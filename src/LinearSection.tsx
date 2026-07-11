@@ -1,9 +1,27 @@
-import { ArrowUpRight, CirclePlus, LoaderCircle, MessageSquareReply, Plug, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Equal, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
 
 const LINEAR_POLL_INTERVAL_MS = 30_000
+
+function PriorityBadge({ priority, label }: { priority: number; label: string }) {
+  const Icon = priority === 1
+    ? CircleAlert
+    : priority === 2
+      ? ChevronsUp
+      : priority === 3
+        ? Equal
+        : priority === 4
+          ? ChevronDown
+          : Minus
+  return (
+    <span className={`linear-priority priority-${priority}`} title={`Priority: ${label}`}>
+      <Icon aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  )
+}
 
 function CommentThread({ comment, onReply }: { comment: LinearComment; onReply: (comment: LinearComment) => void }) {
   return (
@@ -255,14 +273,14 @@ export function LinearSection({ token }: { token: string }) {
                 }}
                 onDragEnd={() => { setDraggedIssueId(null); setDropStateId(null) }}
                 key={item.id}
-              ><span>{item.identifier}</span><strong>{item.title}</strong><footer><small>{item.priorityLabel}</small><small>{item.assignee?.name ?? 'Unassigned'}</small></footer></button>)}</div></section>
+              ><span>{item.identifier}</span><strong>{item.title}</strong><footer><PriorityBadge priority={item.priority} label={item.priorityLabel} /><small>{item.assignee?.name ?? 'Unassigned'}</small></footer></button>)}</div></section>
             })}
             {board && !board.states.length ? <div className="linear-empty">No workflow states found for this project.</div> : null}
             {!board && accountId && !loading ? <div className="linear-empty">Choose a project to open its board.</div> : null}
           </div>
         </>
       )}
-      {issue ? <aside className="linear-issue-drawer"><header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header><div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div><article>{issue.description || 'No description.'}</article><section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}<form onSubmit={sendComment}>{replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} /><button type="submit">Post {replyTo ? 'reply' : 'comment'}</button></form></section></aside> : null}
+      {issue ? <aside className="linear-issue-drawer"><header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header><div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><PriorityBadge priority={issue.priority} label={issue.priorityLabel} /><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div><article>{issue.description || 'No description.'}</article><section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}<form onSubmit={sendComment}>{replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} /><button type="submit">Post {replyTo ? 'reply' : 'comment'}</button></form></section></aside> : null}
     </section>
   )
 }

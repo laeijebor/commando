@@ -33,7 +33,14 @@
 .linear-card[draggable="true"]:active { cursor: grabbing; }
 .linear-card.is-dragging { opacity: .42; border-style: dashed; }
 .linear-card > span { color: #6e6a86; font: 10px 'JetBrains Mono', monospace; }
-.linear-card footer { display: flex; justify-content: space-between; color: #908caa; }
+.linear-card > strong { font-size: 10px; line-height: 1.35; }
+.linear-card footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #908caa; font-size: 9px; }
+.linear-priority { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: #908caa; }
+.linear-priority svg { width: 12px; height: 12px; }
+.linear-priority.priority-1 { color: #eb6f92; }
+.linear-priority.priority-2 { color: #f6c177; }
+.linear-priority.priority-3 { color: #9ccfd8; }
+.linear-priority.priority-4 { color: #908caa; }
 .linear-empty { margin: auto; color: #6e6a86; }
 .linear-issue-drawer { position: absolute; z-index: 8; inset: 0 0 0 auto; width: min(590px, 100%); overflow: auto; border-left: 1px solid #393552; background: #12111a; box-shadow: -20px 0 50px #0008; }
 .linear-issue-drawer > header { padding: 20px; display: flex; justify-content: space-between; border-bottom: 1px solid #26233a; }

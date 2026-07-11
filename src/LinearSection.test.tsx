@@ -80,6 +80,8 @@ describe('LinearSection', () => {
     render(<LinearSection token="test-token" />)
     const card = await screen.findByRole('button', { name: /VIV-1.*Ship polling/ })
     expect(screen.getByText('Live / 30s')).toBeVisible()
+    expect(card.querySelector('.linear-priority.priority-2 svg')).not.toBeNull()
+    expect(within(card).getByText('High')).toBeVisible()
     const target = screen.getByText('In Progress').closest<HTMLElement>('.linear-column')
     expect(target).not.toBeNull()
     const transfer = {
