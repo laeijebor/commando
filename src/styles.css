@@ -375,11 +375,22 @@ kbd {
   overflow: hidden;
 }
 
+.cockpit-body.area-linear,
+.cockpit-body.area-notes {
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+
 .session-sidebar,
 .agent-hud,
 .workspace-main {
   min-width: 0;
   min-height: 0;
+}
+
+.workspace-main.area-linear,
+.workspace-main.area-notes {
+  grid-template-rows: minmax(0, 1fr);
+  background: #0a0a0a;
 }
 
 .session-sidebar,

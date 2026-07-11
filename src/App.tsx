@@ -4,11 +4,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
-  ChevronDown,
   ChevronRight,
   CircleDotDashed,
   Clock3,
-  Columns2,
   Command,
   Grid2X2,
   GripVertical,
@@ -67,6 +65,11 @@ import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './
 import { dispatchBoundedPaste } from './terminalInput'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { XtermPane } from './XtermPane'
+import { LinearSection } from './LinearSection'
+import { NotesSection } from './NotesSection'
+import { SessionTree } from './SessionTree'
+import { TmuxCreateControls } from './TmuxCreateControls'
+import { createTmuxHttpApi } from './tmuxCreateApi'
 
 const TOKEN_STORAGE_KEY = 'commando.session-token'
 
@@ -311,6 +314,8 @@ type PaletteCommand = {
   run: () => void
 }
 
+type CommandoArea = 'workspace' | 'linear' | 'notes'
+
 function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
   if (kind === 'pane') return <Terminal aria-hidden="true" />
   if (kind === 'session') return <Server aria-hidden="true" />
@@ -335,6 +340,7 @@ export function App() {
   const [leftPanelOpen, setLeftPanelOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
+  const [area, setArea] = useState<CommandoArea>('workspace')
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
   if (!paneStreamsRef.current) paneStreamsRef.current = new PaneStreamRegistry()
@@ -459,7 +465,9 @@ export function App() {
   const allVisiblePaneIds = groups.flatMap((group) =>
     group.paneIds.filter((paneId) => paneMap.has(paneId)),
   )
-  const subscribedPaneIds = maximizedPaneId ? [maximizedPaneId] : allVisiblePaneIds
+  const subscribedPaneIds = area === 'workspace'
+    ? maximizedPaneId ? [maximizedPaneId] : allVisiblePaneIds
+    : []
   const subscriptionKey = subscribedPaneIds.join('\u0000')
 
   useEffect(() => {
@@ -549,6 +557,7 @@ export function App() {
   }, [paletteOpen])
 
   const selectSession = (sessionId: string) => {
+    setArea('workspace')
     setSelectedSessionId(sessionId)
     setLeftPanelOpen(false)
   }
@@ -644,6 +653,7 @@ export function App() {
     send({ type: 'refresh', requestId: requestId('refresh') })
     setPaletteOpen(false)
   }
+  const tmuxCreateApi = createTmuxHttpApi(token)
 
   const commands: PaletteCommand[] = [
     {
@@ -829,7 +839,7 @@ export function App() {
         </div>
       ) : null}
 
-      <div className="cockpit-body">
+      <div className={`cockpit-body area-${area}`}>
         <button
           type="button"
           className={`drawer-scrim${leftPanelOpen || rightPanelOpen ? ' visible' : ''}`}
@@ -856,20 +866,18 @@ export function App() {
             </button>
           </div>
           <nav className="primary-nav" aria-label="Commando areas">
-            <button type="button" className="active" aria-current="page">
+            <button type="button" className={area === 'workspace' ? 'active' : ''} aria-current={area === 'workspace' ? 'page' : undefined} onClick={() => { setArea('workspace'); setLeftPanelOpen(false) }}>
               <PanelsTopLeft aria-hidden="true" />
               <span>Workspace</span>
               <span className="nav-count">{snapshot?.sessions.length ?? 0}</span>
             </button>
-            <button type="button" disabled title="Planned for a later release">
+            <button type="button" className={area === 'linear' ? 'active' : ''} aria-current={area === 'linear' ? 'page' : undefined} onClick={() => { setArea('linear'); setLeftPanelOpen(false) }}>
               <CircleDotDashed aria-hidden="true" />
               <span>Linear</span>
-              <span className="later-tag">Later</span>
             </button>
-            <button type="button" disabled title="Planned for a later release">
+            <button type="button" className={area === 'notes' ? 'active' : ''} aria-current={area === 'notes' ? 'page' : undefined} onClick={() => { setArea('notes'); setLeftPanelOpen(false) }}>
               <NotebookPen aria-hidden="true" />
               <span>Notes</span>
-              <span className="later-tag">Later</span>
             </button>
           </nav>
 
@@ -878,71 +886,31 @@ export function App() {
             <span>{snapshot?.panes.length ?? 0} panes</span>
           </div>
           <div className="session-tree">
-            {snapshot?.sessions.map((session) => {
-              const selected = session.id === selectedSessionId
-              const sessionPanes = snapshot.panes.filter((pane) => pane.sessionId === session.id)
-              return (
-                <section className={`session-node${selected ? ' selected' : ''}`} key={session.id}>
-                  <button
-                    type="button"
-                    className="session-button"
-                    onClick={() => selectSession(session.id)}
-                    aria-expanded={selected}
-                  >
-                    {selected ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-                    <span className={`live-dot${session.attached ? ' attached' : ''}`} />
-                    <span className="tree-copy">
-                      <strong>{session.name}</strong>
-                      <small>{session.windowIds.length} windows / {sessionPanes.length} panes</small>
-                    </span>
-                    <span className="tree-count">{sessionPanes.length}</span>
-                  </button>
-                  {selected ? (
-                    <div className="window-tree">
-                      {session.windowIds.map((windowId) => {
-                        const window = windowMap.get(windowId)
-                        if (!window) return null
-                        return (
-                          <div className="window-node" key={window.id}>
-                            <button
-                              type="button"
-                              className="window-button"
-                              onClick={() => jumpToGroup(window.id)}
-                            >
-                              <Columns2 aria-hidden="true" />
-                              <span>{window.index}: {window.name}</span>
-                              <span>{window.paneIds.length}</span>
-                            </button>
-                            <div className="pane-tree">
-                              {window.paneIds.map((paneId) => {
-                                const pane = paneMap.get(paneId)
-                                if (!pane) return null
-                                const status = agentStatuses[pane.id]
-                                return (
-                                  <button
-                                    type="button"
-                                    className={focusedPaneId === pane.id ? 'active' : ''}
-                                    onClick={() => jumpToPane(pane.id)}
-                                    key={pane.id}
-                                  >
-                                    <Terminal aria-hidden="true" />
-                                    <span>{pane.title || pane.command || `Pane ${pane.index}`}</span>
-                                    {status ? <span className={`mini-status ${status.status}`} /> : null}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : null}
-                </section>
-              )
-            })}
-            {snapshot && snapshot.sessions.length === 0 ? (
-              <div className="sidebar-empty">No tmux sessions were reported.</div>
-            ) : null}
+            <SessionTree
+              token={token}
+              sessions={snapshot?.sessions ?? []}
+              windows={snapshot?.windows ?? []}
+              panes={snapshot?.panes ?? []}
+              statuses={agentStatuses}
+              selectedSessionId={selectedSessionId}
+              focusedPaneId={focusedPaneId}
+              onSelectSession={selectSession}
+              onSelectWindow={jumpToGroup}
+              onSelectPane={jumpToPane}
+              onSessionsChanged={refresh}
+            />
+            <TmuxCreateControls
+              sessions={snapshot?.sessions ?? []}
+              windows={snapshot?.windows ?? []}
+              panes={snapshot?.panes ?? []}
+              disabled={!connected}
+              defaultSessionId={selectedSessionId ?? ''}
+              defaultTargetId={focusedPaneId ?? activeWindow?.id ?? ''}
+              onCreateSession={tmuxCreateApi.createSession}
+              onCreateWindow={tmuxCreateApi.createWindow}
+              onCreatePane={tmuxCreateApi.createPane}
+              onCreated={(created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() }}
+            />
           </div>
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />
@@ -953,7 +921,8 @@ export function App() {
           </footer>
         </aside>
 
-        <main className="workspace-main" id="workspace-main">
+        <main className={`workspace-main area-${area}`} id="workspace-main">
+          {area === 'workspace' ? <>
           <header className="workspace-toolbar">
             <div className="workspace-context">
               <span className="section-kicker">Workspace</span>
@@ -1095,9 +1064,10 @@ export function App() {
               </section>
             ) : null}
           </div>
+          </> : area === 'linear' ? <LinearSection token={token} /> : <NotesSection token={token} />}
         </main>
 
-        <aside className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}>
+        {area === 'workspace' ? <aside className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}>
           <div className="hud-header">
             <div className="hud-heading">
               <span className={`hud-pulse${attentionCount ? ' attention' : ''}`} />
@@ -1172,7 +1142,7 @@ export function App() {
             <LockKeyhole aria-hidden="true" />
             <span>Status metadata includes explicit provenance and bounded heuristic reasons.</span>
           </footer>
-        </aside>
+        </aside> : null}
       </div>
 
       {paletteOpen ? (

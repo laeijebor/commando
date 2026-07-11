@@ -27,6 +27,13 @@ import { TmuxClient } from './tmux.js'
 import { normalizeCaptureLineEndings } from './tmux-control.js'
 import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
+import { LinearService } from './linear.js'
+import { handleLinearApi } from './linear-api.js'
+import { NoteStore } from './notes.js'
+import { handleNotesApi } from './notes-api.js'
+import { SessionManagementApi } from './session-management-api.js'
+import { TmuxCreator } from './tmux-create.js'
+import { handleTmuxCreateApi } from './tmux-create-api.js'
 
 const HOST = '127.0.0.1'
 const DEFAULT_PORT = 4310
@@ -420,6 +427,9 @@ async function main(): Promise<void> {
   const digest = tokenDigest(token)
   const tmux = new TmuxClient()
   const workspaces = new WorkspaceStore()
+  const notes = new NoteStore()
+  const linear = new LinearService()
+  const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   let snapshot: CommandoSnapshot = {
@@ -778,6 +788,13 @@ async function main(): Promise<void> {
       })
   }
 
+  const sessionManagement = new SessionManagementApi({
+    currentSessionIds: () => snapshot.sessions.map((session) => session.id),
+    onSessionsChanged: async () => {
+      await refreshSnapshot()
+    },
+  })
+
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
     switch (message.type) {
       case 'subscribe': {
@@ -1012,7 +1029,23 @@ async function main(): Promise<void> {
         return
       }
 
-      if (url.pathname.startsWith('/api/') || url.pathname === '/ws') {
+      if (url.pathname.startsWith('/api/')) {
+        if (!requestIsAuthorized(request, url, digest)) {
+          response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
+          writeJson(response, 401, { error: 'Unauthorized' })
+          return
+        }
+        if (await handleNotesApi(request, response, url, notes)) return
+        if (await handleLinearApi(request, response, url, linear)) return
+        if (await sessionManagement.handle(request, response, url)) return
+        if (await handleTmuxCreateApi(request, response, url, tmuxCreator, async () => {
+          await refreshSnapshot()
+        })) return
+        writeJson(response, 404, { error: 'Not found' })
+        return
+      }
+
+      if (url.pathname === '/ws') {
         writeJson(response, 404, { error: 'Not found' })
         return
       }

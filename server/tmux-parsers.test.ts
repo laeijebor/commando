@@ -157,6 +157,37 @@ describe('tmux format parsers', () => {
     ).toMatchObject({ cursorShape: 'bar', paneTabs: [8, 16, 24] })
   })
 
+  it('normalizes unset alternate-screen cursor sentinels for new shell panes', () => {
+    const terminalFields = [
+      '4294967295',
+      '4294967295',
+      ...defaultTerminalState.slice(2),
+    ]
+    const output = paneRow(
+      '%2',
+      '0',
+      '@1',
+      '$1',
+      'shell',
+      'zsh',
+      '/repo',
+      '1',
+      '0',
+      '80',
+      '24',
+      '1',
+      '2',
+      terminalFields,
+    )
+
+    expect(parsePanes(output)[0]).toMatchObject({
+      id: '%2',
+      alternateSavedX: 0,
+      alternateSavedY: 0,
+      alternateOn: false,
+    })
+  })
+
   it('drops malformed and unstable pane records', () => {
     const output = [
       paneRow('%1', '0', '@1', '$1', 'ok', 'zsh', '/tmp', '1', '0', '80', '24', '1', '2'),

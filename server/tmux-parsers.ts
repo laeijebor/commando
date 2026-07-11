@@ -106,6 +106,13 @@ function paneTabs(value: string): number[] | null {
   return tabs as number[]
 }
 
+function savedCursorCoordinate(value: string, limit: number): number | null {
+  // tmux exposes UINT_MAX until an alternate-screen cursor has been saved.
+  if (value === '4294967295' || value === '18446744073709551615') return 0
+  const coordinate = integer(value)
+  return coordinate !== null && coordinate < limit ? coordinate : null
+}
+
 function parseTerminalState(fields: string[]): PaneTerminalState | null {
   if (fields.length !== PANE_TERMINAL_STATE_FIELDS.length) return null
   const [
@@ -134,8 +141,8 @@ function parseTerminalState(fields: string[]): PaneTerminalState | null {
   const height = integer(heightValue)
   const cursorX = integer(cursorXValue)
   const cursorY = integer(cursorYValue)
-  const alternateSavedX = integer(alternateSavedXValue)
-  const alternateSavedY = integer(alternateSavedYValue)
+  const alternateSavedX = width === null ? null : savedCursorCoordinate(alternateSavedXValue, width)
+  const alternateSavedY = height === null ? null : savedCursorCoordinate(alternateSavedYValue, height)
   const alternateOn = flag(alternateOnValue)
   const cursorVisible = flag(cursorVisibleValue)
   const shape = cursorShape(cursorShapeValue)
@@ -161,9 +168,7 @@ function parseTerminalState(fields: string[]): PaneTerminalState | null {
     cursorY === null ||
     cursorY >= height ||
     alternateSavedX === null ||
-    alternateSavedX >= width ||
     alternateSavedY === null ||
-    alternateSavedY >= height ||
     alternateOn === null ||
     cursorVisible === null ||
     shape === null ||
