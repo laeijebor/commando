@@ -565,6 +565,7 @@ export function App() {
   const jumpToPane = (paneId: string) => {
     const pane = paneMap.get(paneId)
     if (!pane) return
+    setArea('workspace')
     setSelectedSessionId(pane.sessionId)
     setPendingFocusPaneId(paneId)
     setPaletteOpen(false)
