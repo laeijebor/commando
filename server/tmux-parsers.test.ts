@@ -1,0 +1,187 @@
+import { describe, expect, it } from 'vitest'
+import {
+  TMUX_FIELD_SEPARATOR,
+  parsePaneTerminalState,
+  parsePanes,
+  parseTmuxSnapshot,
+} from './tmux-parsers.js'
+
+const row = (...fields: string[]): string => fields.join(TMUX_FIELD_SEPARATOR)
+
+const defaultTerminalState = [
+  '0',
+  '0',
+  '0',
+  '1',
+  'default',
+  '0',
+  '0',
+  '23',
+  '1',
+  '0',
+  '0',
+  '0',
+  '0',
+  '0',
+  '0',
+  '',
+]
+
+function paneRow(
+  ...fields: [
+    id: string,
+    index: string,
+    windowId: string,
+    sessionId: string,
+    title: string,
+    command: string,
+    path: string,
+    active: string,
+    dead: string,
+    width: string,
+    height: string,
+    cursorX: string,
+    cursorY: string,
+    terminalState?: string[],
+  ]
+): string {
+  const terminalState = Array.isArray(fields.at(-1))
+    ? (fields.pop() as string[])
+    : undefined
+  return row(...(fields as string[]), ...(terminalState ?? defaultTerminalState))
+}
+
+describe('tmux format parsers', () => {
+  it('builds relationships from stable tmux ids', () => {
+    const snapshot = parseTmuxSnapshot(
+      `${row('$1', 'work', '2')}\n${row('$2', 'other', '0')}\n`,
+      [
+        row('@3', '1', '$1', 'editor', '1'),
+        row('@4', '2', '$1', 'tests', '0'),
+        row('@5', '0', '$2', 'shell', '1'),
+      ].join('\n'),
+      [
+        paneRow('%8', '1', '@3', '$1', 'Claude Code', 'claude', '/repo', '1', '0', '120', '40', '17', '8'),
+        paneRow('%9', '0', '@3', '$1', 'shell', 'zsh', '/repo', '0', '0', '80', '40', '4', '3'),
+        paneRow('%10', '0', '@4', '$1', 'tests', 'node', '/repo', '1', '0', '100', '30', '0', '29'),
+        paneRow('%11', '0', '@5', '$2', 'shell', 'zsh', '/tmp', '1', '0', '90', '24', '12', '23'),
+      ].join('\n'),
+      7,
+      1234,
+    )
+
+    expect(snapshot.revision).toBe(7)
+    expect(snapshot.sessions[0]).toMatchObject({
+      id: '$2',
+      activeWindowId: '@5',
+      windowIds: ['@5'],
+    })
+    expect(snapshot.sessions[1]).toMatchObject({
+      id: '$1',
+      attached: true,
+      activeWindowId: '@3',
+      windowIds: ['@3', '@4'],
+    })
+    expect(snapshot.windows.find((window) => window.id === '@3')?.paneIds).toEqual([
+      '%9',
+      '%8',
+    ])
+    expect(snapshot.panes.find((pane) => pane.id === '%8')).toMatchObject({
+      cursorX: 17,
+      cursorY: 8,
+      cursorVisible: true,
+      cursorShape: 'default',
+      paneTabs: [],
+    })
+  })
+
+  it('parses tmux 3.6 terminal mode state and tab stops', () => {
+    const terminalFields = [
+      '4',
+      '5',
+      '1',
+      '0',
+      'bar',
+      '1',
+      '2',
+      '38',
+      '0',
+      '1',
+      '1',
+      '1',
+      '1',
+      '1',
+      '0',
+      '8,16,24',
+    ]
+    const output = paneRow(
+      '%7',
+      '0',
+      '@1',
+      '$1',
+      'editor',
+      'nvim',
+      '/repo',
+      '1',
+      '0',
+      '120',
+      '40',
+      '17',
+      '8',
+      terminalFields,
+    )
+
+    expect(parsePanes(output)[0]).toMatchObject({
+      alternateOn: true,
+      alternateSavedX: 4,
+      alternateSavedY: 5,
+      cursorVisible: false,
+      cursorShape: 'bar',
+      cursorBlinking: true,
+      scrollRegionUpper: 2,
+      scrollRegionLower: 38,
+      wrapFlag: false,
+      originFlag: true,
+      insertFlag: true,
+      keypadFlag: true,
+      keypadCursorFlag: true,
+      mouseAnyFlag: true,
+      mouseSgrFlag: false,
+      paneTabs: [8, 16, 24],
+    })
+    expect(
+      parsePaneTerminalState(
+        row('%7', '120', '40', '17', '8', ...terminalFields),
+        '%7',
+      ),
+    ).toMatchObject({ cursorShape: 'bar', paneTabs: [8, 16, 24] })
+  })
+
+  it('drops malformed and unstable pane records', () => {
+    const output = [
+      paneRow('%1', '0', '@1', '$1', 'ok', 'zsh', '/tmp', '1', '0', '80', '24', '1', '2'),
+      paneRow('pane-1', '0', '@1', '$1', 'bad', 'zsh', '/tmp', '1', '0', '80', '24', '0', '0'),
+      paneRow('%2', 'NaN', '@1', '$1', 'bad', 'zsh', '/tmp', '1', '0', '80', '24', '0', '0'),
+      paneRow('%3', '0', '@1', '$1', 'bad', 'zsh', '/tmp', 'yes', '0', '80', '24', '0', '0'),
+      paneRow('%4', '0', '@1', '$1', 'bad', 'zsh', '/tmp', '1', '0', '80', '24', 'x', '0'),
+      paneRow('%5', '0', '@1', '$1', 'bad', 'zsh', '/tmp', '1', '0', '80', '24', '0', '0', [
+        ...defaultTerminalState.slice(0, 4),
+        'beam',
+        ...defaultTerminalState.slice(5),
+      ]),
+      paneRow('%6', '0', '@1', '$1', 'bad', 'zsh', '/tmp', '1', '0', '80', '24', '0', '0', [
+        ...defaultTerminalState.slice(0, 15),
+        '8,nope',
+      ]),
+      'too-few-fields',
+    ].join('\n')
+
+    expect(parsePanes(output).map((pane) => pane.id)).toEqual(['%1'])
+    expect(
+      parsePaneTerminalState(
+        row('%1', '80', '24', '0', '0', ...defaultTerminalState.slice(0, 15), '8,nope'),
+        '%1',
+      ),
+    ).toBeNull()
+  })
+})

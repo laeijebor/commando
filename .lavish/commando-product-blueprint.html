@@ -1,0 +1,2608 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="An interactive product and technical blueprint for Commando, a local-first engineering command center."
+    />
+    <title>Commando — Product Blueprint</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --commando-bg: #07100e;
+        --commando-surface: #0c1714;
+        --commando-surface-2: #11201c;
+        --commando-border: #263a34;
+        --commando-muted: #91a39d;
+        --commando-text: #f3f7f5;
+        --commando-green: #85f4b1;
+        --commando-cyan: #73d9e2;
+        --commando-amber: #f3c66b;
+        --commando-red: #ff8d89;
+        --commando-purple: #b9a3ff;
+        --commando-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        background: var(--commando-bg);
+      }
+
+      body {
+        margin: 0;
+        min-width: 0;
+        overflow-x: hidden;
+        color: var(--commando-text);
+        background:
+          radial-gradient(circle at 10% 0%, rgba(72, 238, 153, 0.09), transparent 29rem),
+          radial-gradient(circle at 92% 12%, rgba(103, 207, 220, 0.08), transparent 32rem),
+          var(--commando-bg);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      button,
+      [role='button'] {
+        touch-action: manipulation;
+      }
+
+      :focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--commando-green), transparent 35%);
+        outline-offset: 3px;
+      }
+
+      :where(.grid, .flex, .artifact-grid, .prototype-grid, .pane-grid) > * {
+        min-width: 0;
+      }
+
+      :where(p, h1, h2, h3, h4, li, dd, figcaption, .badge, .label) {
+        overflow-wrap: anywhere;
+      }
+
+      :where(img, svg, video, canvas, iframe) {
+        max-width: 100%;
+      }
+
+      .mono {
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .artifact-shell {
+        width: min(1480px, 100%);
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .artifact-nav {
+        position: sticky;
+        top: 12px;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        margin-bottom: 48px;
+        border: 1px solid rgba(133, 244, 177, 0.18);
+        border-radius: 16px;
+        background: rgba(7, 16, 14, 0.78);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.24);
+        backdrop-filter: blur(18px);
+      }
+
+      .artifact-nav .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-right: auto;
+        padding: 0 10px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 8px;
+        color: #062012;
+        background: var(--commando-green);
+        box-shadow: 0 0 26px rgba(133, 244, 177, 0.25);
+      }
+
+      .artifact-nav a {
+        min-height: 40px;
+        display: inline-flex;
+        align-items: center;
+        padding: 0 12px;
+        border-radius: 10px;
+        color: var(--commando-muted);
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: 180ms ease;
+      }
+
+      .artifact-nav a:hover {
+        color: var(--commando-text);
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .hero {
+        min-height: auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 48px;
+        align-items: end;
+        padding: 56px 12px 58px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--commando-green);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        content: '';
+        width: 28px;
+        height: 1px;
+        background: currentColor;
+      }
+
+      .hero h1 {
+        max-width: 880px;
+        margin: 20px 0 28px;
+        padding-bottom: 0.08em;
+        font-size: clamp(3.3rem, 7vw, 7.5rem);
+        line-height: 0.98;
+        letter-spacing: -0.075em;
+      }
+
+      .hero h1 span {
+        color: var(--commando-green);
+      }
+
+      .hero .lede {
+        max-width: 720px;
+        margin: 0;
+        color: #b5c3be;
+        font-size: clamp(1rem, 2vw, 1.24rem);
+        line-height: 1.7;
+      }
+
+      .hero-side {
+        display: grid;
+        gap: 12px;
+      }
+
+      .signal-card {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+        min-height: 74px;
+        padding: 14px 16px;
+        border: 1px solid var(--commando-border);
+        border-radius: 16px;
+        background: rgba(17, 32, 28, 0.66);
+      }
+
+      .signal-card .metric {
+        min-width: 60px;
+        color: var(--commando-text);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.38rem;
+        font-weight: 600;
+      }
+
+      .signal-card p {
+        margin: 3px 0 0;
+        color: var(--commando-muted);
+        font-size: 13px;
+      }
+
+      .section-block {
+        padding: 74px 0;
+        scroll-margin-top: 90px;
+      }
+
+      .section-heading {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(260px, 0.45fr);
+        gap: 34px;
+        align-items: end;
+        margin: 0 0 28px;
+      }
+
+      .section-heading h2 {
+        margin: 10px 0 0;
+        padding-bottom: 0.1em;
+        font-size: clamp(2rem, 4vw, 4.4rem);
+        line-height: 1.08;
+        letter-spacing: -0.055em;
+      }
+
+      .section-heading p {
+        margin: 0;
+        color: var(--commando-muted);
+        line-height: 1.65;
+      }
+
+      .prototype-window {
+        overflow: hidden;
+        border: 1px solid #2b443b;
+        border-radius: 22px;
+        background: #08110f;
+        box-shadow: var(--commando-shadow), 0 0 0 1px rgba(133, 244, 177, 0.04) inset;
+      }
+
+      .prototype-titlebar {
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr) 180px;
+        align-items: center;
+        min-height: 52px;
+        gap: 12px;
+        padding: 8px 14px;
+        border-bottom: 1px solid #22362f;
+        background: #0b1512;
+      }
+
+      .traffic-lights {
+        display: flex;
+        gap: 7px;
+      }
+
+      .traffic-lights span {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #40534d;
+      }
+
+      .prototype-title {
+        justify-self: center;
+        color: #8da199;
+        font-size: 12px;
+      }
+
+      .window-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .icon-button {
+        width: 36px;
+        height: 36px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        color: #a2b4ad;
+        background: transparent;
+        cursor: pointer;
+        transition: 160ms ease;
+      }
+
+      .icon-button:hover {
+        color: white;
+        border-color: #2d443c;
+        background: #14231f;
+      }
+
+      .prototype-grid {
+        display: grid;
+        grid-template-columns: 228px minmax(0, 1fr) 278px;
+        min-height: 710px;
+      }
+
+      .app-sidebar {
+        padding: 14px;
+        border-right: 1px solid #22362f;
+        background: #0a1411;
+      }
+
+      .app-main {
+        min-width: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.012) 1px, transparent 1px),
+          #08110f;
+        background-size: 24px 24px;
+      }
+
+      .app-hud {
+        min-width: 0;
+        padding: 14px;
+        border-left: 1px solid #22362f;
+        background: #0a1411;
+      }
+
+      .workspace-switcher {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 46px;
+        margin-bottom: 14px;
+        padding: 8px 10px;
+        border: 1px solid #273c35;
+        border-radius: 12px;
+        background: #101e1a;
+      }
+
+      .workspace-switcher .brand-mark {
+        width: 28px;
+        height: 28px;
+      }
+
+      .workspace-switcher small {
+        display: block;
+        color: #70837c;
+        font-size: 10px;
+        text-transform: uppercase;
+      }
+
+      .workspace-switcher strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .app-nav {
+        display: grid;
+        gap: 4px;
+        margin-bottom: 20px;
+      }
+
+      .app-nav button {
+        min-height: 40px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 0 11px;
+        border: 0;
+        border-radius: 10px;
+        color: #8fa29b;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+        transition: 160ms ease;
+      }
+
+      .app-nav button:hover,
+      .app-nav button.active {
+        color: #f5f9f7;
+        background: #15251f;
+      }
+
+      .app-nav button.active {
+        box-shadow: inset 2px 0 var(--commando-green);
+      }
+
+      .nav-count {
+        margin-left: auto;
+        color: #6f827a;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+      }
+
+      .sidebar-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 18px 8px 8px;
+        color: #62766e;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .session-list {
+        display: grid;
+        gap: 4px;
+      }
+
+      .session-row {
+        width: 100%;
+        min-height: 48px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 9px;
+        align-items: center;
+        padding: 7px 9px;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        color: #91a39d;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .session-row:hover,
+      .session-row.active {
+        border-color: #2a4038;
+        color: white;
+        background: #101e1a;
+      }
+
+      .session-row.active {
+        border-color: rgba(133, 244, 177, 0.28);
+      }
+
+      .session-status {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #4a5e56;
+      }
+
+      .session-status.live {
+        background: var(--commando-green);
+        box-shadow: 0 0 12px rgba(133, 244, 177, 0.62);
+      }
+
+      .session-meta {
+        min-width: 0;
+      }
+
+      .session-meta strong,
+      .session-meta small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .session-meta strong {
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .session-meta small {
+        margin-top: 2px;
+        color: #64786f;
+        font-size: 9px;
+      }
+
+      .session-panes {
+        color: #5f756c;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9px;
+      }
+
+      .main-toolbar {
+        min-height: 62px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #22362f;
+        background: rgba(10, 20, 17, 0.9);
+      }
+
+      .main-toolbar .title-group {
+        min-width: 0;
+        margin-right: auto;
+      }
+
+      .main-toolbar h3 {
+        margin: 0;
+        font-size: 14px;
+        letter-spacing: -0.02em;
+      }
+
+      .main-toolbar p {
+        margin: 3px 0 0;
+        color: #687b74;
+        font-size: 10px;
+      }
+
+      .toolbar-group {
+        display: flex;
+        gap: 6px;
+        padding: 4px;
+        border: 1px solid #263a34;
+        border-radius: 10px;
+        background: #0d1916;
+      }
+
+      .toolbar-button {
+        min-width: 34px;
+        min-height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 7px;
+        color: #879a93;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .toolbar-button:hover,
+      .toolbar-button.active {
+        color: white;
+        background: #1a2b25;
+      }
+
+      .view-panel {
+        display: none;
+        min-width: 0;
+      }
+
+      .view-panel.active {
+        display: block;
+      }
+
+      .workspace-canvas {
+        padding: 14px;
+      }
+
+      .group-shell {
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid #294039;
+        border-radius: 15px;
+        background: #0c1714;
+      }
+
+      .group-head {
+        min-height: 46px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border-bottom: 1px solid #294039;
+      }
+
+      .drag-handle {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 8px;
+        color: #5e746b;
+        background: transparent;
+        cursor: grab;
+      }
+
+      .drag-handle:active {
+        cursor: grabbing;
+      }
+
+      .group-head h4 {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .group-head p {
+        margin: 2px 0 0;
+        color: #657970;
+        font-size: 9px;
+      }
+
+      .group-spacer {
+        flex: 1;
+      }
+
+      .layout-btn {
+        width: 31px;
+        height: 31px;
+        display: grid;
+        place-items: center;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: #6d8179;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .layout-btn:hover,
+      .layout-btn.active {
+        color: var(--commando-green);
+        border-color: #2b453b;
+        background: #14241f;
+      }
+
+      .pane-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        padding: 8px;
+        transition: 180ms ease;
+      }
+
+      .pane-grid.cols-1 {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .pane-grid.cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .terminal-pane {
+        min-width: 0;
+        min-height: 222px;
+        overflow: hidden;
+        border: 1px solid #273c35;
+        border-radius: 10px;
+        background: #07100e;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.17);
+        transition: 160ms ease;
+      }
+
+      .terminal-pane:hover {
+        border-color: #3f5f54;
+      }
+
+      .terminal-pane.dragging {
+        opacity: 0.45;
+        transform: scale(0.985);
+      }
+
+      .pane-head {
+        min-height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 9px;
+        border-bottom: 1px solid #20332c;
+        background: #0e1a17;
+        cursor: grab;
+      }
+
+      .pane-head:active {
+        cursor: grabbing;
+      }
+
+      .pane-icon {
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        color: var(--commando-green);
+        background: rgba(133, 244, 177, 0.1);
+      }
+
+      .pane-head strong {
+        min-width: 0;
+        overflow: hidden;
+        color: #cbd8d3;
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .pane-badge {
+        margin-left: auto;
+        padding: 3px 6px;
+        border-radius: 999px;
+        color: #789087;
+        background: #182721;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 8px;
+      }
+
+      .terminal-body {
+        height: 184px;
+        overflow: hidden;
+        padding: 12px;
+        color: #82978f;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9px;
+        line-height: 1.7;
+      }
+
+      .terminal-body .prompt {
+        color: var(--commando-green);
+      }
+
+      .terminal-body .info {
+        color: var(--commando-cyan);
+      }
+
+      .terminal-body .warn {
+        color: var(--commando-amber);
+      }
+
+      .terminal-body .dim {
+        color: #4c645b;
+      }
+
+      .terminal-body .cursor {
+        display: inline-block;
+        width: 7px;
+        height: 12px;
+        margin-left: 3px;
+        vertical-align: -2px;
+        background: var(--commando-green);
+        animation: cursor-blink 1.05s steps(1) infinite;
+      }
+
+      @keyframes cursor-blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      .hud-header {
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border-bottom: 1px solid #22362f;
+        margin: 0 0 12px;
+        padding: 0;
+      }
+
+      .hud-header h3 {
+        margin: 0;
+        font-size: 12px;
+      }
+
+      .pulse-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--commando-green);
+        box-shadow: 0 0 0 0 rgba(133, 244, 177, 0.45);
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        70% {
+          box-shadow: 0 0 0 8px rgba(133, 244, 177, 0);
+        }
+      }
+
+      .hud-filter {
+        margin-left: auto;
+        color: #6b8077;
+        font-size: 9px;
+      }
+
+      .agent-card {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 9px;
+        padding: 11px;
+        margin-bottom: 8px;
+        border: 1px solid #273c35;
+        border-radius: 12px;
+        background: #0f1c18;
+      }
+
+      .agent-card.question {
+        border-color: rgba(243, 198, 107, 0.36);
+        background: rgba(49, 39, 20, 0.38);
+      }
+
+      .agent-card.done {
+        border-color: rgba(133, 244, 177, 0.28);
+      }
+
+      .agent-avatar {
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        color: #0a1712;
+        background: var(--commando-purple);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9px;
+        font-weight: 700;
+      }
+
+      .agent-avatar.codex {
+        background: var(--commando-cyan);
+      }
+
+      .agent-avatar.opencode {
+        background: var(--commando-green);
+      }
+
+      .agent-copy strong,
+      .agent-copy span,
+      .agent-copy small {
+        display: block;
+      }
+
+      .agent-copy strong {
+        color: #d6e1dd;
+        font-size: 10px;
+      }
+
+      .agent-copy span {
+        margin-top: 3px;
+        color: #879b93;
+        font-size: 9px;
+        line-height: 1.4;
+      }
+
+      .agent-copy small {
+        margin-top: 6px;
+        color: #586d65;
+        font-size: 8px;
+      }
+
+      .agent-state {
+        align-self: start;
+        padding: 3px 6px;
+        border-radius: 999px;
+        color: var(--commando-green);
+        background: rgba(133, 244, 177, 0.08);
+        font-size: 8px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .agent-state.waiting {
+        color: var(--commando-amber);
+        background: rgba(243, 198, 107, 0.08);
+      }
+
+      .hud-summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        margin: 12px 0;
+      }
+
+      .hud-stat {
+        min-width: 0;
+        padding: 9px 7px;
+        border: 1px solid #253a33;
+        border-radius: 10px;
+        background: #0d1916;
+        text-align: center;
+      }
+
+      .hud-stat strong,
+      .hud-stat span {
+        display: block;
+      }
+
+      .hud-stat strong {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 16px;
+      }
+
+      .hud-stat span {
+        margin-top: 2px;
+        color: #5f746c;
+        font-size: 8px;
+        text-transform: uppercase;
+      }
+
+      .quick-action {
+        min-height: 40px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        margin-top: 8px;
+        padding: 0 10px;
+        border: 1px solid #2b433a;
+        border-radius: 10px;
+        color: #9aacA5;
+        background: #11201c;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .quick-action:hover {
+        color: white;
+        border-color: #436054;
+      }
+
+      .quick-action .kbd {
+        margin-left: auto;
+        border-color: #344b43;
+        color: #6e837a;
+        background: #0b1613;
+        font-size: 8px;
+      }
+
+      .linear-view,
+      .notes-view {
+        padding: 18px;
+      }
+
+      .view-title {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+
+      .view-title h3,
+      .view-title p {
+        margin: 0;
+      }
+
+      .view-title p {
+        margin-top: 3px;
+        color: #71857d;
+        font-size: 10px;
+      }
+
+      .view-title .toolbar-button {
+        margin-left: auto;
+        color: #07100e;
+        background: var(--commando-green);
+      }
+
+      .ticket-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .ticket-row {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 58px;
+        padding: 10px 12px;
+        border: 1px solid #263a34;
+        border-radius: 12px;
+        background: #0d1916;
+      }
+
+      .ticket-id {
+        color: #70847b;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9px;
+      }
+
+      .ticket-copy strong,
+      .ticket-copy span {
+        display: block;
+      }
+
+      .ticket-copy strong {
+        font-size: 11px;
+      }
+
+      .ticket-copy span {
+        margin-top: 4px;
+        color: #697e75;
+        font-size: 9px;
+      }
+
+      .priority-marker {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--commando-amber);
+      }
+
+      .priority-marker.high {
+        background: var(--commando-red);
+      }
+
+      .ticket-status {
+        padding: 4px 7px;
+        border-radius: 999px;
+        color: #83b9d8;
+        background: rgba(115, 217, 226, 0.08);
+        font-size: 8px;
+      }
+
+      .notes-layout {
+        display: grid;
+        grid-template-columns: 170px minmax(0, 1fr);
+        min-height: 570px;
+        overflow: hidden;
+        border: 1px solid #283d36;
+        border-radius: 14px;
+        background: #0d1916;
+      }
+
+      .note-index {
+        padding: 12px;
+        border-right: 1px solid #283d36;
+      }
+
+      .note-index button {
+        min-height: 42px;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 9px;
+        color: #7d9188;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .note-index button.active,
+      .note-index button:hover {
+        color: white;
+        background: #16251f;
+      }
+
+      .note-editor {
+        min-width: 0;
+        padding: 42px clamp(24px, 5vw, 70px);
+      }
+
+      .note-editor [contenteditable] {
+        min-height: 430px;
+        outline: none;
+      }
+
+      .note-editor h2 {
+        margin: 0 0 18px;
+        font-size: 28px;
+        letter-spacing: -0.04em;
+      }
+
+      .note-editor p,
+      .note-editor li {
+        color: #9cafA8;
+        font-size: 13px;
+        line-height: 1.8;
+      }
+
+      .note-callout {
+        padding: 13px 14px;
+        margin: 18px 0;
+        border-left: 3px solid var(--commando-green);
+        border-radius: 0 10px 10px 0;
+        color: #c4d2cd;
+        background: rgba(133, 244, 177, 0.055);
+        font-size: 12px;
+      }
+
+      .command-palette {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: none;
+        place-items: start center;
+        padding: 14vh 16px 24px;
+        background: rgba(2, 7, 6, 0.68);
+        backdrop-filter: blur(12px);
+      }
+
+      .command-palette.open {
+        display: grid;
+      }
+
+      .command-box {
+        width: min(600px, 100%);
+        overflow: hidden;
+        border: 1px solid #365248;
+        border-radius: 16px;
+        background: #0d1916;
+        box-shadow: 0 30px 100px rgba(0, 0, 0, 0.6);
+      }
+
+      .command-search {
+        width: 100%;
+        min-height: 58px;
+        padding: 0 18px;
+        border: 0;
+        border-bottom: 1px solid #2a4038;
+        outline: 0;
+        color: white;
+        background: #101e1a;
+      }
+
+      .command-results {
+        display: grid;
+        gap: 4px;
+        padding: 8px;
+      }
+
+      .command-item {
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 9px;
+        color: #99aba4;
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .command-item:hover,
+      .command-item:first-child {
+        color: white;
+        background: #192a24;
+      }
+
+      .command-item .mono {
+        margin-left: auto;
+        color: #5e736a;
+        font-size: 9px;
+      }
+
+      .artifact-grid {
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .artifact-card {
+        min-width: 0;
+        padding: 22px;
+        border: 1px solid var(--commando-border);
+        border-radius: 18px;
+        background: rgba(13, 25, 22, 0.74);
+      }
+
+      .artifact-card h3,
+      .artifact-card h4,
+      .artifact-card p {
+        margin-top: 0;
+      }
+
+      .artifact-card h3 {
+        margin-bottom: 10px;
+        font-size: 1.16rem;
+        letter-spacing: -0.025em;
+      }
+
+      .artifact-card p {
+        color: var(--commando-muted);
+        line-height: 1.65;
+      }
+
+      .artifact-card .card-index {
+        display: inline-flex;
+        margin-bottom: 20px;
+        color: var(--commando-green);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+      }
+
+      .span-4 {
+        grid-column: span 4;
+      }
+
+      .span-5 {
+        grid-column: span 5;
+      }
+
+      .span-6 {
+        grid-column: span 6;
+      }
+
+      .span-7 {
+        grid-column: span 7;
+      }
+
+      .span-8 {
+        grid-column: span 8;
+      }
+
+      .span-12 {
+        grid-column: span 12;
+      }
+
+      .feature-list,
+      .risk-list {
+        display: grid;
+        gap: 10px;
+        padding: 0;
+        margin: 16px 0 0;
+        list-style: none;
+      }
+
+      .feature-list li,
+      .risk-list li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        padding-block: 2px 4px;
+        color: #aabbb5;
+        font-size: 13px;
+        line-height: 1.65;
+      }
+
+      .list-icon {
+        width: 21px;
+        height: 21px;
+        display: grid;
+        place-items: center;
+        margin-top: 1px;
+        border-radius: 6px;
+        color: var(--commando-green);
+        background: rgba(133, 244, 177, 0.08);
+      }
+
+      .architecture-card {
+        padding: 16px;
+        overflow: hidden;
+      }
+
+      .architecture-card .mermaid {
+        display: flex;
+        justify-content: center;
+        min-height: 420px;
+        padding: 10px;
+        border-radius: 14px;
+        background: #09130f;
+      }
+
+      .stack-strip {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .stack-item {
+        padding: 12px;
+        border: 1px solid #293f37;
+        border-radius: 11px;
+        background: #0c1814;
+      }
+
+      .stack-item strong,
+      .stack-item span {
+        display: block;
+      }
+
+      .stack-item strong {
+        font-size: 11px;
+      }
+
+      .stack-item span {
+        margin-top: 4px;
+        color: #697e75;
+        font-size: 9px;
+        line-height: 1.4;
+      }
+
+      .comparison-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .option-card {
+        position: relative;
+        min-width: 0;
+        padding: 22px;
+        border: 1px solid var(--commando-border);
+        border-radius: 18px;
+        background: #0d1916;
+      }
+
+      .option-card.recommended {
+        border-color: rgba(133, 244, 177, 0.46);
+        box-shadow: inset 0 0 0 1px rgba(133, 244, 177, 0.07);
+      }
+
+      .recommendation {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        max-width: calc(100% - 24px);
+        padding: 4px 7px;
+        border-radius: 999px;
+        color: #06140d;
+        background: var(--commando-green);
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .option-card h3 {
+        margin: 10px 0 8px;
+        font-size: 1.15rem;
+      }
+
+      .option-card p {
+        min-height: 74px;
+        color: var(--commando-muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .tradeoff {
+        display: grid;
+        grid-template-columns: 70px minmax(0, 1fr);
+        gap: 10px;
+        padding: 10px 0;
+        border-top: 1px solid #243831;
+        font-size: 11px;
+      }
+
+      .tradeoff strong {
+        color: #71867d;
+        font-weight: 600;
+      }
+
+      .tradeoff span {
+        color: #b1c0bb;
+      }
+
+      .phase-timeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0;
+        overflow: hidden;
+        border: 1px solid var(--commando-border);
+        border-radius: 18px;
+        background: #0c1714;
+      }
+
+      .phase {
+        min-width: 0;
+        padding: 22px;
+        border-right: 1px solid var(--commando-border);
+      }
+
+      .phase:last-child {
+        border-right: 0;
+      }
+
+      .phase-number {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 24px;
+        border-radius: 9px;
+        color: #07100e;
+        background: var(--commando-green);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .phase h3 {
+        margin: 0 0 8px;
+        font-size: 1rem;
+      }
+
+      .phase p {
+        min-height: 72px;
+        color: #8fa29b;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .phase small {
+        color: #61756d;
+        font-size: 9px;
+        text-transform: uppercase;
+      }
+
+      .scope-band {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 16px;
+      }
+
+      .scope-card {
+        padding: 18px;
+        border-radius: 14px;
+        border: 1px solid var(--commando-border);
+      }
+
+      .scope-card.in {
+        background: rgba(133, 244, 177, 0.045);
+      }
+
+      .scope-card.out {
+        background: rgba(255, 141, 137, 0.035);
+      }
+
+      .scope-card h4 {
+        margin: 0 0 12px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.11em;
+      }
+
+      .scope-card ul {
+        margin: 0;
+        padding-left: 18px;
+        color: #9badA6;
+        font-size: 12px;
+        line-height: 1.8;
+      }
+
+      .decision-panel {
+        padding: 26px;
+        border: 1px solid rgba(133, 244, 177, 0.3);
+        border-radius: 20px;
+        background:
+          linear-gradient(135deg, rgba(133, 244, 177, 0.06), transparent 45%),
+          #0c1714;
+      }
+
+      .decision-panel + .decision-panel {
+        margin-top: 14px;
+      }
+
+      .decision-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 20px;
+        align-items: start;
+        margin-bottom: 18px;
+      }
+
+      .decision-head h3,
+      .decision-head p {
+        margin: 0;
+      }
+
+      .decision-head p {
+        max-width: 700px;
+        margin-top: 7px;
+        color: var(--commando-muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .decision-status {
+        padding: 5px 8px;
+        border: 1px solid #324940;
+        border-radius: 999px;
+        color: #82968e;
+        font-size: 9px;
+        white-space: nowrap;
+      }
+
+      .decision-status.queued {
+        color: var(--commando-green);
+        border-color: rgba(133, 244, 177, 0.35);
+        background: rgba(133, 244, 177, 0.06);
+      }
+
+      .choice-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .choice-label {
+        position: relative;
+        display: block;
+        min-width: 0;
+        cursor: pointer;
+      }
+
+      .choice-label input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .choice-content {
+        min-height: 112px;
+        display: block;
+        padding: 16px;
+        border: 1px solid #2a4038;
+        border-radius: 13px;
+        background: #0d1916;
+        transition: 160ms ease;
+      }
+
+      .choice-content strong,
+      .choice-content span {
+        display: block;
+      }
+
+      .choice-content strong {
+        font-size: 12px;
+      }
+
+      .choice-content span {
+        margin-top: 6px;
+        color: #82958e;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .choice-label input:checked + .choice-content {
+        border-color: var(--commando-green);
+        background: rgba(133, 244, 177, 0.06);
+        box-shadow: 0 0 0 1px rgba(133, 244, 177, 0.09) inset;
+      }
+
+      .choice-label input:focus-visible + .choice-content {
+        outline: 3px solid color-mix(in srgb, var(--commando-green), transparent 35%);
+        outline-offset: 3px;
+      }
+
+      .decision-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .queue-button {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 11px;
+        color: #06140d;
+        background: var(--commando-green);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .source-note {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 12px;
+        padding: 16px;
+        border: 1px dashed #31483f;
+        border-radius: 14px;
+        color: #80938c;
+        background: rgba(255, 255, 255, 0.014);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .source-note strong {
+        color: #b8c7c2;
+      }
+
+      .footer {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 40px 0 20px;
+        border-top: 1px solid #20332c;
+        color: #667a72;
+        font-size: 11px;
+      }
+
+      @media (max-width: 1180px) {
+        .prototype-grid {
+          grid-template-columns: 210px minmax(0, 1fr);
+        }
+
+        .app-hud {
+          grid-column: 1 / -1;
+          border-top: 1px solid #22362f;
+          border-left: 0;
+        }
+
+        .app-hud .agent-stream {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .agent-card {
+          margin: 0;
+        }
+
+        .hud-summary,
+        .quick-action {
+          display: none;
+        }
+
+        .stack-strip {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 900px) {
+        .artifact-shell {
+          padding: 16px;
+        }
+
+        .artifact-nav {
+          overflow-x: auto;
+          margin-bottom: 18px;
+        }
+
+        .artifact-nav a {
+          white-space: nowrap;
+        }
+
+        .hero,
+        .section-heading {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .hero {
+          gap: 28px;
+          padding-top: 40px;
+        }
+
+        .hero-side {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .signal-card {
+          display: block;
+        }
+
+        .prototype-titlebar {
+          grid-template-columns: 80px minmax(0, 1fr) 80px;
+        }
+
+        .prototype-grid {
+          grid-template-columns: 178px minmax(0, 1fr);
+        }
+
+        .app-sidebar {
+          padding: 10px;
+        }
+
+        .pane-grid,
+        .pane-grid.cols-3 {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .span-4,
+        .span-5,
+        .span-6,
+        .span-7,
+        .span-8 {
+          grid-column: span 12;
+        }
+
+        .comparison-grid,
+        .phase-timeline {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .phase:nth-child(2) {
+          border-right: 0;
+        }
+
+        .phase:nth-child(-n + 2) {
+          border-bottom: 1px solid var(--commando-border);
+        }
+
+        .choice-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      @media (max-width: 640px) {
+        .artifact-shell {
+          padding: 10px;
+        }
+
+        .artifact-nav .brand span:last-child,
+        .artifact-nav a:nth-of-type(n + 4) {
+          display: none;
+        }
+
+        .hero {
+          padding-inline: 6px;
+        }
+
+        .hero h1 {
+          font-size: clamp(3rem, 18vw, 5.4rem);
+        }
+
+        .hero-side {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .prototype-window {
+          border-radius: 14px;
+        }
+
+        .prototype-titlebar {
+          grid-template-columns: 1fr auto;
+        }
+
+        .prototype-title,
+        .window-actions .icon-button:first-child {
+          display: none;
+        }
+
+        .prototype-grid {
+          display: block;
+        }
+
+        .app-sidebar {
+          border-right: 0;
+          border-bottom: 1px solid #22362f;
+        }
+
+        .workspace-switcher,
+        .sidebar-label,
+        .session-list {
+          display: none;
+        }
+
+        .app-nav {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          margin: 0;
+        }
+
+        .app-nav button {
+          justify-content: center;
+          padding: 0 6px;
+        }
+
+        .app-nav button span:not(.nav-count) {
+          display: none;
+        }
+
+        .nav-count {
+          display: none;
+        }
+
+        .main-toolbar {
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+
+        .main-toolbar .title-group {
+          flex-basis: calc(100% - 50px);
+        }
+
+        .toolbar-group {
+          order: 3;
+        }
+
+        .app-hud .agent-stream {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .ticket-row {
+          grid-template-columns: auto minmax(0, 1fr) auto;
+        }
+
+        .ticket-status {
+          display: none;
+        }
+
+        .notes-layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .note-index {
+          display: none;
+        }
+
+        .note-editor {
+          padding: 28px 20px;
+        }
+
+        .comparison-grid,
+        .phase-timeline,
+        .scope-band,
+        .stack-strip {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .phase,
+        .phase:nth-child(2) {
+          border-right: 0;
+          border-bottom: 1px solid var(--commando-border);
+        }
+
+        .phase:last-child {
+          border-bottom: 0;
+        }
+
+        .option-card p,
+        .phase p {
+          min-height: auto;
+        }
+
+        .decision-head {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .decision-status {
+          justify-self: start;
+        }
+
+        .footer {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="artifact-shell">
+      <nav class="artifact-nav" aria-label="Blueprint navigation">
+        <div class="brand">
+          <span class="brand-mark"><i data-lucide="command" size="16" aria-hidden="true"></i></span>
+          <span>commando / blueprint</span>
+        </div>
+        <a href="#prototype">Prototype</a>
+        <a href="#product">Product</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#delivery">Delivery</a>
+        <a href="#decisions">Decisions</a>
+      </nav>
+
+      <main>
+        <header class="hero">
+          <div>
+            <span class="eyebrow">Local-first engineering command center</span>
+            <h1>Orchestrate work.<br /><span>Keep context.</span></h1>
+            <p class="lede">
+              Commando wraps your existing tmux world in a fast, visual control plane: sessions,
+              resizable pane groups, agent attention signals, Linear work, and personal notes in one
+              keyboard-first interface.
+            </p>
+          </div>
+          <aside class="hero-side" aria-label="Current workspace evidence">
+            <div class="signal-card">
+              <span class="metric">16</span>
+              <div><strong>tmux sessions</strong><p>detected on this machine now</p></div>
+            </div>
+            <div class="signal-card">
+              <span class="metric">54</span>
+              <div><strong>live panes</strong><p>enough density to require a control plane</p></div>
+            </div>
+            <div class="signal-card">
+              <span class="metric">3</span>
+              <div><strong>agent families</strong><p>Claude, Codex, and OpenCode visible</p></div>
+            </div>
+          </aside>
+        </header>
+
+        <section id="prototype" class="section-block">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Experience prototype</span>
+              <h2>The workspace is the product.</h2>
+            </div>
+            <p>
+              Try the tabs, switch sessions, change the pane layout, drag pane cards, edit the note,
+              or press <span class="mono">⌘ K</span>. The sample state reflects your current tmux
+              environment rather than placeholder dashboard metrics.
+            </p>
+          </div>
+
+          <div class="prototype-window" aria-label="Interactive Commando application prototype">
+            <div class="prototype-titlebar">
+              <div class="traffic-lights" aria-hidden="true"><span></span><span></span><span></span></div>
+              <div class="prototype-title mono">commando://local/workspace/notification-translation</div>
+              <div class="window-actions">
+                <button class="icon-button" aria-label="Search" data-open-palette>
+                  <i data-lucide="search" size="16" aria-hidden="true"></i>
+                </button>
+                <button class="icon-button" aria-label="Settings">
+                  <i data-lucide="settings-2" size="16" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="prototype-grid">
+              <aside class="app-sidebar">
+                <div class="workspace-switcher">
+                  <span class="brand-mark"><i data-lucide="command" size="15" aria-hidden="true"></i></span>
+                  <div><small>Workspace</small><strong>Local machine</strong></div>
+                  <i data-lucide="chevrons-up-down" size="13" aria-hidden="true"></i>
+                </div>
+
+                <nav class="app-nav" aria-label="Commando views">
+                  <button class="active" data-view="workspace">
+                    <i data-lucide="panels-top-left" size="15" aria-hidden="true"></i>
+                    <span>Workspace</span><span class="nav-count">16</span>
+                  </button>
+                  <button data-view="linear">
+                    <i data-lucide="circle-dot-dashed" size="15" aria-hidden="true"></i>
+                    <span>Linear</span><span class="nav-count">7</span>
+                  </button>
+                  <button data-view="notes">
+                    <i data-lucide="notebook-pen" size="15" aria-hidden="true"></i>
+                    <span>Notes</span><span class="nav-count">⌘N</span>
+                  </button>
+                </nav>
+
+                <div class="sidebar-label"><span>Sessions</span><span>+</span></div>
+                <div class="session-list">
+                  <button class="session-row active" data-session="notification-translation">
+                    <span class="session-status live"></span>
+                    <span class="session-meta"><strong>notification-translation</strong><small>2 windows · 6 panes</small></span>
+                    <span class="session-panes">6</span>
+                  </button>
+                  <button class="session-row" data-session="vivi">
+                    <span class="session-status live"></span>
+                    <span class="session-meta"><strong>vivi</strong><small>3 windows · 10 panes</small></span>
+                    <span class="session-panes">10</span>
+                  </button>
+                  <button class="session-row" data-session="commando">
+                    <span class="session-status live"></span>
+                    <span class="session-meta"><strong>commando</strong><small>1 window · 3 panes</small></span>
+                    <span class="session-panes">3</span>
+                  </button>
+                  <button class="session-row" data-session="work">
+                    <span class="session-status live"></span>
+                    <span class="session-meta"><strong>work</strong><small>3 windows · 6 panes</small></span>
+                    <span class="session-panes">6</span>
+                  </button>
+                  <button class="session-row" data-session="gizmo-memory-issues">
+                    <span class="session-status"></span>
+                    <span class="session-meta"><strong>gizmo-memory-issues</strong><small>1 window · 3 panes</small></span>
+                    <span class="session-panes">3</span>
+                  </button>
+                </div>
+              </aside>
+
+              <section class="app-main">
+                <div class="main-toolbar">
+                  <div class="title-group">
+                    <h3 id="workspace-title">notification-translation</h3>
+                    <p id="workspace-subtitle">window 0 · 4 panes · feat/notification-translations</p>
+                  </div>
+                  <div class="toolbar-group" aria-label="Pane layout">
+                    <button class="toolbar-button layout-choice" data-cols="1" aria-label="One column">
+                      <i data-lucide="rectangle-horizontal" size="14" aria-hidden="true"></i>
+                    </button>
+                    <button class="toolbar-button layout-choice active" data-cols="2" aria-label="Two columns">
+                      <i data-lucide="columns-2" size="14" aria-hidden="true"></i>
+                    </button>
+                    <button class="toolbar-button layout-choice" data-cols="3" aria-label="Three columns">
+                      <i data-lucide="columns-3" size="14" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                  <button class="icon-button" aria-label="Open command palette" data-open-palette>
+                    <i data-lucide="square-terminal" size="16" aria-hidden="true"></i>
+                  </button>
+                </div>
+
+                <div id="workspace-view" class="view-panel active">
+                  <div class="workspace-canvas">
+                    <article class="group-shell">
+                      <header class="group-head">
+                        <button class="drag-handle" aria-label="Drag service group">
+                          <i data-lucide="grip-vertical" size="15" aria-hidden="true"></i>
+                        </button>
+                        <div><h4>Feature cockpit</h4><p>worktree + services + agents</p></div>
+                        <span class="group-spacer"></span>
+                        <button class="layout-btn" aria-label="Add pane"><i data-lucide="plus" size="14"></i></button>
+                        <button class="layout-btn" aria-label="More group actions"><i data-lucide="ellipsis" size="14"></i></button>
+                      </header>
+
+                      <div id="pane-grid" class="pane-grid" aria-label="Draggable pane group">
+                        <article class="terminal-pane" draggable="true">
+                          <header class="pane-head">
+                            <span class="pane-icon"><i data-lucide="bot" size="13"></i></span>
+                            <strong>Claude · conditional messaging</strong>
+                            <span class="pane-badge">0.1</span>
+                          </header>
+                          <div class="terminal-body">
+                            <div class="dim">Claude Code · notification-translation</div>
+                            <div>&nbsp;</div>
+                            <div><span class="info">●</span> Refactored conditional messaging</div>
+                            <div><span class="info">●</span> 12 files changed, 41 tests passed</div>
+                            <div>&nbsp;</div>
+                            <div class="warn">?</div>
+                            <div>Should the fallback preserve the old title?</div>
+                            <div class="dim">Waiting for your answer...</div>
+                            <div>&nbsp;</div>
+                            <div><span class="prompt">❯</span><span class="cursor"></span></div>
+                          </div>
+                        </article>
+
+                        <article class="terminal-pane" draggable="true">
+                          <header class="pane-head">
+                            <span class="pane-icon"><i data-lucide="terminal" size="13"></i></span>
+                            <strong>frontend · Vite service</strong>
+                            <span class="pane-badge">0.2</span>
+                          </header>
+                          <div class="terminal-body">
+                            <div><span class="prompt">$</span> pnpm dev</div>
+                            <div>&nbsp;</div>
+                            <div class="info">VITE v7 ready in 184 ms</div>
+                            <div>Local: <span class="info">http://localhost:5173</span></div>
+                            <div class="dim">press h + enter to show help</div>
+                            <div>&nbsp;</div>
+                            <div><span class="info">hmr</span> update /src/messages.ts</div>
+                            <div><span class="prompt">ready</span><span class="cursor"></span></div>
+                          </div>
+                        </article>
+
+                        <article class="terminal-pane" draggable="true">
+                          <header class="pane-head">
+                            <span class="pane-icon"><i data-lucide="braces" size="13"></i></span>
+                            <strong>OpenCode · cleanup merged branch</strong>
+                            <span class="pane-badge">0.3</span>
+                          </header>
+                          <div class="terminal-body">
+                            <div class="dim">OpenCode · feat/notification-translations</div>
+                            <div>&nbsp;</div>
+                            <div><span class="info">✓</span> Verified branch merged</div>
+                            <div><span class="info">✓</span> Removed stale worktree</div>
+                            <div><span class="info">✓</span> Pruned remote refs</div>
+                            <div>&nbsp;</div>
+                            <div class="prompt">Task complete</div>
+                            <div class="dim">finished 2m ago</div>
+                          </div>
+                        </article>
+
+                        <article class="terminal-pane" draggable="true">
+                          <header class="pane-head">
+                            <span class="pane-icon"><i data-lucide="database" size="13"></i></span>
+                            <strong>i18n package · tests</strong>
+                            <span class="pane-badge">0.4</span>
+                          </header>
+                          <div class="terminal-body">
+                            <div><span class="prompt">$</span> pnpm test --watch</div>
+                            <div>&nbsp;</div>
+                            <div><span class="info">PASS</span> messages.test.ts</div>
+                            <div><span class="info">PASS</span> templates.test.ts</div>
+                            <div><span class="info">PASS</span> fallback.test.ts</div>
+                            <div>&nbsp;</div>
+                            <div>Tests: <span class="info">41 passed</span>, 41 total</div>
+                            <div class="dim">Watching for file changes...</div>
+                          </div>
+                        </article>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+
+                <div id="linear-view" class="view-panel linear-view">
+                  <div class="view-title">
+                    <div><h3>My active work</h3><p>Linear issues grouped by project and local session</p></div>
+                    <button class="toolbar-button"><i data-lucide="plus" size="13"></i> Create</button>
+                  </div>
+                  <div class="ticket-list">
+                    <article class="ticket-row">
+                      <span class="priority-marker high" aria-label="High priority"></span>
+                      <div class="ticket-copy"><strong>Notification translations</strong><span>Linked session: notification-translation · 3 agents</span></div>
+                      <span class="ticket-id">VIV-372</span><span class="ticket-status">In progress</span>
+                    </article>
+                    <article class="ticket-row">
+                      <span class="priority-marker" aria-label="Medium priority"></span>
+                      <div class="ticket-copy"><strong>Improve Linear issue status workflow</strong><span>Linked session: vivi · Claude waiting</span></div>
+                      <span class="ticket-id">VIV-369</span><span class="ticket-status">In review</span>
+                    </article>
+                    <article class="ticket-row">
+                      <span class="priority-marker high" aria-label="High priority"></span>
+                      <div class="ticket-copy"><strong>Fix workout review navigation</strong><span>Linked session: main · 2 active panes</span></div>
+                      <span class="ticket-id">VIV-354</span><span class="ticket-status">In progress</span>
+                    </article>
+                    <article class="ticket-row">
+                      <span class="priority-marker" aria-label="Medium priority"></span>
+                      <div class="ticket-copy"><strong>Android memory profile</strong><span>Linked session: gizmo-memory-issues · idle 28m</span></div>
+                      <span class="ticket-id">GIZ-81</span><span class="ticket-status">Todo</span>
+                    </article>
+                  </div>
+                </div>
+
+                <div id="notes-view" class="view-panel notes-view">
+                  <div class="view-title">
+                    <div><h3>Personal notes</h3><p>Local, searchable, linked to sessions and tickets</p></div>
+                    <button class="toolbar-button"><i data-lucide="plus" size="13"></i> New page</button>
+                  </div>
+                  <div class="notes-layout">
+                    <aside class="note-index">
+                      <button class="active"><i data-lucide="file-text" size="13"></i> Daily focus</button>
+                      <button><i data-lucide="file-text" size="13"></i> VIV architecture</button>
+                      <button><i data-lucide="file-text" size="13"></i> Debug log</button>
+                      <button><i data-lucide="folder" size="13"></i> Ideas</button>
+                    </aside>
+                    <article class="note-editor">
+                      <div contenteditable="true" role="textbox" aria-multiline="true" aria-label="Editable daily focus note">
+                        <h2>Daily focus — July 10</h2>
+                        <p>Ship notification translations, then close the open agent loops before pulling another ticket.</p>
+                        <div class="note-callout">Two agents need attention: Claude has a fallback-copy question and Codex is ready for review.</div>
+                        <ul>
+                          <li>Review translation fallback behavior</li>
+                          <li>Check workout dashboard navigation</li>
+                          <li>Capture memory profile findings</li>
+                        </ul>
+                        <p>Type <span class="mono">/</span> for blocks, <span class="mono">@</span> to link a session, or <span class="mono">#</span> to link a Linear issue.</p>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="app-hud">
+                <div class="hud-header">
+                  <span class="pulse-dot" aria-hidden="true"></span>
+                  <h3>Agent HUD</h3>
+                  <span class="hud-filter">attention first</span>
+                </div>
+                <div class="agent-stream">
+                  <article class="agent-card question">
+                    <span class="agent-avatar">CC</span>
+                    <div class="agent-copy"><strong>Claude</strong><span>Preserve the old fallback title?</span><small>notification-translation · 38s</small></div>
+                    <span class="agent-state waiting">Question</span>
+                  </article>
+                  <article class="agent-card done">
+                    <span class="agent-avatar codex">CX</span>
+                    <div class="agent-copy"><strong>Codex</strong><span>Closeout checks completed</span><small>vivi · 2m</small></div>
+                    <span class="agent-state">Done</span>
+                  </article>
+                  <article class="agent-card">
+                    <span class="agent-avatar opencode">OC</span>
+                    <div class="agent-copy"><strong>OpenCode</strong><span>Implementing command palette</span><small>commando · now</small></div>
+                    <span class="agent-state">Working</span>
+                  </article>
+                </div>
+                <div class="hud-summary">
+                  <div class="hud-stat"><strong>7</strong><span>Working</span></div>
+                  <div class="hud-stat"><strong>2</strong><span>Need you</span></div>
+                  <div class="hud-stat"><strong>4</strong><span>Done</span></div>
+                </div>
+                <button class="quick-action" data-open-palette>
+                  <i data-lucide="search" size="14"></i> Jump to anything <kbd class="kbd">⌘K</kbd>
+                </button>
+                <button class="quick-action">
+                  <i data-lucide="bell-ring" size="14"></i> Attention inbox <span class="nav-count">2</span>
+                </button>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <section id="product" class="section-block">
+          <div class="section-heading">
+            <div><span class="eyebrow">Product shape</span><h2>One cockpit, five jobs.</h2></div>
+            <p>
+              The MVP stays opinionated: it is a GUI for existing tmux state, not a replacement terminal,
+              project manager, or hosted collaboration suite.
+            </p>
+          </div>
+
+          <div class="artifact-grid">
+            <article class="artifact-card span-4">
+              <span class="card-index">01 / NAVIGATE</span>
+              <h3>Session switcher</h3>
+              <p>Search, preview, attach, rename, create, and kill sessions without memorizing tmux commands.</p>
+              <ul class="feature-list">
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Live windows, panes, cwd, branch, process, and attachment state</span></li>
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Fuzzy keyboard navigation and recent-session ordering</span></li>
+              </ul>
+            </article>
+            <article class="artifact-card span-4">
+              <span class="card-index">02 / ORGANIZE</span>
+              <h3>Pane groups</h3>
+              <p>Visual groups represent a feature cockpit: services, shells, editors, and agents move together.</p>
+              <ul class="feature-list">
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Drag, resize, stack, float, collapse, and save named layouts</span></li>
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Every UI pane remains an actual tmux pane underneath</span></li>
+              </ul>
+            </article>
+            <article class="artifact-card span-4">
+              <span class="card-index">03 / ATTEND</span>
+              <h3>Agent HUD</h3>
+              <p>An attention queue, not another chat client: working, waiting, question, done, failed, or stale.</p>
+              <ul class="feature-list">
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Status source is visible: hook, adapter, or heuristic</span></li>
+                <li><span class="list-icon"><i data-lucide="check" size="12"></i></span><span>Jump directly to the exact pane that needs input</span></li>
+              </ul>
+            </article>
+            <article class="artifact-card span-6">
+              <span class="card-index">04 / CONNECT</span>
+              <h3>Linear workbench</h3>
+              <p>See assigned projects and issues, then bind a ticket to a tmux session, worktree, pane group, and notes page. Keep status changes fast and explicit; do not rebuild all of Linear.</p>
+            </article>
+            <article class="artifact-card span-6">
+              <span class="card-index">05 / REMEMBER</span>
+              <h3>Block notes</h3>
+              <p>A local Notion-style editor with slash commands, autosave, backlinks, search, and first-class links to sessions, panes, commands, and Linear issues.</p>
+            </article>
+          </div>
+
+          <div class="scope-band">
+            <article class="scope-card in"><h4>Inside MVP</h4><ul><li>Local-only web app</li><li>Attach to the current tmux server</li><li>Terminal I/O, pane management, saved groups</li><li>Agent attention events</li><li>Read-focused Linear view</li><li>Local notes with autosave</li></ul></article>
+            <article class="scope-card out"><h4>Deliberately later</h4><ul><li>Remote multi-user hosting</li><li>Full IDE/file editor</li><li>Replacing tmux or the user's shell</li><li>General agent orchestration framework</li><li>Full Linear issue administration</li><li>Cloud notes sync or team spaces</li></ul></article>
+          </div>
+        </section>
+
+        <section id="architecture" class="section-block">
+          <div class="section-heading">
+            <div><span class="eyebrow">Proposed architecture</span><h2>Browser polish, local authority.</h2></div>
+            <p>
+              A browser cannot safely access tmux, processes, or your filesystem directly. A small local
+              daemon owns those capabilities and exposes a narrow event API to the React client.
+            </p>
+          </div>
+
+          <article class="artifact-card architecture-card">
+            <div class="mermaid">
+flowchart TD
+  UI["React web UI<br/>layout, xterm, HUD, notes"]
+  API["Local Commando daemon<br/>HTTP + WebSocket on 127.0.0.1"]
+  TMUX["tmux adapter<br/>control mode + commands"]
+  EVENTS["Agent event hub<br/>hooks, adapters, heuristics"]
+  DATA["Local SQLite<br/>layouts, links, notes, event history"]
+  LINEAR["Linear adapter<br/>user-scoped API token"]
+  SOCKET["Existing tmux server<br/>sessions, windows, panes"]
+  AGENTS["Claude · Codex · OpenCode<br/>running inside tmux panes"]
+
+  UI <-->|"state snapshots + streamed deltas"| API
+  API --> TMUX
+  API --> EVENTS
+  API --> DATA
+  API --> LINEAR
+  TMUX <-->|"control-mode events + pane I/O"| SOCKET
+  AGENTS -->|"structured status when available"| EVENTS
+  SOCKET -->|"process, title, activity fallback"| EVENTS
+            </div>
+            <div class="stack-strip">
+              <div class="stack-item"><strong>React + TypeScript</strong><span>Fast local SPA with URL-addressable views</span></div>
+              <div class="stack-item"><strong>xterm.js</strong><span>Terminal rendering; tmux remains the emulator</span></div>
+              <div class="stack-item"><strong>WebSocket</strong><span>Bidirectional terminal and state deltas</span></div>
+              <div class="stack-item"><strong>tmux control mode</strong><span>Structured lifecycle and pane output events</span></div>
+              <div class="stack-item"><strong>SQLite</strong><span>Layouts, notes, links, event history, no cloud dependency</span></div>
+            </div>
+          </article>
+
+          <div class="artifact-grid" style="margin-top: 16px">
+            <article class="artifact-card span-7">
+              <span class="card-index">AGENT STATUS CONTRACT</span>
+              <h3>Reliable when instrumented, honest when inferred</h3>
+              <p>
+                Commando normalizes every provider into a small event model:
+                <span class="mono">working</span>, <span class="mono">question</span>,
+                <span class="mono">done</span>, <span class="mono">failed</span>, and
+                <span class="mono">stale</span>. Provider hooks or wrappers emit high-confidence events;
+                process/title/activity inspection is a clearly labeled fallback.
+              </p>
+              <ul class="feature-list">
+                <li><span class="list-icon"><i data-lucide="radio" size="12"></i></span><span>Event payload: provider, pane id, session, state, summary, timestamp, confidence, action target</span></li>
+                <li><span class="list-icon"><i data-lucide="shield-check" size="12"></i></span><span>Never parse or persist full terminal output by default; retain only bounded status metadata</span></li>
+              </ul>
+            </article>
+            <article class="artifact-card span-5">
+              <span class="card-index">SECURITY BOUNDARY</span>
+              <h3>Local by default</h3>
+              <ul class="risk-list">
+                <li><span class="list-icon"><i data-lucide="lock-keyhole" size="12"></i></span><span>Bind only to <span class="mono">127.0.0.1</span>; use an ephemeral browser session token.</span></li>
+                <li><span class="list-icon"><i data-lucide="key-round" size="12"></i></span><span>Store Linear credentials in the OS keychain, never SQLite or frontend storage.</span></li>
+                <li><span class="list-icon"><i data-lucide="shield-alert" size="12"></i></span><span>Remote access is a later opt-in with explicit TLS/VPN guidance and authentication.</span></li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="delivery" class="section-block">
+          <div class="section-heading">
+            <div><span class="eyebrow">Delivery choice</span><h2>Web first, desktop ready.</h2></div>
+            <p>
+              The UI should remain a web application even if it is later wrapped as a desktop app. This
+              preserves fast iteration, responsive layout, and optional remote access without coupling the core to a shell.
+            </p>
+          </div>
+
+          <div class="comparison-grid">
+            <article class="option-card recommended">
+              <span class="recommendation">Recommended</span>
+              <span class="card-index mono">A / WEB + LOCAL DAEMON</span>
+              <h3>Local web app</h3>
+              <p>React in the browser, with a local daemon controlling tmux and streaming state over WebSocket.</p>
+              <div class="tradeoff"><strong>Best at</strong><span>Iteration speed, responsive UI, future remote access</span></div>
+              <div class="tradeoff"><strong>Cost</strong><span>Must secure localhost API and manage a background process</span></div>
+              <div class="tradeoff"><strong>Path</strong><span>Can be wrapped with Tauri after product fit</span></div>
+            </article>
+            <article class="option-card">
+              <span class="card-index mono">B / TAURI DESKTOP</span>
+              <h3>Desktop first</h3>
+              <p>Ship the same React interface inside Tauri, using native IPC and a tray/menu-bar lifecycle.</p>
+              <div class="tradeoff"><strong>Best at</strong><span>Installability, native shortcuts, keychain and notifications</span></div>
+              <div class="tradeoff"><strong>Cost</strong><span>Packaging and platform lifecycle work before UX is proven</span></div>
+              <div class="tradeoff"><strong>Path</strong><span>Strong phase-two distribution target</span></div>
+            </article>
+            <article class="option-card">
+              <span class="card-index mono">C / TMUX PLUGIN</span>
+              <h3>Terminal-only plugin</h3>
+              <p>Keep the entire experience inside tmux as a TUI, with mouse and keyboard pane management.</p>
+              <div class="tradeoff"><strong>Best at</strong><span>Zero context switch and SSH-native workflows</span></div>
+              <div class="tradeoff"><strong>Cost</strong><span>Constrained drag/drop, notes editor, rich previews, and mobile</span></div>
+              <div class="tradeoff"><strong>Path</strong><span>Useful companion command, weak primary GUI</span></div>
+            </article>
+          </div>
+
+          <div class="phase-timeline" style="margin-top: 18px">
+            <article class="phase"><span class="phase-number">0</span><h3>Foundation</h3><p>Scaffold monorepo, inspect tmux control events, stream one read-only pane, define protocol.</p><small>Exit: terminal fidelity proven</small></article>
+            <article class="phase"><span class="phase-number">1</span><h3>Core cockpit</h3><p>Session switcher, terminal input, pane lifecycle, drag/resizable groups, saved layouts.</p><small>Exit: daily tmux use is viable</small></article>
+            <article class="phase"><span class="phase-number">2</span><h3>Attention layer</h3><p>Agent event protocol, provider adapters, notifications, attention inbox, pane jump actions.</p><small>Exit: no missed agent questions</small></article>
+            <article class="phase"><span class="phase-number">3</span><h3>Work context</h3><p>Linear links, block notes, command palette, search, session templates, optional Tauri shell.</p><small>Exit: command center is cohesive</small></article>
+          </div>
+
+          <div class="artifact-grid" style="margin-top: 16px">
+            <article class="artifact-card span-6">
+              <span class="card-index">ACCEPTANCE BAR</span>
+              <h3>Performance and resilience</h3>
+              <ul class="feature-list">
+                <li><span class="list-icon"><i data-lucide="gauge" size="12"></i></span><span>Initial session tree visible under 500 ms on a warm local start</span></li>
+                <li><span class="list-icon"><i data-lucide="activity" size="12"></i></span><span>Keystroke-to-pane echo targets under 50 ms locally with backpressure</span></li>
+                <li><span class="list-icon"><i data-lucide="refresh-cw" size="12"></i></span><span>Browser refresh rehydrates from tmux; it never kills or restarts panes</span></li>
+                <li><span class="list-icon"><i data-lucide="plug-zap" size="12"></i></span><span>Daemon restart reconnects without corrupting tmux or saved layouts</span></li>
+              </ul>
+            </article>
+            <article class="artifact-card span-6">
+              <span class="card-index">PRIMARY RISKS</span>
+              <h3>What deserves a spike first</h3>
+              <ul class="risk-list">
+                <li><span class="list-icon"><i data-lucide="triangle-alert" size="12"></i></span><span>Terminal throughput and resize correctness across many visible panes</span></li>
+                <li><span class="list-icon"><i data-lucide="triangle-alert" size="12"></i></span><span>Reconciling visual groups with tmux's tree-shaped native layouts</span></li>
+                <li><span class="list-icon"><i data-lucide="triangle-alert" size="12"></i></span><span>Agent completion/question detection without brittle output scraping</span></li>
+                <li><span class="list-icon"><i data-lucide="triangle-alert" size="12"></i></span><span>Multiple browser tabs issuing conflicting tmux mutations</span></li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="decisions" class="section-block">
+          <div class="section-heading">
+            <div><span class="eyebrow">Decisions to queue</span><h2>Resolve the expensive forks.</h2></div>
+            <p>
+              The recommendation is already encoded in the selected options. Change any selection, then
+              queue it for the agent. Nothing is sent until you use Lavish's Send to Agent control.
+            </p>
+          </div>
+
+          <form class="decision-panel" data-lavish-question="delivery-target" data-decision-form>
+            <div class="decision-head">
+              <div><h3>1. What should the first shippable form be?</h3><p>This changes packaging, security, and background-process work, but not the React UI.</p></div>
+              <span class="decision-status">Selected locally</span>
+            </div>
+            <div class="choice-grid">
+              <label class="choice-label"><input type="radio" name="delivery" value="Local web app with a background daemon" checked /><span class="choice-content"><strong>Local web app</strong><span>Recommended: fastest route to a polished, responsive cockpit.</span></span></label>
+              <label class="choice-label"><input type="radio" name="delivery" value="Tauri desktop application from day one" /><span class="choice-content"><strong>Tauri desktop first</strong><span>Prioritize native install, notifications, and menu-bar lifecycle.</span></span></label>
+              <label class="choice-label"><input type="radio" name="delivery" value="Terminal-only tmux plugin" /><span class="choice-content"><strong>tmux plugin</strong><span>Stay terminal-native and accept constraints on rich interaction.</span></span></label>
+            </div>
+            <div class="decision-actions"><button class="queue-button" type="submit"><i data-lucide="message-square-plus" size="15"></i>Queue delivery choice</button></div>
+          </form>
+
+          <form class="decision-panel" data-lavish-question="daemon-stack" data-decision-form>
+            <div class="decision-head">
+              <div><h3>2. How much native infrastructure belongs in v1?</h3><p>TypeScript minimizes time-to-first-workflow. Rust lowers the performance ceiling risk but increases the initial build surface.</p></div>
+              <span class="decision-status">Selected locally</span>
+            </div>
+            <div class="choice-grid">
+              <label class="choice-label"><input type="radio" name="daemon" value="TypeScript daemon for v1, preserve a protocol boundary for later Rust" checked /><span class="choice-content"><strong>TypeScript-first</strong><span>Recommended: validate terminal fidelity before paying the Rust/Tauri cost.</span></span></label>
+              <label class="choice-label"><input type="radio" name="daemon" value="Rust daemon from v1" /><span class="choice-content"><strong>Rust core from v1</strong><span>Optimize throughput, memory, and future Tauri reuse immediately.</span></span></label>
+              <label class="choice-label"><input type="radio" name="daemon" value="Spike both TypeScript and Rust adapters before choosing" /><span class="choice-content"><strong>Two-day bakeoff</strong><span>Benchmark one high-output pane and 12 idle panes in both implementations.</span></span></label>
+            </div>
+            <div class="decision-actions"><button class="queue-button" type="submit"><i data-lucide="message-square-plus" size="15"></i>Queue daemon choice</button></div>
+          </form>
+
+          <form class="decision-panel" data-lavish-question="mvp-scope" data-decision-form>
+            <div class="decision-head">
+              <div><h3>3. Where should v1 stop?</h3><p>Keeping Linear and notes out of the first milestone makes pane management usable sooner, while still preserving their place in the product architecture.</p></div>
+              <span class="decision-status">Selected locally</span>
+            </div>
+            <div class="choice-grid">
+              <label class="choice-label"><input type="radio" name="scope" value="Tmux cockpit and Agent HUD first; Linear and Notes in the next milestone" checked /><span class="choice-content"><strong>Cockpit + HUD first</strong><span>Recommended: prove the high-frequency workflow, then add context tools.</span></span></label>
+              <label class="choice-label"><input type="radio" name="scope" value="Include read-only Linear and basic notes in v1" /><span class="choice-content"><strong>Thin vertical suite</strong><span>Ship one minimal slice of every major product area.</span></span></label>
+              <label class="choice-label"><input type="radio" name="scope" value="Tmux pane management only for v1" /><span class="choice-content"><strong>tmux GUI only</strong><span>Minimize scope and defer agent intelligence as a separate feature.</span></span></label>
+            </div>
+            <div class="decision-actions"><button class="queue-button" type="submit"><i data-lucide="message-square-plus" size="15"></i>Queue scope choice</button></div>
+          </form>
+
+          <div class="source-note" style="margin-top: 18px">
+            <i data-lucide="scan-search" size="18" aria-hidden="true"></i>
+            <div><strong>Evidence and assumptions.</strong> The local <span class="mono">commando</span> directory is empty, so this is a greenfield proposal. The tmux counts and sample session names were read from the current local server. The tmuxy reference informed the use of tmux control mode and a reusable web UI. No <span class="mono">/quick-recap</span> skill file was available in the searched skill directories, so the HUD is inferred from your description and the agent-like pane titles currently visible.</div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>Commando product blueprint · July 10, 2026</span>
+        <span>Design source: greenfield OLED developer-tool system using Lavish's Tailwind + DaisyUI fallback.</span>
+      </footer>
+    </div>
+
+    <div id="command-palette" class="command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-title">
+      <div class="command-box">
+        <label id="palette-title" class="sr-only" for="command-search">Jump to anything</label>
+        <input id="command-search" class="command-search" type="search" placeholder="Search sessions, panes, tickets, notes, or commands..." autocomplete="off" />
+        <div class="command-results">
+          <button class="command-item"><i data-lucide="panels-top-left" size="15"></i><span>Switch to notification-translation</span><span class="mono">session</span></button>
+          <button class="command-item"><i data-lucide="bot" size="15"></i><span>Answer Claude's fallback-title question</span><span class="mono">attention</span></button>
+          <button class="command-item"><i data-lucide="circle-dot-dashed" size="15"></i><span>Open VIV-372 · Notification translations</span><span class="mono">Linear</span></button>
+          <button class="command-item"><i data-lucide="layout-template" size="15"></i><span>Apply “Feature cockpit” layout</span><span class="mono">layout</span></button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: 'strict',
+        theme: 'base',
+        themeVariables: {
+          background: '#09130f',
+          primaryColor: '#11201c',
+          primaryTextColor: '#f3f7f5',
+          primaryBorderColor: '#3a5a4f',
+          lineColor: '#85f4b1',
+          secondaryColor: '#10201b',
+          tertiaryColor: '#0c1714',
+          fontFamily: 'Inter, sans-serif',
+          fontSize: '13px'
+        },
+        flowchart: { curve: 'basis', htmlLabels: true }
+      });
+    </script>
+    <script>
+      const viewButtons = document.querySelectorAll('[data-view]');
+      const viewPanels = document.querySelectorAll('.view-panel');
+
+      viewButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const view = button.dataset.view;
+          viewButtons.forEach((item) => item.classList.toggle('active', item === button));
+          viewPanels.forEach((panel) => panel.classList.toggle('active', panel.id === `${view}-view`));
+        });
+      });
+
+      const sessionDescriptions = {
+        'notification-translation': 'window 0 · 4 panes · feat/notification-translations',
+        vivi: 'window 2 · 2 panes · codex/vivifit-do-closeout',
+        commando: 'window 0 · 3 panes · /Users/leoijebor/dev',
+        work: 'window 1 · 2 panes · notifications',
+        'gizmo-memory-issues': 'window 0 · 3 panes · Save-All/native'
+      };
+
+      document.querySelectorAll('[data-session]').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('[data-session]').forEach((item) => item.classList.toggle('active', item === button));
+          document.getElementById('workspace-title').textContent = button.dataset.session;
+          document.getElementById('workspace-subtitle').textContent = sessionDescriptions[button.dataset.session];
+        });
+      });
+
+      const paneGrid = document.getElementById('pane-grid');
+      document.querySelectorAll('.layout-choice').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('.layout-choice').forEach((item) => item.classList.toggle('active', item === button));
+          paneGrid.classList.remove('cols-1', 'cols-3');
+          if (button.dataset.cols === '1') paneGrid.classList.add('cols-1');
+          if (button.dataset.cols === '3') paneGrid.classList.add('cols-3');
+        });
+      });
+
+      let draggedPane = null;
+      document.querySelectorAll('.terminal-pane').forEach((pane) => {
+        pane.addEventListener('dragstart', () => {
+          draggedPane = pane;
+          pane.classList.add('dragging');
+        });
+        pane.addEventListener('dragend', () => {
+          pane.classList.remove('dragging');
+          draggedPane = null;
+        });
+        pane.addEventListener('dragover', (event) => event.preventDefault());
+        pane.addEventListener('drop', (event) => {
+          event.preventDefault();
+          if (!draggedPane || draggedPane === pane) return;
+          const panes = [...paneGrid.children];
+          const from = panes.indexOf(draggedPane);
+          const to = panes.indexOf(pane);
+          paneGrid.insertBefore(draggedPane, from < to ? pane.nextSibling : pane);
+        });
+      });
+
+      const palette = document.getElementById('command-palette');
+      const search = document.getElementById('command-search');
+      const openPalette = () => {
+        palette.classList.add('open');
+        window.setTimeout(() => search.focus(), 20);
+      };
+      const closePalette = () => palette.classList.remove('open');
+
+      document.querySelectorAll('[data-open-palette]').forEach((button) => button.addEventListener('click', openPalette));
+      palette.addEventListener('click', (event) => {
+        if (event.target === palette) closePalette();
+      });
+      document.addEventListener('keydown', (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+          event.preventDefault();
+          palette.classList.contains('open') ? closePalette() : openPalette();
+        }
+        if (event.key === 'Escape') closePalette();
+      });
+
+      search.addEventListener('input', () => {
+        const query = search.value.toLowerCase();
+        document.querySelectorAll('.command-item').forEach((item) => {
+          item.style.display = item.textContent.toLowerCase().includes(query) ? 'flex' : 'none';
+        });
+      });
+
+      document.querySelectorAll('[data-decision-form]').forEach((form) => {
+        form.addEventListener('change', () => {
+          const status = form.querySelector('.decision-status');
+          status.textContent = 'Selected locally';
+          status.classList.remove('queued');
+        });
+
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          const selected = form.querySelector('input:checked');
+          if (!selected) return;
+          const status = form.querySelector('.decision-status');
+          const question = form.dataset.lavishQuestion;
+          const prompt = `For Commando, use this ${question.replace('-', ' ')} decision: ${selected.value}. Update the product and implementation plan to reflect it.`;
+          if (window.lavish?.queuePrompt) {
+            window.lavish.queuePrompt(prompt, {
+              tag: 'decision',
+              text: selected.value,
+              element: form,
+              queueKey: question,
+              data: { question, answer: selected.value }
+            });
+            status.textContent = 'Queued for agent';
+            status.classList.add('queued');
+          } else {
+            status.textContent = 'Lavish session required';
+          }
+        });
+      });
+
+      window.addEventListener('load', () => {
+        if (window.lucide) window.lucide.createIcons();
+      });
+    </script>
+  </body>
+</html>
