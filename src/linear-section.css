@@ -3,6 +3,8 @@
 .linear-toolbar span { color: #6e6a86; text-transform: uppercase; letter-spacing: .12em; font-size: 10px; }
 .linear-toolbar h1 { margin: 3px 0 0; font-size: 20px; }
 .linear-selectors { display: flex; gap: 8px; align-items: center; }
+.linear-live-status { display: inline-flex; gap: 6px; align-items: center; color: #908caa !important; white-space: nowrap; }
+.linear-live-status i { width: 7px; height: 7px; border-radius: 50%; background: #85f4b1; box-shadow: 0 0 9px #85f4b177; }
 .linear-selectors select, .linear-connect input, .linear-add-account input, .linear-issue-meta select { border: 1px solid #393552; border-radius: 6px; padding: 8px 10px; color: #e0def4; background: #191724; }
 .linear-remove { padding: 7px; border: 1px solid #393552; border-radius: 6px; color: #eb6f92; background: transparent; }
 .linear-remove svg, .linear-error svg, .linear-issue-drawer svg, .linear-add-account svg { width: 15px; height: 15px; }
@@ -20,12 +22,16 @@
 .linear-add-account form { margin-top: 8px; grid-template-columns: 1fr 1.6fr auto; }
 .linear-board { min-height: 0; flex: 1; overflow: auto; display: flex; gap: 12px; padding: 16px 18px 24px; align-items: stretch; }
 .linear-column { flex: 0 0 290px; min-height: 0; border: 1px solid #26233a; border-radius: 8px; background: #111019; display: flex; flex-direction: column; }
+.linear-column.is-drop-target { border-color: #85f4b1; background: #11201c; box-shadow: inset 0 0 0 1px #85f4b133; }
 .linear-column > header { padding: 11px 12px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #26233a; }
 .linear-column > header > span { width: 8px; height: 8px; border-radius: 999px; }
 .linear-column > header small { margin-left: auto; color: #6e6a86; }
 .linear-column > div { overflow: auto; padding: 8px; display: grid; gap: 8px; align-content: start; }
 .linear-card { padding: 11px; display: grid; gap: 8px; text-align: left; border: 1px solid #26233a; border-radius: 7px; color: #e0def4; background: #191724; cursor: pointer; }
 .linear-card:hover { border-color: #6e6a86; transform: translateY(-1px); }
+.linear-card[draggable="true"] { cursor: grab; }
+.linear-card[draggable="true"]:active { cursor: grabbing; }
+.linear-card.is-dragging { opacity: .42; border-style: dashed; }
 .linear-card > span { color: #6e6a86; font: 10px 'JetBrains Mono', monospace; }
 .linear-card footer { display: flex; justify-content: space-between; color: #908caa; }
 .linear-empty { margin: auto; color: #6e6a86; }

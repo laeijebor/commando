@@ -3,6 +3,8 @@ import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
 
+const LINEAR_POLL_INTERVAL_MS = 30_000
+
 function CommentThread({ comment, onReply }: { comment: LinearComment; onReply: (comment: LinearComment) => void }) {
   return (
     <div className="linear-comment">
@@ -26,6 +28,10 @@ export function LinearSection({ token }: { token: string }) {
   const [comment, setComment] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [polling, setPolling] = useState(false)
+  const [lastSyncedAt, setLastSyncedAt] = useState(0)
+  const [draggedIssueId, setDraggedIssueId] = useState<string | null>(null)
+  const [dropStateId, setDropStateId] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   const loadAccounts = async () => {
@@ -53,9 +59,73 @@ export function LinearSection({ token }: { token: string }) {
   }, [accountId, api])
   useEffect(() => {
     if (!accountId || !projectId) { setBoard(null); return }
-    setLoading(true)
-    api.board(accountId, projectId).then(setBoard).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load board')).finally(() => setLoading(false))
+    let active = true
+    let inFlight = false
+
+    const loadBoard = async (background: boolean) => {
+      if (inFlight || document.visibilityState !== 'visible') return
+      inFlight = true
+      if (background) setPolling(true)
+      else setLoading(true)
+      try {
+        const next = await api.board(accountId, projectId)
+        if (!active) return
+        setBoard(next)
+        setLastSyncedAt(Date.now())
+        setError('')
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : 'Unable to load board')
+      } finally {
+        inFlight = false
+        if (active) {
+          setLoading(false)
+          setPolling(false)
+        }
+      }
+    }
+
+    setBoard(null)
+    void loadBoard(false)
+    const timer = window.setInterval(() => { void loadBoard(true) }, LINEAR_POLL_INTERVAL_MS)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void loadBoard(true)
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }, [accountId, api, projectId])
+
+  useEffect(() => {
+    if (!accountId || !issue?.id) return
+    let active = true
+    let inFlight = false
+    const issueId = issue.id
+    const refreshIssue = async () => {
+      if (inFlight || document.visibilityState !== 'visible') return
+      inFlight = true
+      try {
+        const next = await api.issue(accountId, issueId)
+        if (active) setIssue((current) => current?.id === issueId ? next : current)
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : 'Unable to refresh issue')
+      } finally {
+        inFlight = false
+      }
+    }
+    const timer = window.setInterval(() => { void refreshIssue() }, LINEAR_POLL_INTERVAL_MS)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void refreshIssue()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [accountId, api, issue?.id])
 
   const connect = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -79,13 +149,33 @@ export function LinearSection({ token }: { token: string }) {
     finally { setLoading(false) }
   }
 
-  const changeState = async (stateId: string) => {
-    if (!accountId || !issue) return
+  const moveIssueToState = async (issueId: string, stateId: string) => {
+    if (!accountId || !board) return
+    const currentIssue = board.issues.find((candidate) => candidate.id === issueId)
+    const targetState = board.states.find((candidate) => candidate.id === stateId)
+    if (!currentIssue || !targetState || currentIssue.state.id === targetState.id) return
+    if (currentIssue.teamId !== targetState.teamId) {
+      setError(`“${targetState.name}” belongs to a different Linear team`)
+      return
+    }
+    setBoard((current) => current ? {
+      ...current,
+      issues: current.issues.map((item) => item.id === issueId ? { ...item, state: targetState } : item),
+    } : current)
+    setIssue((current) => current?.id === issueId ? { ...current, state: targetState } : current)
     try {
-      const updated = await api.updateState(accountId, issue.id, stateId)
-      setIssue((current) => current ? { ...current, state: updated.state } : current)
+      const updated = await api.updateState(accountId, issueId, stateId)
+      setIssue((current) => current?.id === issueId ? { ...current, state: updated.state } : current)
       setBoard((current) => current ? { ...current, issues: current.issues.map((item) => item.id === updated.id ? updated : item) } : current)
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to update issue') }
+      setError('')
+    } catch (cause) {
+      setBoard((current) => current ? {
+        ...current,
+        issues: current.issues.map((item) => item.id === issueId ? currentIssue : item),
+      } : current)
+      setIssue((current) => current?.id === issueId ? { ...current, state: currentIssue.state } : current)
+      setError(cause instanceof Error ? cause.message : 'Unable to update issue')
+    }
   }
 
   const sendComment = async (event: FormEvent) => {
@@ -104,6 +194,11 @@ export function LinearSection({ token }: { token: string }) {
       <header className="linear-toolbar">
         <div><span>Connected workspaces</span><h1>Linear projects</h1></div>
         <div className="linear-selectors">
+          {accountId && projectId ? (
+            <span className="linear-live-status" title={lastSyncedAt ? `Last synced ${new Date(lastSyncedAt).toLocaleTimeString()}` : 'Waiting for first sync'}>
+              <i /> {polling ? 'Syncing' : 'Live / 30s'}
+            </span>
+          ) : null}
           <select value={accountId} onChange={(event) => { setAccountId(event.target.value); setIssue(null) }} aria-label="Linear account">
             <option value="">Select account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.label} / {account.workspaceName}</option>)}
           </select>
@@ -126,14 +221,48 @@ export function LinearSection({ token }: { token: string }) {
           <div className="linear-board">
             {board?.states.map((state) => {
               const issues = board.issues.filter((item) => item.state.id === state.id)
-              return <section className="linear-column" key={state.id}><header><span style={{ backgroundColor: state.color }} /><strong>{state.name}</strong><small>{issues.length}</small></header><div>{issues.map((item) => <button type="button" className="linear-card" onClick={() => void openIssue(item.id)} key={item.id}><span>{item.identifier}</span><strong>{item.title}</strong><footer><small>{item.priorityLabel}</small><small>{item.assignee?.name ?? 'Unassigned'}</small></footer></button>)}</div></section>
+              const draggedIssue = board.issues.find((item) => item.id === draggedIssueId)
+              const acceptsDrop = Boolean(draggedIssue && draggedIssue.teamId === state.teamId)
+              return <section
+                className={`linear-column${dropStateId === state.id ? ' is-drop-target' : ''}`}
+                key={state.id}
+                onDragOver={(event) => {
+                  if (!acceptsDrop) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  setDropStateId(state.id)
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropStateId((current) => current === state.id ? null : current)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const issueId = draggedIssueId ?? event.dataTransfer.getData('text/linear-issue')
+                  setDraggedIssueId(null)
+                  setDropStateId(null)
+                  if (issueId && acceptsDrop) void moveIssueToState(issueId, state.id)
+                }}
+              ><header><span style={{ backgroundColor: state.color }} /><strong>{state.name}</strong><small>{issues.length}</small></header><div>{issues.map((item) => <button
+                type="button"
+                draggable
+                aria-grabbed={draggedIssueId === item.id}
+                className={`linear-card${draggedIssueId === item.id ? ' is-dragging' : ''}`}
+                onClick={() => void openIssue(item.id)}
+                onDragStart={(event) => {
+                  setDraggedIssueId(item.id)
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/linear-issue', item.id)
+                }}
+                onDragEnd={() => { setDraggedIssueId(null); setDropStateId(null) }}
+                key={item.id}
+              ><span>{item.identifier}</span><strong>{item.title}</strong><footer><small>{item.priorityLabel}</small><small>{item.assignee?.name ?? 'Unassigned'}</small></footer></button>)}</div></section>
             })}
             {board && !board.states.length ? <div className="linear-empty">No workflow states found for this project.</div> : null}
             {!board && accountId && !loading ? <div className="linear-empty">Choose a project to open its board.</div> : null}
           </div>
         </>
       )}
-      {issue ? <aside className="linear-issue-drawer"><header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header><div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void changeState(event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div><article>{issue.description || 'No description.'}</article><section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}<form onSubmit={sendComment}>{replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} /><button type="submit">Post {replyTo ? 'reply' : 'comment'}</button></form></section></aside> : null}
+      {issue ? <aside className="linear-issue-drawer"><header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header><div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div><article>{issue.description || 'No description.'}</article><section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}<form onSubmit={sendComment}>{replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} /><button type="submit">Post {replyTo ? 'reply' : 'comment'}</button></form></section></aside> : null}
     </section>
   )
 }
