@@ -501,6 +501,9 @@ function mapIssue(value: JsonRecord): LinearIssueSummary {
 
 function mapComment(value: JsonRecord): LinearComment {
   const fallbackAuthor = optionalObject(value, 'botActor') ?? optionalObject(value, 'externalUser')
+  const children = value.children === undefined || value.children === null
+    ? []
+    : nodes(value, 'children').map(mapComment)
   return {
     id: requiredString(value, 'id'),
     body: requiredString(value, 'body'),
@@ -508,7 +511,7 @@ function mapComment(value: JsonRecord): LinearComment {
     updatedAt: requiredString(value, 'updatedAt'),
     parentId: optionalString(value, 'parentId'),
     author: mapUser(optionalObject(value, 'user') ?? fallbackAuthor),
-    children: nodes(value, 'children').map(mapComment),
+    children,
   }
 }
 
@@ -516,7 +519,7 @@ const ISSUE_CARD_FIELDS = `
   id identifier title priority priorityLabel estimate dueDate updatedAt url
   assignee { id name avatarUrl }
   state { id name type color position }
-  team { id name states(first: 100) { nodes { id name type color position } } }
+  team { id name }
   labels(first: 50) { nodes { id name color } }
 `
 
@@ -593,12 +596,14 @@ export class LinearService {
     let project: LinearProject | null = null
     const issues: LinearIssueSummary[] = []
     const states = new Map<string, LinearWorkflowState>()
+    const teams = new Map<string, string>()
     let truncated = false
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const data = await client.request(`
         query CommandoLinearBoard($projectId: String!, $after: String) {
           project(id: $projectId) {
             id name description color icon progress state targetDate archivedAt
+            teams(first: 50) { nodes { id name } }
             issues(first: 100, after: $after) {
               nodes { ${ISSUE_CARD_FIELDS} archivedAt }
               pageInfo { hasNextPage endCursor }
@@ -609,15 +614,14 @@ export class LinearService {
       const rawProject = optionalObject(data, 'project')
       if (!rawProject) throw new LinearServiceError(404, 'project_not_found', 'Linear project not found')
       project ??= mapProject(rawProject)
+      for (const team of nodes(rawProject, 'teams')) {
+        teams.set(requiredString(team, 'id'), requiredString(team, 'name'))
+      }
       for (const rawIssue of nodes(rawProject, 'issues')) {
         if (rawIssue.archivedAt !== null && rawIssue.archivedAt !== undefined) continue
         const issue = mapIssue(rawIssue)
         issues.push(issue)
-        const team = objectField(rawIssue, 'team')
-        for (const rawState of nodes(team, 'states')) {
-          const state = mapState(rawState, issue.teamId, issue.teamName)
-          states.set(state.id, state)
-        }
+        teams.set(issue.teamId, issue.teamName)
       }
       const info = pageInfo(rawProject, 'issues')
       if (!info.hasNextPage) {
@@ -628,6 +632,21 @@ export class LinearService {
       truncated = true
     }
     if (!project) throw invalidUpstream()
+    await Promise.all([...teams].map(async ([teamId, teamName]) => {
+      const data = await client.request(`
+        query CommandoLinearTeamStates($teamId: String!) {
+          team(id: $teamId) {
+            states(first: 100) { nodes { id name type color position } }
+          }
+        }
+      `, { teamId })
+      const team = optionalObject(data, 'team')
+      if (!team) return
+      for (const rawState of nodes(team, 'states')) {
+        const state = mapState(rawState, teamId, teamName)
+        states.set(state.id, state)
+      }
+    }))
     return {
       project,
       issues: issues.sort((left, right) => left.identifier.localeCompare(right.identifier)),
@@ -639,24 +658,44 @@ export class LinearService {
   async getIssue(accountId: string, issueIdValue: string): Promise<LinearIssueDetail> {
     const issueId = validateId(issueIdValue, 'Issue id')
     const client = await this.client(accountId)
+    const issueData = await client.request(`
+      query CommandoLinearIssue($issueId: String!) {
+        issue(id: $issueId) {
+          ${ISSUE_CARD_FIELDS}
+          description createdAt
+          creator { id name avatarUrl }
+          project { id name }
+          cycle { id name }
+        }
+      }
+    `, { issueId })
+    const rawIssue = optionalObject(issueData, 'issue')
+    if (!rawIssue) throw new LinearServiceError(404, 'issue_not_found', 'Linear issue not found')
+    const summary = mapIssue(rawIssue)
+
+    const stateData = await client.request(`
+      query CommandoLinearIssueStates($teamId: String!) {
+        team(id: $teamId) {
+          states(first: 100) { nodes { id name type color position } }
+        }
+      }
+    `, { teamId: summary.teamId })
+    const team = optionalObject(stateData, 'team')
+    const availableStates = team
+      ? nodes(team, 'states')
+        .map((state) => mapState(state, summary.teamId, summary.teamName))
+        .sort(compareStates)
+      : []
+
     let after: string | null = null
-    let rawIssue: JsonRecord | null = null
     const comments = new Map<string, LinearComment>()
     let commentsTruncated = false
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const data = await client.request(`
-        query CommandoLinearIssue($issueId: String!, $after: String) {
+        query CommandoLinearIssueComments($issueId: String!, $after: String) {
           issue(id: $issueId) {
-            ${ISSUE_CARD_FIELDS}
-            description createdAt
-            creator { id name avatarUrl }
-            project { id name }
-            cycle { id name }
             comments(first: 100, after: $after) {
-              nodes {
-                ${COMMENT_FIELDS}
-                children(first: 100) { nodes { ${COMMENT_FIELDS} children(first: 100) { nodes { ${COMMENT_FIELDS} children(first: 1) { nodes { id body createdAt updatedAt parentId user { id name avatarUrl } botActor { id name avatarUrl } externalUser { id name avatarUrl } } } } } } }
-              }
+              nodes { ${COMMENT_FIELDS} }
               pageInfo { hasNextPage endCursor }
             }
           }
@@ -664,7 +703,6 @@ export class LinearService {
       `, { issueId, after })
       const current = optionalObject(data, 'issue')
       if (!current) throw new LinearServiceError(404, 'issue_not_found', 'Linear issue not found')
-      rawIssue ??= current
       for (const value of nodes(current, 'comments')) {
         const comment = mapComment(value)
         comments.set(comment.id, comment)
@@ -677,11 +715,6 @@ export class LinearService {
       after = info.endCursor
       commentsTruncated = true
     }
-    if (!rawIssue) throw invalidUpstream()
-    const summary = mapIssue(rawIssue)
-    const team = objectField(rawIssue, 'team')
-    const allComments = [...comments.values()]
-    const childIds = new Set(allComments.flatMap((comment) => flattenComments(comment.children).map((child) => child.id)))
     return {
       ...summary,
       description: optionalString(rawIssue, 'description') ?? '',
@@ -689,12 +722,8 @@ export class LinearService {
       creator: mapUser(optionalObject(rawIssue, 'creator')),
       project: mapNamedReference(optionalObject(rawIssue, 'project')),
       cycle: mapNamedReference(optionalObject(rawIssue, 'cycle')),
-      availableStates: nodes(team, 'states')
-        .map((state) => mapState(state, summary.teamId, summary.teamName))
-        .sort(compareStates),
-      comments: allComments
-        .filter((comment) => comment.parentId === null && !childIds.has(comment.id))
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+      availableStates,
+      comments: buildCommentTree([...comments.values()]),
       commentsTruncated,
     }
   }
@@ -751,8 +780,20 @@ function mapNamedReference(value: JsonRecord | null): { id: string; name: string
   return value ? { id: requiredString(value, 'id'), name: requiredString(value, 'name') } : null
 }
 
-function flattenComments(comments: LinearComment[]): LinearComment[] {
-  return comments.flatMap((comment) => [comment, ...flattenComments(comment.children)])
+function buildCommentTree(comments: LinearComment[]): LinearComment[] {
+  const byId = new Map<string, LinearComment>(
+    comments.map((comment) => [comment.id, { ...comment, children: [] }]),
+  )
+  const roots: LinearComment[] = []
+  for (const comment of byId.values()) {
+    const parent = comment.parentId ? byId.get(comment.parentId) : undefined
+    if (parent) parent.children.push(comment)
+    else roots.push(comment)
+  }
+  const sort = (items: LinearComment[]): LinearComment[] => items
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .map((comment) => ({ ...comment, children: sort(comment.children) }))
+  return sort(roots)
 }
 
 function compareStates(left: LinearWorkflowState, right: LinearWorkflowState): number {

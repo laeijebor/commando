@@ -59,11 +59,12 @@ export function LinearSection({ token }: { token: string }) {
 
   const connect = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const form = new FormData(event.currentTarget)
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     setConnecting(true)
     try {
       await api.connect(String(form.get('label') ?? ''), String(form.get('apiKey') ?? ''))
-      event.currentTarget.reset()
+      formElement.reset()
       await loadAccounts()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to connect Linear')

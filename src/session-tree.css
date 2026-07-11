@@ -1,13 +1,13 @@
-.managed-session-tree { min-height: 0; overflow: auto; padding: 0 8px 14px; }
-.session-tree-tools { padding: 7px 6px; display: flex; align-items: center; justify-content: space-between; color: #6e6a86; font-size: 11px; }
-.session-tree-tools button, .session-pref-group header button, .session-order-buttons button, .managed-session-tree button { color: inherit; background: transparent; border: 0; cursor: pointer; }
-.session-tree-tools button { display: flex; gap: 5px; align-items: center; color: #908caa; }
-.session-tree-tools svg, .session-pref-group header svg, .session-order-buttons svg { width: 13px; height: 13px; }
-.session-tree-error { width: 100%; padding: 7px; color: #eb6f92 !important; text-align: left; font-size: 11px; }
+.managed-session-tree { min-height: 0; overflow: auto; padding: 0 8px 14px; font-size: 10px; }
+.session-tree-tools { padding: 7px 6px; display: flex; align-items: center; justify-content: space-between; color: #6e6a86; font-family: var(--mono); font-size: 8px; }
+.session-tree-tools button, .session-pref-group header button, .session-row-actions button, .managed-session-tree button { color: inherit; background: transparent; border: 0; cursor: pointer; }
+.session-tree-tools button { display: flex; gap: 5px; align-items: center; color: #908caa; font-size: 9px; }
+.session-tree-tools svg, .session-pref-group header svg, .session-row-actions svg { width: 12px; height: 12px; }
+.session-tree-error { width: 100%; padding: 7px; color: #eb6f92 !important; text-align: left; font-size: 9px; }
 .session-pref-group { margin-bottom: 9px; border: 1px solid #26233a; border-radius: 7px; overflow: hidden; }
 .session-pref-group > header { padding: 7px 8px; display: flex; align-items: center; gap: 6px; color: #908caa; background: #111019; }
-.session-pref-group > header strong { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-.session-pref-group > header small { margin-right: auto; color: #6e6a86; }
+.session-pref-group > header strong { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.session-pref-group > header small { margin-right: auto; color: #6e6a86; font-family: var(--mono); font-size: 8px; }
 .managed-session { border-top: 1px solid #211f30; background: #15131e; }
 .managed-session.selected { background: #1b1927; }
 .managed-session-row { display: flex; align-items: center; }
@@ -15,22 +15,22 @@
 .managed-session-main > svg { flex: 0 0 auto; width: 13px; height: 13px; color: #6e6a86; }
 .managed-session-main > span:nth-of-type(2) { min-width: 0; display: grid; gap: 2px; }
 .managed-session-main strong, .managed-session-main small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.managed-session-main strong { color: #e0def4; }
-.managed-session-main small { color: #6e6a86; font-size: 10px; }
-.session-order-buttons { padding-right: 3px; display: flex; }
-.session-order-buttons button { width: 22px; height: 24px; color: #6e6a86; }
-.session-order-buttons button:hover { color: #e0def4; }
-.session-order-buttons button:disabled { opacity: .25; cursor: default; }
+.managed-session-main strong { color: #e0def4; font-size: 10px; }
+.managed-session-main small { color: #6e6a86; font-family: var(--mono); font-size: 8px; }
+.session-row-actions { padding-right: 3px; display: flex; }
+.session-row-actions button { width: 24px; height: 24px; color: #6e6a86; }
+.session-row-actions button:hover { color: #e0def4; }
 .managed-window-tree { padding: 0 6px 8px 28px; }
-.managed-window-tree button { width: 100%; min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: #908caa; text-align: left; }
+.managed-window-tree button { width: 100%; min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: #908caa; text-align: left; font-size: 9px; }
 .managed-window-tree button > svg { flex: 0 0 auto; width: 12px; height: 12px; }
 .managed-window-tree button > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.managed-window-tree button > small { margin-left: auto; }
+.managed-window-tree button > small { margin-left: auto; font-family: var(--mono); font-size: 8px; }
 .managed-window-tree > div > div { padding-left: 14px; }
+.managed-window-tree > div > div button { font-size: 8px; }
 .managed-window-tree button.active { color: #c4a7e7; }
 .session-pref-empty { margin: 0; padding: 8px; color: #524f67; font-size: 10px; }
 .session-context-menu { position: fixed; z-index: 50; width: 180px; padding: 5px; border: 1px solid #393552; border-radius: 7px; background: #1f1d2e; box-shadow: 0 12px 35px #000a; }
-.session-context-menu button { width: 100%; padding: 8px; display: flex; gap: 8px; align-items: center; color: #e0def4; border-radius: 4px; text-align: left; }
+.session-context-menu button { width: 100%; padding: 8px; display: flex; gap: 8px; align-items: center; color: #e0def4; border-radius: 4px; text-align: left; font-size: 10px; }
 .session-context-menu button:hover { background: #2a273f; }
 .session-context-menu button.danger { color: #eb6f92; }
 .session-context-menu svg { width: 14px; height: 14px; }

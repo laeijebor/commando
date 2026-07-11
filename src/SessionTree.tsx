@@ -20,15 +20,6 @@ type Props = {
 
 const emptyPreferences: SessionTreePreferences = { version: 1, groups: [], ungroupedSessionIds: [] }
 
-function reorder(items: string[], id: string, offset: -1 | 1): string[] {
-  const index = items.indexOf(id)
-  const target = index + offset
-  if (index < 0 || target < 0 || target >= items.length) return items
-  const next = [...items]
-  ;[next[index], next[target]] = [next[target], next[index]]
-  return next
-}
-
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(emptyPreferences)
@@ -62,13 +53,6 @@ export function SessionTree(props: Props) {
   const known = new Set(containers.flatMap((container) => container.sessionIds))
   const missing = props.sessions.map((session) => session.id).filter((id) => !known.has(id))
   if (missing.length) containers[containers.length - 1].sessionIds = [...containers[containers.length - 1].sessionIds, ...missing]
-
-  const updateContainer = (containerId: string, sessionIds: string[]) => {
-    const next = containerId === 'ungrouped'
-      ? { ...preferences, ungroupedSessionIds: sessionIds }
-      : { ...preferences, groups: preferences.groups.map((group) => group.id === containerId ? { ...group, sessionIds } : group) }
-    save(next)
-  }
 
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
     const groups = preferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
@@ -134,7 +118,7 @@ export function SessionTree(props: Props) {
             {container.group ? <><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div>
-            {container.sessionIds.flatMap((sessionId, index) => {
+            {container.sessionIds.flatMap((sessionId) => {
               const session = sessionMap.get(sessionId)
               if (!session) return []
               const selected = session.id === props.selectedSessionId
@@ -142,7 +126,7 @@ export function SessionTree(props: Props) {
               return [<article className={`managed-session${selected ? ' selected' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
                 <div className="managed-session-row">
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className={`live-dot${session.attached ? ' attached' : ''}`} /><span><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
-                  <span className="session-order-buttons"><button type="button" disabled={index === 0} onClick={() => updateContainer(container.id, reorder(container.sessionIds, session.id, -1))} aria-label={`Move ${session.name} up`}>↑</button><button type="button" disabled={index === container.sessionIds.length - 1} onClick={() => updateContainer(container.id, reorder(container.sessionIds, session.id, 1))} aria-label={`Move ${session.name} down`}>↓</button><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
+                  <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
                 {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; return <div key={tmuxWindow.id}><button type="button" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><div>{tmuxWindow.paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; return <button type="button" className={props.focusedPaneId === pane.id ? 'active' : ''} onClick={() => props.onSelectPane(pane.id)} key={pane.id}><Terminal /><span>{pane.title || pane.command || `Pane ${pane.index}`}</span>{status ? <i className={`mini-status ${status.status}`} /> : null}</button> })}</div></div> })}</div> : null}
               </article>]

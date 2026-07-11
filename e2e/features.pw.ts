@@ -15,6 +15,15 @@ test('navigates the new local cockpit sections without browser errors', async ({
   await expect(page.getByText('QA Group')).toBeVisible()
   await expect(page.getByText('renamed-from-commando')).toBeVisible()
   await expect(page.getByText('New tmux target')).toBeVisible()
+  await expect(page.locator('.managed-session-tree [aria-label^="Move "]')).toHaveCount(0)
+  await expect(page.locator('.managed-session-main strong').first()).toHaveCSS('font-size', '10px')
+  await page.getByText('New tmux target').click()
+  const createPanelContained = await page.evaluate(() => {
+    const sidebar = document.querySelector('.session-tree')?.getBoundingClientRect()
+    const panel = document.querySelector('.tmux-create__panel')?.getBoundingClientRect()
+    return Boolean(sidebar && panel && panel.left >= sidebar.left && panel.right <= sidebar.right)
+  })
+  expect(createPanelContained).toBe(true)
 
   await page.getByText('renamed-from-commando').click({ button: 'right' })
   await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
