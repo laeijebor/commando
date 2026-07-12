@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PASTE_BYTES, type SpecialKey } from '../shared/protocol.js'
+import {
+  MAX_PASTE_BYTES,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  type SpecialKey,
+} from '../shared/protocol.js'
 import { MAX_INPUT_BYTES, parseClientMessage } from './client-messages.js'
 
 describe('client message validation', () => {
@@ -120,5 +127,66 @@ describe('client message validation', () => {
     expect(
       parseClientMessage({ type: 'load_workspace', sessionId: '$1' }).ok,
     ).toBe(false)
+  })
+
+  it('accepts bounded pane resize leases and correlated releases', () => {
+    expect(parseClientMessage({
+      type: 'resize_pane',
+      paneId: '%7',
+      cols: 120,
+      rows: 40,
+      requestId: 'resize-1',
+    })).toMatchObject({
+      ok: true,
+      message: { paneId: '%7', cols: 120, rows: 40 },
+    })
+    expect(parseClientMessage({
+      type: 'release_resize',
+      paneId: '%7',
+      requestId: 'resize-release-1',
+    })).toMatchObject({ ok: true, message: { paneId: '%7' } })
+
+    for (const [cols, rows] of [
+      [MIN_TERMINAL_COLS - 1, 40],
+      [MAX_TERMINAL_COLS + 1, 40],
+      [120, MIN_TERMINAL_ROWS - 1],
+      [120, MAX_TERMINAL_ROWS + 1],
+      [120.5, 40],
+    ]) {
+      expect(parseClientMessage({
+        type: 'resize_pane',
+        paneId: '%7',
+        cols,
+        rows,
+        requestId: 'resize-invalid',
+      }).ok).toBe(false)
+    }
+  })
+
+  it('validates authoritative window layouts and ordered capacities', () => {
+    const message = {
+      type: 'apply_window_layout',
+      windowId: '@2',
+      paneIds: ['%3', '%4'],
+      preset: 'equal-grid',
+      stacked: false,
+      capacities: [
+        { paneId: '%3', cols: 80, rows: 24 },
+        { paneId: '%4', cols: 80, rows: 24 },
+      ],
+      requestId: 'layout-1',
+    }
+    expect(parseClientMessage(message)).toMatchObject({
+      ok: true,
+      message: { windowId: '@2', paneIds: ['%3', '%4'] },
+    })
+    expect(parseClientMessage({
+      ...message,
+      capacities: [...message.capacities].reverse(),
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      type: 'release_all_resizes',
+      requestId: 'layout-release-1',
+    }).ok).toBe(true)
   })
 })

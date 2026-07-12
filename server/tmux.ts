@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 import {
   MAX_PASTE_BYTES,
   type CommandoSnapshot,
+  type GroupLayoutPreset,
+  type PaneLayoutCapacity,
   type SpecialKey,
 } from '../shared/protocol.js'
 import {
@@ -16,6 +18,7 @@ import {
   type PaneSeedCapture,
   type TmuxControllerHandlers,
 } from './tmux-control.js'
+import { TmuxResizeLeaseManager } from './tmux-resize-lease.js'
 
 const DISCOVERY_TIMEOUT_MS = 1_500
 const DISCOVERY_BUFFER_BYTES = 4 * 1024 * 1024
@@ -123,6 +126,9 @@ function configuredSocketArgs(): string[] {
 export class TmuxClient {
   private readonly socketArgs = configuredSocketArgs()
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
+  private readonly resizeLeases = new TmuxResizeLeaseManager((args) =>
+    this.run(args, { timeout: 3_000, maxBuffer: 64 * 1024 }),
+  )
 
   private run(
     args: readonly string[],
@@ -189,6 +195,36 @@ export class TmuxClient {
 
   sendKey(sessionId: string, paneId: string, key: SpecialKey): Promise<void> {
     return this.controllers.sendKey(sessionId, paneId, key)
+  }
+
+  resizePane(ownerId: string, paneId: string, cols: number, rows: number): Promise<boolean> {
+    return this.resizeLeases.resize(ownerId, paneId, cols, rows)
+  }
+
+  applyWindowLayout(
+    ownerId: string,
+    windowId: string,
+    paneIds: string[],
+    preset: GroupLayoutPreset,
+    stacked: boolean,
+    capacities: PaneLayoutCapacity[],
+  ): Promise<boolean> {
+    return this.resizeLeases.applyLayout(
+      ownerId,
+      windowId,
+      paneIds,
+      preset,
+      stacked,
+      capacities,
+    )
+  }
+
+  releasePaneResize(ownerId: string, expectedPaneId?: string): Promise<boolean> {
+    return this.resizeLeases.release(ownerId, expectedPaneId)
+  }
+
+  releaseAllPaneResizes(): Promise<void> {
+    return this.resizeLeases.releaseAll()
   }
 
   async pasteText(paneId: string, data: string): Promise<void> {

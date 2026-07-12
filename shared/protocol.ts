@@ -100,6 +100,12 @@ export type SavedWorkspace = {
   updatedAt: number
 }
 
+export type PaneLayoutCapacity = {
+  paneId: string
+  cols: number
+  rows: number
+}
+
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
   | {
@@ -130,6 +136,10 @@ export type ServerMessage =
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
+export const MIN_TERMINAL_COLS = 2
+export const MAX_TERMINAL_COLS = 500
+export const MIN_TERMINAL_ROWS = 1
+export const MAX_TERMINAL_ROWS = 200
 
 export type SpecialKey =
   | 'Enter'
@@ -168,6 +178,18 @@ export type ClientMessage =
   | { type: 'input'; paneId: string; data: string; requestId: string }
   | { type: 'paste'; paneId: string; data: string; requestId: string }
   | { type: 'key'; paneId: string; key: SpecialKey; requestId: string }
+  | { type: 'resize_pane'; paneId: string; cols: number; rows: number; requestId: string }
+  | { type: 'release_resize'; paneId: string; requestId: string }
+  | {
+      type: 'apply_window_layout'
+      windowId: string
+      paneIds: string[]
+      preset: GroupLayoutPreset
+      stacked: boolean
+      capacities: PaneLayoutCapacity[]
+      requestId: string
+    }
+  | { type: 'release_all_resizes'; requestId: string }
   | { type: 'refresh'; requestId: string }
   | { type: 'load_workspace'; sessionId: string; requestId: string }
   | { type: 'save_workspace'; workspace: SavedWorkspace; requestId: string }

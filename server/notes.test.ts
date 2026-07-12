@@ -1,26 +1,56 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { handleNotesApi } from './notes-api.js'
+import { parseNoteMarkdown, serializeNoteMarkdown } from './note-markdown.js'
 import {
+  defaultLegacyNotesPath,
+  defaultNotesDirectory,
   MAX_NOTE_BODY_LENGTH,
+  NoteConflictError,
   NoteNotFoundError,
   NoteStore,
   NoteValidationError,
   parseNoteDraft,
   parseNotesFile,
+  type Note,
 } from './notes.js'
 
 const temporaryDirectories: string[] = []
 const servers: Server[] = []
 
-async function temporaryNotesPath(): Promise<{ directory: string; path: string }> {
-  const directory = await mkdtemp(join(tmpdir(), 'commando-notes-test-'))
-  temporaryDirectories.push(directory)
-  return { directory, path: join(directory, 'private', 'notes.json') }
+async function temporaryNotesStore(): Promise<{
+  root: string
+  directory: string
+  legacyPath: string
+  store: NoteStore
+}> {
+  const root = await mkdtemp(join(tmpdir(), 'commando-notes-test-'))
+  temporaryDirectories.push(root)
+  const directory = join(root, 'vault', 'Commando')
+  const legacyPath = join(root, 'private', 'notes.json')
+  return {
+    root,
+    directory,
+    legacyPath,
+    store: new NoteStore({ directory, legacyPath }),
+  }
+}
+
+async function markdownFiles(directory: string): Promise<string[]> {
+  return (await readdir(directory)).filter((name) => name.endsWith('.md')).sort()
 }
 
 async function startApi(store: NoteStore): Promise<string> {
@@ -54,8 +84,8 @@ afterEach(async () => {
   )
 })
 
-describe('note validation', () => {
-  it('accepts bounded text and rejects malformed persisted notes', () => {
+describe('note validation and Markdown codec', () => {
+  it('validates bounded drafts and configuration paths', () => {
     expect(parseNoteDraft({ title: 'Plan', body: 'Ship it' })).toEqual({
       title: 'Plan',
       body: 'Ship it',
@@ -63,39 +93,96 @@ describe('note validation', () => {
     expect(parseNoteDraft({ title: 'bad\u0000title', body: '' })).toBeNull()
     expect(parseNoteDraft({ title: '', body: 'x'.repeat(MAX_NOTE_BODY_LENGTH + 1) })).toBeNull()
     expect(() => parseNotesFile({ version: 2, notes: [] })).toThrow('invalid structure')
-    expect(() =>
-      parseNotesFile({
-        version: 1,
-        notes: [{ id: 'not-an-id', title: '', body: '', createdAt: 1, updatedAt: 1 }],
-      }),
-    ).toThrow('invalid note')
+    expect(() => defaultNotesDirectory({ COMMANDO_NOTES_DIR: 'relative' })).toThrow('absolute')
+    expect(() => defaultLegacyNotesPath({ COMMANDO_NOTES_PATH: 'relative' })).toThrow('absolute')
+  })
+
+  it('round-trips Commando frontmatter without claiming unrelated Markdown', () => {
+    const note: Note = {
+      id: 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba',
+      title: 'Plan: ship safely',
+      body: '# Heading\n\n- [ ] Verify **Markdown**',
+      createdAt: Date.parse('2026-07-11T10:00:00.000Z'),
+      updatedAt: Date.parse('2026-07-11T11:00:00.000Z'),
+    }
+
+    expect(parseNoteMarkdown(serializeNoteMarkdown(note))).toEqual(note)
+    expect(parseNoteMarkdown('# Existing Obsidian note')).toBeNull()
   })
 })
 
 describe('NoteStore', () => {
-  it('persists CRUD operations with deterministic ordering and private modes', async () => {
-    const { path } = await temporaryNotesPath()
-    const store = new NoteStore(path)
-    const first = await store.create({ title: 'First', body: 'one' })
+  it('persists one Markdown file per note with deterministic ordering and private modes', async () => {
+    const { directory, legacyPath, store } = await temporaryNotesStore()
+    const first = await store.create({ title: 'First plan', body: 'one' })
     const second = await store.create({ title: 'Second', body: 'two' })
 
     await expect(store.list()).resolves.toEqual([second, first])
-    const updated = await store.update(first.id, { title: 'First revised', body: 'three' })
+    const updated = await store.update(first.id, {
+      title: 'First revised',
+      body: '## Three',
+      expectedUpdatedAt: first.updatedAt,
+    })
     await expect(store.list()).resolves.toEqual([updated, second])
-    await expect(new NoteStore(path).get(first.id)).resolves.toEqual(updated)
+    await expect(new NoteStore({ directory, legacyPath }).get(first.id)).resolves.toEqual(updated)
 
-    const file = JSON.parse(await readFile(path, 'utf8')) as { notes: Array<{ id: string }> }
-    expect(file.notes.map((note) => note.id)).toEqual([updated.id, second.id])
-    expect((await stat(join(path, '..'))).mode & 0o777).toBe(0o700)
-    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    const files = await markdownFiles(directory)
+    expect(files).toHaveLength(2)
+    expect(files.some((name) => name.startsWith('first-revised--'))).toBe(true)
+    expect(files.some((name) => name.startsWith('first-plan--'))).toBe(false)
+    expect(await readFile(join(directory, files.find((name) => name.startsWith('first-revised--'))!), 'utf8'))
+      .toContain('commando_id:')
+    expect((await stat(directory)).mode & 0o777).toBe(0o700)
+    expect((await stat(join(directory, files[0]))).mode & 0o777).toBe(0o600)
 
     await store.delete(first.id)
     await expect(store.list()).resolves.toEqual([second])
   })
 
-  it('serializes concurrent mutations without losing notes or temp files', async () => {
-    const { path } = await temporaryNotesPath()
-    const store = new NoteStore(path)
+  it('ignores unrelated vault files and observes external Markdown edits', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    const note = await store.create({ title: 'Shared', body: 'Commando body' })
+    await writeFile(join(directory, 'personal.md'), '# Personal Obsidian note\n', 'utf8')
+    await writeFile(join(directory, 'broken-personal.md'), '---\nnot_yaml: [\n---\nStill unrelated\n', 'utf8')
+    const path = (await markdownFiles(directory)).find((name) => name.includes(note.id))!
+    const notePath = join(directory, path)
+    const content = await readFile(notePath, 'utf8')
+    await writeFile(notePath, content.replace('Commando body', 'Edited in Obsidian'), 'utf8')
+    await utimes(notePath, new Date(), new Date(note.updatedAt + 5_000))
+
+    const external = await store.get(note.id)
+    expect(external.body).toBe('Edited in Obsidian')
+    expect(external.updatedAt).toBe(note.updatedAt + 5_000)
+    await expect(store.update(note.id, {
+      title: note.title,
+      body: 'Stale browser edit',
+      expectedUpdatedAt: note.updatedAt,
+    })).rejects.toBeInstanceOf(NoteConflictError)
+    await expect(store.list()).resolves.toHaveLength(1)
+  })
+
+  it('migrates legacy JSON once while preserving metadata and the source backup', async () => {
+    const { directory, legacyPath, store } = await temporaryNotesStore()
+    const note: Note = {
+      id: 'c362643b-b6f8-447f-9f58-224cc0d4973b',
+      title: 'Legacy note',
+      body: 'Preserve me',
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_100_000,
+    }
+    await mkdir(join(legacyPath, '..'), { recursive: true })
+    await writeFile(legacyPath, `${JSON.stringify({ version: 1, notes: [note] })}\n`, 'utf8')
+
+    await expect(store.list()).resolves.toEqual([note])
+    await expect(readFile(`${legacyPath}.migrated`, 'utf8')).resolves.toContain('Legacy note')
+    expect(await markdownFiles(directory)).toHaveLength(1)
+
+    await store.delete(note.id)
+    await expect(new NoteStore({ directory, legacyPath }).list()).resolves.toEqual([])
+  })
+
+  it('serializes concurrent mutations without losing notes or temporary files', async () => {
+    const { directory, store } = await temporaryNotesStore()
     const created = await Promise.all(
       Array.from({ length: 12 }, (_, index) =>
         store.create({ title: `Note ${index}`, body: `${index}` }),
@@ -103,19 +190,22 @@ describe('NoteStore', () => {
     )
     await Promise.all(
       created.map((note, index) =>
-        store.update(note.id, { title: note.title, body: `updated ${index}` }),
+        store.update(note.id, {
+          title: note.title,
+          body: `updated ${index}`,
+          expectedUpdatedAt: note.updatedAt,
+        }),
       ),
     )
 
     const notes = await store.list()
     expect(notes).toHaveLength(12)
     expect(notes.every((note) => note.body.startsWith('updated '))).toBe(true)
-    await expect(readdir(join(path, '..'))).resolves.toEqual(['notes.json'])
+    expect((await readdir(directory)).every((name) => name.endsWith('.md'))).toBe(true)
   })
 
-  it('reports validation and not-found errors without altering persistence', async () => {
-    const { path } = await temporaryNotesPath()
-    const store = new NoteStore(path)
+  it('reports validation, not-found, and corrupt managed-note errors without overwriting files', async () => {
+    const { directory, store } = await temporaryNotesStore()
     const note = await store.create({ title: 'Keep', body: 'safe' })
 
     await expect(store.update(note.id, { title: 4, body: '' })).rejects.toBeInstanceOf(
@@ -124,25 +214,19 @@ describe('NoteStore', () => {
     await expect(store.get('invalid')).rejects.toBeInstanceOf(NoteValidationError)
     await store.delete(note.id)
     await expect(store.get(note.id)).rejects.toBeInstanceOf(NoteNotFoundError)
-    await expect(store.delete(note.id)).rejects.toBeInstanceOf(NoteNotFoundError)
-    await expect(store.list()).resolves.toEqual([])
-  })
 
-  it('does not overwrite corrupt JSON', async () => {
-    const { path } = await temporaryNotesPath()
-    const store = new NoteStore(path)
-    await store.create({ title: 'One', body: '' })
-    await writeFile(path, '{not-json', 'utf8')
-
-    await expect(store.create({ title: 'Two', body: '' })).rejects.toThrow('invalid JSON')
-    await expect(readFile(path, 'utf8')).resolves.toBe('{not-json')
+    const corrupt = join(directory, 'corrupt.md')
+    await writeFile(corrupt, '---\ncommando_id: invalid\ntitle: Broken\ncreated: nope\nupdated: nope\n---\nbody', 'utf8')
+    await expect(store.list()).rejects.toThrow('invalid Commando metadata')
+    await expect(store.create({ title: 'Two', body: '' })).resolves.toMatchObject({ title: 'Two' })
+    await expect(readFile(corrupt, 'utf8')).resolves.toContain('commando_id: invalid')
   })
 })
 
 describe('handleNotesApi', () => {
-  it('serves CRUD, validation, method, and not-found responses after auth dispatch', async () => {
-    const { path } = await temporaryNotesPath()
-    const baseUrl = await startApi(new NoteStore(path))
+  it('serves CRUD, conflict, validation, method, and not-found responses after auth dispatch', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    const baseUrl = await startApi(store)
 
     const createdResponse = await fetch(`${baseUrl}/api/notes`, {
       method: 'POST',
@@ -150,7 +234,7 @@ describe('handleNotesApi', () => {
       body: JSON.stringify({ title: 'API note', body: 'body' }),
     })
     expect(createdResponse.status).toBe(201)
-    const created = (await createdResponse.json()) as { note: { id: string } }
+    const created = (await createdResponse.json()) as { note: Note }
 
     const listResponse = await fetch(`${baseUrl}/api/notes`)
     expect(listResponse.status).toBe(200)
@@ -161,9 +245,33 @@ describe('handleNotesApi', () => {
     const updatedResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Updated', body: 'new body' }),
+      body: JSON.stringify({
+        title: 'Updated',
+        body: 'new body',
+        expectedUpdatedAt: created.note.updatedAt,
+      }),
     })
     expect(updatedResponse.status).toBe(200)
+    const updated = (await updatedResponse.json()) as { note: Note }
+
+    const [path] = await markdownFiles(directory)
+    await utimes(join(directory, path), new Date(), new Date(updated.note.updatedAt + 5_000))
+    const conflictResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Stale',
+        body: 'stale',
+        expectedUpdatedAt: updated.note.updatedAt,
+      }),
+    })
+    expect(conflictResponse.status).toBe(409)
+
+    const deleteConflict = await fetch(`${baseUrl}/api/notes/${created.note.id}`, {
+      method: 'DELETE',
+      headers: { 'If-Match': `"${updated.note.updatedAt}"` },
+    })
+    expect(deleteConflict.status).toBe(409)
 
     const invalidResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}`, {
       method: 'PUT',
@@ -176,7 +284,11 @@ describe('handleNotesApi', () => {
     expect(methodResponse.status).toBe(405)
     expect(methodResponse.headers.get('allow')).toBe('GET, POST')
 
-    expect((await fetch(`${baseUrl}/api/notes/${created.note.id}`, { method: 'DELETE' })).status).toBe(204)
+    const latest = await store.get(created.note.id)
+    expect((await fetch(`${baseUrl}/api/notes/${created.note.id}`, {
+      method: 'DELETE',
+      headers: { 'If-Match': `"${latest.updatedAt}"` },
+    })).status).toBe(204)
     expect((await fetch(`${baseUrl}/api/notes/${created.note.id}`)).status).toBe(404)
   })
 })

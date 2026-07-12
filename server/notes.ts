@@ -1,7 +1,25 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import {
+  access,
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  utimes,
+} from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import {
+  isMarkdownNoteFile,
+  noteFileName,
+  parseNoteMarkdown,
+  serializeNoteMarkdown,
+} from './note-markdown.js'
 
 export const MAX_NOTE_TITLE_LENGTH = 200
 export const MAX_NOTE_BODY_LENGTH = 512 * 1024
@@ -19,9 +37,31 @@ export type NoteDraft = {
   body: string
 }
 
+export type NoteUpdate = NoteDraft & {
+  expectedUpdatedAt?: number
+}
+
 type NotesFile = {
   version: 1
   notes: Note[]
+}
+
+type StoredNote = {
+  note: Note
+  path: string
+  fingerprint: FileFingerprint
+}
+
+type FileFingerprint = {
+  device: number
+  inode: number
+  modifiedAt: number
+  size: number
+}
+
+export type NoteStoreOptions = {
+  directory?: string
+  legacyPath?: string | null
 }
 
 const NOTE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -43,6 +83,13 @@ export function parseNoteDraft(value: unknown): NoteDraft | null {
   if (!validText(value.title, MAX_NOTE_TITLE_LENGTH)) return null
   if (!validText(value.body, MAX_NOTE_BODY_LENGTH)) return null
   return { title: value.title, body: value.body }
+}
+
+function parseNoteUpdate(value: unknown): NoteUpdate | null {
+  const draft = parseNoteDraft(value)
+  if (!draft || !isRecord(value)) return null
+  if (value.expectedUpdatedAt !== undefined && !validTimestamp(value.expectedUpdatedAt)) return null
+  return { ...draft, expectedUpdatedAt: value.expectedUpdatedAt as number | undefined }
 }
 
 export function parseNote(value: unknown): Note | null {
@@ -95,8 +142,20 @@ export function parseNotesFile(value: unknown): NotesFile {
   return { version: 1, notes: ordered(validNotes) }
 }
 
-export function defaultNotesPath(): string {
-  return process.env.COMMANDO_NOTES_PATH ?? join(homedir(), '.commando', 'notes.json')
+export function defaultNotesDirectory(environment: NodeJS.ProcessEnv = process.env): string {
+  const configured = environment.COMMANDO_NOTES_DIR
+  if (configured && !isAbsolute(configured)) {
+    throw new Error('COMMANDO_NOTES_DIR must be an absolute path')
+  }
+  return configured ?? join(homedir(), '.commando', 'notes')
+}
+
+export function defaultLegacyNotesPath(environment: NodeJS.ProcessEnv = process.env): string {
+  const configured = environment.COMMANDO_NOTES_PATH
+  if (configured && !isAbsolute(configured)) {
+    throw new Error('COMMANDO_NOTES_PATH must be an absolute path')
+  }
+  return configured ?? join(homedir(), '.commando', 'notes.json')
 }
 
 export class NoteNotFoundError extends Error {
@@ -113,25 +172,37 @@ export class NoteValidationError extends Error {
   }
 }
 
+export class NoteConflictError extends Error {
+  constructor() {
+    super('Note changed outside Commando')
+    this.name = 'NoteConflictError'
+  }
+}
+
 export class NoteStore {
-  readonly notesPath: string
+  readonly directory: string
+  readonly legacyPath: string | null
+  private initialization: Promise<void> | null = null
   private writes: Promise<void> = Promise.resolve()
 
-  constructor(notesPath = defaultNotesPath()) {
-    this.notesPath = notesPath
+  constructor(options: NoteStoreOptions = {}) {
+    this.directory = options.directory ?? defaultNotesDirectory()
+    this.legacyPath = options.legacyPath === undefined ? defaultLegacyNotesPath() : options.legacyPath
   }
 
   async list(): Promise<Note[]> {
     await this.writes
-    return ordered((await this.readNotes()).notes)
+    await this.ensureInitialized()
+    return ordered((await this.readStoredNotes()).map(({ note }) => note))
   }
 
   async get(id: string): Promise<Note> {
     this.validateId(id)
     await this.writes
-    const note = (await this.readNotes()).notes.find((candidate) => candidate.id === id)
-    if (!note) throw new NoteNotFoundError(id)
-    return { ...note }
+    await this.ensureInitialized()
+    const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+    if (!stored) throw new NoteNotFoundError(id)
+    return { ...stored.note }
   }
 
   create(value: unknown): Promise<Note> {
@@ -139,7 +210,7 @@ export class NoteStore {
     if (!draft) return Promise.reject(new NoteValidationError())
 
     return this.enqueue(async () => {
-      const file = await this.readNotes()
+      await this.ensureInitialized()
       const now = Date.now()
       const note: Note = {
         id: randomUUID(),
@@ -147,9 +218,7 @@ export class NoteStore {
         createdAt: now,
         updatedAt: now,
       }
-      file.notes.push(note)
-      file.notes = ordered(file.notes)
-      await this.writeNotes(file)
+      await this.writeNote(note)
       return { ...note }
     })
   }
@@ -160,27 +229,32 @@ export class NoteStore {
     } catch (error) {
       return Promise.reject(error)
     }
-    const draft = parseNoteDraft(value)
-    if (!draft) return Promise.reject(new NoteValidationError())
+    const update = parseNoteUpdate(value)
+    if (!update) return Promise.reject(new NoteValidationError())
 
     return this.enqueue(async () => {
-      const file = await this.readNotes()
-      const index = file.notes.findIndex((note) => note.id === id)
-      if (index < 0) throw new NoteNotFoundError(id)
-      const existing = file.notes[index]
-      const note: Note = {
-        ...existing,
-        ...draft,
-        updatedAt: Math.max(Date.now(), existing.updatedAt + 1),
+      await this.ensureInitialized()
+      const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+      if (!stored) throw new NoteNotFoundError(id)
+      if (
+        update.expectedUpdatedAt !== undefined &&
+        update.expectedUpdatedAt !== stored.note.updatedAt
+      ) {
+        throw new NoteConflictError()
       }
-      file.notes[index] = note
-      file.notes = ordered(file.notes)
-      await this.writeNotes(file)
+
+      const note: Note = {
+        ...stored.note,
+        title: update.title,
+        body: update.body,
+        updatedAt: Math.max(Date.now(), stored.note.updatedAt + 1),
+      }
+      await this.writeNote(note, stored.path, stored.fingerprint)
       return { ...note }
     })
   }
 
-  delete(id: string): Promise<void> {
+  delete(id: string, expectedUpdatedAt?: number): Promise<void> {
     try {
       this.validateId(id)
     } catch (error) {
@@ -188,11 +262,17 @@ export class NoteStore {
     }
 
     return this.enqueue(async () => {
-      const file = await this.readNotes()
-      const index = file.notes.findIndex((note) => note.id === id)
-      if (index < 0) throw new NoteNotFoundError(id)
-      file.notes.splice(index, 1)
-      await this.writeNotes(file)
+      await this.ensureInitialized()
+      const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+      if (!stored) throw new NoteNotFoundError(id)
+      if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== stored.note.updatedAt) {
+        throw new NoteConflictError()
+      }
+      if (!this.sameFingerprint(stored.fingerprint, await this.fileFingerprint(stored.path))) {
+        throw new NoteConflictError()
+      }
+      await rm(stored.path)
+      await this.syncDirectory()
     })
   }
 
@@ -209,51 +289,157 @@ export class NoteStore {
     return operation
   }
 
-  private async readNotes(): Promise<NotesFile> {
+  private ensureInitialized(): Promise<void> {
+    this.initialization ??= this.initialize()
+    return this.initialization
+  }
+
+  private async initialize(): Promise<void> {
+    const created = await mkdir(this.directory, { recursive: true, mode: 0o700 })
+    if (created) await chmod(this.directory, 0o700)
+    await this.migrateLegacyNotes()
+  }
+
+  private async migrateLegacyNotes(): Promise<void> {
+    if (!this.legacyPath) return
+
+    let content: string
     try {
-      const content = await readFile(this.notesPath, 'utf8')
-      return parseNotesFile(JSON.parse(content) as unknown)
+      content = await readFile(this.legacyPath, 'utf8')
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { version: 1, notes: [] }
-      }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+
+    let legacy: NotesFile
+    try {
+      legacy = parseNotesFile(JSON.parse(content) as unknown)
+    } catch (error) {
       if (error instanceof SyntaxError) {
-        throw new Error('Notes file contains invalid JSON', { cause: error })
+        throw new Error('Legacy notes file contains invalid JSON', { cause: error })
       }
       throw error
     }
+
+    const existingIds = new Set((await this.readStoredNotes()).map(({ note }) => note.id))
+    for (const note of legacy.notes) {
+      if (!existingIds.has(note.id)) await this.writeNote(note)
+    }
+
+    let migratedPath = `${this.legacyPath}.migrated`
+    try {
+      await access(migratedPath, constants.F_OK)
+      migratedPath = `${migratedPath}.${Date.now()}`
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await rename(this.legacyPath, migratedPath)
   }
 
-  private async writeNotes(file: NotesFile): Promise<void> {
-    const directory = dirname(this.notesPath)
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-    await chmod(directory, 0o700)
-    const temporaryPath = `${this.notesPath}.${process.pid}.${randomUUID()}.tmp`
+  private async readStoredNotes(): Promise<StoredNote[]> {
+    const entries = await readdir(this.directory, { withFileTypes: true })
+    const notes: StoredNote[] = []
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !isMarkdownNoteFile(entry.name)) continue
+      const path = join(this.directory, entry.name)
+      let stable: { content: string; fingerprint: FileFingerprint }
+      try {
+        stable = await this.readStableFile(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      const { content, fingerprint } = stable
+      const value = parseNoteMarkdown(content)
+      if (value === null) continue
+      const parsed = parseNote(value)
+      if (!parsed) throw new Error(`Markdown note has invalid Commando metadata: ${entry.name}`)
+      parsed.updatedAt = Math.max(parsed.updatedAt, Math.round(fingerprint.modifiedAt))
+      notes.push({ note: parsed, path, fingerprint })
+    }
+
+    const ids = notes.map(({ note }) => note.id)
+    if (new Set(ids).size !== ids.length) throw new Error('Markdown notes contain duplicate note ids')
+    return notes
+  }
+
+  private async writeNote(
+    note: Note,
+    previousPath?: string,
+    expectedFingerprint?: FileFingerprint,
+  ): Promise<void> {
+    const path = join(this.directory, noteFileName(note))
+    const temporaryPath = join(this.directory, `.${note.id}.${process.pid}.${randomUUID()}.tmp`)
     let handle: Awaited<ReturnType<typeof open>> | null = null
 
     try {
       handle = await open(temporaryPath, 'wx', 0o600)
-      await handle.writeFile(`${JSON.stringify({ ...file, notes: ordered(file.notes) }, null, 2)}\n`, 'utf8')
+      await handle.writeFile(serializeNoteMarkdown(note), 'utf8')
       await handle.sync()
       await handle.close()
       handle = null
-      await rename(temporaryPath, this.notesPath)
-      await chmod(this.notesPath, 0o600)
-
-      try {
-        const directoryHandle = await open(directory, 'r')
-        try {
-          await directoryHandle.sync()
-        } finally {
-          await directoryHandle.close()
-        }
-      } catch {
-        // Directory fsync is not supported by every filesystem.
+      if (
+        previousPath &&
+        expectedFingerprint &&
+        !this.sameFingerprint(expectedFingerprint, await this.fileFingerprint(previousPath))
+      ) {
+        throw new NoteConflictError()
       }
+      await rename(temporaryPath, path)
+      await chmod(path, 0o600)
+      await utimes(path, new Date(), new Date(note.updatedAt))
+      if (previousPath && previousPath !== path) await rm(previousPath)
+      await this.syncDirectory()
     } catch (error) {
       await handle?.close().catch(() => undefined)
       await rm(temporaryPath, { force: true }).catch(() => undefined)
       throw error
     }
+  }
+
+  private async syncDirectory(): Promise<void> {
+    try {
+      const directoryHandle = await open(this.directory, 'r')
+      try {
+        await directoryHandle.sync()
+      } finally {
+        await directoryHandle.close()
+      }
+    } catch {
+      // Directory fsync is not supported by every filesystem.
+    }
+  }
+
+  private async readStableFile(path: string): Promise<{
+    content: string
+    fingerprint: FileFingerprint
+  }> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = await this.fileFingerprint(path)
+      const content = await readFile(path, 'utf8')
+      const after = await this.fileFingerprint(path)
+      if (this.sameFingerprint(before, after)) return { content, fingerprint: after }
+    }
+    throw new NoteConflictError()
+  }
+
+  private async fileFingerprint(path: string): Promise<FileFingerprint> {
+    const fileStat = await stat(path)
+    return {
+      device: fileStat.dev,
+      inode: fileStat.ino,
+      modifiedAt: fileStat.mtimeMs,
+      size: fileStat.size,
+    }
+  }
+
+  private sameFingerprint(left: FileFingerprint, right: FileFingerprint): boolean {
+    return (
+      left.device === right.device &&
+      left.inode === right.inode &&
+      left.modifiedAt === right.modifiedAt &&
+      left.size === right.size
+    )
   }
 }

@@ -12,12 +12,16 @@
     "test:e2e:terminal": "playwright test e2e/terminal-fidelity.pw.ts --workers=1"
   },
   "dependencies": {
+    "@blocknote/ariakit": "^0.51.4",
+    "@blocknote/core": "^0.51.4",
+    "@blocknote/react": "^0.51.4",
     "@fontsource/jetbrains-mono": "5.2.8",
     "@xterm/xterm": "^6.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

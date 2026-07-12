@@ -35,6 +35,17 @@ describe('getPanePlacement', () => {
       rowSpan: 1,
     })
   })
+
+  it('fills incomplete final rows while web layout ownership is active', () => {
+    const equalGrid = Array.from({ length: 5 }, (_, index) =>
+      getPanePlacement('equal-grid', index, 5, true).columnSpan,
+    )
+    const leadAndStack = Array.from({ length: 5 }, (_, index) =>
+      getPanePlacement('lead-and-stack', index, 5, true).columnSpan,
+    )
+    expect(equalGrid).toEqual([4, 4, 4, 6, 6])
+    expect(leadAndStack).toEqual([8, 4, 4, 6, 6])
+  })
 })
 
 describe('moveItem', () => {

@@ -2,7 +2,14 @@ import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { type FocusEvent, useEffect, useRef } from 'react'
 
-import type { PaneTerminalState, SpecialKey } from '../shared/protocol'
+import {
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  type PaneTerminalState,
+  type SpecialKey,
+} from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
 import { semanticKeyForEvent } from './terminalInput'
 
@@ -12,14 +19,19 @@ type XtermPaneProps = {
   rows: number
   terminalState: PaneTerminalState
   connected: boolean
+  resizeOwner: boolean
+  measurementKey: string
   ariaLabel: string
   onFocus: () => void
   onInput: (data: string) => void
   onKey: (key: SpecialKey) => void
   onPaste: (data: string) => void
+  onResize: (cols: number, rows: number) => void
   registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
 }
+
+const RESIZE_DEBOUNCE_MS = 80
 
 const TERMINAL_THEME = {
   background: '#232136',
@@ -51,17 +63,48 @@ function sourceDimension(value: number, minimum: number): number {
   return Number.isFinite(value) ? Math.max(minimum, Math.floor(value)) : minimum
 }
 
+export function terminalDimensionsForViewport(
+  viewportWidth: number,
+  viewportHeight: number,
+  cellWidth: number,
+  cellHeight: number,
+): { cols: number; rows: number } | null {
+  if (
+    !Number.isFinite(viewportWidth) ||
+    !Number.isFinite(viewportHeight) ||
+    !Number.isFinite(cellWidth) ||
+    !Number.isFinite(cellHeight) ||
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    cellWidth <= 0 ||
+    cellHeight <= 0
+  ) return null
+  return {
+    cols: Math.max(
+      MIN_TERMINAL_COLS,
+      Math.min(MAX_TERMINAL_COLS, Math.floor(viewportWidth / cellWidth)),
+    ),
+    rows: Math.max(
+      MIN_TERMINAL_ROWS,
+      Math.min(MAX_TERMINAL_ROWS, Math.floor(viewportHeight / cellHeight)),
+    ),
+  }
+}
+
 export function XtermPane({
   paneId,
   cols,
   rows,
   terminalState,
   connected,
+  resizeOwner,
+  measurementKey,
   ariaLabel,
   onFocus,
   onInput,
   onKey,
   onPaste,
+  onResize,
   registerSink,
   registerFocusable,
 }: XtermPaneProps) {
@@ -72,11 +115,13 @@ export function XtermPane({
   const inputRef = useRef(onInput)
   const keyRef = useRef(onKey)
   const pasteRef = useRef(onPaste)
+  const resizeRef = useRef(onResize)
   const terminalStateRef = useRef(terminalState)
   connectedRef.current = connected
   inputRef.current = onInput
   keyRef.current = onKey
   pasteRef.current = onPaste
+  resizeRef.current = onResize
   terminalStateRef.current = terminalState
 
   useEffect(() => {
@@ -235,6 +280,49 @@ export function XtermPane({
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
     textarea?.setAttribute('aria-label', ariaLabel)
   }, [ariaLabel])
+
+  useEffect(() => {
+    const sourceGrid = sourceGridRef.current
+    if (!resizeOwner || !sourceGrid || typeof ResizeObserver === 'undefined') return
+
+    let frame: number | null = null
+    let timer: number | null = null
+    let lastDimensions = ''
+    const measure = () => {
+      frame = null
+      const terminal = terminalRef.current
+      const screen = hostRef.current?.querySelector<HTMLElement>('.xterm-screen')
+      if (!terminal || !screen || terminal.cols < 1 || terminal.rows < 1) return
+      const screenBounds = screen.getBoundingClientRect()
+      const dimensions = terminalDimensionsForViewport(
+        sourceGrid.clientWidth,
+        sourceGrid.clientHeight,
+        screenBounds.width / terminal.cols,
+        screenBounds.height / terminal.rows,
+      )
+      if (!dimensions) return
+      const fingerprint = `${dimensions.cols}x${dimensions.rows}`
+      if (fingerprint === lastDimensions) return
+      lastDimensions = fingerprint
+      resizeRef.current(dimensions.cols, dimensions.rows)
+    }
+    const scheduleMeasurement = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      timer = window.setTimeout(() => {
+        timer = null
+        frame = window.requestAnimationFrame(measure)
+      }, RESIZE_DEBOUNCE_MS)
+    }
+    const observer = new ResizeObserver(scheduleMeasurement)
+    observer.observe(sourceGrid)
+    scheduleMeasurement()
+    return () => {
+      observer.disconnect()
+      if (timer !== null) window.clearTimeout(timer)
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [cols, measurementKey, paneId, resizeOwner, rows])
 
   const handleFocus = (event: FocusEvent<HTMLDivElement>) => {
     onFocus()

@@ -6,6 +6,18 @@ const token = process.env.COMMANDO_E2E_TOKEN ?? 'fidelity-token'
 const paneId = process.env.COMMANDO_E2E_PANE ?? '%0'
 const socketName = process.env.COMMANDO_E2E_TMUX_SOCKET ?? 'commando-fidelity'
 
+function tmuxPaneSize(): string {
+  return execFileSync('tmux', [
+    '-L',
+    socketName,
+    'display-message',
+    '-p',
+    '-t',
+    paneId,
+    '#{pane_width}x#{pane_height}',
+  ], { encoding: 'utf8' }).trim()
+}
+
 test('renders an attributed alternate-screen table at exact source geometry', async ({
   page,
 }) => {
@@ -87,6 +99,16 @@ test('renders an attributed alternate-screen table at exact source geometry', as
     caret: 'hide',
   })
 
+  await sourceGrid.focus()
+  await expect.poll(tmuxPaneSize).not.toBe('80x24')
+  const focusedSize = tmuxPaneSize()
+  await expect.poll(() =>
+    page.evaluate((id) => {
+      const terminal = window.__commandoQaTerminals?.get(id)
+      return terminal ? `${terminal.cols}x${terminal.rows}` : ''
+    }, paneId),
+  ).toBe(focusedSize)
+
   try {
     execFileSync('tmux', [
       '-L',
@@ -121,4 +143,9 @@ test('renders an attributed alternate-screen table at exact source geometry', as
     ])
   }
   expect(browserErrors).toEqual([])
+
+  await page.setViewportSize({ width: 1200, height: 800 })
+  await expect.poll(tmuxPaneSize).not.toBe('80x24')
+  await page.close()
+  await expect.poll(tmuxPaneSize).toBe('80x24')
 })

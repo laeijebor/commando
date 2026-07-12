@@ -31,9 +31,9 @@ test('navigates the new local cockpit sections without browser errors', async ({
   await page.keyboard.press('Escape')
 
   await page.getByRole('button', { name: 'Notes' }).click()
-  await expect(page.getByText('Local notebook')).toBeVisible()
+  await expect(page.getByText('Markdown vault')).toBeVisible()
   await expect(page.getByText('QA note')).toBeVisible()
-  await expect(page.getByLabel('Note body')).toHaveValue('Autosave-ready local note')
+  await expect(page.getByLabel('Note body')).toContainText('Autosave-ready local note')
 
   await page.getByRole('button', { name: 'Linear' }).click()
   await expect(page.getByRole('heading', { name: 'Linear projects' })).toBeVisible()
@@ -48,6 +48,28 @@ test('notes section remains usable at a narrow viewport', async ({ page }) => {
   await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
   await page.getByLabel('Open session tree').click()
   await page.getByRole('button', { name: 'Notes' }).click()
-  await expect(page.getByText('Local notebook')).toBeVisible()
+  await expect(page.getByText('Markdown vault')).toBeVisible()
   await expect(page.getByLabel('Note body')).toBeVisible()
+})
+
+test('pane groups resize by width and height and persist locally', async ({ page }) => {
+  await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
+  const group = page.locator('.pane-group').first()
+  const initial = await group.boundingBox()
+  expect(initial).not.toBeNull()
+
+  await group.locator('.resize-width').focus()
+  await page.keyboard.press('ArrowLeft')
+  await group.locator('.resize-height').focus()
+  await page.keyboard.press('ArrowDown')
+
+  const resized = await group.boundingBox()
+  expect(resized).not.toBeNull()
+  expect(resized!.width).toBeLessThanOrEqual(initial!.width - 7)
+  expect(resized!.height).toBeGreaterThanOrEqual(initial!.height + 7)
+
+  await page.reload()
+  const persisted = await page.locator('.pane-group').first().boundingBox()
+  expect(persisted?.width).toBeCloseTo(resized!.width, 0)
+  expect(persisted?.height).toBeCloseTo(resized!.height, 0)
 })

@@ -13,21 +13,44 @@ export function getPanePlacement(
   preset: GroupLayoutPreset,
   index: number,
   paneCount: number,
+  fillIncompleteRows = false,
 ): PanePlacement {
   if (paneCount <= 1) return { columnSpan: 12, rowSpan: 1 }
 
   switch (preset) {
     case 'full-then-halves':
+      if (fillIncompleteRows && paneCount % 2 === 0 && index === paneCount - 1) {
+        return { columnSpan: 12, rowSpan: 1 }
+      }
       return { columnSpan: index === 0 ? 12 : 6, rowSpan: 1 }
     case 'two-full-two-halves':
+      if (fillIncompleteRows && paneCount % 2 !== 0 && index === paneCount - 1) {
+        return { columnSpan: 12, rowSpan: 1 }
+      }
       return { columnSpan: index < 2 ? 12 : 6, rowSpan: 1 }
     case 'lead-and-stack':
+      if (fillIncompleteRows && paneCount > 3 && index >= 3) {
+        const trailingCount = paneCount - 3
+        const remainder = trailingCount % 3
+        const trailingIndex = index - 3
+        if (remainder > 0 && trailingIndex >= trailingCount - remainder) {
+          return { columnSpan: 12 / remainder, rowSpan: 1 }
+        }
+      }
       return index === 0
         ? { columnSpan: paneCount > 2 ? 8 : 7, rowSpan: paneCount > 2 ? 2 : 1 }
         : { columnSpan: paneCount > 2 ? 4 : 5, rowSpan: 1 }
     case 'equal-grid':
       if (paneCount === 2 || paneCount === 4) return { columnSpan: 6, rowSpan: 1 }
-      if (paneCount === 3 || paneCount >= 5) return { columnSpan: 4, rowSpan: 1 }
+      if (paneCount === 3 || paneCount >= 5) {
+        if (fillIncompleteRows && paneCount >= 5) {
+          const remainder = paneCount % 3
+          if (remainder > 0 && index >= paneCount - remainder) {
+            return { columnSpan: 12 / remainder, rowSpan: 1 }
+          }
+        }
+        return { columnSpan: 4, rowSpan: 1 }
+      }
       return { columnSpan: 12, rowSpan: 1 }
   }
 }

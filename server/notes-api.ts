@@ -1,5 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { NoteNotFoundError, NoteStore, NoteValidationError } from './notes.js'
+import {
+  NoteConflictError,
+  NoteNotFoundError,
+  NoteStore,
+  NoteValidationError,
+} from './notes.js'
 
 const MAX_REQUEST_BYTES = 600 * 1024
 const NOTES_PATH = '/api/notes'
@@ -56,6 +61,17 @@ function methodNotAllowed(response: ServerResponse, allowed: string): void {
   writeJson(response, 405, { error: 'Method not allowed' })
 }
 
+function expectedUpdatedAt(request: IncomingMessage): number | undefined {
+  const value = request.headers['if-match']
+  if (value === undefined) return undefined
+  if (Array.isArray(value)) throw new NoteValidationError('If-Match must contain one timestamp')
+  const match = /^"(\d+)"$/.exec(value)
+  if (!match) throw new NoteValidationError('If-Match must be a quoted update timestamp')
+  const parsed = Number(match[1])
+  if (!Number.isSafeInteger(parsed)) throw new NoteValidationError('If-Match timestamp is invalid')
+  return parsed
+}
+
 /**
  * Handles authenticated note routes. The parent server must perform its existing
  * host, origin, and bearer-token checks before invoking this dispatcher.
@@ -92,7 +108,7 @@ export async function handleNotesApi(
       return true
     }
     if (request.method === 'DELETE') {
-      await store.delete(id)
+      await store.delete(id, expectedUpdatedAt(request))
       response.writeHead(204, { 'Cache-Control': 'no-store' })
       response.end()
       return true
@@ -100,6 +116,10 @@ export async function handleNotesApi(
     methodNotAllowed(response, 'GET, PUT, DELETE')
     return true
   } catch (error) {
+    if (error instanceof NoteConflictError) {
+      writeJson(response, 409, { error: error.message })
+      return true
+    }
     if (error instanceof NoteNotFoundError) {
       writeJson(response, 404, { error: 'Note not found' })
       return true

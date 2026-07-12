@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
@@ -34,6 +34,7 @@ import { handleNotesApi } from './notes-api.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 
 const HOST = '127.0.0.1'
 const DEFAULT_PORT = 4310
@@ -57,6 +58,7 @@ const CONTENT_SECURITY_POLICY = [
 ].join('; ')
 
 type ClientState = {
+  id: string
   socket: WebSocket
   subscribedPaneIds: Set<string>
   paneStreams: Map<string, PaneStreamState>
@@ -867,6 +869,90 @@ async function main(): Promise<void> {
           tmux.sendKey(pane.sessionId, message.paneId, message.key),
         )
         return
+      case 'resize_pane': {
+        const pane = paneForId(message.paneId)
+        if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
+          sendError(client, 'invalid_pane', 'Resize references an unavailable pane', message.requestId)
+          return
+        }
+        void tmux
+          .resizePane(client.id, message.paneId, message.cols, message.rows)
+          .then((changed) => changed ? refreshSnapshot() : undefined)
+          .catch((error: unknown) => {
+            sendError(
+              client,
+              error instanceof TmuxResizeLeaseBusyError
+                ? 'resize_window_busy'
+                : 'tmux_resize_failed',
+              error instanceof Error ? error.message : 'tmux resize failed',
+              message.requestId,
+            )
+          })
+        return
+      }
+      case 'release_resize':
+        void tmux
+          .releasePaneResize(client.id, message.paneId)
+          .then((changed) => changed ? refreshSnapshot() : undefined)
+          .catch((error: unknown) => {
+            sendError(
+              client,
+              'tmux_resize_release_failed',
+              error instanceof Error ? error.message : 'tmux resize release failed',
+              message.requestId,
+            )
+          })
+        return
+      case 'apply_window_layout': {
+        const window = snapshot.windows.find((candidate) => candidate.id === message.windowId)
+        if (
+          !window ||
+          window.paneIds.length !== message.paneIds.length ||
+          window.paneIds.some((paneId) => !message.paneIds.includes(paneId))
+        ) {
+          sendError(
+            client,
+            'invalid_window_layout',
+            'Authoritative layout must include every current pane in the window',
+            message.requestId,
+          )
+          return
+        }
+        void tmux
+          .applyWindowLayout(
+            client.id,
+            message.windowId,
+            message.paneIds,
+            message.preset,
+            message.stacked,
+            message.capacities,
+          )
+          .then((changed) => changed ? refreshSnapshot() : undefined)
+          .catch((error: unknown) => {
+            sendError(
+              client,
+              error instanceof TmuxResizeLeaseBusyError
+                ? 'resize_window_busy'
+                : 'tmux_layout_failed',
+              error instanceof Error ? error.message : 'tmux layout failed',
+              message.requestId,
+            )
+          })
+        return
+      }
+      case 'release_all_resizes':
+        void tmux
+          .releasePaneResize(client.id)
+          .then((changed) => changed ? refreshSnapshot() : undefined)
+          .catch((error: unknown) => {
+            sendError(
+              client,
+              'tmux_resize_release_failed',
+              error instanceof Error ? error.message : 'tmux resize release failed',
+              message.requestId,
+            )
+          })
+        return
       case 'refresh':
         void refreshSnapshot()
           .then(() => {
@@ -945,6 +1031,7 @@ async function main(): Promise<void> {
 
   webSocketServer.on('connection', (socket) => {
     const client: ClientState = {
+      id: randomUUID(),
       socket,
       subscribedPaneIds: new Set(),
       paneStreams: new Map(),
@@ -983,7 +1070,12 @@ async function main(): Promise<void> {
       handleClientMessage(client, parsed.message)
     })
     const removeClient = (): void => {
-      if (clients.delete(client)) syncRequiredSessions()
+      if (!clients.delete(client)) return
+      syncRequiredSessions()
+      void tmux
+        .releasePaneResize(client.id)
+        .then((changed) => changed ? refreshSnapshot() : undefined)
+        .catch(reportTmuxError)
     }
     socket.on('close', removeClient)
     socket.on('error', removeClient)
@@ -1106,10 +1198,12 @@ async function main(): Promise<void> {
     shuttingDown = true
     clearInterval(snapshotTimer)
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
-    tmux.close()
     for (const client of clients) client.socket.terminate()
-    webSocketServer.close()
-    httpServer.close()
+    void tmux.releaseAllPaneResizes().finally(() => {
+      tmux.close()
+      webSocketServer.close()
+      httpServer.close()
+    })
   }
   process.once('SIGINT', shutdown)
   process.once('SIGTERM', shutdown)
