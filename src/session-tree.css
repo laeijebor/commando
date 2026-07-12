@@ -27,7 +27,13 @@
 .managed-window-tree button > small { margin-left: auto; font-family: var(--mono); font-size: 8px; }
 .managed-window-tree > div > div { padding-left: 14px; }
 .managed-window-tree > div > div button { font-size: 8px; }
-.managed-window-tree button.active { color: #c4a7e7; }
+.managed-pane-row { display: flex; align-items: center; border-radius: 6px; }
+.managed-pane-row:hover, .managed-pane-row.active { color: #e0def4; background: #201d2e; }
+.managed-pane-row .managed-pane-main { flex: 1; }
+.managed-pane-row .managed-pane-maximize { width: 24px; flex: 0 0 24px; justify-content: center; padding: 0; opacity: 0; color: #6e6a86; }
+.managed-pane-row:hover .managed-pane-maximize, .managed-pane-row:focus-within .managed-pane-maximize { opacity: 1; }
+.managed-pane-row .managed-pane-maximize:hover { color: #c4a7e7; }
+.managed-pane-row .managed-pane-maximize svg { width: 11px; height: 11px; }
 .session-pref-empty { margin: 0; padding: 8px; color: #524f67; font-size: 10px; }
 .session-context-menu { position: fixed; z-index: 50; width: 180px; padding: 5px; border: 1px solid #393552; border-radius: 7px; background: #1f1d2e; box-shadow: 0 12px 35px #000a; }
 .session-context-menu button { width: 100%; padding: 8px; display: flex; gap: 8px; align-items: center; color: #e0def4; border-radius: 4px; text-align: left; font-size: 10px; }

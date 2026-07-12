@@ -93,6 +93,25 @@ const STATUS_PRIORITY: Record<AgentStatus['status'], number> = {
   unknown: 5,
 }
 
+const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
+const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
+
+function storedPanelHidden(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function storePanelHidden(key: string, hidden: boolean): void {
+  try {
+    window.localStorage.setItem(key, String(hidden))
+  } catch {
+    // Panel visibility still works in memory when storage is unavailable.
+  }
+}
+
 let requestSequence = 0
 
 function requestId(prefix: string) {
@@ -339,7 +358,14 @@ export function App() {
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [leftPanelOpen, setLeftPanelOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
+  const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
+  const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
+  const pendingMaximizePaneId = useRef<string | null>(null)
+
+  useEffect(() => storePanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY, leftPanelHidden), [leftPanelHidden])
+  useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
+
   const [area, setArea] = useState<CommandoArea>('workspace')
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
@@ -515,7 +541,8 @@ export function App() {
   }, [connection.phase])
 
   useEffect(() => {
-    setMaximizedPaneId(null)
+    setMaximizedPaneId(pendingMaximizePaneId.current)
+    pendingMaximizePaneId.current = null
     setFocusedPaneId(null)
   }, [selectedSessionId])
 
@@ -571,6 +598,13 @@ export function App() {
     setPaletteOpen(false)
     setLeftPanelOpen(false)
     setRightPanelOpen(false)
+  }
+
+  const openPaneMaximized = (paneId: string) => {
+    if (!paneMap.has(paneId)) return
+    pendingMaximizePaneId.current = paneId
+    jumpToPane(paneId)
+    setMaximizedPaneId(paneId)
   }
 
   const jumpToGroup = (windowId: string) => {
@@ -812,6 +846,16 @@ export function App() {
           </button>
           <button
             type="button"
+            className={`icon-button desktop-panel-toggle left-panel-visibility${leftPanelHidden ? ' is-collapsed' : ''}`}
+            onClick={() => setLeftPanelHidden((current) => !current)}
+            aria-label={leftPanelHidden ? 'Show session tree' : 'Hide session tree'}
+            aria-pressed={!leftPanelHidden}
+            title={leftPanelHidden ? 'Show session tree' : 'Hide session tree'}
+          >
+            <SidebarOpen aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             className="command-trigger"
             onClick={() => setPaletteOpen(true)}
             aria-label="Jump or command Cmd K"
@@ -820,7 +864,7 @@ export function App() {
             <span>Jump or command</span>
             <kbd>Cmd K</kbd>
           </button>
-          <button
+          {area === 'workspace' ? <button
             type="button"
             className="icon-button mobile-panel-toggle hud-toggle"
             onClick={() => setRightPanelOpen(true)}
@@ -828,7 +872,18 @@ export function App() {
           >
             <PanelRightOpen aria-hidden="true" />
             {attentionCount ? <span className="attention-badge">{attentionCount}</span> : null}
-          </button>
+          </button> : null}
+          {area === 'workspace' ? <button
+            type="button"
+            className={`icon-button desktop-panel-toggle right-panel-visibility${rightPanelHidden ? ' is-collapsed' : ''}`}
+            onClick={() => setRightPanelHidden((current) => !current)}
+            aria-label={rightPanelHidden ? 'Show Agent HUD' : 'Hide Agent HUD'}
+            aria-pressed={!rightPanelHidden}
+            title={rightPanelHidden ? 'Show Agent HUD' : 'Hide Agent HUD'}
+          >
+            <PanelRightOpen aria-hidden="true" />
+            {attentionCount ? <span className="attention-badge">{attentionCount}</span> : null}
+          </button> : null}
         </div>
       </header>
 
@@ -840,7 +895,7 @@ export function App() {
         </div>
       ) : null}
 
-      <div className={`cockpit-body area-${area}`}>
+      <div className={`cockpit-body area-${area}${leftPanelHidden ? ' left-panel-hidden' : ''}${rightPanelHidden ? ' right-panel-hidden' : ''}`}>
         <button
           type="button"
           className={`drawer-scrim${leftPanelOpen || rightPanelOpen ? ' visible' : ''}`}
@@ -860,8 +915,8 @@ export function App() {
             <button
               type="button"
               className="icon-button panel-close"
-              onClick={() => setLeftPanelOpen(false)}
-              aria-label="Close session tree"
+              onClick={() => { setLeftPanelOpen(false); setLeftPanelHidden(true) }}
+              aria-label="Hide session tree"
             >
               <X aria-hidden="true" />
             </button>
@@ -898,6 +953,7 @@ export function App() {
               onSelectSession={selectSession}
               onSelectWindow={jumpToGroup}
               onSelectPane={jumpToPane}
+              onOpenPaneMaximized={openPaneMaximized}
               onSessionsChanged={refresh}
             />
             <TmuxCreateControls
@@ -1077,8 +1133,8 @@ export function App() {
             <button
               type="button"
               className="icon-button panel-close"
-              onClick={() => setRightPanelOpen(false)}
-              aria-label="Close Agent HUD"
+              onClick={() => { setRightPanelOpen(false); setRightPanelHidden(true) }}
+              aria-label="Hide Agent HUD"
             >
               <X aria-hidden="true" />
             </button>

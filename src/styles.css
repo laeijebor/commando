@@ -321,9 +321,19 @@ kbd {
   height: 13px;
 }
 
-.mobile-panel-toggle,
-.panel-close {
+.mobile-panel-toggle {
   display: none;
+}
+
+.desktop-panel-toggle,
+.panel-close {
+  display: inline-grid;
+}
+
+.desktop-panel-toggle.is-collapsed {
+  color: var(--green);
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
 }
 
 .attention-badge {
@@ -1529,6 +1539,37 @@ kbd {
   display: none;
 }
 
+@media (min-width: 1181px) {
+  .cockpit-body.left-panel-hidden {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+
+  .cockpit-body.right-panel-hidden {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .cockpit-body.left-panel-hidden.right-panel-hidden,
+  .cockpit-body.area-linear.left-panel-hidden,
+  .cockpit-body.area-notes.left-panel-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-body.left-panel-hidden .session-sidebar,
+  .cockpit-body.right-panel-hidden .agent-hud {
+    display: none;
+  }
+}
+
+@media (min-width: 841px) and (max-width: 1180px) {
+  .cockpit-body.left-panel-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-body.left-panel-hidden .session-sidebar {
+    display: none;
+  }
+}
+
 .palette-backdrop {
   position: fixed;
   inset: 0;
@@ -1855,6 +1896,10 @@ kbd {
     display: inline-grid;
   }
 
+  .desktop-panel-toggle.right-panel-visibility {
+    display: none;
+  }
+
   .drawer-scrim {
     position: fixed;
     inset: 0;
@@ -1910,6 +1955,10 @@ kbd {
   .sidebar-toggle,
   .session-sidebar .panel-close {
     display: inline-grid;
+  }
+
+  .desktop-panel-toggle.left-panel-visibility {
+    display: none;
   }
 
   .workspace-canvas {
