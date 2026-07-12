@@ -13,6 +13,8 @@ type WindowOption = { id: string; name: string; sessionId: string; index: number
 type PaneOption = { id: string; windowId: string; index: number; title: string }
 type CreateMode = 'session' | 'window' | 'pane'
 
+export const LAST_TMUX_CWD_STORAGE_KEY = 'commando.tmux-create.cwd'
+
 export type TmuxCreateControlsProps = {
   sessions: readonly SessionOption[]
   windows: readonly WindowOption[]
@@ -37,6 +39,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unable to create the tmux target'
 }
 
+function loadLastWorkingDirectory(): string {
+  try {
+    return window.localStorage.getItem(LAST_TMUX_CWD_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function saveLastWorkingDirectory(value: string): void {
+  try {
+    if (value) window.localStorage.setItem(LAST_TMUX_CWD_STORAGE_KEY, value)
+    else window.localStorage.removeItem(LAST_TMUX_CWD_STORAGE_KEY)
+  } catch {
+    // Persistence is optional when browser storage is unavailable.
+  }
+}
+
 export function TmuxCreateControls({
   sessions,
   windows,
@@ -54,6 +73,7 @@ export function TmuxCreateControls({
   const [sessionId, setSessionId] = useState(defaultSessionId)
   const [targetId, setTargetId] = useState(defaultTargetId)
   const [direction, setDirection] = useState<TmuxSplitDirection>('horizontal')
+  const [workingDirectory, setWorkingDirectory] = useState(loadLastWorkingDirectory)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
@@ -110,6 +130,7 @@ export function TmuxCreateControls({
           cwd,
         })
       }
+      saveLastWorkingDirectory(cwd)
       setStatus(`Created ${created.kind} ${created.paneId} in ${created.sessionName}`)
       onCreated?.(created)
       formElement.reset()
@@ -222,7 +243,13 @@ export function TmuxCreateControls({
 
           <label>
             Working directory <span>optional, absolute path</span>
-            <input name="cwd" placeholder="/Users/me/project" autoComplete="off" />
+            <input
+              name="cwd"
+              value={workingDirectory}
+              onChange={(event) => setWorkingDirectory(event.target.value)}
+              placeholder="/Users/me/project"
+              autoComplete="off"
+            />
           </label>
 
           {error && (

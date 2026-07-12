@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
-import { TmuxCreateControls } from './TmuxCreateControls'
+import { LAST_TMUX_CWD_STORAGE_KEY, TmuxCreateControls } from './TmuxCreateControls'
 
 const created: TmuxCreatedTarget = {
   kind: 'session',
@@ -24,7 +24,10 @@ const options = {
   panes: [{ id: '%3', title: 'shell', windowId: '@2', index: 0 }],
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  window.localStorage.clear()
+})
 
 describe('TmuxCreateControls', () => {
   it('submits session fields and exposes pending and success states', async () => {
@@ -70,6 +73,23 @@ describe('TmuxCreateControls', () => {
       'Created session %3 in work',
     )
     expect(onCreated).toHaveBeenCalledWith(created)
+    expect(window.localStorage.getItem(LAST_TMUX_CWD_STORAGE_KEY)).toBe('/Users/dev/project')
+    expect(screen.getByLabelText(/Working directory/)).toHaveValue('/Users/dev/project')
+  })
+
+  it('restores the last successfully used working directory', () => {
+    window.localStorage.setItem(LAST_TMUX_CWD_STORAGE_KEY, '/Users/dev/remembered')
+
+    render(
+      <TmuxCreateControls
+        {...options}
+        onCreateSession={vi.fn()}
+        onCreateWindow={vi.fn()}
+        onCreatePane={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByLabelText(/Working directory/)).toHaveValue('/Users/dev/remembered')
   })
 
   it('renders callback failures as an alert and restores the submit action', async () => {
