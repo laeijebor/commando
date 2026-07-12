@@ -37,7 +37,6 @@ import {
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   lazy,
   Suspense,
@@ -70,46 +69,13 @@ import { dispatchBoundedPaste } from './terminalInput'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { XtermPane } from './XtermPane'
 import { LinearSection } from './LinearSection'
+import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { TmuxCreateControls } from './TmuxCreateControls'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 
 const TOKEN_STORAGE_KEY = 'commando.session-token'
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
-const PANE_GROUP_SIZES_STORAGE_KEY = 'commando.pane-group-sizes'
-const MIN_PANE_GROUP_WIDTH = 420
-const MIN_PANE_GROUP_HEIGHT = 320
-const MAX_PANE_GROUP_HEIGHT = 1_600
-
-type PaneGroupSize = {
-  width?: number
-  height?: number
-}
-
-type PaneGroupResizeAxis = 'width' | 'height' | 'both'
-
-function storedPaneGroupSizes(): Record<string, PaneGroupSize> {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(PANE_GROUP_SIZES_STORAGE_KEY) ?? '{}') as unknown
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-    return Object.fromEntries(Object.entries(value).flatMap(([id, size]) => {
-      if (!size || typeof size !== 'object' || Array.isArray(size)) return []
-      const width = Number.isFinite((size as PaneGroupSize).width)
-        ? Math.max(MIN_PANE_GROUP_WIDTH, Math.round((size as PaneGroupSize).width!))
-        : undefined
-      const height = Number.isFinite((size as PaneGroupSize).height)
-        ? Math.max(MIN_PANE_GROUP_HEIGHT, Math.round((size as PaneGroupSize).height!))
-        : undefined
-      return [[id, { width, height }]]
-    }))
-  } catch {
-    return {}
-  }
-}
-
-function clampPaneGroupSize(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(Math.round(value), minimum), maximum)
-}
 
 const PRESETS: Array<{
   id: GroupLayoutPreset
@@ -403,7 +369,6 @@ export function App() {
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(false)
   const [webLayoutError, setWebLayoutError] = useState('')
-  const [paneGroupSizes, setPaneGroupSizes] = useState(storedPaneGroupSizes)
   const [draggedPane, setDraggedPane] = useState<{ groupId: string; paneId: string } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteQuery, setPaletteQuery] = useState('')
@@ -417,14 +382,6 @@ export function App() {
 
   useEffect(() => storePanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY, leftPanelHidden), [leftPanelHidden])
   useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(PANE_GROUP_SIZES_STORAGE_KEY, JSON.stringify(paneGroupSizes))
-    } catch {
-      // Resizing still works for the current session when storage is unavailable.
-    }
-  }, [paneGroupSizes])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
   const paneRefs = useRef(new Map<string, HTMLElement>())
@@ -779,100 +736,6 @@ export function App() {
   const clearLayoutTimers = () => {
     for (const timer of layoutTimers.current.values()) window.clearTimeout(timer)
     layoutTimers.current.clear()
-  }
-
-  const setPaneGroupSize = (
-    groupId: string,
-    axis: PaneGroupResizeAxis,
-    width: number,
-    height: number,
-  ) => {
-    setPaneGroupSizes((current) => ({
-      ...current,
-      [groupId]: {
-        ...current[groupId],
-        ...(axis === 'height' ? {} : { width }),
-        ...(axis === 'width' ? {} : { height }),
-      },
-    }))
-  }
-
-  const beginPaneGroupResize = (
-    event: ReactPointerEvent<HTMLElement>,
-    groupId: string,
-    axis: PaneGroupResizeAxis,
-  ) => {
-    if (event.button !== 0) return
-    const group = event.currentTarget.closest<HTMLElement>('.pane-group')
-    const canvas = group?.parentElement
-    if (!group || !canvas) return
-    event.preventDefault()
-    const bounds = group.getBoundingClientRect()
-    const canvasBounds = canvas.getBoundingClientRect()
-    const startX = event.clientX
-    const startY = event.clientY
-    const maximumWidth = Math.max(
-      MIN_PANE_GROUP_WIDTH,
-      Math.floor(canvasBounds.right - bounds.left - 14),
-    )
-
-    const move = (pointerEvent: globalThis.PointerEvent) => {
-      setPaneGroupSize(
-        groupId,
-        axis,
-        clampPaneGroupSize(bounds.width + pointerEvent.clientX - startX, MIN_PANE_GROUP_WIDTH, maximumWidth),
-        clampPaneGroupSize(bounds.height + pointerEvent.clientY - startY, MIN_PANE_GROUP_HEIGHT, MAX_PANE_GROUP_HEIGHT),
-      )
-    }
-    const stop = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', stop)
-      window.removeEventListener('pointercancel', stop)
-      document.body.classList.remove('is-resizing-pane-group')
-    }
-
-    document.body.classList.add('is-resizing-pane-group')
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', stop)
-    window.addEventListener('pointercancel', stop)
-  }
-
-  const resizePaneGroupFromKeyboard = (
-    event: KeyboardEvent<HTMLElement>,
-    groupId: string,
-    axis: PaneGroupResizeAxis,
-  ) => {
-    const group = event.currentTarget.closest<HTMLElement>('.pane-group')
-    const canvas = group?.parentElement
-    if (!group || !canvas) return
-    const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
-    const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown'
-    if ((!horizontal && !vertical) || (axis === 'width' && !horizontal) || (axis === 'height' && !vertical)) return
-    event.preventDefault()
-    const bounds = group.getBoundingClientRect()
-    const maximumWidth = Math.max(
-      MIN_PANE_GROUP_WIDTH,
-      Math.floor(canvas.getBoundingClientRect().right - bounds.left - 14),
-    )
-    const step = event.shiftKey ? 32 : 8
-    setPaneGroupSize(
-      groupId,
-      axis,
-      clampPaneGroupSize(bounds.width + (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0), MIN_PANE_GROUP_WIDTH, maximumWidth),
-      clampPaneGroupSize(bounds.height + (event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0), MIN_PANE_GROUP_HEIGHT, MAX_PANE_GROUP_HEIGHT),
-    )
-  }
-
-  const resetPaneGroupSize = (groupId: string, axis: PaneGroupResizeAxis) => {
-    setPaneGroupSizes((current) => {
-      const nextSize = { ...current[groupId] }
-      if (axis !== 'height') delete nextSize.width
-      if (axis !== 'width') delete nextSize.height
-      const next = { ...current }
-      if (nextSize.width === undefined && nextSize.height === undefined) delete next[groupId]
-      else next[groupId] = nextSize
-      return next
-    })
   }
 
   const sendPaneResize = (
@@ -1287,17 +1150,8 @@ export function App() {
               if (maximizedPaneId && visibleGroupPanes.length === 0) return null
 
               const window = windowMap.get(group.windowId)
-              const groupSize = maximizedPaneId ? undefined : paneGroupSizes[group.id]
-              const groupStyle: CSSProperties | undefined = groupSize
-                ? { width: groupSize.width, height: groupSize.height }
-                : undefined
               return (
-                <section
-                  className={`pane-group${groupSize?.width ? ' has-custom-width' : ''}${groupSize?.height ? ' has-custom-height' : ''}`}
-                  style={groupStyle}
-                  key={group.id}
-                  data-group-id={group.id}
-                >
+                <section className="pane-group" key={group.id} data-group-id={group.id}>
                   <header className="group-head">
                     <span className="group-grip"><GripVertical aria-hidden="true" /></span>
                     <div className="group-title">
@@ -1325,8 +1179,11 @@ export function App() {
                     </div>
                   </header>
                   {visibleGroupPanes.length ? (
-                    <div className={`pane-grid layout-${group.layout}`}>
-                      {visibleGroupPanes.map((pane) => {
+                    <ResizablePaneLayout
+                      key={`${group.id}:${group.layout}:${group.paneIds.join(',')}:${maximizedPaneId ?? 'grid'}`}
+                      layoutKey={`${group.id}:${group.layout}:${group.paneIds.join(',')}`}
+                      preset={group.layout}
+                      panes={visibleGroupPanes.map((pane) => {
                         const originalIndex = groupPanes.findIndex((candidate) => candidate.id === pane.id)
                         const measurementKey = [
                           group.id,
@@ -1334,8 +1191,6 @@ export function App() {
                           group.paneIds.join(','),
                           maximizedPaneId ?? 'grid',
                           webLayoutAuthoritative ? 'authoritative' : 'focused',
-                          groupSize?.width ?? 'auto-width',
-                          groupSize?.height ?? 'auto-height',
                         ].join(':')
                         return (
                           <TerminalPaneCard
@@ -1396,56 +1251,10 @@ export function App() {
                           />
                         )
                       })}
-                    </div>
+                    />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
                   )}
-                  <div
-                    className="pane-group-resize-handle resize-width"
-                    role="separator"
-                    aria-label={`Resize ${group.name} width`}
-                    aria-orientation="vertical"
-                    aria-valuemin={MIN_PANE_GROUP_WIDTH}
-                    aria-valuenow={groupSize?.width}
-                    aria-valuetext={groupSize?.width ? `${groupSize.width} pixels` : 'Automatic width'}
-                    tabIndex={0}
-                    title="Drag to resize width. Double-click to reset."
-                    onPointerDown={(event) => beginPaneGroupResize(event, group.id, 'width')}
-                    onKeyDown={(event) => resizePaneGroupFromKeyboard(event, group.id, 'width')}
-                    onDoubleClick={() => resetPaneGroupSize(group.id, 'width')}
-                  />
-                  <div
-                    className="pane-group-resize-handle resize-height"
-                    role="separator"
-                    aria-label={`Resize ${group.name} height`}
-                    aria-orientation="horizontal"
-                    aria-valuemin={MIN_PANE_GROUP_HEIGHT}
-                    aria-valuemax={MAX_PANE_GROUP_HEIGHT}
-                    aria-valuenow={groupSize?.height}
-                    aria-valuetext={groupSize?.height ? `${groupSize.height} pixels` : 'Automatic height'}
-                    tabIndex={0}
-                    title="Drag to resize height. Double-click to reset."
-                    onPointerDown={(event) => beginPaneGroupResize(event, group.id, 'height')}
-                    onKeyDown={(event) => resizePaneGroupFromKeyboard(event, group.id, 'height')}
-                    onDoubleClick={() => resetPaneGroupSize(group.id, 'height')}
-                  />
-                  <div
-                    className="pane-group-resize-handle resize-both"
-                    role="button"
-                    aria-label={`Resize ${group.name} width and height`}
-                    tabIndex={0}
-                    title="Drag to resize width and height. Double-click to reset."
-                    onPointerDown={(event) => beginPaneGroupResize(event, group.id, 'both')}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        resetPaneGroupSize(group.id, 'both')
-                        return
-                      }
-                      resizePaneGroupFromKeyboard(event, group.id, 'both')
-                    }}
-                    onDoubleClick={() => resetPaneGroupSize(group.id, 'both')}
-                  />
                 </section>
               )
             })}
