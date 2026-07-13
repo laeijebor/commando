@@ -9,7 +9,6 @@ import {
   Clock3,
   Command,
   Grid2X2,
-  GripVertical,
   KeyRound,
   LayoutGrid,
   LoaderCircle,
@@ -944,6 +943,16 @@ export function App() {
           </div>
           <button
             type="button"
+            className="command-trigger"
+            onClick={() => setPaletteOpen(true)}
+            aria-label="Jump or command Cmd K"
+          >
+            <Search aria-hidden="true" />
+            <span>Jump or command</span>
+            <kbd>Cmd K</kbd>
+          </button>
+          <button
+            type="button"
             className="icon-button mobile-panel-toggle sidebar-toggle"
             onClick={() => setLeftPanelOpen(true)}
             aria-label="Open session tree"
@@ -959,16 +968,6 @@ export function App() {
             title={leftPanelHidden ? 'Show session tree' : 'Hide session tree'}
           >
             <SidebarOpen aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="command-trigger"
-            onClick={() => setPaletteOpen(true)}
-            aria-label="Jump or command Cmd K"
-          >
-            <Search aria-hidden="true" />
-            <span>Jump or command</span>
-            <kbd>Cmd K</kbd>
           </button>
           {area === 'workspace' ? <button
             type="button"
@@ -1089,7 +1088,6 @@ export function App() {
           {area === 'workspace' ? <>
           <header className="workspace-toolbar">
             <div className="workspace-context">
-              <span className="section-kicker">Workspace</span>
               <h1>{selectedSession?.name ?? 'Waiting for tmux'}</h1>
               <p>
                 {activeWindow ? `Active window ${activeWindow.index}: ${activeWindow.name}` : 'No active window'}
@@ -1153,7 +1151,6 @@ export function App() {
               return (
                 <section className="pane-group" key={group.id} data-group-id={group.id}>
                   <header className="group-head">
-                    <span className="group-grip"><GripVertical aria-hidden="true" /></span>
                     <div className="group-title">
                       <span>{window ? `Window ${window.index}` : 'Saved group'}</span>
                       <h2>{group.name}</h2>
