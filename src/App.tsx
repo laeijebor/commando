@@ -379,7 +379,7 @@ function defaultOwnerName(email: string | null): string {
     .join(' ') || 'Owner'
 }
 
-function AuthGate({
+export function AuthGate({
   bootstrap,
   initialError,
   tokenRejected,
@@ -399,6 +399,12 @@ function AuthGate({
   const [tokenDraft, setTokenDraft] = useState('')
   const [error, setError] = useState(initialError)
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!bootstrap.ownerEmail) return
+    setEmail((current) => current || bootstrap.ownerEmail || '')
+    setName((current) => current === 'Owner' ? defaultOwnerName(bootstrap.ownerEmail) : current)
+  }, [bootstrap.ownerEmail])
 
   const submitEmail = async (event: FormEvent) => {
     event.preventDefault()
@@ -457,7 +463,7 @@ function AuthGate({
             ) : null}
             <label>
               <span>Email</span>
-              <span className="auth-input"><Mail aria-hidden="true" /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" readOnly={bootstrap.needsOwner} required /></span>
+              <span className="auth-input"><Mail aria-hidden="true" /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></span>
             </label>
             <label>
               <span>Password</span>
@@ -1061,7 +1067,7 @@ export function App() {
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
 
-  if (!token && authPending) {
+  if (authPending && (!token || connection.phase === 'unauthorized')) {
     return (
       <main className="auth-screen">
         <div className="auth-ambient" aria-hidden="true" />
