@@ -23,6 +23,9 @@ type ActiveNote = {
   title: string
   body: string
   folder: string
+  persistedTitle: string
+  persistedBody: string
+  persistedFolder: string
   persistedUpdatedAt: number
 }
 
@@ -32,6 +35,9 @@ function activeNote(note: Note): ActiveNote {
     title: note.title,
     body: note.body,
     folder: note.folder,
+    persistedTitle: note.title,
+    persistedBody: note.body,
+    persistedFolder: note.folder,
     persistedUpdatedAt: note.updatedAt,
   }
 }
@@ -154,7 +160,13 @@ export function NotesSection({ token }: { token: string }) {
       setNotes((current) => [updated, ...current.filter((note) => note.id !== updated.id)])
       const current = activeRef.current
       if (current?.id === updated.id) {
-        changeActive({ ...current, persistedUpdatedAt: updated.updatedAt })
+        changeActive({
+          ...current,
+          persistedTitle: updated.title,
+          persistedBody: updated.body,
+          persistedFolder: updated.folder,
+          persistedUpdatedAt: updated.updatedAt,
+        })
         changePhase(editVersion.current === version ? 'saved' : 'dirty')
       }
       setError('')
@@ -182,6 +194,7 @@ export function NotesSection({ token }: { token: string }) {
   }
 
   const flush = async (): Promise<boolean> => {
+    if (!activeRef.current) return phaseRef.current !== 'dirty' && phaseRef.current !== 'saving'
     while (phaseRef.current === 'dirty' || phaseRef.current === 'saving') {
       if (!(await save())) return false
     }
@@ -216,7 +229,13 @@ export function NotesSection({ token }: { token: string }) {
           }
           return
         }
-        if (latest.updatedAt <= current.persistedUpdatedAt) return
+        const externallyChanged = (
+          latest.updatedAt > current.persistedUpdatedAt ||
+          latest.folder !== current.persistedFolder ||
+          latest.title !== current.persistedTitle ||
+          latest.body !== current.persistedBody
+        )
+        if (!externallyChanged) return
         if (phaseRef.current === 'saved') applyNote(latest)
         else if (phaseRef.current === 'dirty') {
           setExternalNote(latest)
@@ -245,13 +264,46 @@ export function NotesSection({ token }: { token: string }) {
 
   const runVaultAction = async (action: () => Promise<NoteVaultSnapshot>) => {
     if (!(await flush())) return
+    const previous = {
+      vaultState,
+      vaultId: vaultIdRef.current,
+      notes,
+      folders,
+      active: activeRef.current,
+      phase: phaseRef.current,
+      folderFilter,
+      query,
+    }
     setVaultBusy(true)
     setVaultError('')
+    loadGeneration.current += 1
+    setNotes([])
+    setFolders([])
+    changeActive(null)
+    changePhase('loading')
+    let next: NoteVaultSnapshot | null = null
     try {
-      const next = await action()
+      next = await action()
+      const loaded = await api.list(next.activeVaultId)
       applyVaultState(next)
-      await loadVault(next.activeVaultId)
+      setNotes(loaded.notes)
+      setFolders(loaded.folders)
+      setFolderFilter(null)
+      setQuery('')
+      if (loaded.notes[0]) applyNote(loaded.notes[0])
+      else changePhase('saved')
     } catch (cause) {
+      if (next && previous.vaultId && next.activeVaultId !== previous.vaultId) {
+        await api.selectVault(previous.vaultId).catch(() => undefined)
+      }
+      if (previous.vaultState) applyVaultState(previous.vaultState)
+      else vaultIdRef.current = previous.vaultId
+      setNotes(previous.notes)
+      setFolders(previous.folders)
+      setFolderFilter(previous.folderFilter)
+      setQuery(previous.query)
+      changeActive(previous.active)
+      changePhase(previous.active ? previous.phase : 'saved')
       setVaultError(cause instanceof Error ? cause.message : 'Unable to update note vault')
     } finally {
       setVaultBusy(false)
@@ -278,7 +330,7 @@ export function NotesSection({ token }: { token: string }) {
 
   const clearVaultHistory = () => {
     if (!window.confirm('Clear previously opened vaults? No files will be deleted.')) return
-    void runVaultAction(() => api.clearVaultHistory())
+    void runVaultAction(() => api.clearVaultHistory(vaultIdRef.current))
   }
 
   const createFolder = async () => {
@@ -288,10 +340,12 @@ export function NotesSection({ token }: { token: string }) {
     if (!folder) return
     try {
       const next = await api.createFolder(vaultId, folder)
+      if (vaultIdRef.current !== vaultId) return
       setFolders(next)
       setFolderFilter(folder)
       setVaultError('')
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       setVaultError(cause instanceof Error ? cause.message : 'Unable to create folder')
     }
   }
@@ -312,9 +366,11 @@ export function NotesSection({ token }: { token: string }) {
         body: '',
         folder: folderFilter ?? '',
       })
+      if (vaultIdRef.current !== vaultId) return
       setNotes((current) => [note, ...current])
       applyNote(note)
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       setError(cause instanceof Error ? cause.message : 'Unable to create note')
       changePhase('error')
     }
@@ -345,8 +401,10 @@ export function NotesSection({ token }: { token: string }) {
         folder: listed.folder,
         expectedUpdatedAt: listed.updatedAt,
       })
+      if (vaultIdRef.current !== vaultId) return
       setNotes((current) => [updated, ...current.filter((note) => note.id !== updated.id)])
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       setError(cause instanceof Error ? cause.message : 'Unable to rename note')
       changePhase('error')
     }
@@ -367,9 +425,11 @@ export function NotesSection({ token }: { token: string }) {
         folder,
         expectedUpdatedAt: 'updatedAt' in current ? current.updatedAt : current.persistedUpdatedAt,
       })
+      if (vaultIdRef.current !== vaultId) return
       setNotes((existing) => [updated, ...existing.filter((note) => note.id !== updated.id)])
       if (activeRef.current?.id === noteId) applyNote(updated)
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       setError(cause instanceof Error ? cause.message : 'Unable to move note')
       changePhase('error')
     }
@@ -386,6 +446,7 @@ export function NotesSection({ token }: { token: string }) {
     const expectedUpdatedAt = 'updatedAt' in selected ? selected.updatedAt : selected.persistedUpdatedAt
     try {
       await api.delete(vaultId, selected.id, expectedUpdatedAt)
+      if (vaultIdRef.current !== vaultId) return
       const remaining = notes.filter((note) => note.id !== selected.id)
       setNotes(remaining)
       setConfirmDelete(false)
@@ -397,8 +458,10 @@ export function NotesSection({ token }: { token: string }) {
         }
       }
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       if (cause instanceof NotesApiError && (cause.status === 409 || cause.status === 404)) {
         const latest = await api.get(vaultId, selected.id).catch(() => null)
+        if (vaultIdRef.current !== vaultId) return
         setExternalNote(latest)
         setError(latest ? 'This note changed in Obsidian. Reload it before deleting.' : 'This note was already deleted outside Commando.')
         changePhase('conflict')
@@ -436,6 +499,7 @@ export function NotesSection({ token }: { token: string }) {
     const vaultId = vaultIdRef.current
     if (!selected || !vaultId) return
     const latest = externalNote ?? await api.get(vaultId, selected.id)
+    if (vaultIdRef.current !== vaultId) return
     setNotes((current) => [latest, ...current.filter((note) => note.id !== latest.id)])
     applyNote(latest)
   }
@@ -443,7 +507,13 @@ export function NotesSection({ token }: { token: string }) {
   const overwriteExternal = async () => {
     const current = activeRef.current
     if (!current || !externalNote) return
-    changeActive({ ...current, persistedUpdatedAt: externalNote.updatedAt })
+    changeActive({
+      ...current,
+      persistedTitle: externalNote.title,
+      persistedBody: externalNote.body,
+      persistedFolder: externalNote.folder,
+      persistedUpdatedAt: externalNote.updatedAt,
+    })
     changePhase('dirty')
     setExternalNote(null)
     await save()
@@ -455,9 +525,11 @@ export function NotesSection({ token }: { token: string }) {
     if (!current || !vaultId) return
     try {
       const restored = await api.create(vaultId, { title: current.title, body: current.body, folder: current.folder })
+      if (vaultIdRef.current !== vaultId) return
       setNotes((existing) => [restored, ...existing.filter((note) => note.id !== current.id)])
       applyNote(restored)
     } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
       setError(cause instanceof Error ? cause.message : 'Unable to restore note')
       changePhase('error')
     }
@@ -472,14 +544,14 @@ export function NotesSection({ token }: { token: string }) {
   const menuNote = menu ? notes.find((note) => note.id === menu.noteId) : null
 
   return (
-    <section className="notes-section">
+    <section className={`notes-section${vaultBusy ? ' vault-busy' : ''}`}>
       <aside className="notes-list">
         <header>
           <div className="notes-heading">
             <span>Markdown vault</span>
             <strong title={currentVault?.path}>{currentVault?.name ?? 'Notes'}</strong>
           </div>
-          <button type="button" onClick={() => void create()} aria-label="Create note"><FilePlus2 /></button>
+          <button type="button" onClick={() => void create()} disabled={vaultBusy} aria-label="Create note"><FilePlus2 /></button>
         </header>
         <div className="notes-vault-tools">
           <select
@@ -505,7 +577,7 @@ export function NotesSection({ token }: { token: string }) {
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search notes" />
         </label>
         <nav className="notes-folders" aria-label="Note folders">
-          <div><span>Folders</span><button type="button" onClick={() => void createFolder()} aria-label="Create folder"><FolderPlus /></button></div>
+          <div><span>Folders</span><button type="button" onClick={() => void createFolder()} disabled={vaultBusy} aria-label="Create folder"><FolderPlus /></button></div>
           <button type="button" className={folderFilter === null ? 'active' : ''} onClick={() => setFolderFilter(null)}><Folder /> All notes <small>{notes.length}</small></button>
           <button type="button" className={folderFilter === '' ? 'active' : ''} onClick={() => setFolderFilter('')}><Folder /> Root <small>{notes.filter((note) => !note.folder).length}</small></button>
           {folders.map((folder) => (
@@ -613,7 +685,7 @@ export function NotesSection({ token }: { token: string }) {
             />
           </>
         ) : (
-          <div className="notes-empty"><FilePlus2 /><strong>No note selected</strong><button type="button" onClick={() => void create()}>Create note</button></div>
+          <div className="notes-empty"><FilePlus2 /><strong>{phase === 'loading' ? 'Loading vault' : 'No note selected'}</strong><button type="button" onClick={() => void create()} disabled={vaultBusy}>Create note</button></div>
         )}
       </div>
       {menu ? (

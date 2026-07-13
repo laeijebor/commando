@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import {
   access,
   chmod,
+  copyFile,
   mkdir,
   open,
   readFile,
@@ -106,7 +107,7 @@ export function parseNoteFolder(value: unknown): string | null {
     segment.length > 128 ||
     segment === '.' ||
     segment === '..' ||
-    segment === 'images' ||
+    segment.toLowerCase() === 'images' ||
     segment.startsWith('.') ||
     /[\u0000-\u001f\u007f]/.test(segment)
   ))) return null
@@ -509,7 +510,7 @@ export class NoteStore {
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          if (entry.name === 'images' || entry.name.startsWith('.')) continue
+          if (entry.name.toLowerCase() === 'images' || entry.name.startsWith('.')) continue
           const childFolder = folder ? `${folder}/${entry.name}` : entry.name
           if (parseNoteFolder(childFolder) === null) continue
           folders.push(childFolder)
@@ -549,7 +550,7 @@ export class NoteStore {
   ): Promise<void> {
     const folderDirectory = join(this.directory, note.folder)
     await mkdir(folderDirectory, { recursive: true, mode: 0o700 })
-    const path = join(folderDirectory, noteFileName(note))
+    const path = this.notePath(note)
     const temporaryPath = join(folderDirectory, `.${note.id}.${process.pid}.${randomUUID()}.tmp`)
     let handle: Awaited<ReturnType<typeof open>> | null = null
 
@@ -566,7 +567,16 @@ export class NoteStore {
       ) {
         throw new NoteConflictError()
       }
-      await rename(temporaryPath, path)
+      if (previousPath === path) await rename(temporaryPath, path)
+      else {
+        try {
+          await copyFile(temporaryPath, path, constants.COPYFILE_EXCL)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new NoteConflictError()
+          throw error
+        }
+        await rm(temporaryPath)
+      }
       await chmod(path, 0o600)
       await utimes(path, new Date(), new Date(note.updatedAt))
       if (previousPath && previousPath !== path) await rm(previousPath)
@@ -576,6 +586,10 @@ export class NoteStore {
       await rm(temporaryPath, { force: true }).catch(() => undefined)
       throw error
     }
+  }
+
+  private notePath(note: Pick<Note, 'id' | 'title' | 'folder'>): string {
+    return join(this.directory, note.folder, noteFileName(note))
   }
 
   private imageDirectory(folder: string, id: string): string {

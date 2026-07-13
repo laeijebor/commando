@@ -137,13 +137,13 @@ export class NoteVaultManager {
     const vault = this.state!.vaults.find((candidate) => candidate.id === vaultId)
     if (!vault) throw new NoteValidationError('Unknown note vault')
     await this.requireDirectory(vault.path)
-    let store = this.stores.get(vault.id)
+    let store = this.stores.get(vault.path)
     if (!store) {
       store = new NoteStore({
         directory: vault.path,
         legacyPath: vault.path === this.migrationDirectory ? this.legacyNotesPath : null,
       })
-      this.stores.set(vault.id, store)
+      this.stores.set(vault.path, store)
     }
     return store
   }
@@ -188,13 +188,14 @@ export class NoteVaultManager {
     })
   }
 
-  clearHistory(): Promise<NoteVaultSnapshot> {
+  clearHistory(id: unknown): Promise<NoteVaultSnapshot> {
     return this.mutate(async () => {
-      const active = this.state!.vaults.find((vault) => vault.id === this.state!.activeVaultId)!
+      if (typeof id !== 'string' || !VAULT_ID.test(id)) throw new NoteValidationError('Invalid note vault id')
+      const active = this.state!.vaults.find((vault) => vault.id === id)
+      if (!active) throw new NoteValidationError('Unknown note vault')
+      await this.requireDirectory(active.path)
+      this.state!.activeVaultId = active.id
       this.state!.vaults = [active]
-      for (const id of this.stores.keys()) {
-        if (id !== active.id) this.stores.delete(id)
-      }
       return this.snapshotState()
     })
   }
@@ -246,9 +247,18 @@ export class NoteVaultManager {
       await mkdir(configured, { recursive: true, mode: 0o700 })
       initialPath = await this.canonicalDirectory(configured)
     } else {
-      await this.migrateLegacyDirectory()
+      const additionalLegacyPath = await this.migrateLegacyDirectory()
       await mkdir(this.defaultDirectory, { recursive: true, mode: 0o700 })
       initialPath = await this.canonicalDirectory(this.defaultDirectory)
+      this.migrationDirectory = initialPath
+      const vault: StoredVault = { id: randomUUID(), path: initialPath, lastOpenedAt: Date.now() }
+      const vaults = [vault]
+      if (additionalLegacyPath && additionalLegacyPath !== initialPath) {
+        vaults.push({ id: randomUUID(), path: additionalLegacyPath, lastOpenedAt: Math.max(0, vault.lastOpenedAt - 1) })
+      }
+      this.state = { version: 1, activeVaultId: vault.id, vaults }
+      await this.writeState(this.state)
+      return
     }
     this.migrationDirectory = initialPath
     const vault: StoredVault = { id: randomUUID(), path: initialPath, lastOpenedAt: Date.now() }
@@ -263,11 +273,16 @@ export class NoteVaultManager {
     this.migrationDirectory = canonical
   }
 
-  private async migrateLegacyDirectory(): Promise<void> {
-    if (await this.directoryAvailable(this.defaultDirectory)) return
-    if (!(await this.directoryAvailable(this.legacyDirectory))) return
+  private async migrateLegacyDirectory(): Promise<string | null> {
+    if (await this.directoryAvailable(this.defaultDirectory)) {
+      return await this.directoryAvailable(this.legacyDirectory)
+        ? this.canonicalDirectory(this.legacyDirectory)
+        : null
+    }
+    if (!(await this.directoryAvailable(this.legacyDirectory))) return null
     await mkdir(dirname(this.defaultDirectory), { recursive: true, mode: 0o700 })
     await rename(this.legacyDirectory, this.defaultDirectory)
+    return null
   }
 
   private async canonicalDirectory(value: unknown): Promise<string> {
@@ -344,8 +359,12 @@ export class NoteVaultManager {
       await handle.close()
       handle = null
       await rename(temporaryPath, this.statePath)
-      const directoryHandle = await open(directory, 'r')
-      try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+      try {
+        const directoryHandle = await open(directory, 'r')
+        try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+      } catch {
+        // Directory fsync is not supported by every filesystem.
+      }
     } catch (error) {
       await handle?.close().catch(() => undefined)
       await rm(temporaryPath, { force: true }).catch(() => undefined)

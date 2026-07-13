@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Note } from './notesApi'
@@ -246,5 +246,53 @@ describe('NotesSection', () => {
     await waitFor(() => expect(screen.getByLabelText('Note title')).toHaveValue('Work note'))
     expect(screen.getByLabelText('Note vault')).toHaveValue('vault-2')
     expect(screen.getByTitle('Projects')).toBeVisible()
+  })
+
+  it('can leave a vault that fails to load', async () => {
+    const otherVault = { id: 'vault-2', name: 'healthy', path: '/tmp/healthy', lastOpenedAt: 2, available: true }
+    const bothVaults = { activeVaultId: 'vault-1', vaults: [...vaultState.vaults, otherVault] }
+    const healthyState = { activeVaultId: 'vault-2', vaults: [otherVault, ...vaultState.vaults] }
+    const healthyNote = { ...original, id: 'healthy-note', title: 'Healthy note' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(bothVaults)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ error: 'Corrupt vault' }, { status: 500 })
+      if (url === '/api/note-vaults/active' && init?.method === 'PUT') return Response.json(healthyState)
+      if (url === '/api/notes?vault=vault-2' && !init?.method) return Response.json({ notes: [healthyNote], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByText('Corrupt vault')
+    fireEvent.change(screen.getByLabelText('Note vault'), { target: { value: 'vault-2' } })
+
+    await waitFor(() => expect(screen.getByLabelText('Note title')).toHaveValue('Healthy note'))
+    expect(screen.queryByText('Corrupt vault')).not.toBeInTheDocument()
+  })
+
+  it('does not treat a continuously edited draft as an external conflict', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input)
+        if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+        if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+        return Response.json({ error: 'Unexpected request' }, { status: 500 })
+      })
+
+      render(<NotesSection token="test-token" />)
+      await act(async () => undefined)
+      const body = screen.getByLabelText('Note body')
+      for (let index = 0; index < 6; index += 1) {
+        fireEvent.change(body, { target: { value: `Local draft ${index}` } })
+        await act(async () => { vi.advanceTimersByTime(500) })
+      }
+      await act(async () => undefined)
+
+      expect(screen.queryByText(/changed in Obsidian/)).not.toBeInTheDocument()
+      expect(body).toHaveValue('Local draft 5')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

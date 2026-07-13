@@ -4,6 +4,7 @@
 .notes-list > header div { display: grid; gap: 3px; }
 .notes-list > header span { color: #6e6a86; text-transform: uppercase; letter-spacing: .12em; font-size: 10px; }
 .notes-list button, .notes-editor button { border: 0; color: inherit; background: transparent; cursor: pointer; }
+.notes-list button:disabled, .notes-editor button:disabled { opacity: .4; cursor: default; }
 .notes-list > header button { width: 32px; height: 32px; border: 1px solid #393552; border-radius: 7px; }
 .notes-list svg, .notes-editor svg { width: 15px; }
 .notes-heading { min-width: 0; }

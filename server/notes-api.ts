@@ -119,9 +119,9 @@ export async function handleNotesApi(
   if (!route) return false
 
   try {
-    const store = source instanceof NoteVaultManager
-      ? await source.store(url.searchParams.get('vault'))
-      : source
+    const vaultId = url.searchParams.get('vault')
+    if (source instanceof NoteVaultManager && !vaultId) throw new NoteValidationError('Note vault is required')
+    const store = source instanceof NoteVaultManager ? await source.store(vaultId) : source
     if (route.kind === 'collection') {
       if (request.method === 'GET') {
         writeJson(response, 200, await store.snapshot())

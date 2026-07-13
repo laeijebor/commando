@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { NoteValidationError } from './notes.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
+import { handleNotesApi } from './notes-api.js'
 
 const temporaryDirectories: string[] = []
 const servers: Server[] = []
@@ -34,7 +35,9 @@ async function startApi(manager: NoteVaultManager): Promise<string> {
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      if (!(await handleNoteVaultsApi(request, response, url, manager))) response.writeHead(404).end()
+      if (await handleNoteVaultsApi(request, response, url, manager)) return
+      if (await handleNotesApi(request, response, url, manager)) return
+      response.writeHead(404).end()
     })()
   })
   servers.push(server)
@@ -60,6 +63,19 @@ describe('NoteVaultManager', () => {
     await expect(stat(paths.legacyDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('keeps the old directory in history when both old and new defaults exist', async () => {
+    const paths = await fixture()
+    await mkdir(paths.defaultDirectory)
+    await mkdir(paths.legacyDirectory)
+    await writeFile(join(paths.defaultDirectory, 'new.md'), '# New\n')
+    await writeFile(join(paths.legacyDirectory, 'old.md'), '# Old\n')
+
+    const snapshot = await new NoteVaultManager({ ...paths, environment: {} }).snapshot()
+
+    expect(snapshot.vaults.map((vault) => vault.path)).toEqual([paths.defaultDirectory, paths.legacyDirectory])
+    expect(snapshot.activeVaultId).toBe(snapshot.vaults[0].id)
+  })
+
   it('persists MRU vaults, reopens the latest one, and clears only history', async () => {
     const paths = await fixture()
     const manager = new NoteVaultManager({ ...paths, environment: {} })
@@ -75,7 +91,7 @@ describe('NoteVaultManager', () => {
     expect((await reopened.snapshot()).activeVaultId).toBe(initialId)
 
     await reopened.select(createdId)
-    const cleared = await reopened.clearHistory()
+    const cleared = await reopened.clearHistory(createdId)
     expect(cleared.vaults).toEqual([expect.objectContaining({ id: createdId, path: createdPath })])
     expect((await stat(paths.defaultDirectory)).isDirectory()).toBe(true)
     expect((await stat(createdPath)).isDirectory()).toBe(true)
@@ -99,6 +115,11 @@ describe('NoteVaultManager', () => {
     await defaultStore.create({ title: 'Default vault note', body: '' })
     await expect(existingStore.list()).resolves.toEqual([expect.objectContaining({ title: 'Existing vault note' })])
     await expect(defaultStore.list()).resolves.toEqual([expect.objectContaining({ title: 'Default vault note' })])
+
+    await manager.select(defaultId)
+    await manager.clearHistory(defaultId)
+    const reopened = await manager.open(existing)
+    expect(await manager.store(reopened.activeVaultId)).toBe(existingStore)
   })
 
   it('honors the environment override and rejects unsafe or ambiguous paths', async () => {
@@ -121,6 +142,8 @@ describe('NoteVaultManager', () => {
     const manager = new NoteVaultManager({ ...paths, environment: {} })
     const baseUrl = await startApi(manager)
     const initial = await fetch(`${baseUrl}/api/note-vaults`).then((response) => response.json()) as { activeVaultId: string }
+    expect((await fetch(`${baseUrl}/api/notes`)).status).toBe(400)
+    expect((await fetch(`${baseUrl}/api/notes?vault=${initial.activeVaultId}`)).status).toBe(200)
     const createdPath = join(paths.parent, 'api-created')
 
     const createdResponse = await fetch(`${baseUrl}/api/note-vaults/create`, {
@@ -138,7 +161,7 @@ describe('NoteVaultManager', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: initial.activeVaultId }),
     })).status).toBe(200)
-    const cleared = await fetch(`${baseUrl}/api/note-vaults/history`, { method: 'DELETE' }).then((response) => response.json()) as { vaults: unknown[] }
+    const cleared = await fetch(`${baseUrl}/api/note-vaults/history?active=${initial.activeVaultId}`, { method: 'DELETE' }).then((response) => response.json()) as { vaults: unknown[] }
     expect(cleared.vaults).toHaveLength(1)
 
     const invalid = await fetch(`${baseUrl}/api/note-vaults/open`, {

@@ -67,7 +67,7 @@ export async function handleNoteVaultsApi(
       return true
     }
     if (action === 'history' && request.method === 'DELETE') {
-      writeJson(response, 200, await manager.clearHistory())
+      writeJson(response, 200, await manager.clearHistory(url.searchParams.get('active')))
       return true
     }
     response.setHeader('Allow', action === 'history' ? 'DELETE' : action ? action === 'active' ? 'PUT' : 'POST' : 'GET')

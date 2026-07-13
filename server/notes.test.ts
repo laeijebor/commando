@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { handleNotesApi } from './notes-api.js'
-import { parseNoteMarkdown, serializeNoteMarkdown } from './note-markdown.js'
+import { noteFileName, parseNoteMarkdown, serializeNoteMarkdown } from './note-markdown.js'
 import {
   defaultLegacyNotesPath,
   defaultNotesDirectory,
@@ -25,6 +25,7 @@ import {
   NoteStore,
   NoteValidationError,
   parseNoteDraft,
+  parseNoteFolder,
   parseNotesFile,
   type Note,
 } from './notes.js'
@@ -93,6 +94,7 @@ describe('note validation and Markdown codec', () => {
       folder: '',
     })
     expect(parseNoteDraft({ title: 'bad\u0000title', body: '' })).toBeNull()
+    expect(parseNoteFolder('Projects/Images')).toBeNull()
     expect(parseNoteDraft({ title: '', body: 'x'.repeat(MAX_NOTE_BODY_LENGTH + 1) })).toBeNull()
     expect(() => parseNotesFile({ version: 2, notes: [] })).toThrow('invalid structure')
     expect(() => defaultNotesDirectory({ COMMANDO_NOTES_DIR: 'relative' })).toThrow('absolute')
@@ -266,6 +268,23 @@ describe('NoteStore', () => {
     await expect(store.list()).rejects.toThrow('invalid Commando metadata')
     await expect(store.create({ title: 'Two', body: '' })).resolves.toMatchObject({ title: 'Two' })
     await expect(readFile(corrupt, 'utf8')).resolves.toContain('commando_id: invalid')
+  })
+
+  it('never overwrites an unrelated destination when moving a note', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    const note = await store.create({ title: 'Source', body: 'managed' })
+    await store.createFolder('Archive')
+    const destination = join(directory, 'Archive', noteFileName({ id: note.id, title: 'Collision' }))
+    await writeFile(destination, '# Unrelated\n', 'utf8')
+
+    await expect(store.update(note.id, {
+      title: 'Collision',
+      body: note.body,
+      folder: 'Archive',
+      expectedUpdatedAt: note.updatedAt,
+    })).rejects.toBeInstanceOf(NoteConflictError)
+    await expect(readFile(destination, 'utf8')).resolves.toBe('# Unrelated\n')
+    await expect(store.get(note.id)).resolves.toMatchObject({ title: 'Source', folder: '' })
   })
 })
 

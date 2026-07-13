@@ -45,7 +45,7 @@ export type NotesApi = {
   openVault(path: string): Promise<NoteVaultSnapshot>
   createVault(path: string): Promise<NoteVaultSnapshot>
   selectVault(id: string): Promise<NoteVaultSnapshot>
-  clearVaultHistory(): Promise<NoteVaultSnapshot>
+  clearVaultHistory(vaultId: string): Promise<NoteVaultSnapshot>
   list(vaultId: string): Promise<NotesSnapshot>
   get(vaultId: string, id: string): Promise<Note>
   create(vaultId: string, draft: NoteDraft): Promise<Note>
@@ -87,7 +87,7 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
     openVault: (path) => vaultMutation('open', 'POST', { path }),
     createVault: (path) => vaultMutation('create', 'POST', { path }),
     selectVault: (id) => vaultMutation('active', 'PUT', { id }),
-    clearVaultHistory: () => request<NoteVaultSnapshot>('/api/note-vaults/history', { method: 'DELETE' }),
+    clearVaultHistory: (vaultId) => request<NoteVaultSnapshot>(`/api/note-vaults/history?active=${encodeURIComponent(vaultId)}`, { method: 'DELETE' }),
     list: (vaultId) => request<NotesSnapshot>(notesPath(vaultId)),
     get: async (vaultId, id) => (await request<{ note: Note }>(notesPath(vaultId, `/${encodeURIComponent(id)}`))).note,
     create: async (vaultId, draft) => (await request<{ note: Note }>(notesPath(vaultId), {
