@@ -11,7 +11,7 @@ type SplitWeights = Record<string, number[]>
 
 const STORAGE_KEY = 'commando.pane-split-weights'
 const DEFAULT_PANE_HEIGHT = 254
-const SPLITTER_SIZE = 8
+const SPLITTER_SIZE = 1
 const MIN_PANE_WIDTH = 160
 const MIN_PANE_HEIGHT = 140
 

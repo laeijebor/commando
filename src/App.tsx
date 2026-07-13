@@ -1275,11 +1275,13 @@ export function App() {
           {area === 'workspace' ? <>
           <header className="workspace-toolbar">
             <div className="workspace-context">
-              <h1>{selectedSession?.name ?? 'Waiting for tmux'}</h1>
-              <p>
-                {activeWindow ? `Active window ${activeWindow.index}: ${activeWindow.name}` : 'No active window'}
-                {' / '}{groups.length} groups / {allVisiblePaneIds.length} visible panes
-              </p>
+              <h1
+                title={activeWindow
+                  ? `Active window ${activeWindow.index}: ${activeWindow.name} / ${groups.length} groups / ${allVisiblePaneIds.length} visible panes`
+                  : undefined}
+              >
+                {selectedSession?.name ?? 'Waiting for tmux'}
+              </h1>
             </div>
             <div className="workspace-actions">
               <label
