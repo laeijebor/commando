@@ -27,8 +27,14 @@ const original: Note = {
   id: '71cf1432-e39e-4ac1-a1d8-51185f94dbce',
   title: 'Vault note',
   body: '# Original',
+  folder: '',
   createdAt: 1_700_000_000_000,
   updatedAt: 1_700_000_100_000,
+}
+
+const vaultState = {
+  activeVaultId: 'vault-1',
+  vaults: [{ id: 'vault-1', name: 'default', path: '/tmp/default', lastOpenedAt: 1, available: true }],
 }
 
 afterEach(() => {
@@ -40,8 +46,9 @@ describe('NotesSection', () => {
   it('saves Markdown with an optimistic-concurrency timestamp', async () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/notes' && !init?.method) return Response.json({ notes: [original] })
-      if (url.endsWith(original.id) && init?.method === 'PUT') {
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url.includes(`/api/notes/${original.id}?vault=vault-1`) && init?.method === 'PUT') {
         const update = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(update).toMatchObject({
           title: original.title,
@@ -60,7 +67,7 @@ describe('NotesSection', () => {
 
     await waitFor(() => expect(screen.getByText('Saved to vault')).toBeVisible())
     expect(fetcher).toHaveBeenCalledWith(
-      `/api/notes/${original.id}`,
+      `/api/notes/${original.id}?vault=vault-1`,
       expect.objectContaining({ method: 'PUT' }),
     )
   })
@@ -69,11 +76,12 @@ describe('NotesSection', () => {
     const external = { ...original, body: 'Edited in Obsidian', updatedAt: original.updatedAt + 5_000 }
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/notes' && !init?.method) return Response.json({ notes: [original] })
-      if (url.endsWith(original.id) && init?.method === 'PUT') {
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url.includes(`/api/notes/${original.id}?vault=vault-1`) && init?.method === 'PUT') {
         return Response.json({ error: 'Note changed outside Commando' }, { status: 409 })
       }
-      if (url.endsWith(original.id) && !init?.method) return Response.json({ note: external })
+      if (url.includes(`/api/notes/${original.id}?vault=vault-1`) && !init?.method) return Response.json({ note: external })
       return Response.json({ error: 'Unexpected request' }, { status: 500 })
     })
 
@@ -92,8 +100,9 @@ describe('NotesSection', () => {
     let updateCount = 0
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/notes' && !init?.method) return Response.json({ notes: [original] })
-      if (url.endsWith(original.id) && init?.method === 'PUT') {
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url.includes(`/api/notes/${original.id}?vault=vault-1`) && init?.method === 'PUT') {
         updateCount += 1
         const update = JSON.parse(String(init.body)) as { body: string; expectedUpdatedAt: number }
         if (updateCount === 1) {
@@ -120,7 +129,7 @@ describe('NotesSection', () => {
     finishFirstSave?.()
 
     await waitFor(() => expect(updateCount).toBe(2))
-    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(fetcher).toHaveBeenCalledTimes(4)
   })
 
   it('renames the note targeted by the context menu', async () => {
@@ -128,8 +137,9 @@ describe('NotesSection', () => {
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Renamed note')
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/notes' && !init?.method) return Response.json({ notes: [original, other] })
-      if (url.endsWith(other.id) && init?.method === 'PUT') {
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, other], folders: [] })
+      if (url.includes(`/api/notes/${other.id}?vault=vault-1`) && init?.method === 'PUT') {
         const update = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(update).toMatchObject({
           title: 'Renamed note',
@@ -149,7 +159,7 @@ describe('NotesSection', () => {
     await screen.findByRole('button', { name: /Renamed note/ })
     expect(prompt).toHaveBeenCalledWith('Rename note', 'Other note')
     expect(fetcher).toHaveBeenCalledWith(
-      `/api/notes/${other.id}`,
+      `/api/notes/${other.id}?vault=vault-1`,
       expect.objectContaining({ method: 'PUT' }),
     )
     expect(screen.getByLabelText('Note title')).toHaveValue(original.title)
@@ -160,8 +170,9 @@ describe('NotesSection', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/notes' && !init?.method) return Response.json({ notes: [original, other] })
-      if (url.endsWith(other.id) && init?.method === 'DELETE') {
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, other], folders: [] })
+      if (url.includes(`/api/notes/${other.id}?vault=vault-1`) && init?.method === 'DELETE') {
         expect(new Headers(init.headers).get('If-Match')).toBe(`"${other.updatedAt}"`)
         return new Response(null, { status: 204 })
       }
@@ -176,9 +187,64 @@ describe('NotesSection', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /Other note/ })).not.toBeInTheDocument())
     expect(confirm).toHaveBeenCalledWith('Delete note “Other note”?')
     expect(fetcher).toHaveBeenCalledWith(
-      `/api/notes/${other.id}`,
+      `/api/notes/${other.id}?vault=vault-1`,
       expect.objectContaining({ method: 'DELETE' }),
     )
     expect(screen.getByLabelText('Note title')).toHaveValue(original.title)
+  })
+
+  it('creates folders and creates notes in the selected folder', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Projects/Commando')
+    const created = { ...original, id: 'created-note', title: 'Untitled note', folder: 'Projects/Commando', updatedAt: original.updatedAt + 1 }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url === '/api/notes/folders?vault=vault-1' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ folder: 'Projects/Commando' })
+        return Response.json({ folders: ['Projects', 'Projects/Commando'] }, { status: 201 })
+      }
+      if (url === '/api/notes?vault=vault-1' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toMatchObject({ folder: 'Projects/Commando' })
+        return Response.json({ note: created }, { status: 201 })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByLabelText('Create folder'))
+    const folder = await screen.findByRole('button', { name: /Commando/ })
+    expect(folder).toHaveClass('active')
+    fireEvent.click(screen.getByLabelText('Create note'))
+
+    await waitFor(() => expect(screen.getByLabelText('Note title')).toHaveValue('Untitled note'))
+    expect(screen.getAllByText('Projects/Commando')).not.toHaveLength(0)
+    expect(prompt).toHaveBeenCalledWith('New folder path', '')
+  })
+
+  it('switches to a persisted vault and loads its notes', async () => {
+    const otherVault = { id: 'vault-2', name: 'work', path: '/tmp/work', lastOpenedAt: 2, available: true }
+    const nextVaultState = { activeVaultId: 'vault-2', vaults: [otherVault, ...vaultState.vaults] }
+    const otherNote = { ...original, id: 'work-note', title: 'Work note', folder: 'Projects' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json({ ...vaultState, vaults: [...vaultState.vaults, otherVault] })
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url === '/api/note-vaults/active' && init?.method === 'PUT') {
+        expect(JSON.parse(String(init.body))).toEqual({ id: 'vault-2' })
+        return Response.json(nextVaultState)
+      }
+      if (url === '/api/notes?vault=vault-2' && !init?.method) return Response.json({ notes: [otherNote], folders: ['Projects'] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.change(screen.getByLabelText('Note vault'), { target: { value: 'vault-2' } })
+
+    await waitFor(() => expect(screen.getByLabelText('Note title')).toHaveValue('Work note'))
+    expect(screen.getByLabelText('Note vault')).toHaveValue('vault-2')
+    expect(screen.getByTitle('Projects')).toBeVisible()
   })
 })

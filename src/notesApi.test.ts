@@ -11,9 +11,9 @@ describe('notes image API', () => {
     const api = createNotesApi('test token', fetcher)
     const file = new File(['png bytes'], 'clipboard.png', { type: 'image/png' })
 
-    await expect(api.uploadImage(noteId, file)).resolves.toBe(`images/${noteId}/${imageName}`)
+    await expect(api.uploadImage('vault-1', noteId, file)).resolves.toBe(`images/${noteId}/${imageName}`)
     expect(fetcher).toHaveBeenCalledWith(
-      `/api/notes/${noteId}/images`,
+      `/api/notes/${noteId}/images?vault=vault-1`,
       expect.objectContaining({
         method: 'POST',
         body: file,
@@ -23,24 +23,24 @@ describe('notes image API', () => {
         }),
       }),
     )
-    expect(api.resolveImageUrl(`images/${noteId}/${imageName}`)).toBe(
-      `/api/notes/${noteId}/images/${imageName}?token=test%20token`,
+    expect(api.resolveImageUrl(`images/${noteId}/${imageName}`, 'vault-1')).toBe(
+      `/api/notes/${noteId}/images/${imageName}?vault=vault-1&token=test+token`,
     )
-    expect(api.resolveImageUrl('https://example.com/image.png')).toBe('https://example.com/image.png')
+    expect(api.resolveImageUrl('https://example.com/image.png', 'vault-1')).toBe('https://example.com/image.png')
   })
 
   it('uses the session cookie and clean image URLs when no automation token is present', async () => {
     const noteId = '71cf1432-e39e-4ac1-a1d8-51185f94dbce'
     const imageName = 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba.png'
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ notes: [] }))
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ notes: [], folders: [] }))
     const api = createNotesApi('', fetcher)
 
-    await expect(api.list()).resolves.toEqual([])
+    await expect(api.list('vault-1')).resolves.toEqual({ notes: [], folders: [] })
     const init = fetcher.mock.calls[0]?.[1]
     expect(init?.credentials).toBe('same-origin')
     expect(init?.headers).not.toHaveProperty('Authorization')
-    expect(api.resolveImageUrl(`images/${noteId}/${imageName}`)).toBe(
-      `/api/notes/${noteId}/images/${imageName}`,
+    expect(api.resolveImageUrl(`images/${noteId}/${imageName}`, 'vault-1')).toBe(
+      `/api/notes/${noteId}/images/${imageName}?vault=vault-1`,
     )
   })
 })

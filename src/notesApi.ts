@@ -2,14 +2,33 @@ export type Note = {
   id: string
   title: string
   body: string
+  folder: string
   createdAt: number
   updatedAt: number
 }
 
-export type NoteDraft = Pick<Note, 'title' | 'body'>
+export type NoteDraft = Pick<Note, 'title' | 'body' | 'folder'>
 
 export type NoteUpdate = NoteDraft & {
   expectedUpdatedAt: number
+}
+
+export type NoteVault = {
+  id: string
+  name: string
+  path: string
+  lastOpenedAt: number
+  available: boolean
+}
+
+export type NoteVaultSnapshot = {
+  activeVaultId: string
+  vaults: NoteVault[]
+}
+
+export type NotesSnapshot = {
+  notes: Note[]
+  folders: string[]
 }
 
 const LOCAL_IMAGE_PATH = /^(?:\.\/)?images\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpg|gif|webp))$/i
@@ -22,18 +41,24 @@ export class NotesApiError extends Error {
 }
 
 export type NotesApi = {
-  list(): Promise<Note[]>
-  get(id: string): Promise<Note>
-  create(draft: NoteDraft): Promise<Note>
-  update(id: string, draft: NoteUpdate): Promise<Note>
-  delete(id: string, expectedUpdatedAt: number): Promise<void>
-  uploadImage(id: string, file: File): Promise<string>
-  resolveImageUrl(url: string): string
+  vaults(): Promise<NoteVaultSnapshot>
+  openVault(path: string): Promise<NoteVaultSnapshot>
+  createVault(path: string): Promise<NoteVaultSnapshot>
+  selectVault(id: string): Promise<NoteVaultSnapshot>
+  clearVaultHistory(): Promise<NoteVaultSnapshot>
+  list(vaultId: string): Promise<NotesSnapshot>
+  get(vaultId: string, id: string): Promise<Note>
+  create(vaultId: string, draft: NoteDraft): Promise<Note>
+  update(vaultId: string, id: string, draft: NoteUpdate): Promise<Note>
+  delete(vaultId: string, id: string, expectedUpdatedAt: number): Promise<void>
+  createFolder(vaultId: string, folder: string): Promise<string[]>
+  uploadImage(vaultId: string, id: string, file: File): Promise<string>
+  resolveImageUrl(url: string, vaultId: string): string
 }
 
 export function createNotesApi(token: string, fetcher: typeof fetch = fetch): NotesApi {
-  const request = async <T>(path = '', init?: RequestInit): Promise<T> => {
-    const response = await fetcher(`/api/notes${path}`, {
+  const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const response = await fetcher(path, {
       ...init,
       credentials: 'same-origin',
       headers: {
@@ -51,31 +76,47 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
     return result as T
   }
 
+  const notesPath = (vaultId: string, path = '') => `/api/notes${path}?vault=${encodeURIComponent(vaultId)}`
+  const vaultMutation = (path: string, method: 'POST' | 'PUT', value: object) => request<NoteVaultSnapshot>(`/api/note-vaults/${path}`, {
+    method,
+    body: JSON.stringify(value),
+  })
+
   return {
-    list: async () => (await request<{ notes: Note[] }>()).notes,
-    get: async (id) => (await request<{ note: Note }>(`/${encodeURIComponent(id)}`)).note,
-    create: async (draft) => (await request<{ note: Note }>('', {
+    vaults: () => request<NoteVaultSnapshot>('/api/note-vaults'),
+    openVault: (path) => vaultMutation('open', 'POST', { path }),
+    createVault: (path) => vaultMutation('create', 'POST', { path }),
+    selectVault: (id) => vaultMutation('active', 'PUT', { id }),
+    clearVaultHistory: () => request<NoteVaultSnapshot>('/api/note-vaults/history', { method: 'DELETE' }),
+    list: (vaultId) => request<NotesSnapshot>(notesPath(vaultId)),
+    get: async (vaultId, id) => (await request<{ note: Note }>(notesPath(vaultId, `/${encodeURIComponent(id)}`))).note,
+    create: async (vaultId, draft) => (await request<{ note: Note }>(notesPath(vaultId), {
       method: 'POST',
       body: JSON.stringify(draft),
     })).note,
-    update: async (id, draft) => (await request<{ note: Note }>(`/${encodeURIComponent(id)}`, {
+    update: async (vaultId, id, draft) => (await request<{ note: Note }>(notesPath(vaultId, `/${encodeURIComponent(id)}`), {
       method: 'PUT',
       body: JSON.stringify(draft),
     })).note,
-    delete: (id, expectedUpdatedAt) => request<void>(`/${encodeURIComponent(id)}`, {
+    delete: (vaultId, id, expectedUpdatedAt) => request<void>(notesPath(vaultId, `/${encodeURIComponent(id)}`), {
       method: 'DELETE',
       headers: { 'If-Match': `"${expectedUpdatedAt}"` },
     }),
-    uploadImage: async (id, file) => (await request<{ path: string }>(`/${encodeURIComponent(id)}/images`, {
+    createFolder: async (vaultId, folder) => (await request<{ folders: string[] }>(notesPath(vaultId, '/folders'), {
+      method: 'POST',
+      body: JSON.stringify({ folder }),
+    })).folders,
+    uploadImage: async (vaultId, id, file) => (await request<{ path: string }>(notesPath(vaultId, `/${encodeURIComponent(id)}/images`), {
       method: 'POST',
       headers: { 'Content-Type': file.type },
       body: file,
     })).path,
-    resolveImageUrl: (url) => {
+    resolveImageUrl: (url, vaultId) => {
       const match = LOCAL_IMAGE_PATH.exec(url)
       if (!match) return url
-      const path = `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}`
-      return token ? `${path}?token=${encodeURIComponent(token)}` : path
+      const parameters = new URLSearchParams({ vault: vaultId })
+      if (token) parameters.set('token', token)
+      return `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}?${parameters}`
     },
   }
 }

@@ -56,7 +56,7 @@ npm run build
 | `COMMANDO_TAILSCALE` | Also listen on detected Tailscale IPv4/IPv6 addresses | `false` |
 | `COMMANDO_TRUSTED_ORIGINS` | Comma-separated additional exact HTTP(S) origins, such as a MagicDNS URL | None |
 | `COMMANDO_STATE_PATH` | Saved workspace layout file | `~/.commando/state.json` |
-| `COMMANDO_NOTES_DIR` | Markdown note directory; point this at a dedicated folder inside an Obsidian vault | `~/.commando/notes` |
+| `COMMANDO_NOTES_DIR` | Explicit startup vault override; point this at a dedicated Markdown directory | Most recently opened vault, initially `~/.commando/notes-vaults/default` |
 | `COMMANDO_NOTES_PATH` | Legacy JSON note file imported once on startup | `~/.commando/notes.json` |
 | `COMMANDO_TMUX_SOCKET_NAME` | Connect through `tmux -L <name>` | Default tmux server |
 | `COMMANDO_TMUX_SOCKET_PATH` | Connect through `tmux -S <path>` | Default tmux server |
@@ -89,7 +89,11 @@ Email delivery, address verification, password-reset emails, invitations, and ad
 
 ## Markdown Notes
 
-Commando stores each managed note as an individual Markdown file with YAML frontmatter. To use an Obsidian vault, set `COMMANDO_NOTES_DIR` to a dedicated folder such as `/Users/me/Documents/MyVault/Commando`. Other Markdown files in that folder are left untouched unless they contain Commando's `commando_id` frontmatter field.
+Commando stores each managed note as an individual Markdown file with YAML frontmatter. The Notes sidebar can create vaults, open existing Markdown directories, switch through recently used vaults, and clear that history without deleting any files. The most recently opened vault is restored on startup. `COMMANDO_NOTES_DIR` remains available as an explicit startup override.
+
+The default vault is `~/.commando/notes-vaults/default`. On first use, an existing `~/.commando/notes` directory is moved there so previous notes remain available. Other Markdown files in a selected vault are left untouched unless they contain Commando's `commando_id` frontmatter field.
+
+Folders in the sidebar map directly to directories in the active vault. Creating or moving a note updates its Markdown file location, and generated image attachments move with it so relative links continue to work in Obsidian.
 
 The first startup after this format change imports notes from `COMMANDO_NOTES_PATH`, writes them as Markdown, and renames the source file to `notes.json.migrated`. IDs and timestamps are preserved. Commando polls for edits made in Obsidian and requires an explicit reload or overwrite if an external edit conflicts with unsaved browser changes.
 
