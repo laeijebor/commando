@@ -616,7 +616,7 @@ export function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
-  const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(false)
+  const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(true)
   const [webLayoutError, setWebLayoutError] = useState('')
   const [draggedPane, setDraggedPane] = useState<{ groupId: string; paneId: string } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
