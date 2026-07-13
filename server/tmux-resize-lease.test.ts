@@ -192,6 +192,28 @@ describe('tmux focused-pane resize leases', () => {
     await expect(manager.release('client-1')).resolves.toBe(false)
   })
 
+  it('folds one-shot layouts into a held lease baseline', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run)
+    await manager.resize('client-1', '%2', 120, 40)
+
+    await manager.setLayout('@1', {
+      kind: 'split',
+      direction: 'column',
+      children: [
+        { kind: 'pane', paneId: '%1', cols: 1, rows: 3 },
+        { kind: 'pane', paneId: '%2', cols: 1, rows: 1 },
+      ],
+    })
+    await manager.release('client-1')
+
+    const layouts = fake.commands.filter((command) => command[0] === 'select-layout')
+    const restored = layouts.at(-1)?.[3] ?? ''
+    expect(restored).not.toBe('layout-before')
+    expect(restored).toContain('80x18,0,0,1')
+    expect(restored).toContain('80x5,0,19,2')
+  })
+
   it('rejects one-shot layouts missing window panes', async () => {
     const fake = fakeRunner()
     const manager = new TmuxResizeLeaseManager(fake.run)

@@ -1555,7 +1555,12 @@ export function App() {
                   {visibleTree && visibleGroupPanes.length ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
-                      layoutKey={window?.layout ?? ''}
+                      layoutKey={webLayoutAuthoritative
+                        // The DOM owns geometry while authoritative: only a shape
+                        // change may discard local splitter weights, else the echo
+                        // of an in-flight apply undoes a fresh drag.
+                        ? `shape:${layoutShapeKey(visibleTree)}`
+                        : window?.layout ?? ''}
                       tree={visibleTree}
                       onCommit={() => commitWindowLayout(group.windowId)}
                       panes={new Map(visibleGroupPanes.map((pane) => [

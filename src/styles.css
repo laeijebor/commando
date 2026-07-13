@@ -1090,8 +1090,7 @@ kbd {
   transition: 150ms ease;
 }
 
-.layout-controls button:hover,
-.layout-controls button.active {
+.layout-controls button:hover {
   color: var(--green);
   border-color: #2e4a40;
   background: #14241f;

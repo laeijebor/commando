@@ -178,6 +178,15 @@ export class TmuxResizeLeaseManager {
       if (current.activePaneId && paneIds.includes(current.activePaneId)) {
         await this.run(['select-pane', '-t', current.activePaneId])
       }
+      // A held lease restores its baseline on release; fold the new structure
+      // into that baseline so releasing does not undo an explicit layout edit.
+      const ownerId = this.ownersByWindow.get(windowId)
+      const lease = ownerId ? this.leasesByOwner.get(ownerId)?.get(windowId) : undefined
+      if (lease) {
+        lease.layout = buildScaledTmuxLayout(spec, lease.width, lease.height).layout
+        lease.paneOrder = [...paneIds]
+        lease.zoomed = false
+      }
       return true
     })
   }
