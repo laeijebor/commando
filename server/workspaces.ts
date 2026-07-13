@@ -17,8 +17,6 @@ const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
 const PANE_ID = /^%\d+$/
 const GROUP_ID = /^[A-Za-z0-9._-]{1,64}$/
-const MIN_GROUP_SIZE_PX = 280
-const MAX_GROUP_SIZE_PX = 5_000
 const LAYOUTS = new Set<GroupLayoutPreset>([
   'equal-grid',
   'full-then-halves',
@@ -37,22 +35,10 @@ function cleanName(value: unknown): string | null {
   return /[\u0000-\u001f\u007f]/.test(value) ? null : value
 }
 
-function optionalGroupSize(value: unknown): number | null | undefined {
-  if (value === undefined) return undefined
-  return typeof value === 'number' &&
-    Number.isSafeInteger(value) &&
-    value >= MIN_GROUP_SIZE_PX &&
-    value <= MAX_GROUP_SIZE_PX
-    ? value
-    : null
-}
-
 function parseGroup(value: unknown): SavedGroup | null {
   if (!isRecord(value)) return null
   const { id, name, sessionId, windowId, paneIds, layout } = value
   const parsedName = cleanName(name)
-  const widthPx = optionalGroupSize(value.widthPx)
-  const heightPx = optionalGroupSize(value.heightPx)
 
   if (
     typeof id !== 'string' ||
@@ -66,9 +52,7 @@ function parseGroup(value: unknown): SavedGroup | null {
     paneIds.length === 0 ||
     paneIds.length > 32 ||
     typeof layout !== 'string' ||
-    !LAYOUTS.has(layout as GroupLayoutPreset) ||
-    widthPx === null ||
-    heightPx === null
+    !LAYOUTS.has(layout as GroupLayoutPreset)
   ) {
     return null
   }
@@ -85,8 +69,6 @@ function parseGroup(value: unknown): SavedGroup | null {
     windowId,
     paneIds: [...paneIds],
     layout: layout as GroupLayoutPreset,
-    ...(widthPx === undefined ? {} : { widthPx }),
-    ...(heightPx === undefined ? {} : { heightPx }),
   }
 }
 

@@ -233,7 +233,7 @@ export function ResizablePaneLayout({
   }
 
   return (
-    <div className="pane-layout-root" style={{ height: defaultHeight(root) }}>
+    <div className="pane-layout-root" style={{ minHeight: defaultHeight(root) }}>
       {renderNode(root, 'root')}
     </div>
   )

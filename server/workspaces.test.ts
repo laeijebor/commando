@@ -59,17 +59,13 @@ describe('workspace persistence', () => {
     expect(parseSavedWorkspace(overlapping)).toBeNull()
   })
 
-  it('round-trips bounded optional outer group dimensions', () => {
+  it('drops legacy outer group dimension fields', () => {
     const sized = workspace('$1', '@2', '%3')
-    sized.groups[0].widthPx = 960
-    sized.groups[0].heightPx = 640
-    expect(parseSavedWorkspace(sized)?.groups[0]).toMatchObject({
-      widthPx: 960,
-      heightPx: 640,
-    })
-
-    sized.groups[0].widthPx = 200
-    expect(parseSavedWorkspace(sized)).toBeNull()
+    Object.assign(sized.groups[0], { widthPx: 960, heightPx: 640 })
+    const parsed = parseSavedWorkspace(sized)
+    expect(parsed).not.toBeNull()
+    expect(parsed?.groups[0]).not.toHaveProperty('widthPx')
+    expect(parsed?.groups[0]).not.toHaveProperty('heightPx')
   })
 
   it('serializes concurrent saves and leaves only the final state file', async () => {

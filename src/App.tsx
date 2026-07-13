@@ -71,7 +71,6 @@ import { dispatchBoundedPaste } from './terminalInput'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { XtermPane } from './XtermPane'
 import { LinearSection } from './LinearSection'
-import { ResizablePaneGroup } from './ResizablePaneGroup'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { TmuxCreateControls } from './TmuxCreateControls'
@@ -1456,6 +1455,26 @@ export function App() {
               >
                 {selectedSession?.name ?? 'Waiting for tmux'}
               </h1>
+              {groups.length > 1 ? (
+                <nav className="window-strip" aria-label="Jump to window">
+                  {groups.map((group) => {
+                    const window = windowMap.get(group.windowId)
+                    const focusedInGroup = focusedPaneId !== null && group.paneIds.includes(focusedPaneId)
+                    const active = focusedPaneId ? focusedInGroup : activeWindow?.id === group.windowId
+                    return (
+                      <button
+                        type="button"
+                        className={active ? 'active' : ''}
+                        onClick={() => jumpToGroup(group.windowId)}
+                        title={`Scroll to ${group.name}`}
+                        key={group.id}
+                      >
+                        {window ? `${window.index} ${group.name}` : group.name}
+                      </button>
+                    )
+                  })}
+                </nav>
+              ) : null}
             </div>
             <div className="workspace-actions">
               <label
@@ -1512,14 +1531,7 @@ export function App() {
 
               const window = windowMap.get(group.windowId)
               return (
-                <ResizablePaneGroup
-                  groupId={group.id}
-                  widthPx={group.widthPx}
-                  heightPx={group.heightPx}
-                  maximized={Boolean(maximizedPaneId)}
-                  onCommit={(size) => updateGroup(group.id, (current) => ({ ...current, ...size }))}
-                  key={group.id}
-                >
+                <section className="pane-group" data-group-id={group.id} key={group.id}>
                   <header className="group-head">
                     <div className="group-title">
                       <span>{window ? `Window ${window.index}` : 'Saved group'}</span>
@@ -1626,7 +1638,7 @@ export function App() {
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
                   )}
-                </ResizablePaneGroup>
+                </section>
               )
             })}
 
