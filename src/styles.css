@@ -889,6 +889,9 @@ kbd {
 }
 
 .pane-group {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   border: 1px solid #294039;
@@ -897,6 +900,104 @@ kbd {
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
   scroll-margin-top: 14px;
 }
+
+.pane-group.has-outer-height {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.pane-group.has-outer-height .pane-layout-root {
+  height: 100% !important;
+}
+
+.group-resize-handle {
+  position: absolute;
+  z-index: 12;
+  outline: 0;
+  touch-action: none;
+}
+
+.group-resize-handle::after {
+  position: absolute;
+  content: '';
+  border-radius: 999px;
+  background: transparent;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.group-resize-right {
+  top: 54px;
+  right: 0;
+  bottom: 10px;
+  width: 12px;
+  cursor: col-resize;
+}
+
+.group-resize-right::after {
+  top: 8px;
+  right: 3px;
+  bottom: 8px;
+  width: 2px;
+}
+
+.group-resize-bottom {
+  right: 10px;
+  bottom: 0;
+  left: 0;
+  height: 12px;
+  cursor: row-resize;
+}
+
+.group-resize-bottom::after {
+  right: 8px;
+  bottom: 3px;
+  left: 8px;
+  height: 2px;
+}
+
+.group-resize-corner {
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+}
+
+.group-resize-corner::after {
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #294039;
+  border-bottom: 2px solid #294039;
+  border-radius: 0 0 3px;
+}
+
+.group-resize-handle:hover::after,
+.group-resize-handle:focus-visible::after,
+.is-resizing-group-width .group-resize-right::after,
+.is-resizing-group-height .group-resize-bottom::after,
+.is-resizing-group-both .group-resize-corner::after {
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(133, 244, 177, 0.45);
+}
+
+.group-resize-corner:hover::after,
+.group-resize-corner:focus-visible::after,
+.is-resizing-group-both .group-resize-corner::after {
+  background: transparent;
+  border-color: var(--green);
+}
+
+.is-resizing-group-width,
+.is-resizing-group-height,
+.is-resizing-group-both {
+  user-select: none;
+}
+
+.is-resizing-group-width { cursor: col-resize; }
+.is-resizing-group-height { cursor: row-resize; }
+.is-resizing-group-both { cursor: nwse-resize; }
 
 .pane-layout-root {
   min-width: 0;
@@ -2196,7 +2297,13 @@ kbd {
   }
 
   .pane-group {
+    width: 100% !important;
+    height: auto !important;
     border-radius: 10px;
+  }
+
+  .group-resize-handle {
+    display: none;
   }
 
   .group-head {

@@ -59,6 +59,19 @@ describe('workspace persistence', () => {
     expect(parseSavedWorkspace(overlapping)).toBeNull()
   })
 
+  it('round-trips bounded optional outer group dimensions', () => {
+    const sized = workspace('$1', '@2', '%3')
+    sized.groups[0].widthPx = 960
+    sized.groups[0].heightPx = 640
+    expect(parseSavedWorkspace(sized)?.groups[0]).toMatchObject({
+      widthPx: 960,
+      heightPx: 640,
+    })
+
+    sized.groups[0].widthPx = 200
+    expect(parseSavedWorkspace(sized)).toBeNull()
+  })
+
   it('serializes concurrent saves and leaves only the final state file', async () => {
     const { directory, path } = await temporaryStatePath()
     const store = new WorkspaceStore(path)

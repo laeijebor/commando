@@ -69,6 +69,7 @@ import { dispatchBoundedPaste } from './terminalInput'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { XtermPane } from './XtermPane'
 import { LinearSection } from './LinearSection'
+import { ResizablePaneGroup } from './ResizablePaneGroup'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { TmuxCreateControls } from './TmuxCreateControls'
@@ -1151,7 +1152,14 @@ export function App() {
 
               const window = windowMap.get(group.windowId)
               return (
-                <section className="pane-group" key={group.id} data-group-id={group.id}>
+                <ResizablePaneGroup
+                  groupId={group.id}
+                  widthPx={group.widthPx}
+                  heightPx={group.heightPx}
+                  maximized={Boolean(maximizedPaneId)}
+                  onCommit={(size) => updateGroup(group.id, (current) => ({ ...current, ...size }))}
+                  key={group.id}
+                >
                   <header className="group-head">
                     <span className="group-grip"><GripVertical aria-hidden="true" /></span>
                     <div className="group-title">
@@ -1255,7 +1263,7 @@ export function App() {
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
                   )}
-                </section>
+                </ResizablePaneGroup>
               )
             })}
 

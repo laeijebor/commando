@@ -92,6 +92,8 @@ export type SavedGroup = {
   windowId: string
   paneIds: string[]
   layout: GroupLayoutPreset
+  widthPx?: number
+  heightPx?: number
 }
 
 export type SavedWorkspace = {
