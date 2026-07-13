@@ -13,6 +13,8 @@ import {
   LayoutGrid,
   LoaderCircle,
   LockKeyhole,
+  LogOut,
+  Mail,
   Maximize2,
   Minimize2,
   NotebookPen,
@@ -28,6 +30,7 @@ import {
   ShieldCheck,
   SidebarOpen,
   Terminal,
+  UserRound,
   WifiOff,
   X,
 } from 'lucide-react'
@@ -73,6 +76,15 @@ import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { TmuxCreateControls } from './TmuxCreateControls'
 import { createTmuxHttpApi } from './tmuxCreateApi'
+import {
+  createOwner,
+  getAuthBootstrap,
+  getAuthUser,
+  signInWithEmail,
+  signOut,
+  type AuthBootstrap,
+  type AuthUser,
+} from './authClient'
 
 const TOKEN_STORAGE_KEY = 'commando.session-token'
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
@@ -156,6 +168,14 @@ function storeToken(token: string) {
   }
 }
 
+function clearToken() {
+  try {
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+  } catch {
+    // The in-memory credential can still be cleared when storage is unavailable.
+  }
+}
+
 function connectionLabel(phase: ConnectionPhase) {
   switch (phase) {
     case 'live':
@@ -167,9 +187,9 @@ function connectionLabel(phase: ConnectionPhase) {
     case 'connecting':
       return 'Connecting'
     case 'unauthorized':
-      return 'Token rejected'
-    case 'missing-token':
-      return 'Token required'
+      return 'Signed out'
+    case 'signed-out':
+      return 'Sign in required'
   }
 }
 
@@ -350,6 +370,133 @@ type PaletteCommand = {
 
 type CommandoArea = 'workspace' | 'linear' | 'notes'
 
+function defaultOwnerName(email: string | null): string {
+  const localPart = email?.split('@')[0] ?? 'Owner'
+  return localPart
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+    .join(' ') || 'Owner'
+}
+
+function AuthGate({
+  bootstrap,
+  initialError,
+  tokenRejected,
+  onAuthenticated,
+  onToken,
+}: {
+  bootstrap: AuthBootstrap
+  initialError: string
+  tokenRejected: boolean
+  onAuthenticated: (user: AuthUser) => void
+  onToken: (token: string) => void
+}) {
+  const [name, setName] = useState(() => defaultOwnerName(bootstrap.ownerEmail))
+  const [email, setEmail] = useState(bootstrap.ownerEmail ?? '')
+  const [password, setPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [tokenDraft, setTokenDraft] = useState('')
+  const [error, setError] = useState(initialError)
+  const [submitting, setSubmitting] = useState(false)
+
+  const submitEmail = async (event: FormEvent) => {
+    event.preventDefault()
+    if (bootstrap.needsOwner && password !== confirmation) {
+      setError('Passwords do not match')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      const user = bootstrap.needsOwner
+        ? await createOwner(name.trim(), email.trim(), password)
+        : await signInWithEmail(email.trim(), password)
+      onAuthenticated(user)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Authentication failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const submitToken = (event: FormEvent) => {
+    event.preventDefault()
+    const nextToken = tokenDraft.trim()
+    if (!nextToken) return
+    storeToken(nextToken)
+    onToken(nextToken)
+  }
+
+  return (
+    <main className="auth-screen">
+      <div className="auth-ambient" aria-hidden="true" />
+      <section className="auth-card" aria-labelledby="auth-title">
+        <div className="auth-mark"><Command aria-hidden="true" /></div>
+        <span className="eyebrow">Local authority only</span>
+        <h1 id="auth-title">
+          {tokenRejected
+            ? 'The automation token was rejected.'
+            : bootstrap.needsOwner
+              ? 'Create the owner account.'
+              : 'Sign in to Commando.'}
+        </h1>
+        <p>
+          {bootstrap.enabled
+            ? 'Your session stays in a signed, HttpOnly cookie. Commando never stores the password in the browser.'
+            : 'Email authentication is not configured for this daemon. Connect with its automation token.'}
+        </p>
+
+        {bootstrap.enabled ? (
+          <form className="auth-form" onSubmit={(event) => void submitEmail(event)}>
+            {bootstrap.needsOwner ? (
+              <label>
+                <span>Display name</span>
+                <span className="auth-input"><UserRound aria-hidden="true" /><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required maxLength={80} /></span>
+              </label>
+            ) : null}
+            <label>
+              <span>Email</span>
+              <span className="auth-input"><Mail aria-hidden="true" /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" readOnly={bootstrap.needsOwner} required /></span>
+            </label>
+            <label>
+              <span>Password</span>
+              <span className="auth-input"><LockKeyhole aria-hidden="true" /><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrap.needsOwner ? 'new-password' : 'current-password'} minLength={12} maxLength={128} required autoFocus={!bootstrap.needsOwner} /></span>
+            </label>
+            {bootstrap.needsOwner ? (
+              <label>
+                <span>Confirm password</span>
+                <span className="auth-input"><ShieldCheck aria-hidden="true" /><input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" minLength={12} maxLength={128} required /></span>
+              </label>
+            ) : null}
+            {error ? <p className="auth-error" role="alert">{error}</p> : null}
+            <button className="auth-submit" type="submit" disabled={submitting}>
+              {submitting ? 'Authenticating...' : bootstrap.needsOwner ? 'Create owner' : 'Sign in'}
+            </button>
+          </form>
+        ) : initialError ? <p className="auth-error" role="alert">{initialError}</p> : null}
+
+        <details className="token-fallback" open={!bootstrap.enabled || tokenRejected}>
+          <summary>{bootstrap.enabled ? 'Use an automation token instead' : 'Connect with token'}</summary>
+          <form onSubmit={submitToken}>
+            <label htmlFor="daemon-token">Daemon automation token</label>
+            <div className="token-field">
+              <KeyRound aria-hidden="true" />
+              <input id="daemon-token" type="password" value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="Paste token" autoComplete="off" autoFocus={!bootstrap.enabled} />
+              <button type="submit" disabled={!tokenDraft.trim()}>Connect</button>
+            </div>
+          </form>
+        </details>
+
+        <div className="auth-boundary">
+          <ShieldCheck aria-hidden="true" />
+          <span>Expected endpoint: loopback or an explicitly enabled Tailscale interface.</span>
+        </div>
+      </section>
+    </main>
+  )
+}
+
 function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
   if (kind === 'pane') return <Terminal aria-hidden="true" />
   if (kind === 'session') return <Server aria-hidden="true" />
@@ -359,7 +506,10 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 
 export function App() {
   const [token, setToken] = useState(getInitialToken)
-  const [tokenDraft, setTokenDraft] = useState('')
+  const [authBootstrap, setAuthBootstrap] = useState<AuthBootstrap | null>(null)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [authPending, setAuthPending] = useState(true)
+  const [authError, setAuthError] = useState('')
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
@@ -379,6 +529,27 @@ export function App() {
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
   const pendingMaximizePaneId = useRef<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void getAuthBootstrap()
+      .then(async (bootstrap) => {
+        const user = bootstrap.enabled ? await getAuthUser() : null
+        if (cancelled) return
+        setAuthBootstrap(bootstrap)
+        setAuthUser(user)
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return
+        setAuthError(cause instanceof Error ? cause.message : 'Authentication initialization failed')
+      })
+      .finally(() => {
+        if (!cancelled) setAuthPending(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => storePanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY, leftPanelHidden), [leftPanelHidden])
   useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
@@ -485,8 +656,12 @@ export function App() {
     }
   }
 
-  const { connection, send } = useDaemon(token, handleServerMessage)
+  const { connection, send } = useDaemon(token, authUser !== null, handleServerMessage)
   const connected = connection.phase === 'live'
+
+  useEffect(() => {
+    if (!token && connection.phase === 'unauthorized') setAuthUser(null)
+  }, [connection.phase, token])
   const activeResizePaneId = connected && area === 'workspace'
     ? maximizedPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
     : null
@@ -858,14 +1033,20 @@ export function App() {
     }
   }
 
-  const submitToken = (event: FormEvent) => {
-    event.preventDefault()
-    const nextToken = tokenDraft.trim()
-    if (!nextToken) return
-    storeToken(nextToken)
+  const disconnect = async () => {
     setSnapshot(null)
-    setToken(nextToken)
-    setTokenDraft('')
+    if (token) {
+      clearToken()
+      setToken('')
+      return
+    }
+    try {
+      await signOut()
+    } catch (cause) {
+      console.error(cause)
+    } finally {
+      setAuthUser(null)
+    }
   }
 
   const selectedPaneStatuses = Object.values(agentStatuses)
@@ -880,42 +1061,38 @@ export function App() {
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
 
-  if (!token || connection.phase === 'unauthorized') {
+  if (!token && authPending) {
     return (
       <main className="auth-screen">
         <div className="auth-ambient" aria-hidden="true" />
         <section className="auth-card" aria-labelledby="auth-title">
-          <div className="auth-mark"><Command aria-hidden="true" /></div>
+          <div className="auth-mark"><LoaderCircle className="spin" aria-hidden="true" /></div>
           <span className="eyebrow">Local authority only</span>
-          <h1 id="auth-title">
-            {connection.phase === 'unauthorized' ? 'Replace the rejected token.' : 'Connect the Commando daemon.'}
-          </h1>
-          <p>
-            Commando accepts the ephemeral token from <code>#token=...</code> and keeps it in this tab's
-            session storage. It is sent as a bearer token for the snapshot and as the WebSocket query token.
-          </p>
-          <form onSubmit={submitToken}>
-            <label htmlFor="daemon-token">Daemon session token</label>
-            <div className="token-field">
-              <KeyRound aria-hidden="true" />
-              <input
-                id="daemon-token"
-                type="password"
-                value={tokenDraft}
-                onChange={(event) => setTokenDraft(event.target.value)}
-                placeholder="Paste ephemeral token"
-                autoComplete="off"
-                autoFocus
-              />
-              <button type="submit" disabled={!tokenDraft.trim()}>Connect</button>
-            </div>
-          </form>
-          <div className="auth-boundary">
-            <ShieldCheck aria-hidden="true" />
-            <span>Expected endpoint: this origin proxied to a daemon bound on 127.0.0.1.</span>
-          </div>
+          <h1 id="auth-title">Checking this daemon.</h1>
+          <p>Looking for an owner session and local authentication policy.</p>
         </section>
       </main>
+    )
+  }
+
+  if ((!token && !authUser) || connection.phase === 'unauthorized') {
+    return (
+      <AuthGate
+        bootstrap={authBootstrap ?? { enabled: false, needsOwner: false, ownerEmail: null }}
+        initialError={authError}
+        tokenRejected={Boolean(token && connection.phase === 'unauthorized')}
+        onAuthenticated={(user) => {
+          clearToken()
+          setToken('')
+          setSnapshot(null)
+          setAuthUser(user)
+          setAuthBootstrap((current) => current ? { ...current, needsOwner: false } : current)
+        }}
+        onToken={(nextToken) => {
+          setSnapshot(null)
+          setToken(nextToken)
+        }}
+      />
     )
   }
 
@@ -942,6 +1119,15 @@ export function App() {
             ) : null}
             <span>{connectionLabel(connection.phase)}</span>
           </div>
+          <button
+            type="button"
+            className="icon-button auth-signout"
+            onClick={() => void disconnect()}
+            aria-label={token ? 'Disconnect automation token' : `Sign out ${authUser?.email ?? ''}`}
+            title={token ? 'Disconnect automation token' : `Sign out ${authUser?.email ?? ''}`}
+          >
+            <LogOut aria-hidden="true" />
+          </button>
           <button
             type="button"
             className="command-trigger"

@@ -38,7 +38,7 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         ...init?.headers,
       },
@@ -74,7 +74,8 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
     resolveImageUrl: (url) => {
       const match = LOCAL_IMAGE_PATH.exec(url)
       if (!match) return url
-      return `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}?token=${encodeURIComponent(token)}`
+      const path = `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}`
+      return token ? `${path}?token=${encodeURIComponent(token)}` : path
     },
   }
 }

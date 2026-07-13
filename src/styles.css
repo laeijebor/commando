@@ -134,6 +134,7 @@ pre {
 .location-readout,
 .titlebar-actions,
 .token-field,
+.auth-input,
 .auth-boundary,
 .hud-heading,
 .save-state,
@@ -1969,7 +1970,7 @@ kbd {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  overflow: hidden;
+  overflow: auto;
   padding: 24px;
   background:
     linear-gradient(rgba(255, 255, 255, 0.012) 1px, transparent 1px),
@@ -2042,6 +2043,97 @@ kbd {
   color: var(--text-soft);
   font-size: 10px;
   font-weight: 600;
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-form label {
+  display: grid !important;
+  gap: 7px;
+  margin: 0 !important;
+}
+
+.auth-input {
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 13px;
+  border: 1px solid #304c42;
+  border-radius: 11px;
+  background: #08120f;
+}
+
+.auth-input:focus-within {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(133, 244, 177, 0.08);
+}
+
+.auth-input svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--muted-dim);
+}
+
+.auth-input input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: 12px var(--mono);
+}
+
+.auth-input input:read-only {
+  color: var(--text-soft);
+}
+
+.auth-submit {
+  min-height: 45px;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--green-ink);
+  background: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.auth-submit:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.auth-error {
+  margin: 0 !important;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 110, 110, 0.32);
+  border-radius: 9px;
+  color: #ffadad !important;
+  background: rgba(120, 35, 35, 0.16);
+  font-size: 10px !important;
+  line-height: 1.5 !important;
+}
+
+.token-fallback {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.token-fallback summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.token-fallback[open] summary {
+  margin-bottom: 12px;
+  color: var(--text-soft);
 }
 
 .token-field {

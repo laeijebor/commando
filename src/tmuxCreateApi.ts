@@ -54,9 +54,10 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
   const post = async (route: string, input: object): Promise<TmuxCreatedTarget> => {
     const response = await fetcher(route, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(input),

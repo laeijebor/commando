@@ -37,7 +37,7 @@ export function createSessionManagementApi(
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(init?.body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...init?.headers,
       },

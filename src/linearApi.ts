@@ -14,7 +14,7 @@ export function createLinearApi(token: string, fetcher: typeof fetch = fetch) {
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         ...init?.headers,
       },

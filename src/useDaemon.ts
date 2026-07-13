@@ -3,7 +3,7 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { ClientMessage, CommandoSnapshot, ServerMessage } from '../shared/protocol'
 
 export type ConnectionPhase =
-  | 'missing-token'
+  | 'signed-out'
   | 'loading-snapshot'
   | 'connecting'
   | 'live'
@@ -18,8 +18,8 @@ export type ConnectionState = {
 }
 
 const INITIAL_CONNECTION: ConnectionState = {
-  phase: 'missing-token',
-  detail: 'Session token required',
+  phase: 'signed-out',
+  detail: 'Sign in required',
   attempt: 0,
 }
 
@@ -43,13 +43,17 @@ function snapshotFromResponse(value: unknown): CommandoSnapshot | null {
   return null
 }
 
-export function useDaemon(token: string, onMessage: (message: ServerMessage) => void) {
+export function useDaemon(
+  token: string,
+  sessionAuthenticated: boolean,
+  onMessage: (message: ServerMessage) => void,
+) {
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION)
   const socketRef = useRef<WebSocket | null>(null)
   const receiveMessage = useEffectEvent(onMessage)
 
   useEffect(() => {
-    if (!token) {
+    if (!token && !sessionAuthenticated) {
       socketRef.current = null
       setConnection(INITIAL_CONNECTION)
       return
@@ -70,9 +74,8 @@ export function useDaemon(token: string, onMessage: (message: ServerMessage) => 
       })
 
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const socket = new WebSocket(
-        `${wsProtocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`,
-      )
+      const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : ''
+      const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws${tokenQuery}`)
       socketRef.current = socket
 
       socket.addEventListener('open', () => {
@@ -114,7 +117,8 @@ export function useDaemon(token: string, onMessage: (message: ServerMessage) => 
           if (event.code === 1006) {
             try {
               const response = await fetch('/api/health', {
-                headers: { Authorization: `Bearer ${token}` },
+                credentials: 'same-origin',
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                 signal: abortController.signal,
               })
               if (response.status === 401 || response.status === 403) {
@@ -158,9 +162,10 @@ export function useDaemon(token: string, onMessage: (message: ServerMessage) => 
 
       try {
         const response = await fetch('/api/snapshot', {
+          credentials: 'same-origin',
           headers: {
             Accept: 'application/json',
-            Authorization: `Bearer ${token}`,
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           signal: abortController.signal,
         })
@@ -200,7 +205,7 @@ export function useDaemon(token: string, onMessage: (message: ServerMessage) => 
       socketRef.current = null
       socket?.close(1000, 'Client reset')
     }
-  }, [token])
+  }, [sessionAuthenticated, token])
 
   const send = useCallback((message: ClientMessage) => {
     const socket = socketRef.current
