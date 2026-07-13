@@ -926,9 +926,12 @@ kbd {
   scroll-margin-top: 0;
 }
 
+/* Size containment so terminal content never inflates the group height;
+   the inline min-height (layout preset default) is the only intrinsic floor. */
 .pane-layout-root {
   min-width: 0;
   flex: 1 1 auto;
+  contain: size;
   padding: 0;
 }
 
