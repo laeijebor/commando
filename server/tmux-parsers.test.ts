@@ -56,9 +56,10 @@ describe('tmux format parsers', () => {
     const snapshot = parseTmuxSnapshot(
       `${row('$1', 'work', '2')}\n${row('$2', 'other', '0')}\n`,
       [
-        row('@3', '1', '$1', 'editor', '1'),
-        row('@4', '2', '$1', 'tests', '0'),
-        row('@5', '0', '$2', 'shell', '1'),
+        row('@3', '1', '$1', 'editor', '1', 'dbde,200x50,0,0{100x50,0,0,9,99x50,101,0,8}'),
+        row('@4', '2', '$1', 'tests', '0', 'aaaa,100x30,0,0,10'),
+        row('@5', '0', '$2', 'shell', '1', 'bbbb,90x24,0,0,11'),
+        row('@6', '3', '$1', 'broken', '0', 'not-a-layout'),
       ].join('\n'),
       [
         paneRow('%8', '1', '@3', '$1', 'Claude Code', 'claude', '/repo', '1', '0', '120', '40', '17', '8'),
@@ -86,6 +87,10 @@ describe('tmux format parsers', () => {
       '%9',
       '%8',
     ])
+    expect(snapshot.windows.find((window) => window.id === '@3')?.layout).toBe(
+      'dbde,200x50,0,0{100x50,0,0,9,99x50,101,0,8}',
+    )
+    expect(snapshot.windows.some((window) => window.id === '@6')).toBe(false)
     expect(snapshot.panes.find((pane) => pane.id === '%8')).toMatchObject({
       cursorX: 17,
       cursorY: 8,

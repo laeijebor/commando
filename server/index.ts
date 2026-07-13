@@ -18,6 +18,7 @@ import type {
   SavedWorkspace,
   ServerMessage,
 } from '../shared/protocol.js'
+import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentStatus } from './agent-status.js'
 import {
   MAX_CLIENT_MESSAGE_BYTES,
@@ -898,30 +899,26 @@ async function main(): Promise<void> {
             )
           })
         return
-      case 'apply_window_layout': {
+      case 'apply_window_layout':
+      case 'set_window_layout': {
         const window = snapshot.windows.find((candidate) => candidate.id === message.windowId)
+        const specPaneIds = layoutSpecPaneIds(message.spec)
         if (
           !window ||
-          window.paneIds.length !== message.paneIds.length ||
-          window.paneIds.some((paneId) => !message.paneIds.includes(paneId))
+          window.paneIds.length !== specPaneIds.length ||
+          window.paneIds.some((paneId) => !specPaneIds.includes(paneId))
         ) {
           sendError(
             client,
             'invalid_window_layout',
-            'Authoritative layout must include every current pane in the window',
+            'Window layout must include every current pane in the window',
             message.requestId,
           )
           return
         }
-        void tmux
-          .applyWindowLayout(
-            client.id,
-            message.windowId,
-            message.paneIds,
-            message.preset,
-            message.stacked,
-            message.capacities,
-          )
+        void (message.type === 'apply_window_layout'
+          ? tmux.applyWindowLayout(client.id, message.windowId, message.spec)
+          : tmux.setWindowLayout(message.windowId, message.spec))
           .then((changed) => changed ? refreshSnapshot() : undefined)
           .catch((error: unknown) => {
             sendError(

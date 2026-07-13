@@ -5,10 +5,13 @@ import {
   MIN_TERMINAL_COLS,
   MIN_TERMINAL_ROWS,
   type ClientMessage,
-  type GroupLayoutPreset,
-  type PaneLayoutCapacity,
+  type LayoutSpec,
   type SpecialKey,
 } from '../shared/protocol.js'
+import {
+  MAX_LAYOUT_SPEC_DEPTH,
+  MAX_LAYOUT_SPEC_PANES,
+} from '../shared/window-layout.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -18,12 +21,6 @@ export const MAX_SUBSCRIBED_PANES = 64
 const PANE_ID = /^%\d+$/
 const WINDOW_ID = /^@\d+$/
 const SESSION_ID = /^\$\d+$/
-const GROUP_LAYOUT_PRESETS = new Set<GroupLayoutPreset>([
-  'equal-grid',
-  'full-then-halves',
-  'two-full-two-halves',
-  'lead-and-stack',
-])
 const SPECIAL_KEYS = new Set<SpecialKey>([
   'Enter',
   'Backspace',
@@ -75,14 +72,39 @@ function boundedInteger(value: unknown, minimum: number, maximum: number): value
   return Number.isInteger(value) && (value as number) >= minimum && (value as number) <= maximum
 }
 
-function parsePaneLayoutCapacity(value: unknown): PaneLayoutCapacity | null {
-  if (
-    !isRecord(value) ||
-    !isPaneId(value.paneId) ||
-    !boundedInteger(value.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) ||
-    !boundedInteger(value.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
-  ) return null
-  return { paneId: value.paneId, cols: value.cols, rows: value.rows }
+function parseLayoutSpecNode(value: unknown, depth: number, seen: Set<string>): LayoutSpec | null {
+  if (!isRecord(value) || depth > MAX_LAYOUT_SPEC_DEPTH) return null
+  if (value.kind === 'pane') {
+    if (
+      !isPaneId(value.paneId) ||
+      seen.has(value.paneId) ||
+      seen.size >= MAX_LAYOUT_SPEC_PANES ||
+      !boundedInteger(value.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) ||
+      !boundedInteger(value.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+    ) return null
+    seen.add(value.paneId)
+    return { kind: 'pane', paneId: value.paneId, cols: value.cols, rows: value.rows }
+  }
+  if (value.kind === 'split') {
+    if (
+      (value.direction !== 'row' && value.direction !== 'column') ||
+      !Array.isArray(value.children) ||
+      value.children.length < 2 ||
+      value.children.length > MAX_LAYOUT_SPEC_PANES
+    ) return null
+    const children: LayoutSpec[] = []
+    for (const child of value.children) {
+      const parsed = parseLayoutSpecNode(child, depth + 1, seen)
+      if (!parsed) return null
+      children.push(parsed)
+    }
+    return { kind: 'split', direction: value.direction, children }
+  }
+  return null
+}
+
+function parseLayoutSpec(value: unknown): LayoutSpec | null {
+  return parseLayoutSpecNode(value, 1, new Set())
 }
 
 export function isPaneId(value: unknown): value is string {
@@ -225,43 +247,28 @@ export function parseClientMessage(value: unknown): ParseResult {
             requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
           }
     }
-    case 'apply_window_layout': {
+    case 'apply_window_layout':
+    case 'set_window_layout': {
       const id = requestId(value.requestId)
-      const paneIds = Array.isArray(value.paneIds) ? value.paneIds : []
-      const capacities = Array.isArray(value.capacities)
-        ? value.capacities.map(parsePaneLayoutCapacity)
-        : []
+      const spec = parseLayoutSpec(value.spec)
       if (
         !id ||
         typeof value.windowId !== 'string' ||
         !WINDOW_ID.test(value.windowId) ||
-        paneIds.length === 0 ||
-        paneIds.length > MAX_SUBSCRIBED_PANES ||
-        !paneIds.every(isPaneId) ||
-        new Set(paneIds).size !== paneIds.length ||
-        typeof value.preset !== 'string' ||
-        !GROUP_LAYOUT_PRESETS.has(value.preset as GroupLayoutPreset) ||
-        typeof value.stacked !== 'boolean' ||
-        capacities.length !== paneIds.length ||
-        capacities.some((capacity) => capacity === null) ||
-        new Set(capacities.map((capacity) => capacity?.paneId)).size !== capacities.length ||
-        capacities.some((capacity, index) => capacity?.paneId !== paneIds[index])
+        !spec
       ) {
         return {
           ok: false,
-          error: 'Invalid authoritative window layout',
+          error: 'Invalid window layout',
           requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
         }
       }
       return {
         ok: true,
         message: {
-          type: 'apply_window_layout',
+          type: value.type === 'apply_window_layout' ? 'apply_window_layout' : 'set_window_layout',
           windowId: value.windowId,
-          paneIds: [...paneIds] as string[],
-          preset: value.preset as GroupLayoutPreset,
-          stacked: value.stacked,
-          capacities: capacities as PaneLayoutCapacity[],
+          spec,
           requestId: id,
         },
       }

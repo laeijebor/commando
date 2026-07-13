@@ -1,13 +1,4 @@
-import type {
-  GroupLayoutPreset,
-  PaneLayoutCapacity,
-} from '../shared/protocol.js'
-
-type Direction = 'horizontal' | 'vertical'
-
-type LayoutNode =
-  | { kind: 'pane'; pane: PaneLayoutCapacity }
-  | { kind: 'split'; direction: Direction; children: LayoutNode[] }
+import type { LayoutSpec } from '../shared/protocol.js'
 
 type Size = { width: number; height: number }
 
@@ -20,67 +11,10 @@ export type BuiltTmuxLayout = {
 const MAX_TMUX_DIMENSION = 10_000
 const MAX_LAYOUT_BYTES = 8_192
 
-const pane = (value: PaneLayoutCapacity): LayoutNode => ({ kind: 'pane', pane: value })
-const horizontal = (...children: LayoutNode[]): LayoutNode => ({
-  kind: 'split',
-  direction: 'horizontal',
-  children,
-})
-const vertical = (...children: LayoutNode[]): LayoutNode => ({
-  kind: 'split',
-  direction: 'vertical',
-  children,
-})
-const row = (children: LayoutNode[]): LayoutNode =>
-  children.length === 1 ? children[0] : horizontal(...children)
-
-function chunks<T>(values: T[], size: number): T[][] {
-  const result: T[][] = []
-  for (let index = 0; index < values.length; index += size) {
-    result.push(values.slice(index, index + size))
-  }
-  return result
-}
-
-function topology(
-  preset: GroupLayoutPreset,
-  capacities: PaneLayoutCapacity[],
-  stacked: boolean,
-): LayoutNode {
-  const panes = capacities.map(pane)
-  if (panes.length === 0) throw new Error('Authoritative layout requires at least one pane')
-  if (panes.length === 1) return panes[0]
-  if (stacked) return vertical(...panes)
-
-  switch (preset) {
-    case 'equal-grid':
-      if (panes.length <= 3) return horizontal(...panes)
-      if (panes.length === 4) {
-        return vertical(horizontal(...panes.slice(0, 2)), horizontal(...panes.slice(2)))
-      }
-      return vertical(...chunks(panes, 3).map(row))
-    case 'full-then-halves':
-      return vertical(panes[0], ...chunks(panes.slice(1), 2).map(row))
-    case 'two-full-two-halves':
-      return vertical(
-        panes[0],
-        panes[1],
-        ...chunks(panes.slice(2), 2).map(row),
-      )
-    case 'lead-and-stack':
-      if (panes.length === 2) return horizontal(...panes)
-      if (panes.length === 3) return horizontal(panes[0], vertical(panes[1], panes[2]))
-      return vertical(
-        horizontal(panes[0], vertical(panes[1], panes[2])),
-        ...chunks(panes.slice(3), 3).map(row),
-      )
-  }
-}
-
-function maximumSize(node: LayoutNode): Size {
-  if (node.kind === 'pane') return { width: node.pane.cols, height: node.pane.rows }
+function maximumSize(node: LayoutSpec): Size {
+  if (node.kind === 'pane') return { width: node.cols, height: node.rows }
   const sizes = node.children.map(maximumSize)
-  return node.direction === 'horizontal'
+  return node.direction === 'row'
     ? {
         width: sizes.reduce((total, size) => total + size.width, sizes.length - 1),
         height: Math.min(...sizes.map((size) => size.height)),
@@ -91,10 +25,10 @@ function maximumSize(node: LayoutNode): Size {
       }
 }
 
-function minimumSize(node: LayoutNode): Size {
+function minimumSize(node: LayoutSpec): Size {
   if (node.kind === 'pane') return { width: 2, height: 1 }
   const sizes = node.children.map(minimumSize)
-  return node.direction === 'horizontal'
+  return node.direction === 'row'
     ? {
         width: sizes.reduce((total, size) => total + size.width, sizes.length - 1),
         height: Math.max(...sizes.map((size) => size.height)),
@@ -124,41 +58,56 @@ function allocate(total: number, minima: number[], maxima: number[]): number[] {
   return result
 }
 
+/** Distributes `total` cells proportionally to `targets`, honoring per-child minima. */
+function allocateProportional(total: number, targets: number[], minima: number[]): number[] {
+  const targetSum = targets.reduce((sum, value) => sum + value, 0)
+  if (total < minima.reduce((sum, value) => sum + value, 0) || targetSum <= 0) {
+    throw new Error('Window is too small for the requested tmux layout')
+  }
+  const result = targets.map((target, index) =>
+    Math.max(minima[index], Math.floor((target / targetSum) * total)),
+  )
+  let drift = total - result.reduce((sum, value) => sum + value, 0)
+  for (let index = 0; drift !== 0; index = (index + 1) % result.length) {
+    if (drift > 0) {
+      result[index] += 1
+      drift -= 1
+    } else if (result[index] > minima[index]) {
+      result[index] -= 1
+      drift += 1
+    }
+  }
+  return result
+}
+
+type SplitSpec = Extract<LayoutSpec, { kind: 'split' }>
+
 function serialize(
-  node: LayoutNode,
+  node: LayoutSpec,
   width: number,
   height: number,
   left: number,
   top: number,
+  sizeChildren: (node: SplitSpec, span: number) => number[],
 ): string {
   const dimensions = `${width}x${height},${left},${top}`
-  if (node.kind === 'pane') return `${dimensions},${node.pane.paneId.slice(1)}`
+  if (node.kind === 'pane') return `${dimensions},${node.paneId.slice(1)}`
 
-  const maxima = node.children.map(maximumSize)
-  const minima = node.children.map(minimumSize)
-  if (node.direction === 'horizontal') {
-    const widths = allocate(
-      width - (node.children.length - 1),
-      minima.map((size) => size.width),
-      maxima.map((size) => size.width),
-    )
+  if (node.direction === 'row') {
+    const widths = sizeChildren(node, width - (node.children.length - 1))
     let childLeft = left
     const children = node.children.map((child, index) => {
-      const value = serialize(child, widths[index], height, childLeft, top)
+      const value = serialize(child, widths[index], height, childLeft, top, sizeChildren)
       childLeft += widths[index] + 1
       return value
     })
     return `${dimensions}{${children.join(',')}}`
   }
 
-  const heights = allocate(
-    height - (node.children.length - 1),
-    minima.map((size) => size.height),
-    maxima.map((size) => size.height),
-  )
+  const heights = sizeChildren(node, height - (node.children.length - 1))
   let childTop = top
   const children = node.children.map((child, index) => {
-    const value = serialize(child, width, heights[index], left, childTop)
+    const value = serialize(child, width, heights[index], left, childTop, sizeChildren)
     childTop += heights[index] + 1
     return value
   })
@@ -174,14 +123,20 @@ function checksum(body: string): string {
   return value.toString(16).padStart(4, '0')
 }
 
-export function buildTmuxLayout(
-  preset: GroupLayoutPreset,
-  capacities: PaneLayoutCapacity[],
-  stacked: boolean,
-): BuiltTmuxLayout {
-  const tree = topology(preset, capacities, stacked)
-  const size = maximumSize(tree)
-  const minimum = minimumSize(tree)
+function finalize(body: string, cols: number, rows: number): BuiltTmuxLayout {
+  if (Buffer.byteLength(body, 'ascii') > MAX_LAYOUT_BYTES) {
+    throw new Error('Generated tmux layout is too large')
+  }
+  return { cols, rows, layout: `${checksum(body)},${body}` }
+}
+
+/**
+ * Serializes a spec whose leaf cols/rows are exact cell capacities. The window
+ * is sized to fit them all; used by the authoritative browser-layout sync.
+ */
+export function buildTmuxLayout(spec: LayoutSpec): BuiltTmuxLayout {
+  const size = maximumSize(spec)
+  const minimum = minimumSize(spec)
   if (
     size.width < minimum.width ||
     size.height < minimum.height ||
@@ -190,13 +145,55 @@ export function buildTmuxLayout(
   ) {
     throw new Error('Browser pane capacities exceed tmux layout limits')
   }
-  const body = serialize(tree, size.width, size.height, 0, 0)
-  if (Buffer.byteLength(body, 'ascii') > MAX_LAYOUT_BYTES) {
-    throw new Error('Generated tmux layout is too large')
+  const body = serialize(spec, size.width, size.height, 0, 0, (node, span) =>
+    allocate(
+      span,
+      node.children.map((child) =>
+        node.direction === 'row' ? minimumSize(child).width : minimumSize(child).height,
+      ),
+      node.children.map((child) =>
+        node.direction === 'row' ? maximumSize(child).width : maximumSize(child).height,
+      ),
+    ),
+  )
+  return finalize(body, size.width, size.height)
+}
+
+/**
+ * Serializes a spec scaled to an existing window size, treating leaf cols/rows
+ * as relative weights; used by one-shot restructures that keep tmux dimensions.
+ */
+export function buildScaledTmuxLayout(
+  spec: LayoutSpec,
+  cols: number,
+  rows: number,
+): BuiltTmuxLayout {
+  if (
+    !Number.isSafeInteger(cols) ||
+    !Number.isSafeInteger(rows) ||
+    cols < 1 ||
+    rows < 1 ||
+    cols > MAX_TMUX_DIMENSION ||
+    rows > MAX_TMUX_DIMENSION
+  ) {
+    throw new Error('Invalid tmux window dimensions')
   }
-  return {
-    cols: size.width,
-    rows: size.height,
-    layout: `${checksum(body)},${body}`,
+  const minimum = minimumSize(spec)
+  if (cols < minimum.width || rows < minimum.height) {
+    throw new Error('Window is too small for the requested tmux layout')
   }
+  const body = serialize(spec, cols, rows, 0, 0, (node, span) =>
+    allocateProportional(
+      span,
+      node.children.map((child) => {
+        const size = maximumSize(child)
+        return node.direction === 'row' ? size.width : size.height
+      }),
+      node.children.map((child) => {
+        const size = minimumSize(child)
+        return node.direction === 'row' ? size.width : size.height
+      }),
+    ),
+  )
+  return finalize(body, cols, rows)
 }

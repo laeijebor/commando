@@ -60,6 +60,7 @@ export type TmuxWindow = {
   sessionId: string
   name: string
   active: boolean
+  layout: string
   paneIds: string[]
 }
 
@@ -79,19 +80,12 @@ export type CommandoSnapshot = {
   panes: TmuxPane[]
 }
 
-export type GroupLayoutPreset =
-  | 'equal-grid'
-  | 'full-then-halves'
-  | 'two-full-two-halves'
-  | 'lead-and-stack'
-
 export type SavedGroup = {
   id: string
   name: string
   sessionId: string
   windowId: string
   paneIds: string[]
-  layout: GroupLayoutPreset
 }
 
 export type SavedWorkspace = {
@@ -105,6 +99,15 @@ export type PaneLayoutCapacity = {
   cols: number
   rows: number
 }
+
+/**
+ * A window layout as a tmux-compatible split tree. Leaf cols/rows are exact
+ * cell capacities for apply_window_layout, and relative weights for
+ * set_window_layout (the daemon rescales them to the current window size).
+ */
+export type LayoutSpec =
+  | { kind: 'pane'; paneId: string; cols: number; rows: number }
+  | { kind: 'split'; direction: 'row' | 'column'; children: LayoutSpec[] }
 
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
@@ -183,10 +186,13 @@ export type ClientMessage =
   | {
       type: 'apply_window_layout'
       windowId: string
-      paneIds: string[]
-      preset: GroupLayoutPreset
-      stacked: boolean
-      capacities: PaneLayoutCapacity[]
+      spec: LayoutSpec
+      requestId: string
+    }
+  | {
+      type: 'set_window_layout'
+      windowId: string
+      spec: LayoutSpec
       requestId: string
     }
   | { type: 'release_all_resizes'; requestId: string }

@@ -23,7 +23,6 @@ function workspace(sessionId: string, windowId: string, paneId: string): SavedWo
         sessionId,
         windowId,
         paneIds: [paneId],
-        layout: 'equal-grid',
       },
     ],
     updatedAt: 1234,
@@ -59,13 +58,14 @@ describe('workspace persistence', () => {
     expect(parseSavedWorkspace(overlapping)).toBeNull()
   })
 
-  it('drops legacy outer group dimension fields', () => {
+  it('drops legacy group layout and dimension fields', () => {
     const sized = workspace('$1', '@2', '%3')
-    Object.assign(sized.groups[0], { widthPx: 960, heightPx: 640 })
+    Object.assign(sized.groups[0], { widthPx: 960, heightPx: 640, layout: 'equal-grid' })
     const parsed = parseSavedWorkspace(sized)
     expect(parsed).not.toBeNull()
     expect(parsed?.groups[0]).not.toHaveProperty('widthPx')
     expect(parsed?.groups[0]).not.toHaveProperty('heightPx')
+    expect(parsed?.groups[0]).not.toHaveProperty('layout')
   })
 
   it('serializes concurrent saves and leaves only the final state file', async () => {

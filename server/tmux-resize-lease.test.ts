@@ -153,17 +153,14 @@ describe('tmux focused-pane resize leases', () => {
     const fake = fakeRunner()
     const manager = new TmuxResizeLeaseManager(fake.run)
 
-    await manager.applyLayout(
-      'client-1',
-      '@1',
-      ['%2', '%1'],
-      'equal-grid',
-      false,
-      [
-        { paneId: '%2', cols: 40, rows: 20 },
-        { paneId: '%1', cols: 40, rows: 20 },
+    await manager.applyLayout('client-1', '@1', {
+      kind: 'split',
+      direction: 'row',
+      children: [
+        { kind: 'pane', paneId: '%2', cols: 40, rows: 20 },
+        { kind: 'pane', paneId: '%1', cols: 40, rows: 20 },
       ],
-    )
+    })
     await manager.release('client-1')
 
     expect(fake.commands).toContainEqual(['swap-pane', '-d', '-s', '%2', '-t', '%1'])
@@ -174,20 +171,49 @@ describe('tmux focused-pane resize leases', () => {
     expect(fake.commands.filter((command) => command[0] === 'swap-pane')).toHaveLength(2)
   })
 
+  it('applies a one-shot layout at the current window size without leasing', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run)
+
+    await expect(manager.setLayout('@1', {
+      kind: 'split',
+      direction: 'column',
+      children: [
+        { kind: 'pane', paneId: '%1', cols: 1, rows: 3 },
+        { kind: 'pane', paneId: '%2', cols: 1, rows: 1 },
+      ],
+    })).resolves.toBe(true)
+
+    expect(fake.commands.some((command) => command[0] === 'resize-window')).toBe(false)
+    const layouts = fake.commands.filter((command) => command[0] === 'select-layout')
+    expect(layouts).toHaveLength(1)
+    expect(layouts[0][3]).toContain('80x18,0,0,1')
+    expect(layouts[0][3]).toContain('80x5,0,19,2')
+    await expect(manager.release('client-1')).resolves.toBe(false)
+  })
+
+  it('rejects one-shot layouts missing window panes', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run)
+    await expect(manager.setLayout('@1', {
+      kind: 'pane',
+      paneId: '%1',
+      cols: 1,
+      rows: 1,
+    })).rejects.toThrow(/every pane/)
+  })
+
   it('reasserts an unchanged browser layout after an external tmux change', async () => {
     const fake = fakeRunner()
     const manager = new TmuxResizeLeaseManager(fake.run)
-    const apply = () => manager.applyLayout(
-      'client-1',
-      '@1',
-      ['%1', '%2'],
-      'equal-grid',
-      false,
-      [
-        { paneId: '%1', cols: 40, rows: 20 },
-        { paneId: '%2', cols: 40, rows: 20 },
+    const apply = () => manager.applyLayout('client-1', '@1', {
+      kind: 'split',
+      direction: 'row',
+      children: [
+        { kind: 'pane', paneId: '%1', cols: 40, rows: 20 },
+        { kind: 'pane', paneId: '%2', cols: 40, rows: 20 },
       ],
-    )
+    })
 
     await apply()
     const firstApplyCount = fake.commands.filter((command) => command[0] === 'select-layout').length

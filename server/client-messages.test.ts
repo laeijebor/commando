@@ -163,27 +163,68 @@ describe('client message validation', () => {
     }
   })
 
-  it('validates authoritative window layouts and ordered capacities', () => {
-    const message = {
-      type: 'apply_window_layout',
-      windowId: '@2',
-      paneIds: ['%3', '%4'],
-      preset: 'equal-grid',
-      stacked: false,
-      capacities: [
-        { paneId: '%3', cols: 80, rows: 24 },
-        { paneId: '%4', cols: 80, rows: 24 },
+  it('validates window layout specs', () => {
+    const spec = {
+      kind: 'split',
+      direction: 'row',
+      children: [
+        { kind: 'pane', paneId: '%3', cols: 80, rows: 24 },
+        {
+          kind: 'split',
+          direction: 'column',
+          children: [
+            { kind: 'pane', paneId: '%4', cols: 80, rows: 12 },
+            { kind: 'pane', paneId: '%5', cols: 80, rows: 11 },
+          ],
+        },
       ],
-      requestId: 'layout-1',
     }
-    expect(parseClientMessage(message)).toMatchObject({
-      ok: true,
-      message: { windowId: '@2', paneIds: ['%3', '%4'] },
-    })
-    expect(parseClientMessage({
-      ...message,
-      capacities: [...message.capacities].reverse(),
-    }).ok).toBe(false)
+    for (const type of ['apply_window_layout', 'set_window_layout'] as const) {
+      expect(parseClientMessage({
+        type,
+        windowId: '@2',
+        spec,
+        requestId: 'layout-1',
+      })).toMatchObject({
+        ok: true,
+        message: { type, windowId: '@2', spec },
+      })
+    }
+
+    const invalidSpecs: unknown[] = [
+      { kind: 'pane', paneId: 'nope', cols: 80, rows: 24 },
+      { kind: 'pane', paneId: '%1', cols: 0, rows: 24 },
+      { kind: 'split', direction: 'row', children: [] },
+      {
+        kind: 'split',
+        direction: 'row',
+        children: [{ kind: 'pane', paneId: '%1', cols: 80, rows: 24 }],
+      },
+      {
+        kind: 'split',
+        direction: 'diagonal',
+        children: [
+          { kind: 'pane', paneId: '%1', cols: 80, rows: 24 },
+          { kind: 'pane', paneId: '%2', cols: 80, rows: 24 },
+        ],
+      },
+      {
+        kind: 'split',
+        direction: 'row',
+        children: [
+          { kind: 'pane', paneId: '%1', cols: 80, rows: 24 },
+          { kind: 'pane', paneId: '%1', cols: 80, rows: 24 },
+        ],
+      },
+    ]
+    for (const invalid of invalidSpecs) {
+      expect(parseClientMessage({
+        type: 'apply_window_layout',
+        windowId: '@2',
+        spec: invalid,
+        requestId: 'layout-invalid',
+      }).ok).toBe(false)
+    }
     expect(parseClientMessage({
       type: 'release_all_resizes',
       requestId: 'layout-release-1',

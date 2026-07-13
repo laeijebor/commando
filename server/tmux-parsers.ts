@@ -5,6 +5,7 @@ import type {
   TmuxSession,
   TmuxWindow,
 } from '../shared/protocol.js'
+import { parseWindowLayout } from '../shared/window-layout.js'
 
 export const TMUX_FIELD_SEPARATOR = '\u001f'
 
@@ -20,6 +21,7 @@ export const WINDOW_FORMAT = [
   '#{session_id}',
   '#{window_name}',
   '#{window_active}',
+  '#{window_layout}',
 ].join(TMUX_FIELD_SEPARATOR)
 
 const PANE_TERMINAL_STATE_FIELDS = [
@@ -239,19 +241,20 @@ export function parseSessions(output: string): TmuxSession[] {
 export function parseWindows(output: string): TmuxWindow[] {
   const windows: TmuxWindow[] = []
 
-  for (const [id, indexValue, sessionId, name, activeValue] of rows(output, 5)) {
+  for (const [id, indexValue, sessionId, name, activeValue, layout] of rows(output, 6)) {
     const index = integer(indexValue)
     const active = flag(activeValue)
     if (
       !WINDOW_ID.test(id) ||
       !SESSION_ID.test(sessionId) ||
       index === null ||
-      active === null
+      active === null ||
+      parseWindowLayout(layout) === null
     ) {
       continue
     }
 
-    windows.push({ id, index, sessionId, name, active, paneIds: [] })
+    windows.push({ id, index, sessionId, name, active, layout, paneIds: [] })
   }
 
   return windows

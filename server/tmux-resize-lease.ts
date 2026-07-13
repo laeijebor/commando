@@ -1,8 +1,6 @@
-import type {
-  GroupLayoutPreset,
-  PaneLayoutCapacity,
-} from '../shared/protocol.js'
-import { buildTmuxLayout } from './tmux-layout.js'
+import type { LayoutSpec } from '../shared/protocol.js'
+import { layoutSpecPaneIds } from '../shared/window-layout.js'
+import { buildScaledTmuxLayout, buildTmuxLayout } from './tmux-layout.js'
 
 const FIELD_SEPARATOR = '\u001f'
 const PANE_ID = /^%\d+$/
@@ -100,16 +98,14 @@ export class TmuxResizeLeaseManager {
   applyLayout(
     ownerId: string,
     windowId: string,
-    paneIds: string[],
-    preset: GroupLayoutPreset,
-    stacked: boolean,
-    capacities: PaneLayoutCapacity[],
+    spec: LayoutSpec,
   ): Promise<boolean> {
+    const paneIds = layoutSpecPaneIds(spec)
     if (!ownerId || !WINDOW_ID.test(windowId) || paneIds.length === 0) {
       return Promise.reject(new Error('Invalid authoritative layout owner or window'))
     }
-    const built = buildTmuxLayout(preset, capacities, stacked)
-    const fingerprint = JSON.stringify([windowId, paneIds, preset, stacked, capacities])
+    const built = buildTmuxLayout(spec)
+    const fingerprint = JSON.stringify([windowId, spec])
     return this.enqueue(async () => {
       let lease = this.leasesByOwner.get(ownerId)?.get(windowId)
       const acquired = !lease
@@ -152,6 +148,37 @@ export class TmuxResizeLeaseManager {
         if (acquired) await this.restore(lease).catch(() => undefined)
         throw error
       }
+    })
+  }
+
+  /**
+   * One-shot structural layout change at the window's current size, without
+   * taking a resize lease. Leaf cols/rows in the spec act as relative weights.
+   */
+  setLayout(windowId: string, spec: LayoutSpec): Promise<boolean> {
+    const paneIds = layoutSpecPaneIds(spec)
+    if (!WINDOW_ID.test(windowId) || paneIds.length === 0) {
+      return Promise.reject(new Error('Invalid tmux window layout request'))
+    }
+    return this.enqueue(async () => {
+      const current = await this.inspectPaneState(windowId)
+      if (
+        current.order.length !== paneIds.length ||
+        current.order.some((paneId) => !paneIds.includes(paneId))
+      ) {
+        throw new Error('Window layout must include every pane in the tmux window')
+      }
+      const windowState = await this.inspectCurrentWindow(windowId)
+      if (windowState.zoomed && windowState.activePaneId) {
+        await this.run(['resize-pane', '-Z', '-t', windowState.activePaneId])
+      }
+      const built = buildScaledTmuxLayout(spec, windowState.width, windowState.height)
+      await this.reorderPanes(windowId, paneIds, current.order)
+      await this.run(['select-layout', '-t', windowId, built.layout])
+      if (current.activePaneId && paneIds.includes(current.activePaneId)) {
+        await this.run(['select-pane', '-t', current.activePaneId])
+      }
+      return true
     })
   }
 

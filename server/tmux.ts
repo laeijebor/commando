@@ -3,8 +3,7 @@ import { randomUUID } from 'node:crypto'
 import {
   MAX_PASTE_BYTES,
   type CommandoSnapshot,
-  type GroupLayoutPreset,
-  type PaneLayoutCapacity,
+  type LayoutSpec,
   type SpecialKey,
 } from '../shared/protocol.js'
 import {
@@ -204,19 +203,13 @@ export class TmuxClient {
   applyWindowLayout(
     ownerId: string,
     windowId: string,
-    paneIds: string[],
-    preset: GroupLayoutPreset,
-    stacked: boolean,
-    capacities: PaneLayoutCapacity[],
+    spec: LayoutSpec,
   ): Promise<boolean> {
-    return this.resizeLeases.applyLayout(
-      ownerId,
-      windowId,
-      paneIds,
-      preset,
-      stacked,
-      capacities,
-    )
+    return this.resizeLeases.applyLayout(ownerId, windowId, spec)
+  }
+
+  setWindowLayout(windowId: string, spec: LayoutSpec): Promise<boolean> {
+    return this.resizeLeases.setLayout(windowId, spec)
   }
 
   releasePaneResize(ownerId: string, expectedPaneId?: string): Promise<boolean> {

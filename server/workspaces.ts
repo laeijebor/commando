@@ -3,7 +3,6 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import type {
-  GroupLayoutPreset,
   SavedGroup,
   SavedWorkspace,
 } from '../shared/protocol.js'
@@ -17,12 +16,6 @@ const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
 const PANE_ID = /^%\d+$/
 const GROUP_ID = /^[A-Za-z0-9._-]{1,64}$/
-const LAYOUTS = new Set<GroupLayoutPreset>([
-  'equal-grid',
-  'full-then-halves',
-  'two-full-two-halves',
-  'lead-and-stack',
-])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -37,7 +30,7 @@ function cleanName(value: unknown): string | null {
 
 function parseGroup(value: unknown): SavedGroup | null {
   if (!isRecord(value)) return null
-  const { id, name, sessionId, windowId, paneIds, layout } = value
+  const { id, name, sessionId, windowId, paneIds } = value
   const parsedName = cleanName(name)
 
   if (
@@ -50,9 +43,7 @@ function parseGroup(value: unknown): SavedGroup | null {
     !WINDOW_ID.test(windowId) ||
     !Array.isArray(paneIds) ||
     paneIds.length === 0 ||
-    paneIds.length > 32 ||
-    typeof layout !== 'string' ||
-    !LAYOUTS.has(layout as GroupLayoutPreset)
+    paneIds.length > 32
   ) {
     return null
   }
@@ -68,7 +59,6 @@ function parseGroup(value: unknown): SavedGroup | null {
     sessionId,
     windowId,
     paneIds: [...paneIds],
-    layout: layout as GroupLayoutPreset,
   }
 }
 
