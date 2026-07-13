@@ -29,8 +29,9 @@ import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
-import { NoteStore } from './notes.js'
 import { handleNotesApi } from './notes-api.js'
+import { handleNoteVaultsApi } from './note-vaults-api.js'
+import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
@@ -406,7 +407,7 @@ async function main(): Promise<void> {
     : null
   const tmux = new TmuxClient()
   const workspaces = new WorkspaceStore()
-  const notes = new NoteStore()
+  const notes = new NoteVaultManager()
   const linear = new LinearService()
   const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
@@ -1140,6 +1141,7 @@ async function main(): Promise<void> {
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
         if (await sessionManagement.handle(request, response, url)) return

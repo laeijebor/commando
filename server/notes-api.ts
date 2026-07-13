@@ -6,12 +6,14 @@ import {
   NoteStore,
   NoteValidationError,
 } from './notes.js'
+import { NoteVaultManager } from './note-vaults.js'
 
 const MAX_REQUEST_BYTES = 600 * 1024
 const NOTES_PATH = '/api/notes'
 
 type NotesRoute =
   | { kind: 'collection' }
+  | { kind: 'folders' }
   | { kind: 'note'; id: string }
   | { kind: 'images'; id: string; name: string | null }
 
@@ -73,6 +75,7 @@ function notesRouteFromPath(pathname: string): NotesRoute | undefined {
   if (segments.some((segment) => segment.length === 0)) return undefined
   try {
     const decoded = segments.map((segment) => decodeURIComponent(segment))
+    if (decoded.length === 1 && decoded[0] === 'folders') return { kind: 'folders' }
     if (decoded.length === 1) return { kind: 'note', id: decoded[0] }
     if (decoded.length === 2 && decoded[1] === 'images') {
       return { kind: 'images', id: decoded[0], name: null }
@@ -110,15 +113,18 @@ export async function handleNotesApi(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
-  store: NoteStore,
+  source: NoteStore | NoteVaultManager,
 ): Promise<boolean> {
   const route = notesRouteFromPath(url.pathname)
   if (!route) return false
 
   try {
+    const store = source instanceof NoteVaultManager
+      ? await source.store(url.searchParams.get('vault'))
+      : source
     if (route.kind === 'collection') {
       if (request.method === 'GET') {
-        writeJson(response, 200, { notes: await store.list() })
+        writeJson(response, 200, await store.snapshot())
         return true
       }
       if (request.method === 'POST') {
@@ -126,6 +132,19 @@ export async function handleNotesApi(
         return true
       }
       methodNotAllowed(response, 'GET, POST')
+      return true
+    }
+
+    if (route.kind === 'folders') {
+      if (request.method === 'POST') {
+        const value = await readJson(request)
+        const folder = typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? (value as Record<string, unknown>).folder
+          : undefined
+        writeJson(response, 201, { folders: await store.createFolder(folder) })
+        return true
+      }
+      methodNotAllowed(response, 'POST')
       return true
     }
 

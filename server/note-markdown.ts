@@ -41,7 +41,7 @@ export function parseNoteMarkdown(content: string): unknown | null {
   }
 }
 
-export function serializeNoteMarkdown(note: Note): string {
+export function serializeNoteMarkdown(note: Pick<Note, 'id' | 'title' | 'body' | 'createdAt' | 'updatedAt'>): string {
   const frontmatter = stringify(
     {
       commando_id: note.id,

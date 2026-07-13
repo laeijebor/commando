@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { NoteValidationError } from './notes.js'
+import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 
 const temporaryDirectories: string[] = []
+const servers: Server[] = []
 
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'commando-vaults-test-')))
@@ -24,8 +26,24 @@ async function fixture() {
 }
 
 afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
+
+async function startApi(manager: NoteVaultManager): Promise<string> {
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      if (!(await handleNoteVaultsApi(request, response, url, manager))) response.writeHead(404).end()
+    })()
+  })
+  servers.push(server)
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+}
 
 describe('NoteVaultManager', () => {
   it('migrates the old default directory into notes-vaults/default', async () => {
@@ -97,4 +115,39 @@ describe('NoteVaultManager', () => {
     await expect(manager.create(join(paths.root, 'missing', 'vault'))).rejects.toThrow('parent')
     await expect(manager.create(override)).rejects.toThrow('already exists')
   })
+
+  it('serves vault history, create, select, and clear endpoints', async () => {
+    const paths = await fixture()
+    const manager = new NoteVaultManager({ ...paths, environment: {} })
+    const baseUrl = await startApi(manager)
+    const initial = await fetch(`${baseUrl}/api/note-vaults`).then((response) => response.json()) as { activeVaultId: string }
+    const createdPath = join(paths.parent, 'api-created')
+
+    const createdResponse = await fetch(`${baseUrl}/api/note-vaults/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: createdPath }),
+    })
+    expect(createdResponse.status).toBe(201)
+    const created = await createdResponse.json() as { activeVaultId: string; vaults: unknown[] }
+    expect(created.activeVaultId).not.toBe(initial.activeVaultId)
+    expect(created.vaults).toHaveLength(2)
+
+    expect((await fetch(`${baseUrl}/api/note-vaults/active`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: initial.activeVaultId }),
+    })).status).toBe(200)
+    const cleared = await fetch(`${baseUrl}/api/note-vaults/history`, { method: 'DELETE' }).then((response) => response.json()) as { vaults: unknown[] }
+    expect(cleared.vaults).toHaveLength(1)
+
+    const invalid = await fetch(`${baseUrl}/api/note-vaults/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'relative' }),
+    })
+    expect(invalid.status).toBe(400)
+  })
 })
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'

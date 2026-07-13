@@ -44,6 +44,7 @@ export type Note = {
   id: string
   title: string
   body: string
+  folder: string
   createdAt: number
   updatedAt: number
 }
@@ -51,9 +52,11 @@ export type Note = {
 export type NoteDraft = {
   title: string
   body: string
+  folder: string
 }
 
-export type NoteUpdate = NoteDraft & {
+export type NoteUpdate = Pick<NoteDraft, 'title' | 'body'> & {
+  folder?: string
   expectedUpdatedAt?: number
 }
 
@@ -94,6 +97,22 @@ function validText(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.length <= maximum && !value.includes('\u0000')
 }
 
+export function parseNoteFolder(value: unknown): string | null {
+  if (value === undefined || value === '') return ''
+  if (typeof value !== 'string' || value.length > 512 || value.startsWith('/') || value.includes('\\')) return null
+  const segments = value.split('/')
+  if (segments.length > 8 || segments.some((segment) => (
+    segment.length === 0 ||
+    segment.length > 128 ||
+    segment === '.' ||
+    segment === '..' ||
+    segment === 'images' ||
+    segment.startsWith('.') ||
+    /[\u0000-\u001f\u007f]/.test(segment)
+  ))) return null
+  return segments.join('/')
+}
+
 function validImageData(data: Buffer, contentType: NoteImageContentType): boolean {
   if (data.length === 0 || data.length > MAX_NOTE_IMAGE_BYTES) return false
   if (contentType === 'image/png') {
@@ -119,14 +138,21 @@ export function parseNoteDraft(value: unknown): NoteDraft | null {
   if (!isRecord(value)) return null
   if (!validText(value.title, MAX_NOTE_TITLE_LENGTH)) return null
   if (!validText(value.body, MAX_NOTE_BODY_LENGTH)) return null
-  return { title: value.title, body: value.body }
+  const folder = parseNoteFolder(value.folder)
+  if (folder === null) return null
+  return { title: value.title, body: value.body, folder }
 }
 
 function parseNoteUpdate(value: unknown): NoteUpdate | null {
   const draft = parseNoteDraft(value)
   if (!draft || !isRecord(value)) return null
   if (value.expectedUpdatedAt !== undefined && !validTimestamp(value.expectedUpdatedAt)) return null
-  return { ...draft, expectedUpdatedAt: value.expectedUpdatedAt as number | undefined }
+  return {
+    title: draft.title,
+    body: draft.body,
+    ...(value.folder === undefined ? {} : { folder: draft.folder }),
+    expectedUpdatedAt: value.expectedUpdatedAt as number | undefined,
+  }
 }
 
 export function parseNote(value: unknown): Note | null {
@@ -181,15 +207,15 @@ export function parseNotesFile(value: unknown): NotesFile {
 
 export function defaultNotesDirectory(environment: NodeJS.ProcessEnv = process.env): string {
   const configured = environment.COMMANDO_NOTES_DIR
-  if (configured && !isAbsolute(configured)) {
+  if (configured !== undefined && !isAbsolute(configured)) {
     throw new Error('COMMANDO_NOTES_DIR must be an absolute path')
   }
-  return configured ?? join(homedir(), '.commando', 'notes')
+  return configured ?? join(homedir(), '.commando', 'notes-vaults', 'default')
 }
 
 export function defaultLegacyNotesPath(environment: NodeJS.ProcessEnv = process.env): string {
   const configured = environment.COMMANDO_NOTES_PATH
-  if (configured && !isAbsolute(configured)) {
+  if (configured !== undefined && !isAbsolute(configured)) {
     throw new Error('COMMANDO_NOTES_PATH must be an absolute path')
   }
   return configured ?? join(homedir(), '.commando', 'notes.json')
@@ -228,9 +254,27 @@ export class NoteStore {
   }
 
   async list(): Promise<Note[]> {
+    return (await this.snapshot()).notes
+  }
+
+  async snapshot(): Promise<{ notes: Note[]; folders: string[] }> {
     await this.writes
     await this.ensureInitialized()
-    return ordered((await this.readStoredNotes()).map(({ note }) => note))
+    const scanned = await this.scanVault()
+    return { notes: ordered(scanned.notes.map(({ note }) => note)), folders: scanned.folders }
+  }
+
+  createFolder(value: unknown): Promise<string[]> {
+    const folder = parseNoteFolder(value)
+    if (folder === null || !folder) return Promise.reject(new NoteValidationError('Invalid note folder'))
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      const path = join(this.directory, folder)
+      await mkdir(path, { recursive: true, mode: 0o700 })
+      await chmod(path, 0o700)
+      await this.syncDirectory(path)
+      return (await this.scanVault()).folders
+    })
   }
 
   async get(id: string): Promise<Note> {
@@ -284,9 +328,18 @@ export class NoteStore {
         ...stored.note,
         title: update.title,
         body: update.body,
+        folder: update.folder ?? stored.note.folder,
         updatedAt: Math.max(Date.now(), stored.note.updatedAt + 1),
       }
-      await this.writeNote(note, stored.path, stored.fingerprint)
+      const rollbackImages = note.folder === stored.note.folder
+        ? null
+        : await this.moveImageDirectory(note.id, stored.note.folder, note.folder)
+      try {
+        await this.writeNote(note, stored.path, stored.fingerprint)
+      } catch (error) {
+        await rollbackImages?.()
+        throw error
+      }
       return { ...note }
     })
   }
@@ -307,11 +360,10 @@ export class NoteStore {
 
     return this.enqueue(async () => {
       await this.ensureInitialized()
-      if (!(await this.readStoredNotes()).some(({ note }) => note.id === id)) {
-        throw new NoteNotFoundError(id)
-      }
+      const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+      if (!stored) throw new NoteNotFoundError(id)
 
-      const imageDirectory = join(this.directory, 'images', id)
+      const imageDirectory = this.imageDirectory(stored.note.folder, id)
       await mkdir(imageDirectory, { recursive: true, mode: 0o700 })
       await chmod(imageDirectory, 0o700)
       const name = `${randomUUID()}.${NOTE_IMAGE_FORMATS[supportedContentType]}`
@@ -345,9 +397,11 @@ export class NoteStore {
     if (!contentType) throw new NoteValidationError('Invalid image name')
     await this.writes
     await this.ensureInitialized()
+    const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+    if (!stored) throw new NoteNotFoundError(id)
     try {
       return {
-        data: await readFile(join(this.directory, 'images', id, name)),
+        data: await readFile(join(this.imageDirectory(stored.note.folder, id), name)),
         contentType,
       }
     } catch (error) {
@@ -374,7 +428,7 @@ export class NoteStore {
         throw new NoteConflictError()
       }
       await rm(stored.path)
-      await rm(join(this.directory, 'images', id), { recursive: true, force: true })
+      await rm(this.imageDirectory(stored.note.folder, id), { recursive: true, force: true })
       await this.syncDirectory()
     })
   }
@@ -440,31 +494,52 @@ export class NoteStore {
   }
 
   private async readStoredNotes(): Promise<StoredNote[]> {
-    const entries = await readdir(this.directory, { withFileTypes: true })
-    const notes: StoredNote[] = []
+    return (await this.scanVault()).notes
+  }
 
-    for (const entry of entries) {
-      if (!entry.isFile() || !isMarkdownNoteFile(entry.name)) continue
-      const path = join(this.directory, entry.name)
-      let stable: { content: string; fingerprint: FileFingerprint }
-      try {
-        stable = await this.readStableFile(path)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
+  private async scanVault(): Promise<{ notes: StoredNote[]; folders: string[] }> {
+    const notes: StoredNote[] = []
+    const folders: string[] = []
+    let visitedEntries = 0
+
+    const visit = async (directory: string, folder: string): Promise<void> => {
+      const entries = await readdir(directory, { withFileTypes: true })
+      visitedEntries += entries.length
+      if (visitedEntries > 10_000) throw new Error('Note vault contains too many entries')
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (entry.name === 'images' || entry.name.startsWith('.')) continue
+          const childFolder = folder ? `${folder}/${entry.name}` : entry.name
+          if (parseNoteFolder(childFolder) === null) continue
+          folders.push(childFolder)
+          await visit(join(directory, entry.name), childFolder)
+          continue
+        }
+        if (!entry.isFile() || !isMarkdownNoteFile(entry.name)) continue
+        const path = join(directory, entry.name)
+        let stable: { content: string; fingerprint: FileFingerprint }
+        try {
+          stable = await this.readStableFile(path)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+          throw error
+        }
+        const { content, fingerprint } = stable
+        const value = parseNoteMarkdown(content)
+        if (value === null) continue
+        const parsed = parseNote({ ...(value as Record<string, unknown>), folder })
+        if (!parsed) throw new Error(`Markdown note has invalid Commando metadata: ${entry.name}`)
+        parsed.updatedAt = Math.max(parsed.updatedAt, Math.round(fingerprint.modifiedAt))
+        notes.push({ note: parsed, path, fingerprint })
       }
-      const { content, fingerprint } = stable
-      const value = parseNoteMarkdown(content)
-      if (value === null) continue
-      const parsed = parseNote(value)
-      if (!parsed) throw new Error(`Markdown note has invalid Commando metadata: ${entry.name}`)
-      parsed.updatedAt = Math.max(parsed.updatedAt, Math.round(fingerprint.modifiedAt))
-      notes.push({ note: parsed, path, fingerprint })
     }
+
+    await visit(this.directory, '')
 
     const ids = notes.map(({ note }) => note.id)
     if (new Set(ids).size !== ids.length) throw new Error('Markdown notes contain duplicate note ids')
-    return notes
+    return { notes, folders: folders.sort((left, right) => left.localeCompare(right)) }
   }
 
   private async writeNote(
@@ -472,8 +547,10 @@ export class NoteStore {
     previousPath?: string,
     expectedFingerprint?: FileFingerprint,
   ): Promise<void> {
-    const path = join(this.directory, noteFileName(note))
-    const temporaryPath = join(this.directory, `.${note.id}.${process.pid}.${randomUUID()}.tmp`)
+    const folderDirectory = join(this.directory, note.folder)
+    await mkdir(folderDirectory, { recursive: true, mode: 0o700 })
+    const path = join(folderDirectory, noteFileName(note))
+    const temporaryPath = join(folderDirectory, `.${note.id}.${process.pid}.${randomUUID()}.tmp`)
     let handle: Awaited<ReturnType<typeof open>> | null = null
 
     try {
@@ -493,11 +570,42 @@ export class NoteStore {
       await chmod(path, 0o600)
       await utimes(path, new Date(), new Date(note.updatedAt))
       if (previousPath && previousPath !== path) await rm(previousPath)
-      await this.syncDirectory()
+      await this.syncDirectory(folderDirectory)
     } catch (error) {
       await handle?.close().catch(() => undefined)
       await rm(temporaryPath, { force: true }).catch(() => undefined)
       throw error
+    }
+  }
+
+  private imageDirectory(folder: string, id: string): string {
+    return join(this.directory, folder, 'images', id)
+  }
+
+  private async moveImageDirectory(
+    id: string,
+    fromFolder: string,
+    toFolder: string,
+  ): Promise<(() => Promise<void>) | null> {
+    const source = this.imageDirectory(fromFolder, id)
+    const target = this.imageDirectory(toFolder, id)
+    try {
+      await stat(source)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+    await mkdir(join(this.directory, toFolder, 'images'), { recursive: true, mode: 0o700 })
+    try {
+      await stat(target)
+      throw new NoteConflictError()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await rename(source, target)
+    return async () => {
+      await mkdir(join(this.directory, fromFolder, 'images'), { recursive: true, mode: 0o700 })
+      await rename(target, source)
     }
   }
 

@@ -90,6 +90,7 @@ describe('note validation and Markdown codec', () => {
     expect(parseNoteDraft({ title: 'Plan', body: 'Ship it' })).toEqual({
       title: 'Plan',
       body: 'Ship it',
+      folder: '',
     })
     expect(parseNoteDraft({ title: 'bad\u0000title', body: '' })).toBeNull()
     expect(parseNoteDraft({ title: '', body: 'x'.repeat(MAX_NOTE_BODY_LENGTH + 1) })).toBeNull()
@@ -99,7 +100,7 @@ describe('note validation and Markdown codec', () => {
   })
 
   it('round-trips Commando frontmatter without claiming unrelated Markdown', () => {
-    const note: Note = {
+    const note = {
       id: 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba',
       title: 'Plan: ship safely',
       body: '# Heading\n\n- [ ] Verify **Markdown**',
@@ -162,6 +163,33 @@ describe('NoteStore', () => {
     await expect(store.list()).resolves.toHaveLength(1)
   })
 
+  it('creates folders, scans nested notes, and moves notes with their images', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    await store.createFolder('Projects/Commando')
+    await store.createFolder('Archive')
+    const note = await store.create({ title: 'Nested', body: 'With image', folder: 'Projects/Commando' })
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const imagePath = await store.saveImage(note.id, 'image/png', png)
+    const imageName = imagePath.split('/').at(-1)!
+
+    expect(await store.snapshot()).toMatchObject({
+      notes: [{ id: note.id, folder: 'Projects/Commando' }],
+      folders: ['Archive', 'Projects', 'Projects/Commando'],
+    })
+    expect((await stat(join(directory, 'Projects', 'Commando', imagePath))).isFile()).toBe(true)
+
+    const moved = await store.update(note.id, {
+      title: note.title,
+      body: note.body,
+      folder: 'Archive',
+      expectedUpdatedAt: note.updatedAt,
+    })
+    expect(moved.folder).toBe('Archive')
+    expect((await stat(join(directory, 'Archive', 'images', note.id, imageName))).isFile()).toBe(true)
+    await expect(store.getImage(note.id, imageName)).resolves.toEqual({ data: png, contentType: 'image/png' })
+    await expect(store.createFolder('../outside')).rejects.toBeInstanceOf(NoteValidationError)
+  })
+
   it('stores validated images privately beside the vault and removes them with their note', async () => {
     const { directory, store } = await temporaryNotesStore()
     const note = await store.create({ title: 'With image', body: '' })
@@ -181,7 +209,7 @@ describe('NoteStore', () => {
 
   it('migrates legacy JSON once while preserving metadata and the source backup', async () => {
     const { directory, legacyPath, store } = await temporaryNotesStore()
-    const note: Note = {
+    const note: Omit<Note, 'folder'> = {
       id: 'c362643b-b6f8-447f-9f58-224cc0d4973b',
       title: 'Legacy note',
       body: 'Preserve me',
@@ -191,7 +219,7 @@ describe('NoteStore', () => {
     await mkdir(join(legacyPath, '..'), { recursive: true })
     await writeFile(legacyPath, `${JSON.stringify({ version: 1, notes: [note] })}\n`, 'utf8')
 
-    await expect(store.list()).resolves.toEqual([note])
+    await expect(store.list()).resolves.toEqual([{ ...note, folder: '' }])
     await expect(readFile(`${legacyPath}.migrated`, 'utf8')).resolves.toContain('Legacy note')
     expect(await markdownFiles(directory)).toHaveLength(1)
 
