@@ -54,6 +54,10 @@ export async function handleNoteVaultsApi(
       writeJson(response, 200, await manager.snapshot())
       return true
     }
+    if (action === 'browse' && request.method === 'GET') {
+      writeJson(response, 200, await manager.browse(url.searchParams.get('path') ?? undefined))
+      return true
+    }
     if (action === 'open' && request.method === 'POST') {
       writeJson(response, 200, await manager.open(record(await readJson(request)).path))
       return true

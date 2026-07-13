@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -18,6 +20,7 @@ async function fixture() {
   await mkdir(parent, { recursive: true })
   return {
     root,
+    home,
     parent,
     statePath: join(home, 'note-vaults.json'),
     defaultDirectory: join(parent, 'default'),
@@ -137,11 +140,31 @@ describe('NoteVaultManager', () => {
     await expect(manager.create(override)).rejects.toThrow('already exists')
   })
 
+  it('browses canonical directories without exposing files', async () => {
+    const paths = await fixture()
+    const manager = new NoteVaultManager({ ...paths, environment: {} })
+    await manager.snapshot()
+    await mkdir(join(paths.parent, 'Zebra'))
+    await mkdir(join(paths.parent, 'alpha'))
+    await writeFile(join(paths.parent, 'not-a-folder.txt'), 'hidden from picker')
+
+    const result = await manager.browse(paths.parent)
+
+    expect(result.path).toBe(paths.parent)
+    expect(result.parent).toBe(paths.home)
+    expect(result.directories.map((entry) => entry.name)).toEqual(['alpha', 'default', 'Zebra'])
+    expect(result.directories.every((entry) => entry.path.startsWith(paths.parent))).toBe(true)
+    await expect(manager.browse(join(paths.parent, 'missing'))).rejects.toThrow('does not exist')
+  })
+
   it('serves vault history, create, select, and clear endpoints', async () => {
     const paths = await fixture()
     const manager = new NoteVaultManager({ ...paths, environment: {} })
     const baseUrl = await startApi(manager)
     const initial = await fetch(`${baseUrl}/api/note-vaults`).then((response) => response.json()) as { activeVaultId: string }
+    const browse = await fetch(`${baseUrl}/api/note-vaults/browse?path=${encodeURIComponent(paths.parent)}`)
+    expect(browse.status).toBe(200)
+    expect(await browse.json()).toMatchObject({ path: paths.parent, directories: [{ name: 'default' }] })
     expect((await fetch(`${baseUrl}/api/notes`)).status).toBe(400)
     expect((await fetch(`${baseUrl}/api/notes?vault=${initial.activeVaultId}`)).status).toBe(200)
     const createdPath = join(paths.parent, 'api-created')
@@ -172,5 +195,3 @@ describe('NoteVaultManager', () => {
     expect(invalid.status).toBe(400)
   })
 })
-import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'

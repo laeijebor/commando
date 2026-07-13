@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, parse } from 'node:path'
 import { defaultLegacyNotesPath, NoteStore, NoteValidationError } from './notes.js'
@@ -27,6 +27,13 @@ export type NoteVaultSummary = StoredVault & {
 export type NoteVaultSnapshot = {
   activeVaultId: string
   vaults: NoteVaultSummary[]
+}
+
+export type NoteVaultBrowseResult = {
+  path: string
+  parent: string | null
+  home: string
+  directories: Array<{ name: string; path: string }>
 }
 
 export type NoteVaultManagerOptions = {
@@ -146,6 +153,29 @@ export class NoteVaultManager {
       this.stores.set(vault.path, store)
     }
     return store
+  }
+
+  async browse(path?: unknown): Promise<NoteVaultBrowseResult> {
+    await this.writes
+    await this.ensureInitialized()
+    const active = this.state!.vaults.find((vault) => vault.id === this.state!.activeVaultId)!
+    const current = await this.canonicalBrowseDirectory(path === undefined || path === '' ? active.path : path)
+    const home = await this.canonicalBrowseDirectory(homedir())
+    let entries
+    try {
+      entries = await readdir(current, { withFileTypes: true })
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EACCES' || code === 'EPERM') throw new NoteValidationError('Permission denied while reading this directory')
+      throw error
+    }
+    if (entries.length > 5_000) throw new NoteValidationError('Directory contains too many entries')
+    const directories = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ name: entry.name, path: join(current, entry.name) }))
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' }))
+    const parent = dirname(current)
+    return { path: current, parent: parent === current ? null : parent, home, directories }
   }
 
   open(path: unknown): Promise<NoteVaultSnapshot> {
@@ -290,6 +320,14 @@ export class NoteVaultManager {
     const canonical = await realpath(requested).catch(() => null)
     if (!canonical) throw new NoteValidationError('Vault directory does not exist')
     if (parse(canonical).root === canonical) throw new NoteValidationError('Filesystem root cannot be used as a note vault')
+    await this.requireDirectory(canonical)
+    return canonical
+  }
+
+  private async canonicalBrowseDirectory(value: unknown): Promise<string> {
+    const requested = validateAbsolutePath(value)
+    const canonical = await realpath(requested).catch(() => null)
+    if (!canonical) throw new NoteValidationError('Directory does not exist')
     await this.requireDirectory(canonical)
     return canonical
   }
