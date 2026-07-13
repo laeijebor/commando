@@ -93,17 +93,37 @@ const paneProps = {
 }
 
 describe('terminal pane actions', () => {
-  it('opens the context menu for the targeted pane', () => {
+  it('leaves an unmodified right click to the terminal application', () => {
     const onOpenMenu = vi.fn()
-    const view = render(<TerminalPaneCard {...paneProps} onOpenMenu={onOpenMenu} />)
+    const onFocus = vi.fn()
+    const view = render(
+      <TerminalPaneCard {...paneProps} onFocus={onFocus} onOpenMenu={onOpenMenu} />,
+    )
 
     fireEvent.contextMenu(view.container.querySelector('[data-pane-id="%12"]')!, {
       clientX: 120,
       clientY: 80,
     })
 
+    expect(onOpenMenu).not.toHaveBeenCalled()
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+
+  it('opens the context menu for the targeted pane on Command-right click', () => {
+    const onOpenMenu = vi.fn()
+    const onFocus = vi.fn()
+    const view = render(
+      <TerminalPaneCard {...paneProps} onFocus={onFocus} onOpenMenu={onOpenMenu} />,
+    )
+
+    fireEvent.contextMenu(view.container.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      metaKey: true,
+    })
+
     expect(onOpenMenu).toHaveBeenCalledWith(120, 80)
-    expect(paneProps.onFocus).toHaveBeenCalled()
+    expect(onFocus).toHaveBeenCalled()
   })
 
   it('renames the pane inline', async () => {

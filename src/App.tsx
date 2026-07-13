@@ -329,6 +329,7 @@ export function TerminalPaneCard({
       onDragOver={onDragOver}
       onDrop={onDrop}
       onContextMenu={(event) => {
+        if (!event.metaKey) return
         event.preventDefault()
         onFocus()
         onOpenMenu(event.clientX, event.clientY)
@@ -348,7 +349,7 @@ export function TerminalPaneCard({
           }
         }}
         tabIndex={0}
-        title={renaming ? undefined : 'Drag to reorder this pane; right click for pane actions'}
+        title={renaming ? undefined : 'Drag to reorder this pane; Cmd-right click for pane actions'}
       >
         <span className={`pane-icon provider-${status?.provider ?? 'unknown'}`}>
           {status ? <Bot aria-hidden="true" /> : <Terminal aria-hidden="true" />}
