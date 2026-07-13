@@ -351,8 +351,8 @@ function TerminalPaneCard({
         registerFocusable={registerFocusable}
       />
       <footer className="pane-footer">
-        <span className={`input-indicator${connected ? ' live' : ''}`} />
-        <span>{connected ? 'Input armed' : 'Read only while offline'}</span>
+        <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
+        <span>{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
         <span>{pane.width}x{pane.height}</span>
         <span className="pane-path" title={pane.path}>{pane.path}</span>
       </footer>

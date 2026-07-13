@@ -1182,11 +1182,7 @@ kbd {
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   background: #06100d;
-  transition: box-shadow 150ms ease, opacity 150ms ease;
-}
-
-.terminal-pane.is-focused {
-  box-shadow: inset 0 0 0 1px rgba(133, 244, 177, 0.55);
+  transition: opacity 150ms ease;
 }
 
 .terminal-pane.is-maximized {
@@ -1201,6 +1197,16 @@ kbd {
   border-bottom: 1px solid #20332c;
   background: #0e1a17;
   cursor: grab;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.terminal-pane.is-focused .pane-head {
+  border-bottom-color: rgba(133, 244, 177, 0.55);
+  background: linear-gradient(90deg, rgba(133, 244, 177, 0.16), rgba(133, 244, 177, 0.05));
+}
+
+.terminal-pane.is-focused .pane-heading strong {
+  color: var(--green);
 }
 
 .pane-head:active {
@@ -1350,6 +1356,10 @@ kbd {
 
 .pane-footer > span:nth-child(2) {
   white-space: nowrap;
+}
+
+.terminal-pane.is-focused .pane-footer > span:nth-child(2) {
+  color: var(--green);
 }
 
 .pane-footer > span:nth-child(3) {
