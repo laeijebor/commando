@@ -35,15 +35,21 @@ import { SessionManagementApi } from './session-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
+import {
+  configuredAuthDatabasePath,
+  configuredAuthSecret,
+  configuredOwnerEmail,
+  createAuthService,
+  disabledAuthBootstrap,
+} from './auth.js'
+import { createNetworkAccess } from './network-access.js'
 
-const HOST = '127.0.0.1'
 const DEFAULT_PORT = 4310
 const SNAPSHOT_INTERVAL_MS = 1_000
 const MAX_WS_BUFFERED_BYTES = 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "base-uri 'none'",
@@ -130,7 +136,7 @@ function matchesToken(candidate: string | null, digest: Buffer): boolean {
   return timingSafeEqual(tokenDigest(candidate), digest)
 }
 
-function requestIsAuthorized(
+function requestHasValidToken(
   request: IncomingMessage,
   url: URL,
   digest: Buffer,
@@ -142,52 +148,10 @@ function requestIsAuthorized(
   return matchesToken(match?.[1] ?? null, digest)
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  return LOOPBACK_HOSTS.has(hostname.toLowerCase())
-}
-
-function validHost(request: IncomingMessage): boolean {
-  const host = request.headers.host
-  if (!host || host.length > 255) return false
-  try {
-    const parsed = new URL(`http://${host}`)
-    return (
-      isLoopbackHostname(parsed.hostname) &&
-      parsed.username === '' &&
-      parsed.password === '' &&
-      parsed.pathname === '/' &&
-      parsed.search === '' &&
-      parsed.hash === ''
-    )
-  } catch {
-    return false
-  }
-}
-
-function validOrigin(request: IncomingMessage): boolean {
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  if (origin.length > 512) return false
-  try {
-    const parsed = new URL(origin)
-    return (
-      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-      isLoopbackHostname(parsed.hostname) &&
-      parsed.username === '' &&
-      parsed.password === '' &&
-      parsed.pathname === '/' &&
-      parsed.search === '' &&
-      parsed.hash === ''
-    )
-  } catch {
-    return false
-  }
-}
-
 function requestUrl(request: IncomingMessage): URL | null {
   if (!request.url || request.url.length > 8_192) return null
   try {
-    return new URL(request.url, `http://${HOST}`)
+    return new URL(request.url, 'http://127.0.0.1')
   } catch {
     return null
   }
@@ -425,8 +389,20 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
 
 async function main(): Promise<void> {
   const port = configuredPort()
+  const networkAccess = createNetworkAccess(port)
   const token = authToken()
   const digest = tokenDigest(token)
+  const ownerEmail = configuredOwnerEmail()
+  const authBaseURL = process.env.BETTER_AUTH_URL ?? `http://127.0.0.1:${port}`
+  const auth = ownerEmail
+    ? await createAuthService({
+        ownerEmail,
+        databasePath: configuredAuthDatabasePath(),
+        secret: await configuredAuthSecret(),
+        baseURL: authBaseURL,
+        trustedOrigins: [...new Set([...networkAccess.trustedOrigins, authBaseURL])],
+      })
+    : null
   const tmux = new TmuxClient()
   const workspaces = new WorkspaceStore()
   const notes = new NoteStore()
@@ -446,6 +422,13 @@ async function main(): Promise<void> {
   let outputRevision = 0
   let lastTmuxError = ''
   let structuralRefreshTimer: NodeJS.Timeout | undefined
+
+  const requestIsAuthorized = async (
+    request: IncomingMessage,
+    url: URL,
+  ): Promise<boolean> => (
+    requestHasValidToken(request, url, digest) || (await auth?.hasSession(request)) === true
+  )
 
   const broadcast = (message: ServerMessage): void => {
     for (const client of clients) send(client, message)
@@ -1081,9 +1064,9 @@ async function main(): Promise<void> {
     socket.on('error', removeClient)
   })
 
-  const httpServer = createServer((request, response) => {
+  const requestListener = (request: IncomingMessage, response: ServerResponse): void => {
     void (async () => {
-      if (!validHost(request) || !validOrigin(request)) {
+      if (!networkAccess.validRequest(request)) {
         writeJson(response, 403, { error: 'Invalid host or origin' })
         return
       }
@@ -1094,13 +1077,32 @@ async function main(): Promise<void> {
         return
       }
 
+      if (url.pathname === '/api/auth/bootstrap') {
+        if (request.method !== 'GET') {
+          response.writeHead(405, { Allow: 'GET' })
+          response.end()
+          return
+        }
+        writeJson(response, 200, auth?.bootstrap() ?? disabledAuthBootstrap())
+        return
+      }
+
+      if (url.pathname.startsWith('/api/auth/')) {
+        if (!auth) {
+          writeJson(response, 404, { error: 'Email authentication is not configured' })
+          return
+        }
+        await auth.handle(request, response)
+        return
+      }
+
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {
           response.writeHead(405, { Allow: 'GET' })
           response.end()
           return
         }
-        if (!requestIsAuthorized(request, url, digest)) {
+        if (!(await requestIsAuthorized(request, url))) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
           writeJson(response, 401, { error: 'Unauthorized' })
           return
@@ -1122,7 +1124,7 @@ async function main(): Promise<void> {
       }
 
       if (url.pathname.startsWith('/api/')) {
-        if (!requestIsAuthorized(request, url, digest)) {
+        if (!(await requestIsAuthorized(request, url))) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
           writeJson(response, 401, { error: 'Unauthorized' })
           return
@@ -1152,45 +1154,61 @@ async function main(): Promise<void> {
       if (!response.headersSent) writeJson(response, 500, { error: 'Internal error' })
       else response.destroy()
     })
-  })
+  }
 
-  httpServer.on('upgrade', (request, socket, head) => {
-    if (!validHost(request) || !validOrigin(request)) {
-      rejectUpgrade(socket, 403, 'Forbidden')
-      return
-    }
-    const url = requestUrl(request)
-    if (!url || url.pathname !== '/ws') {
-      rejectUpgrade(socket, 404, 'Not Found')
-      return
-    }
-    if (!requestIsAuthorized(request, url, digest)) {
-      rejectUpgrade(socket, 401, 'Unauthorized')
-      return
-    }
-    webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      webSocketServer.emit('connection', webSocket, request)
+  const httpServers = networkAccess.listeners.map((listener) => {
+    const server = createServer(requestListener)
+    server.on('upgrade', (request, socket, head) => {
+      void (async () => {
+        if (!networkAccess.validRequest(request)) {
+          rejectUpgrade(socket, 403, 'Forbidden')
+          return
+        }
+        const url = requestUrl(request)
+        if (!url || url.pathname !== '/ws') {
+          rejectUpgrade(socket, 404, 'Not Found')
+          return
+        }
+        if (!(await requestIsAuthorized(request, url))) {
+          rejectUpgrade(socket, 401, 'Unauthorized')
+          return
+        }
+        webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+          webSocketServer.emit('connection', webSocket, request)
+        })
+      })().catch((error: unknown) => {
+        console.error('[commando] WebSocket upgrade failed', error)
+        rejectUpgrade(socket, 500, 'Internal Server Error')
+      })
     })
+    return { listener, server }
   })
 
   await refreshSnapshot().catch(reportTmuxError)
 
-  await new Promise<void>((resolveListen, rejectListen) => {
+  await Promise.all(httpServers.map(({ listener, server }) => new Promise<void>((resolveListen, rejectListen) => {
     const onError = (error: Error): void => rejectListen(error)
-    httpServer.once('error', onError)
-    httpServer.listen(port, HOST, () => {
-      httpServer.off('error', onError)
+    server.once('error', onError)
+    server.listen(port, listener, () => {
+      server.off('error', onError)
       resolveListen()
     })
-  })
+  })))
 
   const snapshotTimer = setInterval(() => {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
 
   const encodedToken = encodeURIComponent(token)
-  console.log(`[commando] development: http://${HOST}:5173/#token=${encodedToken}`)
-  console.log(`[commando] production:  http://${HOST}:${port}/#token=${encodedToken}`)
+  console.log(`[commando] development: http://127.0.0.1:5173/${auth ? '' : `#token=${encodedToken}`}`)
+  for (const { listener } of httpServers) {
+    const host = listener.includes(':') ? `[${listener}]` : listener
+    console.log(`[commando] browser:     http://${host}:${port}/${auth ? '' : `#token=${encodedToken}`}`)
+  }
+  if (auth) {
+    console.log(`[commando] owner auth:  ${ownerEmail}`)
+    console.log(`[commando] token URL:   http://127.0.0.1:${port}/#token=${encodedToken}`)
+  }
 
   let shuttingDown = false
   const shutdown = (): void => {
@@ -1202,7 +1220,9 @@ async function main(): Promise<void> {
     void tmux.releaseAllPaneResizes().finally(() => {
       tmux.close()
       webSocketServer.close()
-      httpServer.close()
+      void Promise.all(httpServers.map(({ server }) => new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose())
+      }))).finally(() => auth?.close())
     })
   }
   process.once('SIGINT', shutdown)
