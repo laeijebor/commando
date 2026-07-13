@@ -128,12 +128,16 @@ export function ResizablePaneLayout({
     const start = direction === 'row' ? event.clientX : event.clientY
     const boundary = collectAlignedBoundary(handle, direction)
     if (boundary.length === 0) return
+    const soloPath = handle.parentElement?.getAttribute('data-split-path')
+    const solo = boundary.filter((split) => split.path === soloPath)
     const resizingClass = direction === 'row' ? 'is-resizing-pane-width' : 'is-resizing-pane-height'
     let moved = false
 
     const move = (pointerEvent: globalThis.PointerEvent) => {
       const pointer = direction === 'row' ? pointerEvent.clientX : pointerEvent.clientY
-      moved = applyBoundaryDelta(boundary, direction, pointer - start) || moved
+      // Alt detaches the grabbed splitter from its aligned boundary.
+      const active = pointerEvent.altKey ? solo : boundary
+      moved = applyBoundaryDelta(active, direction, pointer - start) || moved
     }
     const stop = () => {
       window.removeEventListener('pointermove', move)
@@ -160,7 +164,11 @@ export function ResizablePaneLayout({
     if (!negative && !positive) return
     event.preventDefault()
     const boundary = collectAlignedBoundary(event.currentTarget, direction)
-    if (applyBoundaryDelta(boundary, direction, (negative ? -1 : 1) * (event.shiftKey ? 32 : 8))) {
+    const soloPath = event.currentTarget.parentElement?.getAttribute('data-split-path')
+    const active = event.altKey
+      ? boundary.filter((split) => split.path === soloPath)
+      : boundary
+    if (applyBoundaryDelta(active, direction, (negative ? -1 : 1) * (event.shiftKey ? 32 : 8))) {
       scheduleCommit()
     }
   }
@@ -197,7 +205,7 @@ export function ResizablePaneLayout({
               aria-label={node.direction === 'row' ? 'Resize pane widths' : 'Resize pane heights'}
               aria-orientation={node.direction === 'row' ? 'vertical' : 'horizontal'}
               tabIndex={0}
-              title="Drag to resize adjacent panes. Double-click to equalize."
+              title="Drag to resize adjacent panes; aligned splitters move together, hold Alt to move only this one. Double-click to equalize."
               onPointerDown={(event) => beginResize(event, node.direction)}
               onKeyDown={(event) => resizeFromKeyboard(event, node.direction)}
               onDoubleClick={() => equalize(node, path)}
