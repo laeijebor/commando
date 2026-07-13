@@ -17,6 +17,58 @@ export function defaultLayoutHeight(node: WindowLayoutNode): number {
     : heights.reduce((total, height) => total + height, SPLITTER_SIZE * (heights.length - 1))
 }
 
+type AlignedSplit = {
+  path: string
+  beforeIndex: number
+  afterIndex: number
+  beforeSize: number
+  afterSize: number
+  initialSizes: number[]
+}
+
+/** tmux cell rounding can offset an intended shared boundary by about a cell. */
+const BOUNDARY_ALIGN_TOLERANCE_PX = 10
+
+/**
+ * Finds every splitter in the layout that sits on the same boundary line as
+ * the grabbed one (same orientation, same coordinate within tolerance), so a
+ * drag moves the whole row/column edge like a table grid line.
+ */
+function collectAlignedBoundary(handle: HTMLElement, direction: SplitDirection): AlignedSplit[] {
+  const root = handle.closest('.pane-layout-root')
+  const axisCenter = (element: Element) => {
+    const bounds = element.getBoundingClientRect()
+    return direction === 'row' ? bounds.left + bounds.width / 2 : bounds.top + bounds.height / 2
+  }
+  const origin = axisCenter(handle)
+  const splitters = root ? [...root.querySelectorAll('.pane-splitter')] : [handle]
+  const boundary = new Map<string, AlignedSplit>()
+  for (const splitter of splitters) {
+    const parent = splitter.parentElement
+    if (!parent?.classList.contains(`pane-split-${direction}`)) continue
+    if (Math.abs(axisCenter(splitter) - origin) > BOUNDARY_ALIGN_TOLERANCE_PX) continue
+    const path = parent.getAttribute('data-split-path')
+    const before = splitter.previousElementSibling
+    const after = splitter.nextElementSibling
+    if (!path || boundary.has(path) || !before || !after) continue
+    const children = [...parent.children].filter((child) =>
+      child.classList.contains('pane-split-child'),
+    )
+    const dimension = (element: Element) => direction === 'row'
+      ? element.getBoundingClientRect().width
+      : element.getBoundingClientRect().height
+    boundary.set(path, {
+      path,
+      beforeIndex: children.indexOf(before),
+      afterIndex: children.indexOf(after),
+      beforeSize: dimension(before),
+      afterSize: dimension(after),
+      initialSizes: children.map(dimension),
+    })
+  }
+  return [...boundary.values()]
+}
+
 /**
  * Renders the tmux window's split tree. Structure and proportions come from
  * tmux's own layout; splitter drags override proportions locally and then
@@ -46,71 +98,42 @@ export function ResizablePaneLayout({
     window.requestAnimationFrame(() => onCommit())
   }
 
-  const resizeAdjacent = (
-    handle: HTMLElement,
-    direction: SplitDirection,
-    path: string,
-    delta: number,
-  ) => {
-    const before = handle.previousElementSibling as HTMLElement | null
-    const after = handle.nextElementSibling as HTMLElement | null
-    const parent = handle.parentElement
-    if (!before || !after || !parent) return
-    const children = [...parent.children].filter((child): child is HTMLElement =>
-      child instanceof HTMLElement && child.classList.contains('pane-split-child'),
-    )
-    const dimension = (element: HTMLElement) => direction === 'row'
-      ? element.getBoundingClientRect().width
-      : element.getBoundingClientRect().height
+  const applyBoundaryDelta = (boundary: AlignedSplit[], direction: SplitDirection, rawDelta: number): boolean => {
+    if (boundary.length === 0) return false
     const minimum = direction === 'row' ? MIN_PANE_WIDTH : MIN_PANE_HEIGHT
-    const beforeSize = dimension(before)
-    const afterSize = dimension(after)
-    const boundedDelta = Math.min(Math.max(delta, minimum - beforeSize), afterSize - minimum)
-    if (boundedDelta === 0) return
-    const next = children.map(dimension)
-    const beforeIndex = children.indexOf(before)
-    const afterIndex = children.indexOf(after)
-    next[beforeIndex] = beforeSize + boundedDelta
-    next[afterIndex] = afterSize - boundedDelta
-    setWeights((current) => ({ ...current, [path]: next }))
+    const lower = Math.max(...boundary.map((split) => minimum - split.beforeSize))
+    const upper = Math.min(...boundary.map((split) => split.afterSize - minimum))
+    if (lower > upper) return false
+    const delta = Math.min(Math.max(rawDelta, lower), upper)
+    setWeights((current) => {
+      const next = { ...current }
+      for (const split of boundary) {
+        const sizes = [...split.initialSizes]
+        sizes[split.beforeIndex] = split.beforeSize + delta
+        sizes[split.afterIndex] = split.afterSize - delta
+        next[split.path] = sizes
+      }
+      return next
+    })
+    return true
   }
 
   const beginResize = (
     event: ReactPointerEvent<HTMLElement>,
     direction: SplitDirection,
-    path: string,
   ) => {
     if (event.button !== 0) return
     event.preventDefault()
     const handle = event.currentTarget
     const start = direction === 'row' ? event.clientX : event.clientY
-    const before = handle.previousElementSibling as HTMLElement | null
-    const after = handle.nextElementSibling as HTMLElement | null
-    const parent = handle.parentElement
-    if (!before || !after || !parent) return
-    const children = [...parent.children].filter((child): child is HTMLElement =>
-      child instanceof HTMLElement && child.classList.contains('pane-split-child'),
-    )
-    const beforeSize = direction === 'row' ? before.getBoundingClientRect().width : before.getBoundingClientRect().height
-    const afterSize = direction === 'row' ? after.getBoundingClientRect().width : after.getBoundingClientRect().height
-    const initialSizes = children.map((child) => direction === 'row'
-      ? child.getBoundingClientRect().width
-      : child.getBoundingClientRect().height)
-    const beforeIndex = children.indexOf(before)
-    const afterIndex = children.indexOf(after)
-    const minimum = direction === 'row' ? MIN_PANE_WIDTH : MIN_PANE_HEIGHT
+    const boundary = collectAlignedBoundary(handle, direction)
+    if (boundary.length === 0) return
     const resizingClass = direction === 'row' ? 'is-resizing-pane-width' : 'is-resizing-pane-height'
     let moved = false
 
     const move = (pointerEvent: globalThis.PointerEvent) => {
       const pointer = direction === 'row' ? pointerEvent.clientX : pointerEvent.clientY
-      const rawDelta = pointer - start
-      const delta = Math.min(Math.max(rawDelta, minimum - beforeSize), afterSize - minimum)
-      moved = true
-      const next = [...initialSizes]
-      next[beforeIndex] = beforeSize + delta
-      next[afterIndex] = afterSize - delta
-      setWeights((current) => ({ ...current, [path]: next }))
+      moved = applyBoundaryDelta(boundary, direction, pointer - start) || moved
     }
     const stop = () => {
       window.removeEventListener('pointermove', move)
@@ -131,14 +154,15 @@ export function ResizablePaneLayout({
   const resizeFromKeyboard = (
     event: KeyboardEvent<HTMLElement>,
     direction: SplitDirection,
-    path: string,
   ) => {
     const negative = direction === 'row' ? event.key === 'ArrowLeft' : event.key === 'ArrowUp'
     const positive = direction === 'row' ? event.key === 'ArrowRight' : event.key === 'ArrowDown'
     if (!negative && !positive) return
     event.preventDefault()
-    resizeAdjacent(event.currentTarget, direction, path, (negative ? -1 : 1) * (event.shiftKey ? 32 : 8))
-    scheduleCommit()
+    const boundary = collectAlignedBoundary(event.currentTarget, direction)
+    if (applyBoundaryDelta(boundary, direction, (negative ? -1 : 1) * (event.shiftKey ? 32 : 8))) {
+      scheduleCommit()
+    }
   }
 
   const equalize = (node: Extract<WindowLayoutNode, { kind: 'split' }>, path: string) => {
@@ -174,8 +198,8 @@ export function ResizablePaneLayout({
               aria-orientation={node.direction === 'row' ? 'vertical' : 'horizontal'}
               tabIndex={0}
               title="Drag to resize adjacent panes. Double-click to equalize."
-              onPointerDown={(event) => beginResize(event, node.direction, path)}
-              onKeyDown={(event) => resizeFromKeyboard(event, node.direction, path)}
+              onPointerDown={(event) => beginResize(event, node.direction)}
+              onKeyDown={(event) => resizeFromKeyboard(event, node.direction)}
               onDoubleClick={() => equalize(node, path)}
               key={`${path}.splitter.${index}`}
             />,
