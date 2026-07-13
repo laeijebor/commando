@@ -74,6 +74,7 @@ import {
 } from './layout'
 import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './paneStream'
 import { dispatchBoundedPaste } from './terminalInput'
+import { THEMES, applyTheme, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { XtermPane } from './XtermPane'
 import { LinearSection } from './LinearSection'
@@ -615,6 +616,7 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
+  const [themeName, setThemeName] = useState<ThemeName>(() => storedTheme())
   const [leftPanelOpen, setLeftPanelOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
@@ -1166,6 +1168,17 @@ export function App() {
       kind: 'layout' as const,
       run: () => {
         for (const group of groups) restructureWindow(group.windowId, preset.id)
+        setPaletteOpen(false)
+      },
+    })),
+    ...THEMES.map((theme) => ({
+      id: `theme:${theme.name}`,
+      label: `Theme: ${theme.label}`,
+      detail: theme.name === themeName ? 'Current color palette' : 'Switch color palette',
+      kind: 'action' as const,
+      run: () => {
+        applyTheme(theme.name)
+        setThemeName(theme.name)
         setPaletteOpen(false)
       },
     })),
