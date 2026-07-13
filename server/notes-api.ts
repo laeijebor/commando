@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   NoteConflictError,
+  MAX_NOTE_IMAGE_BYTES,
   NoteNotFoundError,
   NoteStore,
   NoteValidationError,
@@ -8,6 +9,11 @@ import {
 
 const MAX_REQUEST_BYTES = 600 * 1024
 const NOTES_PATH = '/api/notes'
+
+type NotesRoute =
+  | { kind: 'collection' }
+  | { kind: 'note'; id: string }
+  | { kind: 'images'; id: string; name: string | null }
 
 function writeJson(response: ServerResponse, status: number, value: unknown): void {
   const body = `${JSON.stringify(value)}\n`
@@ -44,15 +50,39 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-function noteIdFromPath(pathname: string): string | null | undefined {
-  if (pathname === NOTES_PATH || pathname === `${NOTES_PATH}/`) return null
+async function readImage(request: IncomingMessage): Promise<{ contentType: string; data: Buffer }> {
+  const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+  if (!contentType?.startsWith('image/')) throw new NoteValidationError('Content-Type must be an image')
+
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+    size += buffer.byteLength
+    if (size > MAX_NOTE_IMAGE_BYTES) throw new NoteValidationError('Image is too large')
+    chunks.push(buffer)
+  }
+  if (size === 0) throw new NoteValidationError('Image body is required')
+  return { contentType, data: Buffer.concat(chunks) }
+}
+
+function notesRouteFromPath(pathname: string): NotesRoute | undefined {
+  if (pathname === NOTES_PATH || pathname === `${NOTES_PATH}/`) return { kind: 'collection' }
   if (!pathname.startsWith(`${NOTES_PATH}/`)) return undefined
-  const segment = pathname.slice(NOTES_PATH.length + 1)
-  if (segment.length === 0 || segment.includes('/')) return undefined
+  const segments = pathname.slice(NOTES_PATH.length + 1).split('/')
+  if (segments.some((segment) => segment.length === 0)) return undefined
   try {
-    return decodeURIComponent(segment)
+    const decoded = segments.map((segment) => decodeURIComponent(segment))
+    if (decoded.length === 1) return { kind: 'note', id: decoded[0] }
+    if (decoded.length === 2 && decoded[1] === 'images') {
+      return { kind: 'images', id: decoded[0], name: null }
+    }
+    if (decoded.length === 3 && decoded[1] === 'images') {
+      return { kind: 'images', id: decoded[0], name: decoded[2] }
+    }
+    return undefined
   } catch {
-    return segment
+    return undefined
   }
 }
 
@@ -82,11 +112,11 @@ export async function handleNotesApi(
   url: URL,
   store: NoteStore,
 ): Promise<boolean> {
-  const id = noteIdFromPath(url.pathname)
-  if (id === undefined) return false
+  const route = notesRouteFromPath(url.pathname)
+  if (!route) return false
 
   try {
-    if (id === null) {
+    if (route.kind === 'collection') {
       if (request.method === 'GET') {
         writeJson(response, 200, { notes: await store.list() })
         return true
@@ -98,6 +128,30 @@ export async function handleNotesApi(
       methodNotAllowed(response, 'GET, POST')
       return true
     }
+
+    if (route.kind === 'images') {
+      if (route.name === null && request.method === 'POST') {
+        const image = await readImage(request)
+        writeJson(response, 201, { path: await store.saveImage(route.id, image.contentType, image.data) })
+        return true
+      }
+      if (route.name !== null && request.method === 'GET') {
+        const image = await store.getImage(route.id, route.name)
+        response.writeHead(200, {
+          'Cache-Control': 'private, max-age=31536000, immutable',
+          'Content-Length': image.data.byteLength,
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Content-Type': image.contentType,
+          'X-Content-Type-Options': 'nosniff',
+        })
+        response.end(image.data)
+        return true
+      }
+      methodNotAllowed(response, route.name === null ? 'POST' : 'GET')
+      return true
+    }
+
+    const { id } = route
 
     if (request.method === 'GET') {
       writeJson(response, 200, { note: await store.get(id) })

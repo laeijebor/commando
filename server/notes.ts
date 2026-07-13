@@ -23,6 +23,22 @@ import {
 
 export const MAX_NOTE_TITLE_LENGTH = 200
 export const MAX_NOTE_BODY_LENGTH = 512 * 1024
+export const MAX_NOTE_IMAGE_BYTES = 10 * 1024 * 1024
+
+const NOTE_IMAGE_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(png|jpg|gif|webp)$/i
+const NOTE_IMAGE_FORMATS = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+} as const
+
+type NoteImageContentType = keyof typeof NOTE_IMAGE_FORMATS
+
+export type NoteImage = {
+  data: Buffer
+  contentType: NoteImageContentType
+}
 
 export type Note = {
   id: string
@@ -76,6 +92,27 @@ function validTimestamp(value: unknown): value is number {
 
 function validText(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.length <= maximum && !value.includes('\u0000')
+}
+
+function validImageData(data: Buffer, contentType: NoteImageContentType): boolean {
+  if (data.length === 0 || data.length > MAX_NOTE_IMAGE_BYTES) return false
+  if (contentType === 'image/png') {
+    return data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  }
+  if (contentType === 'image/jpeg') {
+    return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff
+  }
+  if (contentType === 'image/gif') {
+    const signature = data.subarray(0, 6).toString('ascii')
+    return signature === 'GIF87a' || signature === 'GIF89a'
+  }
+  return data.length >= 12 && data.subarray(0, 4).toString('ascii') === 'RIFF' && data.subarray(8, 12).toString('ascii') === 'WEBP'
+}
+
+function imageContentType(name: string): NoteImageContentType | null {
+  const extension = NOTE_IMAGE_NAME.exec(name)?.[1]?.toLowerCase()
+  const match = Object.entries(NOTE_IMAGE_FORMATS).find(([, candidate]) => candidate === extension)
+  return match ? match[0] as NoteImageContentType : null
 }
 
 export function parseNoteDraft(value: unknown): NoteDraft | null {
@@ -254,6 +291,71 @@ export class NoteStore {
     })
   }
 
+  saveImage(id: string, contentType: string, data: Buffer): Promise<string> {
+    try {
+      this.validateId(id)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    if (!(contentType in NOTE_IMAGE_FORMATS)) {
+      return Promise.reject(new NoteValidationError('Unsupported image type'))
+    }
+    const supportedContentType = contentType as NoteImageContentType
+    if (!validImageData(data, supportedContentType)) {
+      return Promise.reject(new NoteValidationError('Image data is invalid or too large'))
+    }
+
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      if (!(await this.readStoredNotes()).some(({ note }) => note.id === id)) {
+        throw new NoteNotFoundError(id)
+      }
+
+      const imageDirectory = join(this.directory, 'images', id)
+      await mkdir(imageDirectory, { recursive: true, mode: 0o700 })
+      await chmod(imageDirectory, 0o700)
+      const name = `${randomUUID()}.${NOTE_IMAGE_FORMATS[supportedContentType]}`
+      const path = join(imageDirectory, name)
+      const temporaryPath = join(imageDirectory, `.${name}.${process.pid}.tmp`)
+      let handle: Awaited<ReturnType<typeof open>> | null = null
+
+      try {
+        handle = await open(temporaryPath, 'wx', 0o600)
+        await handle.writeFile(data)
+        await handle.sync()
+        await handle.close()
+        handle = null
+        await rename(temporaryPath, path)
+        await chmod(path, 0o600)
+        await this.syncDirectory(imageDirectory)
+        await this.syncDirectory()
+      } catch (error) {
+        await handle?.close().catch(() => undefined)
+        await rm(temporaryPath, { force: true }).catch(() => undefined)
+        throw error
+      }
+
+      return `images/${id}/${name}`
+    })
+  }
+
+  async getImage(id: string, name: string): Promise<NoteImage> {
+    this.validateId(id)
+    const contentType = imageContentType(name)
+    if (!contentType) throw new NoteValidationError('Invalid image name')
+    await this.writes
+    await this.ensureInitialized()
+    try {
+      return {
+        data: await readFile(join(this.directory, 'images', id, name)),
+        contentType,
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new NoteNotFoundError(id)
+      throw error
+    }
+  }
+
   delete(id: string, expectedUpdatedAt?: number): Promise<void> {
     try {
       this.validateId(id)
@@ -272,6 +374,7 @@ export class NoteStore {
         throw new NoteConflictError()
       }
       await rm(stored.path)
+      await rm(join(this.directory, 'images', id), { recursive: true, force: true })
       await this.syncDirectory()
     })
   }
@@ -398,9 +501,9 @@ export class NoteStore {
     }
   }
 
-  private async syncDirectory(): Promise<void> {
+  private async syncDirectory(directory = this.directory): Promise<void> {
     try {
-      const directoryHandle = await open(this.directory, 'r')
+      const directoryHandle = await open(directory, 'r')
       try {
         await directoryHandle.sync()
       } finally {

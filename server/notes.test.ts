@@ -19,6 +19,7 @@ import {
   defaultLegacyNotesPath,
   defaultNotesDirectory,
   MAX_NOTE_BODY_LENGTH,
+  MAX_NOTE_IMAGE_BYTES,
   NoteConflictError,
   NoteNotFoundError,
   NoteStore,
@@ -161,6 +162,23 @@ describe('NoteStore', () => {
     await expect(store.list()).resolves.toHaveLength(1)
   })
 
+  it('stores validated images privately beside the vault and removes them with their note', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    const note = await store.create({ title: 'With image', body: '' })
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+
+    const imagePath = await store.saveImage(note.id, 'image/png', png)
+    const imageName = imagePath.split('/').at(-1)!
+    expect(imagePath).toMatch(new RegExp(`^images/${note.id}/[0-9a-f-]+\\.png$`))
+    await expect(store.getImage(note.id, imageName)).resolves.toEqual({ data: png, contentType: 'image/png' })
+    expect((await stat(join(directory, imagePath))).mode & 0o777).toBe(0o600)
+    await expect(store.saveImage(note.id, 'image/svg+xml', Buffer.from('<svg/>'))).rejects.toThrow('Unsupported image type')
+    await expect(store.saveImage(note.id, 'image/png', Buffer.alloc(MAX_NOTE_IMAGE_BYTES + 1))).rejects.toThrow('invalid or too large')
+
+    await store.delete(note.id)
+    await expect(store.getImage(note.id, imageName)).rejects.toBeInstanceOf(NoteNotFoundError)
+  })
+
   it('migrates legacy JSON once while preserving metadata and the source backup', async () => {
     const { directory, legacyPath, store } = await temporaryNotesStore()
     const note: Note = {
@@ -236,6 +254,27 @@ describe('handleNotesApi', () => {
     expect(createdResponse.status).toBe(201)
     const created = (await createdResponse.json()) as { note: Note }
 
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const uploadResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      body: png,
+    })
+    expect(uploadResponse.status).toBe(201)
+    const uploaded = (await uploadResponse.json()) as { path: string }
+    const imageName = uploaded.path.split('/').at(-1)!
+    const imageResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}/images/${imageName}`)
+    expect(imageResponse.status).toBe(200)
+    expect(imageResponse.headers.get('content-type')).toBe('image/png')
+    expect(Buffer.from(await imageResponse.arrayBuffer())).toEqual(png)
+
+    const invalidImageResponse = await fetch(`${baseUrl}/api/notes/${created.note.id}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/svg+xml' },
+      body: '<svg/>',
+    })
+    expect(invalidImageResponse.status).toBe(400)
+
     const listResponse = await fetch(`${baseUrl}/api/notes`)
     expect(listResponse.status).toBe(200)
     expect((await listResponse.json()) as unknown).toMatchObject({
@@ -290,5 +329,6 @@ describe('handleNotesApi', () => {
       headers: { 'If-Match': `"${latest.updatedAt}"` },
     })).status).toBe(204)
     expect((await fetch(`${baseUrl}/api/notes/${created.note.id}`)).status).toBe(404)
+    expect((await fetch(`${baseUrl}/api/notes/${created.note.id}/images/${imageName}`)).status).toBe(404)
   })
 })

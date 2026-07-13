@@ -413,6 +413,8 @@ export function NotesSection({ token }: { token: string }) {
             />
             <NoteBlockEditor
               markdown={active.body}
+              uploadImage={(file) => api.uploadImage(active.id, file)}
+              resolveImageUrl={api.resolveImageUrl}
               onChange={(body) => {
                 const current = activeRef.current
                 if (!current || current.body === body) return

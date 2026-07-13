@@ -12,6 +12,8 @@ export type NoteUpdate = NoteDraft & {
   expectedUpdatedAt: number
 }
 
+const LOCAL_IMAGE_PATH = /^(?:\.\/)?images\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpg|gif|webp))$/i
+
 export class NotesApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message)
@@ -25,6 +27,8 @@ export type NotesApi = {
   create(draft: NoteDraft): Promise<Note>
   update(id: string, draft: NoteUpdate): Promise<Note>
   delete(id: string, expectedUpdatedAt: number): Promise<void>
+  uploadImage(id: string, file: File): Promise<string>
+  resolveImageUrl(url: string): string
 }
 
 export function createNotesApi(token: string, fetcher: typeof fetch = fetch): NotesApi {
@@ -62,5 +66,15 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
       method: 'DELETE',
       headers: { 'If-Match': `"${expectedUpdatedAt}"` },
     }),
+    uploadImage: async (id, file) => (await request<{ path: string }>(`/${encodeURIComponent(id)}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': file.type },
+      body: file,
+    })).path,
+    resolveImageUrl: (url) => {
+      const match = LOCAL_IMAGE_PATH.exec(url)
+      if (!match) return url
+      return `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}?token=${encodeURIComponent(token)}`
+    },
   }
 }
