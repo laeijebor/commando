@@ -12,25 +12,27 @@ Commando is a local-first web cockpit for existing tmux sessions and coding agen
 
 ```bash
 npm install
-npm run dev
+COMMANDO_OWNER_EMAIL=leo@ijebor.com npm run dev
 ```
 
-The daemon prints an authenticated URL such as:
+Open `http://127.0.0.1:5173`. On first use, Commando asks you to create the owner account with the configured email address and a password of at least 12 characters. Later visits restore a signed, `HttpOnly` session cookie; the session lasts 30 days and is refreshed while active.
+
+If `COMMANDO_OWNER_EMAIL` is unset, Commando retains its original token-only mode and prints an authenticated URL such as:
 
 ```text
 http://127.0.0.1:5173/#token=<ephemeral-token>
 ```
 
-Open that exact URL. Commando removes the token from the address bar and retains it in session storage for the current browser tab.
+Open that exact URL. Commando removes the token from the address bar and retains it in session storage for the current browser tab. Token authentication remains available alongside owner authentication for automation and recovery.
 
 ## Production
 
 ```bash
 npm run build
-npm start
+COMMANDO_OWNER_EMAIL=leo@ijebor.com npm start
 ```
 
-The production daemon serves the compiled app and prints its authenticated `127.0.0.1` URL.
+The production daemon serves the compiled app and prints its `127.0.0.1` URL.
 
 ## Commands
 
@@ -45,7 +47,14 @@ npm run build
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `COMMANDO_PORT` | Local daemon port | `4310` |
-| `COMMANDO_TOKEN` | Fixed token for development or automation | Random per daemon start |
+| `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
+| `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
+| `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |
+| `BETTER_AUTH_SECRET` | Explicit cookie-signing secret of at least 32 characters | Generated and persisted locally |
+| `BETTER_AUTH_URL` | Canonical auth URL, primarily for an HTTPS proxy | `http://127.0.0.1:<port>` |
+| `COMMANDO_TOKEN` | Fixed bearer token for automation or recovery | Random per daemon start |
+| `COMMANDO_TAILSCALE` | Also listen on detected Tailscale IPv4/IPv6 addresses | `false` |
+| `COMMANDO_TRUSTED_ORIGINS` | Comma-separated additional exact HTTP(S) origins, such as a MagicDNS URL | None |
 | `COMMANDO_STATE_PATH` | Saved workspace layout file | `~/.commando/state.json` |
 | `COMMANDO_NOTES_DIR` | Markdown note directory; point this at a dedicated folder inside an Obsidian vault | `~/.commando/notes` |
 | `COMMANDO_NOTES_PATH` | Legacy JSON note file imported once on startup | `~/.commando/notes.json` |
@@ -53,6 +62,30 @@ npm run build
 | `COMMANDO_TMUX_SOCKET_PATH` | Connect through `tmux -S <path>` | Default tmux server |
 
 Set only one tmux socket override.
+
+## Tailscale Access
+
+Build the production app, then enable Tailscale listeners explicitly:
+
+```bash
+npm run build
+COMMANDO_OWNER_EMAIL=leo@ijebor.com COMMANDO_TAILSCALE=true npm start
+```
+
+Commando listens separately on `127.0.0.1` and each detected Tailscale address. It does not bind to every LAN interface, and it rejects peers outside the loopback and Tailscale address ranges. Open the Tailscale URL printed at startup.
+
+Direct access by Tailscale IP needs no additional origin configuration. To use a MagicDNS hostname directly over HTTP, allow its exact origin:
+
+```bash
+COMMANDO_OWNER_EMAIL=leo@ijebor.com \
+COMMANDO_TAILSCALE=true \
+COMMANDO_TRUSTED_ORIGINS=http://machine.example-tailnet.ts.net:4310 \
+npm start
+```
+
+If Tailscale Serve or another reverse proxy terminates HTTPS and forwards to the loopback listener, set both `COMMANDO_TRUSTED_ORIGINS` and `BETTER_AUTH_URL` to that public HTTPS origin. The proxy is responsible for TLS; Commando itself serves HTTP.
+
+Email delivery, address verification, password-reset emails, invitations, and additional owners are intentionally deferred. The database schema and Better Auth integration can support those flows later without replacing existing accounts or sessions.
 
 ## Markdown Notes
 
@@ -95,9 +128,11 @@ The font stack starts with `JetBrains Mono`, then falls back to `SFMono-Regular`
 
 ## Security
 
-- The daemon binds only to `127.0.0.1`.
-- HTTP and WebSocket access require the ephemeral token.
-- Host and Origin headers are limited to loopback hosts.
+- The daemon binds only to `127.0.0.1` unless Tailscale access is explicitly enabled.
+- Owner passwords are hashed by Better Auth and browser sessions use signed, `HttpOnly`, `SameSite=Lax` cookies.
+- HTTP and WebSocket access accept either an owner session or the automation bearer token.
+- Host, Origin, listener, and peer-address checks are limited to loopback and explicitly enabled Tailscale access.
+- Owner registration is restricted to `COMMANDO_OWNER_EMAIL`; other email addresses cannot create accounts.
 - Browser input can execute shell commands in the selected pane; access to Commando is equivalent to local shell access.
 - Attributed seed captures, live stream buffers, and status-inference tails are bounded and kept in memory. Commando persists layouts, not terminal output.
 - Production assets use a restrictive Content Security Policy.

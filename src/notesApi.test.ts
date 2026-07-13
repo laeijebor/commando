@@ -28,4 +28,19 @@ describe('notes image API', () => {
     )
     expect(api.resolveImageUrl('https://example.com/image.png')).toBe('https://example.com/image.png')
   })
+
+  it('uses the session cookie and clean image URLs when no automation token is present', async () => {
+    const noteId = '71cf1432-e39e-4ac1-a1d8-51185f94dbce'
+    const imageName = 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba.png'
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ notes: [] }))
+    const api = createNotesApi('', fetcher)
+
+    await expect(api.list()).resolves.toEqual([])
+    const init = fetcher.mock.calls[0]?.[1]
+    expect(init?.credentials).toBe('same-origin')
+    expect(init?.headers).not.toHaveProperty('Authorization')
+    expect(api.resolveImageUrl(`images/${noteId}/${imageName}`)).toBe(
+      `/api/notes/${noteId}/images/${imageName}`,
+    )
+  })
 })
