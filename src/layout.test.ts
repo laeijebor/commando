@@ -3,48 +3,60 @@ import { describe, expect, it } from 'vitest'
 import type { CommandoSnapshot } from '../shared/protocol'
 import {
   defaultGroupsForSession,
-  getPanePlacement,
   moveItem,
+  presetLayoutSpec,
   reconcileGroupsForSession,
 } from './layout'
 
-describe('getPanePlacement', () => {
+describe('presetLayoutSpec', () => {
   it('keeps the first two panes full width in two-full-two-halves', () => {
-    const spans = Array.from({ length: 4 }, (_, index) =>
-      getPanePlacement('two-full-two-halves', index, 4).columnSpan,
-    )
-
-    expect(spans).toEqual([12, 12, 6, 6])
-  })
-
-  it('makes only the first pane full width in full-then-halves', () => {
-    const spans = Array.from({ length: 5 }, (_, index) =>
-      getPanePlacement('full-then-halves', index, 5).columnSpan,
-    )
-
-    expect(spans).toEqual([12, 6, 6, 6, 6])
-  })
-
-  it('gives the lead pane two rows when a stack is available', () => {
-    expect(getPanePlacement('lead-and-stack', 0, 4)).toEqual({
-      columnSpan: 8,
-      rowSpan: 2,
-    })
-    expect(getPanePlacement('lead-and-stack', 1, 4)).toEqual({
-      columnSpan: 4,
-      rowSpan: 1,
+    expect(presetLayoutSpec('two-full-two-halves', ['%1', '%2', '%3', '%4'])).toMatchObject({
+      kind: 'split',
+      direction: 'column',
+      children: [
+        { kind: 'pane', paneId: '%1' },
+        { kind: 'pane', paneId: '%2' },
+        {
+          kind: 'split',
+          direction: 'row',
+          children: [
+            { kind: 'pane', paneId: '%3' },
+            { kind: 'pane', paneId: '%4' },
+          ],
+        },
+      ],
     })
   })
 
-  it('fills incomplete final rows while web layout ownership is active', () => {
-    const equalGrid = Array.from({ length: 5 }, (_, index) =>
-      getPanePlacement('equal-grid', index, 5, true).columnSpan,
-    )
-    const leadAndStack = Array.from({ length: 5 }, (_, index) =>
-      getPanePlacement('lead-and-stack', index, 5, true).columnSpan,
-    )
-    expect(equalGrid).toEqual([4, 4, 4, 6, 6])
-    expect(leadAndStack).toEqual([8, 4, 4, 6, 6])
+  it('pairs the lead pane with a stack in lead-and-stack', () => {
+    expect(presetLayoutSpec('lead-and-stack', ['%1', '%2', '%3'])).toMatchObject({
+      kind: 'split',
+      direction: 'row',
+      children: [
+        { kind: 'pane', paneId: '%1' },
+        {
+          kind: 'split',
+          direction: 'column',
+          children: [
+            { kind: 'pane', paneId: '%2' },
+            { kind: 'pane', paneId: '%3' },
+          ],
+        },
+      ],
+    })
+  })
+
+  it('chunks equal-grid into rows of three', () => {
+    expect(presetLayoutSpec('equal-grid', ['%1', '%2', '%3', '%4', '%5'])).toMatchObject({
+      kind: 'split',
+      direction: 'column',
+      children: [
+        { kind: 'split', direction: 'row' },
+        { kind: 'split', direction: 'row' },
+      ],
+    })
+    expect(presetLayoutSpec('equal-grid', ['%1'])).toMatchObject({ kind: 'pane', paneId: '%1' })
+    expect(presetLayoutSpec('equal-grid', [])).toBeNull()
   })
 })
 
@@ -81,6 +93,7 @@ describe('defaultGroupsForSession', () => {
         sessionId: '$1',
         name: 'editor',
         active: true,
+        layout: 'dbde,80x24,0,0,3',
         paneIds: ['%3'],
       }],
       panes: [],
@@ -107,6 +120,7 @@ describe('defaultGroupsForSession', () => {
           sessionId: '$1',
           name: 'editor',
           active: true,
+          layout: 'dbde,161x24,0,0{80x24,0,0,1,80x24,81,0,3}',
           paneIds: ['%1', '%3'],
         },
         {
@@ -115,6 +129,7 @@ describe('defaultGroupsForSession', () => {
           sessionId: '$1',
           name: 'server',
           active: false,
+          layout: 'dbde,80x24,0,0,4',
           paneIds: ['%4'],
         },
       ],
@@ -126,7 +141,6 @@ describe('defaultGroupsForSession', () => {
       sessionId: '$1',
       windowId: '@2',
       paneIds: ['%2', '%1'],
-      layout: 'two-full-two-halves' as const,
     }]
 
     const groups = reconcileGroupsForSession(snapshot, '$1', saved)
@@ -134,7 +148,6 @@ describe('defaultGroupsForSession', () => {
     expect(groups[0]).toMatchObject({
       name: 'Custom editor',
       paneIds: ['%1', '%3'],
-      layout: 'two-full-two-halves',
     })
     expect(groups[1]).toMatchObject({ windowId: '@4', paneIds: ['%4'] })
   })

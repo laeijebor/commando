@@ -63,7 +63,7 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, paneIds: panes.map(({ id }) => id) }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
         panes={panes}
         displayedPaneIds={['%3', '%1', '%2']}
         statuses={{}}

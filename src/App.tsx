@@ -6,7 +6,6 @@ import {
   Bot,
   ChevronRight,
   CircleDotDashed,
-  Clock3,
   Command,
   Grid2X2,
   KeyRound,
@@ -35,7 +34,7 @@ import {
   X,
 } from 'lucide-react'
 import {
-  type CSSProperties,
+
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -52,19 +51,26 @@ import type {
   AgentProvider,
   AgentStatus,
   CommandoSnapshot,
-  GroupLayoutPreset,
+  LayoutSpec,
   PaneLayoutCapacity,
-  SavedGroup,
   SavedWorkspace,
   ServerMessage,
   SpecialKey,
   TmuxPane,
 } from '../shared/protocol'
 import {
+  filterLayoutTree,
+  layoutShapeKey,
+  layoutSpecFromTree,
+  layoutTreePanes,
+  parseWindowLayout,
+  type WindowLayoutNode,
+} from '../shared/window-layout'
+import {
   defaultGroupsForSession,
-  getPanePlacement,
-  moveItem,
+  presetLayoutSpec,
   reconcileGroupsForSession,
+  type GroupLayoutPreset,
 } from './layout'
 import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './paneStream'
 import { dispatchBoundedPaste } from './terminalInput'
@@ -221,12 +227,10 @@ type TerminalPaneProps = {
   status?: AgentStatus
   index: number
   count: number
-  preset: GroupLayoutPreset
   maximized: boolean
   focused: boolean
   resizeOwner: boolean
   measurementKey: string
-  fillIncompleteRows: boolean
   connected: boolean
   renaming: boolean
   onFocus: () => void
@@ -252,12 +256,10 @@ export function TerminalPaneCard({
   status,
   index,
   count,
-  preset,
   maximized,
   focused,
   resizeOwner,
   measurementKey,
-  fillIncompleteRows,
   connected,
   renaming,
   onFocus,
@@ -277,18 +279,11 @@ export function TerminalPaneCard({
   registerSink,
   registerFocusable,
 }: TerminalPaneProps) {
-  const placement = getPanePlacement(preset, index, count, fillIncompleteRows)
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
   const [renameError, setRenameError] = useState('')
-  const style: CSSProperties = maximized
-    ? { gridColumn: '1 / -1', gridRow: 'auto' }
-    : {
-        gridColumn: `span ${placement.columnSpan}`,
-        gridRow: `span ${placement.rowSpan}`,
-      }
 
   useEffect(() => {
     if (!renaming) return
@@ -331,7 +326,6 @@ export function TerminalPaneCard({
   return (
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}`}
-      style={style}
       onDragOver={onDragOver}
       onDrop={onDrop}
       onContextMenu={(event) => {
@@ -611,7 +605,6 @@ export function App() {
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
-  const [dirtySessionIds, setDirtySessionIds] = useState<string[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
@@ -661,8 +654,6 @@ export function App() {
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
   if (!paneStreamsRef.current) paneStreamsRef.current = new PaneStreamRegistry()
   const paletteInputRef = useRef<HTMLInputElement>(null)
-  const pendingSaveSessions = useRef(new Set<string>())
-  const saveRequestSessions = useRef(new Map<string, string>())
   const previousResizePaneId = useRef<string | null>(null)
   const paneLayoutCapacities = useRef(new Map<string, PaneLayoutCapacity & { key: string }>())
   const layoutTimers = useRef(new Map<string, number>())
@@ -711,13 +702,6 @@ export function App() {
         })
         break
       case 'workspace':
-        if (
-          message.reason === 'load' &&
-          (dirtySessionIds.includes(message.sessionId) ||
-            pendingSaveSessions.current.has(message.sessionId))
-        ) {
-          break
-        }
         if (message.workspace) {
           setWorkspaces((current) => ({
             ...current,
@@ -730,13 +714,6 @@ export function App() {
             return next
           })
         }
-        if (message.reason === 'save') {
-          pendingSaveSessions.current.delete(message.sessionId)
-          saveRequestSessions.current.delete(message.requestId)
-          setDirtySessionIds((current) =>
-            current.filter((sessionId) => sessionId !== message.sessionId),
-          )
-        }
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
@@ -746,13 +723,6 @@ export function App() {
           message.code === 'resize_window_busy'
         ) {
           setWebLayoutError(message.message)
-        }
-        if (message.requestId) {
-          const sessionId = saveRequestSessions.current.get(message.requestId)
-          if (sessionId) {
-            pendingSaveSessions.current.delete(sessionId)
-            saveRequestSessions.current.delete(message.requestId)
-          }
         }
         break
     }
@@ -832,28 +802,6 @@ export function App() {
     if (!connected) return
     send({ type: 'subscribe', paneIds: subscriptionKey ? subscriptionKey.split('\u0000') : [] })
   }, [connected, send, subscriptionKey])
-
-  const dirtyKey = dirtySessionIds.join('\u0000')
-  useEffect(() => {
-    if (!connected || !dirtyKey) return
-    const pendingIds = dirtyKey.split('\u0000')
-    for (const sessionId of pendingIds) {
-      if (pendingSaveSessions.current.has(sessionId)) continue
-      const workspace = workspaces[sessionId]
-      if (!workspace) continue
-      const saveRequestId = requestId('save')
-      if (send({ type: 'save_workspace', workspace, requestId: saveRequestId })) {
-        pendingSaveSessions.current.add(sessionId)
-        saveRequestSessions.current.set(saveRequestId, sessionId)
-      }
-    }
-  }, [connected, dirtyKey, send, workspaces])
-
-  useEffect(() => {
-    if (connected) return
-    pendingSaveSessions.current.clear()
-    saveRequestSessions.current.clear()
-  }, [connected])
 
   useEffect(() => {
     if (connection.phase !== 'live') {
@@ -949,40 +897,46 @@ export function App() {
     setLeftPanelOpen(false)
   }
 
-  const persistGroups = (nextGroups: SavedGroup[]) => {
-    if (!selectedSessionId) return
-    const workspace: SavedWorkspace = {
-      sessionId: selectedSessionId,
-      groups: nextGroups,
-      updatedAt: Date.now(),
-    }
-    setWorkspaces((current) => ({ ...current, [selectedSessionId]: workspace }))
-    setDirtySessionIds((current) =>
-      current.includes(selectedSessionId) ? current : [...current, selectedSessionId],
-    )
+  const windowLayoutTree = (windowId: string): WindowLayoutNode | null => {
+    const window = windowMap.get(windowId)
+    return window ? parseWindowLayout(window.layout) : null
   }
 
-  const updateGroup = (groupId: string, update: (group: SavedGroup) => SavedGroup) => {
-    persistGroups(groups.map((group) => (group.id === groupId ? update(group) : group)))
-  }
-
-  const movePane = (groupId: string, paneId: string, direction: -1 | 1) => {
-    updateGroup(groupId, (group) => {
-      const currentIndex = group.paneIds.indexOf(paneId)
-      return { ...group, paneIds: moveItem(group.paneIds, currentIndex, currentIndex + direction) }
+  const sendWindowLayout = (windowId: string, spec: LayoutSpec | null) => {
+    if (!connected || !spec) return
+    setWebLayoutError('')
+    send({
+      type: 'set_window_layout',
+      windowId,
+      spec,
+      requestId: requestId('layout-set'),
     })
   }
 
-  const dropPane = (groupId: string, targetPaneId: string) => {
+  const swapWindowPanes = (windowId: string, firstPaneId: string, secondPaneId: string) => {
+    const tree = windowLayoutTree(windowId)
+    if (!tree || firstPaneId === secondPaneId) return
+    const swapped = new Map([
+      [firstPaneId, secondPaneId],
+      [secondPaneId, firstPaneId],
+    ])
+    const swapLeaves = (spec: LayoutSpec): LayoutSpec => spec.kind === 'pane'
+      ? { ...spec, paneId: swapped.get(spec.paneId) ?? spec.paneId }
+      : { ...spec, children: spec.children.map(swapLeaves) }
+    sendWindowLayout(windowId, swapLeaves(layoutSpecFromTree(tree)))
+  }
+
+  const movePane = (windowId: string, paneId: string, direction: -1 | 1) => {
+    const tree = windowLayoutTree(windowId)
+    if (!tree) return
+    const paneIds = layoutTreePanes(tree).map((leaf) => leaf.paneId)
+    const neighbor = paneIds[paneIds.indexOf(paneId) + direction]
+    if (neighbor) swapWindowPanes(windowId, paneId, neighbor)
+  }
+
+  const dropPane = (windowId: string, groupId: string, targetPaneId: string) => {
     if (!draggedPane || draggedPane.groupId !== groupId || draggedPane.paneId === targetPaneId) return
-    updateGroup(groupId, (group) => ({
-      ...group,
-      paneIds: moveItem(
-        group.paneIds,
-        group.paneIds.indexOf(draggedPane.paneId),
-        group.paneIds.indexOf(targetPaneId),
-      ),
-    }))
+    swapWindowPanes(windowId, draggedPane.paneId, targetPaneId)
     setDraggedPane(null)
   }
 
@@ -1022,7 +976,7 @@ export function App() {
   }
 
   const sendPaneResize = (
-    group: SavedGroup,
+    windowId: string,
     paneId: string,
     measurementKey: string,
     cols: number,
@@ -1031,26 +985,39 @@ export function App() {
     if (!connected) return
     if (webLayoutAuthoritative && !maximizedPaneId) {
       paneLayoutCapacities.current.set(paneId, { paneId, cols, rows, key: measurementKey })
-      const existingTimer = layoutTimers.current.get(group.windowId)
+      const existingTimer = layoutTimers.current.get(windowId)
       if (existingTimer !== undefined) window.clearTimeout(existingTimer)
-      layoutTimers.current.set(group.windowId, window.setTimeout(() => {
-        layoutTimers.current.delete(group.windowId)
-        const capacities = group.paneIds.map((id) => paneLayoutCapacities.current.get(id))
+      layoutTimers.current.set(windowId, window.setTimeout(() => {
+        layoutTimers.current.delete(windowId)
+        const tree = windowLayoutTree(windowId)
+        if (!tree) return
+        const leaves = layoutTreePanes(tree)
+        const capacities = leaves.map((leaf) => paneLayoutCapacities.current.get(leaf.paneId))
         if (
           capacities.some((capacity) => !capacity || capacity.key !== measurementKey)
         ) return
-        const completeCapacities = capacities as Array<PaneLayoutCapacity & { key: string }>
+        const sizes = new Map(
+          (capacities as Array<PaneLayoutCapacity & { key: string }>).map((capacity) => [
+            capacity.paneId,
+            { cols: capacity.cols, rows: capacity.rows },
+          ]),
+        )
+        const stacked = window.matchMedia('(max-width: 680px)').matches && leaves.length > 1
+        const spec: LayoutSpec = stacked
+          ? {
+              kind: 'split',
+              direction: 'column',
+              children: leaves.map((leaf) => ({
+                kind: 'pane',
+                paneId: leaf.paneId,
+                ...(sizes.get(leaf.paneId) ?? { cols: leaf.cols, rows: leaf.rows }),
+              })),
+            }
+          : layoutSpecFromTree(tree, sizes)
         send({
           type: 'apply_window_layout',
-          windowId: group.windowId,
-          paneIds: group.paneIds,
-          preset: group.layout,
-          stacked: window.matchMedia('(max-width: 680px)').matches,
-          capacities: completeCapacities.map(({ paneId: id, cols: width, rows: height }) => ({
-            paneId: id,
-            cols: width,
-            rows: height,
-          })),
+          windowId,
+          spec,
           requestId: requestId('layout'),
         })
       }, 120))
@@ -1058,6 +1025,35 @@ export function App() {
     }
     if (activeResizePaneId !== paneId) return
     send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('resize') })
+  }
+
+  /**
+   * Writes splitter-drag proportions back to tmux while the web is not
+   * authoritative; leaf weights come from the panes' current DOM extents.
+   */
+  const commitWindowLayout = (windowId: string) => {
+    if (!connected || webLayoutAuthoritative || maximizedPaneId) return
+    const tree = windowLayoutTree(windowId)
+    if (!tree) return
+    const sizes = new Map<string, { cols: number; rows: number }>()
+    for (const leaf of layoutTreePanes(tree)) {
+      const element = document.querySelector(`[data-pane-id="${CSS.escape(leaf.paneId)}"]`)
+      if (!element) return
+      const bounds = element.getBoundingClientRect()
+      sizes.set(leaf.paneId, {
+        cols: Math.min(500, Math.max(2, Math.round(bounds.width / 10))),
+        rows: Math.min(200, Math.max(1, Math.round(bounds.height / 10))),
+      })
+    }
+    sendWindowLayout(windowId, layoutSpecFromTree(tree, sizes))
+  }
+
+  const restructureWindow = (windowId: string, preset: GroupLayoutPreset) => {
+    clearLayoutTimers()
+    const tree = windowLayoutTree(windowId)
+    if (!tree) return
+    const paneIds = layoutTreePanes(tree).map((leaf) => leaf.paneId)
+    sendWindowLayout(windowId, presetLayoutSpec(preset, paneIds))
   }
 
   const toggleWebLayoutAuthority = () => {
@@ -1105,16 +1101,6 @@ export function App() {
         placement: before ? 'before' : 'after',
         cwd: pane.path,
       })
-      const targetGroup = groups.find((group) => group.paneIds.includes(paneId))
-      if (targetGroup) {
-        persistGroups(groups.map((group) => {
-          if (group.id !== targetGroup.id) return group
-          const targetIndex = group.paneIds.indexOf(paneId)
-          const nextPaneIds = [...group.paneIds]
-          nextPaneIds.splice(targetIndex + (before ? 0 : 1), 0, created.paneId)
-          return { ...group, paneIds: nextPaneIds }
-        }))
-      }
       setMaximizedPaneId(null)
       setPendingFocusPaneId(created.paneId)
     } catch (cause) {
@@ -1175,10 +1161,10 @@ export function App() {
     ...PRESETS.map((preset) => ({
       id: `layout:${preset.id}`,
       label: `Apply ${preset.label.toLowerCase()} to visible groups`,
-      detail: 'Save as the app-owned workspace layout',
+      detail: 'Restructure the tmux panes of every visible window now',
       kind: 'layout' as const,
       run: () => {
-        persistGroups(groups.map((group) => ({ ...group, layout: preset.id })))
+        for (const group of groups) restructureWindow(group.windowId, preset.id)
         setPaletteOpen(false)
       },
     })),
@@ -1489,10 +1475,8 @@ export function App() {
                 />
                 <span>Web owns tmux</span>
               </label>
-              {dirtySessionIds.includes(selectedSessionId ?? '') ? (
-                <span className="save-state"><Clock3 aria-hidden="true" /> Queued to save</span>
-              ) : selectedWorkspace ? (
-                <span className="save-state saved"><ShieldCheck aria-hidden="true" /> Saved layout</span>
+              {selectedWorkspace ? (
+                <span className="save-state saved"><ShieldCheck aria-hidden="true" /> Saved groups</span>
               ) : (
                 <span className="save-state"><LayoutGrid aria-hidden="true" /> Window defaults</span>
               )}
@@ -1530,26 +1514,37 @@ export function App() {
               if (maximizedPaneId && visibleGroupPanes.length === 0) return null
 
               const window = windowMap.get(group.windowId)
+              const windowTree = window ? parseWindowLayout(window.layout) : null
+              const visibleTree = windowTree
+                ? filterLayoutTree(windowTree, new Set(visibleGroupPanes.map((pane) => pane.id)))
+                : null
+              const leafPaneIds = windowTree
+                ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
+                : []
+              const measurementKey = windowTree
+                ? [
+                    group.id,
+                    layoutShapeKey(windowTree),
+                    maximizedPaneId ?? 'grid',
+                    webLayoutAuthoritative ? 'authoritative' : 'focused',
+                  ].join(':')
+                : ''
               return (
                 <section className="pane-group" data-group-id={group.id} key={group.id}>
                   <header className="group-head">
                     <div className="group-title">
                       <span>{window ? `Window ${window.index}` : 'Saved group'}</span>
                       <h2>{group.name}</h2>
-                      <p>{groupPanes.length} panes / {group.layout.replaceAll('-', ' ')}</p>
+                      <p>{groupPanes.length} panes</p>
                     </div>
-                    <div className="layout-controls" role="group" aria-label={`Layout for ${group.name}`}>
+                    <div className="layout-controls" role="group" aria-label={`Restructure ${group.name}`}>
                       {PRESETS.map((preset) => (
                         <button
                           type="button"
-                          className={group.layout === preset.id ? 'active' : ''}
-                          onClick={() => {
-                            clearLayoutTimers()
-                            updateGroup(group.id, (current) => ({ ...current, layout: preset.id }))
-                          }}
+                          onClick={() => restructureWindow(group.windowId, preset.id)}
+                          disabled={!connected || !windowTree}
                           aria-label={preset.label}
-                          aria-pressed={group.layout === preset.id}
-                          title={preset.label}
+                          title={`${preset.label} — restructure panes now`}
                           key={preset.id}
                         >
                           {preset.icon}
@@ -1557,83 +1552,73 @@ export function App() {
                       ))}
                     </div>
                   </header>
-                  {visibleGroupPanes.length ? (
+                  {visibleTree && visibleGroupPanes.length ? (
                     <ResizablePaneLayout
-                      key={`${group.id}:${group.layout}:${group.paneIds.join(',')}:${maximizedPaneId ?? 'grid'}`}
-                      layoutKey={`${group.id}:${group.layout}:${group.paneIds.join(',')}`}
-                      preset={group.layout}
-                      panes={visibleGroupPanes.map((pane) => {
-                        const originalIndex = groupPanes.findIndex((candidate) => candidate.id === pane.id)
-                        const measurementKey = [
-                          group.id,
-                          group.layout,
-                          group.paneIds.join(','),
-                          maximizedPaneId ?? 'grid',
-                          webLayoutAuthoritative ? 'authoritative' : 'focused',
-                        ].join(':')
-                        return (
-                          <TerminalPaneCard
-                            key={pane.id}
-                            pane={pane}
-                            status={agentStatuses[pane.id]}
-                            index={originalIndex}
-                            count={groupPanes.length}
-                            preset={group.layout}
-                            maximized={maximizedPaneId === pane.id}
-                            focused={focusedPaneId === pane.id}
-                            resizeOwner={
-                              activeResizePaneId === pane.id ||
-                              (webLayoutAuthoritative && !maximizedPaneId)
-                            }
-                            measurementKey={measurementKey}
-                            fillIncompleteRows={webLayoutAuthoritative}
-                            connected={connected}
-                            renaming={renamingPaneId === pane.id}
-                            onFocus={() => setFocusedPaneId(pane.id)}
-                            onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
-                            onRename={(title) => renamePane(pane.id, title)}
-                            onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
-                            onMove={(direction) => {
-                              clearLayoutTimers()
-                              movePane(group.id, pane.id, direction)
-                            }}
-                            onMaximize={() => {
-                              clearLayoutTimers()
-                              setFocusedPaneId(pane.id)
-                              setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
-                            }}
-                            onDragStart={(event) => {
-                              setDraggedPane({ groupId: group.id, paneId: pane.id })
-                              event.dataTransfer.effectAllowed = 'move'
-                              event.dataTransfer.setData('text/plain', pane.id)
-                            }}
-                            onDragEnd={() => setDraggedPane(null)}
-                            onDragOver={(event) => {
-                              if (draggedPane?.groupId === group.id) {
-                                event.preventDefault()
-                                event.dataTransfer.dropEffect = 'move'
-                              }
-                            }}
-                            onDrop={(event) => {
+                      key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
+                      layoutKey={window?.layout ?? ''}
+                      tree={visibleTree}
+                      onCommit={() => commitWindowLayout(group.windowId)}
+                      panes={new Map(visibleGroupPanes.map((pane) => [
+                        pane.id,
+                        <TerminalPaneCard
+                          key={pane.id}
+                          pane={pane}
+                          status={agentStatuses[pane.id]}
+                          index={leafPaneIds.indexOf(pane.id)}
+                          count={leafPaneIds.length}
+                          maximized={maximizedPaneId === pane.id}
+                          focused={focusedPaneId === pane.id}
+                          resizeOwner={
+                            activeResizePaneId === pane.id ||
+                            (webLayoutAuthoritative && !maximizedPaneId)
+                          }
+                          measurementKey={measurementKey}
+                          connected={connected}
+                          renaming={renamingPaneId === pane.id}
+                          onFocus={() => setFocusedPaneId(pane.id)}
+                          onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
+                          onRename={(title) => renamePane(pane.id, title)}
+                          onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
+                          onMove={(direction) => {
+                            clearLayoutTimers()
+                            movePane(group.windowId, pane.id, direction)
+                          }}
+                          onMaximize={() => {
+                            clearLayoutTimers()
+                            setFocusedPaneId(pane.id)
+                            setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
+                          }}
+                          onDragStart={(event) => {
+                            setDraggedPane({ groupId: group.id, paneId: pane.id })
+                            event.dataTransfer.effectAllowed = 'move'
+                            event.dataTransfer.setData('text/plain', pane.id)
+                          }}
+                          onDragEnd={() => setDraggedPane(null)}
+                          onDragOver={(event) => {
+                            if (draggedPane?.groupId === group.id) {
                               event.preventDefault()
-                              clearLayoutTimers()
-                              dropPane(group.id, pane.id)
-                            }}
-                            onInput={(data) => sendPaneInput(pane.id, data)}
-                            onKey={(key) => sendPaneKey(pane.id, key)}
-                            onPaste={(data) => sendPanePaste(pane.id, data)}
-                            onResize={(cols, rows) => sendPaneResize(
-                              group,
-                              pane.id,
-                              measurementKey,
-                              cols,
-                              rows,
-                            )}
-                            registerSink={registerTerminalSink}
-                            registerFocusable={registerFocusable}
-                          />
-                        )
-                      })}
+                              event.dataTransfer.dropEffect = 'move'
+                            }
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault()
+                            clearLayoutTimers()
+                            dropPane(group.windowId, group.id, pane.id)
+                          }}
+                          onInput={(data) => sendPaneInput(pane.id, data)}
+                          onKey={(key) => sendPaneKey(pane.id, key)}
+                          onPaste={(data) => sendPanePaste(pane.id, data)}
+                          onResize={(cols, rows) => sendPaneResize(
+                            group.windowId,
+                            pane.id,
+                            measurementKey,
+                            cols,
+                            rows,
+                          )}
+                          registerSink={registerTerminalSink}
+                          registerFocusable={registerFocusable}
+                        />,
+                      ]))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>

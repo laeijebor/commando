@@ -1,57 +1,52 @@
 import type {
   CommandoSnapshot,
-  GroupLayoutPreset,
+  LayoutSpec,
   SavedGroup,
 } from '../shared/protocol'
 
-export type PanePlacement = {
-  columnSpan: number
-  rowSpan: number
+export type GroupLayoutPreset =
+  | 'equal-grid'
+  | 'full-then-halves'
+  | 'two-full-two-halves'
+  | 'lead-and-stack'
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size))
+  return result
 }
 
-export function getPanePlacement(
-  preset: GroupLayoutPreset,
-  index: number,
-  paneCount: number,
-  fillIncompleteRows = false,
-): PanePlacement {
-  if (paneCount <= 1) return { columnSpan: 12, rowSpan: 1 }
+const pane = (paneId: string): LayoutSpec => ({ kind: 'pane', paneId, cols: 80, rows: 24 })
+const split = (direction: 'row' | 'column', children: LayoutSpec[]): LayoutSpec =>
+  children.length === 1 ? children[0] : { kind: 'split', direction, children }
+
+/**
+ * Builds the split tree a preset button applies to the window's panes right
+ * now. Leaf sizes are equal weights; the daemon rescales them to the window.
+ */
+export function presetLayoutSpec(preset: GroupLayoutPreset, paneIds: string[]): LayoutSpec | null {
+  if (paneIds.length === 0) return null
+  const panes = paneIds.map(pane)
+  if (panes.length === 1) return panes[0]
 
   switch (preset) {
-    case 'full-then-halves':
-      if (fillIncompleteRows && paneCount % 2 === 0 && index === paneCount - 1) {
-        return { columnSpan: 12, rowSpan: 1 }
-      }
-      return { columnSpan: index === 0 ? 12 : 6, rowSpan: 1 }
-    case 'two-full-two-halves':
-      if (fillIncompleteRows && paneCount % 2 !== 0 && index === paneCount - 1) {
-        return { columnSpan: 12, rowSpan: 1 }
-      }
-      return { columnSpan: index < 2 ? 12 : 6, rowSpan: 1 }
-    case 'lead-and-stack':
-      if (fillIncompleteRows && paneCount > 3 && index >= 3) {
-        const trailingCount = paneCount - 3
-        const remainder = trailingCount % 3
-        const trailingIndex = index - 3
-        if (remainder > 0 && trailingIndex >= trailingCount - remainder) {
-          return { columnSpan: 12 / remainder, rowSpan: 1 }
-        }
-      }
-      return index === 0
-        ? { columnSpan: paneCount > 2 ? 8 : 7, rowSpan: paneCount > 2 ? 2 : 1 }
-        : { columnSpan: paneCount > 2 ? 4 : 5, rowSpan: 1 }
     case 'equal-grid':
-      if (paneCount === 2 || paneCount === 4) return { columnSpan: 6, rowSpan: 1 }
-      if (paneCount === 3 || paneCount >= 5) {
-        if (fillIncompleteRows && paneCount >= 5) {
-          const remainder = paneCount % 3
-          if (remainder > 0 && index >= paneCount - remainder) {
-            return { columnSpan: 12 / remainder, rowSpan: 1 }
-          }
-        }
-        return { columnSpan: 4, rowSpan: 1 }
+      if (panes.length <= 3) return split('row', panes)
+      if (panes.length === 4) {
+        return split('column', [split('row', panes.slice(0, 2)), split('row', panes.slice(2))])
       }
-      return { columnSpan: 12, rowSpan: 1 }
+      return split('column', chunks(panes, 3).map((row) => split('row', row)))
+    case 'full-then-halves':
+      return split('column', [panes[0], ...chunks(panes.slice(1), 2).map((row) => split('row', row))])
+    case 'two-full-two-halves':
+      return split('column', [panes[0], panes[1], ...chunks(panes.slice(2), 2).map((row) => split('row', row))])
+    case 'lead-and-stack':
+      if (panes.length === 2) return split('row', panes)
+      if (panes.length === 3) return split('row', [panes[0], split('column', panes.slice(1))])
+      return split('column', [
+        split('row', [panes[0], split('column', panes.slice(1, 3))]),
+        ...chunks(panes.slice(3), 3).map((row) => split('row', row)),
+      ])
   }
 }
 
@@ -86,7 +81,6 @@ export function defaultGroupsForSession(
         sessionId,
         windowId: window.id,
         paneIds: [...window.paneIds],
-        layout: 'equal-grid' as const,
       },
     ]
   })
