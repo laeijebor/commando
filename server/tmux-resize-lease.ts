@@ -190,6 +190,17 @@ export class TmuxResizeLeaseManager {
     })
   }
 
+  releaseWindowForAll(windowId: string): Promise<boolean> {
+    if (!WINDOW_ID.test(windowId)) return Promise.reject(new Error('Invalid tmux window id'))
+    return this.enqueue(async () => {
+      const ownerId = this.ownersByWindow.get(windowId)
+      const lease = ownerId ? this.leasesByOwner.get(ownerId)?.get(windowId) : undefined
+      if (!lease) return false
+      await this.restore(lease)
+      return true
+    })
+  }
+
   releaseAll(): Promise<void> {
     return this.enqueue(async () => {
       const leases = [...this.leasesByOwner.values()].flatMap((ownerLeases) => [

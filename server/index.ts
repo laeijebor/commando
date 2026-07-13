@@ -32,6 +32,7 @@ import { handleLinearApi } from './linear-api.js'
 import { NoteStore } from './notes.js'
 import { handleNotesApi } from './notes-api.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
@@ -779,6 +780,16 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const paneManagement = new PaneManagementApi({
+    currentPaneIds: () => snapshot.panes.map((pane) => pane.id),
+    beforePaneDeleted: async (paneId) => {
+      const windowId = paneForId(paneId)?.windowId
+      if (windowId) await tmux.releaseWindowPaneResizes(windowId)
+    },
+    onPanesChanged: async () => {
+      await refreshSnapshot()
+    },
+  })
 
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
     switch (message.type) {
@@ -1132,9 +1143,20 @@ async function main(): Promise<void> {
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
         if (await sessionManagement.handle(request, response, url)) return
-        if (await handleTmuxCreateApi(request, response, url, tmuxCreator, async () => {
-          await refreshSnapshot()
-        })) return
+        if (await paneManagement.handle(request, response, url)) return
+        if (await handleTmuxCreateApi(
+          request,
+          response,
+          url,
+          tmuxCreator,
+          async (targetId) => {
+            const windowId = targetId.startsWith('@') ? targetId : paneForId(targetId)?.windowId
+            if (windowId) await tmux.releaseWindowPaneResizes(windowId)
+          },
+          async () => {
+            await refreshSnapshot()
+          },
+        )) return
         writeJson(response, 404, { error: 'Not found' })
         return
       }

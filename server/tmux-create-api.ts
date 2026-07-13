@@ -44,6 +44,7 @@ export async function handleTmuxCreateApi(
   response: ServerResponse,
   url: URL,
   creator: TmuxCreator,
+  beforePaneCreated: (targetId: string) => Promise<void>,
   onCreated: () => Promise<void>,
 ): Promise<boolean> {
   if (!url.pathname.startsWith(`${ROOT}/`)) return false
@@ -55,13 +56,16 @@ export async function handleTmuxCreateApi(
 
   try {
     const input = await body(request)
-    const created = url.pathname === `${ROOT}/sessions`
-      ? await creator.createSession(input as never)
-      : url.pathname === `${ROOT}/windows`
-        ? await creator.createWindow(input as never)
-        : url.pathname === `${ROOT}/panes`
-          ? await creator.createPane(input as never)
-          : null
+    let created = null
+    if (url.pathname === `${ROOT}/sessions`) {
+      created = await creator.createSession(input as never)
+    } else if (url.pathname === `${ROOT}/windows`) {
+      created = await creator.createWindow(input as never)
+    } else if (url.pathname === `${ROOT}/panes`) {
+      const targetId = input.targetId
+      if (typeof targetId !== 'string') throw new Error('Invalid tmux window or pane id')
+      created = await creator.createPane(input as never, () => beforePaneCreated(targetId))
+    }
     if (!created) {
       json(response, 404, { error: 'Not found' })
       return true

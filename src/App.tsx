@@ -76,6 +76,8 @@ import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { TmuxCreateControls } from './TmuxCreateControls'
 import { createTmuxHttpApi } from './tmuxCreateApi'
+import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
+import { createPaneManagementApi } from './paneManagementApi'
 import {
   createOwner,
   getAuthBootstrap,
@@ -227,7 +229,11 @@ type TerminalPaneProps = {
   measurementKey: string
   fillIncompleteRows: boolean
   connected: boolean
+  renaming: boolean
   onFocus: () => void
+  onOpenMenu: (x: number, y: number) => void
+  onRename: (title: string) => Promise<void>
+  onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
   onMaximize: () => void
   onDragStart: (event: DragEvent<HTMLElement>) => void
@@ -242,7 +248,7 @@ type TerminalPaneProps = {
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
 }
 
-function TerminalPaneCard({
+export function TerminalPaneCard({
   pane,
   status,
   index,
@@ -254,7 +260,11 @@ function TerminalPaneCard({
   measurementKey,
   fillIncompleteRows,
   connected,
+  renaming,
   onFocus,
+  onOpenMenu,
+  onRename,
+  onRenameFinished,
   onMove,
   onMaximize,
   onDragStart,
@@ -269,6 +279,11 @@ function TerminalPaneCard({
   registerFocusable,
 }: TerminalPaneProps) {
   const placement = getPanePlacement(preset, index, count, fillIncompleteRows)
+  const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  const [renameValue, setRenameValue] = useState(paneLabel)
+  const [renamePending, setRenamePending] = useState(false)
+  const [renameError, setRenameError] = useState('')
   const style: CSSProperties = maximized
     ? { gridColumn: '1 / -1', gridRow: 'auto' }
     : {
@@ -276,26 +291,104 @@ function TerminalPaneCard({
         gridRow: `span ${placement.rowSpan}`,
       }
 
+  useEffect(() => {
+    if (!renaming) return
+    setRenameValue(paneLabel)
+    setRenameError('')
+    window.setTimeout(() => {
+      renameInputRef.current?.focus()
+      renameInputRef.current?.select()
+    }, 0)
+  }, [paneLabel, renaming])
+
+  const commitRename = async () => {
+    if (renamePending) return
+    const title = renameValue.trim()
+    if (!title) {
+      setRenameError('Pane title is required')
+      renameInputRef.current?.focus()
+      return
+    }
+    if (title === pane.title) {
+      onRenameFinished()
+      return
+    }
+    setRenamePending(true)
+    setRenameError('')
+    try {
+      await onRename(title)
+      onRenameFinished()
+    } catch (cause) {
+      setRenameError(cause instanceof Error ? cause.message : 'Unable to rename pane')
+      window.setTimeout(() => {
+        renameInputRef.current?.focus()
+        renameInputRef.current?.select()
+      }, 0)
+    } finally {
+      setRenamePending(false)
+    }
+  }
+
   return (
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}`}
       style={style}
       onDragOver={onDragOver}
       onDrop={onDrop}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        onFocus()
+        onOpenMenu(event.clientX, event.clientY)
+      }}
       data-pane-id={pane.id}
     >
       <header
         className="pane-head"
-        draggable
+        draggable={!renaming}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
-        title="Drag to reorder this pane"
+        onKeyDown={(event) => {
+          if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+            event.preventDefault()
+            const bounds = event.currentTarget.getBoundingClientRect()
+            onOpenMenu(bounds.left + 24, bounds.bottom)
+          }
+        }}
+        tabIndex={0}
+        title={renaming ? undefined : 'Drag to reorder this pane; right click for pane actions'}
       >
         <span className={`pane-icon provider-${status?.provider ?? 'unknown'}`}>
           {status ? <Bot aria-hidden="true" /> : <Terminal aria-hidden="true" />}
         </span>
         <span className="pane-heading">
-          <strong>{pane.title || pane.command || `Pane ${pane.index}`}</strong>
+          {renaming ? (
+            <form
+              className={`pane-title-form${renameError ? ' has-error' : ''}`}
+              onSubmit={(event) => {
+                event.preventDefault()
+                void commitRename()
+              }}
+            >
+              <input
+                ref={renameInputRef}
+                value={renameValue}
+                maxLength={128}
+                disabled={renamePending}
+                aria-label={`Rename ${paneLabel}`}
+                aria-invalid={Boolean(renameError)}
+                title={renameError || 'Press Enter to save or Escape to cancel'}
+                onChange={(event) => setRenameValue(event.target.value)}
+                onBlur={() => { void commitRename() }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    onRenameFinished()
+                  }
+                }}
+              />
+            </form>
+          ) : <strong>{paneLabel}</strong>}
           <small>{pane.command || pane.path}</small>
         </span>
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
@@ -534,6 +627,10 @@ export function App() {
   const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
+  const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
+  const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
+  const [paneActionPending, setPaneActionPending] = useState(false)
+  const [paneActionError, setPaneActionError] = useState('')
   const pendingMaximizePaneId = useRef<string | null>(null)
 
   useEffect(() => {
@@ -780,7 +877,13 @@ export function App() {
     if (focusedPaneId && !snapshot?.panes.some((pane) => pane.id === focusedPaneId)) {
       setFocusedPaneId(null)
     }
-  }, [focusedPaneId, maximizedPaneId, snapshot])
+    if (paneMenu && !snapshot?.panes.some((pane) => pane.id === paneMenu.paneId)) {
+      setPaneMenu(null)
+    }
+    if (renamingPaneId && !snapshot?.panes.some((pane) => pane.id === renamingPaneId)) {
+      setRenamingPaneId(null)
+    }
+  }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot])
 
   useEffect(() => {
     if (!pendingFocusPaneId) return
@@ -976,6 +1079,70 @@ export function App() {
     setPaletteOpen(false)
   }
   const tmuxCreateApi = createTmuxHttpApi(token)
+  const paneManagementApi = createPaneManagementApi(token)
+
+  const openPaneMenu = (paneId: string, x: number, y: number) => {
+    setFocusedPaneId(paneId)
+    setPaletteOpen(false)
+    setPaneActionError('')
+    setPaneMenu({ paneId, x, y })
+  }
+
+  const renamePane = async (paneId: string, title: string) => {
+    await paneManagementApi.renamePane(paneId, title)
+  }
+
+  const splitPane = async (paneId: string, direction: PaneSplitDirection) => {
+    const pane = paneMap.get(paneId)
+    if (!pane || paneActionPending) return
+    setPaneActionPending(true)
+    setPaneActionError('')
+    clearLayoutTimers()
+    try {
+      const before = direction === 'left' || direction === 'up'
+      const created = await tmuxCreateApi.createPane({
+        targetId: paneId,
+        direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
+        placement: before ? 'before' : 'after',
+        cwd: pane.path,
+      })
+      const targetGroup = groups.find((group) => group.paneIds.includes(paneId))
+      if (targetGroup) {
+        persistGroups(groups.map((group) => {
+          if (group.id !== targetGroup.id) return group
+          const targetIndex = group.paneIds.indexOf(paneId)
+          const nextPaneIds = [...group.paneIds]
+          nextPaneIds.splice(targetIndex + (before ? 0 : 1), 0, created.paneId)
+          return { ...group, paneIds: nextPaneIds }
+        }))
+      }
+      setMaximizedPaneId(null)
+      setPendingFocusPaneId(created.paneId)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to split pane')
+    } finally {
+      setPaneActionPending(false)
+    }
+  }
+
+  const killPane = async (paneId: string) => {
+    const pane = paneMap.get(paneId)
+    if (!pane || paneActionPending) return
+    const label = pane.title || pane.command || `Pane ${pane.index}`
+    if (!window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
+    setPaneActionPending(true)
+    setPaneActionError('')
+    clearLayoutTimers()
+    try {
+      await paneManagementApi.deletePane(paneId)
+      if (maximizedPaneId === paneId) setMaximizedPaneId(null)
+      if (renamingPaneId === paneId) setRenamingPaneId(null)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to kill pane')
+    } finally {
+      setPaneActionPending(false)
+    }
+  }
 
   const commands: PaletteCommand[] = [
     {
@@ -1066,6 +1233,7 @@ export function App() {
   const activeWindow = selectedSession?.activeWindowId
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
+  const contextPane = paneMenu ? paneMap.get(paneMenu.paneId) : undefined
 
   if (authPending && (!token || connection.phase === 'unauthorized')) {
     return (
@@ -1408,7 +1576,11 @@ export function App() {
                             measurementKey={measurementKey}
                             fillIncompleteRows={webLayoutAuthoritative}
                             connected={connected}
+                            renaming={renamingPaneId === pane.id}
                             onFocus={() => setFocusedPaneId(pane.id)}
+                            onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
+                            onRename={(title) => renamePane(pane.id, title)}
+                            onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
                             onMove={(direction) => {
                               clearLayoutTimers()
                               movePane(group.id, pane.id, direction)
@@ -1557,6 +1729,28 @@ export function App() {
           </footer>
         </aside> : null}
       </div>
+
+      {paneActionError ? (
+        <div className="pane-action-error" role="alert">
+          <span>{paneActionError}</span>
+          <button type="button" onClick={() => setPaneActionError('')} aria-label="Dismiss pane action error">
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
+      {paneMenu && contextPane ? (
+        <PaneContextMenu
+          paneLabel={contextPane.title || contextPane.command || `Pane ${contextPane.index}`}
+          x={paneMenu.x}
+          y={paneMenu.y}
+          busy={paneActionPending || !connected}
+          onClose={() => setPaneMenu(null)}
+          onRename={() => setRenamingPaneId(paneMenu.paneId)}
+          onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
+          onKill={() => { void killPane(paneMenu.paneId) }}
+        />
+      ) : null}
 
       {paletteOpen ? (
         <div

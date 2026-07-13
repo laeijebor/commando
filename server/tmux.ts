@@ -223,6 +223,10 @@ export class TmuxClient {
     return this.resizeLeases.release(ownerId, expectedPaneId)
   }
 
+  releaseWindowPaneResizes(windowId: string): Promise<boolean> {
+    return this.resizeLeases.releaseWindowForAll(windowId)
+  }
+
   releaseAllPaneResizes(): Promise<void> {
     return this.resizeLeases.releaseAll()
   }

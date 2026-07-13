@@ -126,6 +126,28 @@ describe('TmuxCreator', () => {
     expect(run.mock.calls[0][0]).toContain('@8')
   })
 
+  it('places left and upper splits before the target pane', async () => {
+    const run = runner()
+    const beforeCreate = vi.fn()
+    await new TmuxCreator(run, []).createPane({
+      targetId: '%12',
+      direction: 'horizontal',
+      placement: 'before',
+    }, beforeCreate)
+    expect(beforeCreate).toHaveBeenCalledOnce()
+    expect(run.mock.calls[0][0]).toEqual([
+      'split-window',
+      '-d',
+      '-h',
+      '-b',
+      '-P',
+      '-F',
+      expect.any(String),
+      '-t',
+      '%12',
+    ])
+  })
+
   it.each(['', ' work', 'work ', 'bad:name', 'bad.name', 'bad\nname'])(
     'rejects invalid session name %j before execution',
     async (name) => {
@@ -190,6 +212,20 @@ describe('TmuxCreator', () => {
         direction: 'diagonal' as never,
       }),
     ).rejects.toThrow(/split direction/)
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unsupported split placement before execution', async () => {
+    const run = runner()
+    const beforeCreate = vi.fn()
+    await expect(
+      new TmuxCreator(run, []).createPane({
+        targetId: '%1',
+        direction: 'horizontal',
+        placement: 'around' as never,
+      }, beforeCreate),
+    ).rejects.toThrow(/split placement/)
+    expect(beforeCreate).not.toHaveBeenCalled()
     expect(run).not.toHaveBeenCalled()
   })
 

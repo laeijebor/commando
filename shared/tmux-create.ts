@@ -5,6 +5,7 @@ export const TMUX_CREATE_ROUTES = {
 } as const
 
 export type TmuxSplitDirection = 'horizontal' | 'vertical'
+export type TmuxSplitPlacement = 'before' | 'after'
 
 export type CreateTmuxSessionRequest = {
   name: string
@@ -21,6 +22,7 @@ export type CreateTmuxWindowRequest = {
 export type CreateTmuxPaneRequest = {
   targetId: string
   direction: TmuxSplitDirection
+  placement?: TmuxSplitPlacement
   cwd?: string
 }
 

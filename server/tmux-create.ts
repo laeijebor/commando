@@ -218,7 +218,10 @@ export class TmuxCreator {
     return parseCreatedTarget(await this.run(args), 'window')
   }
 
-  async createPane(input: CreateTmuxPaneRequest): Promise<TmuxCreatedTarget> {
+  async createPane(
+    input: CreateTmuxPaneRequest,
+    beforeCreate?: () => void | Promise<void>,
+  ): Promise<TmuxCreatedTarget> {
     if (
       typeof input.targetId !== 'string' ||
       (!WINDOW_ID.test(input.targetId) && !PANE_ID.test(input.targetId))
@@ -228,12 +231,16 @@ export class TmuxCreator {
     if (input.direction !== 'horizontal' && input.direction !== 'vertical') {
       throw new Error('Invalid tmux split direction')
     }
+    if (input.placement !== undefined && input.placement !== 'before' && input.placement !== 'after') {
+      throw new Error('Invalid tmux split placement')
+    }
     const cwd = validatedPath(input.cwd)
     const args = [
       ...this.socketArgs,
       'split-window',
       '-d',
       input.direction === 'horizontal' ? '-h' : '-v',
+      ...(input.placement === 'before' ? ['-b'] : []),
       '-P',
       '-F',
       CREATE_FORMAT,
@@ -241,6 +248,7 @@ export class TmuxCreator {
       input.targetId,
     ]
     if (cwd) args.push('-c', cwd)
+    await beforeCreate?.()
     return parseCreatedTarget(await this.run(args), 'pane')
   }
 }

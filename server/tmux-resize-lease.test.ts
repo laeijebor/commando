@@ -123,6 +123,16 @@ describe('tmux focused-pane resize leases', () => {
     await expect(manager.release('client-1', '%1')).resolves.toBe(true)
   })
 
+  it('releases the affected window regardless of which browser owns it', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run)
+    await manager.resize('client-1', '%2', 120, 40)
+
+    await expect(manager.releaseWindowForAll('@1')).resolves.toBe(true)
+    await expect(manager.release('client-1')).resolves.toBe(false)
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+  })
+
   it('continues restoring later window state after one tmux command fails', async () => {
     const fake = fakeRunner()
     const manager = new TmuxResizeLeaseManager(async (args) => {

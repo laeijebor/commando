@@ -3,7 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AuthGate } from './App'
+import type { TmuxPane } from '../shared/protocol'
+import { AuthGate, TerminalPaneCard } from './App'
 
 vi.mock('./authClient', () => ({
   createOwner: vi.fn(),
@@ -44,5 +45,84 @@ describe('owner authentication form', () => {
 
     fireEvent.change(email, { target: { value: 'other@example.com' } })
     expect(email).toHaveValue('other@example.com')
+  })
+})
+
+const pane = {
+  id: '%12',
+  index: 1,
+  windowId: '@2',
+  sessionId: '$3',
+  title: 'api',
+  command: 'node',
+  path: '/tmp/project',
+  active: true,
+  dead: false,
+  width: 100,
+  height: 30,
+} as TmuxPane
+
+const paneProps = {
+  pane,
+  index: 0,
+  count: 1,
+  preset: 'equal-grid' as const,
+  maximized: false,
+  focused: false,
+  resizeOwner: false,
+  measurementKey: 'layout',
+  fillIncompleteRows: false,
+  connected: true,
+  renaming: false,
+  onFocus: vi.fn(),
+  onOpenMenu: vi.fn(),
+  onRename: vi.fn().mockResolvedValue(undefined),
+  onRenameFinished: vi.fn(),
+  onMove: vi.fn(),
+  onMaximize: vi.fn(),
+  onDragStart: vi.fn(),
+  onDragEnd: vi.fn(),
+  onDragOver: vi.fn(),
+  onDrop: vi.fn(),
+  onInput: vi.fn(),
+  onKey: vi.fn(),
+  onPaste: vi.fn(),
+  onResize: vi.fn(),
+  registerSink: vi.fn(() => () => undefined),
+  registerFocusable: vi.fn(),
+}
+
+describe('terminal pane actions', () => {
+  it('opens the context menu for the targeted pane', () => {
+    const onOpenMenu = vi.fn()
+    const view = render(<TerminalPaneCard {...paneProps} onOpenMenu={onOpenMenu} />)
+
+    fireEvent.contextMenu(view.container.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+    })
+
+    expect(onOpenMenu).toHaveBeenCalledWith(120, 80)
+    expect(paneProps.onFocus).toHaveBeenCalled()
+  })
+
+  it('renames the pane inline', async () => {
+    const onRename = vi.fn().mockResolvedValue(undefined)
+    const onRenameFinished = vi.fn()
+    render(
+      <TerminalPaneCard
+        {...paneProps}
+        renaming
+        onRename={onRename}
+        onRenameFinished={onRenameFinished}
+      />,
+    )
+
+    const input = await screen.findByRole('textbox', { name: 'Rename api' })
+    fireEvent.change(input, { target: { value: 'api tests' } })
+    fireEvent.submit(input.closest('form')!)
+
+    await waitFor(() => expect(onRename).toHaveBeenCalledWith('api tests'))
+    await waitFor(() => expect(onRenameFinished).toHaveBeenCalled())
   })
 })
