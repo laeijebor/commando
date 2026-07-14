@@ -292,6 +292,8 @@ export class NoteStore {
 
     return this.enqueue(async () => {
       await this.ensureInitialized()
+      const scanned = await this.scanVault()
+      if (!scanned.folders.includes(folder)) throw new NoteValidationError('Note folder does not exist')
       const source = join(this.directory, folder)
       const target = join(this.directory, targetFolder)
       const sourceStat = await lstat(source).catch(() => null)
@@ -314,8 +316,8 @@ export class NoteStore {
         await rename(source, target)
       }
       await this.syncDirectory(dirname(source))
-      const scanned = await this.scanVault()
-      return { notes: ordered(scanned.notes.map(({ note }) => note)), folders: scanned.folders }
+      const next = await this.scanVault()
+      return { notes: ordered(next.notes.map(({ note }) => note)), folders: next.folders }
     })
   }
 
@@ -329,6 +331,7 @@ export class NoteStore {
       const sourceStat = await lstat(source).catch(() => null)
       if (!sourceStat?.isDirectory()) throw new NoteValidationError('Note folder does not exist')
       const scanned = await this.scanVault()
+      if (!scanned.folders.includes(folder)) throw new NoteValidationError('Note folder does not exist')
       const managedPaths = new Set(scanned.notes.map(({ path }) => path))
       const noteIdsByFolder = new Map<string, Set<string>>()
       for (const { note } of scanned.notes) {
@@ -345,6 +348,10 @@ export class NoteStore {
       const entries = await readdir(source, { withFileTypes: true })
       const images = entries.find((entry) => entry.name === 'images')
       const imageEntries = images ? await readdir(join(source, images.name), { withFileTypes: true }) : []
+      const parentImages = await lstat(join(parent, 'images')).catch(() => null)
+      if (parentImages && !parentImages.isDirectory()) {
+        throw new NoteValidationError('Cannot move note images into the parent folder')
+      }
       for (const entry of entries) {
         if (entry.name === 'images') continue
         if (await lstat(join(parent, entry.name)).catch(() => null)) {
