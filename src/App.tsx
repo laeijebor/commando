@@ -84,6 +84,8 @@ import { TmuxCreateControls } from './TmuxCreateControls'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
+import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
+import { PaneGitStats } from './PaneGitStats'
 import {
   createOwner,
   getAuthBootstrap,
@@ -234,6 +236,7 @@ type TerminalPaneProps = {
   measurementKey: string
   connected: boolean
   renaming: boolean
+  gitApi: GitDiffApiClient
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onRename: (title: string) => Promise<void>
@@ -263,6 +266,7 @@ export function TerminalPaneCard({
   measurementKey,
   connected,
   renaming,
+  gitApi,
   onFocus,
   onOpenMenu,
   onRename,
@@ -442,6 +446,7 @@ export function TerminalPaneCard({
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span>{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
         <span>{pane.width}x{pane.height}</span>
+        <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
         <span className="pane-path" title={pane.path}>{pane.path}</span>
       </footer>
     </article>
@@ -1078,6 +1083,7 @@ export function App() {
   }
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
+  const gitDiffApi = createGitDiffApi(token)
 
   const openPaneMenu = (paneId: string, x: number, y: number) => {
     setFocusedPaneId(paneId)
@@ -1594,6 +1600,7 @@ export function App() {
                           measurementKey={measurementKey}
                           connected={connected}
                           renaming={renamingPaneId === pane.id}
+                          gitApi={gitDiffApi}
                           onFocus={() => setFocusedPaneId(pane.id)}
                           onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                           onRename={(title) => renamePane(pane.id, title)}

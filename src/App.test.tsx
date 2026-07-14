@@ -74,6 +74,10 @@ const paneProps = {
   fillIncompleteRows: false,
   connected: true,
   renaming: false,
+  gitApi: {
+    summary: vi.fn().mockResolvedValue({ isRepo: false }),
+    fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
+  },
   onFocus: vi.fn(),
   onOpenMenu: vi.fn(),
   onRename: vi.fn().mockResolvedValue(undefined),
