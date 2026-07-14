@@ -86,6 +86,22 @@ export function defaultGroupsForSession(
   })
 }
 
+/**
+ * Picks the window tab to display: the user's selection when its window still
+ * exists, else the session's tmux-active window, else the first group.
+ */
+export function resolveActiveGroup(
+  groups: SavedGroup[],
+  tabWindowId: string | undefined,
+  sessionActiveWindowId: string | undefined,
+): SavedGroup | undefined {
+  return (
+    groups.find((group) => group.windowId === tabWindowId) ??
+    groups.find((group) => group.windowId === sessionActiveWindowId) ??
+    groups[0]
+  )
+}
+
 export function reconcileGroupsForSession(
   snapshot: CommandoSnapshot,
   sessionId: string,
