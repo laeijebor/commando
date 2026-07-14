@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { LinearBoard, LinearIssue, LinearState } from './linearApi'
+import type { LinearBoard, LinearIssue, LinearIssueDetail, LinearState } from './linearApi'
 import { LinearSection } from './LinearSection'
 
 const todo: LinearState = {
@@ -53,6 +53,25 @@ const board: LinearBoard = {
   states: [todo, started],
   issues: [issue],
   truncated: false,
+}
+const issueDetail: LinearIssueDetail = {
+  ...issue,
+  description: '# Overview\n\n- [x] Render **Markdown**\n\n[Open docs](https://linear.app/docs)\n\n<script>alert("unsafe")</script>',
+  createdAt: '2026-07-10T00:00:00.000Z',
+  creator: null,
+  project: { id: board.project.id, name: board.project.name },
+  cycle: null,
+  availableStates: board.states,
+  comments: [{
+    id: 'comment-1',
+    body: 'A **formatted comment** with `inline code`.',
+    createdAt: '2026-07-11T01:00:00.000Z',
+    updatedAt: '2026-07-11T01:00:00.000Z',
+    parentId: null,
+    author: { id: 'user-1', name: 'Ada', avatarUrl: null },
+    children: [],
+  }],
+  commentsTruncated: false,
 }
 
 afterEach(() => {
@@ -127,5 +146,38 @@ describe('LinearSection', () => {
         expect.objectContaining({ method: 'PATCH' }),
       )
     })
+  })
+
+  it('renders issue markdown while keeping the comment composer outside the scroll region', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/linear/accounts')) {
+        return Response.json({ accounts: [{ id: 'account-1', label: 'Work', workspaceName: 'Work', viewerName: 'Ada', createdAt: 1 }] })
+      }
+      if (url.endsWith('/projects')) {
+        return Response.json({ projects: [board.project], truncated: false })
+      }
+      if (url.endsWith('/board')) return Response.json({ board })
+      if (url.endsWith('/issues/issue-1')) return Response.json({ issue: issueDetail })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<LinearSection token="test-token" />)
+    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeVisible()
+    expect(screen.getByRole('checkbox')).toBeChecked()
+    expect(screen.getByText('Markdown').tagName).toBe('STRONG')
+    expect(screen.getByText('formatted comment').tagName).toBe('STRONG')
+    expect(screen.getByText('inline code').tagName).toBe('CODE')
+    expect(screen.getByRole('link', { name: 'Open docs' })).toHaveAttribute('target', '_blank')
+
+    const composer = screen.getByPlaceholderText('Add a comment...').closest('form')
+    const drawer = composer?.closest('.linear-issue-drawer')
+    expect(composer).toHaveClass('linear-comment-composer')
+    expect(composer?.parentElement).toBe(drawer)
+    expect(drawer?.querySelector('.linear-issue-scroll')).not.toContainElement(composer)
+    expect(drawer?.querySelector('script')).toBeNull()
   })
 })
