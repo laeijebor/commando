@@ -71,6 +71,7 @@ type ClientState = {
   id: string
   socket: WebSocket
   subscribedPaneIds: Set<string>
+  statusPaneIds: Set<string>
   paneStreams: Map<string, PaneStreamState>
   lastStatus: Map<string, string>
   inputLimiter: RateLimiter
@@ -451,21 +452,24 @@ async function main(): Promise<void> {
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
 
+  const statusObserved = (client: ClientState, paneId: string): boolean =>
+    client.subscribedPaneIds.has(paneId) || client.statusPaneIds.has(paneId)
+
   const syncRequiredSessions = (): void => {
     const sessionIds = new Set<string>()
-    const subscribedPaneIds = new Set<string>()
+    const observedPaneIds = new Set<string>()
     for (const client of clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue
-      for (const paneId of client.subscribedPaneIds) {
+      for (const paneId of [...client.subscribedPaneIds, ...client.statusPaneIds]) {
         const pane = paneForId(paneId)
         if (pane) {
-          subscribedPaneIds.add(paneId)
+          observedPaneIds.add(paneId)
           sessionIds.add(pane.sessionId)
         }
       }
     }
     for (const paneId of paneTextTails.keys()) {
-      if (!subscribedPaneIds.has(paneId)) paneTextTails.delete(paneId)
+      if (!observedPaneIds.has(paneId)) paneTextTails.delete(paneId)
     }
     tmux.setRequiredSessions(sessionIds)
   }
@@ -515,7 +519,7 @@ async function main(): Promise<void> {
     })
     const fingerprint = statusFingerprint(status)
     for (const client of clients) {
-      if (!client.subscribedPaneIds.has(paneId)) continue
+      if (!statusObserved(client, paneId)) continue
       if (client.lastStatus.get(paneId) === fingerprint) continue
       if (send(client, { type: 'agent_status', status })) {
         client.lastStatus.set(paneId, fingerprint)
@@ -546,7 +550,10 @@ async function main(): Promise<void> {
     const subscribers = [...clients].filter((client) =>
       client.subscribedPaneIds.has(paneId),
     )
-    if (subscribers.length === 0) return
+    const observed =
+      subscribers.length > 0 ||
+      [...clients].some((client) => client.statusPaneIds.has(paneId))
+    if (!observed) return
 
     const changedAt = Date.now()
     observePaneData(paneId, data, changedAt)
@@ -556,6 +563,33 @@ async function main(): Promise<void> {
       if (!state.seeding) sendPaneData(client, paneId, data)
     }
     emitAgentStatus(paneId, changedAt)
+  }
+
+  const primingStatusTails = new Set<string>()
+
+  const primeStatusTail = (paneId: string): void => {
+    if (paneTextTails.has(paneId)) {
+      emitAgentStatus(paneId)
+      return
+    }
+    if (primingStatusTails.has(paneId)) return
+    const pane = paneForId(paneId)
+    if (!pane) return
+    primingStatusTails.add(paneId)
+    tmux
+      .capturePane(pane.sessionId, paneId)
+      .then((capture) => {
+        // Output that raced the capture already primed the tail via
+        // observePaneData; don't clobber it with the older capture.
+        if (!paneTextTails.has(paneId) && paneExists(paneId)) {
+          observePaneSeed(paneId, normalizeCaptureLineEndings(capture), Buffer.alloc(0), Date.now())
+        }
+        emitAgentStatus(paneId)
+      })
+      .catch(reportTmuxError)
+      .finally(() => {
+        primingStatusTails.delete(paneId)
+      })
   }
 
   const requestPaneSeed = (client: ClientState, paneId: string): void => {
@@ -726,6 +760,12 @@ async function main(): Promise<void> {
           if (!paneIds.has(paneId)) paneTextTails.delete(paneId)
         }
         for (const client of clients) {
+          for (const paneId of [...client.statusPaneIds]) {
+            if (!paneIds.has(paneId)) {
+              client.statusPaneIds.delete(paneId)
+              client.lastStatus.delete(paneId)
+            }
+          }
           for (const paneId of [...client.subscribedPaneIds]) {
             if (!paneIds.has(paneId)) {
               client.subscribedPaneIds.delete(paneId)
@@ -800,17 +840,27 @@ async function main(): Promise<void> {
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
     switch (message.type) {
       case 'subscribe': {
-        if (message.paneIds.some((paneId) => !paneExists(paneId))) {
+        const statusPaneIds = message.statusPaneIds ?? []
+        if (
+          message.paneIds.some((paneId) => !paneExists(paneId)) ||
+          statusPaneIds.some((paneId) => !paneExists(paneId))
+        ) {
           violation(client, 'invalid_pane', 'Subscription references an unknown pane')
           return
         }
         const previous = client.subscribedPaneIds
+        const previouslyObserved = new Set([...previous, ...client.statusPaneIds])
         client.subscribedPaneIds = new Set(message.paneIds)
+        client.statusPaneIds = new Set(
+          statusPaneIds.filter((paneId) => !client.subscribedPaneIds.has(paneId)),
+        )
         for (const paneId of previous) {
           if (!client.subscribedPaneIds.has(paneId)) {
             client.paneStreams.delete(paneId)
-            client.lastStatus.delete(paneId)
           }
+        }
+        for (const paneId of previouslyObserved) {
+          if (!statusObserved(client, paneId)) client.lastStatus.delete(paneId)
         }
         const newlySubscribed = message.paneIds.filter(
           (paneId) => !previous.has(paneId),
@@ -826,6 +876,9 @@ async function main(): Promise<void> {
         }
         syncRequiredSessions()
         for (const paneId of newlySubscribed) requestPaneSeed(client, paneId)
+        for (const paneId of client.statusPaneIds) {
+          if (!previouslyObserved.has(paneId)) primeStatusTail(paneId)
+        }
         return
       }
       case 'input': {
@@ -1030,6 +1083,7 @@ async function main(): Promise<void> {
       id: randomUUID(),
       socket,
       subscribedPaneIds: new Set(),
+      statusPaneIds: new Set(),
       paneStreams: new Map(),
       lastStatus: new Map(),
       inputLimiter: new RateLimiter(),
