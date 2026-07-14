@@ -110,6 +110,14 @@ describe('GitDiffApi', () => {
     })
   })
 
+  it('rejects unknown engines and layouts', async () => {
+    const base = await startApi()
+    const badEngine = await fetch(`${base}/api/git/file-diff?paneId=%251&file=a.ts&engine=meld`)
+    expect(badEngine.status).toBe(400)
+    const badDisplay = await fetch(`${base}/api/git/file-diff?paneId=%251&file=a.ts&display=unified`)
+    expect(badDisplay.status).toBe(400)
+  })
+
   it('maps unknown targets to 400', async () => {
     const base = await startApi()
     const response = await fetch(`${base}/api/git/summary?paneId=%251&target=nope`)

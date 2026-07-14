@@ -1,5 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { GitDiffError, GitDiffInspector, validateDiffWidth } from './git-diff.js'
+import {
+  GitDiffError,
+  GitDiffInspector,
+  validateDiffDisplay,
+  validateDiffEngine,
+  validateDiffWidth,
+} from './git-diff.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
 
 const API_ROOT = '/api/git'
@@ -7,7 +13,8 @@ const API_ROOT = '/api/git'
 const ERROR_STATUS: Record<GitDiffError['kind'], number> = {
   'bad-target': 400,
   'bad-file': 400,
-  'difft-missing': 501,
+  'bad-param': 400,
+  'tool-missing': 501,
   exec: 502,
 }
 
@@ -66,7 +73,9 @@ export class GitDiffApi {
       const file = url.searchParams.get('file')
       if (!file) throw new HttpError(400, 'file query parameter is required')
       const width = validateDiffWidth(url.searchParams.get('width') ?? undefined)
-      const diff = await this.inspector.fileDiff(panePath, file, target, width)
+      const engine = validateDiffEngine(url.searchParams.get('engine') ?? undefined)
+      const display = validateDiffDisplay(url.searchParams.get('display') ?? undefined)
+      const diff = await this.inspector.fileDiff(panePath, file, target, width, engine, display)
       writeJson(response, 200, { file, diff })
       return true
     } catch (error) {

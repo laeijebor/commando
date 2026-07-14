@@ -27,9 +27,19 @@ export type GitBranches = {
   branches?: string[]
 }
 
+export type DiffEngine = 'difftastic' | 'delta'
+export type DiffDisplay = 'side-by-side' | 'inline'
+
+export type GitFileDiffOptions = {
+  target?: string
+  width?: number
+  engine?: DiffEngine
+  display?: DiffDisplay
+}
+
 export interface GitDiffApiClient {
   summary(paneId: string, target?: string): Promise<GitDiffSummary>
-  fileDiff(paneId: string, file: string, target?: string, width?: number): Promise<GitFileDiff>
+  fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
   branches(paneId: string): Promise<GitBranches>
 }
 
@@ -63,12 +73,14 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
 
   return {
     summary: (paneId, target) => request<GitDiffSummary>('summary', { paneId, target }),
-    fileDiff: (paneId, file, target, width) =>
+    fileDiff: (paneId, file, options = {}) =>
       request<GitFileDiff>('file-diff', {
         paneId,
         file,
-        target,
-        width: width === undefined ? undefined : String(width),
+        target: options.target,
+        width: options.width === undefined ? undefined : String(options.width),
+        engine: options.engine,
+        display: options.display,
       }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
   }

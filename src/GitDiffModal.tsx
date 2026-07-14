@@ -1,7 +1,13 @@
-import { FileDiff, LoaderCircle, X } from 'lucide-react'
+import { Columns2, FileDiff, LoaderCircle, Rows3, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { parseAnsi, type AnsiSegment } from './ansi'
-import type { GitChangedFile, GitDiffApiClient, GitDiffSummary } from './gitApi'
+import type {
+  DiffDisplay,
+  DiffEngine,
+  GitChangedFile,
+  GitDiffApiClient,
+  GitDiffSummary,
+} from './gitApi'
 
 type Props = {
   paneId: string
@@ -12,6 +18,25 @@ type Props = {
 }
 
 const APPROXIMATE_CHARACTER_WIDTH = 7.25
+const ENGINE_STORAGE_KEY = 'commando-diff-engine'
+const DISPLAY_STORAGE_KEY = 'commando-diff-display'
+
+function storedChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const value = window.localStorage.getItem(key)
+    return allowed.includes(value as T) ? (value as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function storeChoice(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // Best-effort persistence; the in-memory choice still applies.
+  }
+}
 
 function segmentClassName(segment: AnsiSegment): string | undefined {
   const classes: string[] = []
@@ -68,6 +93,12 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   const [diff, setDiff] = useState('')
   const [diffError, setDiffError] = useState('')
   const [diffLoading, setDiffLoading] = useState(false)
+  const [engine, setEngine] = useState<DiffEngine>(
+    () => storedChoice(ENGINE_STORAGE_KEY, ['difftastic', 'delta'], 'difftastic'),
+  )
+  const [display, setDisplay] = useState<DiffDisplay>(
+    () => storedChoice(DISPLAY_STORAGE_KEY, ['side-by-side', 'inline'], 'side-by-side'),
+  )
   const apiRef = useRef(api)
   apiRef.current = api
   const outputRef = useRef<HTMLDivElement>(null)
@@ -132,7 +163,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       ? Math.min(400, Math.max(80, Math.floor(measured / APPROXIMATE_CHARACTER_WIDTH)))
       : 180
     apiRef.current
-      .fileDiff(paneId, selectedFile, appliedTarget, width)
+      .fileDiff(paneId, selectedFile, { target: appliedTarget, width, engine, display })
       .then((next) => {
         if (request !== diffGeneration.current) return
         setDiff(next.diff)
@@ -145,7 +176,17 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       .finally(() => {
         if (request === diffGeneration.current) setDiffLoading(false)
       })
-  }, [paneId, appliedTarget, selectedFile])
+  }, [paneId, appliedTarget, selectedFile, engine, display])
+
+  const chooseEngine = (next: DiffEngine) => {
+    setEngine(next)
+    storeChoice(ENGINE_STORAGE_KEY, next)
+  }
+
+  const chooseDisplay = (next: DiffDisplay) => {
+    setDisplay(next)
+    storeChoice(DISPLAY_STORAGE_KEY, next)
+  }
 
   const applyTarget = (value: string) => {
     const next = value.trim()
@@ -253,6 +294,48 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
           </div>
           <button type="button" onClick={onClose} aria-label="Close diff view"><X /></button>
         </header>
+        <div className="git-diff-toolbar">
+          <div className="git-diff-segment" role="group" aria-label="Diff engine">
+            <button
+              type="button"
+              className={engine === 'difftastic' ? 'active' : undefined}
+              aria-pressed={engine === 'difftastic'}
+              onClick={() => chooseEngine('difftastic')}
+              title="Structural diff (difftastic)"
+            >
+              difftastic
+            </button>
+            <button
+              type="button"
+              className={engine === 'delta' ? 'active' : undefined}
+              aria-pressed={engine === 'delta'}
+              onClick={() => chooseEngine('delta')}
+              title="Line diff with syntax highlighting (delta)"
+            >
+              delta
+            </button>
+          </div>
+          <div className="git-diff-segment" role="group" aria-label="Diff layout">
+            <button
+              type="button"
+              className={display === 'side-by-side' ? 'active' : undefined}
+              aria-pressed={display === 'side-by-side'}
+              onClick={() => chooseDisplay('side-by-side')}
+              title="Two-column layout"
+            >
+              <Columns2 aria-hidden="true" /> side-by-side
+            </button>
+            <button
+              type="button"
+              className={display === 'inline' ? 'active' : undefined}
+              aria-pressed={display === 'inline'}
+              onClick={() => chooseDisplay('inline')}
+              title="Single-column layout"
+            >
+              <Rows3 aria-hidden="true" /> inline
+            </button>
+          </div>
+        </div>
         <div className="git-diff-body">
           <aside className="git-diff-files" aria-label="Changed files">
             {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}

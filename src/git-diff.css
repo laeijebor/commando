@@ -172,6 +172,48 @@
   background: var(--surface-soft);
 }
 
+.git-diff-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.git-diff-segment {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border-mid);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.git-diff-segment button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.git-diff-segment button svg { width: 12px; height: 12px; }
+
+.git-diff-segment button:hover { color: var(--text); }
+
+.git-diff-segment button.active {
+  color: var(--text);
+  background: var(--surface-hover);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
 .git-diff-body {
   flex: 1;
   display: flex;

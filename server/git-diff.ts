@@ -20,6 +20,10 @@ export type GitExecutorOptions = {
   shell: false
   timeout: number
   windowsHide: true
+  /** Piped to the child's stdin (delta reads patches from stdin). */
+  input?: string
+  /** Non-zero exit codes treated as success (diff tools exit 1 on differences). */
+  allowExitCodes?: readonly number[]
 }
 
 export type GitProcessExecutor = (
@@ -28,7 +32,10 @@ export type GitProcessExecutor = (
   options: GitExecutorOptions,
 ) => Promise<{ stdout: string; stderr: string }>
 
-export type GitDiffErrorKind = 'bad-target' | 'bad-file' | 'difft-missing' | 'exec'
+export type GitDiffErrorKind = 'bad-target' | 'bad-file' | 'bad-param' | 'tool-missing' | 'exec'
+
+export type DiffEngine = 'difftastic' | 'delta'
+export type DiffDisplay = 'side-by-side' | 'inline'
 
 export class GitDiffError extends Error {
   constructor(readonly kind: GitDiffErrorKind, message: string) {
@@ -65,21 +72,39 @@ export class GitCommandFailure extends Error {
 
 const defaultExecutor: GitProcessExecutor = (file, args, options) =>
   new Promise((resolve, reject) => {
-    execFile(file, [...args], options, (error, stdout, stderr) => {
+    const child = execFile(file, [...args], options, (error, stdout, stderr) => {
       if (error) {
-        const missingBinary = (error as NodeJS.ErrnoException).code === 'ENOENT'
+        const code = (error as NodeJS.ErrnoException).code
+        if (typeof code === 'number' && options.allowExitCodes?.includes(code)) {
+          resolve({ stdout, stderr })
+          return
+        }
         reject(
           new GitCommandFailure(
             error.killed ? `${file} timed out` : `${file} failed`,
             (stderr ?? '').slice(0, 4_000),
-            missingBinary,
+            code === 'ENOENT',
           ),
         )
         return
       }
       resolve({ stdout, stderr })
     })
+    child.stdin?.on('error', () => { /* the exit-code path reports the failure */ })
+    child.stdin?.end(options.input ?? '')
   })
+
+export function validateDiffEngine(value: unknown): DiffEngine {
+  if (value === undefined || value === null || value === '') return 'difftastic'
+  if (value === 'difftastic' || value === 'delta') return value
+  throw new GitDiffError('bad-param', 'engine must be "difftastic" or "delta"')
+}
+
+export function validateDiffDisplay(value: unknown): DiffDisplay {
+  if (value === undefined || value === null || value === '') return 'side-by-side'
+  if (value === 'side-by-side' || value === 'inline') return value
+  throw new GitDiffError('bad-param', 'display must be "side-by-side" or "inline"')
+}
 
 export function validateDiffWidth(value: unknown): number {
   const width = typeof value === 'string' && value !== '' ? Number(value) : Number.NaN
@@ -176,7 +201,14 @@ export class GitDiffInspector {
     return { isRepo: true, current: repo.branch, branches }
   }
 
-  async fileDiff(cwd: string, file: string, target: string | undefined, width: number): Promise<string> {
+  async fileDiff(
+    cwd: string,
+    file: string,
+    target: string | undefined,
+    width: number,
+    engine: DiffEngine = 'difftastic',
+    display: DiffDisplay = 'side-by-side',
+  ): Promise<string> {
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
     const relative = validateRepoRelativePath(repo.root, file)
@@ -184,41 +216,104 @@ export class GitDiffInspector {
     if (!resolvedTarget) throw new GitDiffError('bad-target', 'No target branch found (tried main, master)')
     const base = await this.mergeBase(repo.root, resolvedTarget)
 
+    try {
+      const untracked = await this.isUntracked(repo.root, relative)
+      return engine === 'delta'
+        ? await this.deltaDiff(repo.root, relative, base, width, display, untracked)
+        : await this.difftasticDiff(repo.root, relative, base, width, display, untracked)
+    } catch (error) {
+      throw this.asDiffError(error, engine)
+    }
+  }
+
+  private async difftasticDiff(
+    root: string,
+    relative: string,
+    base: string,
+    width: number,
+    display: DiffDisplay,
+    untracked: boolean,
+  ): Promise<string> {
     const difftEnv = {
       ...this.environment,
       DFT_BACKGROUND: 'dark',
       DFT_COLOR: 'always',
+      DFT_DISPLAY: display,
       DFT_WIDTH: String(width),
     }
-
-    try {
-      if (await this.isUntracked(repo.root, relative)) {
-        const { stdout } = await this.execute(
-          'difft',
-          ['--color', 'always', '--width', String(width), '--background', 'dark', '/dev/null', path.join(repo.root, relative)],
-          this.options(repo.root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES, difftEnv),
-        )
-        return stdout
-      }
+    if (untracked) {
       const { stdout } = await this.execute(
-        'git',
-        ['diff', '--ext-diff', base, '--', relative],
-        this.options(repo.root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES, { ...difftEnv, GIT_EXTERNAL_DIFF: 'difft' }),
+        'difft',
+        [
+          '--color', 'always',
+          '--width', String(width),
+          '--display', display,
+          '--background', 'dark',
+          '/dev/null',
+          path.join(root, relative),
+        ],
+        this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES, difftEnv),
       )
       return stdout
-    } catch (error) {
-      throw this.asDiffError(error)
     }
+    const { stdout } = await this.execute(
+      'git',
+      ['diff', '--ext-diff', base, '--', relative],
+      this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES, { ...difftEnv, GIT_EXTERNAL_DIFF: 'difft' }),
+    )
+    return stdout
   }
 
-  private asDiffError(error: unknown): GitDiffError {
+  private async deltaDiff(
+    root: string,
+    relative: string,
+    base: string,
+    width: number,
+    display: DiffDisplay,
+    untracked: boolean,
+  ): Promise<string> {
+    const deltaArgs = [
+      '--paging', 'never',
+      '--dark',
+      '--width', String(width),
+      ...(display === 'side-by-side' ? ['--side-by-side'] : []),
+    ]
+    if (untracked) {
+      // Direct file comparison; delta follows diff exit-code semantics (1 = differences).
+      const { stdout } = await this.execute(
+        'delta',
+        [...deltaArgs, '/dev/null', path.join(root, relative)],
+        { ...this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES), allowExitCodes: [1] },
+      )
+      return stdout
+    }
+    const { stdout: patch } = await this.execute(
+      'git',
+      ['diff', base, '--', relative],
+      this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
+    )
+    if (patch === '') return ''
+    const { stdout } = await this.execute(
+      'delta',
+      deltaArgs,
+      { ...this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES), allowExitCodes: [1], input: patch },
+    )
+    return stdout
+  }
+
+  private asDiffError(error: unknown, engine: DiffEngine): GitDiffError {
     if (error instanceof GitDiffError) return error
     if (error instanceof GitCommandFailure) {
       if (error.missingBinary || /difft.*(not found|No such file)|external diff died/iu.test(error.stderr)) {
-        return new GitDiffError(
-          'difft-missing',
-          'difftastic (difft) is not installed or not on the daemon PATH. Install it, e.g. `brew install difftastic`.',
-        )
+        return engine === 'delta'
+          ? new GitDiffError(
+            'tool-missing',
+            'delta is not installed or not on the daemon PATH. Install it, e.g. `brew install git-delta`.',
+          )
+          : new GitDiffError(
+            'tool-missing',
+            'difftastic (difft) is not installed or not on the daemon PATH. Install it, e.g. `brew install difftastic`.',
+          )
       }
       return new GitDiffError('exec', `git diff failed: ${error.stderr || error.message}`)
     }

@@ -3,6 +3,8 @@ import {
   GitCommandFailure,
   GitDiffError,
   GitDiffInspector,
+  validateDiffDisplay,
+  validateDiffEngine,
   validateDiffWidth,
   validateGitTarget,
   type GitExecutorOptions,
@@ -45,6 +47,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     calls.push({ file, args: [...args], options: executorOptions })
     const joined = args.join(' ')
     if (file === 'difft') return { stdout: diffOutput, stderr: '' }
+    if (file === 'delta') return { stdout: `DELTA:${executorOptions.input ?? ''}`, stderr: '' }
     if (joined === 'rev-parse --show-toplevel --abbrev-ref HEAD') {
       return { stdout: `${ROOT}\n${BRANCH}\n`, stderr: '' }
     }
@@ -69,6 +72,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       if (diffFailure) throw diffFailure
       return { stdout: diffOutput, stderr: '' }
     }
+    if (args[0] === 'diff') return { stdout: 'PATCH', stderr: '' }
     throw new Error(`Unexpected command: ${file} ${joined}`)
   }
   return { calls, execute }
@@ -93,6 +97,17 @@ describe('validateGitTarget', () => {
       expect(() => validateGitTarget(value)).toThrow(GitDiffError)
     },
   )
+})
+
+describe('validateDiffEngine / validateDiffDisplay', () => {
+  it('defaults and validates', () => {
+    expect(validateDiffEngine(undefined)).toBe('difftastic')
+    expect(validateDiffEngine('delta')).toBe('delta')
+    expect(() => validateDiffEngine('meld')).toThrow(GitDiffError)
+    expect(validateDiffDisplay(undefined)).toBe('side-by-side')
+    expect(validateDiffDisplay('inline')).toBe('inline')
+    expect(() => validateDiffDisplay('unified')).toThrow(GitDiffError)
+  })
 })
 
 describe('validateDiffWidth', () => {
@@ -227,10 +242,50 @@ describe('GitDiffInspector.fileDiff', () => {
       .rejects.toMatchObject({ kind: 'bad-file' })
   })
 
+  it('passes the requested display mode to difftastic', async () => {
+    const repo = fakeRepo()
+    const inspector = new GitDiffInspector(repo.execute, {})
+    await inspector.fileDiff('/repo', 'src/app.ts', undefined, 120, 'difftastic', 'inline')
+    const diffCall = repo.calls.find((call) => call.args[1] === '--ext-diff')
+    expect(diffCall?.options.env).toMatchObject({ DFT_DISPLAY: 'inline' })
+  })
+
+  it('pipes the git patch through delta for tracked files', async () => {
+    const repo = fakeRepo()
+    const inspector = new GitDiffInspector(repo.execute, {})
+    const diff = await inspector.fileDiff('/repo', 'src/app.ts', undefined, 120, 'delta', 'side-by-side')
+    expect(diff).toBe('DELTA:PATCH')
+    const gitCall = repo.calls.find((call) => call.file === 'git' && call.args[0] === 'diff')
+    expect(gitCall?.args).toEqual(['diff', BASE, '--', 'src/app.ts'])
+    const deltaCall = repo.calls.find((call) => call.file === 'delta')
+    expect(deltaCall?.args).toContain('--side-by-side')
+    expect(deltaCall?.args).toContain('--width')
+    expect(deltaCall?.options.input).toBe('PATCH')
+    expect(deltaCall?.options.allowExitCodes).toContain(1)
+  })
+
+  it('omits the side-by-side flag for inline delta diffs', async () => {
+    const repo = fakeRepo()
+    const inspector = new GitDiffInspector(repo.execute, {})
+    await inspector.fileDiff('/repo', 'src/app.ts', undefined, 120, 'delta', 'inline')
+    const deltaCall = repo.calls.find((call) => call.file === 'delta')
+    expect(deltaCall?.args).not.toContain('--side-by-side')
+  })
+
+  it('compares untracked files directly with delta', async () => {
+    const repo = fakeRepo({ untracked: ['notes.md'] })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    await inspector.fileDiff('/repo', 'notes.md', undefined, 120, 'delta', 'side-by-side')
+    const deltaCall = repo.calls.find((call) => call.file === 'delta')
+    expect(deltaCall?.args).toContain('/dev/null')
+    expect(deltaCall?.args).toContain(`${ROOT}/notes.md`)
+    expect(deltaCall?.options.allowExitCodes).toContain(1)
+  })
+
   it('maps a missing difft binary to a helpful error', async () => {
     const repo = fakeRepo({ diffFailure: failure('external diff died, stopping at src/app.ts') })
     const inspector = new GitDiffInspector(repo.execute, {})
     await expect(inspector.fileDiff('/repo', 'src/app.ts', undefined, 100))
-      .rejects.toMatchObject({ kind: 'difft-missing' })
+      .rejects.toMatchObject({ kind: 'tool-missing' })
   })
 })

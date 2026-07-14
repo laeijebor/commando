@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffModal } from './GitDiffModal'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  window.localStorage.clear()
+})
 
 const summary: GitDiffSummary = {
   isRepo: true,
@@ -36,6 +39,28 @@ function renderModal(api = fakeApi(), onClose = vi.fn()) {
   )
   return { api, onClose }
 }
+
+describe('GitDiffModal engine and layout toggles', () => {
+  it('re-requests the diff with the chosen engine and layout, and persists them', async () => {
+    const { api } = renderModal()
+    const fileDiff = api.fileDiff as ReturnType<typeof vi.fn>
+    await waitFor(() => expect(fileDiff).toHaveBeenCalled())
+    expect(fileDiff.mock.lastCall?.[2]).toMatchObject({ engine: 'difftastic', display: 'side-by-side' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'delta' }))
+    await waitFor(() => {
+      expect(fileDiff.mock.lastCall?.[2]).toMatchObject({ engine: 'delta', display: 'side-by-side' })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'inline' }))
+    await waitFor(() => {
+      expect(fileDiff.mock.lastCall?.[2]).toMatchObject({ engine: 'delta', display: 'inline' })
+    })
+
+    expect(window.localStorage.getItem('commando-diff-engine')).toBe('delta')
+    expect(window.localStorage.getItem('commando-diff-display')).toBe('inline')
+  })
+})
 
 describe('GitDiffModal target combobox', () => {
   it('suggests branches excluding the current one and filters as you type', async () => {
