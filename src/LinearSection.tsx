@@ -1,4 +1,4 @@
-import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Copy, Equal, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Equal, Link, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
@@ -236,7 +236,7 @@ export function LinearSection({ token }: { token: string }) {
           <select value={projectId} onChange={(event) => { setProjectId(event.target.value); setIssue(null) }} aria-label="Linear project" disabled={!accountId}>
             <option value="">Select project</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
           </select>
-          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Copy />}</button> : null}
+          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Link />}</button> : null}
           {accountId ? <button type="button" className="linear-remove" onClick={() => { if (window.confirm('Disconnect this Linear account?')) void api.remove(accountId).then(loadAccounts) }} title="Disconnect account"><Trash2 /></button> : null}
         </div>
       </header>
