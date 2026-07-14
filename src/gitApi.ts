@@ -10,7 +10,11 @@ export type GitDiffSummary = {
   isRepo: boolean
   root?: string
   branch?: string
+  /** Human-readable label of what the diff is against. */
   target?: string | null
+  /** 'auto' = branch point detected by the daemon; 'ref' = user-chosen target. */
+  targetMode?: 'auto' | 'ref'
+  baseCommit?: string
   additions?: number
   deletions?: number
   files?: GitChangedFile[]

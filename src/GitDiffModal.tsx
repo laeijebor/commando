@@ -18,6 +18,7 @@ type Props = {
 }
 
 const APPROXIMATE_CHARACTER_WIDTH = 7.25
+const AUTO_TARGET = 'auto'
 const ENGINE_STORAGE_KEY = 'commando-diff-engine'
 const DISPLAY_STORAGE_KEY = 'commando-diff-display'
 
@@ -83,7 +84,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
-  const [targetDraft, setTargetDraft] = useState(initialSummary?.target ?? '')
+  const [targetDraft, setTargetDraft] = useState('')
   const [appliedTarget, setAppliedTarget] = useState<string | undefined>(undefined)
   const [branchList, setBranchList] = useState<string[]>([])
   const [dropdownOpen, setDropdownOpen] = useState(false)
@@ -131,7 +132,6 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       .then((next) => {
         if (request !== generation.current) return
         setSummary(next)
-        setTargetDraft((draft) => draft || next.target || '')
       })
       .catch((cause: unknown) => {
         if (request !== generation.current) return
@@ -190,21 +190,29 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
 
   const applyTarget = (value: string) => {
     const next = value.trim()
-    setAppliedTarget(next === '' ? undefined : next)
+    setAppliedTarget(next === '' || next === AUTO_TARGET ? undefined : next)
   }
 
   const chooseBranch = (branch: string) => {
-    setTargetDraft(branch)
-    applyTarget(branch)
+    if (branch === AUTO_TARGET) {
+      setTargetDraft('')
+      setAppliedTarget(undefined)
+    } else {
+      setTargetDraft(branch)
+      applyTarget(branch)
+    }
     setDropdownOpen(false)
   }
 
   // Filter only while the user is editing; a fresh focus offers every branch.
   const query = filtering ? targetDraft.trim().toLowerCase() : ''
-  const suggestions = branchList
-    .filter((branch) => branch !== summary?.branch)
-    .filter((branch) => query === '' || branch.toLowerCase().includes(query))
-    .slice(0, 30)
+  const suggestions = [
+    ...(query === '' || AUTO_TARGET.includes(query) ? [AUTO_TARGET] : []),
+    ...branchList
+      .filter((branch) => branch !== summary?.branch)
+      .filter((branch) => query === '' || branch.toLowerCase().includes(query))
+      .slice(0, 30),
+  ]
   const activeHighlight = Math.min(highlight, Math.max(0, suggestions.length - 1))
 
   const onTargetKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -262,7 +270,9 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
                   setDropdownOpen(false)
                   applyTarget(event.currentTarget.value)
                 }}
-                placeholder="main"
+                placeholder={summary?.targetMode === 'auto' && summary.target
+                  ? `auto - ${summary.target}`
+                  : 'auto'}
                 role="combobox"
                 aria-expanded={dropdownOpen && suggestions.length > 0}
                 aria-autocomplete="list"
@@ -284,7 +294,9 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
                         }}
                         onMouseEnter={() => setHighlight(index)}
                       >
-                        {branch}
+                        {branch === AUTO_TARGET
+                          ? <em className="git-diff-auto-option">auto - branch point</em>
+                          : branch}
                       </button>
                     </li>
                   ))}
@@ -340,10 +352,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
           <aside className="git-diff-files" aria-label="Changed files">
             {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
             {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}</div> : null}
-            {!summaryLoading && !summaryError && summary?.target === null
-              ? <div className="git-diff-status">No main or master branch found. Enter a target branch above.</div>
-              : null}
-            {!summaryLoading && !summaryError && summary?.target !== null && files.length === 0
+            {!summaryLoading && !summaryError && files.length === 0
               ? <div className="git-diff-status">No changes vs {summary?.target ?? 'target'}</div>
               : null}
             {!summaryLoading && !summaryError ? files.map((file) => {

@@ -82,6 +82,23 @@ describe('GitDiffModal target combobox', () => {
     expect(screen.getByRole('button', { name: 'origin/release-2' })).toBeInTheDocument()
   })
 
+  it('offers an auto option that returns to the branch-point default', async () => {
+    const { api } = renderModal()
+    const input = screen.getByRole('combobox', { name: 'Diff target branch' })
+
+    fireEvent.focus(input)
+    fireEvent.mouseDown(await screen.findByRole('button', { name: 'main' }))
+    await waitFor(() => expect(api.summary).toHaveBeenCalledWith('%1', 'main'))
+
+    fireEvent.focus(input)
+    fireEvent.mouseDown(await screen.findByRole('button', { name: 'auto - branch point' }))
+    expect(input).toHaveValue('')
+    await waitFor(() => {
+      const calls = (api.summary as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls[calls.length - 1]).toEqual(['%1', undefined])
+    })
+  })
+
   it('applies a clicked suggestion as the diff target', async () => {
     const { api } = renderModal()
     const input = screen.getByRole('combobox', { name: 'Diff target branch' })

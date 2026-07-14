@@ -26,6 +26,11 @@ type FakeRepoOptions = {
   diffOutput?: string
   diffFailure?: GitCommandFailure
   refList?: string[]
+  /** Lines for the auto-base for-each-ref call: `sha<TAB>shortname<TAB>symref`. */
+  refTips?: string[]
+  autoUnique?: string[]
+  autoBoundary?: string[]
+  nameRev?: string
 }
 
 function failure(stderr = '', missingBinary = false): GitCommandFailure {
@@ -41,6 +46,10 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     diffOutput = 'DIFF',
     diffFailure,
     refList = [],
+    refTips = ['mainsha\tmain\t'],
+    autoUnique = ['uniquesha'],
+    autoBoundary = [BASE],
+    nameRev = 'origin/main',
   } = options
   const calls: Call[] = []
   const execute: GitProcessExecutor = async (file, args, executorOptions) => {
@@ -57,7 +66,18 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       throw failure()
     }
     if (args[0] === 'merge-base') return { stdout: `${BASE}\n`, stderr: '' }
+    if (args[0] === 'for-each-ref' && args[1]?.startsWith('--format=%(objectname)')) {
+      return { stdout: refTips.join('\n'), stderr: '' }
+    }
     if (args[0] === 'for-each-ref') return { stdout: refList.join('\n'), stderr: '' }
+    if (args[0] === 'rev-list' && args[1] === '--boundary') {
+      const lines = [...autoUnique, ...autoBoundary.map((sha) => `-${sha}`)]
+      return { stdout: lines.join('\n'), stderr: '' }
+    }
+    if (args[0] === 'rev-list' && args[1] === '--no-walk=sorted') {
+      return { stdout: `${autoBoundary[0] ?? ''}\n`, stderr: '' }
+    }
+    if (args[0] === 'name-rev') return { stdout: `${nameRev}\n`, stderr: '' }
     if (args[0] === 'diff' && args.includes('--numstat')) return { stdout: numstat, stderr: '' }
     if (args[0] === 'diff' && args.includes('--name-status')) return { stdout: nameStatus, stderr: '' }
     if (args[0] === 'ls-files' && args.includes('--')) {
@@ -138,7 +158,9 @@ describe('GitDiffInspector.summary', () => {
       isRepo: true,
       root: ROOT,
       branch: BRANCH,
-      target: 'main',
+      target: `origin/main @ ${BASE.slice(0, 7)}`,
+      targetMode: 'auto',
+      baseCommit: BASE,
       additions: 10,
       deletions: 7,
     })
@@ -150,19 +172,41 @@ describe('GitDiffInspector.summary', () => {
     ])
   })
 
-  it('falls back to master when main is missing', async () => {
-    const repo = fakeRepo({ refs: ['master'] })
+  it('uses the merge base for an explicit target', async () => {
+    const repo = fakeRepo({ refs: ['develop'] })
     const inspector = new GitDiffInspector(repo.execute, {})
-    const summary = await inspector.summary('/repo')
-    expect(summary.target).toBe('master')
+    const summary = await inspector.summary('/repo', 'develop')
+    expect(summary).toMatchObject({ target: 'develop', targetMode: 'ref', baseCommit: BASE })
+    const numstatCall = repo.calls.find((call) => call.args.includes('--numstat'))
+    expect(numstatCall?.args).toContain(BASE)
   })
 
-  it('reports a null target when no default branch exists', async () => {
-    const repo = fakeRepo({ refs: [] })
+  it('excludes this branch and its remote copies from branch-point detection', async () => {
+    const repo = fakeRepo({
+      refTips: [
+        `headsha\t${BRANCH}\t`,
+        `pushsha\torigin/${BRANCH}\t`,
+        'symsha\torigin\trefs/remotes/origin/main',
+        'mainsha\tmain\t',
+      ],
+    })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    await inspector.summary('/repo')
+    const revList = repo.calls.find((call) => call.args[0] === 'rev-list' && call.args[1] === '--boundary')
+    expect(revList?.args).toContain('mainsha')
+    expect(revList?.args).not.toContain('headsha')
+    expect(revList?.args).not.toContain('pushsha')
+    expect(revList?.args).not.toContain('symsha')
+  })
+
+  it('falls back to uncommitted changes when the branch has no own commits', async () => {
+    const repo = fakeRepo({ autoUnique: [], autoBoundary: [] })
     const inspector = new GitDiffInspector(repo.execute, {})
     const summary = await inspector.summary('/repo')
-    expect(summary.target).toBeNull()
-    expect(summary.files).toEqual([])
+    expect(summary.target).toBe('HEAD (uncommitted changes)')
+    expect(summary.targetMode).toBe('auto')
+    const numstatCall = repo.calls.find((call) => call.args.includes('--numstat'))
+    expect(numstatCall?.args).toContain('HEAD')
   })
 
   it('rejects unknown explicit targets', async () => {

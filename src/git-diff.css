@@ -134,6 +134,11 @@
   cursor: pointer;
 }
 
+.git-diff-auto-option {
+  font-style: normal;
+  color: var(--accent);
+}
+
 .git-diff-branch-list button.highlighted {
   color: var(--text);
   background: var(--surface-hover);

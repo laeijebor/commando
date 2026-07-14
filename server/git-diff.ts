@@ -6,7 +6,7 @@ const DIFF_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
 const DIFF_BUFFER_BYTES = 32 * 1024 * 1024
 const SUMMARY_CACHE_TTL_MS = 5_000
-const DEFAULT_TARGETS = ['main', 'master'] as const
+const MAX_AUTO_BASE_REFS = 4_000
 const MIN_DIFF_WIDTH = 60
 const MAX_DIFF_WIDTH = 500
 const NUL = '\u0000'
@@ -57,10 +57,21 @@ export type GitDiffSummary = {
   isRepo: boolean
   root?: string
   branch?: string
+  /** Human-readable label of what the diff is against. */
   target?: string | null
+  /** 'auto' = branch point detected by the daemon; 'ref' = user-chosen target. */
+  targetMode?: 'auto' | 'ref'
+  baseCommit?: string
   additions?: number
   deletions?: number
   files?: GitChangedFile[]
+}
+
+type ResolvedBase = {
+  base: string
+  label: string
+  mode: 'auto' | 'ref'
+  commit?: string
 }
 
 export class GitCommandFailure extends Error {
@@ -152,6 +163,7 @@ export type GitBranches = {
 export class GitDiffInspector {
   private readonly summaryCache = new Map<string, { at: number; result: Promise<GitDiffSummary> }>()
   private readonly branchesCache = new Map<string, { at: number; result: Promise<GitBranches> }>()
+  private readonly autoBaseCache = new Map<string, { at: number; result: Promise<ResolvedBase> }>()
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultExecutor,
@@ -212,9 +224,7 @@ export class GitDiffInspector {
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
     const relative = validateRepoRelativePath(repo.root, file)
-    const resolvedTarget = await this.resolveTarget(repo.root, target)
-    if (!resolvedTarget) throw new GitDiffError('bad-target', 'No target branch found (tried main, master)')
-    const base = await this.mergeBase(repo.root, resolvedTarget)
+    const { base } = await this.resolveBase(repo.root, repo.branch, target)
 
     try {
       const untracked = await this.isUntracked(repo.root, relative)
@@ -323,11 +333,8 @@ export class GitDiffInspector {
   private async computeSummary(cwd: string, target?: string): Promise<GitDiffSummary> {
     const repo = await this.repoContext(cwd)
     if (!repo) return { isRepo: false }
-    const resolvedTarget = await this.resolveTarget(repo.root, target)
-    if (!resolvedTarget) {
-      return { isRepo: true, root: repo.root, branch: repo.branch, target: null, additions: 0, deletions: 0, files: [] }
-    }
-    const base = await this.mergeBase(repo.root, resolvedTarget)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target)
+    const base = resolved.base
 
     const [numstat, nameStatus, untracked] = await Promise.all([
       this.git(repo.root, ['diff', '--numstat', '--no-renames', '-z', base]),
@@ -366,7 +373,17 @@ export class GitDiffInspector {
     }
     files.sort((left, right) => left.path.localeCompare(right.path))
 
-    return { isRepo: true, root: repo.root, branch: repo.branch, target: resolvedTarget, additions, deletions, files }
+    return {
+      isRepo: true,
+      root: repo.root,
+      branch: repo.branch,
+      target: resolved.label,
+      targetMode: resolved.mode,
+      baseCommit: resolved.commit,
+      additions,
+      deletions,
+      files,
+    }
   }
 
   private async repoContext(cwd: string): Promise<{ root: string; branch: string } | null> {
@@ -384,18 +401,73 @@ export class GitDiffInspector {
     }
   }
 
-  private async resolveTarget(root: string, target?: string): Promise<string | null> {
+  private async resolveBase(root: string, branch: string, target?: string): Promise<ResolvedBase> {
     if (target !== undefined) {
       const validated = validateGitTarget(target)
       if (!(await this.refExists(root, validated))) {
         throw new GitDiffError('bad-target', `Unknown git ref: ${validated}`)
       }
-      return validated
+      const base = await this.mergeBase(root, validated)
+      return { base, label: validated, mode: 'ref', commit: base }
     }
-    for (const candidate of DEFAULT_TARGETS) {
-      if (await this.refExists(root, candidate)) return candidate
+    const cached = this.autoBaseCache.get(root)
+    if (cached && this.now() - cached.at < SUMMARY_CACHE_TTL_MS) return cached.result
+    const result = this.computeAutoBase(root, branch)
+    this.autoBaseCache.set(root, { at: this.now(), result })
+    result.catch(() => this.autoBaseCache.delete(root))
+    return result
+  }
+
+  /**
+   * The branch point: the newest commit reachable from any *other* branch.
+   * Diffing from it shows only this branch's own commits (plus the working
+   * tree), regardless of how busy the target branch's history is.
+   */
+  private async computeAutoBase(root: string, branch: string): Promise<ResolvedBase> {
+    const uncommittedOnly: ResolvedBase = { base: 'HEAD', label: 'HEAD (uncommitted changes)', mode: 'auto' }
+    const { stdout: refsOut } = await this.git(root, [
+      'for-each-ref',
+      '--format=%(objectname)%09%(refname:short)%09%(symref)',
+      'refs/heads',
+      'refs/remotes',
+    ])
+    const negatives = new Set<string>()
+    for (const line of refsOut.split('\n')) {
+      const [sha, name, symref] = line.split('\t')
+      if (!sha || !name || symref?.trim()) continue
+      // Skip this branch and its copies on remotes; they'd swallow its commits.
+      if (name === branch || name.endsWith(`/${branch}`)) continue
+      negatives.add(sha)
+      if (negatives.size >= MAX_AUTO_BASE_REFS) break
     }
-    return null
+    if (negatives.size === 0) return uncommittedOnly
+
+    const { stdout: revsOut } = await this.git(root, [
+      'rev-list', '--boundary', '--topo-order', 'HEAD', '--not', ...negatives,
+    ])
+    const boundaries = revsOut
+      .split('\n')
+      .filter((line) => line.startsWith('-'))
+      .map((line) => line.slice(1).trim())
+      .filter((sha) => sha.length > 0)
+      .slice(0, MAX_AUTO_BASE_REFS)
+    if (boundaries.length === 0) return uncommittedOnly
+
+    const { stdout: newestOut } = await this.git(root, [
+      'rev-list', '--no-walk=sorted', '--max-count=1', ...boundaries,
+    ])
+    const base = newestOut.trim()
+    if (!base) return uncommittedOnly
+
+    const { stdout: nameOut } = await this.git(root, [
+      'name-rev', '--name-only', '--always',
+      '--refs=refs/heads/*', '--refs=refs/remotes/*',
+      base,
+    ])
+    const named = nameOut.trim().replace(/^remotes\//u, '').replace(/[~^].*$/u, '')
+    const short = base.slice(0, 7)
+    const label = named && named !== base ? `${named} @ ${short}` : short
+    return { base, label, mode: 'auto', commit: base }
   }
 
   private async refExists(root: string, ref: string): Promise<boolean> {

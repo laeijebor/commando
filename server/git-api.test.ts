@@ -19,7 +19,17 @@ function repoExecutor(): GitProcessExecutor {
       throw new GitCommandFailure('git failed', '', false)
     }
     if (args[0] === 'merge-base') return { stdout: 'base\n', stderr: '' }
+    if (args[0] === 'for-each-ref' && args[1]?.startsWith('--format=%(objectname)')) {
+      return { stdout: 'mainsha\tmain\t\n', stderr: '' }
+    }
     if (args[0] === 'for-each-ref') return { stdout: 'main\norigin/main\n', stderr: '' }
+    if (args[0] === 'rev-list' && args[1] === '--boundary') {
+      return { stdout: 'uniquesha\n-basesha\n', stderr: '' }
+    }
+    if (args[0] === 'rev-list' && args[1] === '--no-walk=sorted') {
+      return { stdout: 'basesha\n', stderr: '' }
+    }
+    if (args[0] === 'name-rev') return { stdout: 'main\n', stderr: '' }
     if (args.includes('--numstat')) return { stdout: `3\t1\ta.ts${NUL}`, stderr: '' }
     if (args.includes('--name-status')) return { stdout: `M${NUL}a.ts${NUL}`, stderr: '' }
     if (args[0] === 'ls-files') return { stdout: '', stderr: '' }
@@ -63,7 +73,8 @@ describe('GitDiffApi', () => {
     expect(body).toMatchObject({
       isRepo: true,
       branch: 'feature',
-      target: 'main',
+      target: 'main @ basesha',
+      targetMode: 'auto',
       additions: 3,
       deletions: 1,
     })
