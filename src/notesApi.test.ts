@@ -46,6 +46,23 @@ describe('notes image API', () => {
     }))
   })
 
+  it('renames and deletes folders through the vault-scoped endpoint', async () => {
+    const snapshot = { notes: [], folders: ['Archive'] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(snapshot))
+    const api = createNotesApi('test-token', fetcher)
+
+    await expect(api.renameFolder('vault-1', 'Inbox', 'Archive')).resolves.toEqual(snapshot)
+    await expect(api.deleteFolder('vault-1', 'Archive')).resolves.toEqual(snapshot)
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/notes/folders?vault=vault-1', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ folder: 'Inbox', name: 'Archive' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/notes/folders?vault=vault-1', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({ folder: 'Archive' }),
+    }))
+  })
+
   it('uses the session cookie and clean image URLs when no automation token is present', async () => {
     const noteId = '71cf1432-e39e-4ac1-a1d8-51185f94dbce'
     const imageName = 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba.png'

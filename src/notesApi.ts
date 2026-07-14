@@ -61,6 +61,8 @@ export type NotesApi = {
   update(vaultId: string, id: string, draft: NoteUpdate): Promise<Note>
   delete(vaultId: string, id: string, expectedUpdatedAt: number): Promise<void>
   createFolder(vaultId: string, folder: string): Promise<string[]>
+  renameFolder(vaultId: string, folder: string, name: string): Promise<NotesSnapshot>
+  deleteFolder(vaultId: string, folder: string): Promise<NotesSnapshot>
   uploadImage(vaultId: string, id: string, file: File): Promise<string>
   resolveImageUrl(url: string, vaultId: string): string
 }
@@ -117,6 +119,14 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
       method: 'POST',
       body: JSON.stringify({ folder }),
     })).folders,
+    renameFolder: (vaultId, folder, name) => request<NotesSnapshot>(notesPath(vaultId, '/folders'), {
+      method: 'PATCH',
+      body: JSON.stringify({ folder, name }),
+    }),
+    deleteFolder: (vaultId, folder) => request<NotesSnapshot>(notesPath(vaultId, '/folders'), {
+      method: 'DELETE',
+      body: JSON.stringify({ folder }),
+    }),
     uploadImage: async (vaultId, id, file) => (await request<{ path: string }>(notesPath(vaultId, `/${encodeURIComponent(id)}/images`), {
       method: 'POST',
       headers: { 'Content-Type': file.type },

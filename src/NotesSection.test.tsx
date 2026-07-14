@@ -223,6 +223,58 @@ describe('NotesSection', () => {
     expect(prompt).toHaveBeenCalledWith('New folder path', '')
   })
 
+  it('renames a folder from its context menu and updates the active note path', async () => {
+    const nested = { ...original, folder: 'Projects/Commando' }
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Renamed')
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) {
+        return Response.json({ notes: [nested], folders: ['Projects', 'Projects/Commando'] })
+      }
+      if (url === '/api/notes/folders?vault=vault-1' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init.body))).toEqual({ folder: 'Projects/Commando', name: 'Renamed' })
+        return Response.json({ notes: [{ ...nested, folder: 'Projects/Renamed' }], folders: ['Projects', 'Projects/Renamed'] })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.contextMenu(screen.getByTitle('Projects/Commando'), { clientX: 100, clientY: 120 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename folder' }))
+
+    await screen.findByTitle('Projects/Renamed')
+    expect(screen.getAllByText('Projects/Renamed')).toHaveLength(2)
+    expect(prompt).toHaveBeenCalledWith('Rename folder', 'Commando')
+    expect(fetcher).toHaveBeenCalledWith('/api/notes/folders?vault=vault-1', expect.objectContaining({ method: 'PATCH' }))
+  })
+
+  it('deletes a folder from its context menu and moves its notes to the parent', async () => {
+    const nested = { ...original, folder: 'Archive' }
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [nested], folders: ['Archive'] })
+      if (url === '/api/notes/folders?vault=vault-1' && init?.method === 'DELETE') {
+        expect(JSON.parse(String(init.body))).toEqual({ folder: 'Archive' })
+        return Response.json({ notes: [{ ...nested, folder: '' }], folders: [] })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.contextMenu(screen.getByTitle('Archive'), { clientX: 100, clientY: 120 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete folder' }))
+
+    await waitFor(() => expect(screen.queryByTitle('Archive')).not.toBeInTheDocument())
+    expect(screen.getAllByText('Root')).not.toHaveLength(0)
+    expect(confirm).toHaveBeenCalledWith('Delete folder “Archive”? Its contents, including 1 note, will be moved to Root.')
+    expect(fetcher).toHaveBeenCalledWith('/api/notes/folders?vault=vault-1', expect.objectContaining({ method: 'DELETE' }))
+  })
+
   it('switches to a persisted vault and loads its notes', async () => {
     const otherVault = { id: 'vault-2', name: 'work', path: '/tmp/work', lastOpenedAt: 2, available: true }
     const nextVaultState = { activeVaultId: 'vault-2', vaults: [otherVault, ...vaultState.vaults] }

@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { NoteBlockEditor } from './NoteBlockEditor'
-import { createNotesApi, NotesApiError, type Note, type NoteVaultSnapshot } from './notesApi'
+import { createNotesApi, NotesApiError, type Note, type NotesSnapshot, type NoteVaultSnapshot } from './notesApi'
 import { VaultFolderPicker } from './VaultFolderPicker'
 import './notes-section.css'
 
@@ -28,6 +28,20 @@ type ActiveNote = {
   persistedBody: string
   persistedFolder: string
   persistedUpdatedAt: number
+}
+
+type ContextMenuTarget = (
+  | { kind: 'note'; noteId: string }
+  | { kind: 'folder'; folder: string }
+)
+
+type ContextMenu = ContextMenuTarget & { x: number; y: number }
+
+function rebaseFolder(folder: string, source: string, target: string): string {
+  if (folder === source) return target
+  if (!folder.startsWith(`${source}/`)) return folder
+  const suffix = folder.slice(source.length + 1)
+  return target ? `${target}/${suffix}` : suffix
 }
 
 function activeNote(note: Note): ActiveNote {
@@ -58,7 +72,7 @@ export function NotesSection({ token }: { token: string }) {
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [externalNote, setExternalNote] = useState<Note | null>(null)
-  const [menu, setMenu] = useState<{ noteId: string; x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<ContextMenu | null>(null)
   const activeRef = useRef<ActiveNote | null>(null)
   const vaultIdRef = useRef('')
   const phaseRef = useRef<SavePhase>('loading')
@@ -352,6 +366,54 @@ export function NotesSection({ token }: { token: string }) {
     }
   }
 
+  const runFolderAction = async (
+    source: string,
+    target: string,
+    action: (vaultId: string) => Promise<NotesSnapshot>,
+  ) => {
+    if (!(await flush())) return
+    const vaultId = vaultIdRef.current
+    if (!vaultId) return
+    setVaultBusy(true)
+    setVaultError('')
+    try {
+      const next = await action(vaultId)
+      if (vaultIdRef.current !== vaultId) return
+      setNotes(next.notes)
+      setFolders(next.folders)
+      setFolderFilter((current) => current === null ? null : rebaseFolder(current, source, target))
+      const current = activeRef.current
+      if (current) {
+        const updated = next.notes.find((note) => note.id === current.id)
+        if (updated) applyNote(updated)
+      }
+    } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
+      setVaultError(cause instanceof Error ? cause.message : 'Unable to update folder')
+    } finally {
+      setVaultBusy(false)
+    }
+  }
+
+  const renameFolder = async (folder: string) => {
+    const currentName = folder.split('/').at(-1)!
+    const name = window.prompt('Rename folder', currentName)?.trim()
+    if (!name || name === currentName) return
+    const parent = folder.split('/').slice(0, -1).join('/')
+    const target = parent ? `${parent}/${name}` : name
+    await runFolderAction(folder, target, (vaultId) => api.renameFolder(vaultId, folder, name))
+  }
+
+  const deleteFolder = async (folder: string) => {
+    const parent = folder.split('/').slice(0, -1).join('/')
+    const noteCount = notes.filter((note) => note.folder === folder || note.folder.startsWith(`${folder}/`)).length
+    const effect = noteCount
+      ? `Its contents, including ${noteCount} ${noteCount === 1 ? 'note' : 'notes'}, will be moved to ${parent || 'Root'}.`
+      : 'The empty folder will be removed.'
+    if (!window.confirm(`Delete folder “${folder}”? ${effect}`)) return
+    await runFolderAction(folder, parent, (vaultId) => api.deleteFolder(vaultId, folder))
+  }
+
   const selectNote = async (note: Note) => {
     if (note.id === activeRef.current?.id) return
     if (!(await flush())) return
@@ -480,19 +542,19 @@ export function NotesSection({ token }: { token: string }) {
     await remove(note)
   }
 
-  const openMenu = (noteId: string, x: number, y: number) => {
+  const openMenu = (target: ContextMenuTarget, x: number, y: number) => {
     setMenu({
-      noteId,
+      ...target,
       x: Math.max(8, Math.min(x, window.innerWidth - 228)),
       y: Math.max(8, Math.min(y, window.innerHeight - 320)),
     })
   }
 
-  const menuKey = (event: KeyboardEvent<HTMLButtonElement>, noteId: string) => {
+  const menuKey = (event: KeyboardEvent<HTMLButtonElement>, target: ContextMenuTarget) => {
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
       event.preventDefault()
       const bounds = event.currentTarget.getBoundingClientRect()
-      openMenu(noteId, bounds.left + 28, bounds.bottom)
+      openMenu(target, bounds.left + 28, bounds.bottom)
     }
   }
 
@@ -543,7 +605,7 @@ export function NotesSection({ token }: { token: string }) {
     return folderFilter === null || note.folder === folderFilter
   })
   const currentVault = vaultState?.vaults.find((vault) => vault.id === vaultState.activeVaultId)
-  const menuNote = menu ? notes.find((note) => note.id === menu.noteId) : null
+  const menuNote = menu?.kind === 'note' ? notes.find((note) => note.id === menu.noteId) : null
 
   return (
     <section className={`notes-section${vaultBusy ? ' vault-busy' : ''}`}>
@@ -580,14 +642,20 @@ export function NotesSection({ token }: { token: string }) {
         </label>
         <nav className="notes-folders" aria-label="Note folders">
           <div><span>Folders</span><button type="button" onClick={() => void createFolder()} disabled={vaultBusy} aria-label="Create folder"><FolderPlus /></button></div>
-          <button type="button" className={folderFilter === null ? 'active' : ''} onClick={() => setFolderFilter(null)}><Folder /> All notes <small>{notes.length}</small></button>
-          <button type="button" className={folderFilter === '' ? 'active' : ''} onClick={() => setFolderFilter('')}><Folder /> Root <small>{notes.filter((note) => !note.folder).length}</small></button>
+          <button type="button" className={folderFilter === null ? 'active' : ''} onClick={() => setFolderFilter(null)} disabled={vaultBusy}><Folder /> All notes <small>{notes.length}</small></button>
+          <button type="button" className={folderFilter === '' ? 'active' : ''} onClick={() => setFolderFilter('')} disabled={vaultBusy}><Folder /> Root <small>{notes.filter((note) => !note.folder).length}</small></button>
           {folders.map((folder) => (
             <button
               type="button"
               className={folderFilter === folder ? 'active' : ''}
+              disabled={vaultBusy}
               style={{ paddingLeft: 10 + folder.split('/').length * 10 }}
               onClick={() => setFolderFilter(folder)}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                openMenu({ kind: 'folder', folder }, event.clientX, event.clientY)
+              }}
+              onKeyDown={(event) => menuKey(event, { kind: 'folder', folder })}
               title={folder}
               key={folder}
             >
@@ -603,9 +671,9 @@ export function NotesSection({ token }: { token: string }) {
               onClick={() => { void selectNote(note) }}
               onContextMenu={(event) => {
                 event.preventDefault()
-                openMenu(note.id, event.clientX, event.clientY)
+                openMenu({ kind: 'note', noteId: note.id }, event.clientX, event.clientY)
               }}
-              onKeyDown={(event) => menuKey(event, note.id)}
+              onKeyDown={(event) => menuKey(event, { kind: 'note', noteId: note.id })}
               key={note.id}
             >
               <strong>{note.title || 'Untitled note'}</strong>
@@ -697,13 +765,22 @@ export function NotesSection({ token }: { token: string }) {
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <button type="button" role="menuitem" onClick={() => { void rename(menu.noteId); setMenu(null) }}><Pencil /> Rename</button>
-          {(['', ...folders] as string[]).filter((folder) => folder !== menuNote?.folder).map((folder) => (
-            <button type="button" role="menuitem" onClick={() => { void move(menu.noteId, folder); setMenu(null) }} key={folder || 'root'}>
-              <FolderInput /> Move to {folder || 'Root'}
-            </button>
-          ))}
-          <button type="button" className="danger" role="menuitem" onClick={() => { void deleteFromMenu(menu.noteId); setMenu(null) }}><Trash2 /> Delete note</button>
+          {menu.kind === 'folder' ? (
+            <>
+              <button type="button" role="menuitem" onClick={() => { void renameFolder(menu.folder); setMenu(null) }}><Pencil /> Rename folder</button>
+              <button type="button" className="danger" role="menuitem" onClick={() => { void deleteFolder(menu.folder); setMenu(null) }}><Trash2 /> Delete folder</button>
+            </>
+          ) : (
+            <>
+              <button type="button" role="menuitem" onClick={() => { void rename(menu.noteId); setMenu(null) }}><Pencil /> Rename</button>
+              {(['', ...folders] as string[]).filter((folder) => folder !== menuNote?.folder).map((folder) => (
+                <button type="button" role="menuitem" onClick={() => { void move(menu.noteId, folder); setMenu(null) }} key={folder || 'root'}>
+                  <FolderInput /> Move to {folder || 'Root'}
+                </button>
+              ))}
+              <button type="button" className="danger" role="menuitem" onClick={() => { void deleteFromMenu(menu.noteId); setMenu(null) }}><Trash2 /> Delete note</button>
+            </>
+          )}
         </div>
       ) : null}
       {vaultPicker && currentVault ? (
