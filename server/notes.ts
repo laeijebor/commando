@@ -4,17 +4,19 @@ import {
   access,
   chmod,
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
   readdir,
   rename,
+  rmdir,
   rm,
   stat,
   utimes,
 } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import {
   isMarkdownNoteFile,
   noteFileName,
@@ -275,6 +277,120 @@ export class NoteStore {
       await chmod(path, 0o700)
       await this.syncDirectory(path)
       return (await this.scanVault()).folders
+    })
+  }
+
+  renameFolder(value: unknown, name: unknown): Promise<{ notes: Note[]; folders: string[] }> {
+    const folder = parseNoteFolder(value)
+    const parsedName = parseNoteFolder(name)
+    if (!folder || !parsedName || parsedName.includes('/')) {
+      return Promise.reject(new NoteValidationError('Invalid note folder'))
+    }
+    const segments = folder.split('/')
+    const targetFolder = [...segments.slice(0, -1), parsedName].join('/')
+    if (targetFolder === folder) return this.snapshot()
+
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      const source = join(this.directory, folder)
+      const target = join(this.directory, targetFolder)
+      const sourceStat = await lstat(source).catch(() => null)
+      if (!sourceStat?.isDirectory()) throw new NoteValidationError('Note folder does not exist')
+      const targetStat = await lstat(target).catch(() => null)
+      if (targetStat && (targetStat.dev !== sourceStat.dev || targetStat.ino !== sourceStat.ino)) {
+        throw new NoteValidationError('A folder with that name already exists')
+      }
+
+      if (targetStat) {
+        const temporary = join(dirname(source), `.commando-folder-${randomUUID()}`)
+        await rename(source, temporary)
+        try {
+          await rename(temporary, target)
+        } catch (error) {
+          await rename(temporary, source).catch(() => undefined)
+          throw error
+        }
+      } else {
+        await rename(source, target)
+      }
+      await this.syncDirectory(dirname(source))
+      const scanned = await this.scanVault()
+      return { notes: ordered(scanned.notes.map(({ note }) => note)), folders: scanned.folders }
+    })
+  }
+
+  deleteFolder(value: unknown): Promise<{ notes: Note[]; folders: string[] }> {
+    const folder = parseNoteFolder(value)
+    if (!folder) return Promise.reject(new NoteValidationError('Invalid note folder'))
+
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      const source = join(this.directory, folder)
+      const sourceStat = await lstat(source).catch(() => null)
+      if (!sourceStat?.isDirectory()) throw new NoteValidationError('Note folder does not exist')
+      const scanned = await this.scanVault()
+      const managedPaths = new Set(scanned.notes.map(({ path }) => path))
+      const noteIdsByFolder = new Map<string, Set<string>>()
+      for (const { note } of scanned.notes) {
+        const ids = noteIdsByFolder.get(note.folder) ?? new Set<string>()
+        ids.add(note.id)
+        noteIdsByFolder.set(note.folder, ids)
+      }
+      if (!(await this.folderContainsOnlyManagedContent(source, folder, managedPaths, noteIdsByFolder))) {
+        throw new NoteValidationError('Folder contains files Commando does not manage')
+      }
+
+      const parentFolder = folder.split('/').slice(0, -1).join('/')
+      const parent = join(this.directory, parentFolder)
+      const entries = await readdir(source, { withFileTypes: true })
+      const images = entries.find((entry) => entry.name === 'images')
+      const imageEntries = images ? await readdir(join(source, images.name), { withFileTypes: true }) : []
+      for (const entry of entries) {
+        if (entry.name === 'images') continue
+        if (await lstat(join(parent, entry.name)).catch(() => null)) {
+          throw new NoteValidationError(`Cannot delete folder because “${entry.name}” already exists in its parent`)
+        }
+      }
+      for (const entry of imageEntries) {
+        if (await lstat(join(parent, 'images', entry.name)).catch(() => null)) {
+          throw new NoteValidationError('Cannot delete folder because a note image destination already exists')
+        }
+      }
+
+      const staging = join(parent, `.commando-folder-${randomUUID()}`)
+      const moved: Array<{ from: string; to: string }> = []
+      await rename(source, staging)
+      try {
+        for (const entry of entries) {
+          if (entry.name === 'images') continue
+          const from = join(staging, entry.name)
+          const to = join(parent, entry.name)
+          await rename(from, to)
+          moved.push({ from, to })
+        }
+        if (images) {
+          const stagingImages = join(staging, images.name)
+          if (imageEntries.length) await mkdir(join(parent, 'images'), { recursive: true, mode: 0o700 })
+          for (const entry of imageEntries) {
+            const from = join(stagingImages, entry.name)
+            const to = join(parent, 'images', entry.name)
+            await rename(from, to)
+            moved.push({ from, to })
+          }
+          await rmdir(stagingImages)
+        }
+        await rmdir(staging)
+      } catch (error) {
+        for (const entry of moved.reverse()) {
+          await mkdir(dirname(entry.from), { recursive: true, mode: 0o700 }).catch(() => undefined)
+          await rename(entry.to, entry.from).catch(() => undefined)
+        }
+        await rename(staging, source).catch(() => undefined)
+        throw error
+      }
+      await this.syncDirectory(parent)
+      const next = await this.scanVault()
+      return { notes: ordered(next.notes.map(({ note }) => note)), folders: next.folders }
     })
   }
 
@@ -541,6 +657,37 @@ export class NoteStore {
     const ids = notes.map(({ note }) => note.id)
     if (new Set(ids).size !== ids.length) throw new Error('Markdown notes contain duplicate note ids')
     return { notes, folders: folders.sort((left, right) => left.localeCompare(right)) }
+  }
+
+  private async folderContainsOnlyManagedContent(
+    directory: string,
+    folder: string,
+    managedPaths: Set<string>,
+    noteIdsByFolder: Map<string, Set<string>>,
+  ): Promise<boolean> {
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      if (entry.isFile()) {
+        if (!managedPaths.has(path)) return false
+        continue
+      }
+      if (!entry.isDirectory()) return false
+      if (entry.name === 'images') {
+        const noteIds = noteIdsByFolder.get(folder) ?? new Set<string>()
+        const imageDirectories = await readdir(path, { withFileTypes: true })
+        for (const imageDirectory of imageDirectories) {
+          if (!imageDirectory.isDirectory() || !noteIds.has(imageDirectory.name)) return false
+          const imageEntries = await readdir(join(path, imageDirectory.name), { withFileTypes: true })
+          if (imageEntries.some((image) => !image.isFile() || !NOTE_IMAGE_NAME.test(image.name))) return false
+        }
+        continue
+      }
+      const childFolder = `${folder}/${entry.name}`
+      if (parseNoteFolder(childFolder) === null) return false
+      if (!(await this.folderContainsOnlyManagedContent(path, childFolder, managedPaths, noteIdsByFolder))) return false
+    }
+    return true
   }
 
   private async writeNote(

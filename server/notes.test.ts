@@ -192,6 +192,39 @@ describe('NoteStore', () => {
     await expect(store.createFolder('../outside')).rejects.toBeInstanceOf(NoteValidationError)
   })
 
+  it('renames folders and removes a folder by moving managed contents to its parent', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    await store.createFolder('Projects/Commando')
+    const note = await store.create({ title: 'Nested', body: 'Keep me', folder: 'Projects/Commando' })
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const imagePath = await store.saveImage(note.id, 'image/png', png)
+
+    const renamed = await store.renameFolder('Projects', 'Work')
+    expect(renamed.notes).toEqual([expect.objectContaining({ id: note.id, folder: 'Work/Commando' })])
+    expect(renamed.folders).toEqual(['Work', 'Work/Commando'])
+    expect((await stat(join(directory, 'Work', 'Commando', imagePath))).isFile()).toBe(true)
+
+    const deleted = await store.deleteFolder('Work')
+    expect(deleted.notes).toEqual([expect.objectContaining({ id: note.id, folder: 'Commando' })])
+    expect(deleted.folders).toEqual(['Commando'])
+    expect((await stat(join(directory, 'Commando', imagePath))).isFile()).toBe(true)
+    await expect(stat(join(directory, 'Work'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('refuses folder deletion when unmanaged files or destination collisions would be affected', async () => {
+    const { directory, store } = await temporaryNotesStore()
+    await store.createFolder('Inbox')
+    const note = await store.create({ title: 'Keep', body: '', folder: 'Inbox' })
+    await writeFile(join(directory, 'Inbox', 'README.txt'), 'external file', 'utf8')
+
+    await expect(store.deleteFolder('Inbox')).rejects.toThrow('does not manage')
+    await expect(store.get(note.id)).resolves.toMatchObject({ folder: 'Inbox' })
+    await rm(join(directory, 'Inbox', 'README.txt'))
+    await writeFile(join(directory, noteFileName({ id: note.id, title: note.title })), 'collision', 'utf8')
+    await expect(store.deleteFolder('Inbox')).rejects.toThrow('already exists')
+    await expect(store.renameFolder('Inbox', '../outside')).rejects.toBeInstanceOf(NoteValidationError)
+  })
+
   it('stores validated images privately beside the vault and removes them with their note', async () => {
     const { directory, store } = await temporaryNotesStore()
     const note = await store.create({ title: 'With image', body: '' })
@@ -289,6 +322,28 @@ describe('NoteStore', () => {
 })
 
 describe('handleNotesApi', () => {
+  it('serves folder create, rename, and delete operations', async () => {
+    const { store } = await temporaryNotesStore()
+    const baseUrl = await startApi(store)
+    const request = (method: string, body: object) => fetch(`${baseUrl}/api/notes/folders`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    expect((await request('POST', { folder: 'Inbox' })).status).toBe(201)
+    const renamed = await request('PATCH', { folder: 'Inbox', name: 'Archive' })
+    expect(renamed.status).toBe(200)
+    expect(await renamed.json()).toMatchObject({ folders: ['Archive'] })
+    const deleted = await request('DELETE', { folder: 'Archive' })
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toMatchObject({ notes: [], folders: [] })
+
+    const method = await fetch(`${baseUrl}/api/notes/folders`, { method: 'PUT' })
+    expect(method.status).toBe(405)
+    expect(method.headers.get('Allow')).toBe('POST, PATCH, DELETE')
+  })
+
   it('serves CRUD, conflict, validation, method, and not-found responses after auth dispatch', async () => {
     const { directory, store } = await temporaryNotesStore()
     const baseUrl = await startApi(store)

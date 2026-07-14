@@ -144,7 +144,23 @@ export async function handleNotesApi(
         writeJson(response, 201, { folders: await store.createFolder(folder) })
         return true
       }
-      methodNotAllowed(response, 'POST')
+      if (request.method === 'PATCH') {
+        const value = await readJson(request)
+        const record = typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? value as Record<string, unknown>
+          : {}
+        writeJson(response, 200, await store.renameFolder(record.folder, record.name))
+        return true
+      }
+      if (request.method === 'DELETE') {
+        const value = await readJson(request)
+        const folder = typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? (value as Record<string, unknown>).folder
+          : undefined
+        writeJson(response, 200, await store.deleteFolder(folder))
+        return true
+      }
+      methodNotAllowed(response, 'POST, PATCH, DELETE')
       return true
     }
 
