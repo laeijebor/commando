@@ -12,6 +12,8 @@
 
 - **Commit as you go.** Make small, focused commits at each meaningful step — don't batch everything into one commit at the end. Write clear, conventional commit messages (`feat:`, `fix:`, `refactor:`, ...).
 
+- **Use the default Commando vault for planning.** Treat the relevant Markdown note in `~/.commando/notes-vaults/default` as the source of truth for plans and task status. Update its checklist as work progresses, and mark items complete only after verification.
+
 - **Merge only when the feature is finished and tested.** Before merging back into `main`:
   1. `npm run typecheck` passes
   2. `npm test` passes (vitest)

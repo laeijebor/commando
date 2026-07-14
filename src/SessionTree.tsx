@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, Terminal, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
@@ -17,6 +17,7 @@ type Props = {
   onSelectWindow: (id: string) => void
   onSelectPane: (id: string) => void
   onOpenPaneMaximized: (id: string) => void
+  onWindowDeleting: (id: string) => void
   onSessionsChanged: () => void
 }
 
@@ -81,6 +82,15 @@ export function SessionTree(props: Props) {
     save({ ...preferences, groups: [...preferences.groups, group] })
   }
 
+  const moveGroup = (groupId: string, direction: -1 | 1) => {
+    const index = preferences.groups.findIndex((group) => group.id === groupId)
+    const destination = index + direction
+    if (index < 0 || destination < 0 || destination >= preferences.groups.length) return
+    const groups = [...preferences.groups]
+    ;[groups[index], groups[destination]] = [groups[destination], groups[index]]
+    save({ ...preferences, groups })
+  }
+
   const renameSession = async (sessionId: string) => {
     const session = sessionMap.get(sessionId)
     const name = window.prompt('Rename tmux session', session?.name ?? '')?.trim()
@@ -96,6 +106,18 @@ export function SessionTree(props: Props) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to delete session') }
   }
 
+  const deleteWindow = async (windowId: string) => {
+    const tmuxWindow = windowMap.get(windowId)
+    if (!tmuxWindow) return
+    const session = sessionMap.get(tmuxWindow.sessionId)
+    const lastWindow = session?.windowIds.length === 1
+    const consequence = lastWindow ? ' This is the last window, so tmux will also close the session.' : ''
+    if (!window.confirm(`Close window "${tmuxWindow.name}" and terminate all of its panes?${consequence}`)) return
+    props.onWindowDeleting(windowId)
+    try { await api.deleteWindow(windowId); props.onSessionsChanged() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to close window') }
+  }
+
   const openMenu = (sessionId: string, x: number, y: number) => setMenu({ sessionId, x, y })
   const menuKey = (event: KeyboardEvent, sessionId: string) => {
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
@@ -109,7 +131,9 @@ export function SessionTree(props: Props) {
     <div className="managed-session-tree">
       <div className="session-tree-tools"><span>{props.sessions.length} sessions</span><button type="button" onClick={createGroup}><FolderPlus /> Group</button></div>
       {error ? <button type="button" className="session-tree-error" onClick={() => setError('')}>{error}</button> : null}
-      {containers.map((container) => (
+      {containers.map((container) => {
+        const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
+        return (
         <section
           className="session-pref-group"
           key={container.id}
@@ -118,7 +142,7 @@ export function SessionTree(props: Props) {
         >
           <header>
             <strong>{container.name}</strong><small>{container.sessionIds.filter((id) => sessionMap.has(id)).length}</small>
-            {container.group ? <><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
+            {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div>
             {container.sessionIds.flatMap((sessionId) => {
@@ -131,13 +155,14 @@ export function SessionTree(props: Props) {
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className={`live-dot${session.attached ? ' attached' : ''}`} /><span><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
-                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><button type="button" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><div>{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = pane.title || pane.command || `Pane ${pane.index}`; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
+                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = pane.title || pane.command || `Pane ${pane.index}`; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
               </article>]
             })}
             {!container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
           </div>
         </section>
-      ))}
+        )
+      })}
       {menu ? <div className="session-context-menu" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button></div> : null}
     </div>
   )

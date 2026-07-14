@@ -1,21 +1,31 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane } from '../shared/protocol'
 import { SessionTree } from './SessionTree'
 
-vi.mock('./sessionManagementApi', () => ({
-  createSessionManagementApi: () => ({
-    loadPreferences: async () => ({ version: 1, groups: [], ungroupedSessionIds: [] }),
-    savePreferences: vi.fn(),
-    renameSession: vi.fn(),
-    deleteSession: vi.fn(),
-  }),
+const sessionApi = vi.hoisted(() => ({
+  loadPreferences: vi.fn(),
+  savePreferences: vi.fn(),
+  renameSession: vi.fn(),
+  deleteSession: vi.fn(),
+  deleteWindow: vi.fn(),
 }))
 
-afterEach(cleanup)
+vi.mock('./sessionManagementApi', () => ({ createSessionManagementApi: () => sessionApi }))
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
+beforeEach(() => {
+  vi.clearAllMocks()
+  sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+  sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
+  sessionApi.deleteWindow.mockResolvedValue(undefined)
+})
 
 function pane(id: string, index: number, title: string): TmuxPane {
   return {
@@ -52,6 +62,46 @@ function pane(id: string, index: number, title: string): TmuxPane {
 }
 
 describe('SessionTree', () => {
+  it('moves named groups in their persisted display order', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [
+        { id: 'vivi', name: 'VIVI', sessionIds: [] },
+        { id: 'gizmo', name: 'GIZMO', sessionIds: [] },
+      ],
+      ungroupedSessionIds: [],
+    })
+    render(
+      <SessionTree
+        token="token"
+        sessions={[]}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Move GIZMO up' }))
+
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledWith({
+      version: 1,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: [] },
+        { id: 'vivi', name: 'VIVI', sessionIds: [] },
+      ],
+      ungroupedSessionIds: [],
+    }))
+  })
+
   it('lists panes in their displayed workspace order', () => {
     const panes = [
       pane('%1', 0, 'First tmux pane'),
@@ -73,6 +123,7 @@ describe('SessionTree', () => {
         onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
         onOpenPaneMaximized={onOpenPaneMaximized}
+        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
       />,
     )
@@ -83,5 +134,36 @@ describe('SessionTree', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Third tmux pane maximized' }))
     expect(onOpenPaneMaximized).toHaveBeenCalledWith('%3')
+  })
+
+  it('confirms and closes a tmux window', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const onSessionsChanged = vi.fn()
+    const onWindowDeleting = vi.fn()
+    render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: [] }]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId="$1"
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={onWindowDeleting}
+        onSessionsChanged={onSessionsChanged}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close window zsh' }))
+
+    await waitFor(() => expect(sessionApi.deleteWindow).toHaveBeenCalledWith('@1'))
+    expect(onWindowDeleting).toHaveBeenCalledWith('@1')
+    expect(onSessionsChanged).toHaveBeenCalled()
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('last window'))
   })
 })

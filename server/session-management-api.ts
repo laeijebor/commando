@@ -8,6 +8,7 @@ import {
   TmuxSessionActions,
   validateTmuxSessionId,
   validateTmuxSessionName,
+  validateTmuxWindowId,
 } from './tmux-session-actions.js'
 
 const API_ROOT = '/api/session-management'
@@ -17,6 +18,8 @@ type SessionManagementDependencies = {
   preferences?: SessionPreferenceStore
   actions?: TmuxSessionActions
   currentSessionIds: () => readonly string[]
+  currentWindowIds: () => readonly string[]
+  beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
 }
 
@@ -84,6 +87,16 @@ function sessionRoute(pathname: string): { sessionId: string; action: 'rename' |
   }
 }
 
+function windowDeleteRoute(pathname: string): string | null {
+  const match = /^\/api\/session-management\/windows\/([^/]+)\/delete$/.exec(pathname)
+  if (!match) return null
+  try {
+    return validateTmuxWindowId(decodeURIComponent(match[1]))
+  } catch {
+    throw new HttpError(400, 'Invalid tmux window id')
+  }
+}
+
 export function isSessionManagementPath(pathname: string): boolean {
   return pathname === API_ROOT || pathname.startsWith(`${API_ROOT}/`)
 }
@@ -111,34 +124,51 @@ export class SessionManagementApi {
       }
 
       const route = sessionRoute(url.pathname)
-      if (!route) throw new HttpError(404, 'Not found')
-      if (!this.dependencies.currentSessionIds().includes(route.sessionId)) {
-        throw new HttpError(404, 'Tmux session does not exist')
-      }
-
-      if (route.action === 'rename') {
-        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
-        const body = record(await readJson(request))
-        let name: string
-        try {
-          name = validateTmuxSessionName(body.name)
-        } catch (error) {
-          throw new HttpError(400, error instanceof Error ? error.message : 'Invalid session name')
+      if (route) {
+        if (!this.dependencies.currentSessionIds().includes(route.sessionId)) {
+          throw new HttpError(404, 'Tmux session does not exist')
         }
-        await this.actions.rename(route.sessionId, name)
+
+        if (route.action === 'rename') {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = record(await readJson(request))
+          let name: string
+          try {
+            name = validateTmuxSessionName(body.name)
+          } catch (error) {
+            throw new HttpError(400, error instanceof Error ? error.message : 'Invalid session name')
+          }
+          await this.actions.rename(route.sessionId, name)
+          await this.dependencies.onSessionsChanged?.()
+          writeJson(response, 200, { ok: true, sessionId: route.sessionId, name })
+          return true
+        }
+
+        if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
+        const body = record(await readJson(request))
+        if (body.confirmSessionId !== route.sessionId) {
+          throw new HttpError(400, 'Deletion requires an exact confirmSessionId')
+        }
+        await this.actions.delete(route.sessionId)
         await this.dependencies.onSessionsChanged?.()
-        writeJson(response, 200, { ok: true, sessionId: route.sessionId, name })
+        writeJson(response, 200, { ok: true, sessionId: route.sessionId })
         return true
       }
 
+      const windowId = windowDeleteRoute(url.pathname)
+      if (!windowId) throw new HttpError(404, 'Not found')
+      if (!this.dependencies.currentWindowIds().includes(windowId)) {
+        throw new HttpError(404, 'Tmux window does not exist')
+      }
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
       const body = record(await readJson(request))
-      if (body.confirmSessionId !== route.sessionId) {
-        throw new HttpError(400, 'Deletion requires an exact confirmSessionId')
+      if (body.confirmWindowId !== windowId) {
+        throw new HttpError(400, 'Deletion requires an exact confirmWindowId')
       }
-      await this.actions.delete(route.sessionId)
+      await this.dependencies.beforeWindowDeleted?.(windowId)
+      await this.actions.deleteWindow(windowId)
       await this.dependencies.onSessionsChanged?.()
-      writeJson(response, 200, { ok: true, sessionId: route.sessionId })
+      writeJson(response, 200, { ok: true, windowId })
       return true
     } catch (error) {
       if (error instanceof HttpError) {

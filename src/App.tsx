@@ -1426,6 +1426,7 @@ export function App() {
               onSelectWindow={jumpToGroup}
               onSelectPane={jumpToPane}
               onOpenPaneMaximized={openPaneMaximized}
+              onWindowDeleting={clearLayoutTimers}
               onSessionsChanged={refresh}
             />
             <TmuxCreateControls

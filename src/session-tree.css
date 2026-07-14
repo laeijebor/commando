@@ -3,6 +3,7 @@
 .session-tree-tools button, .session-pref-group header button, .session-row-actions button, .managed-session-tree button { color: inherit; background: transparent; border: 0; cursor: pointer; }
 .session-tree-tools button { display: flex; gap: 5px; align-items: center; color: var(--muted); font-size: 9px; }
 .session-tree-tools svg, .session-pref-group header svg, .session-row-actions svg { width: 12px; height: 12px; }
+.session-pref-group header button:disabled { opacity: .28; cursor: default; }
 .session-tree-error { width: 100%; padding: 7px; color: #eb6f92 !important; text-align: left; font-size: 9px; }
 .session-pref-group { margin-bottom: 9px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .session-pref-group > header { padding: 7px 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); background: var(--surface); }
@@ -21,12 +22,17 @@
 .session-row-actions button { width: 24px; height: 24px; color: var(--muted-dim); }
 .session-row-actions button:hover { color: var(--text); }
 .managed-window-tree { padding: 0 6px 8px 28px; }
-.managed-window-tree button { width: 100%; min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: var(--muted); text-align: left; font-size: 9px; }
+.managed-window-row { display: flex; align-items: center; }
+.managed-window-tree button { min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: var(--muted); text-align: left; font-size: 9px; }
+.managed-window-row .managed-window-main { flex: 1; }
+.managed-window-row .managed-window-close { width: 24px; flex: 0 0 24px; justify-content: center; padding: 0; opacity: 0; color: var(--muted-dim); }
+.managed-window-row:hover .managed-window-close, .managed-window-row:focus-within .managed-window-close { opacity: 1; }
+.managed-window-row .managed-window-close:hover { color: var(--red); }
 .managed-window-tree button > svg { flex: 0 0 auto; width: 12px; height: 12px; }
 .managed-window-tree button > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .managed-window-tree button > small { margin-left: auto; font-family: var(--mono); font-size: 8px; }
-.managed-window-tree > div > div { padding-left: 14px; }
-.managed-window-tree > div > div button { font-size: 8px; }
+.managed-window-panes { padding-left: 14px; }
+.managed-window-panes button { font-size: 8px; }
 .managed-pane-row { display: flex; align-items: center; border-radius: 6px; }
 .managed-pane-row:hover, .managed-pane-row.active { color: var(--text); background: var(--surface-hover); }
 .managed-pane-row .managed-pane-main { flex: 1; }

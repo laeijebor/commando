@@ -15,6 +15,7 @@ export interface SessionManagementApiClient {
   savePreferences(preferences: SessionTreePreferences): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
   deleteSession(sessionId: string): Promise<void>
+  deleteWindow(windowId: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -74,6 +75,12 @@ export function createSessionManagementApi(
       await request(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
         method: 'DELETE',
         body: JSON.stringify({ confirmSessionId: sessionId }),
+      })
+    },
+    async deleteWindow(windowId) {
+      await request(`/windows/${encodeURIComponent(windowId)}/delete`, {
+        method: 'DELETE',
+        body: JSON.stringify({ confirmWindowId: windowId }),
       })
     },
   }
