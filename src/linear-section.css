@@ -62,6 +62,7 @@
 .linear-comment-composer { flex: none; padding: 12px 20px 16px; display: grid; gap: 8px; border-top: 1px solid var(--border-strong); background: var(--surface-raised); box-shadow: 0 -12px 30px #0004; }
 .linear-comment-composer > span { color: var(--muted); font-size: 11px; }
 .linear-comment-composer > span button { color: var(--accent); }
+.linear-comment-composer > button { color: var(--surface-soft); background: var(--accent); }
 .linear-comment-composer textarea { min-height: 72px; max-height: 180px; padding: 10px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface-soft); }
 .linear-markdown { color: var(--accent); line-height: 1.6; overflow-wrap: anywhere; }
 .linear-markdown > :first-child { margin-top: 0; }
@@ -84,4 +85,4 @@
 .linear-markdown input[type="checkbox"] { margin-right: 6px; accent-color: var(--accent); }
 .linear-markdown hr { border: 0; border-top: 1px solid var(--border-strong); }
 .linear-markdown img { max-width: 100%; }
-@media (max-width: 760px) { .linear-toolbar { align-items: stretch; flex-direction: column; } .linear-selectors { align-items: stretch; flex-direction: column; } .linear-add-account form { grid-template-columns: 1fr; } .linear-board { padding: 12px; } .linear-column { flex-basis: 82vw; } }
+@media (max-width: 760px) { .linear-toolbar { align-items: stretch; flex-direction: column; } .linear-selectors { align-items: stretch; flex-direction: column; } .linear-add-account form { grid-template-columns: 1fr; } .linear-board { padding: 12px; } .linear-column { flex-basis: 82vw; } .linear-issue-drawer { position: fixed; inset: 44px 0 0; width: 100%; border-left: 0; } .linear-issue-meta { flex-wrap: wrap; } }
