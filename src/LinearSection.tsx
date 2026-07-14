@@ -1,4 +1,4 @@
-import { ArrowUpRight, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Equal, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Copy, Equal, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
@@ -50,7 +50,9 @@ export function LinearSection({ token }: { token: string }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(0)
   const [draggedIssueId, setDraggedIssueId] = useState<string | null>(null)
   const [dropStateId, setDropStateId] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const loadAccounts = async () => {
     try {
@@ -196,6 +198,15 @@ export function LinearSection({ token }: { token: string }) {
     }
   }
 
+  const copyProjectLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = setTimeout(() => setCopied(false), 1500)
+    } catch { setError('Unable to copy project link') }
+  }
+
   const sendComment = async (event: FormEvent) => {
     event.preventDefault()
     if (!accountId || !issue || !comment.trim()) return
@@ -206,6 +217,8 @@ export function LinearSection({ token }: { token: string }) {
       setIssue(await api.issue(accountId, issue.id))
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to add comment') }
   }
+
+  const selectedProject = projects.find((project) => project.id === projectId)
 
   return (
     <section className="linear-section">
@@ -223,6 +236,7 @@ export function LinearSection({ token }: { token: string }) {
           <select value={projectId} onChange={(event) => { setProjectId(event.target.value); setIssue(null) }} aria-label="Linear project" disabled={!accountId}>
             <option value="">Select project</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
           </select>
+          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Copy />}</button> : null}
           {accountId ? <button type="button" className="linear-remove" onClick={() => { if (window.confirm('Disconnect this Linear account?')) void api.remove(accountId).then(loadAccounts) }} title="Disconnect account"><Trash2 /></button> : null}
         </div>
       </header>

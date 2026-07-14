@@ -109,7 +109,22 @@ describe('terminal pane actions', () => {
     expect(onFocus).not.toHaveBeenCalled()
   })
 
-  it('opens the context menu for the targeted pane on Command-right click', () => {
+  it('leaves Command-right click to the terminal application', () => {
+    const onOpenMenu = vi.fn()
+    const onFocus = vi.fn()
+    const view = render(
+      <TerminalPaneCard {...paneProps} onFocus={onFocus} onOpenMenu={onOpenMenu} />,
+    )
+
+    fireEvent.contextMenu(view.container.querySelector('[data-pane-id="%12"]')!, {
+      metaKey: true,
+    })
+
+    expect(onOpenMenu).not.toHaveBeenCalled()
+    expect(onFocus).not.toHaveBeenCalled()
+  })
+
+  it('opens the context menu for the targeted pane on Option-right click', () => {
     const onOpenMenu = vi.fn()
     const onFocus = vi.fn()
     const view = render(
@@ -119,7 +134,7 @@ describe('terminal pane actions', () => {
     fireEvent.contextMenu(view.container.querySelector('[data-pane-id="%12"]')!, {
       clientX: 120,
       clientY: 80,
-      metaKey: true,
+      altKey: true,
     })
 
     expect(onOpenMenu).toHaveBeenCalledWith(120, 80)
