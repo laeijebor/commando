@@ -118,8 +118,15 @@ function splitZeroTerminated(output: string): string[] {
   return output.split(NUL).filter((entry) => entry.length > 0)
 }
 
+export type GitBranches = {
+  isRepo: boolean
+  current?: string
+  branches?: string[]
+}
+
 export class GitDiffInspector {
   private readonly summaryCache = new Map<string, { at: number; result: Promise<GitDiffSummary> }>()
+  private readonly branchesCache = new Map<string, { at: number; result: Promise<GitBranches> }>()
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultExecutor,
@@ -135,6 +142,36 @@ export class GitDiffInspector {
     this.summaryCache.set(key, { at: this.now(), result })
     result.catch(() => this.summaryCache.delete(key))
     return result
+  }
+
+  async branches(cwd: string): Promise<GitBranches> {
+    const cached = this.branchesCache.get(cwd)
+    if (cached && this.now() - cached.at < SUMMARY_CACHE_TTL_MS) return cached.result
+    const result = this.computeBranches(cwd)
+    this.branchesCache.set(cwd, { at: this.now(), result })
+    result.catch(() => this.branchesCache.delete(cwd))
+    return result
+  }
+
+  private async computeBranches(cwd: string): Promise<GitBranches> {
+    const repo = await this.repoContext(cwd)
+    if (!repo) return { isRepo: false }
+    const { stdout } = await this.git(repo.root, [
+      'for-each-ref',
+      '--format=%(refname:short)',
+      '--sort=-committerdate',
+      'refs/heads',
+      'refs/remotes',
+    ])
+    const seen = new Set<string>()
+    const branches: string[] = []
+    for (const name of stdout.split('\n')) {
+      const branch = name.trim()
+      if (!branch || branch.endsWith('/HEAD') || seen.has(branch)) continue
+      seen.add(branch)
+      branches.push(branch)
+    }
+    return { isRepo: true, current: repo.branch, branches }
   }
 
   async fileDiff(cwd: string, file: string, target: string | undefined, width: number): Promise<string> {

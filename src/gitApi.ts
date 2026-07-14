@@ -21,9 +21,16 @@ export type GitFileDiff = {
   diff: string
 }
 
+export type GitBranches = {
+  isRepo: boolean
+  current?: string
+  branches?: string[]
+}
+
 export interface GitDiffApiClient {
   summary(paneId: string, target?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, target?: string, width?: number): Promise<GitFileDiff>
+  branches(paneId: string): Promise<GitBranches>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -63,5 +70,6 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
         target,
         width: width === undefined ? undefined : String(width),
       }),
+    branches: (paneId) => request<GitBranches>('branches', { paneId }),
   }
 }

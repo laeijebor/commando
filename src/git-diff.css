@@ -95,6 +95,50 @@
   color: var(--accent);
 }
 
+.git-diff-target-combo {
+  position: relative;
+}
+
+.git-diff-branch-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 240px;
+  max-width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 12px 40px #000c;
+}
+
+.git-diff-branch-list button {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+.git-diff-branch-list button.highlighted {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
 .git-diff-target input {
   width: 160px;
   padding: 5px 9px;

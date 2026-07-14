@@ -19,6 +19,7 @@ function repoExecutor(): GitProcessExecutor {
       throw new GitCommandFailure('git failed', '', false)
     }
     if (args[0] === 'merge-base') return { stdout: 'base\n', stderr: '' }
+    if (args[0] === 'for-each-ref') return { stdout: 'main\norigin/main\n', stderr: '' }
     if (args.includes('--numstat')) return { stdout: `3\t1\ta.ts${NUL}`, stderr: '' }
     if (args.includes('--name-status')) return { stdout: `M${NUL}a.ts${NUL}`, stderr: '' }
     if (args[0] === 'ls-files') return { stdout: '', stderr: '' }
@@ -96,6 +97,17 @@ describe('GitDiffApi', () => {
     const response = await fetch(`${base}/api/git/file-diff?paneId=%251&file=a.ts&width=120`)
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ file: 'a.ts', diff: 'STRUCTURAL' })
+  })
+
+  it('lists branches for a known pane', async () => {
+    const base = await startApi()
+    const response = await fetch(`${base}/api/git/branches?paneId=%251`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      isRepo: true,
+      current: 'feature',
+      branches: ['main', 'origin/main'],
+    })
   })
 
   it('maps unknown targets to 400', async () => {

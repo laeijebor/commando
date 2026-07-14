@@ -44,7 +44,8 @@ export class GitDiffApi {
     if (url.pathname !== API_ROOT && !url.pathname.startsWith(`${API_ROOT}/`)) return false
 
     try {
-      if (url.pathname !== `${API_ROOT}/summary` && url.pathname !== `${API_ROOT}/file-diff`) {
+      const routes = [`${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/branches`]
+      if (!routes.includes(url.pathname)) {
         throw new HttpError(404, 'Not found')
       }
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
@@ -54,6 +55,11 @@ export class GitDiffApi {
 
       if (url.pathname === `${API_ROOT}/summary`) {
         writeJson(response, 200, await this.inspector.summary(panePath, target))
+        return true
+      }
+
+      if (url.pathname === `${API_ROOT}/branches`) {
+        writeJson(response, 200, await this.inspector.branches(panePath))
         return true
       }
 

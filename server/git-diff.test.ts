@@ -23,6 +23,7 @@ type FakeRepoOptions = {
   untracked?: string[]
   diffOutput?: string
   diffFailure?: GitCommandFailure
+  refList?: string[]
 }
 
 function failure(stderr = '', missingBinary = false): GitCommandFailure {
@@ -37,6 +38,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     untracked = [],
     diffOutput = 'DIFF',
     diffFailure,
+    refList = [],
   } = options
   const calls: Call[] = []
   const execute: GitProcessExecutor = async (file, args, executorOptions) => {
@@ -52,6 +54,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       throw failure()
     }
     if (args[0] === 'merge-base') return { stdout: `${BASE}\n`, stderr: '' }
+    if (args[0] === 'for-each-ref') return { stdout: refList.join('\n'), stderr: '' }
     if (args[0] === 'diff' && args.includes('--numstat')) return { stdout: numstat, stderr: '' }
     if (args[0] === 'diff' && args.includes('--name-status')) return { stdout: nameStatus, stderr: '' }
     if (args[0] === 'ls-files' && args.includes('--')) {
@@ -165,6 +168,26 @@ describe('GitDiffInspector.summary', () => {
     clock = 60_000
     await inspector.summary('/repo')
     expect(repo.calls.length).toBeGreaterThan(callsAfterFirst)
+  })
+})
+
+describe('GitDiffInspector.branches', () => {
+  it('lists deduplicated branches without HEAD pointers', async () => {
+    const repo = fakeRepo({
+      refList: ['feature', 'main', 'origin/HEAD', 'origin/main', 'main', '', 'origin/feature-2'],
+    })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    const result = await inspector.branches('/repo')
+    expect(result).toEqual({
+      isRepo: true,
+      current: BRANCH,
+      branches: ['feature', 'main', 'origin/main', 'origin/feature-2'],
+    })
+  })
+
+  it('reports non-repositories', async () => {
+    const inspector = new GitDiffInspector(notARepo(), {})
+    await expect(inspector.branches('/tmp')).resolves.toEqual({ isRepo: false })
   })
 })
 
