@@ -56,7 +56,7 @@ export type GitDiffSummary = {
   files?: GitChangedFile[]
 }
 
-class GitCommandFailure extends Error {
+export class GitCommandFailure extends Error {
   constructor(message: string, readonly stderr: string, readonly missingBinary: boolean) {
     super(message)
     this.name = 'GitCommandFailure'
