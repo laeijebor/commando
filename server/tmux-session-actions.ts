@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 
 const SESSION_ID = /^\$\d+$/
+const WINDOW_ID = /^@\d+$/
 const SOCKET_NAME = /^[A-Za-z0-9._-]{1,128}$/
 const ACTION_TIMEOUT_MS = 3_000
 const ACTION_BUFFER_BYTES = 64 * 1024
@@ -37,6 +38,13 @@ export class TmuxSessionActionError extends Error {
 export function validateTmuxSessionId(value: unknown): string {
   if (typeof value !== 'string' || !SESSION_ID.test(value)) {
     throw new Error('Invalid tmux session id')
+  }
+  return value
+}
+
+export function validateTmuxWindowId(value: unknown): string {
+  if (typeof value !== 'string' || !WINDOW_ID.test(value)) {
+    throw new Error('Invalid tmux window id')
   }
   return value
 }
@@ -112,6 +120,11 @@ export class TmuxSessionActions {
   async delete(sessionId: string): Promise<void> {
     const target = validateTmuxSessionId(sessionId)
     await this.run(['kill-session', '-t', target])
+  }
+
+  async deleteWindow(windowId: string): Promise<void> {
+    const target = validateTmuxWindowId(windowId)
+    await this.run(['kill-window', '-t', target])
   }
 
   private async run(args: readonly string[]): Promise<void> {

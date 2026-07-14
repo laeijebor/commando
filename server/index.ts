@@ -779,6 +779,10 @@ async function main(): Promise<void> {
 
   const sessionManagement = new SessionManagementApi({
     currentSessionIds: () => snapshot.sessions.map((session) => session.id),
+    currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    beforeWindowDeleted: async (windowId) => {
+      await tmux.releaseWindowPaneResizes(windowId)
+    },
     onSessionsChanged: async () => {
       await refreshSnapshot()
     },
