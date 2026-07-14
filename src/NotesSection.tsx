@@ -14,6 +14,7 @@ import {
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { NoteBlockEditor } from './NoteBlockEditor'
 import { createNotesApi, NotesApiError, type Note, type NoteVaultSnapshot } from './notesApi'
+import { VaultFolderPicker } from './VaultFolderPicker'
 import './notes-section.css'
 
 type SavePhase = 'loading' | 'saved' | 'dirty' | 'saving' | 'conflict' | 'error'
@@ -50,6 +51,7 @@ export function NotesSection({ token }: { token: string }) {
   const [vaultState, setVaultState] = useState<NoteVaultSnapshot | null>(null)
   const [vaultError, setVaultError] = useState('')
   const [vaultBusy, setVaultBusy] = useState(false)
+  const [vaultPicker, setVaultPicker] = useState<'open' | 'create' | null>(null)
   const [active, setActive] = useState<ActiveNote | null>(null)
   const [query, setQuery] = useState('')
   const [phase, setPhase] = useState<SavePhase>('loading')
@@ -316,16 +318,16 @@ export function NotesSection({ token }: { token: string }) {
   }
 
   const openVault = () => {
-    const currentPath = vaultState?.vaults.find((vault) => vault.id === vaultState.activeVaultId)?.path ?? ''
-    const path = window.prompt('Open existing Markdown vault', currentPath)?.trim()
-    if (path) void runVaultAction(() => api.openVault(path))
+    setVaultPicker('open')
   }
 
   const createVault = () => {
-    const currentPath = vaultState?.vaults.find((vault) => vault.id === vaultState.activeVaultId)?.path ?? ''
-    const parent = currentPath.replace(/\/[^/]+\/?$/, '')
-    const path = window.prompt('Create Markdown vault', parent ? `${parent}/new-vault` : '')?.trim()
-    if (path) void runVaultAction(() => api.createVault(path))
+    setVaultPicker('create')
+  }
+
+  const confirmVaultPicker = (path: string, name?: string) => {
+    setVaultPicker(null)
+    void runVaultAction(() => name === undefined ? api.openVault(path) : api.createVaultIn(path, name))
   }
 
   const clearVaultHistory = () => {
@@ -703,6 +705,15 @@ export function NotesSection({ token }: { token: string }) {
           ))}
           <button type="button" className="danger" role="menuitem" onClick={() => { void deleteFromMenu(menu.noteId); setMenu(null) }}><Trash2 /> Delete note</button>
         </div>
+      ) : null}
+      {vaultPicker && currentVault ? (
+        <VaultFolderPicker
+          mode={vaultPicker}
+          initialPath={currentVault.path}
+          browse={api.browseVault}
+          onCancel={() => setVaultPicker(null)}
+          onConfirm={confirmVaultPicker}
+        />
       ) : null}
     </section>
   )

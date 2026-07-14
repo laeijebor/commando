@@ -205,6 +205,36 @@ export class NoteVaultManager {
     })
   }
 
+  createIn(parent: unknown, name: unknown): Promise<NoteVaultSnapshot> {
+    return this.mutate(async () => {
+      if (
+        typeof name !== 'string' ||
+        name.length === 0 ||
+        name.length > 128 ||
+        name !== name.trim() ||
+        name === '.' ||
+        name === '..' ||
+        name.includes('/') ||
+        name.includes('\\') ||
+        /[\u0000-\u001f\u007f]/.test(name)
+      ) {
+        throw new NoteValidationError('Vault name must be a valid folder name')
+      }
+      const canonicalParent = await this.canonicalBrowseDirectory(parent)
+      const target = join(canonicalParent, name)
+      try {
+        await mkdir(target, { mode: 0o700 })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new NoteValidationError('The vault directory already exists; open it instead')
+        }
+        throw error
+      }
+      this.activatePath(await this.canonicalDirectory(target))
+      return this.snapshotState()
+    })
+  }
+
   select(id: unknown): Promise<NoteVaultSnapshot> {
     return this.mutate(async () => {
       if (typeof id !== 'string' || !VAULT_ID.test(id)) throw new NoteValidationError('Invalid note vault id')

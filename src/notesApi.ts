@@ -31,6 +31,13 @@ export type NotesSnapshot = {
   folders: string[]
 }
 
+export type NoteVaultBrowseResult = {
+  path: string
+  parent: string | null
+  home: string
+  directories: Array<{ name: string; path: string }>
+}
+
 const LOCAL_IMAGE_PATH = /^(?:\.\/)?images\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpg|gif|webp))$/i
 
 export class NotesApiError extends Error {
@@ -44,6 +51,8 @@ export type NotesApi = {
   vaults(): Promise<NoteVaultSnapshot>
   openVault(path: string): Promise<NoteVaultSnapshot>
   createVault(path: string): Promise<NoteVaultSnapshot>
+  createVaultIn(parent: string, name: string): Promise<NoteVaultSnapshot>
+  browseVault(path?: string): Promise<NoteVaultBrowseResult>
   selectVault(id: string): Promise<NoteVaultSnapshot>
   clearVaultHistory(vaultId: string): Promise<NoteVaultSnapshot>
   list(vaultId: string): Promise<NotesSnapshot>
@@ -86,6 +95,8 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
     vaults: () => request<NoteVaultSnapshot>('/api/note-vaults'),
     openVault: (path) => vaultMutation('open', 'POST', { path }),
     createVault: (path) => vaultMutation('create', 'POST', { path }),
+    createVaultIn: (parent, name) => vaultMutation('create', 'POST', { parent, name }),
+    browseVault: (path) => request<NoteVaultBrowseResult>(`/api/note-vaults/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
     selectVault: (id) => vaultMutation('active', 'PUT', { id }),
     clearVaultHistory: (vaultId) => request<NoteVaultSnapshot>(`/api/note-vaults/history?active=${encodeURIComponent(vaultId)}`, { method: 'DELETE' }),
     list: (vaultId) => request<NotesSnapshot>(notesPath(vaultId)),

@@ -138,6 +138,7 @@ describe('NoteVaultManager', () => {
     await expect(manager.open('/')).rejects.toThrow('root')
     await expect(manager.create(join(paths.root, 'missing', 'vault'))).rejects.toThrow('parent')
     await expect(manager.create(override)).rejects.toThrow('already exists')
+    await expect(manager.createIn(paths.parent, '../escape')).rejects.toThrow('valid folder name')
   })
 
   it('browses canonical directories without exposing files', async () => {
@@ -165,6 +166,9 @@ describe('NoteVaultManager', () => {
     const browse = await fetch(`${baseUrl}/api/note-vaults/browse?path=${encodeURIComponent(paths.parent)}`)
     expect(browse.status).toBe(200)
     expect(await browse.json()).toMatchObject({ path: paths.parent, directories: [{ name: 'default' }] })
+    const invalidBrowse = await fetch(`${baseUrl}/api/note-vaults/browse`, { method: 'POST' })
+    expect(invalidBrowse.status).toBe(405)
+    expect(invalidBrowse.headers.get('Allow')).toBe('GET')
     expect((await fetch(`${baseUrl}/api/notes`)).status).toBe(400)
     expect((await fetch(`${baseUrl}/api/notes?vault=${initial.activeVaultId}`)).status).toBe(200)
     const createdPath = join(paths.parent, 'api-created')
@@ -178,6 +182,14 @@ describe('NoteVaultManager', () => {
     const created = await createdResponse.json() as { activeVaultId: string; vaults: unknown[] }
     expect(created.activeVaultId).not.toBe(initial.activeVaultId)
     expect(created.vaults).toHaveLength(2)
+
+    const createdInResponse = await fetch(`${baseUrl}/api/note-vaults/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent: paths.parent, name: 'api-created-in' }),
+    })
+    expect(createdInResponse.status).toBe(201)
+    expect(await createdInResponse.json()).toMatchObject({ vaults: expect.arrayContaining([expect.objectContaining({ name: 'api-created-in' })]) })
 
     expect((await fetch(`${baseUrl}/api/note-vaults/active`, {
       method: 'PUT',

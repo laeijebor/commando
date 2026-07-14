@@ -63,7 +63,10 @@ export async function handleNoteVaultsApi(
       return true
     }
     if (action === 'create' && request.method === 'POST') {
-      writeJson(response, 201, await manager.create(record(await readJson(request)).path))
+      const value = record(await readJson(request))
+      writeJson(response, 201, value.parent === undefined
+        ? await manager.create(value.path)
+        : await manager.createIn(value.parent, value.name))
       return true
     }
     if (action === 'active' && request.method === 'PUT') {
@@ -74,7 +77,7 @@ export async function handleNoteVaultsApi(
       writeJson(response, 200, await manager.clearHistory(url.searchParams.get('active')))
       return true
     }
-    response.setHeader('Allow', action === 'history' ? 'DELETE' : action ? action === 'active' ? 'PUT' : 'POST' : 'GET')
+    response.setHeader('Allow', action === 'history' ? 'DELETE' : action === 'browse' ? 'GET' : action ? action === 'active' ? 'PUT' : 'POST' : 'GET')
     writeJson(response, 405, { error: 'Method not allowed' })
     return true
   } catch (error) {

@@ -29,6 +29,23 @@ describe('notes image API', () => {
     expect(api.resolveImageUrl('https://example.com/image.png', 'vault-1')).toBe('https://example.com/image.png')
   })
 
+  it('browses daemon directories and creates a vault within the selected parent', async () => {
+    const browseResult = { path: '/tmp/notes', parent: '/tmp', home: '/Users/test', directories: [] }
+    const vaultResult = { activeVaultId: 'vault-2', vaults: [] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => (
+      String(input).includes('/browse') ? Response.json(browseResult) : Response.json(vaultResult)
+    ))
+    const api = createNotesApi('test-token', fetcher)
+
+    await expect(api.browseVault('/tmp/notes')).resolves.toEqual(browseResult)
+    await expect(api.createVaultIn('/tmp/notes', 'work')).resolves.toEqual(vaultResult)
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/note-vaults/browse?path=%2Ftmp%2Fnotes', expect.any(Object))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/note-vaults/create', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ parent: '/tmp/notes', name: 'work' }),
+    }))
+  })
+
   it('uses the session cookie and clean image URLs when no automation token is present', async () => {
     const noteId = '71cf1432-e39e-4ac1-a1d8-51185f94dbce'
     const imageName = 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba.png'

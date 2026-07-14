@@ -248,6 +248,41 @@ describe('NotesSection', () => {
     expect(screen.getByTitle('Projects')).toBeVisible()
   })
 
+  it('opens a browsed vault without asking for a filesystem path', async () => {
+    const otherVault = { id: 'vault-2', name: 'work', path: '/tmp/default/work', lastOpenedAt: 2, available: true }
+    const nextVaultState = { activeVaultId: 'vault-2', vaults: [otherVault, ...vaultState.vaults] }
+    const otherNote = { ...original, id: 'work-note', title: 'Work note' }
+    const prompt = vi.spyOn(window, 'prompt')
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url === '/api/note-vaults/browse?path=%2Ftmp%2Fdefault' && !init?.method) {
+        return Response.json({ path: '/tmp/default', parent: '/tmp', home: '/tmp', directories: [{ name: 'work', path: otherVault.path }] })
+      }
+      if (url === `/api/note-vaults/browse?path=${encodeURIComponent(otherVault.path)}` && !init?.method) {
+        return Response.json({ path: otherVault.path, parent: '/tmp/default', home: '/tmp', directories: [] })
+      }
+      if (url === '/api/note-vaults/open' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ path: otherVault.path })
+        return Response.json(nextVaultState)
+      }
+      if (url === '/api/notes?vault=vault-2' && !init?.method) return Response.json({ notes: [otherNote], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByLabelText('Open vault'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open folder work' }))
+    await screen.findByText(otherVault.path)
+    fireEvent.click(screen.getByRole('button', { name: 'Open this folder' }))
+
+    await waitFor(() => expect(screen.getByLabelText('Note title')).toHaveValue('Work note'))
+    expect(fetcher).toHaveBeenCalledWith('/api/note-vaults/open', expect.objectContaining({ method: 'POST' }))
+    expect(prompt).not.toHaveBeenCalled()
+  })
+
   it('can leave a vault that fails to load', async () => {
     const otherVault = { id: 'vault-2', name: 'healthy', path: '/tmp/healthy', lastOpenedAt: 2, available: true }
     const bothVaults = { activeVaultId: 'vault-1', vaults: [...vaultState.vaults, otherVault] }
