@@ -36,6 +36,7 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
+import { GitDiffApi } from './git-api.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
@@ -782,6 +783,9 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const gitDiffApi = new GitDiffApi({
+    panePath: (paneId) => paneForId(paneId)?.path,
+  })
   const paneManagement = new PaneManagementApi({
     currentPaneIds: () => snapshot.panes.map((pane) => pane.id),
     beforePaneDeleted: async (paneId) => {
@@ -1143,6 +1147,7 @@ async function main(): Promise<void> {
         if (await handleLinearApi(request, response, url, linear)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
+        if (await gitDiffApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
           request,
           response,

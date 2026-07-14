@@ -18,7 +18,7 @@
 .linear-connect > svg { color: var(--accent); }
 .linear-connect p { color: var(--muted); line-height: 1.5; }
 .linear-connect form, .linear-add-account form { display: grid; gap: 9px; }
-.linear-connect button, .linear-add-account button, .linear-comments form > button { padding: 9px 12px; border: 0; border-radius: 6px; color: var(--surface-soft); background: var(--accent); font-weight: 700; }
+.linear-connect button, .linear-add-account button, .linear-comment-composer > button { padding: 9px 12px; border: 0; border-radius: 6px; color: var(--surface-soft); background: var(--accent); font-weight: 700; }
 .linear-add-account { margin: 10px 18px 0; width: min(430px, calc(100% - 36px)); color: var(--muted); }
 .linear-add-account summary { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 .linear-add-account form { margin-top: 8px; grid-template-columns: 1fr 1.6fr auto; }
@@ -44,22 +44,45 @@
 .linear-priority.priority-3 { color: #9ccfd8; }
 .linear-priority.priority-4 { color: var(--muted); }
 .linear-empty { margin: auto; color: var(--muted-dim); }
-.linear-issue-drawer { position: absolute; z-index: 8; inset: 0 0 0 auto; width: min(590px, 100%); overflow: auto; border-left: 1px solid var(--border-strong); background: var(--surface-raised); box-shadow: -20px 0 50px #0008; }
-.linear-issue-drawer > header { padding: 20px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.linear-issue-drawer { position: absolute; z-index: 8; inset: 0 0 0 auto; width: min(590px, 100%); min-height: 0; overflow: hidden; display: flex; flex-direction: column; border-left: 1px solid var(--border-strong); background: var(--surface-raised); box-shadow: -20px 0 50px #0008; }
+.linear-issue-drawer > header { flex: none; padding: 20px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .linear-issue-drawer h2 { margin: 4px 0 0; font-size: 22px; }
 .linear-issue-drawer > header span { color: var(--muted); font: 11px 'JetBrains Mono', monospace; }
 .linear-issue-drawer button { color: inherit; border: 0; background: transparent; cursor: pointer; }
-.linear-issue-meta { padding: 12px 20px; display: flex; gap: 12px; align-items: center; color: var(--muted); border-bottom: 1px solid var(--border); }
+.linear-issue-meta { flex: none; padding: 12px 20px; display: flex; gap: 12px; align-items: center; color: var(--muted); border-bottom: 1px solid var(--border); }
 .linear-issue-meta a { margin-left: auto; display: flex; align-items: center; color: var(--accent); }
-.linear-issue-drawer > article { padding: 22px 20px; white-space: pre-wrap; line-height: 1.65; color: var(--accent); border-bottom: 1px solid var(--border); }
-.linear-comments { padding: 18px 20px 40px; }
+.linear-issue-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; }
+.linear-issue-description { padding: 22px 20px; border-bottom: 1px solid var(--border); }
+.linear-comments { padding: 18px 20px 24px; }
 .linear-comment { margin: 12px 0; padding-left: 12px; border-left: 2px solid var(--border-strong); }
 .linear-comment > div:first-child { display: flex; gap: 8px; align-items: baseline; }
 .linear-comment time { color: var(--muted-dim); font-size: 10px; }
-.linear-comment p { white-space: pre-wrap; line-height: 1.5; color: var(--accent); }
 .linear-comment > button { color: var(--muted); display: flex; gap: 5px; align-items: center; font-size: 11px; }
 .linear-comment-children { margin-left: 14px; }
-.linear-comments form { margin-top: 18px; display: grid; gap: 8px; }
-.linear-comments form > span { color: var(--muted); font-size: 11px; }
-.linear-comments textarea { min-height: 90px; padding: 10px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface-soft); }
-@media (max-width: 760px) { .linear-toolbar { align-items: stretch; flex-direction: column; } .linear-selectors { align-items: stretch; flex-direction: column; } .linear-add-account form { grid-template-columns: 1fr; } .linear-board { padding: 12px; } .linear-column { flex-basis: 82vw; } }
+.linear-comment-composer { flex: none; padding: 12px 20px 16px; display: grid; gap: 8px; border-top: 1px solid var(--border-strong); background: var(--surface-raised); box-shadow: 0 -12px 30px #0004; }
+.linear-comment-composer > span { color: var(--muted); font-size: 11px; }
+.linear-comment-composer > span button { color: var(--accent); }
+.linear-comment-composer > button { color: var(--surface-soft); background: var(--accent); }
+.linear-comment-composer textarea { min-height: 72px; max-height: 180px; padding: 10px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--surface-soft); }
+.linear-markdown { color: var(--accent); line-height: 1.6; overflow-wrap: anywhere; }
+.linear-markdown > :first-child { margin-top: 0; }
+.linear-markdown > :last-child { margin-bottom: 0; }
+.linear-markdown p, .linear-markdown ul, .linear-markdown ol, .linear-markdown blockquote, .linear-markdown pre, .linear-markdown table { margin: .75em 0; }
+.linear-markdown h1, .linear-markdown h2, .linear-markdown h3, .linear-markdown h4 { margin: 1.2em 0 .5em; color: var(--text); line-height: 1.3; }
+.linear-markdown h1 { font-size: 1.35em; }
+.linear-markdown h2 { font-size: 1.2em; }
+.linear-markdown h3, .linear-markdown h4 { font-size: 1.05em; }
+.linear-markdown ul, .linear-markdown ol { padding-left: 1.7em; }
+.linear-markdown li + li { margin-top: .3em; }
+.linear-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--muted); }
+.linear-markdown a { color: #9ccfd8; text-decoration: underline; text-underline-offset: 2px; }
+.linear-markdown code { padding: .15em .35em; border: 1px solid var(--border); border-radius: 4px; color: #f6c177; background: var(--surface-soft); font: .9em 'JetBrains Mono', monospace; }
+.linear-markdown pre { overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.linear-markdown pre code { padding: 0; border: 0; color: inherit; background: transparent; }
+.linear-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.linear-markdown th, .linear-markdown td { padding: 6px 9px; border: 1px solid var(--border-strong); text-align: left; }
+.linear-markdown th { color: var(--text); background: var(--surface-soft); }
+.linear-markdown input[type="checkbox"] { margin-right: 6px; accent-color: var(--accent); }
+.linear-markdown hr { border: 0; border-top: 1px solid var(--border-strong); }
+.linear-markdown img { max-width: 100%; }
+@media (max-width: 760px) { .linear-toolbar { align-items: stretch; flex-direction: column; } .linear-selectors { align-items: stretch; flex-direction: column; } .linear-add-account form { grid-template-columns: 1fr; } .linear-board { padding: 12px; } .linear-column { flex-basis: 82vw; } .linear-issue-drawer { position: fixed; inset: 44px 0 0; width: 100%; border-left: 0; } .linear-issue-meta { flex-wrap: wrap; } }

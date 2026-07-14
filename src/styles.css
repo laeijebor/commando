@@ -2369,7 +2369,9 @@ kbd {
 }
 
 @media (max-width: 840px) {
-  .cockpit-body {
+  .cockpit-body,
+  .cockpit-body.area-linear,
+  .cockpit-body.area-notes {
     grid-template-columns: minmax(0, 1fr);
   }
 

@@ -1,9 +1,21 @@
-import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Copy, Equal, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Equal, Link, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
 
 const LINEAR_POLL_INTERVAL_MS = 30_000
+
+const markdownComponents: Components = {
+  a({ node: _node, ...props }) {
+    return <a {...props} target="_blank" rel="noreferrer" />
+  },
+}
+
+function MarkdownContent({ children }: { children: string }) {
+  return <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+}
 
 function PriorityBadge({ priority, label }: { priority: number; label: string }) {
   const Icon = priority === 1
@@ -27,7 +39,7 @@ function CommentThread({ comment, onReply }: { comment: LinearComment; onReply: 
   return (
     <div className="linear-comment">
       <div><strong>{comment.author?.name ?? 'Linear user'}</strong><time>{new Date(comment.createdAt).toLocaleString()}</time></div>
-      <p>{comment.body}</p>
+      <div className="linear-markdown"><MarkdownContent>{comment.body}</MarkdownContent></div>
       <button type="button" onClick={() => onReply(comment)}><MessageSquareReply /> Reply</button>
       {comment.children.length ? <div className="linear-comment-children">{comment.children.map((child) => <CommentThread comment={child} onReply={onReply} key={child.id} />)}</div> : null}
     </div>
@@ -236,7 +248,7 @@ export function LinearSection({ token }: { token: string }) {
           <select value={projectId} onChange={(event) => { setProjectId(event.target.value); setIssue(null) }} aria-label="Linear project" disabled={!accountId}>
             <option value="">Select project</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
           </select>
-          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Copy />}</button> : null}
+          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Link />}</button> : null}
           {accountId ? <button type="button" className="linear-remove" onClick={() => { if (window.confirm('Disconnect this Linear account?')) void api.remove(accountId).then(loadAccounts) }} title="Disconnect account"><Trash2 /></button> : null}
         </div>
       </header>
@@ -294,7 +306,21 @@ export function LinearSection({ token }: { token: string }) {
           </div>
         </>
       )}
-      {issue ? <aside className="linear-issue-drawer"><header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header><div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><PriorityBadge priority={issue.priority} label={issue.priorityLabel} /><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div><article>{issue.description || 'No description.'}</article><section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}<form onSubmit={sendComment}>{replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} /><button type="submit">Post {replyTo ? 'reply' : 'comment'}</button></form></section></aside> : null}
+      {issue ? (
+        <aside className="linear-issue-drawer">
+          <header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header>
+          <div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><PriorityBadge priority={issue.priority} label={issue.priorityLabel} /><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div>
+          <div className="linear-issue-scroll">
+            <article className="linear-issue-description linear-markdown"><MarkdownContent>{issue.description || 'No description.'}</MarkdownContent></article>
+            <section className="linear-comments"><h3>Comments</h3>{issue.comments.map((entry) => <CommentThread comment={entry} onReply={setReplyTo} key={entry.id} />)}</section>
+          </div>
+          <form className="linear-comment-composer" onSubmit={sendComment}>
+            {replyTo ? <span>Replying to {replyTo.author?.name ?? 'comment'} <button type="button" onClick={() => setReplyTo(null)}>Cancel</button></span> : null}
+            <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder={replyTo ? 'Write a reply...' : 'Add a comment...'} />
+            <button type="submit">Post {replyTo ? 'reply' : 'comment'}</button>
+          </form>
+        </aside>
+      ) : null}
     </section>
   )
 }

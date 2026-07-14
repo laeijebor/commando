@@ -193,6 +193,37 @@ describe('tmux format parsers', () => {
     })
   })
 
+  it('normalizes valid tmux cursor positions outside the resized grid', () => {
+    const output = paneRow(
+      '%63',
+      '2',
+      '@1',
+      '$1',
+      'agent',
+      'opencode',
+      '/repo',
+      '0',
+      '0',
+      '80',
+      '24',
+      '80',
+      '23',
+      [
+        '120',
+        '139',
+        ...defaultTerminalState.slice(2),
+      ],
+    )
+
+    expect(parsePanes(output)[0]).toMatchObject({
+      id: '%63',
+      cursorX: 79,
+      cursorY: 23,
+      alternateSavedX: 79,
+      alternateSavedY: 23,
+    })
+  })
+
   it('drops malformed and unstable pane records', () => {
     const output = [
       paneRow('%1', '0', '@1', '$1', 'ok', 'zsh', '/tmp', '1', '0', '80', '24', '1', '2'),
