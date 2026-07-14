@@ -17,6 +17,7 @@ type Props = {
   onSelectWindow: (id: string) => void
   onSelectPane: (id: string) => void
   onOpenPaneMaximized: (id: string) => void
+  onWindowDeleting: (id: string) => void
   onSessionsChanged: () => void
 }
 
@@ -112,6 +113,7 @@ export function SessionTree(props: Props) {
     const lastWindow = session?.windowIds.length === 1
     const consequence = lastWindow ? ' This is the last window, so tmux will also close the session.' : ''
     if (!window.confirm(`Close window "${tmuxWindow.name}" and terminate all of its panes?${consequence}`)) return
+    props.onWindowDeleting(windowId)
     try { await api.deleteWindow(windowId); props.onSessionsChanged() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to close window') }
   }

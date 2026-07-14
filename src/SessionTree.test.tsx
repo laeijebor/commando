@@ -85,6 +85,7 @@ describe('SessionTree', () => {
         onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
         onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
       />,
     )
@@ -122,6 +123,7 @@ describe('SessionTree', () => {
         onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
         onOpenPaneMaximized={onOpenPaneMaximized}
+        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
       />,
     )
@@ -137,6 +139,7 @@ describe('SessionTree', () => {
   it('confirms and closes a tmux window', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onSessionsChanged = vi.fn()
+    const onWindowDeleting = vi.fn()
     render(
       <SessionTree
         token="token"
@@ -151,6 +154,7 @@ describe('SessionTree', () => {
         onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
         onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={onWindowDeleting}
         onSessionsChanged={onSessionsChanged}
       />,
     )
@@ -158,6 +162,7 @@ describe('SessionTree', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close window zsh' }))
 
     await waitFor(() => expect(sessionApi.deleteWindow).toHaveBeenCalledWith('@1'))
+    expect(onWindowDeleting).toHaveBeenCalledWith('@1')
     expect(onSessionsChanged).toHaveBeenCalled()
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('last window'))
   })
