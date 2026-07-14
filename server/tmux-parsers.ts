@@ -112,7 +112,9 @@ function savedCursorCoordinate(value: string, limit: number): number | null {
   // tmux exposes UINT_MAX until an alternate-screen cursor has been saved.
   if (value === '4294967295' || value === '18446744073709551615') return 0
   const coordinate = integer(value)
-  return coordinate !== null && coordinate < limit ? coordinate : null
+  if (coordinate === null || limit < 1) return null
+  // A pane shrink does not clamp tmux's saved alternate-screen cursor.
+  return Math.min(coordinate, limit - 1)
 }
 
 function parseTerminalState(fields: string[]): PaneTerminalState | null {
@@ -166,7 +168,7 @@ function parseTerminalState(fields: string[]): PaneTerminalState | null {
     height === null ||
     height < 1 ||
     cursorX === null ||
-    cursorX >= width ||
+    cursorX > width ||
     cursorY === null ||
     cursorY >= height ||
     alternateSavedX === null ||
@@ -198,7 +200,8 @@ function parseTerminalState(fields: string[]): PaneTerminalState | null {
   return {
     width,
     height,
-    cursorX,
+    // tmux uses cx === sx for a cursor pending an automatic wrap.
+    cursorX: Math.min(cursorX, width - 1),
     cursorY,
     alternateSavedX,
     alternateSavedY,
