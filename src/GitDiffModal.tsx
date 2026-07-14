@@ -62,6 +62,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   const [appliedTarget, setAppliedTarget] = useState<string | undefined>(undefined)
   const [branchList, setBranchList] = useState<string[]>([])
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [filtering, setFiltering] = useState(false)
   const [highlight, setHighlight] = useState(0)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [diff, setDiff] = useState('')
@@ -157,7 +158,8 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
     setDropdownOpen(false)
   }
 
-  const query = targetDraft.trim().toLowerCase()
+  // Filter only while the user is editing; a fresh focus offers every branch.
+  const query = filtering ? targetDraft.trim().toLowerCase() : ''
   const suggestions = branchList
     .filter((branch) => branch !== summary?.branch)
     .filter((branch) => query === '' || branch.toLowerCase().includes(query))
@@ -201,10 +203,20 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
                 onChange={(event) => {
                   setTargetDraft(event.target.value)
                   setDropdownOpen(true)
+                  setFiltering(true)
                   setHighlight(0)
                 }}
                 onKeyDown={onTargetKeyDown}
-                onFocus={() => setDropdownOpen(true)}
+                onFocus={() => {
+                  setDropdownOpen(true)
+                  setFiltering(false)
+                  setHighlight(0)
+                }}
+                onClick={() => {
+                  setDropdownOpen(true)
+                  setFiltering(false)
+                  setHighlight(0)
+                }}
                 onBlur={(event) => {
                   setDropdownOpen(false)
                   applyTarget(event.currentTarget.value)

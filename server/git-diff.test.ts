@@ -172,9 +172,9 @@ describe('GitDiffInspector.summary', () => {
 })
 
 describe('GitDiffInspector.branches', () => {
-  it('lists deduplicated branches without HEAD pointers', async () => {
+  it('lists deduplicated branches without symbolic refs like origin/HEAD', async () => {
     const repo = fakeRepo({
-      refList: ['feature', 'main', 'origin/HEAD', 'origin/main', 'main', '', 'origin/feature-2'],
+      refList: ['feature', 'main', 'origin\trefs/remotes/origin/main', 'origin/main', 'main', '', 'origin/feature-2'],
     })
     const inspector = new GitDiffInspector(repo.execute, {})
     const result = await inspector.branches('/repo')

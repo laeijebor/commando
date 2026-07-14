@@ -158,16 +158,18 @@ export class GitDiffInspector {
     if (!repo) return { isRepo: false }
     const { stdout } = await this.git(repo.root, [
       'for-each-ref',
-      '--format=%(refname:short)',
+      '--format=%(refname:short)%09%(symref)',
       '--sort=-committerdate',
       'refs/heads',
       'refs/remotes',
     ])
     const seen = new Set<string>()
     const branches: string[] = []
-    for (const name of stdout.split('\n')) {
-      const branch = name.trim()
-      if (!branch || branch.endsWith('/HEAD') || seen.has(branch)) continue
+    for (const line of stdout.split('\n')) {
+      const [name, symref] = line.split('\t')
+      const branch = name?.trim() ?? ''
+      // Symbolic refs like origin/HEAD point at another branch already listed.
+      if (!branch || symref?.trim() || seen.has(branch)) continue
       seen.add(branch)
       branches.push(branch)
     }

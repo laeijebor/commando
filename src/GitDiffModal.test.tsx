@@ -44,9 +44,11 @@ describe('GitDiffModal target combobox', () => {
 
     fireEvent.focus(input)
     await screen.findByRole('listbox')
-    // "feature" (current branch) must not be offered; "main" matches the draft.
+    // On focus every branch is offered (no filtering by the prefilled draft),
+    // except the current branch.
     expect(screen.queryByRole('button', { name: 'feature' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'main' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'origin/release-2' })).toBeInTheDocument()
 
     fireEvent.change(input, { target: { value: 'release' } })
     await waitFor(() => {
