@@ -35,6 +35,7 @@ export type LinearProject = {
   progress: number
   state: string
   targetDate: string | null
+  url: string
 }
 
 export type LinearWorkflowState = {
@@ -464,6 +465,7 @@ function mapProject(value: JsonRecord): LinearProject {
     progress: requiredNumber(value, 'progress'),
     state: requiredString(value, 'state'),
     targetDate: optionalString(value, 'targetDate'),
+    url: requiredString(value, 'url'),
   }
 }
 
@@ -573,7 +575,7 @@ export class LinearService {
       const data = await client.request(`
         query CommandoLinearProjects($after: String) {
           projects(first: 50, after: $after) {
-            nodes { id name description color icon progress state targetDate archivedAt }
+            nodes { id name description color icon progress state targetDate url archivedAt }
             pageInfo { hasNextPage endCursor }
           }
         }
@@ -602,7 +604,7 @@ export class LinearService {
       const data = await client.request(`
         query CommandoLinearBoard($projectId: String!, $after: String) {
           project(id: $projectId) {
-            id name description color icon progress state targetDate archivedAt
+            id name description color icon progress state targetDate url archivedAt
             teams(first: 50) { nodes { id name } }
             issues(first: 100, after: $after) {
               nodes { ${ISSUE_CARD_FIELDS} archivedAt }

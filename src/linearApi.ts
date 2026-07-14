@@ -1,7 +1,7 @@
 export type LinearAccount = { id: string; label: string; workspaceName: string; viewerName: string; createdAt: number }
 export type LinearUser = { id: string; name: string; avatarUrl: string | null }
 export type LinearState = { id: string; name: string; type: string; color: string; position: number; teamId: string; teamName: string }
-export type LinearProject = { id: string; name: string; description: string; color: string; icon: string | null; progress: number; state: string; targetDate: string | null }
+export type LinearProject = { id: string; name: string; description: string; color: string; icon: string | null; progress: number; state: string; targetDate: string | null; url: string }
 export type LinearIssue = { id: string; identifier: string; title: string; priority: number; priorityLabel: string; estimate: number | null; dueDate: string | null; updatedAt: string; url: string; assignee: LinearUser | null; state: LinearState; teamId: string; teamName: string; labels: Array<{ id: string; name: string; color: string }> }
 export type LinearComment = { id: string; body: string; createdAt: string; updatedAt: string; parentId: string | null; author: LinearUser | null; children: LinearComment[] }
 export type LinearBoard = { project: LinearProject; states: LinearState[]; issues: LinearIssue[]; truncated: boolean }

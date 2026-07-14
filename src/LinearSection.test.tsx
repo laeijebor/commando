@@ -48,6 +48,7 @@ const board: LinearBoard = {
     progress: 0,
     state: 'started',
     targetDate: null,
+    url: 'https://linear.app/team/project/project-1',
   },
   states: [todo, started],
   issues: [issue],
@@ -60,6 +61,30 @@ afterEach(() => {
 })
 
 describe('LinearSection', () => {
+  it('copies the project link to the clipboard', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/linear/accounts')) {
+        return Response.json({ accounts: [{ id: 'account-1', label: 'Work', workspaceName: 'Work', viewerName: 'Ada', createdAt: 1 }] })
+      }
+      if (url.endsWith('/projects')) {
+        return Response.json({ projects: [board.project], truncated: false })
+      }
+      if (url.endsWith('/board')) return Response.json({ board })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<LinearSection token="test-token" />)
+    const copyButton = await screen.findByRole('button', { name: 'Copy project link' })
+
+    fireEvent.click(copyButton)
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://linear.app/team/project/project-1'))
+  })
+
   it('optimistically moves an issue when it is dropped on a same-team status', async () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
