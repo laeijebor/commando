@@ -6,3 +6,4 @@ coverage/
 test-results/
 playwright-report/
 .commando-state.json
+node_modules
