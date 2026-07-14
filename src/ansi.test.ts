@@ -35,6 +35,15 @@ describe('parseAnsi', () => {
     expect(segments[0].foreground).toBe(2)
   })
 
+  it('applies attributes that follow a reset in the same sequence', () => {
+    const segments = parseAnsi(`${sgr('4')}under${sgr('0;1;31')}boldred`)
+    expect(segments[1]).toEqual({ text: 'boldred', bold: true, foreground: 1 })
+  })
+
+  it('strips cursor sequences with uppercase M finals', () => {
+    expect(parseAnsi(`${ESC}[2Mkept`)).toEqual([{ text: 'kept' }])
+  })
+
   it('treats an empty SGR as reset', () => {
     const segments = parseAnsi(`${sgr('33')}amber${sgr('')}plain`)
     expect(segments[1]).toEqual({ text: 'plain' })

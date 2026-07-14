@@ -17,7 +17,7 @@ export type AnsiSegment = {
 
 type Style = Omit<AnsiSegment, 'text'>
 
-const ESCAPE_SEQUENCE = /\u001b\[([0-9;]*)m|\u001b\[[0-9;?]*[A-LN-Za-ln-z]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/gu
+const ESCAPE_SEQUENCE = /\u001b\[([0-9;]*)m|\u001b\[[0-9;?]*[A-Za-z]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/gu
 
 const CUBE_LEVELS = [0, 95, 135, 175, 215, 255]
 
@@ -49,11 +49,11 @@ function extendedColor(codes: number[], start: number): { color: number | string
 }
 
 function applyCodes(style: Style, codes: number[]): Style {
-  const next = { ...style }
+  let next = { ...style }
   for (let index = 0; index < codes.length; index += 1) {
     const code = codes[index]
     if (code === 0) {
-      return {}
+      next = {}
     } else if (code === 1) {
       next.bold = true
     } else if (code === 2) {
