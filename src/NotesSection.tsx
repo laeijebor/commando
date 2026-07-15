@@ -733,7 +733,7 @@ export function NotesSection({ token }: { token: string }) {
   const menuNote = menu?.kind === 'note' ? notes.find((note) => note.id === menu.noteId) : null
 
   return (
-    <section className={`notes-section${vaultBusy ? ' vault-busy' : ''}`}>
+    <section className={`notes-section${vaultBusy ? ' vault-busy' : ''}${selectionMode ? ' selection-mode' : ''}`}>
       <aside className="notes-list">
         <header>
           <div className="notes-heading">
