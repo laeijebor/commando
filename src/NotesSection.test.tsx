@@ -132,6 +132,76 @@ describe('NotesSection', () => {
     expect(fetcher).toHaveBeenCalledTimes(4)
   })
 
+  it('keeps a popped-out draft mounted while the notes area is inactive', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    const view = render(<NotesSection token="test-token" isActive />)
+    const body = await screen.findByLabelText('Note body')
+    fireEvent.change(body, { target: { value: 'Draft that follows me' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pop out note' }))
+
+    const dialog = screen.getByRole('dialog', { name: `Popped-out note: ${original.title}` })
+    expect(dialog).toHaveClass('popped-out')
+    expect(screen.getByRole('button', { name: 'Dock note' })).toBeVisible()
+
+    view.rerender(<NotesSection token="test-token" isActive={false} />)
+
+    expect(dialog.closest('.notes-section')).toHaveClass('is-inactive')
+    expect(screen.getByLabelText('Note body')).toHaveValue('Draft that follows me')
+    expect(screen.getByRole('dialog', { name: `Popped-out note: ${original.title}` })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dock note' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('moves and resizes a popped-out note within the viewport', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByRole('button', { name: 'Pop out note' }))
+    const dialog = screen.getByRole('dialog')
+    const initialLeft = Number.parseFloat(dialog.style.left)
+    const initialWidth = Number.parseFloat(dialog.style.width)
+
+    fireEvent.pointerDown(dialog.querySelector('.notes-window-bar')!, { button: 0, clientX: 400, clientY: 100 })
+    fireEvent.pointerMove(window, { clientX: 350, clientY: 125 })
+    fireEvent.pointerUp(window)
+
+    await waitFor(() => expect(Number.parseFloat(dialog.style.left)).toBe(initialLeft - 50))
+    const resizeHandle = screen.getByRole('separator', { name: 'Resize popped-out note' })
+    fireEvent.keyDown(resizeHandle, { key: 'ArrowLeft' })
+    expect(Number.parseFloat(dialog.style.width)).toBe(initialWidth - 8)
+  })
+
+  it('pops out the note targeted by the context menu', async () => {
+    const other = { ...original, id: 'other-note', title: 'Other note', updatedAt: original.updatedAt + 1 }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, other], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    const note = await screen.findByRole('button', { name: /Other note/ })
+    fireEvent.contextMenu(note, { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pop out note' }))
+
+    await screen.findByRole('dialog', { name: 'Popped-out note: Other note' })
+    expect(screen.getByLabelText('Note title')).toHaveValue('Other note')
+  })
+
   it('renames the note targeted by the context menu', async () => {
     const other = { ...original, id: 'other-note', title: 'Other note', updatedAt: original.updatedAt + 1 }
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Renamed note')

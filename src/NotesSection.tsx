@@ -8,6 +8,7 @@ import {
   ListChecks,
   LoaderCircle,
   Pencil,
+  PictureInPicture2,
   RefreshCw,
   Search,
   Square,
@@ -41,6 +42,42 @@ type ContextMenuTarget = (
 
 type ContextMenu = ContextMenuTarget & { x: number; y: number }
 
+type NoteWindowBounds = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+const NOTE_WINDOW_MARGIN = 12
+const NOTE_WINDOW_TOP = 52
+const NOTE_WINDOW_MIN_WIDTH = 320
+const NOTE_WINDOW_MIN_HEIGHT = 280
+
+function clampNoteWindowBounds(bounds: NoteWindowBounds): NoteWindowBounds {
+  const maxWidth = Math.max(1, window.innerWidth - NOTE_WINDOW_MARGIN * 2)
+  const maxHeight = Math.max(1, window.innerHeight - NOTE_WINDOW_TOP - NOTE_WINDOW_MARGIN)
+  const width = Math.min(maxWidth, Math.max(Math.min(NOTE_WINDOW_MIN_WIDTH, maxWidth), bounds.width))
+  const height = Math.min(maxHeight, Math.max(Math.min(NOTE_WINDOW_MIN_HEIGHT, maxHeight), bounds.height))
+  return {
+    x: Math.min(Math.max(NOTE_WINDOW_MARGIN, bounds.x), window.innerWidth - width - NOTE_WINDOW_MARGIN),
+    y: Math.min(Math.max(NOTE_WINDOW_TOP, bounds.y), window.innerHeight - height - NOTE_WINDOW_MARGIN),
+    width,
+    height,
+  }
+}
+
+function initialNoteWindowBounds(): NoteWindowBounds {
+  const width = Math.min(560, window.innerWidth - NOTE_WINDOW_MARGIN * 2)
+  const height = Math.min(640, window.innerHeight - NOTE_WINDOW_TOP - NOTE_WINDOW_MARGIN)
+  return clampNoteWindowBounds({
+    x: window.innerWidth - width - 24,
+    y: 64,
+    width,
+    height,
+  })
+}
+
 function rebaseFolder(folder: string, source: string, target: string): string {
   if (folder === source) return target
   if (!folder.startsWith(`${source}/`)) return folder
@@ -61,7 +98,7 @@ function activeNote(note: Note): ActiveNote {
   }
 }
 
-export function NotesSection({ token }: { token: string }) {
+export function NotesSection({ token, isActive = true }: { token: string; isActive?: boolean }) {
   const api = useRef(createNotesApi(token)).current
   const [notes, setNotes] = useState<Note[]>([])
   const [folders, setFolders] = useState<string[]>([])
@@ -79,6 +116,8 @@ export function NotesSection({ token }: { token: string }) {
   const [menu, setMenu] = useState<ContextMenu | null>(null)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [poppedOut, setPoppedOut] = useState(false)
+  const [windowBounds, setWindowBounds] = useState(initialNoteWindowBounds)
   const activeRef = useRef<ActiveNote | null>(null)
   const vaultIdRef = useRef('')
   const phaseRef = useRef<SavePhase>('loading')
@@ -87,6 +126,7 @@ export function NotesSection({ token }: { token: string }) {
   const saveInFlight = useRef<Promise<boolean> | null>(null)
   const longPress = useRef<{ timer: number; noteId: string; x: number; y: number } | null>(null)
   const suppressClick = useRef<{ noteId: string; until: number } | null>(null)
+  const windowInteractionCleanup = useRef<(() => void) | null>(null)
 
   const changePhase = (next: SavePhase) => {
     phaseRef.current = next
@@ -170,6 +210,13 @@ export function NotesSection({ token }: { token: string }) {
 
   useEffect(() => () => {
     if (longPress.current) window.clearTimeout(longPress.current.timer)
+    windowInteractionCleanup.current?.()
+  }, [])
+
+  useEffect(() => {
+    const keepWindowVisible = () => setWindowBounds((current) => clampNoteWindowBounds(current))
+    window.addEventListener('resize', keepWindowVisible)
+    return () => window.removeEventListener('resize', keepWindowVisible)
   }, [])
 
   const save = async (): Promise<boolean> => {
@@ -537,6 +584,66 @@ export function NotesSection({ token }: { token: string }) {
     applyNote(note)
   }
 
+  const popOutNote = async (noteId: string) => {
+    if (noteId !== activeRef.current?.id) {
+      const note = notes.find((candidate) => candidate.id === noteId)
+      if (!note || !(await flush())) return
+      applyNote(note)
+    }
+    setWindowBounds((current) => clampNoteWindowBounds(current))
+    setPoppedOut(true)
+  }
+
+  const beginWindowInteraction = (
+    event: ReactPointerEvent<HTMLElement>,
+    update: (start: NoteWindowBounds, dx: number, dy: number) => NoteWindowBounds,
+    bodyClass: string,
+  ) => {
+    if (!poppedOut || event.button !== 0) return
+    event.preventDefault()
+    windowInteractionCleanup.current?.()
+    const startX = event.clientX
+    const startY = event.clientY
+    const start = windowBounds
+    const move = (pointerEvent: globalThis.PointerEvent) => {
+      setWindowBounds(clampNoteWindowBounds(update(start, pointerEvent.clientX - startX, pointerEvent.clientY - startY)))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      document.body.classList.remove(bodyClass)
+      if (windowInteractionCleanup.current === stop) windowInteractionCleanup.current = null
+    }
+    document.body.classList.add(bodyClass)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+    windowInteractionCleanup.current = stop
+  }
+
+  const dragPoppedNote = (event: ReactPointerEvent<HTMLElement>) => {
+    if ((event.target as Element).closest('button, input, select, textarea, a')) return
+    beginWindowInteraction(event, (start, dx, dy) => ({ ...start, x: start.x + dx, y: start.y + dy }), 'is-moving-note-window')
+  }
+
+  const resizePoppedNote = (event: ReactPointerEvent<HTMLElement>) => {
+    beginWindowInteraction(event, (start, dx, dy) => ({ ...start, width: start.width + dx, height: start.height + dy }), 'is-resizing-note-window')
+  }
+
+  const resizePoppedNoteWithKeyboard = (event: KeyboardEvent<HTMLElement>) => {
+    const amount = event.shiftKey ? 32 : 8
+    const dx = event.key === 'ArrowRight' ? amount : event.key === 'ArrowLeft' ? -amount : 0
+    const dy = event.key === 'ArrowDown' ? amount : event.key === 'ArrowUp' ? -amount : 0
+    if (!dx && !dy) return
+    event.preventDefault()
+    setWindowBounds((current) => clampNoteWindowBounds({
+      ...current,
+      width: current.width + dx,
+      height: current.height + dy,
+    }))
+  }
+
   const create = async () => {
     if (!(await flush())) return
     const vaultId = vaultIdRef.current
@@ -733,7 +840,7 @@ export function NotesSection({ token }: { token: string }) {
   const menuNote = menu?.kind === 'note' ? notes.find((note) => note.id === menu.noteId) : null
 
   return (
-    <section className={`notes-section${vaultBusy ? ' vault-busy' : ''}${selectionMode ? ' selection-mode' : ''}`}>
+    <section className={`notes-section${isActive ? ' is-active' : ' is-inactive'}${poppedOut ? ' has-popped-note' : ''}${vaultBusy ? ' vault-busy' : ''}${selectionMode ? ' selection-mode' : ''}`}>
       <aside className="notes-list">
         <header>
           <div className="notes-heading">
@@ -867,10 +974,23 @@ export function NotesSection({ token }: { token: string }) {
           {!filtered.length ? <p>{notes.length ? 'No notes in this view.' : 'Create your first note.'}</p> : null}
         </div>
       </aside>
-      <div className="notes-editor">
+      {isActive && poppedOut ? (
+        <div className="notes-popout-placeholder">
+          <PictureInPicture2 />
+          <strong>{active?.title || 'Untitled note'} is popped out</strong>
+          <span>The note stays visible while you move around Commando.</span>
+          <button type="button" onClick={() => setPoppedOut(false)}>Return note here</button>
+        </div>
+      ) : null}
+      <div
+        className={`notes-editor${poppedOut ? ' popped-out' : ''}`}
+        style={poppedOut ? { left: windowBounds.x, top: windowBounds.y, width: windowBounds.width, height: windowBounds.height } : undefined}
+        role={poppedOut ? 'dialog' : undefined}
+        aria-label={poppedOut ? `Popped-out note: ${active?.title || 'Untitled note'}` : undefined}
+      >
         {active ? (
           <>
-            <header>
+            <header className="notes-window-bar" onPointerDown={dragPoppedNote}>
               <span className="notes-editor-folder"><Folder />{active.folder || 'Root'}</span>
               <span className={`notes-save-state ${phase}`}>
                 {phase === 'saving' || phase === 'loading' ? <LoaderCircle className="spin" /> : null}
@@ -905,24 +1025,35 @@ export function NotesSection({ token }: { token: string }) {
                 <button type="button" className="notes-delete" onClick={() => setConfirmDelete(true)} aria-label="Delete note"><Trash2 /></button>
               )}
             </header>
-            <input
-              className="notes-title"
-              value={active.title}
-              maxLength={200}
-              onChange={(event) => {
-                const next = { ...activeRef.current!, title: event.target.value }
-                editVersion.current += 1
-                changeActive(next)
-                changePhase('dirty')
-              }}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-                  event.preventDefault()
-                  void save()
-                }
-              }}
-              aria-label="Note title"
-            />
+            <div className="notes-title-row">
+              <input
+                className="notes-title"
+                value={active.title}
+                maxLength={200}
+                onChange={(event) => {
+                  const next = { ...activeRef.current!, title: event.target.value }
+                  editVersion.current += 1
+                  changeActive(next)
+                  changePhase('dirty')
+                }}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+                    event.preventDefault()
+                    void save()
+                  }
+                }}
+                aria-label="Note title"
+              />
+              <button
+                type="button"
+                className={`notes-popout-toggle${poppedOut ? ' active' : ''}`}
+                onClick={() => poppedOut ? setPoppedOut(false) : void popOutNote(active.id)}
+                aria-label={poppedOut ? 'Dock note' : 'Pop out note'}
+                title={poppedOut ? 'Return note to Notes' : 'Keep note visible across Commando'}
+              >
+                <PictureInPicture2 />
+              </button>
+            </div>
             <NoteBlockEditor
               markdown={active.body}
               uploadImage={(file) => api.uploadImage(vaultIdRef.current, active.id, file)}
@@ -940,6 +1071,16 @@ export function NotesSection({ token }: { token: string }) {
         ) : (
           <div className="notes-empty"><FilePlus2 /><strong>{phase === 'loading' ? 'Loading vault' : 'No note selected'}</strong><button type="button" onClick={() => void create()} disabled={vaultBusy}>Create note</button></div>
         )}
+        {poppedOut ? (
+          <div
+            className="notes-window-resize"
+            role="separator"
+            tabIndex={0}
+            aria-label="Resize popped-out note"
+            onPointerDown={resizePoppedNote}
+            onKeyDown={resizePoppedNoteWithKeyboard}
+          />
+        ) : null}
       </div>
       {menu ? (
         <div
@@ -955,6 +1096,7 @@ export function NotesSection({ token }: { token: string }) {
             </>
           ) : (
             <>
+              <button type="button" role="menuitem" onClick={() => { void popOutNote(menu.noteId); setMenu(null) }}><PictureInPicture2 /> Pop out note</button>
               <button type="button" role="menuitem" onClick={() => { void rename(menu.noteId); setMenu(null) }}><Pencil /> Rename</button>
               {(['', ...folders] as string[]).filter((folder) => folder !== menuNote?.folder).map((folder) => (
                 <button type="button" role="menuitem" onClick={() => { void move(menu.noteId, folder); setMenu(null) }} key={folder || 'root'}>

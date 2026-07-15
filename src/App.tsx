@@ -658,6 +658,7 @@ export function App() {
   useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
+  const [notesMounted, setNotesMounted] = useState(false)
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
   if (!paneStreamsRef.current) paneStreamsRef.current = new PaneStreamRegistry()
@@ -1402,7 +1403,7 @@ export function App() {
               <CircleDotDashed aria-hidden="true" />
               <span>Linear</span>
             </button>
-            <button type="button" className={area === 'notes' ? 'active' : ''} aria-current={area === 'notes' ? 'page' : undefined} onClick={() => { setArea('notes'); setLeftPanelOpen(false) }}>
+            <button type="button" className={area === 'notes' ? 'active' : ''} aria-current={area === 'notes' ? 'page' : undefined} onClick={() => { setNotesMounted(true); setArea('notes'); setLeftPanelOpen(false) }}>
               <NotebookPen aria-hidden="true" />
               <span>Notes</span>
             </button>
@@ -1669,11 +1670,12 @@ export function App() {
               </section>
             ) : null}
           </div>
-          </> : area === 'linear' ? <LinearSection token={token} /> : (
+          </> : area === 'linear' ? <LinearSection token={token} /> : null}
+          {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
-              <NotesSection token={token} />
+              <NotesSection token={token} isActive={area === 'notes'} />
             </Suspense>
-          )}
+          ) : null}
         </main>
 
         {area === 'workspace' ? <aside className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}>

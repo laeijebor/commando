@@ -43,6 +43,48 @@ test('navigates the new local cockpit sections without browser errors', async ({
   expect(errors).toEqual([])
 })
 
+test('popped-out note stays visible across areas and can move and resize', async ({ page }) => {
+  await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
+  await page.getByRole('button', { name: 'Notes' }).click()
+  await expect(page.getByLabel('Note body')).toBeVisible()
+  await page.getByRole('button', { name: 'Pop out note' }).click()
+
+  const noteWindow = page.getByRole('dialog', { name: /Popped-out note:/ })
+  const initial = await noteWindow.boundingBox()
+  expect(initial).not.toBeNull()
+
+  const bar = noteWindow.locator('.notes-window-bar')
+  const barBounds = await bar.boundingBox()
+  expect(barBounds).not.toBeNull()
+  await page.mouse.move(barBounds!.x + 80, barBounds!.y + barBounds!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(barBounds!.x + 30, barBounds!.y + barBounds!.height / 2 + 24, { steps: 4 })
+  await page.mouse.up()
+
+  const resizeHandle = noteWindow.getByRole('separator', { name: 'Resize popped-out note' })
+  const resizeBounds = await resizeHandle.boundingBox()
+  expect(resizeBounds).not.toBeNull()
+  await page.mouse.move(resizeBounds!.x + 10, resizeBounds!.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(resizeBounds!.x - 30, resizeBounds!.y - 30, { steps: 4 })
+  await page.mouse.up()
+
+  const changed = await noteWindow.boundingBox()
+  expect(changed!.x).toBeLessThan(initial!.x - 40)
+  expect(changed!.y).toBeGreaterThan(initial!.y + 15)
+  expect(changed!.width).toBeLessThan(initial!.width - 30)
+  expect(changed!.height).toBeLessThan(initial!.height - 30)
+
+  await page.getByRole('button', { name: 'Workspace' }).click()
+  await expect(noteWindow).toBeVisible()
+  await expect(page.getByText('QA Group')).toBeVisible()
+  await page.getByRole('button', { name: 'Linear' }).click()
+  await expect(noteWindow).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Linear projects' })).toBeVisible()
+  await noteWindow.getByRole('button', { name: 'Dock note' }).click()
+  await expect(noteWindow).not.toBeVisible()
+})
+
 test('notes section remains usable at a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
