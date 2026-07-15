@@ -13,6 +13,7 @@ const NOTES_PATH = '/api/notes'
 
 type NotesRoute =
   | { kind: 'collection' }
+  | { kind: 'batch' }
   | { kind: 'folders' }
   | { kind: 'note'; id: string }
   | { kind: 'images'; id: string; name: string | null }
@@ -75,6 +76,7 @@ function notesRouteFromPath(pathname: string): NotesRoute | undefined {
   if (segments.some((segment) => segment.length === 0)) return undefined
   try {
     const decoded = segments.map((segment) => decodeURIComponent(segment))
+    if (decoded.length === 1 && decoded[0] === 'batch') return { kind: 'batch' }
     if (decoded.length === 1 && decoded[0] === 'folders') return { kind: 'folders' }
     if (decoded.length === 1) return { kind: 'note', id: decoded[0] }
     if (decoded.length === 2 && decoded[1] === 'images') {
@@ -161,6 +163,19 @@ export async function handleNotesApi(
         return true
       }
       methodNotAllowed(response, 'POST, PATCH, DELETE')
+      return true
+    }
+
+    if (route.kind === 'batch') {
+      if (request.method === 'PATCH') {
+        writeJson(response, 200, await store.moveMany(await readJson(request)))
+        return true
+      }
+      if (request.method === 'DELETE') {
+        writeJson(response, 200, await store.deleteMany(await readJson(request)))
+        return true
+      }
+      methodNotAllowed(response, 'PATCH, DELETE')
       return true
     }
 

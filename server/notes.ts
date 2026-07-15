@@ -52,6 +52,12 @@ export type Note = {
   updatedAt: number
 }
 
+export type NoteBatchResult = {
+  notes: Note[]
+  folders: string[]
+  failures: Array<{ id: string; error: string }>
+}
+
 export type NoteDraft = {
   title: string
   body: string
@@ -94,6 +100,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function validTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function parseBatchTargets(value: unknown): Array<{ id: string; expectedUpdatedAt: number }> | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 100) return null
+  const ids = new Set<string>()
+  const targets: Array<{ id: string; expectedUpdatedAt: number }> = []
+  for (const target of value) {
+    if (
+      !isRecord(target) ||
+      typeof target.id !== 'string' ||
+      !NOTE_ID.test(target.id) ||
+      !validTimestamp(target.expectedUpdatedAt) ||
+      ids.has(target.id)
+    ) return null
+    ids.add(target.id)
+    targets.push({ id: target.id, expectedUpdatedAt: target.expectedUpdatedAt })
+  }
+  return targets
 }
 
 function validText(value: unknown, maximum: number): value is string {
@@ -468,6 +492,45 @@ export class NoteStore {
     })
   }
 
+  moveMany(value: unknown): Promise<NoteBatchResult> {
+    if (!isRecord(value)) return Promise.reject(new NoteValidationError('Invalid batch move'))
+    const targets = parseBatchTargets(value.notes)
+    const folder = parseNoteFolder(value.folder)
+    if (!targets || folder === null) return Promise.reject(new NoteValidationError('Invalid batch move'))
+
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      const failures: NoteBatchResult['failures'] = []
+      for (const target of targets) {
+        try {
+          await this.moveStoredNote(target.id, folder, target.expectedUpdatedAt)
+        } catch (error) {
+          failures.push({ id: target.id, error: error instanceof Error ? error.message : 'Unable to move note' })
+        }
+      }
+      return this.batchResult(failures)
+    })
+  }
+
+  deleteMany(value: unknown): Promise<NoteBatchResult> {
+    if (!isRecord(value)) return Promise.reject(new NoteValidationError('Invalid batch delete'))
+    const targets = parseBatchTargets(value.notes)
+    if (!targets) return Promise.reject(new NoteValidationError('Invalid batch delete'))
+
+    return this.enqueue(async () => {
+      await this.ensureInitialized()
+      const failures: NoteBatchResult['failures'] = []
+      for (const target of targets) {
+        try {
+          await this.deleteStoredNote(target.id, target.expectedUpdatedAt)
+        } catch (error) {
+          failures.push({ id: target.id, error: error instanceof Error ? error.message : 'Unable to delete note' })
+        }
+      }
+      return this.batchResult(failures)
+    })
+  }
+
   saveImage(id: string, contentType: string, data: Buffer): Promise<string> {
     try {
       this.validateId(id)
@@ -543,18 +606,50 @@ export class NoteStore {
 
     return this.enqueue(async () => {
       await this.ensureInitialized()
-      const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
-      if (!stored) throw new NoteNotFoundError(id)
-      if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== stored.note.updatedAt) {
-        throw new NoteConflictError()
-      }
-      if (!this.sameFingerprint(stored.fingerprint, await this.fileFingerprint(stored.path))) {
-        throw new NoteConflictError()
-      }
-      await rm(stored.path)
-      await rm(this.imageDirectory(stored.note.folder, id), { recursive: true, force: true })
-      await this.syncDirectory()
+      await this.deleteStoredNote(id, expectedUpdatedAt)
     })
+  }
+
+  private async moveStoredNote(id: string, folder: string, expectedUpdatedAt: number): Promise<void> {
+    const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+    if (!stored) throw new NoteNotFoundError(id)
+    if (expectedUpdatedAt !== stored.note.updatedAt) throw new NoteConflictError()
+    if (folder === stored.note.folder) return
+    const note = {
+      ...stored.note,
+      folder,
+      updatedAt: Math.max(Date.now(), stored.note.updatedAt + 1),
+    }
+    const rollbackImages = await this.moveImageDirectory(note.id, stored.note.folder, folder)
+    try {
+      await this.writeNote(note, stored.path, stored.fingerprint)
+    } catch (error) {
+      await rollbackImages?.()
+      throw error
+    }
+  }
+
+  private async deleteStoredNote(id: string, expectedUpdatedAt?: number): Promise<void> {
+    const stored = (await this.readStoredNotes()).find(({ note }) => note.id === id)
+    if (!stored) throw new NoteNotFoundError(id)
+    if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== stored.note.updatedAt) {
+      throw new NoteConflictError()
+    }
+    if (!this.sameFingerprint(stored.fingerprint, await this.fileFingerprint(stored.path))) {
+      throw new NoteConflictError()
+    }
+    await rm(stored.path)
+    await rm(this.imageDirectory(stored.note.folder, id), { recursive: true, force: true })
+    await this.syncDirectory()
+  }
+
+  private async batchResult(failures: NoteBatchResult['failures']): Promise<NoteBatchResult> {
+    const snapshot = await this.scanVault()
+    return {
+      notes: ordered(snapshot.notes.map(({ note }) => note)),
+      folders: snapshot.folders,
+      failures,
+    }
   }
 
   private validateId(id: string): void {

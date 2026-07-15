@@ -192,6 +192,30 @@ describe('NoteStore', () => {
     await expect(store.createFolder('../outside')).rejects.toBeInstanceOf(NoteValidationError)
   })
 
+  it('batch moves and deletes notes while reporting per-note conflicts', async () => {
+    const { store } = await temporaryNotesStore()
+    await store.createFolder('Archive')
+    const first = await store.create({ title: 'First', body: '', folder: '' })
+    const second = await store.create({ title: 'Second', body: '', folder: '' })
+
+    const moved = await store.moveMany({
+      folder: 'Archive',
+      notes: [
+        { id: first.id, expectedUpdatedAt: first.updatedAt },
+        { id: second.id, expectedUpdatedAt: second.updatedAt - 1 },
+      ],
+    })
+    expect(moved.notes.find((note) => note.id === first.id)?.folder).toBe('Archive')
+    expect(moved.notes.find((note) => note.id === second.id)?.folder).toBe('')
+    expect(moved.failures).toEqual([{ id: second.id, error: 'Note changed outside Commando' }])
+
+    const deleted = await store.deleteMany({
+      notes: moved.notes.map((note) => ({ id: note.id, expectedUpdatedAt: note.updatedAt })),
+    })
+    expect(deleted).toMatchObject({ notes: [], failures: [] })
+    await expect(store.moveMany({ folder: '', notes: [] })).rejects.toThrow('Invalid batch move')
+  })
+
   it('renames folders and removes a folder by moving managed contents to its parent', async () => {
     const { directory, store } = await temporaryNotesStore()
     await store.createFolder('Projects/Commando')
@@ -322,6 +346,34 @@ describe('NoteStore', () => {
 })
 
 describe('handleNotesApi', () => {
+  it('serves batch move and delete operations', async () => {
+    const { store } = await temporaryNotesStore()
+    const baseUrl = await startApi(store)
+    const note = await store.create({ title: 'Batch note', body: '', folder: '' })
+    const request = (method: string, body: object) => fetch(`${baseUrl}/api/notes/batch`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    const moved = await request('PATCH', {
+      folder: 'Archive',
+      notes: [{ id: note.id, expectedUpdatedAt: note.updatedAt }],
+    })
+    expect(moved.status).toBe(200)
+    const moveResult = await moved.json() as { notes: Note[]; failures: unknown[] }
+    expect(moveResult).toMatchObject({ notes: [{ id: note.id, folder: 'Archive' }], failures: [] })
+
+    const deleted = await request('DELETE', {
+      notes: [{ id: note.id, expectedUpdatedAt: moveResult.notes[0].updatedAt }],
+    })
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toMatchObject({ notes: [], failures: [] })
+    const method = await fetch(`${baseUrl}/api/notes/batch`, { method: 'POST' })
+    expect(method.status).toBe(405)
+    expect(method.headers.get('Allow')).toBe('PATCH, DELETE')
+  })
+
   it('serves folder create, rename, and delete operations', async () => {
     const { store } = await temporaryNotesStore()
     const baseUrl = await startApi(store)
