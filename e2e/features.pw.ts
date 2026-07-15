@@ -30,7 +30,7 @@ test('navigates the new local cockpit sections without browser errors', async ({
   await expect(page.getByRole('menuitem', { name: 'Delete session' })).toBeVisible()
   await page.keyboard.press('Escape')
 
-  await page.getByRole('button', { name: 'Notes' }).click()
+  await page.getByRole('button', { name: 'Notes', exact: true }).click()
   await expect(page.getByText('Markdown vault')).toBeVisible()
   await expect(page.getByText('QA note')).toBeVisible()
   await expect(page.getByLabel('Note body')).toContainText('Autosave-ready local note')
@@ -45,7 +45,7 @@ test('navigates the new local cockpit sections without browser errors', async ({
 
 test('popped-out note stays visible across areas and can move and resize', async ({ page }) => {
   await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
-  await page.getByRole('button', { name: 'Notes' }).click()
+  await page.getByRole('button', { name: 'Notes', exact: true }).click()
   await expect(page.getByLabel('Note body')).toBeVisible()
   await page.getByRole('button', { name: 'Pop out note' }).click()
 
@@ -75,10 +75,12 @@ test('popped-out note stays visible across areas and can move and resize', async
   expect(changed!.width).toBeLessThan(initial!.width - 30)
   expect(changed!.height).toBeLessThan(initial!.height - 30)
 
-  await page.getByRole('button', { name: 'Workspace' }).click()
+  const areaNavigation = page.getByRole('navigation', { name: 'Commando areas' })
+  const workspaceButton = areaNavigation.getByRole('button').filter({ hasText: 'Workspace' })
+  await workspaceButton.click()
   await expect(noteWindow).toBeVisible()
-  await expect(page.getByText('QA Group')).toBeVisible()
-  await page.getByRole('button', { name: 'Linear' }).click()
+  await expect(workspaceButton).toHaveAttribute('aria-current', 'page')
+  await areaNavigation.getByRole('button', { name: 'Linear', exact: true }).click()
   await expect(noteWindow).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Linear projects' })).toBeVisible()
   await noteWindow.getByRole('button', { name: 'Dock note' }).click()
@@ -89,9 +91,32 @@ test('notes section remains usable at a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
   await page.getByLabel('Open session tree').click()
-  await page.getByRole('button', { name: 'Notes' }).click()
+  await page.getByRole('button', { name: 'Notes', exact: true }).click()
   await expect(page.getByText('Markdown vault')).toBeVisible()
   await expect(page.getByLabel('Note body')).toBeVisible()
+})
+
+test('popped-out note remains contained at a narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
+  await page.getByLabel('Open session tree').click()
+  await page.getByRole('button', { name: 'Notes', exact: true }).click()
+  await page.getByRole('button', { name: 'Pop out note' }).click()
+
+  const noteWindow = page.getByRole('dialog', { name: /Popped-out note:/ })
+  await expect(noteWindow).toBeVisible()
+  const bounds = await noteWindow.boundingBox()
+  expect(bounds).not.toBeNull()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.y).toBeGreaterThanOrEqual(44)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390)
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844)
+
+  await page.getByLabel('Open session tree').click()
+  await page.getByRole('button', { name: 'Linear', exact: true }).click()
+  await expect(noteWindow).toBeVisible()
+  await noteWindow.getByRole('button', { name: 'Dock note' }).click()
+  await expect(noteWindow).not.toBeVisible()
 })
 
 test('adjacent panes resize by width and height and persist locally', async ({ page }) => {
