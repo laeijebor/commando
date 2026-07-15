@@ -1518,6 +1518,32 @@ kbd {
 .pane-path {
   min-width: 0;
   max-width: 42%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.pane-path:hover,
+.pane-path:focus-visible {
+  color: var(--text-soft);
+}
+
+.pane-path-status {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.pane-path[data-copy-state="failed"] .pane-path-status {
+  color: var(--red);
+}
+
+.pane-path-value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
