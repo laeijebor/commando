@@ -104,6 +104,35 @@ describe('LinearSection', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://linear.app/team/project/project-1'))
   })
 
+  it('copies an issue identifier and URL from the detail header', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/linear/accounts')) {
+        return Response.json({ accounts: [{ id: 'account-1', label: 'Work', workspaceName: 'Work', viewerName: 'Ada', createdAt: 1 }] })
+      }
+      if (url.endsWith('/projects')) {
+        return Response.json({ projects: [board.project], truncated: false })
+      }
+      if (url.endsWith('/board')) return Response.json({ board })
+      if (url.endsWith('/issues/issue-1')) return Response.json({ issue: issueDetail })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<LinearSection token="test-token" />)
+    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy issue ID: VIV-1' }))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('VIV-1'))
+    expect(screen.getByRole('button', { name: 'Copied issue ID' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy issue URL' }))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('https://linear.app/issue/VIV-1'))
+    expect(screen.getByRole('button', { name: 'Copied issue URL' })).toBeVisible()
+  })
+
   it('optimistically moves an issue when it is dropped on a same-team status', async () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

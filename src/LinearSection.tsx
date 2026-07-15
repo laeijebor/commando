@@ -7,6 +7,8 @@ import './linear-section.css'
 
 const LINEAR_POLL_INTERVAL_MS = 30_000
 
+type CopyTarget = 'project-link' | 'issue-id' | 'issue-url'
+
 const markdownComponents: Components = {
   a({ node: _node, ...props }) {
     return <a {...props} target="_blank" rel="noreferrer" />
@@ -62,7 +64,7 @@ export function LinearSection({ token }: { token: string }) {
   const [lastSyncedAt, setLastSyncedAt] = useState(0)
   const [draggedIssueId, setDraggedIssueId] = useState<string | null>(null)
   const [dropStateId, setDropStateId] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null)
   const [error, setError] = useState('')
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -210,13 +212,13 @@ export function LinearSection({ token }: { token: string }) {
     }
   }
 
-  const copyProjectLink = async (url: string) => {
+  const copyToClipboard = async (value: string, target: CopyTarget, label: string) => {
     try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
+      await navigator.clipboard.writeText(value)
+      setCopiedTarget(target)
       clearTimeout(copyResetTimer.current)
-      copyResetTimer.current = setTimeout(() => setCopied(false), 1500)
-    } catch { setError('Unable to copy project link') }
+      copyResetTimer.current = setTimeout(() => setCopiedTarget(null), 1500)
+    } catch { setError(`Unable to copy ${label}`) }
   }
 
   const sendComment = async (event: FormEvent) => {
@@ -248,7 +250,7 @@ export function LinearSection({ token }: { token: string }) {
           <select value={projectId} onChange={(event) => { setProjectId(event.target.value); setIssue(null) }} aria-label="Linear project" disabled={!accountId}>
             <option value="">Select project</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
           </select>
-          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyProjectLink(selectedProject.url)} title="Copy project link">{copied ? <Check /> : <Link />}</button> : null}
+          {selectedProject ? <button type="button" className="linear-copy-link" onClick={() => void copyToClipboard(selectedProject.url, 'project-link', 'project link')} title="Copy project link" aria-label="Copy project link">{copiedTarget === 'project-link' ? <Check /> : <Link />}</button> : null}
           {accountId ? <button type="button" className="linear-remove" onClick={() => { if (window.confirm('Disconnect this Linear account?')) void api.remove(accountId).then(loadAccounts) }} title="Disconnect account"><Trash2 /></button> : null}
         </div>
       </header>
@@ -308,7 +310,7 @@ export function LinearSection({ token }: { token: string }) {
       )}
       {issue ? (
         <aside className="linear-issue-drawer">
-          <header><div><span>{issue.identifier}</span><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header>
+          <header><div><div className="linear-issue-copy-actions"><button type="button" onClick={() => void copyToClipboard(issue.identifier, 'issue-id', 'issue ID')} title={copiedTarget === 'issue-id' ? 'Copied issue ID' : `Copy issue ID: ${issue.identifier}`} aria-label={copiedTarget === 'issue-id' ? 'Copied issue ID' : `Copy issue ID: ${issue.identifier}`}><span>{issue.identifier}</span>{copiedTarget === 'issue-id' ? <Check aria-hidden="true" /> : null}</button><button type="button" className="linear-issue-url-copy" onClick={() => void copyToClipboard(issue.url, 'issue-url', 'issue URL')} title={copiedTarget === 'issue-url' ? 'Copied issue URL' : 'Copy issue URL'} aria-label={copiedTarget === 'issue-url' ? 'Copied issue URL' : 'Copy issue URL'}>{copiedTarget === 'issue-url' ? <Check aria-hidden="true" /> : <Link aria-hidden="true" />}</button></div><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header>
           <div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><PriorityBadge priority={issue.priority} label={issue.priorityLabel} /><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div>
           <div className="linear-issue-scroll">
             <article className="linear-issue-description linear-markdown"><MarkdownContent>{issue.description || 'No description.'}</MarkdownContent></article>

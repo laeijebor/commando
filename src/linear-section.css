@@ -49,6 +49,12 @@
 .linear-issue-drawer h2 { margin: 4px 0 0; font-size: 22px; }
 .linear-issue-drawer > header span { color: var(--muted); font: 11px 'JetBrains Mono', monospace; }
 .linear-issue-drawer button { color: inherit; border: 0; background: transparent; cursor: pointer; }
+.linear-issue-copy-actions { display: flex; gap: 3px; align-items: center; }
+.linear-issue-copy-actions button { min-height: 24px; padding: 3px 5px; display: inline-flex; gap: 5px; align-items: center; border-radius: 4px; color: var(--muted); }
+.linear-issue-copy-actions button:hover { color: var(--text); background: var(--surface-soft); }
+.linear-issue-copy-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.linear-issue-copy-actions .linear-issue-url-copy { width: 24px; padding: 3px; justify-content: center; }
+.linear-issue-copy-actions svg { width: 12px; height: 12px; color: var(--accent); }
 .linear-issue-meta { flex: none; padding: 12px 20px; display: flex; gap: 12px; align-items: center; color: var(--muted); border-bottom: 1px solid var(--border); }
 .linear-issue-meta a { margin-left: auto; display: flex; align-items: center; color: var(--accent); }
 .linear-issue-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; }
