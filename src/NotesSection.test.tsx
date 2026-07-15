@@ -275,6 +275,111 @@ describe('NotesSection', () => {
     expect(fetcher).toHaveBeenCalledWith('/api/notes/folders?vault=vault-1', expect.objectContaining({ method: 'DELETE' }))
   })
 
+  it('toggles individual notes and selects or deselects the visible list', async () => {
+    const second = { ...original, id: 'second-note', title: 'Second note', updatedAt: original.updatedAt + 1 }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, second], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByLabelText('Select notes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select note Second note' }))
+
+    expect(screen.getByText('1 selected')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Deselect note Second note' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByText('2 selected')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect all' }))
+    expect(screen.getByText('0 selected')).toBeVisible()
+  })
+
+  it('batch moves selected notes and keeps conflicted notes selected', async () => {
+    const second = { ...original, id: 'second-note', title: 'Second note', updatedAt: original.updatedAt + 1 }
+    const moved = { ...original, folder: 'Archive', updatedAt: original.updatedAt + 2 }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, second], folders: ['Archive'] })
+      if (url === '/api/notes/batch?vault=vault-1' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          folder: 'Archive',
+          notes: [
+            { id: original.id, expectedUpdatedAt: original.updatedAt },
+            { id: second.id, expectedUpdatedAt: second.updatedAt },
+          ],
+        })
+        return Response.json({
+          notes: [moved, second],
+          folders: ['Archive'],
+          failures: [{ id: second.id, error: 'Note changed outside Commando' }],
+        })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByLabelText('Select notes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    fireEvent.change(screen.getByLabelText('Move selected notes to folder'), { target: { value: 'Archive' } })
+
+    await screen.findByText(/1 note could not be moved/)
+    expect(screen.getByText('1 selected')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Deselect note Second note' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getAllByText('Archive')).not.toHaveLength(0)
+  })
+
+  it('batch deletes selected notes after confirmation', async () => {
+    const second = { ...original, id: 'second-note', title: 'Second note', updatedAt: original.updatedAt + 1 }
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, second], folders: [] })
+      if (url === '/api/notes/batch?vault=vault-1' && init?.method === 'DELETE') {
+        return Response.json({ notes: [], folders: [], failures: [] })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    await screen.findByLabelText('Note body')
+    fireEvent.click(screen.getByLabelText('Select notes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    fireEvent.click(screen.getByLabelText('Delete selected notes'))
+
+    await screen.findByText('Create your first note.')
+    expect(confirm).toHaveBeenCalledWith('Delete 2 selected notes?')
+    expect(screen.queryByLabelText('Batch note actions')).not.toBeInTheDocument()
+  })
+
+  it('enters selection mode by long-pressing a note on touch', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" />)
+    const note = await screen.findByRole('button', { name: /Vault note/ })
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerDown(note, { pointerType: 'touch', button: 0, clientX: 20, clientY: 20 })
+      await act(async () => { vi.advanceTimersByTime(550) })
+      fireEvent.pointerUp(note, { pointerType: 'touch', button: 0, clientX: 20, clientY: 20 })
+
+      expect(screen.getByText('1 selected')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Deselect note Vault note' })).toHaveAttribute('aria-pressed', 'true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('switches to a persisted vault and loads its notes', async () => {
     const otherVault = { id: 'vault-2', name: 'work', path: '/tmp/work', lastOpenedAt: 2, available: true }
     const nextVaultState = { activeVaultId: 'vault-2', vaults: [otherVault, ...vaultState.vaults] }

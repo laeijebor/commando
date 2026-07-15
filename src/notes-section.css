@@ -1,7 +1,7 @@
 .notes-section { min-height: 0; height: 100%; display: grid; grid-template-columns: minmax(230px, 310px) 1fr; background: #0a0a0a; color: var(--text); }
 .notes-list { min-width: 0; border-right: 1px solid var(--border); background: var(--surface-raised); display: flex; flex-direction: column; }
 .notes-list > header { padding: 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
-.notes-list > header div { display: grid; gap: 3px; }
+.notes-list > header .notes-heading { display: grid; gap: 3px; }
 .notes-list > header span { color: var(--muted-dim); text-transform: uppercase; letter-spacing: .12em; font-size: 10px; }
 .notes-list button, .notes-editor button { border: 0; color: inherit; background: transparent; cursor: pointer; }
 .notes-list button:disabled, .notes-editor button:disabled { opacity: .4; cursor: default; }
@@ -9,6 +9,9 @@
 .notes-list svg, .notes-editor svg { width: 15px; }
 .notes-heading { min-width: 0; }
 .notes-heading strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.notes-heading-actions { display: flex; gap: 6px; }
+.notes-heading-actions button { display: grid; place-items: center; }
+.notes-heading-actions button.active { color: var(--accent); border-color: var(--accent); background: var(--surface-soft); }
 .notes-vault-tools { padding: 10px 12px 0; display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 28px); gap: 5px; }
 .notes-vault-tools select { min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 5px 7px; color: var(--text); background: var(--surface); font-size: 11px; }
 .notes-vault-tools button { display: grid; place-items: center; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); }
@@ -25,11 +28,28 @@
 .notes-folders > button:hover, .notes-folders > button.active { color: var(--text); background: var(--surface-soft); }
 .notes-folders > button svg { flex: 0 0 auto; width: 12px; height: 12px; }
 .notes-folders > button small { margin-left: auto; color: var(--muted-dim); font: 8px var(--mono); }
+.notes-batch-toolbar { margin: 0 8px 8px; padding: 8px; display: grid; gap: 7px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-soft); }
+.notes-batch-toolbar > div { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.notes-batch-toolbar > div:first-child { justify-content: space-between; }
+.notes-batch-toolbar strong { color: var(--text); font-size: 10px; }
+.notes-batch-toolbar button { min-height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9px; }
+.notes-batch-toolbar button:hover:not(:disabled), .notes-batch-toolbar button:focus-visible { outline: 0; color: var(--text); border-color: var(--border-strong); }
+.notes-batch-toolbar button.danger { width: 30px; padding: 0; display: grid; flex: 0 0 auto; place-items: center; color: #eb6f92; }
+.notes-batch-toolbar label { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; color: var(--muted-dim); }
+.notes-batch-toolbar label > svg { width: 13px; height: 13px; flex: 0 0 auto; }
+.notes-batch-toolbar select { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 5px; padding: 6px; color: var(--text); background: var(--surface); font-size: 10px; }
 .notes-items { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 16px; }
-.notes-items > button { width: 100%; padding: 12px; text-align: left; display: grid; gap: 5px; border-radius: 7px; border: 1px solid transparent; }
+.notes-items > button { width: 100%; padding: 12px; text-align: left; display: grid; gap: 5px; border-radius: 7px; border: 1px solid transparent; touch-action: pan-y; }
 .notes-items > button:hover, .notes-items > button.active { background: var(--surface-soft); border-color: var(--border-strong); }
+.notes-items > button.selecting { grid-template-columns: 18px minmax(0, 1fr); align-items: start; }
+.notes-items > button.selected { border-color: var(--accent); background: var(--surface-soft); }
 .notes-items strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .notes-items span { color: var(--muted); font-size: 12px; line-height: 1.4; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.notes-items .note-list-copy { min-width: 0; display: grid; gap: 5px; }
+.notes-items .note-list-copy > strong { color: var(--text); }
+.notes-items .note-selection-indicator { width: 18px; height: 18px; display: grid; place-items: center; overflow: visible; color: var(--muted-dim); }
+.notes-items .note-selection-indicator svg { width: 15px; height: 15px; }
+.notes-items > button.selected .note-selection-indicator { color: var(--accent); }
 .notes-items time { color: var(--muted-dim); font-size: 10px; }
 .notes-items .note-list-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted-dim); }
 .notes-items .note-list-meta small { overflow: hidden; text-overflow: ellipsis; }
@@ -100,4 +120,4 @@
 .vault-picker > footer button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); }
 .vault-picker > footer button:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .vault-picker > footer button.primary { color: var(--accent-ink); border-color: var(--accent); background: var(--accent); }
-@media (max-width: 760px) { .notes-section { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 42vh) 1fr; } .notes-list { border-right: 0; border-bottom: 1px solid var(--border); } .notes-folders { max-height: 110px; } .notes-editor { padding: 18px; } .notes-editor > header { align-items: flex-start; flex-wrap: wrap; } .notes-save-state { flex: 1 1 auto; } .notes-block-editor .bn-editor { padding-inline: 20px 32px; } .vault-picker-backdrop { padding: 10px; } .vault-picker-list { min-height: 220px; } }
+@media (max-width: 760px) { .notes-section { grid-template-columns: 1fr; grid-template-rows: minmax(260px, 42vh) 1fr; } .notes-list { border-right: 0; border-bottom: 1px solid var(--border); } .notes-list > header button { width: 44px; height: 44px; } .notes-folders { max-height: 110px; } .notes-batch-toolbar button, .notes-batch-toolbar select { min-height: 40px; } .notes-batch-toolbar button.danger { width: 40px; } .notes-editor { padding: 18px; } .notes-editor > header { align-items: flex-start; flex-wrap: wrap; } .notes-save-state { flex: 1 1 auto; } .notes-block-editor .bn-editor { padding-inline: 20px 32px; } .vault-picker-backdrop { padding: 10px; } .vault-picker-list { min-height: 220px; } }

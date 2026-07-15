@@ -63,6 +63,25 @@ describe('notes image API', () => {
     }))
   })
 
+  it('moves and deletes note batches with concurrency timestamps', async () => {
+    const snapshot = { notes: [], folders: ['Archive'], failures: [] }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(snapshot))
+    const api = createNotesApi('test-token', fetcher)
+    const targets = [{ id: 'note-1', updatedAt: 123 }, { id: 'note-2', updatedAt: 456 }]
+
+    await expect(api.moveMany('vault-1', targets, 'Archive')).resolves.toEqual(snapshot)
+    await expect(api.deleteMany('vault-1', targets)).resolves.toEqual(snapshot)
+    const notes = targets.map(({ id, updatedAt }) => ({ id, expectedUpdatedAt: updatedAt }))
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/notes/batch?vault=vault-1', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ notes, folder: 'Archive' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/notes/batch?vault=vault-1', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({ notes }),
+    }))
+  })
+
   it('uses the session cookie and clean image URLs when no automation token is present', async () => {
     const noteId = '71cf1432-e39e-4ac1-a1d8-51185f94dbce'
     const imageName = 'a30fa1a4-6f1c-41d9-890f-c93cb9c218ba.png'

@@ -31,6 +31,12 @@ export type NotesSnapshot = {
   folders: string[]
 }
 
+export type NoteBatchTarget = Pick<Note, 'id' | 'updatedAt'>
+
+export type NoteBatchResult = NotesSnapshot & {
+  failures: Array<{ id: string; error: string }>
+}
+
 export type NoteVaultBrowseResult = {
   path: string
   parent: string | null
@@ -60,6 +66,8 @@ export type NotesApi = {
   create(vaultId: string, draft: NoteDraft): Promise<Note>
   update(vaultId: string, id: string, draft: NoteUpdate): Promise<Note>
   delete(vaultId: string, id: string, expectedUpdatedAt: number): Promise<void>
+  moveMany(vaultId: string, notes: NoteBatchTarget[], folder: string): Promise<NoteBatchResult>
+  deleteMany(vaultId: string, notes: NoteBatchTarget[]): Promise<NoteBatchResult>
   createFolder(vaultId: string, folder: string): Promise<string[]>
   renameFolder(vaultId: string, folder: string, name: string): Promise<NotesSnapshot>
   deleteFolder(vaultId: string, folder: string): Promise<NotesSnapshot>
@@ -114,6 +122,14 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
     delete: (vaultId, id, expectedUpdatedAt) => request<void>(notesPath(vaultId, `/${encodeURIComponent(id)}`), {
       method: 'DELETE',
       headers: { 'If-Match': `"${expectedUpdatedAt}"` },
+    }),
+    moveMany: (vaultId, notes, folder) => request<NoteBatchResult>(notesPath(vaultId, '/batch'), {
+      method: 'PATCH',
+      body: JSON.stringify({ notes: notes.map(({ id, updatedAt }) => ({ id, expectedUpdatedAt: updatedAt })), folder }),
+    }),
+    deleteMany: (vaultId, notes) => request<NoteBatchResult>(notesPath(vaultId, '/batch'), {
+      method: 'DELETE',
+      body: JSON.stringify({ notes: notes.map(({ id, updatedAt }) => ({ id, expectedUpdatedAt: updatedAt })) }),
     }),
     createFolder: async (vaultId, folder) => (await request<{ folders: string[] }>(notesPath(vaultId, '/folders'), {
       method: 'POST',

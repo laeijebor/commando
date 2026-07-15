@@ -5,15 +5,19 @@ import {
   FolderOpen,
   FolderPlus,
   History,
+  ListChecks,
   LoaderCircle,
   Pencil,
   RefreshCw,
   Search,
+  Square,
+  SquareCheck,
   Trash2,
+  X,
 } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 import { NoteBlockEditor } from './NoteBlockEditor'
-import { createNotesApi, NotesApiError, type Note, type NotesSnapshot, type NoteVaultSnapshot } from './notesApi'
+import { createNotesApi, NotesApiError, type Note, type NoteBatchResult, type NoteBatchTarget, type NotesSnapshot, type NoteVaultSnapshot } from './notesApi'
 import { VaultFolderPicker } from './VaultFolderPicker'
 import './notes-section.css'
 
@@ -73,12 +77,16 @@ export function NotesSection({ token }: { token: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [externalNote, setExternalNote] = useState<Note | null>(null)
   const [menu, setMenu] = useState<ContextMenu | null>(null)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const activeRef = useRef<ActiveNote | null>(null)
   const vaultIdRef = useRef('')
   const phaseRef = useRef<SavePhase>('loading')
   const editVersion = useRef(0)
   const loadGeneration = useRef(0)
   const saveInFlight = useRef<Promise<boolean> | null>(null)
+  const longPress = useRef<{ timer: number; noteId: string; x: number; y: number } | null>(null)
+  const suppressClick = useRef<{ noteId: string; until: number } | null>(null)
 
   const changePhase = (next: SavePhase) => {
     phaseRef.current = next
@@ -101,6 +109,8 @@ export function NotesSection({ token }: { token: string }) {
 
   const loadVault = async (vaultId: string) => {
     const generation = ++loadGeneration.current
+    setSelectionMode(false)
+    setSelectedIds(new Set())
     changePhase('loading')
     try {
       const snapshot = await api.list(vaultId)
@@ -157,6 +167,10 @@ export function NotesSection({ token }: { token: string }) {
       window.removeEventListener('blur', close)
     }
   }, [menu])
+
+  useEffect(() => () => {
+    if (longPress.current) window.clearTimeout(longPress.current.timer)
+  }, [])
 
   const save = async (): Promise<boolean> => {
     if (saveInFlight.current) return saveInFlight.current
@@ -291,6 +305,8 @@ export function NotesSection({ token }: { token: string }) {
       query,
     }
     setVaultBusy(true)
+    setSelectionMode(false)
+    setSelectedIds(new Set())
     setVaultError('')
     loadGeneration.current += 1
     setNotes([])
@@ -412,6 +428,107 @@ export function NotesSection({ token }: { token: string }) {
       : 'The empty folder will be removed.'
     if (!window.confirm(`Delete folder “${folder}”? ${effect}`)) return
     await runFolderAction(folder, parent, (vaultId) => api.deleteFolder(vaultId, folder))
+  }
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const toggleNoteSelection = (noteId: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(noteId)) next.delete(noteId)
+      else next.add(noteId)
+      return next
+    })
+  }
+
+  const cancelLongPress = () => {
+    if (longPress.current) window.clearTimeout(longPress.current.timer)
+    longPress.current = null
+  }
+
+  const startLongPress = (event: ReactPointerEvent<HTMLButtonElement>, noteId: string) => {
+    if (selectionMode || event.pointerType === 'mouse' || event.button !== 0) return
+    cancelLongPress()
+    suppressClick.current = null
+    const timer = window.setTimeout(() => {
+      suppressClick.current = { noteId, until: Date.now() + 1_000 }
+      longPress.current = null
+      setMenu(null)
+      setSelectionMode(true)
+      setSelectedIds(new Set([noteId]))
+    }, 550)
+    longPress.current = { timer, noteId, x: event.clientX, y: event.clientY }
+  }
+
+  const moveLongPress = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const pending = longPress.current
+    if (!pending) return
+    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > 10) cancelLongPress()
+  }
+
+  const applyBatchResult = (result: NoteBatchResult, action: 'move' | 'delete') => {
+    setNotes(result.notes)
+    setFolders(result.folders)
+    const failedIds = new Set(result.failures.map(({ id }) => id))
+    setSelectedIds(failedIds)
+    setSelectionMode(failedIds.size > 0)
+    const current = activeRef.current
+    if (current) {
+      const latest = result.notes.find((note) => note.id === current.id)
+      if (latest) applyNote(latest)
+      else if (result.notes[0]) applyNote(result.notes[0])
+      else {
+        changeActive(null)
+        changePhase('saved')
+      }
+    }
+    if (result.failures.length) {
+      const noun = result.failures.length === 1 ? 'note' : 'notes'
+      setVaultError(`${result.failures.length} ${noun} could not be ${action === 'move' ? 'moved' : 'deleted'}. ${result.failures[0].error}`)
+    } else {
+      setVaultError('')
+    }
+  }
+
+  const runBatchAction = async (
+    action: 'move' | 'delete',
+    operation: (vaultId: string, targets: NoteBatchTarget[]) => Promise<NoteBatchResult>,
+  ) => {
+    if (!selectedIds.size || !(await flush())) return
+    const vaultId = vaultIdRef.current
+    if (!vaultId) return
+    setVaultBusy(true)
+    setVaultError('')
+    try {
+      const latest = await api.list(vaultId)
+      if (vaultIdRef.current !== vaultId) return
+      const targets = latest.notes.filter((note) => selectedIds.has(note.id))
+      if (!targets.length) {
+        setNotes(latest.notes)
+        setFolders(latest.folders)
+        exitSelectionMode()
+        return
+      }
+      applyBatchResult(await operation(vaultId, targets), action)
+    } catch (cause) {
+      if (vaultIdRef.current !== vaultId) return
+      setVaultError(cause instanceof Error ? cause.message : `Unable to ${action} selected notes`)
+    } finally {
+      setVaultBusy(false)
+    }
+  }
+
+  const moveSelectedNotes = (folder: string) => {
+    void runBatchAction('move', (vaultId, targets) => api.moveMany(vaultId, targets, folder))
+  }
+
+  const deleteSelectedNotes = () => {
+    const count = selectedIds.size
+    if (!count || !window.confirm(`Delete ${count} selected ${count === 1 ? 'note' : 'notes'}?`)) return
+    void runBatchAction('delete', (vaultId, targets) => api.deleteMany(vaultId, targets))
   }
 
   const selectNote = async (note: Note) => {
@@ -604,6 +721,14 @@ export function NotesSection({ token }: { token: string }) {
     if (normalizedQuery) return `${note.title} ${note.body} ${note.folder}`.toLowerCase().includes(normalizedQuery)
     return folderFilter === null || note.folder === folderFilter
   })
+  const allVisibleSelected = filtered.length > 0 && filtered.every((note) => selectedIds.has(note.id))
+  const toggleAllVisible = () => {
+    if (allVisibleSelected) {
+      setSelectedIds(new Set())
+      return
+    }
+    setSelectedIds((current) => new Set([...current, ...filtered.map((note) => note.id)]))
+  }
   const currentVault = vaultState?.vaults.find((vault) => vault.id === vaultState.activeVaultId)
   const menuNote = menu?.kind === 'note' ? notes.find((note) => note.id === menu.noteId) : null
 
@@ -615,7 +740,19 @@ export function NotesSection({ token }: { token: string }) {
             <span>Markdown vault</span>
             <strong title={currentVault?.path}>{currentVault?.name ?? 'Notes'}</strong>
           </div>
-          <button type="button" onClick={() => void create()} disabled={vaultBusy} aria-label="Create note"><FilePlus2 /></button>
+          <div className="notes-heading-actions">
+            <button
+              type="button"
+              className={selectionMode ? 'active' : ''}
+              onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}
+              disabled={vaultBusy}
+              aria-label={selectionMode ? 'Exit note selection' : 'Select notes'}
+              title={selectionMode ? 'Exit selection' : 'Select notes'}
+            >
+              {selectionMode ? <X /> : <ListChecks />}
+            </button>
+            <button type="button" onClick={() => void create()} disabled={vaultBusy || selectionMode} aria-label="Create note"><FilePlus2 /></button>
+          </div>
         </header>
         <div className="notes-vault-tools">
           <select
@@ -663,22 +800,68 @@ export function NotesSection({ token }: { token: string }) {
             </button>
           ))}
         </nav>
+        {selectionMode ? (
+          <section className="notes-batch-toolbar" aria-label="Batch note actions">
+            <div>
+              <strong aria-live="polite">{selectedIds.size} selected</strong>
+              <button type="button" onClick={toggleAllVisible} disabled={vaultBusy || !filtered.length}>
+                {allVisibleSelected ? 'Deselect all' : 'Select all'}
+              </button>
+            </div>
+            <div>
+              <label>
+                <FolderInput aria-hidden="true" />
+                <select
+                  aria-label="Move selected notes to folder"
+                  value=""
+                  disabled={vaultBusy || !selectedIds.size}
+                  onChange={(event) => moveSelectedNotes(event.target.value === '/' ? '' : event.target.value)}
+                >
+                  <option value="" disabled>Move to...</option>
+                  <option value="/">Root</option>
+                  {folders.map((folder) => <option value={folder} key={folder}>{folder}</option>)}
+                </select>
+              </label>
+              <button type="button" className="danger" onClick={deleteSelectedNotes} disabled={vaultBusy || !selectedIds.size} aria-label="Delete selected notes">
+                {vaultBusy ? <LoaderCircle className="spin" /> : <Trash2 />}
+              </button>
+            </div>
+          </section>
+        ) : null}
         <div className="notes-items">
           {filtered.map((note) => (
             <button
               type="button"
-              className={note.id === active?.id ? 'active' : ''}
-              onClick={() => { void selectNote(note) }}
+              className={`${note.id === active?.id && !selectionMode ? 'active ' : ''}${selectionMode ? 'selecting ' : ''}${selectedIds.has(note.id) ? 'selected' : ''}`.trim()}
+              disabled={vaultBusy}
+              aria-pressed={selectionMode ? selectedIds.has(note.id) : undefined}
+              aria-label={selectionMode ? `${selectedIds.has(note.id) ? 'Deselect' : 'Select'} note ${note.title || 'Untitled note'}` : undefined}
+              onClick={() => {
+                if (suppressClick.current?.noteId === note.id && suppressClick.current.until >= Date.now()) {
+                  suppressClick.current = null
+                  return
+                }
+                suppressClick.current = null
+                if (selectionMode) toggleNoteSelection(note.id)
+                else void selectNote(note)
+              }}
+              onPointerDown={(event) => startLongPress(event, note.id)}
+              onPointerMove={moveLongPress}
+              onPointerUp={cancelLongPress}
+              onPointerCancel={cancelLongPress}
               onContextMenu={(event) => {
                 event.preventDefault()
-                openMenu({ kind: 'note', noteId: note.id }, event.clientX, event.clientY)
+                if (!selectionMode) openMenu({ kind: 'note', noteId: note.id }, event.clientX, event.clientY)
               }}
-              onKeyDown={(event) => menuKey(event, { kind: 'note', noteId: note.id })}
+              onKeyDown={(event) => { if (!selectionMode) menuKey(event, { kind: 'note', noteId: note.id }) }}
               key={note.id}
             >
-              <strong>{note.title || 'Untitled note'}</strong>
-              <span>{note.body.trim().slice(0, 90) || 'Empty note'}</span>
-              <span className="note-list-meta"><small>{note.folder || 'Root'}</small><time>{new Date(note.updatedAt).toLocaleString()}</time></span>
+              {selectionMode ? <span className="note-selection-indicator" aria-hidden="true">{selectedIds.has(note.id) ? <SquareCheck /> : <Square />}</span> : null}
+              <span className="note-list-copy">
+                <strong>{note.title || 'Untitled note'}</strong>
+                <span>{note.body.trim().slice(0, 90) || 'Empty note'}</span>
+                <span className="note-list-meta"><small>{note.folder || 'Root'}</small><time>{new Date(note.updatedAt).toLocaleString()}</time></span>
+              </span>
             </button>
           ))}
           {!filtered.length ? <p>{notes.length ? 'No notes in this view.' : 'Create your first note.'}</p> : null}
