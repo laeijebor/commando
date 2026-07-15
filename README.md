@@ -124,6 +124,8 @@ The terminal renderer bundles JetBrains Mono and uses the Rosé Pine Moon palett
 
 Tmux-generated copy-mode UI is not emitted by control mode. Page Up, Page Down, and the mouse wheel therefore navigate xterm.js scrollback and the source-sized current screen instead of entering tmux copy mode.
 
+Selecting text in a Workspace terminal copies it to the browser device's clipboard. When a mouse-aware TUI owns pointer input, use Shift-drag on Linux and Windows or Option-drag on macOS to force terminal selection.
+
 ## Terminal Profile
 
 The browser terminal mirrors the local WezTerm profile with a 10 px font size and the Rosé Pine Moon palette. It uses the scheme's original muted ANSI and bright colors without browser contrast correction, and bold ANSI colors use their bright variants to match WezTerm's default bold-color behavior.

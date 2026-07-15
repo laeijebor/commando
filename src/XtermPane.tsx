@@ -33,6 +33,8 @@ type XtermPaneProps = {
 
 const RESIZE_DEBOUNCE_MS = 80
 
+type ClipboardWriter = Pick<Clipboard, 'writeText'>
+
 const TERMINAL_THEME = {
   background: '#232136',
   foreground: '#e0def4',
@@ -61,6 +63,18 @@ const TERMINAL_THEME = {
 
 function sourceDimension(value: number, minimum: number): number {
   return Number.isFinite(value) ? Math.max(minimum, Math.floor(value)) : minimum
+}
+
+export async function copyTerminalSelection(
+  selection: string,
+  clipboard: ClipboardWriter | undefined,
+): Promise<void> {
+  if (!selection || !clipboard) return
+  try {
+    await clipboard.writeText(selection)
+  } catch {
+    // Preserve the selection so the user can still copy it explicitly.
+  }
 }
 
 export function terminalDimensionsForViewport(
@@ -144,6 +158,8 @@ export function XtermPane({
       fontSize: 10,
       lineHeight: 1,
       minimumContrastRatio: 1,
+      macOptionClickForcesSelection: true,
+      altClickMovesCursor: false,
       scrollback: 5_000,
       scrollOnUserInput: true,
       theme: TERMINAL_THEME,
@@ -161,6 +177,9 @@ export function XtermPane({
 
     const dataSubscription = terminal.onData((data) => {
       if (connectedRef.current) inputRef.current(data)
+    })
+    const selectionSubscription = terminal.onSelectionChange(() => {
+      void copyTerminalSelection(terminal.getSelection(), navigator.clipboard)
     })
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
@@ -265,6 +284,7 @@ export function XtermPane({
     return () => {
       unregisterSink()
       dataSubscription.dispose()
+      selectionSubscription.dispose()
       host.removeEventListener('paste', handlePaste, true)
       window.__commandoQaTerminals?.delete(paneId)
       terminalRef.current = null

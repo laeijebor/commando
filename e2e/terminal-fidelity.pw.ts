@@ -19,9 +19,13 @@ function tmuxPaneSize(): string {
 }
 
 test('renders an attributed alternate-screen table at exact source geometry', async ({
+  context,
   page,
 }) => {
   const browserErrors: string[] = []
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(baseUrl).origin,
+  })
   page.on('console', (message) => {
     if (message.type() === 'error') browserErrors.push(message.text())
   })
@@ -43,6 +47,8 @@ test('renders an attributed alternate-screen table at exact source geometry', as
       type: buffer.type,
       cursorX: buffer.cursorX,
       cursorY: buffer.cursorY,
+      macOptionClickForcesSelection: terminal.options.macOptionClickForcesSelection,
+      altClickMovesCursor: terminal.options.altClickMovesCursor,
       lines: Array.from({ length: terminal.rows }, (_, row) =>
         buffer.getLine(row)?.translateToString(true) ?? '',
       ),
@@ -75,6 +81,8 @@ test('renders an attributed alternate-screen table at exact source geometry', as
     type: 'alternate',
     cursorX: 9,
     cursorY: 21,
+    macOptionClickForcesSelection: true,
+    altClickMovesCursor: false,
   })
   expect(snapshot.lines[4]).toBe(
     '+----------------------------------------------+-------------------------------+',
@@ -98,6 +106,15 @@ test('renders an attributed alternate-screen table at exact source geometry', as
     animations: 'disabled',
     caret: 'hide',
   })
+
+  await page.evaluate((id) => {
+    const terminal = window.__commandoQaTerminals?.get(id)
+    if (!terminal) throw new Error(`Missing QA terminal for ${id}`)
+    terminal.select(1, 1, 26)
+  }, paneId)
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'COMMANDO TERMINAL FIDELITY',
+  )
 
   await sourceGrid.focus()
   await expect.poll(tmuxPaneSize).not.toBe('80x24')
