@@ -115,6 +115,8 @@ test('renders an attributed alternate-screen table at exact source geometry', as
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
     'COMMANDO TERMINAL FIDELITY',
   )
+  await expect(pane.getByRole('status')).toHaveText('Copied')
+  await expect(pane.getByRole('status')).toBeHidden({ timeout: 2_000 })
 
   await sourceGrid.focus()
   await expect.poll(tmuxPaneSize).not.toBe('80x24')

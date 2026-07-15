@@ -13,7 +13,11 @@ vi.mock('./authClient', () => ({
   signInWithEmail: vi.fn(),
   signOut: vi.fn(),
 }))
-vi.mock('./XtermPane', () => ({ XtermPane: () => null }))
+vi.mock('./XtermPane', () => ({
+  XtermPane: ({ onSelectionCopied }: { onSelectionCopied: () => void }) => (
+    <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
+  ),
+}))
 
 afterEach(cleanup)
 
@@ -98,6 +102,14 @@ const paneProps = {
 }
 
 describe('terminal pane actions', () => {
+  it('confirms when a terminal selection is copied', () => {
+    render(<TerminalPaneCard {...paneProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate terminal selection copy' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent('Copied')
+  })
+
   it('copies the pane path to the clipboard', async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })

@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  Check,
   ChevronRight,
   CircleDotDashed,
   Command,
@@ -290,7 +291,9 @@ export function TerminalPaneCard({
   const [renamePending, setRenamePending] = useState(false)
   const [renameError, setRenameError] = useState('')
   const [pathCopyState, setPathCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [selectionCopied, setSelectionCopied] = useState(false)
   const pathCopyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const selectionCopyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
     if (!renaming) return
@@ -302,7 +305,10 @@ export function TerminalPaneCard({
     }, 0)
   }, [paneLabel, renaming])
 
-  useEffect(() => () => clearTimeout(pathCopyResetTimer.current), [])
+  useEffect(() => () => {
+    clearTimeout(pathCopyResetTimer.current)
+    clearTimeout(selectionCopyResetTimer.current)
+  }, [])
 
   const commitRename = async () => {
     if (renamePending) return
@@ -341,6 +347,12 @@ export function TerminalPaneCard({
       setPathCopyState('failed')
     }
     pathCopyResetTimer.current = setTimeout(() => setPathCopyState('idle'), 1500)
+  }
+
+  const showSelectionCopied = () => {
+    clearTimeout(selectionCopyResetTimer.current)
+    setSelectionCopied(true)
+    selectionCopyResetTimer.current = setTimeout(() => setSelectionCopied(false), 1500)
   }
 
   return (
@@ -453,6 +465,7 @@ export function TerminalPaneCard({
         onInput={onInput}
         onKey={onKey}
         onPaste={onPaste}
+        onSelectionCopied={showSelectionCopied}
         onResize={onResize}
         registerSink={registerSink}
         registerFocusable={registerFocusable}
@@ -476,6 +489,12 @@ export function TerminalPaneCard({
           <span className="pane-path-value">{pane.path}</span>
         </button>
       </footer>
+      {selectionCopied ? (
+        <div className="terminal-copy-toast" role="status" aria-live="polite">
+          <Check aria-hidden="true" />
+          <span>Copied</span>
+        </div>
+      ) : null}
     </article>
   )
 }

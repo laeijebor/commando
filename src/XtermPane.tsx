@@ -26,6 +26,7 @@ type XtermPaneProps = {
   onInput: (data: string) => void
   onKey: (key: SpecialKey) => void
   onPaste: (data: string) => void
+  onSelectionCopied: () => void
   onResize: (cols: number, rows: number) => void
   registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
@@ -68,12 +69,14 @@ function sourceDimension(value: number, minimum: number): number {
 export async function copyTerminalSelection(
   selection: string,
   clipboard: ClipboardWriter | undefined,
-): Promise<void> {
-  if (!selection || !clipboard) return
+): Promise<boolean> {
+  if (!selection || !clipboard) return false
   try {
     await clipboard.writeText(selection)
+    return true
   } catch {
     // Preserve the selection so the user can still copy it explicitly.
+    return false
   }
 }
 
@@ -118,6 +121,7 @@ export function XtermPane({
   onInput,
   onKey,
   onPaste,
+  onSelectionCopied,
   onResize,
   registerSink,
   registerFocusable,
@@ -129,12 +133,14 @@ export function XtermPane({
   const inputRef = useRef(onInput)
   const keyRef = useRef(onKey)
   const pasteRef = useRef(onPaste)
+  const selectionCopiedRef = useRef(onSelectionCopied)
   const resizeRef = useRef(onResize)
   const terminalStateRef = useRef(terminalState)
   connectedRef.current = connected
   inputRef.current = onInput
   keyRef.current = onKey
   pasteRef.current = onPaste
+  selectionCopiedRef.current = onSelectionCopied
   resizeRef.current = onResize
   terminalStateRef.current = terminalState
 
@@ -179,7 +185,9 @@ export function XtermPane({
       if (connectedRef.current) inputRef.current(data)
     })
     const selectionSubscription = terminal.onSelectionChange(() => {
-      void copyTerminalSelection(terminal.getSelection(), navigator.clipboard)
+      void copyTerminalSelection(terminal.getSelection(), navigator.clipboard).then((copied) => {
+        if (copied) selectionCopiedRef.current()
+      })
     })
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true

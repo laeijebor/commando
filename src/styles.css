@@ -1187,6 +1187,7 @@ kbd {
 }
 
 .terminal-pane {
+  position: relative;
   min-width: 0;
   min-height: 254px;
   display: grid;
@@ -1470,6 +1471,43 @@ kbd {
 .terminal-source-grid .xterm-viewport {
   overscroll-behavior: contain;
   scrollbar-color: var(--border-mid) transparent;
+}
+
+.terminal-copy-toast {
+  position: absolute;
+  right: 8px;
+  bottom: 24px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+  font: 700 8px/1 var(--mono);
+  animation: terminal-copy-toast-in 160ms ease-out;
+}
+
+.terminal-copy-toast svg {
+  width: 10px;
+  height: 10px;
+  color: var(--accent);
+  stroke-width: 2.5;
+}
+
+@keyframes terminal-copy-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .terminal-pane.is-maximized .terminal-source-grid,

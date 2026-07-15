@@ -11,17 +11,18 @@ describe('terminal selection clipboard', () => {
   it('copies the exact selected text', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
 
-    await copyTerminalSelection('  selected\ntext  ', { writeText })
+    const copied = await copyTerminalSelection('  selected\ntext  ', { writeText })
 
     expect(writeText).toHaveBeenCalledWith('  selected\ntext  ')
+    expect(copied).toBe(true)
   })
 
   it('ignores empty selections, unavailable clipboards, and denied writes', async () => {
     const writeText = vi.fn().mockRejectedValue(new DOMException('Denied', 'NotAllowedError'))
 
-    await copyTerminalSelection('', { writeText })
-    await copyTerminalSelection('selected', undefined)
-    await expect(copyTerminalSelection('selected', { writeText })).resolves.toBeUndefined()
+    await expect(copyTerminalSelection('', { writeText })).resolves.toBe(false)
+    await expect(copyTerminalSelection('selected', undefined)).resolves.toBe(false)
+    await expect(copyTerminalSelection('selected', { writeText })).resolves.toBe(false)
 
     expect(writeText).toHaveBeenCalledOnce()
   })
