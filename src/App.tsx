@@ -289,6 +289,8 @@ export function TerminalPaneCard({
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
   const [renameError, setRenameError] = useState('')
+  const [pathCopyState, setPathCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const pathCopyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   useEffect(() => {
     if (!renaming) return
@@ -299,6 +301,8 @@ export function TerminalPaneCard({
       renameInputRef.current?.select()
     }, 0)
   }, [paneLabel, renaming])
+
+  useEffect(() => () => clearTimeout(pathCopyResetTimer.current), [])
 
   const commitRename = async () => {
     if (renamePending) return
@@ -326,6 +330,17 @@ export function TerminalPaneCard({
     } finally {
       setRenamePending(false)
     }
+  }
+
+  const copyPath = async () => {
+    clearTimeout(pathCopyResetTimer.current)
+    try {
+      await navigator.clipboard.writeText(pane.path)
+      setPathCopyState('copied')
+    } catch {
+      setPathCopyState('failed')
+    }
+    pathCopyResetTimer.current = setTimeout(() => setPathCopyState('idle'), 1500)
   }
 
   return (
@@ -447,7 +462,19 @@ export function TerminalPaneCard({
         <span>{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
         <span>{pane.width}x{pane.height}</span>
         <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
-        <span className="pane-path" title={pane.path}>{pane.path}</span>
+        <button
+          type="button"
+          className="pane-path"
+          data-copy-state={pathCopyState}
+          onClick={() => void copyPath()}
+          aria-label={`Copy path ${pane.path}`}
+          title={pathCopyState === 'copied' ? 'Copied path' : pathCopyState === 'failed' ? 'Unable to copy path' : `Copy path: ${pane.path}`}
+        >
+          <span className="pane-path-status" aria-live="polite">
+            {pathCopyState === 'copied' ? 'Copied' : pathCopyState === 'failed' ? 'Copy failed' : null}
+          </span>
+          <span className="pane-path-value">{pane.path}</span>
+        </button>
       </footer>
     </article>
   )

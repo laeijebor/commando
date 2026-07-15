@@ -98,6 +98,17 @@ const paneProps = {
 }
 
 describe('terminal pane actions', () => {
+  it('copies the pane path to the clipboard', async () => {
+    const writeText = vi.fn(async () => {})
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<TerminalPaneCard {...paneProps} />)
+
+    fireEvent.click(screen.getByRole('button', { name: `Copy path ${pane.path}` }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(pane.path))
+    expect(screen.getByText('Copied')).toBeVisible()
+  })
+
   it('leaves an unmodified right click to the terminal application', () => {
     const onOpenMenu = vi.fn()
     const onFocus = vi.fn()
