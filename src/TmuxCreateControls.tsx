@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useState } from 'react'
 import type {
   CreateTmuxPaneRequest,
   CreateTmuxSessionRequest,
@@ -13,7 +13,8 @@ type WindowOption = { id: string; name: string; sessionId: string; index: number
 type PaneOption = { id: string; windowId: string; index: number; title: string }
 type CreateMode = 'session' | 'window' | 'pane'
 
-export const LAST_TMUX_CWD_STORAGE_KEY = 'commando.tmux-create.cwd'
+export const TMUX_CWD_HISTORY_STORAGE_KEY = 'commando.tmux-create.cwd'
+const MAX_WORKING_DIRECTORY_HISTORY = 10
 
 export type TmuxCreateControlsProps = {
   sessions: readonly SessionOption[]
@@ -39,21 +40,37 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unable to create the tmux target'
 }
 
-function loadLastWorkingDirectory(): string {
+function loadWorkingDirectoryHistory(): string[] {
   try {
-    return window.localStorage.getItem(LAST_TMUX_CWD_STORAGE_KEY) ?? ''
+    const stored = window.localStorage.getItem(TMUX_CWD_HISTORY_STORAGE_KEY)
+    if (!stored) return []
+    let values: unknown
+    try {
+      values = JSON.parse(stored)
+    } catch {
+      // Older versions stored only the last successful directory as plain text.
+      values = [stored]
+    }
+    if (!Array.isArray(values)) return []
+    return values
+      .filter((value): value is string => typeof value === 'string' && value.startsWith('/'))
+      .filter((value, index, history) => history.indexOf(value) === index)
+      .slice(0, MAX_WORKING_DIRECTORY_HISTORY)
   } catch {
-    return ''
+    return []
   }
 }
 
-function saveLastWorkingDirectory(value: string): void {
+function saveWorkingDirectoryHistory(value: string, history: readonly string[]): string[] {
+  if (!value) return [...history]
+  const nextHistory = [value, ...history.filter((directory) => directory !== value)]
+    .slice(0, MAX_WORKING_DIRECTORY_HISTORY)
   try {
-    if (value) window.localStorage.setItem(LAST_TMUX_CWD_STORAGE_KEY, value)
-    else window.localStorage.removeItem(LAST_TMUX_CWD_STORAGE_KEY)
+    window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, JSON.stringify(nextHistory))
   } catch {
     // Persistence is optional when browser storage is unavailable.
   }
+  return nextHistory
 }
 
 export function TmuxCreateControls({
@@ -73,7 +90,11 @@ export function TmuxCreateControls({
   const [sessionId, setSessionId] = useState(defaultSessionId)
   const [targetId, setTargetId] = useState(defaultTargetId)
   const [direction, setDirection] = useState<TmuxSplitDirection>('horizontal')
-  const [workingDirectory, setWorkingDirectory] = useState(loadLastWorkingDirectory)
+  const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
+  const [workingDirectory, setWorkingDirectory] = useState(workingDirectoryHistory[0] ?? '')
+  const [directoryHistoryOpen, setDirectoryHistoryOpen] = useState(false)
+  const [directoryHistoryFiltering, setDirectoryHistoryFiltering] = useState(false)
+  const [directoryHistoryHighlight, setDirectoryHistoryHighlight] = useState(0)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
@@ -94,11 +115,46 @@ export function TmuxCreateControls({
     ? targetId
     : (targets[0]?.id ?? '')
   const unavailable = disabled || pending
+  const directoryQuery = directoryHistoryFiltering ? workingDirectory.toLowerCase() : ''
+  const directorySuggestions = workingDirectoryHistory.filter(
+    (directory) => directoryQuery === '' || directory.toLowerCase().includes(directoryQuery),
+  )
+  const activeDirectoryHighlight = Math.min(
+    directoryHistoryHighlight,
+    Math.max(0, directorySuggestions.length - 1),
+  )
 
   const changeMode = (nextMode: CreateMode) => {
     setMode(nextMode)
     setError('')
     setStatus('')
+  }
+
+  const chooseWorkingDirectory = (directory: string) => {
+    setWorkingDirectory(directory)
+    setDirectoryHistoryOpen(false)
+    setDirectoryHistoryFiltering(false)
+  }
+
+  const onWorkingDirectoryKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (!directoryHistoryOpen) {
+        setDirectoryHistoryOpen(true)
+        return
+      }
+      if (!directorySuggestions.length) return
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      setDirectoryHistoryHighlight(
+        (activeDirectoryHighlight + step + directorySuggestions.length) % directorySuggestions.length,
+      )
+    } else if (event.key === 'Enter' && directoryHistoryOpen && directorySuggestions.length) {
+      event.preventDefault()
+      chooseWorkingDirectory(directorySuggestions[activeDirectoryHighlight])
+    } else if (event.key === 'Escape' && directoryHistoryOpen) {
+      event.preventDefault()
+      setDirectoryHistoryOpen(false)
+    }
   }
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -130,7 +186,9 @@ export function TmuxCreateControls({
           cwd,
         })
       }
-      saveLastWorkingDirectory(cwd)
+      const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
+      setWorkingDirectoryHistory(nextHistory)
+      setDirectoryHistoryOpen(false)
       setStatus(`Created ${created.kind} ${created.paneId} in ${created.sessionName}`)
       onCreated?.(created)
       formElement.reset()
@@ -241,16 +299,75 @@ export function TmuxCreateControls({
             </>
           )}
 
-          <label>
-            Working directory <span>optional, absolute path</span>
-            <input
-              name="cwd"
-              value={workingDirectory}
-              onChange={(event) => setWorkingDirectory(event.target.value)}
-              placeholder="/Users/me/project"
-              autoComplete="off"
-            />
-          </label>
+          <div className="tmux-create__field">
+            <label htmlFor="tmux-create-cwd">
+              Working directory <span>optional, absolute path</span>
+            </label>
+            <div className="tmux-create__cwd-combo">
+              <input
+                id="tmux-create-cwd"
+                name="cwd"
+                value={workingDirectory}
+                onChange={(event) => {
+                  setWorkingDirectory(event.target.value)
+                  setDirectoryHistoryOpen(true)
+                  setDirectoryHistoryFiltering(true)
+                  setDirectoryHistoryHighlight(0)
+                }}
+                onKeyDown={onWorkingDirectoryKeyDown}
+                onFocus={() => {
+                  setDirectoryHistoryOpen(true)
+                  setDirectoryHistoryFiltering(false)
+                  setDirectoryHistoryHighlight(0)
+                }}
+                onClick={() => {
+                  setDirectoryHistoryOpen(true)
+                  setDirectoryHistoryFiltering(false)
+                  setDirectoryHistoryHighlight(0)
+                }}
+                onBlur={() => setDirectoryHistoryOpen(false)}
+                placeholder="/Users/me/project"
+                autoComplete="off"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={directoryHistoryOpen && directorySuggestions.length > 0}
+                aria-controls="tmux-create-cwd-history"
+                aria-activedescendant={
+                  directoryHistoryOpen && directorySuggestions.length > 0
+                    ? `tmux-create-cwd-option-${activeDirectoryHighlight}`
+                    : undefined
+                }
+                spellCheck={false}
+              />
+              {directoryHistoryOpen && directorySuggestions.length > 0 ? (
+                <div
+                  className="tmux-create__cwd-history"
+                  id="tmux-create-cwd-history"
+                  role="listbox"
+                  aria-label="Recent working directories"
+                >
+                  {directorySuggestions.map((directory, index) => (
+                    <button
+                      key={directory}
+                      id={`tmux-create-cwd-option-${index}`}
+                      type="button"
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={directory === workingDirectory}
+                      className={index === activeDirectoryHighlight ? 'is-highlighted' : undefined}
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        chooseWorkingDirectory(directory)
+                      }}
+                      onMouseEnter={() => setDirectoryHistoryHighlight(index)}
+                    >
+                      {directory}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
 
           {error && (
             <p className="tmux-create__message is-error" role="alert">
