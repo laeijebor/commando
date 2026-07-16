@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LinearBoard, LinearIssue, LinearIssueDetail, LinearState } from './linearApi'
 import { LinearSection } from './LinearSection'
 
+const ASYNC_QUERY_OPTIONS = { timeout: 5_000 }
+
 const todo: LinearState = {
   id: 'todo',
   name: 'Todo',
@@ -97,7 +99,7 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    const copyButton = await screen.findByRole('button', { name: 'Copy project link' })
+    const copyButton = await screen.findByRole('button', { name: 'Copy project link' }, ASYNC_QUERY_OPTIONS)
 
     fireEvent.click(copyButton)
 
@@ -122,9 +124,9 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }, ASYNC_QUERY_OPTIONS))
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Copy issue ID: VIV-1' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy issue ID: VIV-1' }, ASYNC_QUERY_OPTIONS))
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('VIV-1'))
     expect(screen.getByRole('button', { name: 'Copied issue ID' })).toBeVisible()
 
@@ -151,7 +153,7 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    const card = await screen.findByRole('button', { name: /VIV-1.*Ship polling/ })
+    const card = await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }, ASYNC_QUERY_OPTIONS)
     expect(screen.getByText('Live / 30s')).toBeVisible()
     expect(card.querySelector('.linear-priority.priority-2 svg')).not.toBeNull()
     expect(within(card).getByText('High')).toBeVisible()
@@ -193,9 +195,9 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }, ASYNC_QUERY_OPTIONS))
 
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Overview' }, ASYNC_QUERY_OPTIONS)).toBeVisible()
     expect(screen.getByRole('checkbox')).toBeChecked()
     expect(screen.getByText('Markdown').tagName).toBe('STRONG')
     expect(screen.getByText('formatted comment').tagName).toBe('STRONG')

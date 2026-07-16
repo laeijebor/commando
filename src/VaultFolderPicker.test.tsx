@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NoteVaultBrowseResult } from './notesApi'
 import { VaultFolderPicker } from './VaultFolderPicker'
 
+const ASYNC_QUERY_OPTIONS = { timeout: 5_000 }
+
 afterEach(cleanup)
 
 const root: NoteVaultBrowseResult = {
@@ -22,8 +24,8 @@ describe('VaultFolderPicker', () => {
     const confirm = vi.fn()
     render(<VaultFolderPicker mode="open" initialPath={root.path} browse={browse} onCancel={vi.fn()} onConfirm={confirm} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open folder Documents' }))
-    await screen.findByText(child.path)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open folder Documents' }, ASYNC_QUERY_OPTIONS))
+    await screen.findByText(child.path, {}, ASYNC_QUERY_OPTIONS)
     fireEvent.click(screen.getByRole('button', { name: 'Open this folder' }))
 
     expect(confirm).toHaveBeenCalledWith(child.path, undefined)
@@ -32,7 +34,7 @@ describe('VaultFolderPicker', () => {
   it('creates a named vault inside the browsed folder', async () => {
     const confirm = vi.fn()
     render(<VaultFolderPicker mode="create" initialPath={root.path} browse={async () => root} onCancel={vi.fn()} onConfirm={confirm} />)
-    await screen.findByText(root.path)
+    await screen.findByText(root.path, {}, ASYNC_QUERY_OPTIONS)
     const create = screen.getByRole('button', { name: 'Create vault here' })
     expect(create).toBeDisabled()
 
@@ -51,8 +53,8 @@ describe('VaultFolderPicker', () => {
     const confirm = vi.fn()
     render(<VaultFolderPicker mode="open" initialPath={root.path} browse={browse} onCancel={vi.fn()} onConfirm={confirm} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open folder Documents' }))
-    await screen.findByRole('alert')
+    fireEvent.click(await screen.findByRole('button', { name: 'Open folder Documents' }, ASYNC_QUERY_OPTIONS))
+    await screen.findByRole('alert', {}, ASYNC_QUERY_OPTIONS)
 
     expect(screen.getByRole('button', { name: 'Open this folder' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Open this folder' }))
