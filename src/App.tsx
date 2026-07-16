@@ -1490,7 +1490,7 @@ export function App() {
               onCreated={(created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() }}
             />
           </div>
-          <PortsSection sessions={snapshot?.sessions ?? []} ports={snapshot?.ports ?? []} />
+          <PortsSection token={token} sessions={snapshot?.sessions ?? []} ports={snapshot?.ports ?? []} />
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />
             <span>

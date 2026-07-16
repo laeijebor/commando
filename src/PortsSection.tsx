@@ -1,9 +1,12 @@
-import { ChevronDown, ChevronRight, RadioTower } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronRight, RadioTower, Trash2 } from 'lucide-react'
+import { type KeyboardEvent, useRef, useState } from 'react'
 import type { OpenPort, TmuxSession } from '../shared/protocol'
+import { createPortManagementApi } from './portManagementApi'
+import { PortContextMenu } from './PortContextMenu'
 import './ports-section.css'
 
 type Props = {
+  token: string
   sessions: TmuxSession[]
   ports: OpenPort[]
 }
@@ -15,8 +18,12 @@ export function openPortUrl(port: number): string {
   return url.toString()
 }
 
-export function PortsSection({ sessions, ports }: Props) {
+export function PortsSection({ token, sessions, ports }: Props) {
+  const api = useRef(createPortManagementApi(token)).current
   const [collapsed, setCollapsed] = useState(false)
+  const [menu, setMenu] = useState<{ port: OpenPort; x: number; y: number } | null>(null)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
   const groups = sessions.flatMap((session) => {
     const sessionPorts = ports
       .filter((port) => port.sessionId === session.id)
@@ -25,6 +32,40 @@ export function PortsSection({ sessions, ports }: Props) {
   })
   const portCount = groups.reduce((count, group) => count + group.ports.length, 0)
   if (portCount === 0) return null
+
+  const openMenuFromKeyboard = (event: KeyboardEvent<HTMLAnchorElement>, port: OpenPort) => {
+    if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+      event.preventDefault()
+      const bounds = event.currentTarget.getBoundingClientRect()
+      setMenu({ port, x: bounds.left + 8, y: bounds.bottom })
+    }
+  }
+
+  const killPort = async (port: OpenPort) => {
+    if (pending) return
+    setPending(true)
+    setError('')
+    try {
+      await api.killPort(port)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Unable to kill process on port ${port.port}`)
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const killSessionPorts = async (session: TmuxSession, sessionPorts: OpenPort[]) => {
+    if (pending || !window.confirm(`Kill every process listening on ${sessionPorts.length} open port${sessionPorts.length === 1 ? '' : 's'} for "${session.name}"? This can stop development servers.`)) return
+    setPending(true)
+    setError('')
+    try {
+      await api.killSessionPorts(session.id)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Unable to kill port processes for ${session.name}`)
+    } finally {
+      setPending(false)
+    }
+  }
 
   return (
     <section className={`sidebar-ports${collapsed ? ' is-collapsed' : ''}`} aria-labelledby="sidebar-ports-title">
@@ -46,11 +87,23 @@ export function PortsSection({ sessions, ports }: Props) {
         </span>
         <small>{portCount}</small>
       </header>
+      {error ? <button type="button" className="sidebar-ports-error" role="alert" onClick={() => setError('')}>{error}</button> : null}
       <div className="sidebar-port-groups" id="sidebar-port-groups" hidden={collapsed}>
         {groups.map(({ session, ports: sessionPorts }) => (
           <div className="sidebar-port-group" key={session.id}>
-            <strong title={session.name}>{session.name}</strong>
-            <div aria-label={`Open ports for ${session.name}`}>
+            <div className="sidebar-port-group-header">
+              <strong title={session.name}>{session.name}</strong>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => void killSessionPorts(session, sessionPorts)}
+                aria-label={`Kill all port processes for ${session.name}`}
+                title={`Kill all port processes for ${session.name}`}
+              >
+                <Trash2 aria-hidden="true" />
+              </button>
+            </div>
+            <div className="sidebar-port-links" aria-label={`Open ports for ${session.name}`}>
               {sessionPorts.map((port) => (
                 <a
                   className="sidebar-port-link"
@@ -58,7 +111,13 @@ export function PortsSection({ sessions, ports }: Props) {
                   target="_blank"
                   rel="noreferrer"
                   aria-label={`Open ${port.processName} on port ${port.port}`}
-                  title={`${port.processName} listening on port ${port.port}`}
+                  title={`${port.processName} listening on port ${port.port}. Option-right-click for process actions.`}
+                  onContextMenu={(event) => {
+                    if (!event.altKey) return
+                    event.preventDefault()
+                    setMenu({ port, x: event.clientX, y: event.clientY })
+                  }}
+                  onKeyDown={(event) => openMenuFromKeyboard(event, port)}
                   key={`${port.paneId}:${port.port}`}
                 >
                   {port.port}
@@ -68,6 +127,16 @@ export function PortsSection({ sessions, ports }: Props) {
           </div>
         ))}
       </div>
+      {menu ? (
+        <PortContextMenu
+          port={menu.port}
+          x={menu.x}
+          y={menu.y}
+          busy={pending}
+          onClose={() => setMenu(null)}
+          onKill={() => void killPort(menu.port)}
+        />
+      ) : null}
     </section>
   )
 }
