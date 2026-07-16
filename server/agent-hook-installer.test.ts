@@ -248,11 +248,20 @@ describe('agent hook installer', () => {
       await send({
         hook_event_name: 'UserPromptSubmit',
         prompt_id: 'prompt-1',
-        prompt: `  Inspect\nAPI_KEY=raw-prompt-secret   ${'x'.repeat(300)}`,
+        source: 'startup',
+        prompt: [
+          'Inspect',
+          'OPENAI_API_KEY=raw-prompt-secret',
+          '{"api_key":"raw-json-secret"}',
+          'password: raw multiword secret',
+          'https://user:raw-url-secret@example.com',
+          'ghp_1234567890abcdefghijkl',
+        ].join('\n'),
       })
       await send({
         hook_event_name: 'PreToolUse',
         tool_name: 'Bash',
+        tool_use_id: 'tool-1',
         tool_input: {
           command: 'TOKEN=raw-command-secret npm test -- raw-command-argument',
           description: 'raw command description',
@@ -295,10 +304,12 @@ describe('agent hook installer', () => {
       expect(prompt).toMatchObject({
         session_id: 'claude-session',
         prompt_id: 'prompt-1',
+        source: 'startup',
       })
-      expect(String(prompt?.intent)).toHaveLength(240)
-      expect(String(prompt?.intent)).toContain('Inspect API_KEY=[REDACTED]')
+      expect(String(prompt?.intent).length).toBeLessThanOrEqual(240)
+      expect(String(prompt?.intent)).toContain('Inspect OPENAI_API_KEY=[REDACTED]')
       expect(bodies.get('PreToolUse')).toMatchObject({
+        activityId: 'tool-1',
         activity: { label: 'Running tests', kind: 'check', state: 'running' },
         check: { label: 'tests', status: 'running' },
       })
@@ -323,6 +334,10 @@ describe('agent hook installer', () => {
       const serialized = JSON.stringify(received)
       for (const rawValue of [
         'raw-prompt-secret',
+        'raw-json-secret',
+        'raw multiword secret',
+        'raw-url-secret',
+        'ghp_1234567890abcdefghijkl',
         'raw-command-secret',
         'raw-command-argument',
         'raw-file-content',
@@ -375,16 +390,17 @@ describe('agent hook installer', () => {
         },
       ),
       plugin['tool.execute.before'](
-        { tool: 'bash', sessionID: 'main' },
+        { tool: 'bash', sessionID: 'main', callID: 'call-typecheck' },
         { args: { command: 'npm run typecheck -- raw-command-argument' } },
       ),
       plugin['tool.execute.after'](
         {
           tool: 'bash',
           sessionID: 'main',
+          callID: 'call-typecheck',
           args: { command: 'npm run typecheck -- raw-command-argument' },
         },
-        { output: 'raw-tool-output' },
+        { output: 'raw-tool-output', metadata: { exit: 0 } },
       ),
       plugin['tool.execute.before'](
         { tool: 'edit', sessionID: 'main' },
@@ -495,10 +511,12 @@ describe('agent hook installer', () => {
       intent: 'Fix login API_TOKEN=[REDACTED]',
     })
     expect(events[2]?.properties).toMatchObject({
+      activityId: 'call-typecheck',
       activity: { label: 'Running typecheck', kind: 'check', state: 'running' },
       check: { label: 'typecheck', status: 'running' },
     })
     expect(events[3]?.properties).toMatchObject({
+      activityId: 'call-typecheck',
       activity: { label: 'Running typecheck', kind: 'check', state: 'completed' },
       check: { label: 'typecheck', status: 'passed' },
     })
@@ -570,5 +588,88 @@ describe('agent hook installer', () => {
     expect(serialized).not.toContain('"args"')
     expect(serialized).not.toContain('"output"')
     expect(serialized).not.toContain('"parts"')
+  })
+
+  it('clears OpenCode turn caches, redacts common credentials, and reports failed checks', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const requests: OpenCodeEvent[] = []
+    vi.stubEnv('TMUX_PANE', '%42')
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body)) as { event: OpenCodeEvent }
+      requests.push(request.event)
+      return new Response(null, { status: 200 })
+    }))
+    const plugin = await loadOpenCodePlugin(paths.openCodePluginPath)
+    const send = (type: string, properties: Record<string, unknown> = {}) =>
+      plugin.event({ event: { type, properties: { sessionID: 'main', ...properties } } })
+
+    const firstTurn = [
+      plugin['chat.message'](
+        { sessionID: 'main' },
+        {
+          parts: [{
+            type: 'text',
+            text: [
+              '{"api_key":"raw-json-secret"}',
+              'password: raw multiword secret',
+              'https://user:raw-url-secret@example.com',
+              'ghp_1234567890abcdefghijkl',
+            ].join('\n'),
+          }],
+        },
+      ),
+      plugin['tool.execute.before'](
+        { tool: 'bash', sessionID: 'main', callID: 'failed-check' },
+        { args: { command: 'npm test' } },
+      ),
+      plugin['tool.execute.after'](
+        { tool: 'bash', sessionID: 'main', callID: 'failed-check', args: { command: 'npm test' } },
+        { metadata: { exit: 2 } },
+      ),
+      send('todo.updated', {
+        todos: [{ content: 'First turn todo', status: 'completed', priority: 'high' }],
+      }),
+      send('session.diff', {
+        diff: [{ file: 'src/private.ts', additions: 1, deletions: 0 }],
+      }),
+    ].filter((delivery): delivery is Promise<void> => delivery !== undefined)
+    plugin['experimental.text.complete'](
+      { sessionID: 'main' },
+      { text: 'First turn result' },
+    )
+    firstTurn.push(send('session.idle') as Promise<void>)
+    await Promise.all(firstTurn)
+
+    await plugin['chat.message'](
+      { sessionID: 'main' },
+      { parts: [{ type: 'text', text: 'Second turn' }] },
+    )
+    await send('session.idle')
+
+    const failedCheck = requests.find((event) => (
+      event.type === 'commando.activity.completed' && event.properties.activityId === 'failed-check'
+    ))
+    expect(failedCheck?.properties).toMatchObject({
+      activity: { state: 'failed' },
+      check: { label: 'tests', status: 'failed' },
+    })
+    const idleEvents = requests.filter((event) => event.type === 'session.idle')
+    expect(idleEvents[0]?.properties).toMatchObject({
+      finalMessage: 'First turn result',
+      todos: [{ content: 'First turn todo' }],
+      diff: [{ file: 'src/private.ts' }],
+    })
+    expect(idleEvents[1]?.properties).not.toHaveProperty('finalMessage')
+    expect(idleEvents[1]?.properties).not.toHaveProperty('todos')
+    expect(idleEvents[1]?.properties).not.toHaveProperty('diff')
+
+    const serialized = JSON.stringify(requests)
+    for (const secret of [
+      'raw-json-secret',
+      'raw multiword secret',
+      'raw-url-secret',
+      'ghp_1234567890abcdefghijkl',
+    ]) expect(serialized).not.toContain(secret)
   })
 })

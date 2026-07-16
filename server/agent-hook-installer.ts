@@ -114,11 +114,20 @@ function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
 }
 
+function boundedSource(value, maximum) {
+  const limit = Math.max(1024, maximum * 4)
+  if (value.length <= limit) return value
+  const half = Math.floor(limit / 2)
+  return value.slice(0, half) + '\\n' + value.slice(-half)
+}
+
 function boundedText(value, maximum) {
   if (typeof value !== 'string') return undefined
-  const text = value
-    .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
-    .replace(/(\\b(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)\\b\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)/gi, '$1[REDACTED]')
+  const text = boundedSource(value, maximum)
+    .replace(/(\\b[a-z][a-z0-9+.-]*:\\/\\/[^:\\s/@]+:)[^@\\s/]+@/gi, '$1[REDACTED]@')
+    .replace(/\\b(?:Bearer|Basic)\\s+[^\\s,;]+/gi, (match) => match.split(/\\s/, 1)[0] + ' [REDACTED]')
+    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
     .replace(/[\\r\\n]+/g, ' ')
     .replace(/\\s+/g, ' ')
     .trim()
@@ -127,7 +136,7 @@ function boundedText(value, maximum) {
 
 function boundedMessage(value, maximum) {
   if (typeof value !== 'string') return undefined
-  const lines = value
+  const lines = boundedSource(value, maximum)
     .split(/\\r?\\n/)
     .map((line) => boundedText(line, 240))
     .filter(Boolean)
@@ -149,13 +158,14 @@ function filePathFrom(args) {
 
 function commandCheck(command, state) {
   if (typeof command !== 'string') return undefined
+  const source = command.slice(0, 4000)
   const checks = [
     { pattern: /\\b(?:typecheck|type-check|tsc)\\b/i, label: 'typecheck' },
     { pattern: /\\b(?:test|tests|vitest|jest|pytest|rspec)\\b|\\bgo\\s+test\\b|\\bcargo\\s+test\\b|\\bdotnet\\s+test\\b/i, label: 'tests' },
     { pattern: /\\b(?:build|vite\\s+build|next\\s+build|cargo\\s+build)\\b/i, label: 'build' },
     { pattern: /\\b(?:lint|eslint|stylelint|ruff|clippy)\\b/i, label: 'lint' },
   ]
-  const match = checks.find(({ pattern }) => pattern.test(command))
+  const match = checks.find(({ pattern }) => pattern.test(source))
   if (!match) return undefined
   const status = state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'passed'
   return { label: match.label, status }
@@ -246,7 +256,10 @@ async function main() {
     const port = process.env.COMMANDO_PORT || '4310'
     if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
     let raw = ''
-    for await (const chunk of process.stdin) raw += chunk
+    for await (const chunk of process.stdin) {
+      raw += chunk
+      if (raw.length > 2_000_000) return
+    }
     const input = JSON.parse(raw)
     const event = input.hook_event_name
     const toolState = event === 'PreToolUse'
@@ -274,8 +287,10 @@ async function main() {
       tool_name: boundedText(input.tool_name, 80),
       notification_type: boundedText(input.notification_type, 80),
       prompt_id: boundedText(input.prompt_id, 200),
+      source: boundedText(input.source, 80),
       intent: event === 'UserPromptSubmit' ? boundedText(input.prompt, 240) : undefined,
       activity: tool.activity ?? subagentActivity,
+      activityId: boundedText(input.tool_use_id ?? input.agent_id, 200),
       attention: attentionFor(input),
       task: taskFor(input),
       filePath: tool.filePath,
@@ -319,11 +334,20 @@ function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
 }
 
+function boundedSource(value, maximum) {
+  const limit = Math.max(1024, maximum * 4)
+  if (value.length <= limit) return value
+  const half = Math.floor(limit / 2)
+  return value.slice(0, half) + '\\n' + value.slice(-half)
+}
+
 function boundedText(value, maximum) {
   if (typeof value !== 'string') return undefined
-  const text = value
-    .replace(/\\bBearer\\s+[^\\s,;]+/gi, 'Bearer [REDACTED]')
-    .replace(/(\\b(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)\\b\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)/gi, '$1[REDACTED]')
+  const text = boundedSource(value, maximum)
+    .replace(/(\\b[a-z][a-z0-9+.-]*:\\/\\/[^:\\s/@]+:)[^@\\s/]+@/gi, '$1[REDACTED]@')
+    .replace(/\\b(?:Bearer|Basic)\\s+[^\\s,;]+/gi, (match) => match.split(/\\s/, 1)[0] + ' [REDACTED]')
+    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
     .replace(/[\\r\\n]+/g, ' ')
     .replace(/\\s+/g, ' ')
     .trim()
@@ -332,7 +356,7 @@ function boundedText(value, maximum) {
 
 function boundedMessage(value, maximum) {
   if (typeof value !== 'string') return undefined
-  const lines = value
+  const lines = boundedSource(value, maximum)
     .split(/\\r?\\n/)
     .map((line) => boundedText(line, 240))
     .filter(Boolean)
@@ -354,13 +378,14 @@ function filePathFrom(args) {
 
 function commandCheck(command, state) {
   if (typeof command !== 'string') return undefined
+  const source = command.slice(0, 4000)
   const checks = [
     { pattern: /\\b(?:typecheck|type-check|tsc)\\b/i, label: 'typecheck' },
     { pattern: /\\b(?:test|tests|vitest|jest|pytest|rspec)\\b|\\bgo\\s+test\\b|\\bcargo\\s+test\\b|\\bdotnet\\s+test\\b/i, label: 'tests' },
     { pattern: /\\b(?:build|vite\\s+build|next\\s+build|cargo\\s+build)\\b/i, label: 'build' },
     { pattern: /\\b(?:lint|eslint|stylelint|ruff|clippy)\\b/i, label: 'lint' },
   ]
-  const match = checks.find(({ pattern }) => pattern.test(command))
+  const match = checks.find(({ pattern }) => pattern.test(source))
   if (!match) return undefined
   const status = state === 'running' ? 'running' : state === 'failed' ? 'failed' : 'passed'
   return { label: match.label, status }
@@ -560,10 +585,19 @@ function intentFromParts(value) {
   for (const candidate of value) {
     const part = asObject(candidate)
     if (part.type !== 'text' || typeof part.text !== 'string') continue
-    text += (text ? ' ' : '') + part.text
+    const separator = text ? ' ' : ''
+    const remaining = Math.max(0, 480 - text.length - separator.length)
+    text += separator + part.text.slice(0, remaining)
     if (text.length >= 480) break
   }
   return boundedText(text, 240)
+}
+
+function toolFailed(output) {
+  const result = asObject(output)
+  const metadata = asObject(result.metadata)
+  const exit = metadata.exit ?? metadata.exitCode
+  return (typeof exit === 'number' && exit !== 0) || result.error !== undefined
 }
 
 async function report(directory, event) {
@@ -610,6 +644,9 @@ export const CommandoAgentStatusPlugin = async ({ directory }) => ({
     try {
       const sessionId = acceptsSyntheticSession(input.sessionID)
       if (!sessionId) return
+      finalMessages.delete(sessionId)
+      latestTodos.delete(sessionId)
+      latestDiffs.delete(sessionId)
       return enqueue(directory, {
         type: 'commando.turn.started',
         properties: { sessionID: sessionId, intent: intentFromParts(output.parts) },
@@ -625,20 +662,20 @@ export const CommandoAgentStatusPlugin = async ({ directory }) => ({
       const metadata = toolMetadata(input.tool, output.args, 'running')
       return enqueue(directory, {
         type: 'commando.activity.started',
-        properties: { sessionID: sessionId, ...metadata },
+        properties: { sessionID: sessionId, activityId: boundedText(input.callID, 200), ...metadata },
       })
     } catch {
       // Status reporting must never interrupt OpenCode.
     }
   },
-  'tool.execute.after': (input) => {
+  'tool.execute.after': (input, output) => {
     try {
       const sessionId = acceptsSyntheticSession(input.sessionID)
       if (!sessionId) return
-      const metadata = toolMetadata(input.tool, input.args, 'completed')
+      const metadata = toolMetadata(input.tool, input.args, toolFailed(output) ? 'failed' : 'completed')
       return enqueue(directory, {
         type: 'commando.activity.completed',
-        properties: { sessionID: sessionId, ...metadata },
+        properties: { sessionID: sessionId, activityId: boundedText(input.callID, 200), ...metadata },
       })
     } catch {
       // Status reporting must never interrupt OpenCode.
