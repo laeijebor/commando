@@ -324,6 +324,14 @@ function updateCheck(
   ].slice(0, MAX_CHECKS)
 }
 
+function clearRunningChecks(
+  details: AgentDetails,
+  runningChecks: Map<string, AgentCheck>,
+): void {
+  runningChecks.clear()
+  details.checks = details.checks.filter((check) => check.status !== 'running')
+}
+
 function addChangedFile(
   details: AgentDetails,
   changedFiles: Set<string>,
@@ -730,12 +738,12 @@ export class AgentStatusRegistry {
 
     if (eventName === 'Notification' && notificationType === 'idle_prompt') {
       runningActivities.clear()
-      runningChecks.clear()
+      clearRunningChecks(details, runningChecks)
       delete details.currentActivity
     }
     if (eventName === 'Stop' || eventName === 'StopFailure') {
       runningActivities.clear()
-      runningChecks.clear()
+      clearRunningChecks(details, runningChecks)
       delete details.currentActivity
       const recap = createRecap(
         'claude',
@@ -904,7 +912,7 @@ export class AgentStatusRegistry {
       (event.type === 'session.status' && isRecord(event.properties.status) && event.properties.status.type === 'idle')
     if (event.type === 'session.error') {
       runningActivities.clear()
-      runningChecks.clear()
+      clearRunningChecks(details, runningChecks)
       delete details.currentActivity
       setRecap(details, createRecap(
         'opencode',
@@ -918,7 +926,7 @@ export class AgentStatusRegistry {
       ))
     } else if (isIdle) {
       runningActivities.clear()
-      runningChecks.clear()
+      clearRunningChecks(details, runningChecks)
       delete details.currentActivity
       if (sameSession && previous.status.status === 'failed' && previous.status.details?.recap) {
         details.recap = { ...previous.status.details.recap }

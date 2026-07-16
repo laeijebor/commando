@@ -470,6 +470,35 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it('removes unresolved running checks from terminal provider states', () => {
+    const claude = new AgentStatusRegistry()
+    claude.applyClaudeHook(paneId, claudePayload('PreToolUse', {
+      activityId: 'claude-tests',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 1)
+    claude.applyClaudeHook(paneId, claudePayload('Stop'), 2)
+    expect(claude.get(paneId)?.details?.checks).toEqual([])
+
+    const idle = new AgentStatusRegistry()
+    idle.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+      activityId: 'idle-tests',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 3)
+    idle.applyOpenCodeEvent(paneId, openCodeEvent('session.idle'), 4)
+    expect(idle.get(paneId)?.details?.checks).toEqual([])
+
+    const failed = new AgentStatusRegistry()
+    failed.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+      activityId: 'failed-tests',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 5)
+    failed.applyOpenCodeEvent(paneId, openCodeEvent('session.error', { error: 'Stopped' }), 6)
+    expect(failed.get(paneId)?.details?.checks).toEqual([])
+  })
+
   it('retains attention until all requests clear and clears it after successful work', () => {
     const registry = new AgentStatusRegistry()
     registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.asked', {
