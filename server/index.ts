@@ -227,6 +227,7 @@ function statusFingerprint(status: AgentStatus): string {
     status.summary,
     status.source,
     status.confidence,
+    JSON.stringify(status.details ?? null),
   ].join('\u001f')
 }
 
