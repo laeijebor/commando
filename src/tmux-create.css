@@ -67,7 +67,8 @@
 }
 
 .tmux-create form,
-.tmux-create form > label {
+.tmux-create form > label,
+.tmux-create__field {
   display: grid;
   gap: 4px;
 }
@@ -100,6 +101,47 @@
 .tmux-create > summary:focus-visible {
   outline: 2px solid #9ccfd8;
   outline-offset: 2px;
+}
+
+.tmux-create__cwd-combo {
+  position: relative;
+}
+
+.tmux-create__cwd-history {
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  bottom: calc(100% + 3px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 132px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 35%);
+  padding: 3px;
+}
+
+.tmux-create__cwd-history button {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-soft);
+  padding: 6px 7px;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tmux-create__cwd-history button:hover,
+.tmux-create__cwd-history button.is-highlighted {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .tmux-create fieldset {
