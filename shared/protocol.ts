@@ -137,6 +137,7 @@ export type ServerMessage =
       revision: number
     }
   | { type: 'agent_status'; status: AgentStatus }
+  | { type: 'agent_status_removed'; paneId: string }
   | {
       type: 'workspace'
       sessionId: string

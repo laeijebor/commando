@@ -757,6 +757,14 @@ export function App() {
           }
         })
         break
+      case 'agent_status_removed':
+        setAgentStatuses((current) => {
+          if (!(message.paneId in current)) return current
+          const next = { ...current }
+          delete next[message.paneId]
+          return next
+        })
+        break
       case 'workspace':
         if (message.workspace) {
           setWorkspaces((current) => ({
