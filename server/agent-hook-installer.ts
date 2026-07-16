@@ -106,7 +106,9 @@ async function main() {
     if (token.length < 32) return
     const port = process.env.COMMANDO_PORT || '4310'
     if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
-    const input = JSON.parse(await readFile(0, 'utf8'))
+    let raw = ''
+    for await (const chunk of process.stdin) raw += chunk
+    const input = JSON.parse(raw)
     const body = JSON.stringify({
       hook_event_name: input.hook_event_name,
       session_id: input.session_id,

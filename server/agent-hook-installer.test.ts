@@ -1,4 +1,6 @@
+import { spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -136,7 +138,7 @@ describe('agent hook installer', () => {
 
     expect(claudeBridge).toContain('/api/agent-status/hooks/claude')
     expect(claudeBridge).toContain('X-Commando-Pane')
-    expect(claudeBridge).toContain("JSON.parse(await readFile(0, 'utf8'))")
+    expect(claudeBridge).toContain('for await (const chunk of process.stdin)')
     expect(openCodePlugin).toContain('/api/agent-status/hooks/opencode')
     expect(openCodePlugin).toContain('event: { type: event.type, properties }')
     for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)
@@ -144,5 +146,60 @@ describe('agent hook installer', () => {
     expect(openCodePlugin).not.toContain(token)
     expect((await stat(paths.claudeBridgePath)).mode & 0o777).toBe(0o600)
     expect((await stat(paths.openCodePluginPath)).mode & 0o777).toBe(0o600)
+  })
+
+  it('forwards Claude stdin through the installed bridge', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const token = (await readFile(paths.tokenPath, 'utf8')).trim()
+    let resolveRequest!: (request: { authorization: string | undefined; body: unknown; pane: string | undefined }) => void
+    const received = new Promise<{ authorization: string | undefined; body: unknown; pane: string | undefined }>((resolve) => {
+      resolveRequest = resolve
+    })
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        resolveRequest({
+          authorization: request.headers.authorization,
+          body: JSON.parse(body),
+          pane: request.headers['x-commando-pane'] as string | undefined,
+        })
+        response.writeHead(200)
+        response.end()
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+
+    try {
+      const child = spawn(process.execPath, [paths.claudeBridgePath], {
+        env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+        stdio: ['pipe', 'ignore', 'inherit'],
+      })
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'PermissionRequest',
+        notification_type: 'private detail',
+        prompt: 'must not be forwarded',
+        session_id: 'claude-session',
+      }))
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Bridge exited ${code}`)))
+      })
+
+      await expect(received).resolves.toEqual({
+        authorization: `Bearer ${token}`,
+        body: {
+          hook_event_name: 'PermissionRequest',
+          notification_type: 'private detail',
+          session_id: 'claude-session',
+        },
+        pane: '%42',
+      })
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
   })
 })

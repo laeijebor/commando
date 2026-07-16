@@ -170,6 +170,7 @@ export class AgentStatusRegistry {
     let status: AgentStatusKind | null = null
     if (eventName === 'SessionStart') status = 'unknown'
     else if (eventName === 'UserPromptSubmit') status = 'working'
+    else if (eventName === 'PermissionRequest') status = 'needs_input'
     else if (eventName === 'PreToolUse') {
       const toolName = stringProperty(payload, 'tool_name')
       status = toolName === 'AskUserQuestion' || toolName === 'PermissionRequest'

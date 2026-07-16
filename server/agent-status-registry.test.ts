@@ -45,6 +45,7 @@ describe('AgentStatusRegistry', () => {
     }> = [
       { payload: claudePayload('SessionStart'), status: 'unknown', confidence: 'low' },
       { payload: claudePayload('UserPromptSubmit'), status: 'working' },
+      { payload: claudePayload('PermissionRequest'), status: 'needs_input' },
       { payload: claudePayload('PreToolUse', { tool_name: 'Read' }), status: 'working' },
       {
         payload: claudePayload('PreToolUse', { tool_name: 'AskUserQuestion' }),
