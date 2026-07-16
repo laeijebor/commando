@@ -1,0 +1,148 @@
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  AgentHookInstaller,
+  CLAUDE_HOOK_EVENTS,
+  OPENCODE_HOOK_EVENTS,
+} from './agent-hook-installer.js'
+import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
+
+const cleanup: Array<() => Promise<void>> = []
+
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await Promise.all(cleanup.splice(0).map((task) => task()))
+})
+
+async function temporaryHome(): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), 'commando-hook-home-'))
+  cleanup.push(() => rm(home, { recursive: true, force: true }))
+  return home
+}
+
+describe('agent hook token', () => {
+  it('persists a private token in a private directory', async () => {
+    const home = await temporaryHome()
+    const store = new AgentHookTokenStore({ home })
+    const first = await store.loadOrCreate()
+    const second = await store.loadOrCreate()
+
+    expect(first.length).toBeGreaterThanOrEqual(32)
+    expect(second).toBe(first)
+    expect((await stat(join(home, '.commando'))).mode & 0o777).toBe(0o700)
+    expect((await stat(store.path)).mode & 0o777).toBe(0o600)
+  })
+
+  it('rejects an existing token shorter than 32 characters', async () => {
+    const home = await temporaryHome()
+    const path = join(home, 'secrets', 'hook-token')
+    await mkdir(join(home, 'secrets'))
+    await writeFile(path, 'too-short\n')
+
+    await expect(new AgentHookTokenStore({ path }).loadOrCreate()).rejects.toThrow(
+      'must contain at least 32 characters',
+    )
+  })
+
+  it('uses an explicit home independently of the process token path', async () => {
+    const home = await temporaryHome()
+    vi.stubEnv(AGENT_HOOK_TOKEN_PATH_ENV, join(home, 'outside-test-home'))
+
+    expect(new AgentHookTokenStore({ home }).path).toBe(
+      join(home, '.commando', 'agent-hook-token'),
+    )
+    expect(new AgentHookInstaller({ home }).paths.tokenPath).toBe(
+      join(home, '.commando', 'agent-hook-token'),
+    )
+  })
+})
+
+describe('agent hook installer', () => {
+  it('preserves unrelated Claude settings and hooks', async () => {
+    const home = await temporaryHome()
+    const settingsPath = join(home, '.claude', 'settings.json')
+    await mkdir(join(home, '.claude'))
+    await writeFile(settingsPath, `${JSON.stringify({
+      theme: 'dark',
+      hooks: {
+        PreToolUse: [{
+          matcher: 'Bash',
+          hooks: [{ type: 'command', command: '/usr/local/bin/existing-hook' }],
+        }],
+        CustomEvent: [{ matcher: 'custom', hooks: [] }],
+      },
+    }, null, 2)}\n`)
+
+    const installed = await new AgentHookInstaller({ home }).install()
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8'))
+
+    expect(settings.theme).toBe('dark')
+    expect(settings.hooks.CustomEvent).toEqual([{ matcher: 'custom', hooks: [] }])
+    expect(settings.hooks.PreToolUse[0]).toEqual({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: '/usr/local/bin/existing-hook' }],
+    })
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      expect(settings.hooks[event]).toContainEqual({
+        matcher: '',
+        hooks: [{
+          type: 'command',
+          command: 'node',
+          args: [installed.claudeBridgePath, '--commando-agent-status-hook'],
+        }],
+      })
+    }
+  })
+
+  it('is idempotent and preserves files it does not own', async () => {
+    const home = await temporaryHome()
+    const installer = new AgentHookInstaller({ home })
+    const unrelatedPlugin = join(home, '.config', 'opencode', 'plugins', 'unrelated.js')
+    const unrelatedHook = join(home, '.commando', 'hooks', 'unrelated.sh')
+    await mkdir(join(home, '.config', 'opencode', 'plugins'), { recursive: true })
+    await mkdir(join(home, '.commando', 'hooks'), { recursive: true })
+    await writeFile(unrelatedPlugin, 'export const unrelated = true\n')
+    await writeFile(unrelatedHook, '#!/bin/sh\n')
+
+    const paths = await installer.install()
+    const firstSettings = await readFile(paths.claudeSettingsPath, 'utf8')
+    const firstBridge = await readFile(paths.claudeBridgePath, 'utf8')
+    const firstPlugin = await readFile(paths.openCodePluginPath, 'utf8')
+    await installer.install()
+
+    expect(await readFile(paths.claudeSettingsPath, 'utf8')).toBe(firstSettings)
+    expect(await readFile(paths.claudeBridgePath, 'utf8')).toBe(firstBridge)
+    expect(await readFile(paths.openCodePluginPath, 'utf8')).toBe(firstPlugin)
+    expect(await readFile(unrelatedPlugin, 'utf8')).toBe('export const unrelated = true\n')
+    expect(await readFile(unrelatedHook, 'utf8')).toBe('#!/bin/sh\n')
+
+    const settings = JSON.parse(firstSettings)
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      const installedHooks = settings.hooks[event]
+        .flatMap((entry: { hooks?: unknown[] }) => entry.hooks ?? [])
+        .filter((hook: { args?: unknown[] }) => hook.args?.includes('--commando-agent-status-hook'))
+      expect(installedHooks).toHaveLength(1)
+    }
+  })
+
+  it('generates provider bridges without embedding the hook token', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const token = (await readFile(paths.tokenPath, 'utf8')).trim()
+    const claudeBridge = await readFile(paths.claudeBridgePath, 'utf8')
+    const openCodePlugin = await readFile(paths.openCodePluginPath, 'utf8')
+
+    expect(claudeBridge).toContain('/api/agent-status/hooks/claude')
+    expect(claudeBridge).toContain('X-Commando-Pane')
+    expect(claudeBridge).toContain("JSON.parse(await readFile(0, 'utf8'))")
+    expect(openCodePlugin).toContain('/api/agent-status/hooks/opencode')
+    expect(openCodePlugin).toContain('event: { type: event.type, properties }')
+    for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)
+    expect(claudeBridge).not.toContain(token)
+    expect(openCodePlugin).not.toContain(token)
+    expect((await stat(paths.claudeBridgePath)).mode & 0o777).toBe(0o600)
+    expect((await stat(paths.openCodePluginPath)).mode & 0o777).toBe(0o600)
+  })
+})

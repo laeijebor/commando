@@ -37,10 +37,23 @@ The production daemon serves the compiled app and prints its `127.0.0.1` URL.
 ## Commands
 
 ```bash
+npm run hooks:install
 npm run typecheck
 npm test
 npm run build
 ```
+
+## Agent Status Hooks
+
+Install the authenticated Claude Code and OpenCode status bridges for the current user:
+
+```bash
+npm run hooks:install
+```
+
+The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, and installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
+
+The installer generates a dedicated hook bearer token at `~/.commando/agent-hook-token`. The token is separate from browser and automation authentication, remains on disk with mode `0600`, and is read at hook runtime rather than embedded in generated files. Set `COMMANDO_AGENT_HOOK_TOKEN_PATH` for both installation and daemon startup to use another path. Hooks post to the loopback `COMMANDO_PORT`, defaulting to `4310`, and silently continue when Commando is unavailable.
 
 ## Configuration
 
@@ -50,6 +63,7 @@ npm run build
 | `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |
+| `COMMANDO_AGENT_HOOK_TOKEN_PATH` | Persisted bearer token shared by installed agent hooks and the daemon | `~/.commando/agent-hook-token` |
 | `BETTER_AUTH_SECRET` | Explicit cookie-signing secret of at least 32 characters | Generated and persisted locally |
 | `BETTER_AUTH_URL` | Canonical auth URL, primarily for an HTTPS proxy | `http://127.0.0.1:<port>` |
 | `COMMANDO_TOKEN` | Fixed bearer token for automation or recovery | Random per daemon start |
