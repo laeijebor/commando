@@ -120,6 +120,15 @@ const STATUS_PRIORITY: Record<AgentStatus['status'], number> = {
   unknown: 5,
 }
 
+export function agentHudStatuses(
+  statuses: Record<string, AgentStatus>,
+  panes: ReadonlyMap<string, TmuxPane>,
+): AgentStatus[] {
+  return Object.values(statuses)
+    .filter((status) => panes.has(status.paneId))
+    .sort((left, right) => STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status])
+}
+
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
 
@@ -1272,14 +1281,12 @@ export function App() {
     }
   }
 
-  const selectedPaneStatuses = Object.values(agentStatuses)
-    .filter((status) => paneMap.get(status.paneId)?.sessionId === selectedSessionId)
-    .sort((left, right) => STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status])
-  const attentionCount = selectedPaneStatuses.filter(
+  const hudStatuses = agentHudStatuses(agentStatuses, paneMap)
+  const attentionCount = hudStatuses.filter(
     (status) => status.status === 'needs_input' || status.status === 'failed',
   ).length
-  const workingCount = selectedPaneStatuses.filter((status) => status.status === 'working').length
-  const doneCount = selectedPaneStatuses.filter((status) => status.status === 'done').length
+  const workingCount = hudStatuses.filter((status) => status.status === 'working').length
+  const doneCount = hudStatuses.filter((status) => status.status === 'done').length
   const activeWindow = selectedSession?.activeWindowId
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
@@ -1739,9 +1746,9 @@ export function App() {
             </button>
           </div>
           <div className="hud-context">
-            <span className="section-kicker">Session context</span>
-            <strong>{selectedSession?.name ?? 'No session'}</strong>
-            <small>{activeWindow ? `Window ${activeWindow.index}: ${activeWindow.name}` : 'All visible windows'}</small>
+            <span className="section-kicker">Global context</span>
+            <strong>All sessions</strong>
+            <small>{snapshot ? `${snapshot.sessions.length} tmux ${snapshot.sessions.length === 1 ? 'session' : 'sessions'}` : 'Waiting for tmux'}</small>
           </div>
           <div className="hud-stats" aria-label="Agent status totals">
             <div><strong>{workingCount}</strong><span>Working</span></div>
@@ -1749,12 +1756,14 @@ export function App() {
             <div><strong>{doneCount}</strong><span>Done</span></div>
           </div>
           <div className="agent-stream">
-            {selectedPaneStatuses.map((status) => {
+            {hudStatuses.map((status) => {
               const pane = paneMap.get(status.paneId)
               const window = pane ? windowMap.get(pane.windowId) : undefined
+              const session = pane ? sessionMap.get(pane.sessionId) : undefined
               return (
                 <AgentHudCard
                   status={status}
+                  sessionName={session?.name ?? pane?.sessionId}
                   windowName={window?.name ?? pane?.windowId}
                   paneIndex={pane?.index}
                   onSelect={() => jumpToPane(status.paneId)}
@@ -1762,7 +1771,7 @@ export function App() {
                 />
               )
             })}
-            {selectedPaneStatuses.length === 0 ? (
+            {hudStatuses.length === 0 ? (
               <div className="hud-empty">
                 <Bot aria-hidden="true" />
                 <strong>No agent signals yet</strong>

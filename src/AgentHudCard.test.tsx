@@ -148,6 +148,7 @@ describe('AgentHudCard', () => {
     render(
       <AgentHudCard
         status={status()}
+        sessionName="commando"
         windowName="terminal"
         paneIndex={4}
         now={NOW}
@@ -157,8 +158,9 @@ describe('AgentHudCard', () => {
 
     const card = screen.getByRole('button', { name: /Open claude agent in pane 4.*Modernizing dashboard/ })
     expect(card).toHaveAttribute('type', 'button')
+    expect(card).toHaveAccessibleName(/Session: commando.*Window: terminal/)
     expect(screen.getByText('Modernizing dashboard')).toBeVisible()
-    expect(screen.getByText(/terminal \/ pane 4 \/ updated 5m ago/)).toBeVisible()
+    expect(screen.getByText(/commando \/ terminal \/ pane 4 \/ updated 5m ago/)).toBeVisible()
     expect(screen.getByText(/Source: hook \/ Confidence: high/)).toBeVisible()
 
     fireEvent.click(card)

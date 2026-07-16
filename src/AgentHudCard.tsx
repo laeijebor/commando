@@ -11,6 +11,7 @@ import type { AgentActivity, AgentProvider, AgentRecap, AgentStatus } from '../s
 
 type AgentHudCardProps = {
   status: AgentStatus
+  sessionName?: string
   windowName?: string
   paneIndex?: number
   now?: number
@@ -59,6 +60,7 @@ function CheckIcon({ status }: { status: 'running' | 'passed' | 'failed' }) {
 
 export function AgentHudCard({
   status,
+  sessionName,
   windowName,
   paneIndex,
   now = Date.now(),
@@ -88,6 +90,8 @@ export function AgentHudCard({
   const paneLabel = paneIndex === undefined ? status.paneId : String(paneIndex)
   const accessibleLabel = [
     `Open ${providerLabel} agent in pane ${paneLabel}`,
+    `Session: ${sessionName ?? 'unknown session'}`,
+    `Window: ${windowName ?? 'unknown window'}`,
     `Status: ${status.status.replace('_', ' ')}`,
     `Summary: ${status.summary}`,
     details?.attention ? `Attention: ${details.attention}` : undefined,
@@ -203,7 +207,7 @@ export function AgentHudCard({
         ) : null}
 
         <span className="agent-context">
-          {windowName ?? 'unknown window'} / pane {paneIndex ?? '?'} / updated {relativeTime(status.updatedAt, now)}
+          {sessionName ?? 'unknown session'} / {windowName ?? 'unknown window'} / pane {paneIndex ?? '?'} / updated {relativeTime(status.updatedAt, now)}
         </span>
         <span className="provenance-row">
           <ShieldCheck aria-hidden="true" />
