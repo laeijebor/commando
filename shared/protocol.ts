@@ -8,6 +8,57 @@ export type AgentStatusKind =
   | 'stale'
   | 'unknown'
 
+export type AgentActivityKind =
+  | 'inspect'
+  | 'edit'
+  | 'command'
+  | 'check'
+  | 'delegate'
+  | 'task'
+  | 'other'
+
+export type AgentActivity = {
+  label: string
+  kind: AgentActivityKind
+  state: 'running' | 'completed' | 'failed'
+  updatedAt: number
+}
+
+export type AgentProgress = {
+  completed: number
+  total: number
+  active?: string
+}
+
+export type AgentChanges = {
+  files: string[]
+  additions: number
+  deletions: number
+}
+
+export type AgentCheck = {
+  label: string
+  status: 'running' | 'passed' | 'failed'
+  updatedAt: number
+}
+
+export type AgentRecap = {
+  outcome: 'done' | 'follow_up' | 'blocked' | 'failed'
+  summary: string
+  completedAt: number
+}
+
+export type AgentDetails = {
+  intent?: string
+  currentActivity?: AgentActivity
+  recentActivities: AgentActivity[]
+  progress?: AgentProgress
+  changes?: AgentChanges
+  checks: AgentCheck[]
+  attention?: string
+  recap?: AgentRecap
+}
+
 export type AgentStatus = {
   paneId: string
   provider: AgentProvider
@@ -17,6 +68,7 @@ export type AgentStatus = {
   confidence: 'high' | 'medium' | 'low'
   reason: string
   updatedAt: number
+  details?: AgentDetails
 }
 
 export type PaneTerminalState = {
