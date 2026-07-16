@@ -183,12 +183,15 @@ export class TmuxClient {
     return this.openPorts.terminatePort(parsePaneProcesses(panes), target)
   }
 
-  async terminateSessionPorts(sessionId: string): Promise<TerminatedSessionPorts> {
+  async terminateSessionPorts(
+    sessionId: string,
+    expectedTargets: OpenPortTarget[],
+  ): Promise<TerminatedSessionPorts> {
     const panes = await this.run(['list-panes', '-a', '-F', PANE_FORMAT], {
       timeout: DISCOVERY_TIMEOUT_MS,
       maxBuffer: DISCOVERY_BUFFER_BYTES,
     })
-    return this.openPorts.terminateSessionPorts(parsePaneProcesses(panes), sessionId)
+    return this.openPorts.terminateSessionPorts(parsePaneProcesses(panes), sessionId, expectedTargets)
   }
 
   setControllerHandlers(handlers: TmuxControllerHandlers): void {

@@ -805,6 +805,7 @@ async function main(): Promise<void> {
   const portManagement = new PortManagementApi({
     actions: tmux,
     currentSessionIds: () => snapshot.sessions.map((session) => session.id),
+    currentPorts: () => snapshot.ports,
     onPortsChanged: async () => {
       await refreshSnapshot()
     },

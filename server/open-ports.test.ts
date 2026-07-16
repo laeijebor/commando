@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  OpenPortConflictError,
   OpenPortNotFoundError,
   OpenPortScanner,
   associatePortsWithPanes,
@@ -78,7 +79,7 @@ describe('open port discovery', () => {
   it('freshly revalidates a listener before terminating its process', async () => {
     const runner = vi.fn(async (command: string) => command === 'lsof' ? lsofOutput : '200 100\n')
     const signaler = vi.fn()
-    const scanner = new OpenPortScanner(runner, signaler)
+    const scanner = new OpenPortScanner(runner, signaler, vi.fn())
     const panes = [{ paneId: '%1', sessionId: '$1', processId: 100 }]
 
     await expect(scanner.terminatePort(panes, {
@@ -110,11 +111,21 @@ describe('open port discovery', () => {
       ? listeners
       : '200 100\n201 100\n')
     const signaler = vi.fn()
-    const scanner = new OpenPortScanner(runner, signaler)
+    const scanner = new OpenPortScanner(runner, signaler, vi.fn())
+    const expectedTargets = [
+      { sessionId: '$1', paneId: '%1', port: 3000 },
+      { sessionId: '$1', paneId: '%1', port: 3001 },
+      { sessionId: '$1', paneId: '%1', port: 8787 },
+    ]
 
     await expect(scanner.terminateSessionPorts([
       { paneId: '%1', sessionId: '$1', processId: 100 },
-    ], '$1')).resolves.toEqual({ processCount: 2, portCount: 3 })
+    ], '$1', expectedTargets.slice(0, 2))).rejects.toBeInstanceOf(OpenPortConflictError)
+    expect(signaler).not.toHaveBeenCalled()
+
+    await expect(scanner.terminateSessionPorts([
+      { paneId: '%1', sessionId: '$1', processId: 100 },
+    ], '$1', expectedTargets)).resolves.toEqual({ processCount: 2, portCount: 3 })
     expect(signaler.mock.calls).toEqual([
       [200, 'SIGTERM'],
       [201, 'SIGTERM'],

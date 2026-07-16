@@ -30,10 +30,23 @@ export type OpenPortCommandRunner = (
 
 export type ProcessSignaler = (processId: number, signal: NodeJS.Signals) => void
 
+export type ProcessTerminationAudit = (entry: {
+  processId: number
+  sessionId: string
+  ports: number[]
+}) => void
+
 export class OpenPortNotFoundError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'OpenPortNotFoundError'
+  }
+}
+
+export class OpenPortConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'OpenPortConflictError'
   }
 }
 
@@ -168,6 +181,9 @@ export class OpenPortScanner {
   constructor(
     private readonly runner: OpenPortCommandRunner = runCommand,
     private readonly signaler: ProcessSignaler = (processId, signal) => process.kill(processId, signal),
+    private readonly audit: ProcessTerminationAudit = (entry) => {
+      console.info(`[commando] terminating port process ${entry.processId} for ${entry.sessionId} (${entry.ports.join(', ')})`)
+    },
   ) {}
 
   async scan(panes: TmuxPaneProcess[], capturedAt = Date.now()): Promise<OpenPort[]> {
@@ -205,6 +221,7 @@ export class OpenPortScanner {
     if (!match) throw new OpenPortNotFoundError('Open port process no longer exists')
 
     try {
+      this.audit({ processId: match.processId, sessionId: match.sessionId, ports: [match.port] })
       this.signaler(match.processId, 'SIGTERM')
     } finally {
       this.invalidate()
@@ -215,6 +232,7 @@ export class OpenPortScanner {
   async terminateSessionPorts(
     panes: TmuxPaneProcess[],
     sessionId: string,
+    expectedTargets: OpenPortTarget[],
   ): Promise<TerminatedSessionPorts> {
     const ports = (await discoverManagedOpenPorts(panes, this.runner))
       .filter((port) => port.sessionId === sessionId)
@@ -222,13 +240,34 @@ export class OpenPortScanner {
       throw new OpenPortNotFoundError('No open port processes remain for this session')
     }
 
-    const processIds = [...new Set(ports.map((port) => port.processId))]
+    const targetKey = (target: OpenPortTarget) => `${target.sessionId}\u0000${target.paneId}\u0000${target.port}`
+    const expectedKeys = new Set(expectedTargets.map(targetKey))
+    const discoveredKeys = new Set(ports.map(targetKey))
+    if (
+      expectedTargets.length === 0 ||
+      expectedKeys.size !== expectedTargets.length ||
+      expectedTargets.some((target) => target.sessionId !== sessionId) ||
+      expectedKeys.size !== discoveredKeys.size ||
+      [...expectedKeys].some((key) => !discoveredKeys.has(key))
+    ) {
+      throw new OpenPortConflictError('Open ports changed; refresh and confirm the session action again')
+    }
+
+    const portsByProcess = new Map<number, number[]>()
+    for (const port of ports) {
+      const processPorts = portsByProcess.get(port.processId) ?? []
+      processPorts.push(port.port)
+      portsByProcess.set(port.processId, processPorts)
+    }
     try {
-      for (const processId of processIds) this.signaler(processId, 'SIGTERM')
+      for (const [processId, processPorts] of portsByProcess) {
+        this.audit({ processId, sessionId, ports: processPorts.sort((left, right) => left - right) })
+        this.signaler(processId, 'SIGTERM')
+      }
     } finally {
       this.invalidate()
     }
-    return { processCount: processIds.length, portCount: ports.length }
+    return { processCount: portsByProcess.size, portCount: ports.length }
   }
 
   private invalidate(): void {

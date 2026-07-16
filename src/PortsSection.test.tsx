@@ -111,8 +111,11 @@ describe('PortsSection', () => {
     confirm.mockReturnValue(true)
     fireEvent.click(killAll)
 
-    expect(confirm).toHaveBeenLastCalledWith('Kill every process listening on 2 open ports for "frontend"? This can stop development servers.')
-    expect(portApi.killSessionPorts).toHaveBeenCalledWith('$1')
+    expect(confirm).toHaveBeenLastCalledWith('Kill every process listening on ports 3000, 5173 for "frontend"? This can stop development servers.')
+    expect(portApi.killSessionPorts).toHaveBeenCalledWith('$1', [
+      { port: 3000, processName: 'node', sessionId: '$1', paneId: '%1' },
+      { port: 5173, processName: 'node', sessionId: '$1', paneId: '%1' },
+    ])
   })
 
   it('stays hidden when no session owns an open port', () => {

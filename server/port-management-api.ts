@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { OpenPort } from '../shared/protocol.js'
-import { OpenPortNotFoundError, type OpenPortTarget, type TerminatedSessionPorts } from './open-ports.js'
+import { OpenPortConflictError, OpenPortNotFoundError, type OpenPortTarget, type TerminatedSessionPorts } from './open-ports.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
 import { validateTmuxSessionId } from './tmux-session-actions.js'
 
@@ -9,12 +9,13 @@ const MAX_REQUEST_BYTES = 16 * 1024
 
 type PortActions = {
   terminatePort(target: OpenPortTarget): Promise<OpenPort>
-  terminateSessionPorts(sessionId: string): Promise<TerminatedSessionPorts>
+  terminateSessionPorts(sessionId: string, expectedTargets: OpenPortTarget[]): Promise<TerminatedSessionPorts>
 }
 
 type PortManagementDependencies = {
   actions: PortActions
   currentSessionIds: () => readonly string[]
+  currentPorts: () => readonly OpenPort[]
   onPortsChanged?: () => void | Promise<void>
 }
 
@@ -78,6 +79,32 @@ function sessionRoute(pathname: string): string | null {
   }
 }
 
+function portTargetKey(target: OpenPortTarget): string {
+  return `${target.sessionId}\u0000${target.paneId}\u0000${target.port}`
+}
+
+function parseExpectedTargets(value: unknown, sessionId: string): OpenPortTarget[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) {
+    throw new HttpError(400, 'targets must contain 1-256 open ports')
+  }
+  return value.map((candidate) => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+      throw new HttpError(400, 'Each target must be an object')
+    }
+    const target = candidate as Record<string, unknown>
+    try {
+      return {
+        sessionId,
+        paneId: validateTmuxPaneId(target.paneId),
+        port: validatePort(target.port),
+      }
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      throw new HttpError(400, error instanceof Error ? error.message : 'Invalid open port target')
+    }
+  })
+}
+
 export class PortManagementApi {
   constructor(private readonly dependencies: PortManagementDependencies) {}
 
@@ -118,11 +145,29 @@ export class PortManagementApi {
       if (body.confirmSessionId !== sessionId) {
         throw new HttpError(400, 'Termination requires an exact confirmSessionId')
       }
-      const terminated = await this.dependencies.actions.terminateSessionPorts(sessionId)
+      const targets = parseExpectedTargets(body.targets, sessionId)
+      const expectedKeys = new Set(targets.map(portTargetKey))
+      const currentKeys = new Set(
+        this.dependencies.currentPorts()
+          .filter((port) => port.sessionId === sessionId)
+          .map(portTargetKey),
+      )
+      if (
+        expectedKeys.size !== targets.length ||
+        expectedKeys.size !== currentKeys.size ||
+        [...expectedKeys].some((key) => !currentKeys.has(key))
+      ) {
+        throw new HttpError(409, 'Open ports changed; refresh and confirm the session action again')
+      }
+      const terminated = await this.dependencies.actions.terminateSessionPorts(sessionId, targets)
       await this.dependencies.onPortsChanged?.()
       writeJson(response, 200, { ok: true, sessionId, ...terminated })
       return true
     } catch (error) {
+      if (error instanceof OpenPortConflictError) {
+        writeJson(response, 409, { error: error.message })
+        return true
+      }
       if (error instanceof OpenPortNotFoundError) {
         writeJson(response, 404, { error: error.message })
         return true

@@ -2,7 +2,7 @@ import type { OpenPort } from '../shared/protocol'
 
 export interface PortManagementApiClient {
   killPort(port: OpenPort): Promise<void>
-  killSessionPorts(sessionId: string): Promise<void>
+  killSessionPorts(sessionId: string, ports: OpenPort[]): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -41,8 +41,9 @@ export function createPortManagementApi(
       port: port.port,
       confirmPort: port.port,
     }),
-    killSessionPorts: (sessionId) => request(`/sessions/${encodeURIComponent(sessionId)}/kill`, {
+    killSessionPorts: (sessionId, ports) => request(`/sessions/${encodeURIComponent(sessionId)}/kill`, {
       confirmSessionId: sessionId,
+      targets: ports.map((port) => ({ paneId: port.paneId, port: port.port })),
     }),
   }
 }

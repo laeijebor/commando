@@ -55,11 +55,12 @@ export function PortsSection({ token, sessions, ports }: Props) {
   }
 
   const killSessionPorts = async (session: TmuxSession, sessionPorts: OpenPort[]) => {
-    if (pending || !window.confirm(`Kill every process listening on ${sessionPorts.length} open port${sessionPorts.length === 1 ? '' : 's'} for "${session.name}"? This can stop development servers.`)) return
+    const portList = sessionPorts.map((port) => port.port).join(', ')
+    if (pending || !window.confirm(`Kill every process listening on port${sessionPorts.length === 1 ? '' : 's'} ${portList} for "${session.name}"? This can stop development servers.`)) return
     setPending(true)
     setError('')
     try {
-      await api.killSessionPorts(session.id)
+      await api.killSessionPorts(session.id, sessionPorts)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : `Unable to kill port processes for ${session.name}`)
     } finally {
