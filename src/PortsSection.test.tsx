@@ -45,6 +45,7 @@ describe('PortsSection', () => {
 
     const reopen = screen.getByRole('button', { name: 'Reopen ports section' })
     expect(reopen).toHaveAttribute('aria-expanded', 'false')
+    expect(document.getElementById('sidebar-port-groups')).toHaveAttribute('hidden')
     expect(screen.queryByRole('link', { name: 'Open node on port 3000' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Ports' })).toBeVisible()
     expect(screen.getByText('1')).toBeVisible()
