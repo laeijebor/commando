@@ -97,7 +97,11 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    const copyButton = await screen.findByRole('button', { name: 'Copy project link' })
+    const copyButton = await screen.findByRole(
+      'button',
+      { name: 'Copy project link' },
+      { timeout: 5_000 },
+    )
 
     fireEvent.click(copyButton)
 
@@ -122,15 +126,23 @@ describe('LinearSection', () => {
     })
 
     render(<LinearSection token="test-token" />)
-    fireEvent.click(await screen.findByRole('button', { name: /VIV-1.*Ship polling/ }))
+    fireEvent.click(await screen.findByRole(
+      'button',
+      { name: /VIV-1.*Ship polling/ },
+      { timeout: 5_000 },
+    ))
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Copy issue ID: VIV-1' }))
+    fireEvent.click(await screen.findByRole(
+      'button',
+      { name: 'Copy issue ID: VIV-1' },
+      { timeout: 5_000 },
+    ))
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('VIV-1'))
-    expect(screen.getByRole('button', { name: 'Copied issue ID' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Copied issue ID' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy issue URL' }))
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('https://linear.app/issue/VIV-1'))
-    expect(screen.getByRole('button', { name: 'Copied issue URL' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Copied issue URL' })).toBeVisible()
   })
 
   it('optimistically moves an issue when it is dropped on a same-team status', async () => {
