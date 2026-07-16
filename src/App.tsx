@@ -757,6 +757,19 @@ export function App() {
           }
         })
         break
+      case 'agent_status_snapshot':
+        setAgentStatuses(Object.fromEntries(
+          message.statuses.map((status) => [status.paneId, status]),
+        ))
+        break
+      case 'agent_status_removed':
+        setAgentStatuses((current) => {
+          if (!(message.paneId in current)) return current
+          const next = { ...current }
+          delete next[message.paneId]
+          return next
+        })
+        break
       case 'workspace':
         if (message.workspace) {
           setWorkspaces((current) => ({
@@ -862,9 +875,7 @@ export function App() {
   useEffect(() => {
     if (connection.phase !== 'live') {
       paneStreamsRef.current?.clear()
-      return
     }
-    setAgentStatuses({})
   }, [connection.phase])
 
   useEffect(() => {

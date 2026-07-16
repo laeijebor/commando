@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { TmuxPane } from '../shared/protocol'
+import type { AgentStatus, TmuxPane } from '../shared/protocol'
 import { SessionTree } from './SessionTree'
 
 const sessionApi = vi.hoisted(() => ({
@@ -58,6 +58,19 @@ function pane(id: string, index: number, title: string): TmuxPane {
     mouseAnyFlag: false,
     mouseSgrFlag: false,
     paneTabs: [],
+  }
+}
+
+function agentStatus(paneId: string, provider: AgentStatus['provider'], status: AgentStatus['status']): AgentStatus {
+  return {
+    paneId,
+    provider,
+    status,
+    summary: '',
+    source: 'hook',
+    confidence: 'high',
+    reason: '',
+    updatedAt: 1,
   }
 }
 
@@ -134,6 +147,79 @@ describe('SessionTree', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Third tmux pane maximized' }))
     expect(onOpenPaneMaximized).toHaveBeenCalledWith('%3')
+  })
+
+  it('shows ordered accessible pane statuses on a collapsed session', () => {
+    const panes = [
+      pane('%1', 0, 'Claude pane'),
+      pane('%2', 1, 'No agent'),
+      pane('%3', 2, 'Codex pane'),
+    ]
+    const onSelectPane = vi.fn()
+    const { container } = render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
+        panes={panes}
+        displayedPaneIds={['%3', '%2', '%1']}
+        statuses={{
+          '%1': agentStatus('%1', 'claude', 'working'),
+          '%3': agentStatus('%3', 'codex', 'needs_input'),
+        }}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={onSelectPane}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+      />,
+    )
+
+    const dots = [...container.querySelectorAll('.session-status-dot')]
+    expect(dots).toHaveLength(2)
+    expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
+      'Codex: needs input - Codex pane',
+      'Claude: working - Claude pane',
+    ])
+    expect(dots.map((dot) => dot.getAttribute('title'))).toEqual([
+      'Codex: needs input - Codex pane',
+      'Claude: working - Claude pane',
+    ])
+    expect(dots[0]).toHaveClass('needs_input')
+    expect(dots[1]).toHaveClass('working')
+    fireEvent.click(dots[0])
+    expect(onSelectPane).toHaveBeenCalledWith('%3')
+    expect(container.querySelector('.managed-window-tree')).not.toBeInTheDocument()
+    expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
+  })
+
+  it('does not show attachment or placeholder dots without pane statuses', () => {
+    const panes = [pane('%1', 0, 'No agent')]
+    const { container } = render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'attached', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: ['%1'] }]}
+        panes={panes}
+        displayedPaneIds={['%1']}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+      />,
+    )
+
+    expect(container.querySelector('.session-status-cluster')).not.toBeInTheDocument()
+    expect(container.querySelector('.session-status-dot')).not.toBeInTheDocument()
+    expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
   })
 
   it('confirms and closes a tmux window', async () => {

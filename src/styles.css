@@ -669,23 +669,12 @@ kbd {
   color: var(--muted-dim);
 }
 
-.live-dot,
 .mini-status,
 .input-indicator,
 .hud-pulse {
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--text-faint);
-}
-
-.live-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.live-dot.attached {
-  background: var(--accent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 58%, transparent);
 }
 
 .tree-copy {
@@ -797,18 +786,26 @@ kbd {
   height: 5px;
 }
 
-.mini-status.working,
-.mini-status.done {
+.mini-status.working {
   background: var(--accent);
+  animation: session-status-pulse 1.8s ease-in-out infinite;
 }
 
-.mini-status.needs_input,
-.mini-status.stale {
+.mini-status.needs_input {
   background: var(--amber);
+}
+
+.mini-status.done {
+  background: var(--green);
 }
 
 .mini-status.failed {
   background: var(--red);
+}
+
+.mini-status.stale,
+.mini-status.unknown {
+  background: var(--muted-dim);
 }
 
 .sidebar-empty,

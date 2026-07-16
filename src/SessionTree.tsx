@@ -23,6 +23,30 @@ type Props = {
 
 const emptyPreferences: SessionTreePreferences = { version: 1, groups: [], ungroupedSessionIds: [] }
 
+const providerLabels: Record<AgentStatus['provider'], string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  unknown: 'Unknown agent',
+}
+
+const statusLabels: Record<AgentStatus['status'], string> = {
+  working: 'working',
+  needs_input: 'needs input',
+  done: 'done',
+  failed: 'failed',
+  stale: 'stale',
+  unknown: 'unknown',
+}
+
+function paneLabel(pane: TmuxPane): string {
+  return pane.title || pane.command || `Pane ${pane.index}`
+}
+
+function statusLabel(status: AgentStatus, pane: TmuxPane): string {
+  return `${providerLabels[status.provider]}: ${statusLabels[status.status]} - ${paneLabel(pane)}`
+}
+
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(emptyPreferences)
@@ -149,13 +173,17 @@ export function SessionTree(props: Props) {
               const session = sessionMap.get(sessionId)
               if (!session) return []
               const selected = session.id === props.selectedSessionId
-              const sessionPanes = props.panes.filter((pane) => pane.sessionId === session.id)
+              const sessionPanes = props.panes
+                .filter((pane) => pane.sessionId === session.id)
+                .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
+              const statusPanes = sessionPanes.filter((pane) => props.statuses[pane.id])
               return [<article className={`managed-session${selected ? ' selected' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
                 <div className="managed-session-row">
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className={`live-dot${session.attached ? ' attached' : ''}`} /><span><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
+                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
+                  {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
-                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = pane.title || pane.command || `Pane ${pane.index}`; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
+                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = paneLabel(pane); const agentLabel = status ? statusLabel(status, pane) : ''; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} role="img" aria-label={agentLabel} title={agentLabel} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
               </article>]
             })}
             {!container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}

@@ -48,6 +48,12 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess } from './network-access.js'
+import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
+import { AgentStatusHookApi } from './agent-status-api.js'
+import {
+  AgentStatusRegistry,
+  type AgentStatusChange,
+} from './agent-status-registry.js'
 
 const DEFAULT_PORT = 4310
 const SNAPSHOT_INTERVAL_MS = 1_000
@@ -397,6 +403,7 @@ async function main(): Promise<void> {
   const networkAccess = createNetworkAccess(port)
   const token = authToken()
   const digest = tokenDigest(token)
+  const agentHookToken = await loadOrCreateAgentHookToken()
   const ownerEmail = configuredOwnerEmail()
   const authBaseURL = process.env.BETTER_AUTH_URL ?? `http://127.0.0.1:${port}`
   const auth = ownerEmail
@@ -415,6 +422,7 @@ async function main(): Promise<void> {
   const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
+  const agentStatuses = new AgentStatusRegistry()
   let snapshot: CommandoSnapshot = {
     revision: 0,
     capturedAt: Date.now(),
@@ -438,6 +446,24 @@ async function main(): Promise<void> {
 
   const broadcast = (message: ServerMessage): void => {
     for (const client of clients) send(client, message)
+  }
+
+  const sendAgentStatusChange = (client: ClientState, change: AgentStatusChange): void => {
+    if (!change) return
+    if (change.type === 'remove') {
+      client.lastStatus.delete(change.paneId)
+      send(client, { type: 'agent_status_removed', paneId: change.paneId })
+      return
+    }
+    const fingerprint = statusFingerprint(change.status)
+    if (client.lastStatus.get(change.status.paneId) === fingerprint) return
+    if (send(client, { type: 'agent_status', status: change.status })) {
+      client.lastStatus.set(change.status.paneId, fingerprint)
+    }
+  }
+
+  const publishAgentStatusChange = (change: AgentStatusChange): void => {
+    for (const client of clients) sendAgentStatusChange(client, change)
   }
 
   const reportTmuxError = (error: unknown): void => {
@@ -467,7 +493,11 @@ async function main(): Promise<void> {
       }
     }
     for (const paneId of paneTextTails.keys()) {
-      if (!subscribedPaneIds.has(paneId)) paneTextTails.delete(paneId)
+      if (subscribedPaneIds.has(paneId)) continue
+      paneTextTails.delete(paneId)
+      if (agentStatuses.get(paneId)?.source !== 'hook') {
+        publishAgentStatusChange(agentStatuses.remove(paneId))
+      }
     }
     tmux.setRequiredSessions(sessionIds)
   }
@@ -506,23 +536,17 @@ async function main(): Promise<void> {
     const pane = paneForId(paneId)
     if (!pane) return
     const tail = paneTextTails.get(paneId)
+    if (!tail) return
     const status = inferAgentStatus({
       paneId,
       command: pane.command,
       title: pane.title,
-      content: stripAnsi(tail?.content ?? ''),
+      content: stripAnsi(tail.content),
       dead: pane.dead,
       capturedAt,
-      lastChangedAt: tail?.lastChangedAt ?? capturedAt,
+      lastChangedAt: tail.lastChangedAt,
     })
-    const fingerprint = statusFingerprint(status)
-    for (const client of clients) {
-      if (!client.subscribedPaneIds.has(paneId)) continue
-      if (client.lastStatus.get(paneId) === fingerprint) continue
-      if (send(client, { type: 'agent_status', status })) {
-        client.lastStatus.set(paneId, fingerprint)
-      }
-    }
+    publishAgentStatusChange(agentStatuses.applyInferred(status))
   }
 
   const sendPaneData = (client: ClientState, paneId: string, data: Buffer): void => {
@@ -724,6 +748,12 @@ async function main(): Promise<void> {
         lastTmuxError = ''
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
+        for (const pane of snapshot.panes) {
+          publishAgentStatusChange(agentStatuses.removeIfProcessChanged(pane.id, pane.command))
+        }
+        for (const change of agentStatuses.retainPaneIds(paneIds)) {
+          publishAgentStatusChange(change)
+        }
         for (const paneId of paneTextTails.keys()) {
           if (!paneIds.has(paneId)) paneTextTails.delete(paneId)
         }
@@ -810,6 +840,13 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const agentStatusHooks = new AgentStatusHookApi({
+    token: agentHookToken,
+    registry: agentStatuses,
+    paneExists,
+    paneCommand: (paneId) => paneForId(paneId)?.command,
+    onChange: publishAgentStatusChange,
+  })
 
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
     switch (message.type) {
@@ -823,7 +860,6 @@ async function main(): Promise<void> {
         for (const paneId of previous) {
           if (!client.subscribedPaneIds.has(paneId)) {
             client.paneStreams.delete(paneId)
-            client.lastStatus.delete(paneId)
           }
         }
         const newlySubscribed = message.paneIds.filter(
@@ -1052,6 +1088,12 @@ async function main(): Promise<void> {
     }
     clients.add(client)
     send(client, { type: 'snapshot', snapshot })
+    const replayStatuses = agentStatuses.values()
+    if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
+      for (const status of replayStatuses) {
+        client.lastStatus.set(status.paneId, statusFingerprint(status))
+      }
+    }
 
     socket.on('message', (data, isBinary) => {
       if (isBinary) {
@@ -1122,6 +1164,8 @@ async function main(): Promise<void> {
         await auth.handle(request, response)
         return
       }
+
+      if (await agentStatusHooks.handle(request, response, url)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {

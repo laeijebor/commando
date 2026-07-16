@@ -7,6 +7,7 @@
     "dev": "concurrently -k -n daemon,web -c green,cyan \"tsx watch server/index.ts\" \"vite\"",
     "build": "tsc -b && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
+    "hooks:install": "tsx scripts/install-agent-hooks.ts",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:e2e:terminal": "playwright test e2e/terminal-fidelity.pw.ts --workers=1"
