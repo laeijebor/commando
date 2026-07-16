@@ -7,6 +7,7 @@ import {
   MAX_TERMINAL_ROWS,
   MIN_TERMINAL_COLS,
   MIN_TERMINAL_ROWS,
+  TERMINAL_SCROLLBACK_LINES,
   type PaneTerminalState,
   type SpecialKey,
 } from '../shared/protocol'
@@ -166,7 +167,7 @@ export function XtermPane({
       minimumContrastRatio: 1,
       macOptionClickForcesSelection: true,
       altClickMovesCursor: false,
-      scrollback: 5_000,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       scrollOnUserInput: true,
       theme: TERMINAL_THEME,
     })

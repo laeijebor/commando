@@ -3,7 +3,11 @@ import {
   spawn,
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process'
-import type { PaneTerminalState, SpecialKey } from '../shared/protocol.js'
+import {
+  TERMINAL_SCROLLBACK_LINES,
+  type PaneTerminalState,
+  type SpecialKey,
+} from '../shared/protocol.js'
 import {
   PANE_TERMINAL_STATE_FORMAT,
   parsePaneTerminalState,
@@ -13,7 +17,7 @@ const SESSION_ID = /^\$\d+$/
 const PANE_ID = /^%\d+$/
 const MAX_CONTROL_LINE_BYTES = 1024 * 1024
 const MAX_COMMAND_QUEUE = 512
-const MAX_CAPTURE_BYTES = 512 * 1024
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024
 const COMMAND_TIMEOUT_MS = 3_000
 const ATTACH_TIMEOUT_MS = 3_000
 const STABLE_CONTROLLER_MS = 10_000
@@ -302,6 +306,8 @@ export function capturePaneProcess(
         '-p',
         '-e',
         '-N',
+        '-S',
+        `-${TERMINAL_SCROLLBACK_LINES}`,
         ...(alternate ? ['-a'] : []),
         '-t',
         paneId,

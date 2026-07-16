@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { Terminal } from '@xterm/headless'
 
-import type { PaneTerminalState } from '../shared/protocol.js'
+import {
+  TERMINAL_SCROLLBACK_LINES,
+  type PaneTerminalState,
+} from '../shared/protocol.js'
 import { buildPaneSeed } from './terminal-seed.js'
 
 const state: PaneTerminalState = {
@@ -94,5 +97,40 @@ describe('pane terminal bootstrap', () => {
     expect(output).not.toContain('\u001b[?1049h')
     expect(output).toContain('\u001b[6 q')
     expect(output).toContain('\u001b[11;13H')
+  })
+
+  it('restores retained history behind the live normal-screen viewport', async () => {
+    const terminal = new Terminal({
+      cols: 80,
+      rows: 24,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
+      allowProposedApi: true,
+    })
+    const rows = Array.from({ length: 30 }, (_, index) => `captured-row-${index + 1}`)
+
+    await new Promise<void>((resolve) => {
+      terminal.write(
+        buildPaneSeed(
+          Buffer.from(rows.join('\r\n')),
+          {
+            ...state,
+            alternateOn: false,
+            originFlag: false,
+            scrollRegionUpper: 0,
+            scrollRegionLower: 23,
+          },
+        ),
+        resolve,
+      )
+    })
+
+    expect(terminal.buffer.normal.baseY).toBe(6)
+    expect(terminal.buffer.normal.viewportY).toBe(6)
+    expect(terminal.buffer.normal.getLine(0)?.translateToString(true)).toBe('captured-row-1')
+    expect(terminal.buffer.normal.getLine(6)?.translateToString(true)).toBe('captured-row-7')
+    expect(terminal.buffer.normal.getLine(29)?.translateToString(true)).toBe('captured-row-30')
+    expect(terminal.buffer.normal.cursorX).toBe(state.cursorX)
+    expect(terminal.buffer.normal.cursorY).toBe(state.cursorY)
+    terminal.dispose()
   })
 })

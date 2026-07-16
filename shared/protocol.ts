@@ -149,6 +149,7 @@ export type ServerMessage =
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
+export const TERMINAL_SCROLLBACK_LINES = 5_000
 export const MIN_TERMINAL_COLS = 2
 export const MAX_TERMINAL_COLS = 500
 export const MIN_TERMINAL_ROWS = 1

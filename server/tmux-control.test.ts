@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TERMINAL_SCROLLBACK_LINES } from '../shared/protocol.js'
 
 const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }))
 
@@ -131,6 +132,8 @@ describe('tmux pane capture', () => {
         '-p',
         '-e',
         '-N',
+        '-S',
+        `-${TERMINAL_SCROLLBACK_LINES}`,
         '-t',
         '%42',
       ],
