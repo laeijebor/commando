@@ -306,6 +306,24 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it('bounds unmatched parallel activities', () => {
+    const registry = new AgentStatusRegistry()
+    for (let index = 0; index < 22; index += 1) {
+      registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+        activityId: `tool-${index}`,
+        activity: { label: `Tool ${index}`, kind: 'other', state: 'running' },
+      }), index + 1)
+    }
+    for (let index = 2; index < 22; index += 1) {
+      registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.completed', {
+        activityId: `tool-${index}`,
+        activity: { label: `Tool ${index}`, kind: 'other', state: 'completed' },
+      }), index + 30)
+    }
+
+    expect(registry.get(paneId)?.details?.currentActivity).toBeUndefined()
+  })
+
   it('tracks Claude subagent work as delegated activity', () => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook(paneId, claudePayload('SubagentStart', {
@@ -417,6 +435,41 @@ describe('AgentStatusRegistry', () => {
     ])
   })
 
+  it('keeps a check running until all same-label parallel checks complete', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+      activityId: 'tests-a',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 1)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+      activityId: 'tests-b',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 2)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.completed', {
+      activityId: 'tests-a',
+      activity: { label: 'Running tests', kind: 'check', state: 'completed' },
+      check: { label: 'tests', status: 'passed' },
+    }), 3)
+
+    expect(registry.get(paneId)?.details?.checks[0]).toEqual({
+      label: 'tests',
+      status: 'running',
+      updatedAt: 2,
+    })
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.completed', {
+      activityId: 'tests-b',
+      activity: { label: 'Running tests', kind: 'check', state: 'failed' },
+      check: { label: 'tests', status: 'failed' },
+    }), 4)
+    expect(registry.get(paneId)?.details?.checks[0]).toEqual({
+      label: 'tests',
+      status: 'failed',
+      updatedAt: 4,
+    })
+  })
+
   it('retains attention until all requests clear and clears it after successful work', () => {
     const registry = new AgentStatusRegistry()
     registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.asked', {
@@ -471,6 +524,28 @@ describe('AgentStatusRegistry', () => {
       status: 'needs_input',
       details: { attention: 'Approve command' },
     })
+  })
+
+  it('preserves cross-type request arrival order when timestamps match', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
+      id: 'question-old',
+      attention: 'Older question',
+    }), 1)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.asked', {
+      id: 'permission-newer',
+      attention: 'Newer permission',
+    }), 1)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
+      id: 'question-latest',
+      attention: 'Latest question',
+    }), 2)
+
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.replied', {
+      requestID: 'question-latest',
+    }), 3)
+
+    expect(registry.get(paneId)?.details?.attention).toBe('Newer permission')
   })
 
   it.each([
@@ -592,6 +667,30 @@ describe('AgentStatusRegistry', () => {
       details: { recap: { summary: 'OpenCode finished' } },
     })
     expect(openCode.applyInferred(inferred({ provider: 'opencode' }))).toBeNull()
+  })
+
+  it('retains blocked recaps through Claude SessionEnd and process exit', () => {
+    const claude = new AgentStatusRegistry()
+    claude.applyClaudeHook(paneId, claudePayload('Stop', {
+      finalMessage: '🔴 Approve the release',
+    }), 1, 'claude')
+    expect(claude.applyClaudeHook(paneId, claudePayload('SessionEnd'), 2, 'zsh')).toBeNull()
+    expect(claude.get(paneId)).toMatchObject({
+      status: 'needs_input',
+      details: { recap: { outcome: 'blocked', summary: 'Approve the release' } },
+    })
+
+    const openCode = new AgentStatusRegistry()
+    openCode.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
+      id: 'question-1',
+      attention: 'Choose a target',
+    }), 3, 'opencode')
+    openCode.applyOpenCodeEvent(paneId, openCodeEvent('session.idle'), 4, 'opencode')
+    expect(openCode.removeIfProcessChanged(paneId, 'zsh')).toBeNull()
+    expect(openCode.get(paneId)).toMatchObject({
+      status: 'needs_input',
+      details: { recap: { outcome: 'blocked', summary: 'Choose a target' } },
+    })
   })
 
   it('replaces a retained completion with a fresh provider turn', () => {

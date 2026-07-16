@@ -21,16 +21,15 @@ type TaskState = {
 
 type PendingRequest = {
   attention: string
-  updatedAt: number
 }
 
 type RegistryRecord = {
   status: AgentStatus
   providerSessionId: string | null
   processCommand: string | null
-  pendingPermissions: Map<string, PendingRequest>
-  pendingQuestions: Map<string, PendingRequest>
+  pendingRequests: Map<string, PendingRequest>
   runningActivities: Map<string, AgentActivity>
+  runningChecks: Map<string, AgentCheck>
   changedFiles: Set<string>
   tasks: Map<string, TaskState>
   turnId: string | null
@@ -50,6 +49,7 @@ type OpenCodeEvent = {
 const MAX_INTENT_LENGTH = 240
 const MAX_ACTIVITY_LABEL_LENGTH = 240
 const MAX_RECENT_ACTIVITIES = 3
+const MAX_RUNNING_ACTIVITIES = 20
 const MAX_TASK_ID_LENGTH = 120
 const MAX_TASK_SUBJECT_LENGTH = 240
 const MAX_TASKS = 100
@@ -254,6 +254,10 @@ function startActivity(
   const activity = parseActivity(value, updatedAt, 'running')
   if (!activity) return false
   const activityId = boundedText(activityIdValue, 200) ?? '__legacy__'
+  if (!runningActivities.has(activityId) && runningActivities.size >= MAX_RUNNING_ACTIVITIES) {
+    const oldestActivityId = runningActivities.keys().next().value
+    if (oldestActivityId !== undefined) runningActivities.delete(oldestActivityId)
+  }
   runningActivities.delete(activityId)
   runningActivities.set(activityId, activity)
   details.currentActivity = { ...activity }
@@ -285,7 +289,13 @@ function completeActivity(
   return state
 }
 
-function updateCheck(details: AgentDetails, value: unknown, updatedAt: number): void {
+function updateCheck(
+  details: AgentDetails,
+  runningChecks: Map<string, AgentCheck>,
+  value: unknown,
+  activityIdValue: unknown,
+  updatedAt: number,
+): void {
   if (!isRecord(value)) return
   const label = boundedText(value.label, MAX_CHECK_LABEL_LENGTH)
   const status = value.status
@@ -294,8 +304,22 @@ function updateCheck(details: AgentDetails, value: unknown, updatedAt: number): 
     (status !== 'running' && status !== 'passed' && status !== 'failed')
   ) return
   const check: AgentCheck = { label, status, updatedAt }
+  const checkId = boundedText(activityIdValue, 200) ?? `__legacy__:${label}`
+  if (status === 'running') {
+    if (!runningChecks.has(checkId) && runningChecks.size >= MAX_RUNNING_ACTIVITIES) {
+      const oldestCheckId = runningChecks.keys().next().value
+      if (oldestCheckId !== undefined) runningChecks.delete(oldestCheckId)
+    }
+    runningChecks.delete(checkId)
+    runningChecks.set(checkId, check)
+  } else {
+    runningChecks.delete(checkId)
+  }
+  const displayedCheck = status === 'running'
+    ? check
+    : [...runningChecks.values()].reverse().find((candidate) => candidate.label === label) ?? check
   details.checks = [
-    check,
+    displayedCheck,
     ...details.checks.filter((candidate) => candidate.label !== label),
   ].slice(0, MAX_CHECKS)
 }
@@ -407,29 +431,26 @@ function setAttention(
 
 function syncAttention(
   details: AgentDetails,
-  pendingPermissions: Map<string, PendingRequest>,
-  pendingQuestions: Map<string, PendingRequest>,
+  pendingRequests: Map<string, PendingRequest>,
 ): void {
-  let latest: PendingRequest | undefined
-  for (const request of [...pendingPermissions.values(), ...pendingQuestions.values()]) {
-    if (!latest || request.updatedAt >= latest.updatedAt) latest = request
-  }
+  const latest = [...pendingRequests.values()].at(-1)
   if (latest) details.attention = latest.attention
   else delete details.attention
 }
 
 function addPendingRequest(
   requests: Map<string, PendingRequest>,
+  kind: 'permission' | 'question',
   requestId: string,
   attention: string,
-  updatedAt: number,
 ): void {
-  if (!requests.has(requestId) && requests.size >= MAX_PENDING_REQUESTS) {
+  const key = `${kind}:${requestId}`
+  if (!requests.has(key) && requests.size >= MAX_PENDING_REQUESTS) {
     const oldestRequestId = requests.keys().next().value
     if (oldestRequestId !== undefined) requests.delete(oldestRequestId)
   }
-  requests.delete(requestId)
-  requests.set(requestId, { attention, updatedAt })
+  requests.delete(key)
+  requests.set(key, { attention })
 }
 
 function messageLines(value: unknown): string[] {
@@ -509,6 +530,15 @@ function setRecap(details: AgentDetails, recap: AgentRecap): void {
     : recap
 }
 
+function hasRetainableRecap(record: RegistryRecord): boolean {
+  const recap = record.status.details?.recap
+  return Boolean(recap && (
+    record.status.status === 'done' ||
+    record.status.status === 'failed' ||
+    (record.status.status === 'needs_input' && recap.outcome === 'blocked')
+  ))
+}
+
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
   private readonly inferenceSuppressions = new Map<string, InferenceSuppression>()
@@ -559,9 +589,9 @@ export class AgentStatusRegistry {
       status: statusWithoutDetails(status),
       providerSessionId: null,
       processCommand: null,
-      pendingPermissions: new Map(),
-      pendingQuestions: new Map(),
+      pendingRequests: new Map(),
       runningActivities: new Map(),
+      runningChecks: new Map(),
       changedFiles: new Set(),
       tasks: new Map(),
       turnId: null,
@@ -643,15 +673,15 @@ export class AgentStatusRegistry {
       ? emptyDetails(eventName === 'UserPromptSubmit' ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
     const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
-    const pendingPermissions = resetDetails
+    const pendingRequests = resetDetails
       ? new Map<string, PendingRequest>()
-      : new Map(previous.pendingPermissions)
-    const pendingQuestions = resetDetails
-      ? new Map<string, PendingRequest>()
-      : new Map(previous.pendingQuestions)
+      : new Map(previous.pendingRequests)
     const runningActivities = resetDetails
       ? new Map<string, AgentActivity>()
       : new Map(previous.runningActivities)
+    const runningChecks = resetDetails
+      ? new Map<string, AgentCheck>()
+      : new Map(previous.runningChecks)
     const changedFiles = resetDetails
       ? new Set<string>()
       : new Set(previous.changedFiles)
@@ -673,10 +703,10 @@ export class AgentStatusRegistry {
         eventName === 'PostToolUseFailure',
       )
       if (activityState === 'completed') {
-        syncAttention(details, pendingPermissions, pendingQuestions)
+        syncAttention(details, pendingRequests)
       }
     }
-    updateCheck(details, payload.check, updatedAt)
+    updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
     addChangedFile(details, changedFiles, payload.filePath)
     updateClaudeTask(tasks, details, payload.task)
 
@@ -695,21 +725,23 @@ export class AgentStatusRegistry {
         notificationType === 'elicitation_response'
       ))
     ) {
-      syncAttention(details, pendingPermissions, pendingQuestions)
+      syncAttention(details, pendingRequests)
     }
 
     if (eventName === 'Notification' && notificationType === 'idle_prompt') {
       runningActivities.clear()
+      runningChecks.clear()
       delete details.currentActivity
     }
     if (eventName === 'Stop' || eventName === 'StopFailure') {
       runningActivities.clear()
+      runningChecks.clear()
       delete details.currentActivity
       const recap = createRecap(
         'claude',
         status,
         details,
-        pendingPermissions.size > 0 || pendingQuestions.size > 0,
+        pendingRequests.size > 0,
         payload.finalMessage,
         payload.backgroundTasks,
         payload.error,
@@ -725,9 +757,9 @@ export class AgentStatusRegistry {
       processCommand: status === 'unknown'
         ? null
         : sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
-      pendingPermissions,
-      pendingQuestions,
+      pendingRequests,
       runningActivities,
+      runningChecks,
       changedFiles,
       tasks,
       turnId: eventName === 'UserPromptSubmit'
@@ -764,15 +796,15 @@ export class AgentStatusRegistry {
       ? emptyDetails(startsNewTurn ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
     const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
-    const pendingPermissions = resetDetails
+    const pendingRequests = resetDetails
       ? new Map<string, PendingRequest>()
-      : new Map(previous.pendingPermissions)
-    const pendingQuestions = resetDetails
-      ? new Map<string, PendingRequest>()
-      : new Map(previous.pendingQuestions)
+      : new Map(previous.pendingRequests)
     const runningActivities = resetDetails
       ? new Map<string, AgentActivity>()
       : new Map(previous.runningActivities)
+    const runningChecks = resetDetails
+      ? new Map<string, AgentCheck>()
+      : new Map(previous.runningChecks)
     const changedFiles = resetDetails
       ? new Set<string>()
       : new Set(previous.changedFiles)
@@ -790,13 +822,13 @@ export class AgentStatusRegistry {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
       const attention = setAttention(details, event.properties.attention, 'opencode')
-      addPendingRequest(pendingPermissions, requestId, attention, updatedAt)
+      addPendingRequest(pendingRequests, 'permission', requestId, attention)
       status = 'needs_input'
     } else if (event.type === 'question.asked') {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
       const attention = setAttention(details, event.properties.attention, 'opencode')
-      addPendingRequest(pendingQuestions, requestId, attention, updatedAt)
+      addPendingRequest(pendingRequests, 'question', requestId, attention)
       status = 'needs_input'
     } else if (
       event.type === 'permission.replied' ||
@@ -806,10 +838,10 @@ export class AgentStatusRegistry {
       if (previous?.status.source === 'hook' && !sameSession) return null
       const requestId = stringProperty(event.properties, 'requestID')
       if (!requestId) return null
-      if (event.type === 'permission.replied') pendingPermissions.delete(requestId)
-      else pendingQuestions.delete(requestId)
-      syncAttention(details, pendingPermissions, pendingQuestions)
-      status = pendingPermissions.size > 0 || pendingQuestions.size > 0
+      if (event.type === 'permission.replied') pendingRequests.delete(`permission:${requestId}`)
+      else pendingRequests.delete(`question:${requestId}`)
+      syncAttention(details, pendingRequests)
+      status = pendingRequests.size > 0
         ? 'needs_input'
         : 'working'
     } else if (event.type === 'session.error') {
@@ -845,10 +877,16 @@ export class AgentStatusRegistry {
         false,
       )
       if (activityState === 'completed') {
-        syncAttention(details, pendingPermissions, pendingQuestions)
+        syncAttention(details, pendingRequests)
       }
     }
-    updateCheck(details, event.properties.check, updatedAt)
+    updateCheck(
+      details,
+      runningChecks,
+      event.properties.check,
+      event.properties.activityId,
+      updatedAt,
+    )
     addChangedFile(details, changedFiles, event.properties.filePath)
     if (event.type === 'todo.updated' || event.type === 'session.idle' || event.type === 'session.status') {
       updateTodos(tasks, details, event.properties.todos)
@@ -859,19 +897,20 @@ export class AgentStatusRegistry {
 
     if (
       status === 'working' &&
-      (pendingPermissions.size > 0 || pendingQuestions.size > 0)
+      pendingRequests.size > 0
     ) status = 'needs_input'
 
     const isIdle = event.type === 'session.idle' ||
       (event.type === 'session.status' && isRecord(event.properties.status) && event.properties.status.type === 'idle')
     if (event.type === 'session.error') {
       runningActivities.clear()
+      runningChecks.clear()
       delete details.currentActivity
       setRecap(details, createRecap(
         'opencode',
         'failed',
         details,
-        pendingPermissions.size > 0 || pendingQuestions.size > 0,
+        pendingRequests.size > 0,
         event.properties.finalMessage,
         0,
         event.properties.error,
@@ -879,6 +918,7 @@ export class AgentStatusRegistry {
       ))
     } else if (isIdle) {
       runningActivities.clear()
+      runningChecks.clear()
       delete details.currentActivity
       if (sameSession && previous.status.status === 'failed' && previous.status.details?.recap) {
         details.recap = { ...previous.status.details.recap }
@@ -888,7 +928,7 @@ export class AgentStatusRegistry {
           'opencode',
           status,
           details,
-          pendingPermissions.size > 0 || pendingQuestions.size > 0,
+          pendingRequests.size > 0,
           event.properties.finalMessage,
           0,
           event.properties.error,
@@ -910,9 +950,9 @@ export class AgentStatusRegistry {
       status: attachDetails(hookStatus(paneId, 'opencode', status, updatedAt), details),
       providerSessionId: sessionId,
       processCommand: sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
-      pendingPermissions,
-      pendingQuestions,
+      pendingRequests,
       runningActivities,
+      runningChecks,
       changedFiles,
       tasks,
       turnId: startsNewTurn
@@ -934,8 +974,7 @@ export class AgentStatusRegistry {
     ) return null
     if (
       provider === 'claude' &&
-      record.status.details?.recap &&
-      (record.status.status === 'done' || record.status.status === 'failed')
+      hasRetainableRecap(record)
     ) {
       const previousCommand = record.processCommand
       const suppression = this.inferenceSuppressions.get(paneId)
@@ -964,10 +1003,7 @@ export class AgentStatusRegistry {
       record.processCommand === null ||
       record.processCommand === processCommand
     ) return null
-    if (
-      record.status.details?.recap &&
-      (record.status.status === 'done' || record.status.status === 'failed')
-    ) {
+    if (hasRetainableRecap(record)) {
       const previousCommand = record.processCommand
       record.processCommand = null
       record.retainedCompletion = true

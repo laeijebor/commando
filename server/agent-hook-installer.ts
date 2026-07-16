@@ -124,10 +124,12 @@ function boundedSource(value, maximum) {
 function boundedText(value, maximum) {
   if (typeof value !== 'string') return undefined
   const text = boundedSource(value, maximum)
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----[\\s\\S]*?(?:-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----|$)/gi, '[REDACTED PRIVATE KEY]')
     .replace(/(\\b[a-z][a-z0-9+.-]*:\\/\\/[^:\\s/@]+:)[^@\\s/]+@/gi, '$1[REDACTED]@')
     .replace(/\\b(?:Bearer|Basic)\\s+[^\\s,;]+/gi, (match) => match.split(/\\s/, 1)[0] + ' [REDACTED]')
-    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
-    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
+    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b/g, '[REDACTED JWT]')
+    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?(?:key|token)|auth[_ -]?token|secret[_ -]?access[_ -]?key|private[_ -]?key|client[_ -]?secret|token|secret|password|credential)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
     .replace(/[\\r\\n]+/g, ' ')
     .replace(/\\s+/g, ' ')
     .trim()
@@ -344,10 +346,12 @@ function boundedSource(value, maximum) {
 function boundedText(value, maximum) {
   if (typeof value !== 'string') return undefined
   const text = boundedSource(value, maximum)
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----[\\s\\S]*?(?:-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----|$)/gi, '[REDACTED PRIVATE KEY]')
     .replace(/(\\b[a-z][a-z0-9+.-]*:\\/\\/[^:\\s/@]+:)[^@\\s/]+@/gi, '$1[REDACTED]@')
     .replace(/\\b(?:Bearer|Basic)\\s+[^\\s,;]+/gi, (match) => match.split(/\\s/, 1)[0] + ' [REDACTED]')
-    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
-    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?token|auth[_ -]?token|token|secret|password)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
+    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b/g, '[REDACTED JWT]')
+    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?(?:key|token)|auth[_ -]?token|secret[_ -]?access[_ -]?key|private[_ -]?key|client[_ -]?secret|token|secret|password|credential)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
     .replace(/[\\r\\n]+/g, ' ')
     .replace(/\\s+/g, ' ')
     .trim()
@@ -596,8 +600,15 @@ function intentFromParts(value) {
 function toolFailed(output) {
   const result = asObject(output)
   const metadata = asObject(result.metadata)
-  const exit = metadata.exit ?? metadata.exitCode
-  return (typeof exit === 'number' && exit !== 0) || result.error !== undefined
+  const hasExit = Object.prototype.hasOwnProperty.call(metadata, 'exit') ||
+    Object.prototype.hasOwnProperty.call(metadata, 'exitCode')
+  const exit = Object.prototype.hasOwnProperty.call(metadata, 'exit')
+    ? metadata.exit
+    : metadata.exitCode
+  return (hasExit && exit !== 0) ||
+    metadata.timedOut === true ||
+    metadata.aborted === true ||
+    result.error !== undefined
 }
 
 async function report(directory, event) {

@@ -615,6 +615,10 @@ describe('agent hook installer', () => {
               'password: raw multiword secret',
               'https://user:raw-url-secret@example.com',
               'ghp_1234567890abcdefghijkl',
+              'AWS_SECRET_ACCESS_KEY=raw-aws-secret-key',
+              'ASIA1234567890ABCDEF',
+              'eyJheader123.payload123.signature123',
+              '-----BEGIN PRIVATE KEY-----\nraw-private-key\n-----END PRIVATE KEY-----',
             ].join('\n'),
           }],
         },
@@ -625,7 +629,7 @@ describe('agent hook installer', () => {
       ),
       plugin['tool.execute.after'](
         { tool: 'bash', sessionID: 'main', callID: 'failed-check', args: { command: 'npm test' } },
-        { metadata: { exit: 2 } },
+        { metadata: { exit: null } },
       ),
       send('todo.updated', {
         todos: [{ content: 'First turn todo', status: 'completed', priority: 'high' }],
@@ -670,6 +674,10 @@ describe('agent hook installer', () => {
       'raw multiword secret',
       'raw-url-secret',
       'ghp_1234567890abcdefghijkl',
+      'raw-aws-secret-key',
+      'ASIA1234567890ABCDEF',
+      'eyJheader123.payload123.signature123',
+      'raw-private-key',
     ]) expect(serialized).not.toContain(secret)
   })
 })
