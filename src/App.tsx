@@ -5,7 +5,6 @@ import {
   ArrowRight,
   Bot,
   Check,
-  ChevronRight,
   CircleDotDashed,
   Command,
   Grid2X2,
@@ -49,7 +48,6 @@ import {
 } from 'react'
 
 import type {
-  AgentProvider,
   AgentStatus,
   CommandoSnapshot,
   LayoutSpec,
@@ -88,6 +86,7 @@ import { createPaneManagementApi } from './paneManagementApi'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PortsSection } from './PortsSection'
+import { AgentHudCard } from './AgentHudCard'
 import {
   createOwner,
   getAuthBootstrap,
@@ -202,19 +201,6 @@ function connectionLabel(phase: ConnectionPhase) {
       return 'Signed out'
     case 'signed-out':
       return 'Sign in required'
-  }
-}
-
-function providerInitials(provider: AgentProvider) {
-  switch (provider) {
-    case 'claude':
-      return 'CL'
-    case 'codex':
-      return 'CX'
-    case 'opencode':
-      return 'OC'
-    case 'unknown':
-      return 'AG'
   }
 }
 
@@ -1767,32 +1753,13 @@ export function App() {
               const pane = paneMap.get(status.paneId)
               const window = pane ? windowMap.get(pane.windowId) : undefined
               return (
-                <button
-                  type="button"
-                  className={`agent-card status-${status.status}`}
-                  onClick={() => jumpToPane(status.paneId)}
+                <AgentHudCard
+                  status={status}
+                  windowName={window?.name ?? pane?.windowId}
+                  paneIndex={pane?.index}
+                  onSelect={() => jumpToPane(status.paneId)}
                   key={status.paneId}
-                >
-                  <span className={`agent-avatar provider-${status.provider}`}>
-                    {providerInitials(status.provider)}
-                  </span>
-                  <span className="agent-copy">
-                    <span className="agent-title-row">
-                      <strong>{status.provider === 'unknown' ? 'Agent' : status.provider}</strong>
-                      <span className={`agent-state ${status.status}`}>{status.status.replace('_', ' ')}</span>
-                    </span>
-                    <span className="agent-summary">{status.summary || status.reason}</span>
-                    <span className="agent-context">
-                      {window?.name ?? pane?.windowId ?? 'unknown window'} / pane {pane?.index ?? '?'} / {displayTime(status.updatedAt)}
-                    </span>
-                    <span className="provenance-row">
-                      <ShieldCheck aria-hidden="true" />
-                      Source: {status.source} / Confidence: {status.confidence}
-                    </span>
-                    <span className="agent-reason">{status.reason}</span>
-                  </span>
-                  <ChevronRight className="jump-chevron" aria-hidden="true" />
-                </button>
+                />
               )
             })}
             {selectedPaneStatuses.length === 0 ? (
@@ -1810,7 +1777,7 @@ export function App() {
           </button>
           <footer className="hud-footer">
             <LockKeyhole aria-hidden="true" />
-            <span>Status metadata includes explicit provenance and bounded heuristic reasons.</span>
+            <span>Agent signals include bounded task and activity metadata, change totals, checks, and provenance.</span>
           </footer>
         </aside> : null}
       </div>
