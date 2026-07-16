@@ -9,6 +9,21 @@ const SPLITTER_SIZE = 1
 const MIN_PANE_WIDTH = 160
 const MIN_PANE_HEIGHT = 140
 
+function splitWeightsFromTree(
+  node: WindowLayoutNode,
+  path = 'root',
+  weights: SplitWeights = {},
+): SplitWeights {
+  if (node.kind === 'pane') return weights
+  weights[path] = node.children.map((child) =>
+    node.direction === 'row' ? child.cols : child.rows,
+  )
+  node.children.forEach((child, index) => {
+    splitWeightsFromTree(child, `${path}.${index}`, weights)
+  })
+  return weights
+}
+
 export function defaultLayoutHeight(node: WindowLayoutNode): number {
   if (node.kind === 'pane') return DEFAULT_PANE_HEIGHT
   const heights = node.children.map(defaultLayoutHeight)
@@ -85,12 +100,12 @@ export function ResizablePaneLayout({
   panes: ReadonlyMap<string, ReactNode>
   onCommit?: () => void
 }) {
-  const [weights, setWeights] = useState<SplitWeights>({})
+  const [weights, setWeights] = useState<SplitWeights>(() => splitWeightsFromTree(tree))
   const [seenLayoutKey, setSeenLayoutKey] = useState(layoutKey)
   if (seenLayoutKey !== layoutKey) {
     // tmux geometry moved on; it is the source of truth once a snapshot lands.
     setSeenLayoutKey(layoutKey)
-    setWeights({})
+    setWeights(splitWeightsFromTree(tree))
   }
 
   const scheduleCommit = () => {
