@@ -14,6 +14,11 @@ export type AgentStatusInput = {
   lastChangedAt: number
 }
 
+export type AgentProcessStatusInput = Pick<
+  AgentStatusInput,
+  'paneId' | 'command' | 'title' | 'dead' | 'capturedAt'
+>
+
 type ProviderEvidence = {
   provider: AgentProvider
   source: 'heuristic' | 'process'
@@ -72,6 +77,28 @@ export function inferAgentProvider(
     provider: 'unknown',
     source: 'heuristic',
     reason: 'no supported agent signature found',
+  }
+}
+
+export function inferAgentProcessStatus(input: AgentProcessStatusInput): AgentStatus {
+  const evidence = inferAgentProvider(input.command, input.title, '')
+  const provider = evidence.provider
+  const knownProvider = provider !== 'unknown'
+  return {
+    paneId: input.paneId,
+    provider,
+    status: input.dead && knownProvider ? 'failed' : 'unknown',
+    summary: input.dead && knownProvider
+      ? `${provider} process exited`
+      : knownProvider ? `${provider} process detected` : 'No supported agent detected',
+    source: input.dead && knownProvider ? 'process' : evidence.source,
+    confidence: input.dead && knownProvider
+      ? 'high'
+      : evidence.source === 'process' ? 'medium' : 'low',
+    reason: input.dead && knownProvider
+      ? 'tmux reports the pane process as dead'
+      : evidence.reason,
+    updatedAt: input.capturedAt,
   }
 }
 

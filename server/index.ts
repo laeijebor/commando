@@ -19,7 +19,7 @@ import type {
   ServerMessage,
 } from '../shared/protocol.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
-import { inferAgentStatus } from './agent-status.js'
+import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
   MAX_CLIENT_MESSAGE_BYTES,
   parseClientMessage,
@@ -423,7 +423,6 @@ async function main(): Promise<void> {
   const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
-  const statusSeedTasks = new Map<string, Promise<void>>()
   const agentStatuses = new AgentStatusRegistry()
   let snapshot: CommandoSnapshot = {
     revision: 0,
@@ -481,18 +480,9 @@ async function main(): Promise<void> {
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
 
-  const hasStatusObserver = (): boolean => [...clients].some(
-    (client) => client.socket.readyState === WebSocket.OPEN,
-  )
-
   const syncRequiredSessions = (): void => {
     const sessionIds = new Set<string>()
     const subscribedPaneIds = new Set<string>()
-    const observedPaneIds = new Set<string>()
-    if (hasStatusObserver()) {
-      for (const session of snapshot.sessions) sessionIds.add(session.id)
-      for (const pane of snapshot.panes) observedPaneIds.add(pane.id)
-    }
     for (const client of clients) {
       if (client.socket.readyState !== WebSocket.OPEN) continue
       for (const paneId of client.subscribedPaneIds) {
@@ -504,7 +494,7 @@ async function main(): Promise<void> {
       }
     }
     for (const paneId of paneTextTails.keys()) {
-      if (subscribedPaneIds.has(paneId) || observedPaneIds.has(paneId)) continue
+      if (subscribedPaneIds.has(paneId)) continue
       paneTextTails.delete(paneId)
       if (agentStatuses.get(paneId)?.source !== 'hook') {
         publishAgentStatusChange(agentStatuses.remove(paneId))
@@ -560,36 +550,6 @@ async function main(): Promise<void> {
     publishAgentStatusChange(agentStatuses.applyInferred(status))
   }
 
-  const requestStatusSeed = (paneId: string): void => {
-    if (paneTextTails.has(paneId) || statusSeedTasks.has(paneId) || !hasStatusObserver()) return
-    const pane = paneForId(paneId)
-    if (!pane) return
-    const task = tmux.capturePane(pane.sessionId, paneId)
-      .then((capture) => {
-        const currentPane = paneForId(paneId)
-        if (!currentPane || currentPane.sessionId !== pane.sessionId || !hasStatusObserver()) return
-        observePaneSeed(
-          paneId,
-          normalizeCaptureLineEndings(capture),
-          Buffer.alloc(0),
-          Date.now(),
-        )
-        emitAgentStatus(paneId)
-      })
-      .catch((error: unknown) => {
-        if (paneExists(paneId) && hasStatusObserver()) reportTmuxError(error)
-      })
-      .finally(() => {
-        statusSeedTasks.delete(paneId)
-      })
-    statusSeedTasks.set(paneId, task)
-  }
-
-  const requestStatusSeeds = (): void => {
-    if (!hasStatusObserver()) return
-    for (const pane of snapshot.panes) requestStatusSeed(pane.id)
-  }
-
   const sendPaneData = (client: ClientState, paneId: string, data: Buffer): void => {
     for (let offset = 0; offset < data.length; offset += MAX_LIVE_MESSAGE_BYTES) {
       const chunk = data.subarray(offset, offset + MAX_LIVE_MESSAGE_BYTES)
@@ -613,7 +573,7 @@ async function main(): Promise<void> {
     const subscribers = [...clients].filter((client) =>
       client.subscribedPaneIds.has(paneId),
     )
-    if (subscribers.length === 0 && !hasStatusObserver()) return
+    if (subscribers.length === 0) return
 
     const changedAt = Date.now()
     observePaneData(paneId, data, changedAt)
@@ -784,13 +744,34 @@ async function main(): Promise<void> {
         const previousRenderingState = new Map(
           snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
         )
+        const previousCommands = new Map(
+          snapshot.panes.map((pane) => [pane.id, pane.command]),
+        )
         snapshotRevision = nextSnapshot.revision
         snapshot = nextSnapshot
         lastTmuxError = ''
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {
+          if (
+            previousCommands.get(pane.id) !== undefined &&
+            previousCommands.get(pane.id) !== pane.command
+          ) {
+            paneTextTails.delete(pane.id)
+            if (agentStatuses.get(pane.id)?.source !== 'hook') {
+              publishAgentStatusChange(agentStatuses.remove(pane.id))
+            }
+          }
           publishAgentStatusChange(agentStatuses.removeIfProcessChanged(pane.id, pane.command))
+          if (!paneTextTails.has(pane.id)) {
+            publishAgentStatusChange(agentStatuses.applyInferred(inferAgentProcessStatus({
+              paneId: pane.id,
+              command: pane.command,
+              title: pane.title,
+              dead: pane.dead,
+              capturedAt: snapshot.capturedAt,
+            })))
+          }
         }
         for (const change of agentStatuses.retainPaneIds(paneIds)) {
           publishAgentStatusChange(change)
@@ -810,7 +791,10 @@ async function main(): Promise<void> {
             if (
               pane &&
               previousRenderingState.get(paneId) !== undefined &&
-              previousRenderingState.get(paneId) !== paneRenderingFingerprint(pane)
+              (
+                previousRenderingState.get(paneId) !== paneRenderingFingerprint(pane) ||
+                previousCommands.get(paneId) !== pane.command
+              )
             ) {
               requestPaneSeed(client, paneId)
             }
@@ -818,7 +802,6 @@ async function main(): Promise<void> {
         }
 
         syncRequiredSessions()
-        requestStatusSeeds()
         broadcast({ type: 'snapshot', snapshot })
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
         return snapshot
@@ -1129,8 +1112,6 @@ async function main(): Promise<void> {
       violations: 0,
     }
     clients.add(client)
-    syncRequiredSessions()
-    requestStatusSeeds()
     send(client, { type: 'snapshot', snapshot })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {

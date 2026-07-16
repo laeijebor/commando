@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { inferAgentProvider, inferAgentStatus } from './agent-status.js'
+import {
+  inferAgentProcessStatus,
+  inferAgentProvider,
+  inferAgentStatus,
+} from './agent-status.js'
 
 const now = 100_000
 
@@ -13,6 +17,38 @@ describe('agent inference', () => {
       provider: 'opencode',
       source: 'heuristic',
     })
+  })
+
+  it('discovers supported agent processes without treating captured history as live work', () => {
+    expect(inferAgentProcessStatus({
+      paneId: '%1',
+      command: '/opt/bin/codex',
+      title: 'shell',
+      capturedAt: now,
+    })).toMatchObject({
+      provider: 'codex',
+      status: 'unknown',
+      source: 'process',
+      confidence: 'medium',
+      summary: 'codex process detected',
+    })
+    expect(inferAgentProcessStatus({
+      paneId: '%2',
+      command: 'node',
+      title: 'OpenCode',
+      capturedAt: now,
+    })).toMatchObject({
+      provider: 'opencode',
+      status: 'unknown',
+      source: 'heuristic',
+      confidence: 'low',
+    })
+    expect(inferAgentProcessStatus({
+      paneId: '%3',
+      command: 'zsh',
+      title: 'shell',
+      capturedAt: now,
+    })).toMatchObject({ provider: 'unknown', status: 'unknown' })
   })
 
   it('recognizes active work and input prompts', () => {
