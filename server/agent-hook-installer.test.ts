@@ -15,6 +15,7 @@ const cleanup: Array<() => Promise<void>> = []
 
 afterEach(async () => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   await Promise.all(cleanup.splice(0).map((task) => task()))
 })
 
@@ -58,6 +59,18 @@ describe('agent hook token', () => {
     expect(new AgentHookInstaller({ home }).paths.tokenPath).toBe(
       join(home, '.commando', 'agent-hook-token'),
     )
+  })
+
+  it('does not change permissions on a custom token directory', async () => {
+    const home = await temporaryHome()
+    const directory = join(home, 'shared')
+    const path = join(directory, 'hook-token')
+    await mkdir(directory, { mode: 0o750 })
+
+    await new AgentHookTokenStore({ path }).loadOrCreate()
+
+    expect((await stat(directory)).mode & 0o777).toBe(0o750)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
 })
 
@@ -140,7 +153,7 @@ describe('agent hook installer', () => {
     expect(claudeBridge).toContain('X-Commando-Pane')
     expect(claudeBridge).toContain('for await (const chunk of process.stdin)')
     expect(openCodePlugin).toContain('/api/agent-status/hooks/opencode')
-    expect(openCodePlugin).toContain('event: { type: event.type, properties }')
+    expect(openCodePlugin).toContain('const payload = { type: event.type, properties }')
     for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)
     expect(claudeBridge).not.toContain(token)
     expect(openCodePlugin).not.toContain(token)
@@ -201,5 +214,44 @@ describe('agent hook installer', () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
+  })
+
+  it('forwards only the active OpenCode session', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const requests: Array<{ event: { type: string; properties: { sessionID?: string } } }> = []
+    vi.stubEnv('TMUX_PANE', '%42')
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body))
+      if (request.event.properties.status?.type === 'busy') {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      requests.push(request)
+      return new Response(null, { status: 200 })
+    }))
+    const source = await readFile(paths.openCodePluginPath, 'utf8')
+    const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`) as {
+      CommandoAgentStatusPlugin: (context: { directory: string }) => Promise<{
+        event: (input: { event: { type: string; properties: Record<string, unknown> } }) => Promise<void> | undefined
+      }>
+    }
+    const plugin = await module.CommandoAgentStatusPlugin({ directory: '/workspace' })
+    const send = (type: string, sessionID: string, properties: Record<string, unknown> = {}) =>
+      plugin.event({ event: { type, properties: { sessionID, ...properties } } })
+
+    const deliveries = [
+      send('session.status', 'main', { status: { type: 'busy' } }),
+      send('session.status', 'child', { status: { type: 'busy' } }),
+      send('session.idle', 'child'),
+      send('session.idle', 'main'),
+      send('session.status', 'next', { status: { type: 'busy' } }),
+    ].filter((delivery): delivery is Promise<void> => delivery !== undefined)
+    await Promise.all(deliveries)
+
+    expect(requests.map(({ event }) => [event.type, event.properties.sessionID])).toEqual([
+      ['session.status', 'main'],
+      ['session.idle', 'main'],
+      ['session.status', 'next'],
+    ])
   })
 })

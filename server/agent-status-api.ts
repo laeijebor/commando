@@ -10,6 +10,7 @@ type AgentStatusApiDependencies = {
   token: string
   registry: AgentStatusRegistry
   paneExists: (paneId: string) => boolean
+  paneCommand: (paneId: string) => string | undefined
   onChange: (change: AgentStatusChange) => void
   now?: () => number
 }
@@ -123,6 +124,7 @@ export class AgentStatusHookApi {
       if (!this.dependencies.paneExists(targetPaneId)) {
         throw new HttpError(404, 'Tmux pane does not exist')
       }
+      const processCommand = this.dependencies.paneCommand(targetPaneId) ?? null
 
       const body = await readJson(request)
       const updatedAt = this.dependencies.now?.() ?? Date.now()
@@ -130,7 +132,12 @@ export class AgentStatusHookApi {
       if (provider === 'claude') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
-        change = this.dependencies.registry.applyClaudeHook(targetPaneId, body, updatedAt)
+        change = this.dependencies.registry.applyClaudeHook(
+          targetPaneId,
+          body,
+          updatedAt,
+          processCommand,
+        )
       } else {
         const event = body.event
         if (typeof event !== 'object' || event === null || Array.isArray(event)) {
@@ -145,7 +152,12 @@ export class AgentStatusHookApi {
         ) {
           throw new HttpError(400, 'event.properties must be a JSON object')
         }
-        change = this.dependencies.registry.applyOpenCodeEvent(targetPaneId, event, updatedAt)
+        change = this.dependencies.registry.applyOpenCodeEvent(
+          targetPaneId,
+          event,
+          updatedAt,
+          processCommand,
+        )
       }
 
       this.dependencies.onChange(change)

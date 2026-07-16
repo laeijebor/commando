@@ -155,6 +155,7 @@ describe('SessionTree', () => {
       pane('%2', 1, 'No agent'),
       pane('%3', 2, 'Codex pane'),
     ]
+    const onSelectPane = vi.fn()
     const { container } = render(
       <SessionTree
         token="token"
@@ -170,7 +171,7 @@ describe('SessionTree', () => {
         focusedPaneId={null}
         onSelectSession={vi.fn()}
         onSelectWindow={vi.fn()}
-        onSelectPane={vi.fn()}
+        onSelectPane={onSelectPane}
         onOpenPaneMaximized={vi.fn()}
         onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
@@ -189,6 +190,8 @@ describe('SessionTree', () => {
     ])
     expect(dots[0]).toHaveClass('needs_input')
     expect(dots[1]).toHaveClass('working')
+    fireEvent.click(dots[0])
+    expect(onSelectPane).toHaveBeenCalledWith('%3')
     expect(container.querySelector('.managed-window-tree')).not.toBeInTheDocument()
     expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
   })

@@ -46,6 +46,10 @@ describe('AgentStatusRegistry', () => {
       { payload: claudePayload('SessionStart'), status: 'unknown', confidence: 'low' },
       { payload: claudePayload('UserPromptSubmit'), status: 'working' },
       { payload: claudePayload('PermissionRequest'), status: 'needs_input' },
+      { payload: claudePayload('PostToolUse'), status: 'working' },
+      { payload: claudePayload('PostToolUseFailure'), status: 'working' },
+      { payload: claudePayload('PermissionDenied'), status: 'working' },
+      { payload: claudePayload('ElicitationResult'), status: 'working' },
       { payload: claudePayload('PreToolUse', { tool_name: 'Read' }), status: 'working' },
       {
         payload: claudePayload('PreToolUse', { tool_name: 'AskUserQuestion' }),
@@ -70,6 +74,10 @@ describe('AgentStatusRegistry', () => {
       {
         payload: claudePayload('Notification', { notification_type: 'idle_prompt' }),
         status: 'done',
+      },
+      {
+        payload: claudePayload('Notification', { notification_type: 'elicitation_response' }),
+        status: 'working',
       },
       { payload: claudePayload('Stop'), status: 'done' },
       { payload: claudePayload('StopFailure'), status: 'failed' },
@@ -114,6 +122,10 @@ describe('AgentStatusRegistry', () => {
     })
     expect(registry.get(paneId)).toBeUndefined()
     expect(registry.applyInferred(inferred())).toBeNull()
+    expect(registry.applyInferred(inferred({ provider: 'codex' }))).toMatchObject({
+      type: 'upsert',
+      status: { provider: 'codex' },
+    })
   })
 
   it('maps OpenCode status events and treats session.idle as a duplicate idle signal', () => {
@@ -125,7 +137,7 @@ describe('AgentStatusRegistry', () => {
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
       status: { type: 'retry', attempt: 1 },
     }), 2)).toBeNull()
-    expect(registry.get(paneId)?.updatedAt).toBe(2)
+    expect(registry.get(paneId)?.updatedAt).toBe(1)
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
       status: { type: 'idle' },
     }), 3)).toMatchObject({ status: { status: 'done' } })
@@ -134,7 +146,7 @@ describe('AgentStatusRegistry', () => {
       openCodeEvent('session.idle'),
       4,
     )).toBeNull()
-    expect(registry.get(paneId)?.updatedAt).toBe(4)
+    expect(registry.get(paneId)?.updatedAt).toBe(3)
   })
 
   it('keeps same-session OpenCode failures through idle and recovers on busy', () => {
@@ -174,6 +186,11 @@ describe('AgentStatusRegistry', () => {
 
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('question.replied', {
       requestID: 'que_1',
+    }))).toMatchObject({ status: { status: 'working' } })
+
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', { id: 'que_2' }))
+    expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('question.rejected', {
+      requestID: 'que_2',
     }))).toMatchObject({ status: { status: 'working' } })
   })
 
@@ -249,11 +266,42 @@ describe('AgentStatusRegistry', () => {
     expect(registry.applyInferred(inferred({ provider: 'unknown', status: 'unknown' }))).toBeNull()
   })
 
-  it('returns null for duplicate semantic state while updating its timestamp', () => {
+  it('keeps the transition timestamp for duplicate semantic state', () => {
     const registry = new AgentStatusRegistry()
     expect(registry.applyInferred(inferred({ updatedAt: 10 }))).not.toBeNull()
     expect(registry.applyInferred(inferred({ updatedAt: 20 }))).toBeNull()
-    expect(registry.get(paneId)?.updatedAt).toBe(20)
+    expect(registry.get(paneId)?.updatedAt).toBe(10)
+  })
+
+  it('removes hook state when its pane foreground command changes', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
+      status: { type: 'busy' },
+    }), 1, 'opencode')
+
+    expect(registry.removeIfProcessChanged(paneId, 'opencode')).toBeNull()
+    expect(registry.removeIfProcessChanged(paneId, 'zsh')).toEqual({
+      type: 'remove',
+      paneId,
+    })
+    expect(registry.applyInferred(inferred({ provider: 'opencode' }))).toBeNull()
+    expect(registry.applyInferred(inferred())).toMatchObject({ type: 'upsert' })
+  })
+
+  it('rejects late provider events after its process exits', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
+      status: { type: 'busy' },
+    }), 1, 'opencode')
+    registry.removeIfProcessChanged(paneId, 'zsh')
+
+    expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
+      status: { type: 'idle' },
+    }), 2, 'zsh')).toBeNull()
+    expect(registry.get(paneId)).toBeUndefined()
+    expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
+      status: { type: 'busy' },
+    }), 3, 'opencode')).toMatchObject({ status: { status: 'working' } })
   })
 
   it('supports direct removal and pruning to retained pane ids', () => {

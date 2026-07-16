@@ -18,13 +18,16 @@
 .managed-session-main strong, .managed-session-main small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .managed-session-main strong { color: var(--text); font-size: 10px; }
 .managed-session-main small { color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
-.session-status-cluster { max-width: 40%; display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-.session-status-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--muted-dim); }
-.session-status-dot.working { background: var(--accent); animation: session-status-pulse 1.8s ease-in-out infinite; }
-.session-status-dot.needs_input { background: var(--amber); }
-.session-status-dot.done { background: var(--green); }
-.session-status-dot.failed { background: var(--red); }
-.session-status-dot.stale, .session-status-dot.unknown { background: var(--muted-dim); }
+.session-status-cluster { max-width: 50%; display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
+.session-status-dot { width: 24px; height: 24px; flex: 0 0 24px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
+.session-status-dot::before { width: 6px; height: 6px; content: ''; border-radius: 50%; background: var(--muted-dim); }
+.session-status-dot:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.session-status-dot.working::before { background: var(--accent); animation: session-status-pulse 1.8s ease-in-out infinite; }
+.session-status-dot.needs_input::before { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
+.session-status-dot.done::before { box-sizing: border-box; border: 2px solid var(--green); background: transparent; }
+.session-status-dot.failed::before { border-radius: 1px; background: var(--red); }
+.session-status-dot.stale::before { box-sizing: border-box; border: 1px solid var(--muted-dim); background: transparent; }
+.session-status-dot.unknown::before { width: 4px; height: 4px; background: var(--muted-dim); }
 .session-row-actions { padding-right: 3px; display: flex; }
 .session-row-actions button { width: 24px; height: 24px; color: var(--muted-dim); }
 .session-row-actions button:hover { color: var(--text); }

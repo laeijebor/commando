@@ -12,8 +12,14 @@ export type AgentStatusChange =
 type RegistryRecord = {
   status: AgentStatus
   providerSessionId: string | null
+  processCommand: string | null
   pendingPermissionIds: Set<string>
   pendingQuestionIds: Set<string>
+}
+
+type InferenceSuppression = {
+  provider: AgentProvider
+  processCommand: string | null
 }
 
 type OpenCodeEvent = {
@@ -105,7 +111,7 @@ function hookStatus(
 
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
-  private readonly inferenceSuppressedPaneIds = new Set<string>()
+  private readonly inferenceSuppressions = new Map<string, InferenceSuppression>()
 
   get(paneId: string): AgentStatus | undefined {
     const status = this.records.get(paneId)?.status
@@ -129,14 +135,16 @@ export class AgentStatusRegistry {
       this.records.delete(paneId)
       changes.push({ type: 'remove', paneId })
     }
-    for (const paneId of this.inferenceSuppressedPaneIds) {
-      if (!retained.has(paneId)) this.inferenceSuppressedPaneIds.delete(paneId)
+    for (const paneId of this.inferenceSuppressions.keys()) {
+      if (!retained.has(paneId)) this.inferenceSuppressions.delete(paneId)
     }
     return changes
   }
 
   applyInferred(status: AgentStatus): AgentStatusChange {
-    if (this.inferenceSuppressedPaneIds.has(status.paneId)) return null
+    const suppression = this.inferenceSuppressions.get(status.paneId)
+    if (status.provider === suppression?.provider) return null
+    if (status.provider !== 'unknown') this.inferenceSuppressions.delete(status.paneId)
     const previous = this.records.get(status.paneId)
     if (previous?.status.source === 'hook') return null
 
@@ -147,6 +155,7 @@ export class AgentStatusRegistry {
     return this.upsert({
       status: { ...status },
       providerSessionId: null,
+      processCommand: null,
       pendingPermissionIds: new Set(),
       pendingQuestionIds: new Set(),
     })
@@ -156,6 +165,7 @@ export class AgentStatusRegistry {
     paneId: string,
     payload: unknown,
     updatedAt = Date.now(),
+    processCommand: string | null = null,
   ): AgentStatusChange {
     if (!isRecord(payload)) return null
     const eventName = stringProperty(payload, 'hook_event_name')
@@ -165,12 +175,18 @@ export class AgentStatusRegistry {
     if (eventName === 'SessionEnd') {
       return this.removeProviderSession(paneId, 'claude', sessionId)
     }
-    this.inferenceSuppressedPaneIds.delete(paneId)
+    if (!this.acceptHookProcess(paneId, 'claude', processCommand)) return null
 
     let status: AgentStatusKind | null = null
     if (eventName === 'SessionStart') status = 'unknown'
     else if (eventName === 'UserPromptSubmit') status = 'working'
     else if (eventName === 'PermissionRequest') status = 'needs_input'
+    else if (
+      eventName === 'PostToolUse' ||
+      eventName === 'PostToolUseFailure' ||
+      eventName === 'PermissionDenied' ||
+      eventName === 'ElicitationResult'
+    ) status = 'working'
     else if (eventName === 'PreToolUse') {
       const toolName = stringProperty(payload, 'tool_name')
       status = toolName === 'AskUserQuestion' || toolName === 'PermissionRequest'
@@ -184,13 +200,23 @@ export class AgentStatusRegistry {
         notificationType === 'agent_needs_input'
       ) status = 'needs_input'
       else if (notificationType === 'idle_prompt') status = 'done'
+      else if (
+        notificationType === 'elicitation_complete' ||
+        notificationType === 'elicitation_response'
+      ) status = 'working'
     } else if (eventName === 'Stop') status = 'done'
     else if (eventName === 'StopFailure') status = 'failed'
 
     if (!status) return null
+    const previous = this.records.get(paneId)
+    const sameSession = previous?.status.provider === 'claude' &&
+      previous.providerSessionId === sessionId
     return this.upsert({
       status: hookStatus(paneId, 'claude', status, updatedAt),
       providerSessionId: sessionId,
+      processCommand: status === 'unknown'
+        ? null
+        : sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
       pendingPermissionIds: new Set(),
       pendingQuestionIds: new Set(),
     })
@@ -200,6 +226,7 @@ export class AgentStatusRegistry {
     paneId: string,
     value: unknown,
     updatedAt = Date.now(),
+    processCommand: string | null = null,
   ): AgentStatusChange {
     const event = parseOpenCodeEvent(value)
     if (!event) return null
@@ -209,7 +236,7 @@ export class AgentStatusRegistry {
     if (event.type === 'session.deleted') {
       return this.removeProviderSession(paneId, 'opencode', sessionId)
     }
-    this.inferenceSuppressedPaneIds.delete(paneId)
+    if (!this.acceptHookProcess(paneId, 'opencode', processCommand)) return null
 
     const previous = this.records.get(paneId)
     const sameSession = previous?.status.provider === 'opencode' &&
@@ -242,7 +269,8 @@ export class AgentStatusRegistry {
       status = 'needs_input'
     } else if (
       event.type === 'permission.replied' ||
-      event.type === 'question.replied'
+      event.type === 'question.replied' ||
+      event.type === 'question.rejected'
     ) {
       if (previous?.status.source === 'hook' && !sameSession) return null
       const requestId = stringProperty(event.properties, 'requestID')
@@ -261,6 +289,7 @@ export class AgentStatusRegistry {
       return this.upsert({
         status: { ...previous.status, updatedAt },
         providerSessionId: sessionId,
+        processCommand: previous.processCommand,
         pendingPermissionIds,
         pendingQuestionIds,
       })
@@ -269,6 +298,7 @@ export class AgentStatusRegistry {
     return this.upsert({
       status: hookStatus(paneId, 'opencode', status, updatedAt),
       providerSessionId: sessionId,
+      processCommand: sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
       pendingPermissionIds,
       pendingQuestionIds,
     })
@@ -285,15 +315,50 @@ export class AgentStatusRegistry {
       record.providerSessionId !== sessionId
     ) return null
     this.records.delete(paneId)
-    this.inferenceSuppressedPaneIds.add(paneId)
+    this.inferenceSuppressions.set(paneId, {
+      provider,
+      processCommand: record.processCommand,
+    })
     return { type: 'remove', paneId }
+  }
+
+  removeIfProcessChanged(paneId: string, processCommand: string): AgentStatusChange {
+    const record = this.records.get(paneId)
+    if (
+      record?.status.source !== 'hook' ||
+      record.processCommand === null ||
+      record.processCommand === processCommand
+    ) return null
+    this.records.delete(paneId)
+    this.inferenceSuppressions.set(paneId, {
+      provider: record.status.provider,
+      processCommand: record.processCommand,
+    })
+    return { type: 'remove', paneId }
+  }
+
+  private acceptHookProcess(
+    paneId: string,
+    provider: Exclude<AgentProvider, 'unknown'>,
+    processCommand: string | null,
+  ): boolean {
+    const suppression = this.inferenceSuppressions.get(paneId)
+    if (
+      suppression?.provider === provider &&
+      suppression.processCommand !== null &&
+      suppression.processCommand !== processCommand
+    ) return false
+    this.inferenceSuppressions.delete(paneId)
+    return true
   }
 
   private upsert(record: RegistryRecord): AgentStatusChange {
     const previous = this.records.get(record.status.paneId)
+    if (previous && sameStatus(previous.status, record.status)) {
+      this.records.set(record.status.paneId, { ...record, status: previous.status })
+      return null
+    }
     this.records.set(record.status.paneId, record)
-    return previous && sameStatus(previous.status, record.status)
-      ? null
-      : { type: 'upsert', status: { ...record.status } }
+    return { type: 'upsert', status: { ...record.status } }
   }
 }

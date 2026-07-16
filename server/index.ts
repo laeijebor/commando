@@ -747,6 +747,9 @@ async function main(): Promise<void> {
         lastTmuxError = ''
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
+        for (const pane of snapshot.panes) {
+          publishAgentStatusChange(agentStatuses.removeIfProcessChanged(pane.id, pane.command))
+        }
         for (const change of agentStatuses.retainPaneIds(paneIds)) {
           publishAgentStatusChange(change)
         }
@@ -832,6 +835,7 @@ async function main(): Promise<void> {
     token: agentHookToken,
     registry: agentStatuses,
     paneExists,
+    paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
   })
 
@@ -1075,8 +1079,11 @@ async function main(): Promise<void> {
     }
     clients.add(client)
     send(client, { type: 'snapshot', snapshot })
-    for (const status of agentStatuses.values()) {
-      sendAgentStatusChange(client, { type: 'upsert', status })
+    const replayStatuses = agentStatuses.values()
+    if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
+      for (const status of replayStatuses) {
+        client.lastStatus.set(status.paneId, statusFingerprint(status))
+      }
     }
 
     socket.on('message', (data, isBinary) => {

@@ -7,7 +7,11 @@ export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
   'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
   'PermissionRequest',
+  'PermissionDenied',
+  'ElicitationResult',
   'Notification',
   'Stop',
   'StopFailure',
@@ -23,6 +27,7 @@ export const OPENCODE_HOOK_EVENTS = [
   'permission.replied',
   'question.asked',
   'question.replied',
+  'question.rejected',
 ] as const
 
 const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
@@ -138,41 +143,71 @@ function generatedOpenCodePlugin(tokenPath: string): string {
   return `import { readFile } from 'node:fs/promises'
 
 const trackedEvents = new Set(${JSON.stringify(OPENCODE_HOOK_EVENTS)})
+let activeSessionId = null
+let activeSessionIdle = true
+let delivery = Promise.resolve()
+
+function tracksActiveSession(event) {
+  const properties = event.properties || {}
+  const sessionId = properties.sessionID || properties.info?.id
+  if (!sessionId) return false
+  if (activeSessionId === null || (activeSessionId !== sessionId && activeSessionIdle)) {
+    activeSessionId = sessionId
+  }
+  if (activeSessionId !== sessionId) return false
+
+  const statusType = properties.status?.type
+  if (event.type === 'session.status' && (statusType === 'busy' || statusType === 'retry')) {
+    activeSessionIdle = false
+  } else if (event.type === 'session.idle' || statusType === 'idle') {
+    activeSessionIdle = true
+  } else if (event.type === 'session.deleted') {
+    activeSessionId = null
+    activeSessionIdle = true
+  }
+  return true
+}
+
+async function report(directory, event) {
+  try {
+    const pane = process.env.TMUX_PANE
+    if (!pane || !/^%\\d+$/.test(pane)) return
+    const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
+    if (token.length < 32) return
+    const port = process.env.COMMANDO_PORT || '4310'
+    if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
+    await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
+      method: 'POST',
+      headers: {
+        'Authorization': \`Bearer \${token}\`,
+        'Content-Type': 'application/json',
+        'X-Commando-Pane': pane,
+      },
+      body: JSON.stringify({ directory, event }),
+      signal: AbortSignal.timeout(1000),
+    })
+  } catch {
+    // Status reporting is best-effort and must not block OpenCode.
+  }
+}
 
 export const CommandoAgentStatusPlugin = async ({ directory }) => ({
-  event: async ({ event }) => {
-    if (!trackedEvents.has(event.type)) return
-    try {
-      const pane = process.env.TMUX_PANE
-      if (!pane || !/^%\\d+$/.test(pane)) return
-      const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
-      if (token.length < 32) return
-      const port = process.env.COMMANDO_PORT || '4310'
-      if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
-      const source = event.properties || {}
-      const info = source.info && typeof source.info === 'object'
-        ? { id: source.info.id }
-        : undefined
-      const properties = {
-        sessionID: source.sessionID,
-        status: source.status,
-        id: source.id,
-        requestID: source.requestID,
-        info,
-      }
-      await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
-        method: 'POST',
-        headers: {
-          'Authorization': \`Bearer \${token}\`,
-          'Content-Type': 'application/json',
-          'X-Commando-Pane': pane,
-        },
-        body: JSON.stringify({ directory, event: { type: event.type, properties } }),
-        signal: AbortSignal.timeout(1000),
-      })
-    } catch {
-      // Status reporting is best-effort and must not block OpenCode.
+  event: ({ event }) => {
+    if (!trackedEvents.has(event.type) || !tracksActiveSession(event)) return
+    const source = event.properties || {}
+    const info = source.info && typeof source.info === 'object'
+      ? { id: source.info.id }
+      : undefined
+    const properties = {
+      sessionID: source.sessionID,
+      status: source.status,
+      id: source.id,
+      requestID: source.requestID,
+      info,
     }
+    const payload = { type: event.type, properties }
+    delivery = delivery.then(() => report(directory, payload))
+    return delivery
   },
 })
 `

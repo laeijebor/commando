@@ -16,6 +16,7 @@ beforeEach(async () => {
     token,
     registry,
     paneExists: (paneId) => paneId === '%1',
+    paneCommand: () => 'opencode',
     onChange: (change) => changes.push(change),
     now: () => 123,
   })

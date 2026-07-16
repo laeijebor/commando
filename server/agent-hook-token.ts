@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, open } from 'node:fs/promises'
+import { lstat, mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 export const AGENT_HOOK_TOKEN_PATH_ENV = 'COMMANDO_AGENT_HOOK_TOKEN_PATH'
@@ -39,7 +39,6 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
     throw new Error(`${path} must be a directory, not a symbolic link`)
   }
-  await chmod(path, 0o700)
 }
 
 async function readPrivateToken(path: string): Promise<string> {
