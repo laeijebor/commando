@@ -1465,6 +1465,7 @@ export function App() {
               sessions={snapshot?.sessions ?? []}
               windows={snapshot?.windows ?? []}
               panes={snapshot?.panes ?? []}
+              ports={snapshot?.ports ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
               selectedSessionId={selectedSessionId}

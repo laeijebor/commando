@@ -97,6 +97,7 @@ describe('defaultGroupsForSession', () => {
         paneIds: ['%3'],
       }],
       panes: [],
+      ports: [],
     }
 
     expect(defaultGroupsForSession(snapshot, '$1')[0]?.id).toBe('window-2')
@@ -134,6 +135,7 @@ describe('defaultGroupsForSession', () => {
         },
       ],
       panes: [],
+      ports: [],
     }
     const saved = [{
       id: 'window-2',

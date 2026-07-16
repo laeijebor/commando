@@ -10,8 +10,10 @@ import {
   PANE_FORMAT,
   SESSION_FORMAT,
   WINDOW_FORMAT,
+  parsePaneProcesses,
   parseTmuxSnapshot,
 } from './tmux-parsers.js'
+import { OpenPortScanner } from './open-ports.js'
 import {
   TmuxControllerPool,
   type PaneSeedCapture,
@@ -125,6 +127,7 @@ function configuredSocketArgs(): string[] {
 export class TmuxClient {
   private readonly socketArgs = configuredSocketArgs()
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
+  private readonly openPorts = new OpenPortScanner()
   private readonly resizeLeases = new TmuxResizeLeaseManager((args) =>
     this.run(args, { timeout: 3_000, maxBuffer: 64 * 1024 }),
   )
@@ -153,7 +156,9 @@ export class TmuxClient {
           maxBuffer: DISCOVERY_BUFFER_BYTES,
         }),
       ])
-      return parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt)
+      const snapshot = parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt)
+      snapshot.ports = await this.openPorts.scan(parsePaneProcesses(panes), capturedAt)
+      return snapshot
     } catch (error) {
       if (isNoServer(error)) {
         return {
@@ -162,6 +167,7 @@ export class TmuxClient {
           sessions: [],
           windows: [],
           panes: [],
+          ports: [],
         }
       }
       throw error

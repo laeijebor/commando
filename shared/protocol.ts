@@ -72,12 +72,20 @@ export type TmuxSession = {
   windowIds: string[]
 }
 
+export type OpenPort = {
+  port: number
+  processName: string
+  sessionId: string
+  paneId: string
+}
+
 export type CommandoSnapshot = {
   revision: number
   capturedAt: number
   sessions: TmuxSession[]
   windows: TmuxWindow[]
   panes: TmuxPane[]
+  ports: OpenPort[]
 }
 
 export type SavedGroup = {

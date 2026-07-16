@@ -420,6 +420,7 @@ async function main(): Promise<void> {
     sessions: [],
     windows: [],
     panes: [],
+    ports: [],
   }
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
   let snapshotRevision = 0

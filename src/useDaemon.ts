@@ -30,7 +30,8 @@ function isSnapshot(value: unknown): value is CommandoSnapshot {
     typeof candidate.revision === 'number' &&
     Array.isArray(candidate.sessions) &&
     Array.isArray(candidate.windows) &&
-    Array.isArray(candidate.panes)
+    Array.isArray(candidate.panes) &&
+    Array.isArray(candidate.ports)
   )
 }
 

@@ -63,6 +63,7 @@ export const PANE_FORMAT = [
   '#{pane_active}',
   '#{pane_dead}',
   ...PANE_TERMINAL_STATE_FIELDS,
+  '#{pane_pid}',
 ].join(TMUX_FIELD_SEPARATOR)
 
 const SESSION_ID = /^\$\d+$/
@@ -266,7 +267,7 @@ export function parseWindows(output: string): TmuxWindow[] {
 export function parsePanes(output: string): TmuxPane[] {
   const panes: TmuxPane[] = []
 
-  for (const fields of rows(output, 9 + PANE_TERMINAL_STATE_FIELDS.length)) {
+  for (const fields of rows(output, 10 + PANE_TERMINAL_STATE_FIELDS.length)) {
     const [
       id,
       indexValue,
@@ -281,7 +282,9 @@ export function parsePanes(output: string): TmuxPane[] {
     const index = integer(indexValue)
     const active = flag(activeValue)
     const dead = flag(deadValue)
-    const terminalState = parseTerminalState(fields.slice(9))
+    const terminalState = parseTerminalState(
+      fields.slice(9, 9 + PANE_TERMINAL_STATE_FIELDS.length),
+    )
 
     if (
       !PANE_ID.test(id) ||
@@ -310,6 +313,29 @@ export function parsePanes(output: string): TmuxPane[] {
   }
 
   return panes
+}
+
+export type TmuxPaneProcess = {
+  paneId: string
+  sessionId: string
+  processId: number
+}
+
+export function parsePaneProcesses(output: string): TmuxPaneProcess[] {
+  const processes: TmuxPaneProcess[] = []
+  for (const fields of rows(output, 10 + PANE_TERMINAL_STATE_FIELDS.length)) {
+    const paneId = fields[0]
+    const sessionId = fields[3]
+    const processId = integer(fields.at(-1) ?? '')
+    if (
+      !PANE_ID.test(paneId) ||
+      !SESSION_ID.test(sessionId) ||
+      processId === null ||
+      processId < 1
+    ) continue
+    processes.push({ paneId, sessionId, processId })
+  }
+  return processes
 }
 
 export function parsePaneTerminalState(
@@ -371,5 +397,5 @@ export function parseTmuxSnapshot(
 
   sessions.sort((left, right) => left.name.localeCompare(right.name))
 
-  return { revision, capturedAt, sessions, windows, panes }
+  return { revision, capturedAt, sessions, windows, panes, ports: [] }
 }

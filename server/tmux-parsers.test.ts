@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   TMUX_FIELD_SEPARATOR,
+  parsePaneProcesses,
   parsePaneTerminalState,
   parsePanes,
   parseTmuxSnapshot,
@@ -48,7 +49,7 @@ function paneRow(
   const terminalState = Array.isArray(fields.at(-1))
     ? (fields.pop() as string[])
     : undefined
-  return row(...(fields as string[]), ...(terminalState ?? defaultTerminalState))
+  return row(...(fields as string[]), ...(terminalState ?? defaultTerminalState), '1234')
 }
 
 describe('tmux format parsers', () => {
@@ -98,6 +99,10 @@ describe('tmux format parsers', () => {
       cursorShape: 'default',
       paneTabs: [],
     })
+    expect(snapshot.ports).toEqual([])
+    expect(parsePaneProcesses(paneRow('%8', '1', '@3', '$1', 'Claude Code', 'claude', '/repo', '1', '0', '120', '40', '17', '8'))).toEqual([
+      { paneId: '%8', sessionId: '$1', processId: 1234 },
+    ])
   })
 
   it('parses tmux 3.6 terminal mode state and tab stops', () => {
