@@ -199,6 +199,52 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it('starts a fresh Claude turn when an older provider repeats the same prompt without an id', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
+      intent: 'Repeat this task',
+    }), 1)
+    registry.applyClaudeHook(paneId, claudePayload('TaskCreated', {
+      task: { id: 'old', subject: 'Old task', state: 'created' },
+    }), 2)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', {
+      finalMessage: 'Old recap',
+    }), 3)
+
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
+      intent: 'Repeat this task',
+    }), 4)
+
+    expect(registry.get(paneId)?.details).toEqual({
+      intent: 'Repeat this task',
+      recentActivities: [],
+      checks: [],
+    })
+  })
+
+  it('preserves active Claude turn details across compaction SessionStart hooks', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
+      intent: 'Keep this turn',
+    }), 1)
+    registry.applyClaudeHook(paneId, claudePayload('PreToolUse', {
+      activityId: 'tool-1',
+      activity: { label: 'Editing app.ts', kind: 'edit', state: 'running' },
+    }), 2)
+
+    expect(registry.applyClaudeHook(paneId, claudePayload('SessionStart', {
+      source: 'compact',
+    }), 3)).toBeNull()
+    expect(registry.get(paneId)).toMatchObject({
+      status: 'working',
+      updatedAt: 2,
+      details: {
+        intent: 'Keep this turn',
+        currentActivity: { label: 'Editing app.ts' },
+      },
+    })
+  })
+
   it('tracks current activity and keeps the three newest completed or failed activities', () => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
@@ -237,6 +283,27 @@ describe('AgentStatusRegistry', () => {
       { label: 'Third', kind: 'edit', state: 'completed', updatedAt: 7 },
       { label: 'Second', kind: 'edit', state: 'failed', updatedAt: 5 },
     ])
+  })
+
+  it('keeps another parallel activity current when one tool completes', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('PreToolUse', {
+      activityId: 'tool-a',
+      activity: { label: 'Reading config', kind: 'inspect', state: 'running' },
+    }), 1)
+    registry.applyClaudeHook(paneId, claudePayload('PreToolUse', {
+      activityId: 'tool-b',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+    }), 2)
+    registry.applyClaudeHook(paneId, claudePayload('PostToolUse', {
+      activityId: 'tool-a',
+      activity: { label: 'Reading config', kind: 'inspect', state: 'completed' },
+    }), 3)
+
+    expect(registry.get(paneId)?.details).toMatchObject({
+      currentActivity: { label: 'Running tests', state: 'running' },
+      recentActivities: [{ label: 'Reading config', state: 'completed' }],
+    })
   })
 
   it('tracks Claude subagent work as delegated activity', () => {
@@ -297,6 +364,18 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it('excludes cancelled OpenCode todos from unfinished progress', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('todo.updated', {
+      todos: [
+        { content: 'Done', status: 'completed', priority: 'high' },
+        { content: 'No longer needed', status: 'cancelled', priority: 'low' },
+      ],
+    }))
+
+    expect(registry.get(paneId)?.details?.progress).toEqual({ completed: 1, total: 1 })
+  })
+
   it('bounds unique changed files, merges diffs, and keeps four checks by label', () => {
     const registry = new AgentStatusRegistry()
     for (let index = 0; index < 22; index += 1) {
@@ -324,10 +403,12 @@ describe('AgentStatusRegistry', () => {
     }), 50)
 
     expect(registry.get(paneId)?.details?.changes).toEqual({
-      files: Array.from({ length: 20 }, (_, index) => `src/file-${index}.ts`),
+      fileCount: 20,
       additions: 190,
       deletions: 20,
     })
+    expect(JSON.stringify(registry.get(paneId))).not.toContain('src/file-')
+    expect(JSON.stringify(registry.get(paneId))).not.toContain('old/file-')
     expect(registry.get(paneId)?.details?.checks).toEqual([
       { label: 'check-4', status: 'passed', updatedAt: 50 },
       { label: 'check-3', status: 'running', updatedAt: 43 },
@@ -371,6 +452,27 @@ describe('AgentStatusRegistry', () => {
     expect(registry.get(paneId)?.details?.attention).toBeUndefined()
   })
 
+  it('restores the latest unanswered prompt when a newer request is answered first', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.asked', {
+      id: 'permission-1',
+      attention: 'Approve command',
+    }), 1)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
+      id: 'question-1',
+      attention: 'Choose target',
+    }), 2)
+
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.replied', {
+      requestID: 'question-1',
+    }), 3)
+
+    expect(registry.get(paneId)).toMatchObject({
+      status: 'needs_input',
+      details: { attention: 'Approve command' },
+    })
+  })
+
   it.each([
     ['🟢', 'done'],
     ['🟡', 'follow_up'],
@@ -387,6 +489,7 @@ describe('AgentStatusRegistry', () => {
       summary: 'Concise outcome',
       completedAt: 42,
     })
+    expect(registry.get(paneId)?.status).toBe(outcome === 'blocked' ? 'needs_input' : 'done')
   })
 
   it('uses the first useful final line and deterministic recap fallbacks', () => {
@@ -425,6 +528,7 @@ describe('AgentStatusRegistry', () => {
       outcome: 'blocked',
       summary: 'Choose a deployment target',
     })
+    expect(blocked.get(paneId)?.status).toBe('needs_input')
 
     const followUp = new AgentStatusRegistry()
     followUp.applyClaudeHook(paneId, claudePayload('TaskCreated', {
@@ -525,7 +629,7 @@ describe('AgentStatusRegistry', () => {
     }
     fromGet.details.intent = 'Mutated intent'
     fromGet.details.currentActivity.label = 'Mutated activity'
-    fromGet.details.changes.files.push('mutated.ts')
+    fromGet.details.changes.fileCount = 999
     fromGet.details.checks[0].label = 'mutated check'
     const fromValues = registry.values()[0]
     if (!fromValues.details) throw new Error('Expected details from values')
@@ -539,7 +643,7 @@ describe('AgentStatusRegistry', () => {
     expect(registry.get(paneId)?.details).toMatchObject({
       intent: 'Immutable intent',
       currentActivity: { label: 'Editing file' },
-      changes: { files: ['src/file.ts'] },
+      changes: { fileCount: 1 },
       checks: [{ label: 'tests' }],
       recentActivities: [],
     })

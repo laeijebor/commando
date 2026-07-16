@@ -119,7 +119,7 @@ describe('AgentHudCard', () => {
             recentActivities: [],
             progress: { completed: 3, total: 5, active: 'Run verification' },
             changes: {
-              files: ['src/App.tsx', 'src/styles.css', 'src/AgentHudCard.tsx', 'src/AgentHudCard.test.tsx'],
+              fileCount: 4,
               additions: 12,
               deletions: 3,
             },
@@ -138,6 +138,9 @@ describe('AgentHudCard', () => {
     expect(screen.getByText('4 files +12/-3')).toBeVisible()
     expect(screen.getByText('Tests passed')).toBeVisible()
     expect(screen.getByText('Typecheck failed')).toBeVisible()
+    expect(screen.getByRole('button')).toHaveAccessibleName(
+      /Progress: 3 of 5 tasks, active: Run verification.*Changes: 4 files, 12 additions, 3 deletions.*Check Tests: passed.*Check Typecheck: failed/,
+    )
   })
 
   it('keeps legacy statuses informative and clickable without details', () => {
@@ -152,7 +155,7 @@ describe('AgentHudCard', () => {
       />,
     )
 
-    const card = screen.getByRole('button', { name: /Open claude agent in pane 4: Modernizing dashboard/ })
+    const card = screen.getByRole('button', { name: /Open claude agent in pane 4.*Modernizing dashboard/ })
     expect(card).toHaveAttribute('type', 'button')
     expect(screen.getByText('Modernizing dashboard')).toBeVisible()
     expect(screen.getByText(/terminal \/ pane 4 \/ updated 5m ago/)).toBeVisible()

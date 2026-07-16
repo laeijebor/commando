@@ -31,7 +31,7 @@ export type AgentProgress = {
 }
 
 export type AgentChanges = {
-  files: string[]
+  fileCount: number
   additions: number
   deletions: number
 }

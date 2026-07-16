@@ -86,19 +86,33 @@ export function AgentHudCard({
   )
   const providerLabel = status.provider === 'unknown' ? 'Agent' : status.provider
   const paneLabel = paneIndex === undefined ? status.paneId : String(paneIndex)
-  const accessibleSummary = details?.attention
-    || recap?.summary
-    || details?.intent
-    || primaryActivity?.label
-    || status.summary
-    || status.reason
+  const accessibleLabel = [
+    `Open ${providerLabel} agent in pane ${paneLabel}`,
+    `Status: ${status.status.replace('_', ' ')}`,
+    `Summary: ${status.summary}`,
+    details?.attention ? `Attention: ${details.attention}` : undefined,
+    recap ? `${RECAP_LABELS[recap.outcome]}: ${recap.summary}` : undefined,
+    details?.intent ? `Task: ${details.intent}` : undefined,
+    primaryActivity ? `${currentActivity ? 'Current' : 'Latest'} ${primaryActivity.kind}: ${primaryActivity.label}` : undefined,
+    ...visibleRecentActivities.map((activity) => `Recent: ${activity.label}`),
+    details?.progress
+      ? `Progress: ${details.progress.completed} of ${details.progress.total} tasks${details.progress.active ? `, active: ${details.progress.active}` : ''}`
+      : undefined,
+    details?.changes
+      ? `Changes: ${details.changes.fileCount} files, ${details.changes.additions} additions, ${details.changes.deletions} deletions`
+      : undefined,
+    ...checks.map((check) => `Check ${check.label}: ${check.status}`),
+    `Updated ${relativeTime(status.updatedAt, now)}`,
+    `Source: ${status.source}, confidence: ${status.confidence}`,
+    status.reason ? `Reason: ${status.reason}` : undefined,
+  ].filter((part): part is string => Boolean(part)).join('. ')
 
   return (
     <button
       type="button"
       className={`agent-card status-${status.status}`}
       onClick={onSelect}
-      aria-label={`Open ${providerLabel} agent in pane ${paneLabel}: ${accessibleSummary}`}
+      aria-label={accessibleLabel}
     >
       <span className={`agent-avatar provider-${status.provider}`} aria-hidden="true">
         {providerInitials(status.provider)}
@@ -176,7 +190,7 @@ export function AgentHudCard({
             ) : null}
             {details?.changes ? (
               <span className="agent-chip agent-chip-changes">
-                {details.changes.files.length} {details.changes.files.length === 1 ? 'file' : 'files'}{changeStats}
+                {details.changes.fileCount} {details.changes.fileCount === 1 ? 'file' : 'files'}{changeStats}
               </span>
             ) : null}
             {checks.map((check) => (

@@ -19,12 +19,19 @@ type TaskState = {
   state: 'created' | 'completed'
 }
 
+type PendingRequest = {
+  attention: string
+  updatedAt: number
+}
+
 type RegistryRecord = {
   status: AgentStatus
   providerSessionId: string | null
   processCommand: string | null
-  pendingPermissionIds: Set<string>
-  pendingQuestionIds: Set<string>
+  pendingPermissions: Map<string, PendingRequest>
+  pendingQuestions: Map<string, PendingRequest>
+  runningActivities: Map<string, AgentActivity>
+  changedFiles: Set<string>
   tasks: Map<string, TaskState>
   turnId: string | null
   retainedCompletion: boolean
@@ -121,12 +128,7 @@ function cloneDetails(details: AgentDetails): AgentDetails {
   if (details.intent !== undefined) clone.intent = details.intent
   if (details.currentActivity) clone.currentActivity = { ...details.currentActivity }
   if (details.progress) clone.progress = { ...details.progress }
-  if (details.changes) {
-    clone.changes = {
-      ...details.changes,
-      files: [...details.changes.files],
-    }
-  }
+  if (details.changes) clone.changes = { ...details.changes }
   if (details.attention !== undefined) clone.attention = details.attention
   if (details.recap) clone.recap = { ...details.recap }
   return clone
@@ -203,7 +205,7 @@ function hookStatus(
 function attachDetails(status: AgentStatus, details: AgentDetails): AgentStatus {
   const summary = status.status === 'needs_input' && details.attention
     ? boundedText(`${status.provider === 'claude' ? 'Claude' : 'OpenCode'} needs input: ${details.attention}`, MAX_ACTIVITY_LABEL_LENGTH)
-    : (status.status === 'done' || status.status === 'failed') && details.recap
+    : (status.status === 'needs_input' || status.status === 'done' || status.status === 'failed') && details.recap
       ? details.recap.summary
       : status.status === 'working' && details.currentActivity
         ? details.currentActivity.label
@@ -244,27 +246,39 @@ function parseActivity(
 
 function startActivity(
   details: AgentDetails,
+  runningActivities: Map<string, AgentActivity>,
   value: unknown,
+  activityIdValue: unknown,
   updatedAt: number,
 ): boolean {
   const activity = parseActivity(value, updatedAt, 'running')
   if (!activity) return false
-  details.currentActivity = activity
+  const activityId = boundedText(activityIdValue, 200) ?? '__legacy__'
+  runningActivities.delete(activityId)
+  runningActivities.set(activityId, activity)
+  details.currentActivity = { ...activity }
   return true
 }
 
 function completeActivity(
   details: AgentDetails,
+  runningActivities: Map<string, AgentActivity>,
   value: unknown,
+  activityIdValue: unknown,
   updatedAt: number,
   failed: boolean,
 ): 'completed' | 'failed' | null {
   const payloadState = isRecord(value) ? value.state : null
   const state = failed || payloadState === 'failed' ? 'failed' : 'completed'
-  const activity = parseActivity(value, updatedAt, state) ?? (details.currentActivity
-    ? { ...details.currentActivity, state, updatedAt }
+  const activityId = boundedText(activityIdValue, 200) ?? '__legacy__'
+  const runningActivity = runningActivities.get(activityId)
+  const activity = parseActivity(value, updatedAt, state) ?? (runningActivity
+    ? { ...runningActivity, state, updatedAt }
     : null)
-  delete details.currentActivity
+  runningActivities.delete(activityId)
+  const nextCurrent = [...runningActivities.values()].at(-1)
+  if (nextCurrent) details.currentActivity = { ...nextCurrent }
+  else delete details.currentActivity
   if (!activity) return null
   details.recentActivities = [activity, ...details.recentActivities]
     .slice(0, MAX_RECENT_ACTIVITIES)
@@ -286,13 +300,16 @@ function updateCheck(details: AgentDetails, value: unknown, updatedAt: number): 
   ].slice(0, MAX_CHECKS)
 }
 
-function addChangedFile(details: AgentDetails, value: unknown): void {
+function addChangedFile(
+  details: AgentDetails,
+  changedFiles: Set<string>,
+  value: unknown,
+): void {
   const filePath = boundedText(value, MAX_FILE_PATH_LENGTH)
   if (!filePath) return
-  const changes = details.changes ?? { files: [], additions: 0, deletions: 0 }
-  if (!changes.files.includes(filePath) && changes.files.length < MAX_CHANGED_FILES) {
-    changes.files.push(filePath)
-  }
+  if (changedFiles.size < MAX_CHANGED_FILES) changedFiles.add(filePath)
+  const changes = details.changes ?? { fileCount: 0, additions: 0, deletions: 0 }
+  changes.fileCount = changedFiles.size
   details.changes = changes
 }
 
@@ -301,24 +318,22 @@ function boundedCount(value: unknown): number {
   return Math.min(MAX_CHANGE_TOTAL, Math.max(0, Math.trunc(value)))
 }
 
-function updateDiff(details: AgentDetails, value: unknown): void {
+function updateDiff(
+  details: AgentDetails,
+  changedFiles: Set<string>,
+  value: unknown,
+): void {
   if (!Array.isArray(value)) return
-  const files: string[] = []
   let additions = 0
   let deletions = 0
   for (const candidate of value.slice(0, MAX_CHANGED_FILES)) {
     if (!isRecord(candidate)) continue
     const filePath = boundedText(candidate.file, MAX_FILE_PATH_LENGTH)
-    if (filePath && !files.includes(filePath) && files.length < MAX_CHANGED_FILES) {
-      files.push(filePath)
-    }
+    if (filePath && changedFiles.size < MAX_CHANGED_FILES) changedFiles.add(filePath)
     additions = Math.min(MAX_CHANGE_TOTAL, additions + boundedCount(candidate.additions))
     deletions = Math.min(MAX_CHANGE_TOTAL, deletions + boundedCount(candidate.deletions))
   }
-  for (const filePath of details.changes?.files ?? []) {
-    if (!files.includes(filePath) && files.length < MAX_CHANGED_FILES) files.push(filePath)
-  }
-  details.changes = { files, additions, deletions }
+  details.changes = { fileCount: changedFiles.size, additions, deletions }
 }
 
 function updateProgress(tasks: Map<string, TaskState>, details: AgentDetails): void {
@@ -366,6 +381,7 @@ function updateTodos(
     const status = boundedText(candidate.status, 40)
     boundedText(candidate.priority, 40)
     if (!subject || !status) continue
+    if (status === 'cancelled' || status === 'canceled') continue
     const state = status === 'completed' ? 'completed' : 'created'
     tasks.set(String(index), { subject, state })
     if (state === 'completed') completed += 1
@@ -383,26 +399,37 @@ function setAttention(
   details: AgentDetails,
   value: unknown,
   provider: Exclude<AgentProvider, 'unknown'>,
-): void {
-  details.attention = boundedText(value, MAX_ATTENTION_LENGTH) ?? attentionFallback(provider)
+): string {
+  const attention = boundedText(value, MAX_ATTENTION_LENGTH) ?? attentionFallback(provider)
+  details.attention = attention
+  return attention
 }
 
-function clearAttentionIfAnswered(
+function syncAttention(
   details: AgentDetails,
-  pendingPermissionIds: Set<string>,
-  pendingQuestionIds: Set<string>,
+  pendingPermissions: Map<string, PendingRequest>,
+  pendingQuestions: Map<string, PendingRequest>,
 ): void {
-  if (pendingPermissionIds.size === 0 && pendingQuestionIds.size === 0) {
-    delete details.attention
+  let latest: PendingRequest | undefined
+  for (const request of [...pendingPermissions.values(), ...pendingQuestions.values()]) {
+    if (!latest || request.updatedAt >= latest.updatedAt) latest = request
   }
+  if (latest) details.attention = latest.attention
+  else delete details.attention
 }
 
-function addPendingRequest(requests: Set<string>, requestId: string): void {
+function addPendingRequest(
+  requests: Map<string, PendingRequest>,
+  requestId: string,
+  attention: string,
+  updatedAt: number,
+): void {
   if (!requests.has(requestId) && requests.size >= MAX_PENDING_REQUESTS) {
-    const oldestRequestId = requests.values().next().value
+    const oldestRequestId = requests.keys().next().value
     if (oldestRequestId !== undefined) requests.delete(oldestRequestId)
   }
-  requests.add(requestId)
+  requests.delete(requestId)
+  requests.set(requestId, { attention, updatedAt })
 }
 
 function messageLines(value: unknown): string[] {
@@ -532,8 +559,10 @@ export class AgentStatusRegistry {
       status: statusWithoutDetails(status),
       providerSessionId: null,
       processCommand: null,
-      pendingPermissionIds: new Set(),
-      pendingQuestionIds: new Set(),
+      pendingPermissions: new Map(),
+      pendingQuestions: new Map(),
+      runningActivities: new Map(),
+      changedFiles: new Set(),
       tasks: new Map(),
       turnId: null,
       retainedCompletion: false,
@@ -554,6 +583,14 @@ export class AgentStatusRegistry {
     if (eventName === 'SessionEnd') {
       return this.removeProviderSession(paneId, 'claude', sessionId)
     }
+    const previous = this.records.get(paneId)
+    const sameSession = previous?.status.provider === 'claude' &&
+      previous.providerSessionId === sessionId
+    if (
+      eventName === 'SessionStart' &&
+      stringProperty(payload, 'source', 80) === 'compact' &&
+      sameSession
+    ) return null
     const startsProviderWork = eventName === 'SessionStart' || eventName === 'UserPromptSubmit'
     if (!this.acceptHookProcess(paneId, 'claude', processCommand, startsProviderWork)) return null
 
@@ -594,32 +631,34 @@ export class AgentStatusRegistry {
     else if (eventName === 'StopFailure') status = 'failed'
 
     if (!status) return null
-    const previous = this.records.get(paneId)
-    const sameSession = previous?.status.provider === 'claude' &&
-      previous.providerSessionId === sessionId
     const intent = boundedText(payload.intent, MAX_INTENT_LENGTH)
     const promptId = boundedText(payload.prompt_id, 200)
     const nextTurnId = eventName === 'UserPromptSubmit'
       ? JSON.stringify([promptId, intent])
       : null
-    const startsNewTurn = eventName === 'UserPromptSubmit' &&
-      (!sameSession || nextTurnId !== previous.turnId)
+    const startsNewTurn = eventName === 'UserPromptSubmit'
     const resetDetails = !sameSession || previous.retainedCompletion ||
       eventName === 'SessionStart' || startsNewTurn
     const details = resetDetails
       ? emptyDetails(eventName === 'UserPromptSubmit' ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
     const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
-    const pendingPermissionIds = resetDetails
+    const pendingPermissions = resetDetails
+      ? new Map<string, PendingRequest>()
+      : new Map(previous.pendingPermissions)
+    const pendingQuestions = resetDetails
+      ? new Map<string, PendingRequest>()
+      : new Map(previous.pendingQuestions)
+    const runningActivities = resetDetails
+      ? new Map<string, AgentActivity>()
+      : new Map(previous.runningActivities)
+    const changedFiles = resetDetails
       ? new Set<string>()
-      : new Set(previous.pendingPermissionIds)
-    const pendingQuestionIds = resetDetails
-      ? new Set<string>()
-      : new Set(previous.pendingQuestionIds)
+      : new Set(previous.changedFiles)
 
     if (eventName === 'UserPromptSubmit' && intent) details.intent = intent
     if (eventName === 'PreToolUse' || eventName === 'SubagentStart') {
-      startActivity(details, payload.activity, updatedAt)
+      startActivity(details, runningActivities, payload.activity, payload.activityId, updatedAt)
     } else if (
       eventName === 'PostToolUse' ||
       eventName === 'PostToolUseFailure' ||
@@ -627,16 +666,18 @@ export class AgentStatusRegistry {
     ) {
       const activityState = completeActivity(
         details,
+        runningActivities,
         payload.activity,
+        payload.activityId,
         updatedAt,
         eventName === 'PostToolUseFailure',
       )
       if (activityState === 'completed') {
-        clearAttentionIfAnswered(details, pendingPermissionIds, pendingQuestionIds)
+        syncAttention(details, pendingPermissions, pendingQuestions)
       }
     }
     updateCheck(details, payload.check, updatedAt)
-    addChangedFile(details, payload.filePath)
+    addChangedFile(details, changedFiles, payload.filePath)
     updateClaudeTask(tasks, details, payload.task)
 
     const notificationType = stringProperty(payload, 'notification_type', 80)
@@ -654,24 +695,28 @@ export class AgentStatusRegistry {
         notificationType === 'elicitation_response'
       ))
     ) {
-      clearAttentionIfAnswered(details, pendingPermissionIds, pendingQuestionIds)
+      syncAttention(details, pendingPermissions, pendingQuestions)
     }
 
     if (eventName === 'Notification' && notificationType === 'idle_prompt') {
+      runningActivities.clear()
       delete details.currentActivity
     }
     if (eventName === 'Stop' || eventName === 'StopFailure') {
+      runningActivities.clear()
       delete details.currentActivity
-      setRecap(details, createRecap(
+      const recap = createRecap(
         'claude',
         status,
         details,
-        pendingPermissionIds.size > 0 || pendingQuestionIds.size > 0,
+        pendingPermissions.size > 0 || pendingQuestions.size > 0,
         payload.finalMessage,
         payload.backgroundTasks,
         payload.error,
         updatedAt,
-      ))
+      )
+      setRecap(details, recap)
+      if (recap.outcome === 'blocked') status = 'needs_input'
     }
 
     return this.upsert({
@@ -680,8 +725,10 @@ export class AgentStatusRegistry {
       processCommand: status === 'unknown'
         ? null
         : sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
-      pendingPermissionIds,
-      pendingQuestionIds,
+      pendingPermissions,
+      pendingQuestions,
+      runningActivities,
+      changedFiles,
       tasks,
       turnId: eventName === 'UserPromptSubmit'
         ? nextTurnId
@@ -717,12 +764,18 @@ export class AgentStatusRegistry {
       ? emptyDetails(startsNewTurn ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
     const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
-    const pendingPermissionIds = resetDetails
+    const pendingPermissions = resetDetails
+      ? new Map<string, PendingRequest>()
+      : new Map(previous.pendingPermissions)
+    const pendingQuestions = resetDetails
+      ? new Map<string, PendingRequest>()
+      : new Map(previous.pendingQuestions)
+    const runningActivities = resetDetails
+      ? new Map<string, AgentActivity>()
+      : new Map(previous.runningActivities)
+    const changedFiles = resetDetails
       ? new Set<string>()
-      : new Set(previous.pendingPermissionIds)
-    const pendingQuestionIds = resetDetails
-      ? new Set<string>()
-      : new Set(previous.pendingQuestionIds)
+      : new Set(previous.changedFiles)
 
     let status: AgentStatusKind | null = null
     if (event.type === 'session.status') {
@@ -736,14 +789,14 @@ export class AgentStatusRegistry {
     } else if (event.type === 'permission.asked') {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
-      addPendingRequest(pendingPermissionIds, requestId)
-      setAttention(details, event.properties.attention, 'opencode')
+      const attention = setAttention(details, event.properties.attention, 'opencode')
+      addPendingRequest(pendingPermissions, requestId, attention, updatedAt)
       status = 'needs_input'
     } else if (event.type === 'question.asked') {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
-      addPendingRequest(pendingQuestionIds, requestId)
-      setAttention(details, event.properties.attention, 'opencode')
+      const attention = setAttention(details, event.properties.attention, 'opencode')
+      addPendingRequest(pendingQuestions, requestId, attention, updatedAt)
       status = 'needs_input'
     } else if (
       event.type === 'permission.replied' ||
@@ -753,10 +806,10 @@ export class AgentStatusRegistry {
       if (previous?.status.source === 'hook' && !sameSession) return null
       const requestId = stringProperty(event.properties, 'requestID')
       if (!requestId) return null
-      if (event.type === 'permission.replied') pendingPermissionIds.delete(requestId)
-      else pendingQuestionIds.delete(requestId)
-      clearAttentionIfAnswered(details, pendingPermissionIds, pendingQuestionIds)
-      status = pendingPermissionIds.size > 0 || pendingQuestionIds.size > 0
+      if (event.type === 'permission.replied') pendingPermissions.delete(requestId)
+      else pendingQuestions.delete(requestId)
+      syncAttention(details, pendingPermissions, pendingQuestions)
+      status = pendingPermissions.size > 0 || pendingQuestions.size > 0
         ? 'needs_input'
         : 'working'
     } else if (event.type === 'session.error') {
@@ -775,62 +828,74 @@ export class AgentStatusRegistry {
     if (!status) return null
     if (event.type === 'commando.turn.started' && intent) details.intent = intent
     if (event.type === 'commando.activity.started') {
-      startActivity(details, event.properties.activity, updatedAt)
+      startActivity(
+        details,
+        runningActivities,
+        event.properties.activity,
+        event.properties.activityId,
+        updatedAt,
+      )
     } else if (event.type === 'commando.activity.completed') {
       const activityState = completeActivity(
         details,
+        runningActivities,
         event.properties.activity,
+        event.properties.activityId,
         updatedAt,
         false,
       )
       if (activityState === 'completed') {
-        clearAttentionIfAnswered(details, pendingPermissionIds, pendingQuestionIds)
+        syncAttention(details, pendingPermissions, pendingQuestions)
       }
     }
     updateCheck(details, event.properties.check, updatedAt)
-    addChangedFile(details, event.properties.filePath)
+    addChangedFile(details, changedFiles, event.properties.filePath)
     if (event.type === 'todo.updated' || event.type === 'session.idle' || event.type === 'session.status') {
       updateTodos(tasks, details, event.properties.todos)
     }
     if (event.type === 'session.diff' || event.type === 'session.idle' || event.type === 'session.status') {
-      updateDiff(details, event.properties.diff)
+      updateDiff(details, changedFiles, event.properties.diff)
     }
 
     if (
       status === 'working' &&
-      (pendingPermissionIds.size > 0 || pendingQuestionIds.size > 0)
+      (pendingPermissions.size > 0 || pendingQuestions.size > 0)
     ) status = 'needs_input'
 
     const isIdle = event.type === 'session.idle' ||
       (event.type === 'session.status' && isRecord(event.properties.status) && event.properties.status.type === 'idle')
     if (event.type === 'session.error') {
+      runningActivities.clear()
       delete details.currentActivity
       setRecap(details, createRecap(
         'opencode',
         'failed',
         details,
-        pendingPermissionIds.size > 0 || pendingQuestionIds.size > 0,
+        pendingPermissions.size > 0 || pendingQuestions.size > 0,
         event.properties.finalMessage,
         0,
         event.properties.error,
         updatedAt,
       ))
     } else if (isIdle) {
+      runningActivities.clear()
       delete details.currentActivity
       if (sameSession && previous.status.status === 'failed' && previous.status.details?.recap) {
         details.recap = { ...previous.status.details.recap }
         status = 'failed'
       } else {
-        setRecap(details, createRecap(
+        const recap = createRecap(
           'opencode',
           status,
           details,
-          pendingPermissionIds.size > 0 || pendingQuestionIds.size > 0,
+          pendingPermissions.size > 0 || pendingQuestions.size > 0,
           event.properties.finalMessage,
           0,
           event.properties.error,
           updatedAt,
-        ))
+        )
+        setRecap(details, recap)
+        if (recap.outcome === 'blocked') status = 'needs_input'
       }
     } else if (
       event.type === 'session.status' &&
@@ -845,8 +910,10 @@ export class AgentStatusRegistry {
       status: attachDetails(hookStatus(paneId, 'opencode', status, updatedAt), details),
       providerSessionId: sessionId,
       processCommand: sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
-      pendingPermissionIds,
-      pendingQuestionIds,
+      pendingPermissions,
+      pendingQuestions,
+      runningActivities,
+      changedFiles,
       tasks,
       turnId: startsNewTurn
         ? `${intent ?? 'turn'}:${updatedAt}`
