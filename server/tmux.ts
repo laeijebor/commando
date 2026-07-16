@@ -14,6 +14,7 @@ import {
   parseTmuxSnapshot,
 } from './tmux-parsers.js'
 import { OpenPortScanner } from './open-ports.js'
+import type { OpenPortTarget, TerminatedSessionPorts } from './open-ports.js'
 import {
   TmuxControllerPool,
   type PaneSeedCapture,
@@ -172,6 +173,22 @@ export class TmuxClient {
       }
       throw error
     }
+  }
+
+  async terminatePort(target: OpenPortTarget): Promise<CommandoSnapshot['ports'][number]> {
+    const panes = await this.run(['list-panes', '-a', '-F', PANE_FORMAT], {
+      timeout: DISCOVERY_TIMEOUT_MS,
+      maxBuffer: DISCOVERY_BUFFER_BYTES,
+    })
+    return this.openPorts.terminatePort(parsePaneProcesses(panes), target)
+  }
+
+  async terminateSessionPorts(sessionId: string): Promise<TerminatedSessionPorts> {
+    const panes = await this.run(['list-panes', '-a', '-F', PANE_FORMAT], {
+      timeout: DISCOVERY_TIMEOUT_MS,
+      maxBuffer: DISCOVERY_BUFFER_BYTES,
+    })
+    return this.openPorts.terminateSessionPorts(parsePaneProcesses(panes), sessionId)
   }
 
   setControllerHandlers(handlers: TmuxControllerHandlers): void {

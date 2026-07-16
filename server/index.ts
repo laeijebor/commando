@@ -35,6 +35,7 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
+import { PortManagementApi } from './port-management-api.js'
 import { TmuxCreator } from './tmux-create.js'
 import { GitDiffApi } from './git-api.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
@@ -801,6 +802,13 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const portManagement = new PortManagementApi({
+    actions: tmux,
+    currentSessionIds: () => snapshot.sessions.map((session) => session.id),
+    onPortsChanged: async () => {
+      await refreshSnapshot()
+    },
+  })
 
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
     switch (message.type) {
@@ -1152,6 +1160,7 @@ async function main(): Promise<void> {
         if (await handleLinearApi(request, response, url, linear)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
+        if (await portManagement.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
           request,

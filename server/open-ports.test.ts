@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  OpenPortNotFoundError,
   OpenPortScanner,
   associatePortsWithPanes,
   parseListeningProcesses,
@@ -71,6 +72,52 @@ describe('open port discovery', () => {
     runner.mockRejectedValue(new Error('lsof unavailable'))
     await expect(scanner.scan(panes, 13_000)).resolves.toEqual([
       { port: 5173, processName: 'node', sessionId: '$1', paneId: '%1' },
+    ])
+  })
+
+  it('freshly revalidates a listener before terminating its process', async () => {
+    const runner = vi.fn(async (command: string) => command === 'lsof' ? lsofOutput : '200 100\n')
+    const signaler = vi.fn()
+    const scanner = new OpenPortScanner(runner, signaler)
+    const panes = [{ paneId: '%1', sessionId: '$1', processId: 100 }]
+
+    await expect(scanner.terminatePort(panes, {
+      sessionId: '$1',
+      paneId: '%1',
+      port: 5173,
+    })).resolves.toEqual({
+      port: 5173,
+      processName: 'node',
+      sessionId: '$1',
+      paneId: '%1',
+    })
+    expect(signaler).toHaveBeenCalledWith(200, 'SIGTERM')
+
+    await expect(scanner.terminatePort(panes, {
+      sessionId: '$1',
+      paneId: '%1',
+      port: 5174,
+    })).rejects.toBeInstanceOf(OpenPortNotFoundError)
+    expect(signaler).toHaveBeenCalledTimes(1)
+  })
+
+  it('signals each listener process only once for a session-wide termination', async () => {
+    const listeners = [
+      'p200', 'cnode', 'n*:3000', 'n*:3001',
+      'p201', 'cworkerd', 'n*:8787', '',
+    ].join('\n')
+    const runner = vi.fn(async (command: string) => command === 'lsof'
+      ? listeners
+      : '200 100\n201 100\n')
+    const signaler = vi.fn()
+    const scanner = new OpenPortScanner(runner, signaler)
+
+    await expect(scanner.terminateSessionPorts([
+      { paneId: '%1', sessionId: '$1', processId: 100 },
+    ], '$1')).resolves.toEqual({ processCount: 2, portCount: 3 })
+    expect(signaler.mock.calls).toEqual([
+      [200, 'SIGTERM'],
+      [201, 'SIGTERM'],
     ])
   })
 })
