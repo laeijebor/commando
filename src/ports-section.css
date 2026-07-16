@@ -1,0 +1,13 @@
+.sidebar-ports { min-height: 0; max-height: min(28vh, 240px); margin-top: 8px; padding: 8px 6px 6px; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--border); scrollbar-color: var(--border-mid) transparent; }
+.sidebar-ports > header { display: flex; align-items: center; justify-content: space-between; color: var(--muted-dim); }
+.sidebar-ports > header > span { display: flex; align-items: center; gap: 6px; }
+.sidebar-ports > header svg { width: 12px; height: 12px; color: var(--accent); }
+.sidebar-ports > header h2 { margin: 0; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+.sidebar-ports > header small { font-family: var(--mono); font-size: 8px; }
+.sidebar-port-groups { display: grid; gap: 9px; padding-top: 8px; }
+.sidebar-port-group { min-width: 0; }
+.sidebar-port-group > strong { display: block; overflow: hidden; color: var(--muted); font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.sidebar-port-group > div { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 5px; }
+.sidebar-port-link { min-width: 34px; height: 22px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-radius: 4px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-family: var(--mono); font-size: 8px; line-height: 1; text-decoration: none; }
+.sidebar-port-link:hover { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.sidebar-port-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

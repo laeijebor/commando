@@ -21,11 +21,6 @@
 .session-row-actions { padding-right: 3px; display: flex; }
 .session-row-actions button { width: 24px; height: 24px; color: var(--muted-dim); }
 .session-row-actions button:hover { color: var(--text); }
-.managed-session-ports { padding: 0 7px 7px 29px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.managed-session-ports > svg { width: 11px; height: 11px; margin-right: 2px; color: var(--accent); }
-.managed-port-link { min-width: 34px; height: 22px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-radius: 4px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-family: var(--mono); font-size: 8px; line-height: 1; text-decoration: none; }
-.managed-port-link:hover { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.managed-port-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .managed-window-tree { padding: 0 6px 8px 28px; }
 .managed-window-row { display: flex; align-items: center; }
 .managed-window-tree button { min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: var(--muted); text-align: left; font-size: 9px; }

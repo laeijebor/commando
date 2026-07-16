@@ -1,6 +1,6 @@
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, RadioTower, Terminal, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
-import type { AgentStatus, OpenPort, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
+import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import './session-tree.css'
 
@@ -9,7 +9,6 @@ type Props = {
   sessions: TmuxSession[]
   windows: TmuxWindow[]
   panes: TmuxPane[]
-  ports: OpenPort[]
   displayedPaneIds: string[]
   statuses: Record<string, AgentStatus>
   selectedSessionId: string | null
@@ -24,13 +23,6 @@ type Props = {
 
 const emptyPreferences: SessionTreePreferences = { version: 1, groups: [], ungroupedSessionIds: [] }
 
-export function openPortUrl(port: number): string {
-  const url = new URL('/', window.location.href)
-  url.protocol = 'http:'
-  url.port = String(port)
-  return url.toString()
-}
-
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(emptyPreferences)
@@ -41,12 +33,6 @@ export function SessionTree(props: Props) {
   const paneMap = new Map(props.panes.map((pane) => [pane.id, pane]))
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
-  const portsBySession = new Map<string, OpenPort[]>()
-  for (const port of props.ports) {
-    const ports = portsBySession.get(port.sessionId) ?? []
-    ports.push(port)
-    portsBySession.set(port.sessionId, ports)
-  }
 
   useEffect(() => {
     api.loadPreferences().then(setPreferences).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
@@ -164,13 +150,11 @@ export function SessionTree(props: Props) {
               if (!session) return []
               const selected = session.id === props.selectedSessionId
               const sessionPanes = props.panes.filter((pane) => pane.sessionId === session.id)
-              const sessionPorts = portsBySession.get(session.id)?.sort((left, right) => left.port - right.port) ?? []
               return [<article className={`managed-session${selected ? ' selected' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
                 <div className="managed-session-row">
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className={`live-dot${session.attached ? ' attached' : ''}`} /><span><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
-                {sessionPorts.length ? <div className="managed-session-ports" aria-label={`Open ports for ${session.name}`}><RadioTower aria-hidden="true" />{sessionPorts.map((port) => <a className="managed-port-link" href={openPortUrl(port.port)} target="_blank" rel="noreferrer" aria-label={`Open ${port.processName} on port ${port.port}`} title={`${port.processName} listening on port ${port.port}`} key={`${port.paneId}:${port.port}`}>{port.port}</a>)}</div> : null}
                 {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = pane.title || pane.command || `Pane ${pane.index}`; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
               </article>]
             })}

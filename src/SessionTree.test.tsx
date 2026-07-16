@@ -77,7 +77,6 @@ describe('SessionTree', () => {
         sessions={[]}
         windows={[]}
         panes={[]}
-        ports={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
@@ -116,7 +115,6 @@ describe('SessionTree', () => {
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
         windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
         panes={panes}
-        ports={[]}
         displayedPaneIds={['%3', '%1', '%2']}
         statuses={{}}
         selectedSessionId="$1"
@@ -148,7 +146,6 @@ describe('SessionTree', () => {
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
         windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: [] }]}
         panes={[]}
-        ports={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId="$1"
@@ -168,47 +165,5 @@ describe('SessionTree', () => {
     expect(onWindowDeleting).toHaveBeenCalledWith('@1')
     expect(onSessionsChanged).toHaveBeenCalled()
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('last window'))
-  })
-
-  it('groups open port links beneath their sessions', () => {
-    const { container } = render(
-      <SessionTree
-        token="token"
-        sessions={[
-          { id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] },
-          { id: '$2', name: 'api', attached: false, activeWindowId: null, windowIds: [] },
-        ]}
-        windows={[]}
-        panes={[]}
-        ports={[
-          { port: 5173, processName: 'node', sessionId: '$1', paneId: '%1' },
-          { port: 3000, processName: 'node', sessionId: '$1', paneId: '%2' },
-          { port: 8787, processName: 'workerd', sessionId: '$2', paneId: '%3' },
-        ]}
-        displayedPaneIds={[]}
-        statuses={{}}
-        selectedSessionId={null}
-        focusedPaneId={null}
-        onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
-        onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
-        onSessionsChanged={vi.fn()}
-      />,
-    )
-
-    const sessionArticles = [...container.querySelectorAll('.managed-session')]
-    expect(sessionArticles[0].querySelector('.managed-session-ports')).toHaveTextContent('30005173')
-    expect(sessionArticles[0]).not.toHaveTextContent('8787')
-    expect(sessionArticles[1].querySelector('.managed-session-ports')).toHaveTextContent('8787')
-    expect(screen.getByRole('link', { name: 'Open node on port 3000' })).toHaveAttribute(
-      'href',
-      'http://localhost:3000/',
-    )
-    expect(screen.getByRole('link', { name: 'Open workerd on port 8787' })).toHaveAttribute(
-      'target',
-      '_blank',
-    )
   })
 })

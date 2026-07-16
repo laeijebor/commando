@@ -87,6 +87,7 @@ import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
+import { PortsSection } from './PortsSection'
 import {
   createOwner,
   getAuthBootstrap,
@@ -1465,7 +1466,6 @@ export function App() {
               sessions={snapshot?.sessions ?? []}
               windows={snapshot?.windows ?? []}
               panes={snapshot?.panes ?? []}
-              ports={snapshot?.ports ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
               selectedSessionId={selectedSessionId}
@@ -1490,6 +1490,7 @@ export function App() {
               onCreated={(created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() }}
             />
           </div>
+          <PortsSection sessions={snapshot?.sessions ?? []} ports={snapshot?.ports ?? []} />
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />
             <span>
