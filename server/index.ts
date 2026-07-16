@@ -480,6 +480,16 @@ async function main(): Promise<void> {
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
 
+  const processStatusForPane = (pane: CommandoSnapshot['panes'][number]): AgentStatus => (
+    inferAgentProcessStatus({
+      paneId: pane.id,
+      command: pane.command,
+      title: pane.title,
+      dead: pane.dead,
+      capturedAt: snapshot.capturedAt,
+    })
+  )
+
   const syncRequiredSessions = (): void => {
     const sessionIds = new Set<string>()
     const subscribedPaneIds = new Set<string>()
@@ -497,7 +507,12 @@ async function main(): Promise<void> {
       if (subscribedPaneIds.has(paneId)) continue
       paneTextTails.delete(paneId)
       if (agentStatuses.get(paneId)?.source !== 'hook') {
-        publishAgentStatusChange(agentStatuses.remove(paneId))
+        const pane = paneForId(paneId)
+        publishAgentStatusChange(
+          pane
+            ? agentStatuses.applyInferred(processStatusForPane(pane))
+            : agentStatuses.remove(paneId),
+        )
       }
     }
     tmux.setRequiredSessions(sessionIds)
@@ -764,13 +779,7 @@ async function main(): Promise<void> {
           }
           publishAgentStatusChange(agentStatuses.removeIfProcessChanged(pane.id, pane.command))
           if (!paneTextTails.has(pane.id)) {
-            publishAgentStatusChange(agentStatuses.applyInferred(inferAgentProcessStatus({
-              paneId: pane.id,
-              command: pane.command,
-              title: pane.title,
-              dead: pane.dead,
-              capturedAt: snapshot.capturedAt,
-            })))
+            publishAgentStatusChange(agentStatuses.applyInferred(processStatusForPane(pane)))
           }
         }
         for (const change of agentStatuses.retainPaneIds(paneIds)) {

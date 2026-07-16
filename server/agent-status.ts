@@ -81,7 +81,13 @@ export function inferAgentProvider(
 }
 
 export function inferAgentProcessStatus(input: AgentProcessStatusInput): AgentStatus {
-  const evidence = inferAgentProvider(input.command, input.title, '')
+  const commandEvidence = inferAgentProvider(input.command, '', '')
+  const runtimeCanUseTitle = /(?:^|\/)(?:node|bun|deno|python\d*(?:\.\d+)?)$/i.test(
+    input.command.trim(),
+  )
+  const evidence = commandEvidence.provider !== 'unknown' || !runtimeCanUseTitle
+    ? commandEvidence
+    : inferAgentProvider(input.command, input.title, '')
   const provider = evidence.provider
   const knownProvider = provider !== 'unknown'
   return {

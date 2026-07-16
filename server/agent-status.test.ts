@@ -46,7 +46,7 @@ describe('agent inference', () => {
     expect(inferAgentProcessStatus({
       paneId: '%3',
       command: 'zsh',
-      title: 'shell',
+      title: 'Codex',
       capturedAt: now,
     })).toMatchObject({ provider: 'unknown', status: 'unknown' })
   })
