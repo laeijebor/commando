@@ -143,8 +143,7 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
   const hasActiveIndicator = /(?:esc (?:to )?interrupt|ctrl-c to stop|thinking(?:\.{3}|…)|working(?:\.{3}|…)|generating(?:\.{3}|…))/i.test(
     recentLines,
   )
-  const hasSettledOpenCodeComposer = provider === 'opencode' &&
-    unchangedFor >= 2_000 &&
+  const hasIdleOpenCodeComposer = provider === 'opencode' &&
     !hasActiveIndicator &&
     /\bOpenCode\s+\d+\.\d+(?:\.\d+)?\s*$/m.test(recentLines)
 
@@ -210,7 +209,7 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
     /(?:^|\n)\s*(?:task )?(?:done|completed successfully)\.?\s*$/i.test(
       recentLines,
     ) ||
-    hasSettledOpenCodeComposer
+    hasIdleOpenCodeComposer
   ) {
     return result(
       input,
@@ -218,9 +217,9 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
       'done',
       `${label} is idle`,
       'heuristic',
-      hasSettledOpenCodeComposer ? 'high' : 'medium',
-      hasSettledOpenCodeComposer
-        ? 'OpenCode composer is idle and pane output has settled'
+      hasIdleOpenCodeComposer ? 'high' : 'medium',
+      hasIdleOpenCodeComposer
+        ? 'OpenCode composer shows no active work'
         : 'recent output ends at an agent prompt or completion marker',
     )
   }

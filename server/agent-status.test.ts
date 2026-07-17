@@ -146,13 +146,13 @@ describe('agent inference', () => {
       title: '',
       content: composer,
       capturedAt: now,
-      lastChangedAt: now - 3_000,
+      lastChangedAt: now,
     })).toMatchObject({
       provider: 'opencode',
       status: 'done',
       source: 'heuristic',
       confidence: 'high',
-      reason: 'OpenCode composer is idle and pane output has settled',
+      reason: 'OpenCode composer shows no active work',
     })
 
     expect(inferAgentStatus({

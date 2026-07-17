@@ -584,13 +584,20 @@ export class AgentStatusRegistry {
     if (status.provider === suppression?.provider) return null
     if (status.provider !== 'unknown') this.inferenceSuppressions.delete(status.paneId)
     const previous = this.records.get(status.paneId)
+    const retainsConfirmedCompletion = previous?.status.source !== 'hook' &&
+      previous?.status.provider === status.provider &&
+      previous.status.status === 'done' &&
+      previous.status.confidence === 'high' &&
+      status.confidence !== 'high'
+    if (retainsConfirmedCompletion) return null
     const reconcilesOpenCodeCompletion = previous?.status.source === 'hook' &&
       previous.status.provider === 'opencode' &&
       previous.status.status === 'working' &&
       status.provider === 'opencode' &&
       status.status === 'done' &&
       status.source === 'heuristic' &&
-      status.confidence === 'high'
+      status.confidence === 'high' &&
+      status.updatedAt - previous.status.updatedAt >= 2_000
     if (
       previous?.status.source === 'hook' &&
       !reconcilesOpenCodeCompletion &&

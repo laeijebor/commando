@@ -618,11 +618,14 @@ async function main(): Promise<void> {
     tmux
       .capturePane(pane.sessionId, paneId)
       .then((capture) => {
-        // Output that raced the capture already primed the tail via
-        // observePaneData; don't clobber it with the older capture.
-        if (!paneTextTails.has(paneId) && paneExists(paneId)) {
-          observePaneSeed(paneId, normalizeCaptureLineEndings(capture), Buffer.alloc(0), Date.now())
-        }
+        if (!paneExists(paneId)) return
+        const buffered = Buffer.from(paneTextTails.get(paneId)?.content ?? '')
+        observePaneSeed(
+          paneId,
+          normalizeCaptureLineEndings(capture),
+          buffered,
+          Date.now(),
+        )
         emitAgentStatus(paneId)
       })
       .catch(reportTmuxError)
