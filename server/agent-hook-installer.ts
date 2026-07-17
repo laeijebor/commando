@@ -150,6 +150,10 @@ function boundedMessage(value, maximum) {
   return (text.slice(0, headLength) + '\\n' + last).slice(0, maximum)
 }
 
+function isTaskNotification(value) {
+  return typeof value === 'string' && /^\s*<task-notification(?:\s[^>]*)?>/i.test(value)
+}
+
 function basename(path) {
   return path.split(/[\\\\/]/).filter(Boolean).pop() || path
 }
@@ -264,6 +268,7 @@ async function main() {
     }
     const input = JSON.parse(raw)
     const event = input.hook_event_name
+    if (event === 'UserPromptSubmit' && isTaskNotification(input.prompt)) return
     const toolState = event === 'PreToolUse'
       ? 'running'
       : event === 'PostToolUseFailure' ? 'failed' : 'completed'

@@ -76,6 +76,7 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
 
 describe('SessionTree', () => {
   it('moves named groups in their persisted display order', async () => {
+    const onPreferencesChanged = vi.fn()
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,
       groups: [
@@ -100,6 +101,7 @@ describe('SessionTree', () => {
         onOpenPaneMaximized={vi.fn()}
         onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
+        onPreferencesChanged={onPreferencesChanged}
       />,
     )
 
@@ -113,6 +115,14 @@ describe('SessionTree', () => {
       ],
       ungroupedSessionIds: [],
     }))
+    expect(onPreferencesChanged).toHaveBeenCalledWith({
+      version: 1,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: [] },
+        { id: 'vivi', name: 'VIVI', sessionIds: [] },
+      ],
+      ungroupedSessionIds: [],
+    })
   })
 
   it('lists panes in their displayed workspace order', () => {
@@ -138,6 +148,7 @@ describe('SessionTree', () => {
         onOpenPaneMaximized={onOpenPaneMaximized}
         onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
       />,
     )
 
@@ -175,6 +186,7 @@ describe('SessionTree', () => {
         onOpenPaneMaximized={vi.fn()}
         onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
       />,
     )
 
@@ -214,6 +226,7 @@ describe('SessionTree', () => {
         onOpenPaneMaximized={vi.fn()}
         onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
       />,
     )
 
@@ -242,6 +255,7 @@ describe('SessionTree', () => {
         onOpenPaneMaximized={vi.fn()}
         onWindowDeleting={onWindowDeleting}
         onSessionsChanged={onSessionsChanged}
+        onPreferencesChanged={vi.fn()}
       />,
     )
 

@@ -50,6 +50,7 @@ describe('AgentHudCard', () => {
         paneIndex={2}
         now={NOW}
         onSelect={vi.fn()}
+        onDismiss={vi.fn()}
       />,
     )
 
@@ -75,6 +76,7 @@ describe('AgentHudCard', () => {
         })}
         now={NOW}
         onSelect={vi.fn()}
+        onDismiss={vi.fn()}
       />,
     )
 
@@ -102,6 +104,7 @@ describe('AgentHudCard', () => {
         })}
         now={NOW}
         onSelect={vi.fn()}
+        onDismiss={vi.fn()}
       />,
     )
 
@@ -109,6 +112,9 @@ describe('AgentHudCard', () => {
     expect(screen.getByText('Done')).toBeVisible()
     expect(screen.getByText('Delivered the activity-first HUD and focused tests.')).toBeVisible()
     expect(screen.getByText('2m ago')).toBeVisible()
+    const intent = screen.getByText('Improve Agent HUD')
+    const recap = screen.getByText('Delivered the activity-first HUD and focused tests.')
+    expect(intent.compareDocumentPosition(recap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('renders compact progress, change, and check chips', () => {
@@ -131,6 +137,7 @@ describe('AgentHudCard', () => {
         })}
         now={NOW}
         onSelect={vi.fn()}
+        onDismiss={vi.fn()}
       />,
     )
 
@@ -138,13 +145,14 @@ describe('AgentHudCard', () => {
     expect(screen.getByText('4 files +12/-3')).toBeVisible()
     expect(screen.getByText('Tests passed')).toBeVisible()
     expect(screen.getByText('Typecheck failed')).toBeVisible()
-    expect(screen.getByRole('button')).toHaveAccessibleName(
+    expect(screen.getByRole('button', { name: /Open claude agent/ })).toHaveAccessibleName(
       /Progress: 3 of 5 tasks, active: Run verification.*Changes: 4 files, 12 additions, 3 deletions.*Check Tests: passed.*Check Typecheck: failed/,
     )
   })
 
   it('keeps legacy statuses informative and clickable without details', () => {
     const onSelect = vi.fn()
+    const onDismiss = vi.fn()
     render(
       <AgentHudCard
         status={status()}
@@ -153,6 +161,7 @@ describe('AgentHudCard', () => {
         paneIndex={4}
         now={NOW}
         onSelect={onSelect}
+        onDismiss={onDismiss}
       />,
     )
 
@@ -165,5 +174,33 @@ describe('AgentHudCard', () => {
 
     fireEvent.click(card)
     expect(onSelect).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss claude update for commando until its next update' }))
+    expect(onDismiss).toHaveBeenCalledOnce()
+    expect(onSelect).toHaveBeenCalledOnce()
+  })
+
+  it('uses the session as the visible title and hides synthetic task notification markup', () => {
+    render(
+      <AgentHudCard
+        status={status({
+          summary: '<task-notification><task-id>abc</task-id></task-notification>',
+          details: {
+            intent: '<task-notification><task-id>abc</task-id><output-file>/tmp/result</output-file></task-notification>',
+            recentActivities: [],
+            checks: [],
+          },
+        })}
+        sessionName="gizmo-Save-All"
+        now={NOW}
+        onSelect={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('gizmo-Save-All')).toBeVisible()
+    expect(screen.queryByText(/task-notification/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/output-file/)).not.toBeInTheDocument()
+    expect(screen.getByText('Agent hook emitted a working state')).toBeVisible()
   })
 })

@@ -91,6 +91,15 @@ import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
+  agentHudGroups,
+  agentNeedsAttention,
+  storedAgentHudDismissals,
+  storeAgentHudDismissals,
+  type AgentHudDismissals,
+} from './agentHud'
+import type { SessionTreePreferences } from './sessionManagementApi'
+import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
+import {
   createOwner,
   getAuthBootstrap,
   getAuthUser,
@@ -113,24 +122,6 @@ const PRESETS: Array<{
   { id: 'two-full-two-halves', label: 'Two full, two halves', icon: <Rows3 /> },
   { id: 'lead-and-stack', label: 'Lead and stack', icon: <PanelLeft /> },
 ]
-
-const STATUS_PRIORITY: Record<AgentStatus['status'], number> = {
-  needs_input: 0,
-  failed: 1,
-  working: 2,
-  stale: 3,
-  done: 4,
-  unknown: 5,
-}
-
-export function agentHudStatuses(
-  statuses: Record<string, AgentStatus>,
-  panes: ReadonlyMap<string, TmuxPane>,
-): AgentStatus[] {
-  return Object.values(statuses)
-    .filter((status) => panes.has(status.paneId))
-    .sort((left, right) => STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status])
-}
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
@@ -656,6 +647,8 @@ export function App() {
   const [authError, setAuthError] = useState('')
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
+  const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
+  const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
@@ -1315,12 +1308,20 @@ export function App() {
     }
   }
 
-  const hudStatuses = agentHudStatuses(agentStatuses, paneMap)
+  const hudGroups = agentHudGroups(
+    agentStatuses,
+    paneMap,
+    snapshot?.sessions ?? [],
+    sessionTreePreferences,
+    agentHudDismissals,
+  )
+  const hudStatuses = hudGroups.flatMap((group) => group.statuses)
   const attentionCount = hudStatuses.filter(
-    (status) => status.status === 'needs_input' || status.status === 'failed',
+    agentNeedsAttention,
   ).length
   const workingCount = hudStatuses.filter((status) => status.status === 'working').length
   const doneCount = hudStatuses.filter((status) => status.status === 'done').length
+  const hasKnownHudStatuses = Object.values(agentStatuses).some((status) => paneMap.has(status.paneId))
   const activeWindow = selectedSession?.activeWindowId
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
@@ -1514,6 +1515,7 @@ export function App() {
               onOpenPaneMaximized={openPaneMaximized}
               onWindowDeleting={clearLayoutTimers}
               onSessionsChanged={refresh}
+              onPreferencesChanged={setSessionTreePreferences}
             />
             <TmuxCreateControls
               sessions={snapshot?.sessions ?? []}
@@ -1818,26 +1820,39 @@ export function App() {
             />
           ) : null}
           <div className="agent-stream">
-            {hudStatuses.map((status) => {
-              const pane = paneMap.get(status.paneId)
-              const window = pane ? windowMap.get(pane.windowId) : undefined
-              const session = pane ? sessionMap.get(pane.sessionId) : undefined
-              return (
-                <AgentHudCard
-                  status={status}
-                  sessionName={session?.name ?? pane?.sessionId}
-                  windowName={window?.name ?? pane?.windowId}
-                  paneIndex={pane?.index}
-                  onSelect={() => jumpToPane(status.paneId)}
-                  key={status.paneId}
-                />
-              )
-            })}
+            {hudGroups.map((group) => (
+              <section className="agent-group" key={group.id} aria-labelledby={`agent-group-${group.id}`}>
+                <header>
+                  <strong id={`agent-group-${group.id}`}>{group.name}</strong>
+                  <small aria-label={`${group.statuses.length} ${group.statuses.length === 1 ? 'agent' : 'agents'}`}>{group.statuses.length}</small>
+                </header>
+                {group.statuses.map((status) => {
+                  const pane = paneMap.get(status.paneId)
+                  const window = pane ? windowMap.get(pane.windowId) : undefined
+                  const session = pane ? sessionMap.get(pane.sessionId) : undefined
+                  return (
+                    <AgentHudCard
+                      status={status}
+                      sessionName={session?.name ?? pane?.sessionId}
+                      windowName={window?.name ?? pane?.windowId}
+                      paneIndex={pane?.index}
+                      onSelect={() => jumpToPane(status.paneId)}
+                      onDismiss={() => setAgentHudDismissals((current) => {
+                        const next = { ...current, [status.paneId]: status.updatedAt }
+                        storeAgentHudDismissals(next)
+                        return next
+                      })}
+                      key={status.paneId}
+                    />
+                  )
+                })}
+              </section>
+            ))}
             {hudStatuses.length === 0 ? (
               <div className="hud-empty">
                 <Bot aria-hidden="true" />
-                <strong>No agent signals yet</strong>
-                <p>Provider hooks, process inspection, and heuristics will appear here with their source.</p>
+                <strong>{hasKnownHudStatuses ? 'All current updates dismissed' : 'No agent signals yet'}</strong>
+                <p>{hasKnownHudStatuses ? 'Cards return when their agent reports a new update.' : 'Provider hooks, process inspection, and heuristics will appear here with their source.'}</p>
               </div>
             ) : null}
           </div>

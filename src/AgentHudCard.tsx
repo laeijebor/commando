@@ -16,6 +16,7 @@ type AgentHudCardProps = {
   paneIndex?: number
   now?: number
   onSelect: () => void
+  onDismiss: () => void
 }
 
 const RECAP_LABELS: Record<AgentRecap['outcome'], string> = {
@@ -65,8 +66,11 @@ export function AgentHudCard({
   paneIndex,
   now = Date.now(),
   onSelect,
+  onDismiss,
 }: AgentHudCardProps) {
   const details = status.details
+  const intent = visibleAgentTask(details?.intent)
+  const summary = visibleAgentTask(status.summary)
   const recap = status.status === 'working' ? undefined : details?.recap
   const currentActivity = details?.currentActivity
   const recentActivities = details?.recentActivities ?? []
@@ -84,7 +88,7 @@ export function AgentHudCard({
     : ''
   const hasChips = Boolean(details?.progress || details?.changes || checks.length)
   const hasPrimaryDetails = Boolean(
-    details?.attention || recap || details?.intent || primaryActivity,
+    details?.attention || recap || intent || primaryActivity,
   )
   const providerLabel = status.provider === 'unknown' ? 'Agent' : status.provider
   const paneLabel = paneIndex === undefined ? status.paneId : String(paneIndex)
@@ -93,10 +97,10 @@ export function AgentHudCard({
     `Session: ${sessionName ?? 'unknown session'}`,
     `Window: ${windowName ?? 'unknown window'}`,
     `Status: ${status.status.replace('_', ' ')}`,
-    `Summary: ${status.summary}`,
+    summary ? `Summary: ${summary}` : undefined,
     details?.attention ? `Attention: ${details.attention}` : undefined,
+    intent ? `Task: ${intent}` : undefined,
     recap ? `${RECAP_LABELS[recap.outcome]}: ${recap.summary}` : undefined,
-    details?.intent ? `Task: ${details.intent}` : undefined,
     primaryActivity ? `${currentActivity ? 'Current' : 'Latest'} ${primaryActivity.kind}: ${primaryActivity.label}` : undefined,
     ...visibleRecentActivities.map((activity) => `Recent: ${activity.label}`),
     details?.progress
@@ -111,19 +115,22 @@ export function AgentHudCard({
     status.reason ? `Reason: ${status.reason}` : undefined,
   ].filter((part): part is string => Boolean(part)).join('. ')
 
+  const sessionLabel = sessionName ?? 'Unknown session'
+
   return (
-    <button
-      type="button"
-      className={`agent-card status-${status.status}`}
-      onClick={onSelect}
-      aria-label={accessibleLabel}
-    >
+    <div className="agent-card-wrap">
+      <button
+        type="button"
+        className={`agent-card status-${status.status}`}
+        onClick={onSelect}
+        aria-label={accessibleLabel}
+      >
       <span className={`agent-avatar provider-${status.provider}`} aria-hidden="true">
         {providerInitials(status.provider)}
       </span>
       <span className="agent-copy">
         <span className="agent-title-row">
-          <strong>{providerLabel}</strong>
+          <strong>{sessionLabel}</strong>
           <span className={`agent-state ${status.status}`}>{status.status.replace('_', ' ')}</span>
         </span>
 
@@ -137,6 +144,13 @@ export function AgentHudCard({
           </span>
         ) : null}
 
+        {intent ? (
+          <span className="agent-intent">
+            <small>Task</small>
+            <strong>{intent}</strong>
+          </span>
+        ) : null}
+
         {recap ? (
           <span className={`agent-recap recap-${recap.outcome}`}>
             <span className="agent-recap-meta">
@@ -146,13 +160,6 @@ export function AgentHudCard({
               </time>
             </span>
             <strong>{recap.summary}</strong>
-          </span>
-        ) : null}
-
-        {details?.intent ? (
-          <span className="agent-intent">
-            <small>Task</small>
-            <strong>{details.intent}</strong>
           </span>
         ) : null}
 
@@ -182,7 +189,7 @@ export function AgentHudCard({
         ) : null}
 
         {!hasPrimaryDetails ? (
-          <span className="agent-summary">{status.summary || status.reason}</span>
+          <span className="agent-summary">{summary || status.reason}</span>
         ) : null}
 
         {hasChips ? (
@@ -218,6 +225,22 @@ export function AgentHudCard({
         </span>
       </span>
       <ChevronRight className="jump-chevron" aria-hidden="true" />
-    </button>
+      </button>
+      <button
+        type="button"
+        className="agent-dismiss"
+        onClick={onDismiss}
+        aria-label={`Dismiss ${providerLabel} update for ${sessionLabel} until its next update`}
+        title="Dismiss until next update"
+      >
+        <X aria-hidden="true" />
+      </button>
+    </div>
   )
+}
+
+export function visibleAgentTask(value: string | undefined): string | undefined {
+  const text = value?.trim()
+  if (!text || /^<task-notification(?:\s[^>]*)?>/i.test(text)) return undefined
+  return text
 }
