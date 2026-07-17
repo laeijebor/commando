@@ -130,4 +130,41 @@ describe('agent inference', () => {
       source: 'process',
     })
   })
+
+  it('recognizes a settled OpenCode composer without treating active work as idle', () => {
+    const composer = [
+      'Implemented and verified the requested change.',
+      '',
+      '  Build auto · GPT-5.6 Sol Fast OpenAI · xhigh',
+      '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      '  149.9K (30%)  ctrl+p commands    • OpenCode 1.17.20',
+    ].join('\n')
+
+    expect(inferAgentStatus({
+      paneId: '%4',
+      command: 'opencode',
+      title: '',
+      content: composer,
+      capturedAt: now,
+      lastChangedAt: now - 3_000,
+    })).toMatchObject({
+      provider: 'opencode',
+      status: 'done',
+      source: 'heuristic',
+      confidence: 'high',
+      reason: 'OpenCode composer is idle and pane output has settled',
+    })
+
+    expect(inferAgentStatus({
+      paneId: '%5',
+      command: 'opencode',
+      title: '',
+      content: `${composer}\nDone.\n  esc interrupt`,
+      capturedAt: now,
+      lastChangedAt: now - 60_000,
+    })).toMatchObject({
+      status: 'working',
+      confidence: 'high',
+    })
+  })
 })

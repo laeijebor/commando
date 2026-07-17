@@ -901,6 +901,72 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it('reconciles a hook-owned OpenCode turn when the settled composer shows completion', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.turn.started', {
+      intent: 'Finish the HUD fix',
+    }), 1)
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('commando.activity.started', {
+      activityId: 'check-1',
+      activity: { label: 'Running tests', kind: 'check', state: 'running' },
+      check: { label: 'tests', status: 'running' },
+    }), 2)
+
+    expect(registry.applyInferred(inferred({
+      provider: 'opencode',
+      status: 'done',
+      summary: 'opencode is idle',
+      source: 'heuristic',
+      confidence: 'high',
+      reason: 'OpenCode composer is idle and pane output has settled',
+      updatedAt: 3,
+    }))).toMatchObject({
+      type: 'upsert',
+      status: {
+        provider: 'opencode',
+        status: 'done',
+        source: 'hook',
+        confidence: 'high',
+        updatedAt: 3,
+        details: {
+          intent: 'Finish the HUD fix',
+          recentActivities: [],
+          checks: [],
+          recap: {
+            outcome: 'done',
+            summary: 'OpenCode completed the turn',
+            completedAt: 3,
+          },
+        },
+      },
+    })
+    expect(registry.get(paneId)?.details).not.toHaveProperty('currentActivity')
+
+    expect(registry.applyInferred(inferred({
+      provider: 'opencode',
+      status: 'done',
+      source: 'heuristic',
+      confidence: 'high',
+      updatedAt: 4,
+    }))).toBeNull()
+    expect(registry.get(paneId)?.updatedAt).toBe(3)
+  })
+
+  it('does not reconcile hook-owned OpenCode work from a medium-confidence completion marker', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('session.status', {
+      status: { type: 'busy' },
+    }), 1)
+
+    expect(registry.applyInferred(inferred({
+      provider: 'opencode',
+      status: 'done',
+      source: 'heuristic',
+      confidence: 'medium',
+    }))).toBeNull()
+    expect(registry.get(paneId)?.status).toBe('working')
+  })
+
   it('uses unknown inferred state to remove only an inferred record', () => {
     const registry = new AgentStatusRegistry()
     expect(registry.applyInferred(inferred())).toMatchObject({

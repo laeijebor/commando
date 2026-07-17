@@ -584,10 +584,48 @@ export class AgentStatusRegistry {
     if (status.provider === suppression?.provider) return null
     if (status.provider !== 'unknown') this.inferenceSuppressions.delete(status.paneId)
     const previous = this.records.get(status.paneId)
+    const reconcilesOpenCodeCompletion = previous?.status.source === 'hook' &&
+      previous.status.provider === 'opencode' &&
+      previous.status.status === 'working' &&
+      status.provider === 'opencode' &&
+      status.status === 'done' &&
+      status.source === 'heuristic' &&
+      status.confidence === 'high'
     if (
       previous?.status.source === 'hook' &&
+      !reconcilesOpenCodeCompletion &&
       !(previous.retainedCompletion && status.provider !== 'unknown' && status.provider !== previous.status.provider)
     ) return null
+
+    if (previous && reconcilesOpenCodeCompletion) {
+      const details = cloneDetails(previous.status.details ?? emptyDetails())
+      const runningChecks = new Map(previous.runningChecks)
+      delete details.currentActivity
+      clearRunningChecks(details, runningChecks)
+      setRecap(details, createRecap(
+        'opencode',
+        'done',
+        details,
+        false,
+        undefined,
+        0,
+        undefined,
+        status.updatedAt,
+      ))
+      return this.upsert({
+        ...previous,
+        status: attachDetails({
+          ...previous.status,
+          status: 'done',
+          summary: status.summary,
+          confidence: status.confidence,
+          reason: status.reason,
+          updatedAt: status.updatedAt,
+        }, details),
+        runningActivities: new Map(),
+        runningChecks,
+      })
+    }
 
     if (status.provider === 'unknown' && status.status === 'unknown') {
       return previous ? this.remove(status.paneId) : null

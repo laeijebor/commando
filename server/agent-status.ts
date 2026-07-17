@@ -139,6 +139,14 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
   const label = provider === 'unknown' ? 'Agent' : provider
   const tail = input.content.slice(-16_000)
   const recentLines = tail.split(/\r?\n/).slice(-50).join('\n')
+  const unchangedFor = Math.max(0, input.capturedAt - input.lastChangedAt)
+  const hasActiveIndicator = /(?:esc (?:to )?interrupt|ctrl-c to stop|thinking(?:\.{3}|…)|working(?:\.{3}|…)|generating(?:\.{3}|…))/i.test(
+    recentLines,
+  )
+  const hasSettledOpenCodeComposer = provider === 'opencode' &&
+    unchangedFor >= 2_000 &&
+    !hasActiveIndicator &&
+    /\bOpenCode\s+\d+\.\d+(?:\.\d+)?\s*$/m.test(recentLines)
 
   if (input.dead) {
     return result(
@@ -185,11 +193,24 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
     )
   }
 
+  if (hasActiveIndicator) {
+    return result(
+      input,
+      provider,
+      'working',
+      `${label} is working`,
+      'heuristic',
+      'high',
+      'recent output contains an active-work indicator',
+    )
+  }
+
   if (
     /(?:^|\n)\s*(?:❯|›)\s*$/.test(recentLines) ||
     /(?:^|\n)\s*(?:task )?(?:done|completed successfully)\.?\s*$/i.test(
       recentLines,
-    )
+    ) ||
+    hasSettledOpenCodeComposer
   ) {
     return result(
       input,
@@ -197,12 +218,13 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
       'done',
       `${label} is idle`,
       'heuristic',
-      'medium',
-      'recent output ends at an agent prompt or completion marker',
+      hasSettledOpenCodeComposer ? 'high' : 'medium',
+      hasSettledOpenCodeComposer
+        ? 'OpenCode composer is idle and pane output has settled'
+        : 'recent output ends at an agent prompt or completion marker',
     )
   }
 
-  const unchangedFor = Math.max(0, input.capturedAt - input.lastChangedAt)
   if (provider !== 'unknown' && unchangedFor >= 30_000) {
     return result(
       input,
@@ -212,22 +234,6 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
       'process',
       'low',
       `pane output has been unchanged for ${Math.floor(unchangedFor / 1000)} seconds`,
-    )
-  }
-
-  if (
-    /(?:esc to interrupt|ctrl-c to stop|thinking(?:\.{3}|…)|working(?:\.{3}|…)|generating(?:\.{3}|…))/i.test(
-      recentLines,
-    )
-  ) {
-    return result(
-      input,
-      provider,
-      'working',
-      `${label} is working`,
-      'heuristic',
-      'high',
-      'recent output contains an active-work indicator',
     )
   }
 
