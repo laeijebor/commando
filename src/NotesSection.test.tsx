@@ -202,6 +202,58 @@ describe('NotesSection', () => {
     expect(screen.getByLabelText('Note title')).toHaveValue('Other note')
   })
 
+  it('saves a draft before pinning it to the HUD', async () => {
+    const onPinnedNoteChange = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      if (url.includes(`/api/notes/${original.id}?vault=vault-1`) && init?.method === 'PUT') {
+        const update = JSON.parse(String(init.body)) as Record<string, unknown>
+        return Response.json({ note: { ...original, ...update, updatedAt: original.updatedAt + 1 } })
+      }
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" onPinnedNoteChange={onPinnedNoteChange} />)
+    fireEvent.change(await screen.findByLabelText('Note body'), { target: { value: '## Saved before pinning' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pin note to HUD' }))
+
+    await waitFor(() => expect(onPinnedNoteChange).toHaveBeenCalledWith({
+      vaultId: 'vault-1',
+      id: original.id,
+      title: original.title,
+      body: '## Saved before pinning',
+      folder: original.folder,
+      updatedAt: original.updatedAt + 1,
+    }))
+    expect(screen.getByText('Saved to vault')).toBeVisible()
+  })
+
+  it('pins the note targeted by the context menu', async () => {
+    const other = { ...original, id: 'other-note', title: 'Other note', updatedAt: original.updatedAt + 1 }
+    const onPinnedNoteChange = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original, other], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(<NotesSection token="test-token" onPinnedNoteChange={onPinnedNoteChange} />)
+    fireEvent.contextMenu(await screen.findByRole('button', { name: /Other note/ }), { clientX: 120, clientY: 160 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pin to HUD' }))
+
+    await waitFor(() => expect(onPinnedNoteChange).toHaveBeenCalledWith({
+      vaultId: 'vault-1',
+      id: other.id,
+      title: other.title,
+      body: other.body,
+      folder: other.folder,
+      updatedAt: other.updatedAt,
+    }))
+  })
+
   it('renames the note targeted by the context menu', async () => {
     const other = { ...original, id: 'other-note', title: 'Other note', updatedAt: original.updatedAt + 1 }
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Renamed note')

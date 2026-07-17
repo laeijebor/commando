@@ -9,6 +9,8 @@ import {
   LoaderCircle,
   Pencil,
   PictureInPicture2,
+  Pin,
+  PinOff,
   RefreshCw,
   Search,
   Square,
@@ -19,6 +21,7 @@ import {
 import { type KeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 import { NoteBlockEditor } from './NoteBlockEditor'
 import { createNotesApi, NotesApiError, type Note, type NoteBatchResult, type NoteBatchTarget, type NotesSnapshot, type NoteVaultSnapshot } from './notesApi'
+import { pinnedNoteFrom, type NoteRequest, type PinnedNote } from './pinnedNote'
 import { VaultFolderPicker } from './VaultFolderPicker'
 import './notes-section.css'
 
@@ -98,7 +101,19 @@ function activeNote(note: Note): ActiveNote {
   }
 }
 
-export function NotesSection({ token, isActive = true }: { token: string; isActive?: boolean }) {
+export function NotesSection({
+  token,
+  isActive = true,
+  pinnedNote = null,
+  requestedNote = null,
+  onPinnedNoteChange,
+}: {
+  token: string
+  isActive?: boolean
+  pinnedNote?: PinnedNote | null
+  requestedNote?: NoteRequest | null
+  onPinnedNoteChange?: (note: PinnedNote | null) => void
+}) {
   const api = useRef(createNotesApi(token)).current
   const [notes, setNotes] = useState<Note[]>([])
   const [folders, setFolders] = useState<string[]>([])
@@ -283,6 +298,24 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
     const timer = window.setTimeout(() => { void save() }, 650)
     return () => window.clearTimeout(timer)
   }, [active?.body, active?.title, phase])
+
+  useEffect(() => {
+    const vaultId = vaultState?.activeVaultId
+    if (!vaultId || phase === 'loading' || pinnedNote?.vaultId !== vaultId) return
+    const latest = notes.find((note) => note.id === pinnedNote.id)
+    if (!latest) {
+      onPinnedNoteChange?.(null)
+      return
+    }
+    if (
+      latest.title !== pinnedNote.title ||
+      latest.body !== pinnedNote.body ||
+      latest.folder !== pinnedNote.folder ||
+      latest.updatedAt !== pinnedNote.updatedAt
+    ) {
+      onPinnedNoteChange?.(pinnedNoteFrom(vaultId, latest))
+    }
+  }, [notes, onPinnedNoteChange, phase, pinnedNote, vaultState?.activeVaultId])
 
   useEffect(() => {
     const vaultId = vaultState?.activeVaultId
@@ -584,6 +617,41 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
     applyNote(note)
   }
 
+  useEffect(() => {
+    if (!requestedNote || vaultBusy || !vaultState) return
+    if (vaultState.activeVaultId !== requestedNote.vaultId) {
+      if (vaultState.vaults.some((vault) => vault.id === requestedNote.vaultId && vault.available)) {
+        switchVault(requestedNote.vaultId)
+      }
+      return
+    }
+    const requested = notes.find((note) => note.id === requestedNote.noteId)
+    if (requested && activeRef.current?.id !== requested.id) void selectNote(requested)
+  }, [notes, requestedNote, vaultBusy, vaultState])
+
+  const togglePinnedNote = async (noteId: string) => {
+    const vaultId = vaultIdRef.current
+    if (!vaultId || !onPinnedNoteChange) return
+    if (pinnedNote?.vaultId === vaultId && pinnedNote.id === noteId) {
+      onPinnedNoteChange(null)
+      return
+    }
+    if (!(await flush())) return
+    const current = activeRef.current
+    if (current?.id === noteId) {
+      onPinnedNoteChange(pinnedNoteFrom(vaultId, {
+        id: current.id,
+        title: current.persistedTitle,
+        body: current.persistedBody,
+        folder: current.persistedFolder,
+        updatedAt: current.persistedUpdatedAt,
+      }))
+      return
+    }
+    const note = notes.find((candidate) => candidate.id === noteId)
+    if (note) onPinnedNoteChange(pinnedNoteFrom(vaultId, note))
+  }
+
   const popOutNote = async (noteId: string) => {
     if (noteId !== activeRef.current?.id) {
       const note = notes.find((candidate) => candidate.id === noteId)
@@ -838,6 +906,9 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
   }
   const currentVault = vaultState?.vaults.find((vault) => vault.id === vaultState.activeVaultId)
   const menuNote = menu?.kind === 'note' ? notes.find((note) => note.id === menu.noteId) : null
+  const isPinnedToActiveVault = (noteId: string) => Boolean(
+    pinnedNote && pinnedNote.vaultId === vaultState?.activeVaultId && pinnedNote.id === noteId,
+  )
 
   return (
     <section className={`notes-section${isActive ? ' is-active' : ' is-inactive'}${poppedOut ? ' has-popped-note' : ''}${vaultBusy ? ' vault-busy' : ''}${selectionMode ? ' selection-mode' : ''}`}>
@@ -965,7 +1036,10 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
             >
               {selectionMode ? <span className="note-selection-indicator" aria-hidden="true">{selectedIds.has(note.id) ? <SquareCheck /> : <Square />}</span> : null}
               <span className="note-list-copy">
-                <strong>{note.title || 'Untitled note'}</strong>
+                <span className="note-list-title">
+                  <strong>{note.title || 'Untitled note'}</strong>
+                  {isPinnedToActiveVault(note.id) ? <Pin aria-label="Pinned to HUD" /> : null}
+                </span>
                 <span>{note.body.trim().slice(0, 90) || 'Empty note'}</span>
                 <span className="note-list-meta"><small>{note.folder || 'Root'}</small><time>{new Date(note.updatedAt).toLocaleString()}</time></span>
               </span>
@@ -1046,6 +1120,16 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
               />
               <button
                 type="button"
+                className={`notes-pin-toggle${isPinnedToActiveVault(active.id) ? ' active' : ''}`}
+                onClick={() => void togglePinnedNote(active.id)}
+                aria-label={isPinnedToActiveVault(active.id) ? 'Unpin note from HUD' : 'Pin note to HUD'}
+                aria-pressed={isPinnedToActiveVault(active.id)}
+                title={isPinnedToActiveVault(active.id) ? 'Unpin from HUD' : 'Keep note visible in the HUD'}
+              >
+                {isPinnedToActiveVault(active.id) ? <PinOff /> : <Pin />}
+              </button>
+              <button
+                type="button"
                 className={`notes-popout-toggle${poppedOut ? ' active' : ''}`}
                 onClick={() => poppedOut ? setPoppedOut(false) : void popOutNote(active.id)}
                 aria-label={poppedOut ? 'Dock note' : 'Pop out note'}
@@ -1096,6 +1180,10 @@ export function NotesSection({ token, isActive = true }: { token: string; isActi
             </>
           ) : (
             <>
+              <button type="button" role="menuitem" onClick={() => { void togglePinnedNote(menu.noteId); setMenu(null) }}>
+                {isPinnedToActiveVault(menu.noteId) ? <PinOff /> : <Pin />}
+                {isPinnedToActiveVault(menu.noteId) ? 'Unpin from HUD' : 'Pin to HUD'}
+              </button>
               <button type="button" role="menuitem" onClick={() => { void popOutNote(menu.noteId); setMenu(null) }}><PictureInPicture2 /> Pop out note</button>
               <button type="button" role="menuitem" onClick={() => { void rename(menu.noteId); setMenu(null) }}><Pencil /> Rename</button>
               {(['', ...folders] as string[]).filter((folder) => folder !== menuNote?.folder).map((folder) => (

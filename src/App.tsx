@@ -87,6 +87,8 @@ import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
+import { HudPinnedNote } from './HudPinnedNote'
+import { storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
   createOwner,
   getAuthBootstrap,
@@ -673,7 +675,14 @@ export function App() {
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
   const [paneActionPending, setPaneActionPending] = useState(false)
   const [paneActionError, setPaneActionError] = useState('')
+  const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
+  const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const pendingMaximizePaneId = useRef<string | null>(null)
+
+  const changePinnedNote = useCallback((next: PinnedNote | null) => {
+    setPinnedNote(next)
+    storePinnedNote(next)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1391,7 +1400,7 @@ export function App() {
             type="button"
             className="icon-button mobile-panel-toggle hud-toggle"
             onClick={() => setRightPanelOpen(true)}
-            aria-label="Open Agent HUD"
+            aria-label="Open HUD"
           >
             <PanelRightOpen aria-hidden="true" />
             {attentionCount ? <span className="attention-badge">{attentionCount}</span> : null}
@@ -1400,9 +1409,9 @@ export function App() {
             type="button"
             className={`icon-button desktop-panel-toggle right-panel-visibility${rightPanelHidden ? ' is-collapsed' : ''}`}
             onClick={() => setRightPanelHidden((current) => !current)}
-            aria-label={rightPanelHidden ? 'Show Agent HUD' : 'Hide Agent HUD'}
+            aria-label={rightPanelHidden ? 'Show HUD' : 'Hide HUD'}
             aria-pressed={!rightPanelHidden}
-            title={rightPanelHidden ? 'Show Agent HUD' : 'Hide Agent HUD'}
+            title={rightPanelHidden ? 'Show HUD' : 'Hide HUD'}
           >
             <PanelRightOpen aria-hidden="true" />
             {attentionCount ? <span className="attention-badge">{attentionCount}</span> : null}
@@ -1725,7 +1734,13 @@ export function App() {
           </> : area === 'linear' ? <LinearSection token={token} /> : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
-              <NotesSection token={token} isActive={area === 'notes'} />
+              <NotesSection
+                token={token}
+                isActive={area === 'notes'}
+                pinnedNote={pinnedNote}
+                requestedNote={requestedNote}
+                onPinnedNoteChange={changePinnedNote}
+              />
             </Suspense>
           ) : null}
         </main>
@@ -1734,13 +1749,13 @@ export function App() {
           <div className="hud-header">
             <div className="hud-heading">
               <span className={`hud-pulse${attentionCount ? ' attention' : ''}`} />
-              <div><strong>Agent HUD</strong><small>Attention first</small></div>
+              <div><strong>HUD</strong><small>Notes and agents</small></div>
             </div>
             <button
               type="button"
               className="icon-button panel-close"
               onClick={() => { setRightPanelOpen(false); setRightPanelHidden(true) }}
-              aria-label="Hide Agent HUD"
+              aria-label="Hide HUD"
             >
               <X aria-hidden="true" />
             </button>
@@ -1755,6 +1770,22 @@ export function App() {
             <div className={attentionCount ? 'attention' : ''}><strong>{attentionCount}</strong><span>Need you</span></div>
             <div><strong>{doneCount}</strong><span>Done</span></div>
           </div>
+          {pinnedNote ? (
+            <HudPinnedNote
+              note={pinnedNote}
+              onOpen={() => {
+                setNotesMounted(true)
+                setArea('notes')
+                setRightPanelOpen(false)
+                setRequestedNote((current) => ({
+                  vaultId: pinnedNote.vaultId,
+                  noteId: pinnedNote.id,
+                  requestId: (current?.requestId ?? 0) + 1,
+                }))
+              }}
+              onUnpin={() => changePinnedNote(null)}
+            />
+          ) : null}
           <div className="agent-stream">
             {hudStatuses.map((status) => {
               const pane = paneMap.get(status.paneId)

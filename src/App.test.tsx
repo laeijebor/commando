@@ -52,7 +52,7 @@ describe('owner authentication form', () => {
   })
 })
 
-describe('Agent HUD status scope', () => {
+describe('HUD status scope', () => {
   it('includes known panes from every session and keeps attention-first ordering', () => {
     const statuses: Record<string, AgentStatus> = {
       '%1': {

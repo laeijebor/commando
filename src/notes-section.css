@@ -49,6 +49,9 @@
 .notes-items span { color: var(--muted); font-size: 12px; line-height: 1.4; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .notes-items .note-list-copy { min-width: 0; display: grid; gap: 5px; }
 .notes-items .note-list-copy > strong { color: var(--text); }
+.notes-items .note-list-title { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--text); }
+.notes-items .note-list-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.notes-items .note-list-title svg { width: 12px; height: 12px; flex: 0 0 auto; color: var(--accent); }
 .notes-items .note-selection-indicator { width: 18px; height: 18px; display: grid; place-items: center; overflow: visible; color: var(--muted-dim); }
 .notes-items .note-selection-indicator svg { width: 15px; height: 15px; }
 .notes-items > button.selected .note-selection-indicator { color: var(--accent); }
@@ -75,8 +78,8 @@
 .notes-conflict-actions svg { width: 12px; height: 12px; }
 .notes-title-row { display: flex; align-items: center; gap: 10px; }
 .notes-title { min-width: 0; flex: 1; border: 0; outline: 0; padding: 20px 0 14px; color: var(--text); background: transparent; font: 700 clamp(26px, 4vw, 42px)/1.1 system-ui, sans-serif; }
-.notes-popout-toggle { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border: 1px solid var(--border-strong) !important; border-radius: 7px; color: var(--muted-dim) !important; }
-.notes-popout-toggle:hover, .notes-popout-toggle:focus-visible, .notes-popout-toggle.active { outline: 0; color: var(--accent) !important; border-color: var(--accent) !important; background: var(--surface-soft) !important; }
+.notes-popout-toggle, .notes-pin-toggle { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border: 1px solid var(--border-strong) !important; border-radius: 7px; color: var(--muted-dim) !important; }
+.notes-popout-toggle:hover, .notes-popout-toggle:focus-visible, .notes-popout-toggle.active, .notes-pin-toggle:hover, .notes-pin-toggle:focus-visible, .notes-pin-toggle.active { outline: 0; color: var(--accent) !important; border-color: var(--accent) !important; background: var(--surface-soft) !important; }
 .notes-editor.popped-out .notes-title { padding-block: 13px 11px; font-size: clamp(22px, 5vw, 30px); }
 .notes-editor.popped-out .notes-block-editor .bn-editor { padding: 8px 28px 52px 18px; font-size: 13px; }
 .notes-window-resize { position: absolute; right: 0; bottom: 0; width: 22px; height: 22px; cursor: nwse-resize; touch-action: none; }

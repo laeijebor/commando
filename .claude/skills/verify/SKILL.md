@@ -27,7 +27,7 @@ Playwright works well headless (`chromium.launch()`, viewport 1440x900).
 Scripts must live inside the repo dir to resolve `@playwright/test`. If the
 browser binary is missing: `npx playwright install chromium-headless-shell`.
 
-Useful flows: cockpit renders session tree + panes + Agent HUD from the live
+Useful flows: cockpit renders session tree + panes + HUD from the live
 tmux server; `Meta+k` opens the command palette; sidebar "Linear" opens the
 Linear board. The daemon mirrors the user's real tmux sessions — look, don't
 type into panes.
