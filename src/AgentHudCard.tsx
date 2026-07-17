@@ -3,7 +3,6 @@ import {
   Check,
   ChevronRight,
   CircleDotDashed,
-  ShieldCheck,
   X,
 } from 'lucide-react'
 
@@ -214,14 +213,7 @@ export function AgentHudCard({
         ) : null}
 
         <span className="agent-context">
-          {sessionName ?? 'unknown session'} / {windowName ?? 'unknown window'} / pane {paneIndex ?? '?'} / updated {relativeTime(status.updatedAt, now)}
-        </span>
-        <span className="provenance-row">
-          <ShieldCheck aria-hidden="true" />
-          <span>
-            Source: {status.source} / Confidence: {status.confidence}
-            {status.reason ? ` / ${status.reason}` : ''}
-          </span>
+          {windowName ?? 'unknown window'} / pane {paneIndex ?? '?'} / updated {relativeTime(status.updatedAt, now)}
         </span>
       </span>
       <ChevronRight className="jump-chevron" aria-hidden="true" />

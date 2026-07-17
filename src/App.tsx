@@ -1793,11 +1793,6 @@ export function App() {
               <X aria-hidden="true" />
             </button>
           </div>
-          <div className="hud-context">
-            <span className="section-kicker">Global context</span>
-            <strong>All sessions</strong>
-            <small>{snapshot ? `${snapshot.sessions.length} tmux ${snapshot.sessions.length === 1 ? 'session' : 'sessions'}` : 'Waiting for tmux'}</small>
-          </div>
           <div className="hud-stats" aria-label="Agent status totals">
             <div><strong>{workingCount}</strong><span>Working</span></div>
             <div className={attentionCount ? 'attention' : ''}><strong>{attentionCount}</strong><span>Need you</span></div>

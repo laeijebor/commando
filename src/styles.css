@@ -224,7 +224,6 @@ pre {
 .hud-heading,
 .save-state,
 .pane-footer,
-.provenance-row,
 .quick-jump,
 .sidebar-footer {
   display: flex;
@@ -1628,14 +1627,14 @@ kbd {
 
 .agent-hud {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   gap: 8px;
   padding: 8px;
   border-left: 1px solid var(--border);
 }
 
 .agent-hud:has(.hud-pinned-note) {
-  grid-template-rows: auto auto auto minmax(120px, auto) minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(120px, auto) minmax(0, 1fr) auto auto;
 }
 
 .hud-header {
@@ -1679,37 +1678,6 @@ kbd {
 
 @keyframes pulse {
   70% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
-}
-
-.hud-context {
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.hud-context strong,
-.hud-context small {
-  display: block;
-}
-
-.hud-context strong {
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--text-soft);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hud-context small {
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--muted-dim);
-  font-family: var(--mono);
-  font-size: 7px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .hud-stats {
@@ -2054,8 +2022,7 @@ kbd {
 .agent-activity,
 .agent-recent,
 .agent-chips,
-.agent-context,
-.provenance-row {
+.agent-context {
   display: block;
 }
 
@@ -2326,30 +2293,6 @@ kbd {
   font-size: 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.provenance-row {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px;
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px dotted var(--border);
-  color: var(--text-dim);
-  font-family: var(--mono);
-  font-size: 6px;
-  line-height: 1.35;
-  text-transform: capitalize;
-}
-
-.provenance-row svg {
-  width: 9px;
-  height: 9px;
-}
-
-.provenance-row > span {
-  overflow-wrap: anywhere;
 }
 
 .jump-chevron {

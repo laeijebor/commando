@@ -168,9 +168,10 @@ describe('AgentHudCard', () => {
     const card = screen.getByRole('button', { name: /Open claude agent in pane 4.*Modernizing dashboard/ })
     expect(card).toHaveAttribute('type', 'button')
     expect(card).toHaveAccessibleName(/Session: commando.*Window: terminal/)
+    expect(card).toHaveAccessibleName(/Source: hook, confidence: high.*Agent hook emitted a working state/)
     expect(screen.getByText('Modernizing dashboard')).toBeVisible()
-    expect(screen.getByText(/commando \/ terminal \/ pane 4 \/ updated 5m ago/)).toBeVisible()
-    expect(screen.getByText(/Source: hook \/ Confidence: high/)).toBeVisible()
+    expect(screen.getByText(/terminal \/ pane 4 \/ updated 5m ago/)).toBeVisible()
+    expect(screen.queryByText(/Source: hook \/ Confidence: high/)).not.toBeInTheDocument()
 
     fireEvent.click(card)
     expect(onSelect).toHaveBeenCalledOnce()
