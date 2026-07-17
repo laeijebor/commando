@@ -93,9 +93,11 @@ import { storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } 
 import {
   agentHudGroups,
   agentNeedsAttention,
+  filterAgentHudGroups,
   storedAgentHudDismissals,
   storeAgentHudDismissals,
   type AgentHudDismissals,
+  type AgentHudFilter,
 } from './agentHud'
 import type { SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
@@ -648,6 +650,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
+  const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -1316,12 +1319,28 @@ export function App() {
     agentHudDismissals,
   )
   const hudStatuses = hudGroups.flatMap((group) => group.statuses)
+  const visibleHudGroups = filterAgentHudGroups(hudGroups, agentHudFilter)
+  const visibleHudStatuses = visibleHudGroups.flatMap((group) => group.statuses)
   const attentionCount = hudStatuses.filter(
     agentNeedsAttention,
   ).length
   const workingCount = hudStatuses.filter((status) => status.status === 'working').length
   const doneCount = hudStatuses.filter((status) => status.status === 'done').length
   const hasKnownHudStatuses = Object.values(agentStatuses).some((status) => paneMap.has(status.paneId))
+  const activeHudFilterLabel = agentHudFilter === 'attention'
+    ? 'Need you'
+    : agentHudFilter === 'working'
+      ? 'Working'
+      : agentHudFilter === 'done'
+        ? 'Done'
+        : ''
+  const activeHudFilterEmptyTitle = agentHudFilter === 'attention'
+    ? 'No agents need you'
+    : agentHudFilter === 'working'
+      ? 'No agents are working'
+      : agentHudFilter === 'done'
+        ? 'No done agents'
+        : ''
   const activeWindow = selectedSession?.activeWindowId
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
@@ -1793,10 +1812,35 @@ export function App() {
               <X aria-hidden="true" />
             </button>
           </div>
-          <div className="hud-stats" aria-label="Agent status totals">
-            <div><strong>{workingCount}</strong><span>Working</span></div>
-            <div className={attentionCount ? 'attention' : ''}><strong>{attentionCount}</strong><span>Need you</span></div>
-            <div><strong>{doneCount}</strong><span>Done</span></div>
+          <div className="hud-stats" aria-label="Agent status filters">
+            <button
+              type="button"
+              aria-pressed={agentHudFilter === 'working'}
+              aria-label={`${agentHudFilter === 'working' ? 'Clear' : 'Filter to'} working agents (${workingCount})`}
+              title={agentHudFilter === 'working' ? 'Show all agents' : 'Show working agents'}
+              onClick={() => setAgentHudFilter((current) => current === 'working' ? null : 'working')}
+            >
+              <strong>{workingCount}</strong><span>Working</span>
+            </button>
+            <button
+              type="button"
+              className="attention"
+              aria-pressed={agentHudFilter === 'attention'}
+              aria-label={`${agentHudFilter === 'attention' ? 'Clear' : 'Filter to'} agents needing you (${attentionCount})`}
+              title={agentHudFilter === 'attention' ? 'Show all agents' : 'Show agents needing you'}
+              onClick={() => setAgentHudFilter((current) => current === 'attention' ? null : 'attention')}
+            >
+              <strong>{attentionCount}</strong><span>Need you</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={agentHudFilter === 'done'}
+              aria-label={`${agentHudFilter === 'done' ? 'Clear' : 'Filter to'} done agents (${doneCount})`}
+              title={agentHudFilter === 'done' ? 'Show all agents' : 'Show done agents'}
+              onClick={() => setAgentHudFilter((current) => current === 'done' ? null : 'done')}
+            >
+              <strong>{doneCount}</strong><span>Done</span>
+            </button>
           </div>
           {pinnedNote ? (
             <HudPinnedNote
@@ -1815,7 +1859,7 @@ export function App() {
             />
           ) : null}
           <div className="agent-stream">
-            {hudGroups.map((group) => (
+            {visibleHudGroups.map((group) => (
               <section className="agent-group" key={group.id} aria-labelledby={`agent-group-${group.id}`}>
                 <header>
                   <strong id={`agent-group-${group.id}`}>{group.name}</strong>
@@ -1843,11 +1887,11 @@ export function App() {
                 })}
               </section>
             ))}
-            {hudStatuses.length === 0 ? (
+            {visibleHudStatuses.length === 0 ? (
               <div className="hud-empty">
                 <Bot aria-hidden="true" />
-                <strong>{hasKnownHudStatuses ? 'All current updates dismissed' : 'No agent signals yet'}</strong>
-                <p>{hasKnownHudStatuses ? 'Cards return when their agent reports a new update.' : 'Provider hooks, process inspection, and heuristics will appear here with their source.'}</p>
+                <strong>{agentHudFilter ? activeHudFilterEmptyTitle : hasKnownHudStatuses ? 'All current updates dismissed' : 'No agent signals yet'}</strong>
+                <p>{agentHudFilter ? `Select ${activeHudFilterLabel} again to show all current updates.` : hasKnownHudStatuses ? 'Cards return when their agent reports a new update.' : 'Provider hooks, process inspection, and heuristics will appear here with their source.'}</p>
               </div>
             ) : null}
           </div>

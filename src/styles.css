@@ -1686,18 +1686,42 @@ kbd {
   gap: 5px;
 }
 
-.hud-stats > div {
+.hud-stats > button {
   min-width: 0;
+  min-height: 44px;
   padding: 5px 4px;
   border: 1px solid var(--border);
   border-radius: 9px;
+  color: inherit;
   background: var(--surface);
+  cursor: pointer;
+  font: inherit;
   text-align: center;
+  transition: 150ms ease;
 }
 
-.hud-stats > div.attention {
+.hud-stats > button:hover,
+.hud-stats > button:focus-visible {
+  outline: 0;
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
+}
+
+.hud-stats > button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.hud-stats > button.attention {
   border-color: rgba(243, 198, 107, 0.3);
   background: rgba(49, 39, 20, 0.36);
+}
+
+.hud-stats > button.attention[aria-pressed='true'] {
+  border-color: var(--amber);
+  background: rgba(49, 39, 20, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(243, 198, 107, 0.24);
 }
 
 .hud-stats strong,

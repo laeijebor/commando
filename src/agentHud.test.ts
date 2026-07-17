@@ -6,6 +6,7 @@ import type { SessionTreePreferences } from './sessionManagementApi'
 import {
   AGENT_HUD_DISMISSALS_STORAGE_KEY,
   agentHudGroups,
+  filterAgentHudGroups,
   storedAgentHudDismissals,
   storeAgentHudDismissals,
 } from './agentHud'
@@ -86,6 +87,34 @@ describe('Agent HUD grouping', () => {
     const updated = { ...current, summary: 'New update', updatedAt: 11 }
     expect(agentHudGroups({ '%1': updated }, panes, sessions, preferences, { '%1': 10 })[0].statuses)
       .toEqual([updated])
+  })
+
+  it('filters grouped cards while preserving group order and attention recaps', () => {
+    const statuses = {
+      '%1': status('%1', 'working', 1),
+      '%2': status('%2', 'done', 2, {
+        outcome: 'follow_up',
+        summary: 'Review requested',
+        completedAt: 2,
+      }),
+      '%3': status('%3', 'needs_input', 3),
+      '%4': status('%4', 'done', 4),
+    }
+    const panes = new Map([
+      ['%1', pane('%1', '$1')],
+      ['%2', pane('%2', '$2')],
+      ['%3', pane('%3', '$3')],
+      ['%4', pane('%4', '$4')],
+    ])
+    const groups = agentHudGroups(statuses, panes, sessions, preferences)
+
+    expect(filterAgentHudGroups(groups, 'working').flatMap((group) => group.statuses.map(({ paneId }) => paneId)))
+      .toEqual(['%1'])
+    expect(filterAgentHudGroups(groups, 'attention').flatMap((group) => group.statuses.map(({ paneId }) => paneId)))
+      .toEqual(['%2', '%3'])
+    expect(filterAgentHudGroups(groups, 'done').flatMap((group) => group.statuses.map(({ paneId }) => paneId)))
+      .toEqual(['%2', '%4'])
+    expect(filterAgentHudGroups(groups, null)).toEqual(groups)
   })
 })
 

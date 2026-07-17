@@ -22,6 +22,7 @@ export type AgentHudGroup = {
 }
 
 export type AgentHudDismissals = Record<string, number>
+export type AgentHudFilter = 'working' | 'attention' | 'done'
 
 export function agentNeedsAttention(status: AgentStatus): boolean {
   return status.status === 'needs_input' ||
@@ -29,6 +30,22 @@ export function agentNeedsAttention(status: AgentStatus): boolean {
     status.details?.recap?.outcome === 'follow_up' ||
     status.details?.recap?.outcome === 'blocked' ||
     status.details?.recap?.outcome === 'failed'
+}
+
+export function agentMatchesHudFilter(status: AgentStatus, filter: AgentHudFilter): boolean {
+  if (filter === 'attention') return agentNeedsAttention(status)
+  return status.status === filter
+}
+
+export function filterAgentHudGroups(
+  groups: readonly AgentHudGroup[],
+  filter: AgentHudFilter | null,
+): AgentHudGroup[] {
+  if (!filter) return [...groups]
+  return groups.flatMap((group) => {
+    const statuses = group.statuses.filter((status) => agentMatchesHudFilter(status, filter))
+    return statuses.length ? [{ ...group, statuses }] : []
+  })
 }
 
 export function agentHudGroups(
