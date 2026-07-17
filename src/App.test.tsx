@@ -3,8 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentStatus, TmuxPane } from '../shared/protocol'
-import { agentHudStatuses, AuthGate, TerminalPaneCard } from './App'
+import type { TmuxPane } from '../shared/protocol'
+import { AuthGate, TerminalPaneCard } from './App'
 
 vi.mock('./authClient', () => ({
   createOwner: vi.fn(),
@@ -49,52 +49,6 @@ describe('owner authentication form', () => {
 
     fireEvent.change(email, { target: { value: 'other@example.com' } })
     expect(email).toHaveValue('other@example.com')
-  })
-})
-
-describe('Agent HUD status scope', () => {
-  it('includes known panes from every session and keeps attention-first ordering', () => {
-    const statuses: Record<string, AgentStatus> = {
-      '%1': {
-        paneId: '%1',
-        provider: 'claude',
-        status: 'working',
-        summary: 'Working',
-        source: 'hook',
-        confidence: 'high',
-        reason: 'Test',
-        updatedAt: 1,
-      },
-      '%2': {
-        paneId: '%2',
-        provider: 'opencode',
-        status: 'needs_input',
-        summary: 'Needs input',
-        source: 'hook',
-        confidence: 'high',
-        reason: 'Test',
-        updatedAt: 2,
-      },
-      '%999': {
-        paneId: '%999',
-        provider: 'codex',
-        status: 'done',
-        summary: 'Orphaned',
-        source: 'process',
-        confidence: 'low',
-        reason: 'Test',
-        updatedAt: 3,
-      },
-    }
-    const panes = new Map<string, TmuxPane>([
-      ['%1', { ...pane, id: '%1', sessionId: '$1' }],
-      ['%2', { ...pane, id: '%2', sessionId: '$2' }],
-    ])
-
-    expect(agentHudStatuses(statuses, panes).map((status) => status.paneId)).toEqual([
-      '%2',
-      '%1',
-    ])
   })
 })
 

@@ -259,6 +259,11 @@ describe('agent hook installer', () => {
         ].join('\n'),
       })
       await send({
+        hook_event_name: 'UserPromptSubmit',
+        prompt_id: 'synthetic-task-notification',
+        prompt: '<task-notification><task-id>task-1</task-id><tool-use-id>tool-1</tool-use-id><output-file>/tmp/task.output</output-file></task-notification>',
+      })
+      await send({
         hook_event_name: 'PreToolUse',
         tool_name: 'Bash',
         tool_use_id: 'tool-1',
@@ -294,6 +299,7 @@ describe('agent hook installer', () => {
       })
 
       expect(received).toHaveLength(6)
+      expect(received.some(({ body }) => body.prompt_id === 'synthetic-task-notification')).toBe(false)
       for (const request of received) {
         expect(request.authorization).toBe(`Bearer ${token}`)
         expect(request.pane).toBe('%42')

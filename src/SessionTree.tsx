@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Ma
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers } from './sessionTreePreferences'
 import './session-tree.css'
 
 type Props = {
@@ -19,9 +20,8 @@ type Props = {
   onOpenPaneMaximized: (id: string) => void
   onWindowDeleting: (id: string) => void
   onSessionsChanged: () => void
+  onPreferencesChanged: (preferences: SessionTreePreferences) => void
 }
-
-const emptyPreferences: SessionTreePreferences = { version: 1, groups: [], ungroupedSessionIds: [] }
 
 const providerLabels: Record<AgentStatus['provider'], string> = {
   claude: 'Claude',
@@ -49,7 +49,7 @@ function statusLabel(status: AgentStatus, pane: TmuxPane): string {
 
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
-  const [preferences, setPreferences] = useState<SessionTreePreferences>(emptyPreferences)
+  const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
   const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -59,8 +59,11 @@ export function SessionTree(props: Props) {
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
 
   useEffect(() => {
-    api.loadPreferences().then(setPreferences).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
-  }, [api, props.sessions.length])
+    api.loadPreferences().then((next) => {
+      setPreferences(next)
+      props.onPreferencesChanged(next)
+    }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
+  }, [api, props.onPreferencesChanged, props.sessions.length])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -71,16 +74,14 @@ export function SessionTree(props: Props) {
 
   const save = (next: SessionTreePreferences) => {
     setPreferences(next)
-    api.savePreferences(next).then(setPreferences).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to save session order'))
+    props.onPreferencesChanged(next)
+    api.savePreferences(next).then((saved) => {
+      setPreferences(saved)
+      props.onPreferencesChanged(saved)
+    }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to save session order'))
   }
 
-  const containers = [
-    ...preferences.groups.map((group) => ({ id: group.id, name: group.name, sessionIds: group.sessionIds, group })),
-    { id: 'ungrouped', name: 'Ungrouped', sessionIds: preferences.ungroupedSessionIds, group: null },
-  ]
-  const known = new Set(containers.flatMap((container) => container.sessionIds))
-  const missing = props.sessions.map((session) => session.id).filter((id) => !known.has(id))
-  if (missing.length) containers[containers.length - 1].sessionIds = [...containers[containers.length - 1].sessionIds, ...missing]
+  const containers = sessionTreeContainers(preferences, props.sessions)
 
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
     const groups = preferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
