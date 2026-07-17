@@ -129,9 +129,21 @@ export function parseClientMessage(value: unknown): ParseResult {
       ) {
         return { ok: false, error: 'Invalid pane subscription' }
       }
+      const statusPaneIds = value.statusPaneIds ?? []
+      if (
+        !Array.isArray(statusPaneIds) ||
+        statusPaneIds.length > MAX_SUBSCRIBED_PANES ||
+        !statusPaneIds.every(isPaneId)
+      ) {
+        return { ok: false, error: 'Invalid pane subscription' }
+      }
       return {
         ok: true,
-        message: { type: 'subscribe', paneIds: [...new Set(value.paneIds)] },
+        message: {
+          type: 'subscribe',
+          paneIds: [...new Set(value.paneIds)],
+          statusPaneIds: [...new Set(statusPaneIds)],
+        },
       }
     }
     case 'input': {

@@ -240,7 +240,7 @@ export type SpecialKey =
   | 'C-l'
 
 export type ClientMessage =
-  | { type: 'subscribe'; paneIds: string[] }
+  | { type: 'subscribe'; paneIds: string[]; statusPaneIds?: string[] }
   | { type: 'input'; paneId: string; data: string; requestId: string }
   | { type: 'paste'; paneId: string; data: string; requestId: string }
   | { type: 'key'; paneId: string; key: SpecialKey; requestId: string }

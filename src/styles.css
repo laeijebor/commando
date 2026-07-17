@@ -917,6 +917,16 @@ kbd {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
+.window-strip .tab-attention {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--red);
+  vertical-align: 1px;
+}
+
 .workspace-actions {
   display: flex;
   align-items: center;

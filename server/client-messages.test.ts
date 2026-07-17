@@ -231,3 +231,31 @@ describe('client message validation', () => {
     }).ok).toBe(true)
   })
 })
+
+describe('subscribe messages', () => {
+  it('defaults statusPaneIds to an empty list and dedupes both sets', () => {
+    expect(parseClientMessage({ type: 'subscribe', paneIds: ['%1', '%1'] })).toEqual({
+      ok: true,
+      message: { type: 'subscribe', paneIds: ['%1'], statusPaneIds: [] },
+    })
+    expect(
+      parseClientMessage({
+        type: 'subscribe',
+        paneIds: ['%1'],
+        statusPaneIds: ['%2', '%2', '%3'],
+      }),
+    ).toEqual({
+      ok: true,
+      message: { type: 'subscribe', paneIds: ['%1'], statusPaneIds: ['%2', '%3'] },
+    })
+  })
+
+  it('rejects malformed statusPaneIds', () => {
+    expect(
+      parseClientMessage({ type: 'subscribe', paneIds: [], statusPaneIds: ['nope'] }).ok,
+    ).toBe(false)
+    expect(
+      parseClientMessage({ type: 'subscribe', paneIds: [], statusPaneIds: 'x' }).ok,
+    ).toBe(false)
+  })
+})

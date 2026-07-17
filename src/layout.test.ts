@@ -6,6 +6,7 @@ import {
   moveItem,
   presetLayoutSpec,
   reconcileGroupsForSession,
+  resolveActiveGroup,
 } from './layout'
 
 describe('presetLayoutSpec', () => {
@@ -152,5 +153,33 @@ describe('defaultGroupsForSession', () => {
       paneIds: ['%1', '%3'],
     })
     expect(groups[1]).toMatchObject({ windowId: '@4', paneIds: ['%4'] })
+  })
+})
+
+describe('resolveActiveGroup', () => {
+  const group = (windowId: string) => ({
+    id: `window-${windowId.slice(1)}`,
+    name: windowId,
+    sessionId: '$1',
+    windowId,
+    paneIds: [],
+  })
+  const groups = [group('@1'), group('@2'), group('@3')]
+
+  it('prefers the selected tab window', () => {
+    expect(resolveActiveGroup(groups, '@2', '@3')?.windowId).toBe('@2')
+  })
+
+  it('falls back to the session active window when the tab window is gone', () => {
+    expect(resolveActiveGroup(groups, '@9', '@3')?.windowId).toBe('@3')
+  })
+
+  it('falls back to the first group when neither window exists', () => {
+    expect(resolveActiveGroup(groups, '@9', '@8')?.windowId).toBe('@1')
+    expect(resolveActiveGroup(groups, undefined, undefined)?.windowId).toBe('@1')
+  })
+
+  it('returns undefined for an empty session', () => {
+    expect(resolveActiveGroup([], '@1', '@1')).toBeUndefined()
   })
 })

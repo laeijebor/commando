@@ -69,6 +69,7 @@ import {
   defaultGroupsForSession,
   presetLayoutSpec,
   reconcileGroupsForSession,
+  resolveActiveGroup,
   type GroupLayoutPreset,
 } from './layout'
 import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './paneStream'
@@ -657,6 +658,7 @@ export function App() {
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(true)
@@ -854,13 +856,25 @@ export function App() {
   const paneMap = new Map(snapshot?.panes.map((pane) => [pane.id, pane]) ?? [])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
-  const allVisiblePaneIds = groups.flatMap((group) =>
-    group.paneIds.filter((paneId) => paneMap.has(paneId)),
+  const selectedTabWindowId = selectedSessionId ? activeTabs[selectedSessionId] : undefined
+  const activeGroup = resolveActiveGroup(
+    groups,
+    selectedTabWindowId,
+    selectedSession?.activeWindowId ?? undefined,
   )
+  const allVisiblePaneIds = activeGroup
+    ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
+    : []
   const subscribedPaneIds = area === 'workspace'
     ? maximizedPaneId ? [maximizedPaneId] : allVisiblePaneIds
     : []
+  const statusOnlyPaneIds = area === 'workspace' && selectedSessionId
+    ? (snapshot?.panes ?? [])
+        .filter((pane) => pane.sessionId === selectedSessionId && !subscribedPaneIds.includes(pane.id))
+        .map((pane) => pane.id)
+    : []
   const subscriptionKey = subscribedPaneIds.join('\u0000')
+  const statusSubscriptionKey = statusOnlyPaneIds.join('\u0000')
 
   useEffect(() => {
     if (!connected || !selectedSessionId) return
@@ -873,8 +887,12 @@ export function App() {
 
   useEffect(() => {
     if (!connected) return
-    send({ type: 'subscribe', paneIds: subscriptionKey ? subscriptionKey.split('\u0000') : [] })
-  }, [connected, send, subscriptionKey])
+    send({
+      type: 'subscribe',
+      paneIds: subscriptionKey ? subscriptionKey.split('\u0000') : [],
+      statusPaneIds: statusSubscriptionKey ? statusSubscriptionKey.split('\u0000') : [],
+    })
+  }, [connected, send, subscriptionKey, statusSubscriptionKey])
 
   useEffect(() => {
     if (connection.phase !== 'live') {
@@ -905,6 +923,16 @@ export function App() {
 
   useEffect(() => {
     if (!pendingFocusPaneId) return
+    const pane = paneMap.get(pendingFocusPaneId)
+    if (!pane) {
+      setPendingFocusPaneId(null)
+      return
+    }
+    const group = groups.find((candidate) => candidate.paneIds.includes(pendingFocusPaneId))
+    if (group && group !== activeGroup) {
+      setActiveTabs((current) => ({ ...current, [pane.sessionId]: group.windowId }))
+      return
+    }
     const node = paneRefs.current.get(pendingFocusPaneId)
     if (!node) return
     node.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -960,11 +988,8 @@ export function App() {
 
   const jumpToGroup = (windowId: string) => {
     const group = groups.find((candidate) => candidate.windowId === windowId)
-    if (!group) return
-    document.querySelector(`[data-group-id="${CSS.escape(group.id)}"]`)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    })
+    if (!group || !selectedSessionId) return
+    setActiveTabs((current) => ({ ...current, [selectedSessionId]: group.windowId }))
     setLeftPanelOpen(false)
   }
 
@@ -1232,11 +1257,11 @@ export function App() {
     }) ?? []),
     ...PRESETS.map((preset) => ({
       id: `layout:${preset.id}`,
-      label: `Apply ${preset.label.toLowerCase()} to visible groups`,
-      detail: 'Restructure the tmux panes of every visible window now',
+      label: `Apply ${preset.label.toLowerCase()} to the visible window`,
+      detail: 'Restructure the tmux panes of the visible window now',
       kind: 'layout' as const,
       run: () => {
-        for (const group of groups) restructureWindow(group.windowId, preset.id)
+        if (activeGroup) restructureWindow(activeGroup.windowId, preset.id)
         setPaletteOpen(false)
       },
     })),
@@ -1518,27 +1543,33 @@ export function App() {
           <header className="workspace-toolbar">
             <div className="workspace-context">
               <h1
-                title={activeWindow
-                  ? `Active window ${activeWindow.index}: ${activeWindow.name} / ${groups.length} groups / ${allVisiblePaneIds.length} visible panes`
+                title={activeGroup
+                  ? `Window ${windowMap.get(activeGroup.windowId)?.index ?? '?'}: ${activeGroup.name} / ${groups.length} windows / ${allVisiblePaneIds.length} visible panes`
                   : undefined}
               >
                 {selectedSession?.name ?? 'Waiting for tmux'}
               </h1>
               {groups.length > 1 ? (
-                <nav className="window-strip" aria-label="Jump to window">
+                <nav className="window-strip" role="tablist" aria-label="Windows">
                   {groups.map((group) => {
                     const window = windowMap.get(group.windowId)
-                    const focusedInGroup = focusedPaneId !== null && group.paneIds.includes(focusedPaneId)
-                    const active = focusedPaneId ? focusedInGroup : activeWindow?.id === group.windowId
+                    const active = group === activeGroup
+                    const attention = group.paneIds.some((paneId) => {
+                      const status = agentStatuses[paneId]?.status
+                      return status === 'needs_input' || status === 'failed'
+                    })
                     return (
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={active}
                         className={active ? 'active' : ''}
                         onClick={() => jumpToGroup(group.windowId)}
-                        title={`Scroll to ${group.name}`}
+                        title={`Show ${group.name}`}
                         key={group.id}
                       >
                         {window ? `${window.index} ${group.name}` : group.name}
+                        {attention ? <span className="tab-attention" aria-label="Needs attention" /> : null}
                       </button>
                     )
                   })}
@@ -1586,7 +1617,7 @@ export function App() {
           </header>
 
           <div className={`workspace-canvas${maximizedPaneId ? ' maximized' : ''}`}>
-            {groups.map((group) => {
+            {(activeGroup ? [activeGroup] : []).map((group) => {
               const groupPanes = group.paneIds.flatMap((paneId) => {
                 const pane = paneMap.get(paneId)
                 return pane ? [pane] : []
