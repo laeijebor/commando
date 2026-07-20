@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { NetworkInterfaceInfo } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { createNetworkAccess, isTailscaleAddress } from './network-access.js'
+import { createNetworkAccess, isLoopbackAddress, isTailscaleAddress } from './network-access.js'
 
 function request(options: {
   host: string
@@ -20,6 +20,13 @@ const interfaces = {
 } satisfies NodeJS.Dict<NetworkInterfaceInfo[]>
 
 describe('Commando network access', () => {
+  it('recognizes IPv4, mapped IPv4, and IPv6 loopback peers', () => {
+    expect(isLoopbackAddress('127.0.0.1')).toBe(true)
+    expect(isLoopbackAddress('::ffff:127.0.0.1')).toBe(true)
+    expect(isLoopbackAddress('::1')).toBe(true)
+    expect(isLoopbackAddress('100.99.1.2')).toBe(false)
+  })
+
   it('recognizes Tailscale IPv4, mapped IPv4, and IPv6 addresses', () => {
     expect(isTailscaleAddress('100.64.0.1')).toBe(true)
     expect(isTailscaleAddress('::ffff:100.127.255.254')).toBe(true)

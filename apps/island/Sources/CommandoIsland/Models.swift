@@ -81,6 +81,7 @@ struct CompanionSession: Codable, Equatable, Identifiable, Sendable {
     let provider: AgentProvider
     let status: AgentStatusKind
     let summary: String
+    let lastOutput: String?
     let intent: String?
     let activity: AgentActivity?
     let requests: [AgentInteractionRequest]
@@ -175,6 +176,16 @@ struct CompanionCommand: Encodable, Sendable {
         CompanionCommand(
             type: "refresh_usage",
             paneId: nil,
+            requestId: UUID().uuidString,
+            answer: nil,
+            requestIdempotencyKey: nil
+        )
+    }
+
+    static func focusOutput(paneId: String?) -> CompanionCommand {
+        CompanionCommand(
+            type: "focus_output",
+            paneId: paneId,
             requestId: UUID().uuidString,
             answer: nil,
             requestIdempotencyKey: nil

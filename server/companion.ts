@@ -15,6 +15,7 @@ import type {
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
 import type { ProviderUsageService } from './provider-usage.js'
+import { companionOutputTail } from './terminal-text.js'
 
 const MAX_BUFFERED_BYTES = 256 * 1024
 const MAX_IDEMPOTENCY_KEYS = 500
@@ -24,6 +25,8 @@ type CompanionHubOptions = {
   registry: AgentStatusRegistry
   usage: ProviderUsageService
   snapshot: () => CommandoSnapshot
+  outputTail: (paneId: string) => string | undefined
+  onClientCountChange: (count: number) => void
   onStatusChange: (change: AgentStatusChange) => void
 }
 
@@ -68,6 +71,7 @@ export function buildCompanionSnapshot(
   snapshot: CommandoSnapshot,
   statuses: readonly AgentStatus[],
   usage: readonly ProviderUsage[],
+  outputTail: (paneId: string) => string | undefined = () => undefined,
 ): CompanionSnapshot {
   const panes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
   const windows = new Map(snapshot.windows.map((window) => [window.id, window]))
@@ -98,6 +102,7 @@ export function buildCompanionSnapshot(
     return sessionStatuses.map((status) => {
       const pane = panes.get(status.paneId)
       const details = status.details
+      const lastOutput = pane ? companionOutputTail(outputTail(pane.id)) : undefined
       return {
         id: `${session.id}:${status.paneId}`,
         tmuxSessionId: session.id,
@@ -107,6 +112,7 @@ export function buildCompanionSnapshot(
         provider: status.provider,
         status: status.status,
         summary: status.summary,
+        ...(lastOutput ? { lastOutput } : {}),
         ...(details?.intent ? { intent: details.intent } : {}),
         ...(details?.currentActivity ? { activity: { ...details.currentActivity } } : {}),
         requests: details?.requests?.map((request) => ({
@@ -167,8 +173,14 @@ function parseAnswer(value: unknown): AgentInteractionAnswer | null {
   return { action }
 }
 
-function parseMessage(value: unknown): CompanionClientMessage | null {
+export function parseCompanionMessage(value: unknown): CompanionClientMessage | null {
   if (!isRecord(value) || typeof value.type !== 'string') return null
+  if (value.type === 'focus_output') {
+    if (value.paneId === undefined || value.paneId === null) return { type: 'focus_output' }
+    return typeof value.paneId === 'string' && /^%\d+$/.test(value.paneId)
+      ? { type: 'focus_output', paneId: value.paneId }
+      : null
+  }
   if (value.type === 'refresh_usage') {
     return typeof value.requestId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value.requestId)
       ? { type: 'refresh_usage', requestId: value.requestId }
@@ -195,12 +207,14 @@ function parseMessage(value: unknown): CompanionClientMessage | null {
 export class CompanionHub {
   private readonly clients = new Set<WebSocket>()
   private readonly idempotencyKeys = new Set<string>()
+  private readonly focusedPaneIds = new Map<WebSocket, string>()
 
   constructor(private readonly options: CompanionHubOptions) {}
 
   connect(socket: WebSocket): void {
     this.clients.add(socket)
     this.options.interactions.setConsumerCount(this.clients.size)
+    this.options.onClientCountChange(this.clients.size)
     if (this.clients.size === 1) {
       this.options.usage.start(() => this.publish())
     }
@@ -218,9 +232,19 @@ export class CompanionHub {
         this.sendError(socket, 'invalid_json', 'Message is not valid JSON')
         return
       }
-      const message = parseMessage(value)
+      const message = parseCompanionMessage(value)
       if (!message) {
         this.sendError(socket, 'invalid_message', 'Unsupported companion message')
+        return
+      }
+      if (message.type === 'focus_output') {
+        if (message.paneId && !this.options.registry.get(message.paneId)) {
+          this.sendError(socket, 'invalid_pane', 'Focused output references an unavailable agent pane')
+          return
+        }
+        if (message.paneId) this.focusedPaneIds.set(socket, message.paneId)
+        else this.focusedPaneIds.delete(socket)
+        this.sendSnapshot(socket)
         return
       }
       if (message.type === 'refresh_usage') {
@@ -252,7 +276,9 @@ export class CompanionHub {
 
     const disconnect = (): void => {
       if (!this.clients.delete(socket)) return
+      this.focusedPaneIds.delete(socket)
       this.options.interactions.setConsumerCount(this.clients.size)
+      this.options.onClientCountChange(this.clients.size)
       if (this.clients.size === 0) this.options.usage.stop()
     }
     socket.on('close', disconnect)
@@ -266,17 +292,23 @@ export class CompanionHub {
   close(): void {
     for (const client of this.clients) client.terminate()
     this.clients.clear()
+    this.focusedPaneIds.clear()
     this.options.interactions.setConsumerCount(0)
+    this.options.onClientCountChange(0)
     this.options.usage.stop()
   }
 
   private sendSnapshot(socket: WebSocket): void {
+    const focusedPaneId = this.focusedPaneIds.get(socket)
     this.send(socket, {
       type: 'companion_snapshot',
       snapshot: buildCompanionSnapshot(
         this.options.snapshot(),
         this.options.registry.values(),
         this.options.usage.values(),
+        (paneId) => paneId === focusedPaneId
+          ? this.options.outputTail(paneId)
+          : undefined,
       ),
     })
   }

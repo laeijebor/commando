@@ -33,7 +33,7 @@ export function isTailscaleAddress(address: string): boolean {
   return normalized === 'fd7a:115c:a1e0::' || normalized.startsWith('fd7a:115c:a1e0:')
 }
 
-function isLoopbackAddress(address: string | undefined): boolean {
+export function isLoopbackAddress(address: string | undefined): boolean {
   if (!address) return false
   const normalized = address.toLowerCase().replace(/^::ffff:/, '').split('%')[0]
   const ipv4 = ipv4Parts(normalized)

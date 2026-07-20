@@ -47,12 +47,13 @@ import {
   createAuthService,
   disabledAuthBootstrap,
 } from './auth.js'
-import { createNetworkAccess } from './network-access.js'
+import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { stripAnsi } from './terminal-text.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -233,14 +234,6 @@ function statusFingerprint(status: AgentStatus): string {
     status.confidence,
     JSON.stringify(status.details ?? null),
   ].join('\u001f')
-}
-
-function stripAnsi(value: string): string {
-  return value
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/\u001bP.*?\u001b\\/gs, '')
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\u001b[@-_]/g, '')
 }
 
 function paneRenderingFingerprint(pane: CommandoSnapshot['panes'][number]): string {
@@ -428,8 +421,15 @@ async function main(): Promise<void> {
   const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
+  const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
   let companion: CompanionHub | null = null
+  let companionClientCount = 0
+  let companionPublishTimer: NodeJS.Timeout | undefined
+  const companionOutputRefreshTimers = new Map<string, NodeJS.Timeout>()
+  const companionOutputGenerations = new Map<string, number>()
+  let syncingRequiredSessions = false
+  let requiredSessionsResyncPending = false
   let snapshot: CommandoSnapshot = {
     revision: 0,
     capturedAt: Date.now(),
@@ -455,6 +455,13 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const invalidateCompanionOutputRefresh = (paneId: string): void => {
+    const timer = companionOutputRefreshTimers.get(paneId)
+    if (timer) clearTimeout(timer)
+    companionOutputRefreshTimers.delete(paneId)
+    companionOutputGenerations.set(paneId, (companionOutputGenerations.get(paneId) ?? 0) + 1)
+  }
+
   const sendAgentStatusChange = (client: ClientState, change: AgentStatusChange): void => {
     if (!change) return
     if (change.type === 'remove') {
@@ -471,6 +478,25 @@ async function main(): Promise<void> {
 
   const publishAgentStatusChange = (change: AgentStatusChange): void => {
     for (const client of clients) sendAgentStatusChange(client, change)
+    if (change && companionClientCount > 0) {
+      if (change.type === 'remove') {
+        invalidateCompanionOutputRefresh(change.paneId)
+        companionOutputTails.delete(change.paneId)
+      } else if (
+        change.status.source === 'hook' &&
+        (change.status.status === 'done' || change.status.status === 'failed')
+      ) {
+        invalidateCompanionOutputRefresh(change.status.paneId)
+        const tail = paneTextTails.get(change.status.paneId)
+        if (tail) companionOutputTails.set(change.status.paneId, tail.content)
+        else primeStatusTail(change.status.paneId)
+      }
+      syncRequiredSessions()
+      if (
+        change.type === 'upsert' &&
+        companionObservesLiveOutput(change.status.paneId)
+      ) primeStatusTail(change.status.paneId)
+    }
     if (change) companion?.publish()
   }
 
@@ -498,31 +524,59 @@ async function main(): Promise<void> {
   )
 
   const syncRequiredSessions = (): void => {
-    const sessionIds = new Set<string>()
-    const observedPaneIds = new Set<string>()
-    for (const client of clients) {
-      if (client.socket.readyState !== WebSocket.OPEN) continue
-      for (const paneId of [...client.subscribedPaneIds, ...client.statusPaneIds]) {
-        const pane = paneForId(paneId)
-        if (pane) {
-          observedPaneIds.add(paneId)
+    if (syncingRequiredSessions) {
+      requiredSessionsResyncPending = true
+      return
+    }
+    syncingRequiredSessions = true
+    try {
+      do {
+        requiredSessionsResyncPending = false
+        const sessionIds = new Set<string>()
+        const observedPaneIds = new Set<string>()
+        for (const client of clients) {
+          if (client.socket.readyState !== WebSocket.OPEN) continue
+          for (const paneId of [...client.subscribedPaneIds, ...client.statusPaneIds]) {
+            const pane = paneForId(paneId)
+            if (pane) {
+              observedPaneIds.add(paneId)
+              sessionIds.add(pane.sessionId)
+            }
+          }
+        }
+        for (const status of agentStatuses.values()) {
+          const pane = paneForId(status.paneId)
+          if (!pane) continue
+          if (!companionObservesLiveOutput(pane.id)) continue
+          observedPaneIds.add(pane.id)
           sessionIds.add(pane.sessionId)
         }
-      }
+        for (const paneId of paneTextTails.keys()) {
+          if (observedPaneIds.has(paneId)) continue
+          paneTextTails.delete(paneId)
+          if (agentStatuses.get(paneId)?.source !== 'hook') {
+            const pane = paneForId(paneId)
+            publishAgentStatusChange(
+              pane
+                ? agentStatuses.applyInferred(processStatusForPane(pane))
+                : agentStatuses.remove(paneId),
+            )
+          }
+        }
+        tmux.setRequiredSessions(sessionIds)
+      } while (requiredSessionsResyncPending)
+    } finally {
+      syncingRequiredSessions = false
     }
-    for (const paneId of paneTextTails.keys()) {
-      if (observedPaneIds.has(paneId)) continue
-      paneTextTails.delete(paneId)
-      if (agentStatuses.get(paneId)?.source !== 'hook') {
-        const pane = paneForId(paneId)
-        publishAgentStatusChange(
-          pane
-            ? agentStatuses.applyInferred(processStatusForPane(pane))
-            : agentStatuses.remove(paneId),
-        )
-      }
-    }
-    tmux.setRequiredSessions(sessionIds)
+  }
+
+  const scheduleCompanionPublish = (): void => {
+    if (companionClientCount === 0 || companionPublishTimer) return
+    companionPublishTimer = setTimeout(() => {
+      companionPublishTimer = undefined
+      companion?.publish()
+    }, 250)
+    companionPublishTimer.unref()
   }
 
   const observePaneData = (paneId: string, data: Buffer, changedAt: number): void => {
@@ -535,6 +589,54 @@ async function main(): Promise<void> {
       -MAX_INFERENCE_TAIL_CHARS,
     )
     tail.lastChangedAt = changedAt
+  }
+
+  const companionObservesLiveOutput = (paneId: string): boolean => {
+    if (companionClientCount === 0) return false
+    const pane = paneForId(paneId)
+    const status = agentStatuses.get(paneId)
+    return pane !== undefined &&
+      status !== undefined &&
+      status.status !== 'done' &&
+      status.status !== 'failed' &&
+      processStatusForPane(pane).provider !== 'unknown'
+  }
+
+  const scheduleCompanionOutputRefresh = (paneId: string): void => {
+    invalidateCompanionOutputRefresh(paneId)
+    const generation = companionOutputGenerations.get(paneId) ?? 0
+    const timer = setTimeout(() => {
+      companionOutputRefreshTimers.delete(paneId)
+      void (async () => {
+        const pane = paneForId(paneId)
+        const status = agentStatuses.get(paneId)
+        const candidate = paneTextTails.get(paneId)?.content
+        if (!pane || !status || !candidate || companionClientCount === 0) return
+        const completedByHook = status.source === 'hook' &&
+          (status.status === 'done' || status.status === 'failed')
+        if (!companionObservesLiveOutput(paneId) && !completedByHook) return
+        const currentCommand = await tmux.paneCurrentCommand(paneId)
+        if (companionOutputGenerations.get(paneId) !== generation) return
+        const currentPane = paneForId(paneId)
+        const currentStatus = agentStatuses.get(paneId)
+        if (!currentPane || !currentStatus || companionClientCount === 0) return
+        const currentlyCompletedByHook = currentStatus.source === 'hook' &&
+          (currentStatus.status === 'done' || currentStatus.status === 'failed')
+        if (!companionObservesLiveOutput(paneId) && !currentlyCompletedByHook) return
+        const currentProcess = inferAgentProcessStatus({
+          paneId,
+          command: currentCommand,
+          title: currentPane.title,
+          dead: currentPane.dead,
+          capturedAt: Date.now(),
+        })
+        if (currentProcess.provider === 'unknown') return
+        companionOutputTails.set(paneId, candidate)
+        scheduleCompanionPublish()
+      })().catch(reportTmuxError)
+    }, 300)
+    companionOutputRefreshTimers.set(paneId, timer)
+    timer.unref()
   }
 
   const observePaneSeed = (
@@ -597,17 +699,21 @@ async function main(): Promise<void> {
     )
     const observed =
       subscribers.length > 0 ||
-      [...clients].some((client) => client.statusPaneIds.has(paneId))
+      [...clients].some((client) => client.statusPaneIds.has(paneId)) ||
+      companionObservesLiveOutput(paneId)
     if (!observed) return
 
     const changedAt = Date.now()
     observePaneData(paneId, data, changedAt)
+    emitAgentStatus(paneId, changedAt)
+    if (companionObservesLiveOutput(paneId)) {
+      scheduleCompanionOutputRefresh(paneId)
+    }
     for (const client of subscribers) {
       const state = client.paneStreams.get(paneId)
       if (!state) continue
       if (!state.seeding) sendPaneData(client, paneId, data)
     }
-    emitAgentStatus(paneId, changedAt)
   }
 
   const primingStatusTails = new Set<string>()
@@ -620,11 +726,23 @@ async function main(): Promise<void> {
     if (primingStatusTails.has(paneId)) return
     const pane = paneForId(paneId)
     if (!pane) return
+    const command = pane.command
     primingStatusTails.add(paneId)
     tmux
       .capturePane(pane.sessionId, paneId)
       .then((capture) => {
-        if (!paneExists(paneId)) return
+        const currentPane = paneForId(paneId)
+        const observedByBrowser = [...clients].some((client) => (
+          client.subscribedPaneIds.has(paneId) || client.statusPaneIds.has(paneId)
+        ))
+        const status = agentStatuses.get(paneId)
+        const completedByHook = status?.source === 'hook' &&
+          (status.status === 'done' || status.status === 'failed')
+        if (
+          !currentPane ||
+          currentPane.command !== command ||
+          (!observedByBrowser && !companionObservesLiveOutput(paneId) && !completedByHook)
+        ) return
         const buffered = Buffer.from(paneTextTails.get(paneId)?.content ?? '')
         observePaneSeed(
           paneId,
@@ -632,6 +750,9 @@ async function main(): Promise<void> {
           buffered,
           Date.now(),
         )
+        if (companionObservesLiveOutput(paneId) || completedByHook) {
+          scheduleCompanionOutputRefresh(paneId)
+        }
         emitAgentStatus(paneId)
       })
       .catch(reportTmuxError)
@@ -928,6 +1049,28 @@ async function main(): Promise<void> {
     registry: agentStatuses,
     usage: providerUsage,
     snapshot: () => snapshot,
+    outputTail: (paneId) => companionOutputTails.get(paneId),
+    onClientCountChange: (count) => {
+      companionClientCount = count
+      if (count === 0 && companionPublishTimer) {
+        clearTimeout(companionPublishTimer)
+        companionPublishTimer = undefined
+      }
+      if (count === 0) {
+        for (const timer of companionOutputRefreshTimers.values()) clearTimeout(timer)
+        companionOutputRefreshTimers.clear()
+        for (const [paneId, generation] of companionOutputGenerations) {
+          companionOutputGenerations.set(paneId, generation + 1)
+        }
+        companionOutputTails.clear()
+      }
+      syncRequiredSessions()
+      if (count > 0) {
+        for (const status of agentStatuses.values()) {
+          if (companionObservesLiveOutput(status.paneId)) primeStatusTail(status.paneId)
+        }
+      }
+    },
     onStatusChange: publishAgentStatusChange,
   })
   const agentStatusHooks = new AgentStatusHookApi({
@@ -1365,6 +1508,10 @@ async function main(): Promise<void> {
           return
         }
         if (url.pathname === '/companion/ws') {
+          if (!isLoopbackAddress(request.socket.remoteAddress)) {
+            rejectUpgrade(socket, 403, 'Forbidden')
+            return
+          }
           if (!requestHasValidToken(request, url, companionTokenDigest)) {
             rejectUpgrade(socket, 401, 'Unauthorized')
             return

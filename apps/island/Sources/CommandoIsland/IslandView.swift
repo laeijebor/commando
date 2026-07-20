@@ -282,7 +282,7 @@ private struct SessionFocus: View {
             if let request = session.requests.first {
                 RequestView(store: store, session: session, request: request)
             } else {
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 9) {
                     if let intent = session.intent {
                         Label(intent, systemImage: "scope")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -291,22 +291,82 @@ private struct SessionFocus: View {
                         Label(activity.label, systemImage: "waveform.path.ecg")
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.7))
-                    } else {
-                        Text(session.summary)
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.72))
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(13)
-                .background(islandRaised, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+            SessionOutput(lastOutput: session.lastOutput, fallback: session.summary)
         }
         .padding(16)
         .background(islandSurface, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 21, style: .continuous)
                 .stroke(session.requests.isEmpty ? Color.white.opacity(0.06) : islandPurple.opacity(0.45))
+        }
+    }
+}
+
+private struct SessionOutput: View {
+    let lastOutput: String?
+    let fallback: String
+    @State private var isInspecting = false
+
+    private var content: String {
+        guard let lastOutput,
+              !lastOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return fallback
+        }
+        return lastOutput
+    }
+
+    private var hasOutput: Bool {
+        lastOutput?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(hasOutput ? "LAST OUTPUT" : "LATEST STATUS", systemImage: "terminal")
+                .font(.system(size: 9, weight: .black, design: .rounded))
+                .tracking(0.8)
+                .foregroundStyle(.white.opacity(0.42))
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(content)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(hasOutput ? 0.78 : 0.6))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                        Color.clear
+                            .frame(height: 1)
+                            .id("last-output-bottom")
+                    }
+                }
+                .frame(height: 96)
+                .scrollIndicators(.visible)
+                .onAppear {
+                    Task { @MainActor in
+                        proxy.scrollTo("last-output-bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: content) {
+                    if !isInspecting {
+                        proxy.scrollTo("last-output-bottom", anchor: .bottom)
+                    }
+                }
+                .onHover { inside in
+                    isInspecting = inside
+                    if !inside {
+                        proxy.scrollTo("last-output-bottom", anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.055))
         }
     }
 }

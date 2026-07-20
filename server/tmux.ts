@@ -206,6 +206,15 @@ export class TmuxClient {
     return this.controllers.capturePane(sessionId, paneId)
   }
 
+  async paneCurrentCommand(paneId: string): Promise<string> {
+    if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
+    const command = await this.run(
+      ['display-message', '-p', '-t', paneId, '#{pane_current_command}'],
+      { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 },
+    )
+    return command.trim()
+  }
+
   capturePaneSeed(
     sessionId: string,
     paneId: string,

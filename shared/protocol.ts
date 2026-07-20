@@ -197,6 +197,7 @@ export type CompanionSession = {
   provider: AgentProvider
   status: AgentStatusKind
   summary: string
+  lastOutput?: string
   intent?: string
   activity?: AgentActivity
   requests: AgentInteractionRequest[]
@@ -225,6 +226,7 @@ export type CompanionClientMessage =
       answer: AgentInteractionAnswer
       requestIdempotencyKey: string
     }
+  | { type: 'focus_output'; paneId?: string }
   | { type: 'refresh_usage'; requestId: string }
 
 export type SavedGroup = {

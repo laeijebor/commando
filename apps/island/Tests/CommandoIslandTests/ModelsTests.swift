@@ -18,6 +18,7 @@ import Testing
           "provider": "opencode",
           "status": "needs_input",
           "summary": "Choose a target",
+          "lastOutput": "Building companion\nWaiting for selection",
           "requests": [{
             "id": "question-1",
             "kind": "question",
@@ -54,6 +55,7 @@ import Testing
 
     #expect(envelope.snapshot?.primarySession?.tmuxSessionName == "commando")
     #expect(envelope.snapshot?.primarySession?.agentSessionName == "Build the island")
+    #expect(envelope.snapshot?.primarySession?.lastOutput == "Building companion\nWaiting for selection")
     #expect(envelope.snapshot?.primarySession?.requests.first?.questions?.first?.options.first?.label == "macOS")
     #expect(envelope.snapshot?.usage.first?.windows.first?.remainingPercent == 75)
 }
@@ -70,12 +72,16 @@ import Testing
         action: "answer",
         answers: [["Production"], ["Tests", "Typecheck"]]
     )
+    let focus = CompanionCommand.focusOutput(paneId: "%2")
 
     let permissionJSON = try #require(
         JSONSerialization.jsonObject(with: JSONEncoder().encode(permission)) as? [String: Any]
     )
     let questionJSON = try #require(
         JSONSerialization.jsonObject(with: JSONEncoder().encode(question)) as? [String: Any]
+    )
+    let focusJSON = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(focus)) as? [String: Any]
     )
 
     #expect(permissionJSON["paneId"] as? String == "%1")
@@ -84,6 +90,8 @@ import Testing
         ["Production"],
         ["Tests", "Typecheck"],
     ])
+    #expect(focusJSON["type"] as? String == "focus_output")
+    #expect(focusJSON["paneId"] as? String == "%2")
 }
 
 @Test func placesBothIslandSizesAtTheScreenTopCenter() {

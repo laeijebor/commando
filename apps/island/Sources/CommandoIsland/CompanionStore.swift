@@ -28,11 +28,13 @@ final class CompanionStore: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var sendTask: Task<Void, Never>?
     private var collapseTask: Task<Void, Never>?
     private var collapseGeneration = 0
     private var collapseDelay: Duration = .milliseconds(450)
     private var panelFrame: (() -> CGRect?)?
     private var pointerLocation: (() -> CGPoint?)?
+    private var focusedOutputPaneID: String?
     private var intentionalStop = false
     private var reconnectAttempt = 0
 
@@ -67,8 +69,10 @@ final class CompanionStore: ObservableObject {
         cancelScheduledCollapse()
         reconnectTask?.cancel()
         receiveTask?.cancel()
+        sendTask?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
+        focusedOutputPaneID = nil
     }
 
     func toggleExpanded() {
@@ -138,6 +142,7 @@ final class CompanionStore: ObservableObject {
 
     func select(_ session: CompanionSession) {
         selectedSessionID = session.id
+        syncFocusedOutput()
     }
 
     func answerPermission(
@@ -179,6 +184,8 @@ final class CompanionStore: ObservableObject {
 
     private func connect() {
         receiveTask?.cancel()
+        sendTask?.cancel()
+        sendTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         guard let token = companionToken() else {
             connection = .offline("Run npm run hooks:install once")
@@ -197,6 +204,7 @@ final class CompanionStore: ObservableObject {
         }
 
         connection = .connecting
+        focusedOutputPaneID = nil
         let socket = URLSession.shared.webSocketTask(with: url)
         self.socket = socket
         socket.resume()
@@ -251,6 +259,7 @@ final class CompanionStore: ObservableObject {
                           !next.sessions.contains(where: { $0.id == selectedSessionID }) {
                     self.selectedSessionID = next.primarySession?.id
                 }
+                syncFocusedOutput()
                 lastError = nil
             } else if envelope.type == "companion_error" {
                 lastError = envelope.message ?? envelope.code ?? "Companion request failed"
@@ -268,16 +277,28 @@ final class CompanionStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(command)
             guard let text = String(data: data, encoding: .utf8) else { return }
-            Task { [weak self, socket] in
+            let previous = sendTask
+            let task = Task { [weak self, socket] in
+                await previous?.value
+                guard let self, self.socket === socket, !Task.isCancelled else { return }
                 do {
                     try await socket.send(.string(text))
                 } catch {
-                    self?.lastError = "Could not reach Commando"
+                    self.lastError = "Could not reach Commando"
                 }
             }
+            sendTask = task
         } catch {
             lastError = "Could not encode companion request"
         }
+    }
+
+    private func syncFocusedOutput() {
+        guard socket != nil else { return }
+        let paneID = selectedSession?.paneId
+        guard paneID != focusedOutputPaneID else { return }
+        focusedOutputPaneID = paneID
+        send(.focusOutput(paneId: paneID))
     }
 
     private func companionToken() -> String? {

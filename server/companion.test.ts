@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AgentStatus, CommandoSnapshot, ProviderUsage } from '../shared/protocol.js'
-import { buildCompanionSnapshot } from './companion.js'
+import { buildCompanionSnapshot, parseCompanionMessage } from './companion.js'
 
 const snapshot: CommandoSnapshot = {
   revision: 4,
@@ -64,7 +64,7 @@ const usage: ProviderUsage = {
 }
 
 describe('buildCompanionSnapshot', () => {
-  it('includes every tmux session with both origin names and no terminal data', () => {
+  it('includes every tmux session with both origin names', () => {
     const result = buildCompanionSnapshot(snapshot, [status], [usage])
 
     expect(result.sessions).toHaveLength(2)
@@ -85,11 +85,44 @@ describe('buildCompanionSnapshot', () => {
     expect(JSON.stringify(result)).not.toContain('/private/worktree')
   })
 
+  it('includes a bounded plain-text tail for an agent pane', () => {
+    const output = `${Array.from({ length: 45 }, (_, index) => `line ${index}`).join('\n')}\n\u001b[32mcomplete\u001b[0m\r\nready\u0000`
+
+    const result = buildCompanionSnapshot(
+      snapshot,
+      [status],
+      [],
+      (paneId) => paneId === '%1' ? output : undefined,
+    )
+
+    const lastOutput = result.sessions[0]?.lastOutput
+    expect(lastOutput).toBeDefined()
+    expect(lastOutput).not.toContain('\u001b')
+    expect(lastOutput).not.toContain('\u0000')
+    expect(lastOutput?.split('\n')).toHaveLength(40)
+    expect(lastOutput?.endsWith('complete\nready')).toBe(true)
+    expect(lastOutput?.length).toBeLessThanOrEqual(2_000)
+
+    const longResult = buildCompanionSnapshot(snapshot, [status], [], () => 'x'.repeat(3_000))
+    expect(longResult.sessions[0]?.lastOutput).toHaveLength(2_000)
+  })
+
   it('falls back to a stable provider session reference when no title exists', () => {
     const result = buildCompanionSnapshot(snapshot, [{
       ...status,
       agentSessionName: undefined,
     }], [])
     expect(result.sessions[0]?.agentSessionName).toBe('OpenCode · cdefgh')
+  })
+})
+
+describe('parseCompanionMessage', () => {
+  it('accepts focused agent output subscriptions and rejects malformed pane ids', () => {
+    expect(parseCompanionMessage({ type: 'focus_output', paneId: '%12' })).toEqual({
+      type: 'focus_output',
+      paneId: '%12',
+    })
+    expect(parseCompanionMessage({ type: 'focus_output' })).toEqual({ type: 'focus_output' })
+    expect(parseCompanionMessage({ type: 'focus_output', paneId: '12' })).toBeNull()
   })
 })
