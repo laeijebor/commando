@@ -19,6 +19,7 @@ const note: PinnedNote = {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  window.localStorage.clear()
 })
 
 describe('HudPinnedNote', () => {
@@ -89,5 +90,30 @@ describe('HudPinnedNote', () => {
     })
     expect(onSave).toHaveBeenCalledTimes(2)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('resizes with pointer and keyboard controls and restores the saved height', () => {
+    const props = { note, onOpen: vi.fn(), onSave: vi.fn().mockResolvedValue(note), onUnpin: vi.fn() }
+    const view = render(<HudPinnedNote {...props} />)
+    const region = screen.getByRole('region', { name: 'Pinned note: Release checklist' })
+    const handle = screen.getByRole('separator', { name: 'Resize pinned note height' })
+
+    expect(region).toHaveStyle({ height: '260px' })
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(region).toHaveStyle({ height: '268px' })
+    expect(window.localStorage.getItem('commando.hud.pinned-note-height')).toBe('268')
+
+    fireEvent.pointerDown(handle, { button: 0, clientY: 100 })
+    fireEvent.pointerMove(window, { clientY: 180 })
+    fireEvent.pointerUp(window)
+    expect(region).toHaveStyle({ height: '348px' })
+    expect(window.localStorage.getItem('commando.hud.pinned-note-height')).toBe('348')
+
+    fireEvent.doubleClick(handle)
+    expect(region).toHaveStyle({ height: '260px' })
+    view.unmount()
+    window.localStorage.setItem('commando.hud.pinned-note-height', '340')
+    render(<HudPinnedNote {...props} />)
+    expect(screen.getByRole('region', { name: 'Pinned note: Release checklist' })).toHaveStyle({ height: '340px' })
   })
 })

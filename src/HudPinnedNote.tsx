@@ -1,9 +1,32 @@
 import { Eye, NotebookPen, Pencil, Pin, PinOff } from 'lucide-react'
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type { PinnedNote } from './pinnedNote'
+
+const PINNED_NOTE_HEIGHT_STORAGE_KEY = 'commando.hud.pinned-note-height'
+const DEFAULT_PINNED_NOTE_HEIGHT = 260
+const MIN_PINNED_NOTE_HEIGHT = 160
+const HUD_SPACE_OUTSIDE_PINNED_NOTE = 250
+
+function storedPinnedNoteHeight(): number {
+  try {
+    const stored = Number.parseInt(window.localStorage.getItem(PINNED_NOTE_HEIGHT_STORAGE_KEY) ?? '', 10)
+    if (!Number.isFinite(stored)) return DEFAULT_PINNED_NOTE_HEIGHT
+    return Math.min(Math.max(stored, MIN_PINNED_NOTE_HEIGHT), Math.max(MIN_PINNED_NOTE_HEIGHT, window.innerHeight - HUD_SPACE_OUTSIDE_PINNED_NOTE))
+  } catch {
+    return DEFAULT_PINNED_NOTE_HEIGHT
+  }
+}
+
+function storePinnedNoteHeight(height: number): void {
+  try {
+    window.localStorage.setItem(PINNED_NOTE_HEIGHT_STORAGE_KEY, String(height))
+  } catch {
+    // Resizing still works for the current page when browser storage is unavailable.
+  }
+}
 
 const markdownComponents: Components = {
   a({ node: _node, ...props }) {
@@ -29,11 +52,15 @@ export function HudPinnedNote({
   const [draft, setDraft] = useState(() => ({ title: note.title, body: note.body }))
   const [savePhase, setSavePhase] = useState<'saved' | 'dirty' | 'saving' | 'error'>('saved')
   const [saveError, setSaveError] = useState('')
+  const [height, setHeight] = useState(storedPinnedNoteHeight)
+  const sectionRef = useRef<HTMLElement>(null)
   const noteRef = useRef(note)
   const draftRef = useRef(draft)
   const savePhaseRef = useRef(savePhase)
+  const heightRef = useRef(height)
   const editVersion = useRef(0)
   const saveInFlight = useRef(false)
+  const resizeCleanup = useRef<(() => void) | null>(null)
 
   const changeSavePhase = (next: typeof savePhase) => {
     savePhaseRef.current = next
@@ -99,6 +126,57 @@ export function HudPinnedNote({
     return () => window.clearTimeout(timer)
   }, [draft.body, draft.title, savePhase])
 
+  const maximumHeight = () => {
+    const hudHeight = sectionRef.current?.closest<HTMLElement>('.agent-hud')?.clientHeight || window.innerHeight
+    return Math.max(MIN_PINNED_NOTE_HEIGHT, hudHeight - HUD_SPACE_OUTSIDE_PINNED_NOTE)
+  }
+
+  const changeHeight = (next: number, persist: boolean) => {
+    const clamped = Math.min(Math.max(next, MIN_PINNED_NOTE_HEIGHT), maximumHeight())
+    heightRef.current = clamped
+    setHeight(clamped)
+    if (persist) storePinnedNoteHeight(clamped)
+  }
+
+  useEffect(() => {
+    const fitToHud = () => changeHeight(heightRef.current, false)
+    fitToHud()
+    window.addEventListener('resize', fitToHud)
+    return () => {
+      window.removeEventListener('resize', fitToHud)
+      resizeCleanup.current?.()
+    }
+  }, [])
+
+  const beginResize = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    resizeCleanup.current?.()
+    const startY = event.clientY
+    const startHeight = heightRef.current
+    const move = (pointerEvent: globalThis.PointerEvent) => changeHeight(startHeight + pointerEvent.clientY - startY, false)
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      document.body.classList.remove('is-resizing-hud-pinned-note')
+      storePinnedNoteHeight(heightRef.current)
+      if (resizeCleanup.current === stop) resizeCleanup.current = null
+    }
+    document.body.classList.add('is-resizing-hud-pinned-note')
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+    resizeCleanup.current = stop
+  }
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLElement>) => {
+    const direction = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
+    if (!direction) return
+    event.preventDefault()
+    changeHeight(heightRef.current + direction * (event.shiftKey ? 32 : 8), true)
+  }
+
   const saveWithShortcut = (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault()
@@ -116,7 +194,7 @@ export function HudPinnedNote({
         : ''
 
   return (
-    <section className="hud-pinned-note" aria-label={`Pinned note: ${title}`}>
+    <section ref={sectionRef} className="hud-pinned-note" style={{ height }} aria-label={`Pinned note: ${title}`}>
       <header>
         <span className="hud-pinned-note-label"><Pin aria-hidden="true" /> Pinned note</span>
         <div className="hud-pinned-note-actions">
@@ -172,6 +250,21 @@ export function HudPinnedNote({
           </>
         )}
       </div>
+      <div
+        className="hud-pinned-note-resize"
+        role="separator"
+        aria-label="Resize pinned note height"
+        aria-orientation="horizontal"
+        aria-valuemin={MIN_PINNED_NOTE_HEIGHT}
+        aria-valuemax={Math.max(height, maximumHeight())}
+        aria-valuenow={height}
+        aria-valuetext={`${height} pixels high`}
+        tabIndex={0}
+        title="Drag to resize; use Up and Down arrows from the keyboard. Double-click to reset."
+        onPointerDown={beginResize}
+        onKeyDown={resizeWithKeyboard}
+        onDoubleClick={() => changeHeight(DEFAULT_PINNED_NOTE_HEIGHT, true)}
+      />
       <button type="button" className="hud-pinned-note-open" onClick={onOpen}>
         <NotebookPen aria-hidden="true" />
         Open in Notes
