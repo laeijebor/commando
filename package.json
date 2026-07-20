@@ -8,6 +8,9 @@
     "build": "tsc -b && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "hooks:install": "tsx scripts/install-agent-hooks.ts",
+    "island:dev": "swift run --package-path apps/island CommandoIsland",
+    "island:test": "swift test --package-path apps/island",
+    "island:build": "bash scripts/build-island-app.sh",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:e2e:terminal": "playwright test e2e/terminal-fidelity.pw.ts --workers=1"
