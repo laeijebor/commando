@@ -108,7 +108,8 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
 }
 
 function generatedClaudeBridge(tokenPath: string): string {
-  return `import { readFile } from 'node:fs/promises'
+  return `import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 
 function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -239,6 +240,97 @@ function attentionFor(input) {
   return undefined
 }
 
+function sanitizedQuestions(value) {
+  if (!Array.isArray(value)) return undefined
+  const questions = value.slice(0, 8).map((candidate) => {
+    const question = asObject(candidate)
+    const text = boundedText(question.question, 300)
+    if (!text) return undefined
+    const options = Array.isArray(question.options)
+      ? question.options.slice(0, 12).map((candidateOption) => {
+          const option = asObject(candidateOption)
+          const label = boundedText(option.label, 80)
+          if (!label) return undefined
+          return {
+            label,
+            description: boundedText(option.description, 200),
+          }
+        }).filter(Boolean)
+      : []
+    return {
+      header: boundedText(question.header, 30) || 'Question',
+      question: text,
+      options,
+      multiple: question.multiSelect === true || question.multiple === true,
+      custom: question.custom !== false,
+    }
+  }).filter(Boolean)
+  return questions.length ? questions : undefined
+}
+
+function interactionFor(input) {
+  if (input.hook_event_name !== 'PermissionRequest') return undefined
+  const args = asObject(input.tool_input)
+  const questions = input.tool_name === 'AskUserQuestion'
+    ? sanitizedQuestions(args.questions)
+    : undefined
+  const kind = questions ? 'question' : 'permission'
+  return {
+    id: randomUUID(),
+    kind,
+    prompt: attentionFor(input) || (kind === 'question' ? questions[0].question : 'Approve this agent action?'),
+    toolName: boundedText(input.tool_name, 80),
+    questions,
+  }
+}
+
+function hookOutput(input, request, answer) {
+  if (!request || !answer || typeof answer !== 'object') return undefined
+  if (request.kind === 'permission') {
+    if (answer.action === 'deny') {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: { behavior: 'deny', message: 'Denied from Commando Island' },
+        },
+      }
+    }
+    if (answer.action !== 'allow_once' && answer.action !== 'allow_always') return undefined
+    const decision = { behavior: 'allow' }
+    if (answer.action === 'allow_always' && Array.isArray(input.permission_suggestions)) {
+      decision.updatedPermissions = input.permission_suggestions
+    }
+    return { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } }
+  }
+  if (answer.action === 'reject') {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'Question dismissed from Commando Island' },
+      },
+    }
+  }
+  if (answer.action !== 'answer' || !Array.isArray(answer.answers)) return undefined
+  const args = asObject(input.tool_input)
+  const originalQuestions = Array.isArray(args.questions) ? args.questions : []
+  if (answer.answers.length !== originalQuestions.length) return undefined
+  const answers = {}
+  for (const [index, candidate] of originalQuestions.entries()) {
+    const question = asObject(candidate)
+    if (typeof question.question !== 'string' || !Array.isArray(answer.answers[index])) return undefined
+    answers[question.question] = answer.answers[index].join(', ')
+  }
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PermissionRequest',
+      decision: {
+        behavior: 'allow',
+        updatedInput: { ...args, answers },
+      },
+    },
+  }
+}
+
 function taskFor(input) {
   if (input.hook_event_name !== 'TaskCreated' && input.hook_event_name !== 'TaskCompleted') {
     return undefined
@@ -288,9 +380,11 @@ async function main() {
     const error = event === 'PostToolUseFailure' || event === 'StopFailure'
       ? boundedText(input.error_details ?? input.error, 200)
       : undefined
+    const request = interactionFor(input)
     const body = JSON.stringify({
       hook_event_name: boundedText(event, 80),
       session_id: boundedText(input.session_id, 200),
+      session_title: boundedText(input.session_title, 120),
       tool_name: boundedText(input.tool_name, 80),
       notification_type: boundedText(input.notification_type, 80),
       prompt_id: boundedText(input.prompt_id, 200),
@@ -299,6 +393,7 @@ async function main() {
       activity: tool.activity ?? subagentActivity,
       activityId: boundedText(input.tool_use_id ?? input.agent_id, 200),
       attention: attentionFor(input),
+      request,
       task: taskFor(input),
       filePath: tool.filePath,
       check: tool.check,
@@ -306,7 +401,7 @@ async function main() {
       backgroundTasks: Array.isArray(input.background_tasks) ? input.background_tasks.length : undefined,
       error,
     })
-    await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/claude\`, {
+    const response = await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/claude\`, {
       method: 'POST',
       headers: {
         'Authorization': \`Bearer \${token}\`,
@@ -314,8 +409,12 @@ async function main() {
         'X-Commando-Pane': pane,
       },
       body,
-      signal: AbortSignal.timeout(1000),
+      signal: AbortSignal.timeout(request ? 590000 : 1000),
     })
+    if (!request || !response.ok) return
+    const result = await response.json()
+    const output = hookOutput(input, request, asObject(result).answer)
+    if (output) process.stdout.write(JSON.stringify(output))
   } catch {
     // Agent hooks must never interrupt Claude Code when Commando is unavailable.
   }
@@ -336,6 +435,7 @@ const childSessionIds = new Set()
 const finalMessages = new Map()
 const latestTodos = new Map()
 const latestDiffs = new Map()
+const sessionNames = new Map()
 
 function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -453,6 +553,8 @@ function observeSession(event) {
   const sessionId = boundedText(properties.sessionID ?? info.id, 200)
   if (!sessionId) return false
   if (event.type === 'session.created' || event.type === 'session.updated') {
+    const sessionName = boundedText(info.title, 120)
+    if (sessionName) remember(sessionNames, sessionId, sessionName)
     if (typeof info.parentID === 'string' && info.parentID) {
       childSessionIds.add(sessionId)
       if (childSessionIds.size > 100) childSessionIds.delete(childSessionIds.values().next().value)
@@ -462,6 +564,7 @@ function observeSession(event) {
   }
   const isChild = childSessionIds.has(sessionId)
   if (event.type === 'session.deleted') childSessionIds.delete(sessionId)
+  if (event.type === 'session.deleted') sessionNames.delete(sessionId)
   return isChild
 }
 
@@ -554,17 +657,72 @@ function attentionFor(eventType, source) {
   return undefined
 }
 
+function sanitizeQuestions(value) {
+  if (!Array.isArray(value)) return undefined
+  const questions = value.slice(0, 8).map((candidate) => {
+    const question = asObject(candidate)
+    const text = boundedText(question.question, 300)
+    if (!text) return undefined
+    const options = Array.isArray(question.options)
+      ? question.options.slice(0, 12).map((candidateOption) => {
+          const option = asObject(candidateOption)
+          const label = boundedText(option.label, 80)
+          if (!label) return undefined
+          return {
+            label,
+            description: boundedText(option.description, 200),
+          }
+        }).filter(Boolean)
+      : []
+    return {
+      header: boundedText(question.header, 30) || 'Question',
+      question: text,
+      options,
+      multiple: question.multiple === true || question.multiSelect === true,
+      custom: question.custom !== false,
+    }
+  }).filter(Boolean)
+  return questions.length ? questions : undefined
+}
+
+function interactionFor(eventType, source) {
+  const id = boundedText(source.id, 200)
+  if (!id) return undefined
+  if (eventType === 'permission.asked') {
+    const prompt = attentionFor(eventType, source) || 'Approve this agent action?'
+    return {
+      id,
+      kind: 'permission',
+      prompt,
+      toolName: boundedText(source.permission, 80),
+    }
+  }
+  if (eventType === 'question.asked') {
+    const questions = sanitizeQuestions(source.questions)
+    if (!questions) return undefined
+    return {
+      id,
+      kind: 'question',
+      prompt: questions[0].question,
+      questions,
+    }
+  }
+  return undefined
+}
+
 function sanitizeProviderEvent(event, sessionId) {
   const source = asObject(event.properties)
   const sourceInfo = asObject(source.info)
   const infoId = boundedText(sourceInfo.id, 200)
   const properties = {
     sessionID: sessionId,
+    sessionName: sessionNames.get(sessionId),
     status: sanitizeStatus(source.status),
     id: boundedText(source.id, 200),
     requestID: boundedText(source.requestID, 200),
     info: infoId ? { id: infoId } : undefined,
     attention: attentionFor(event.type, source),
+    request: interactionFor(event.type, source),
   }
 
   if (event.type === 'todo.updated') {
@@ -624,7 +782,8 @@ async function report(directory, event) {
     if (token.length < 32) return
     const port = process.env.COMMANDO_PORT || '4310'
     if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
-    await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
+    const interactive = event.type === 'permission.asked' || event.type === 'question.asked'
+    const response = await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
       method: 'POST',
       headers: {
         'Authorization': \`Bearer \${token}\`,
@@ -632,8 +791,10 @@ async function report(directory, event) {
         'X-Commando-Pane': pane,
       },
       body: JSON.stringify({ directory, event }),
-      signal: AbortSignal.timeout(1000),
+      signal: AbortSignal.timeout(interactive ? 590000 : 1000),
     })
+    if (!interactive || !response.ok) return undefined
+    return asObject(await response.json()).answer
   } catch {
     // Status reporting is best-effort and must not block OpenCode.
   }
@@ -644,14 +805,51 @@ function enqueue(directory, event) {
   return delivery
 }
 
-export const CommandoAgentStatusPlugin = async ({ directory }) => ({
+async function answerInteraction(directory, event, client) {
+  const answer = asObject(await report(directory, event))
+  const properties = asObject(event.properties)
+  const requestID = boundedText(properties.id, 200)
+  if (!requestID || !client) return
+  if (event.type === 'permission.asked') {
+    const replies = { allow_once: 'once', allow_always: 'always', deny: 'reject' }
+    const reply = replies[answer.action]
+    if (!reply || typeof client.permission?.reply !== 'function') return
+    await client.permission.reply({ requestID, directory, reply })
+    return
+  }
+  if (event.type !== 'question.asked') return
+  if (answer.action === 'reject') {
+    if (typeof client.question?.reject === 'function') {
+      await client.question.reject({ requestID, directory })
+    }
+    return
+  }
+  if (
+    answer.action === 'answer' &&
+    Array.isArray(answer.answers) &&
+    typeof client.question?.reply === 'function'
+  ) {
+    await client.question.reply({ requestID, directory, answers: answer.answers })
+  }
+}
+
+function enqueueInteraction(directory, event, client) {
+  delivery = delivery.then(() => answerInteraction(directory, event, client))
+  return delivery
+}
+
+export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({
   event: ({ event }) => {
     try {
       const isChild = observeSession(event)
       if (!trackedEvents.has(event.type)) return
       const sessionId = tracksActiveSession(event, isChild)
       if (!sessionId) return
-      return enqueue(directory, sanitizeProviderEvent(event, sessionId))
+      const sanitized = sanitizeProviderEvent(event, sessionId)
+      if (event.type === 'permission.asked' || event.type === 'question.asked') {
+        return enqueueInteraction(directory, sanitized, client)
+      }
+      return enqueue(directory, sanitized)
     } catch {
       // Status reporting must never interrupt OpenCode.
     }

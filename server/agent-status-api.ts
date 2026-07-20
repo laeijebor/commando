@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
+import type { AgentInteractionBroker } from './agent-interaction-broker.js'
 
 const API_ROOT = '/api/agent-status/hooks'
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -12,6 +13,7 @@ type AgentStatusApiDependencies = {
   paneExists: (paneId: string) => boolean
   paneCommand: (paneId: string) => string | undefined
   onChange: (change: AgentStatusChange) => void
+  interactions?: AgentInteractionBroker
   now?: () => number
 }
 
@@ -161,7 +163,22 @@ export class AgentStatusHookApi {
       }
 
       this.dependencies.onChange(change)
-      writeJson(response, 200, { ok: true, changed: change !== null })
+      const requestId = isRecord(body.request) && typeof body.request.id === 'string'
+        ? body.request.id
+        : null
+      const interaction = requestId
+        ? this.dependencies.registry.get(targetPaneId)?.details?.requests?.find((request) => (
+            request.id === requestId
+          ))
+        : undefined
+      const answer = interaction && this.dependencies.interactions?.hasConsumers()
+        ? await this.dependencies.interactions.wait(targetPaneId, interaction)
+        : null
+      writeJson(response, 200, {
+        ok: true,
+        changed: change !== null,
+        ...(answer ? { answer } : {}),
+      })
       return true
     } catch (error) {
       if (error instanceof HttpError) {
@@ -173,4 +190,8 @@ export class AgentStatusHookApi {
       return true
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

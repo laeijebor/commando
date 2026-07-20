@@ -832,11 +832,21 @@ describe('AgentStatusRegistry', () => {
     }))).toMatchObject({ status: { status: 'needs_input' } })
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
       id: 'que_1',
-    }))).toBeNull()
+    }))).toMatchObject({
+      status: {
+        status: 'needs_input',
+        details: { requests: [{ id: 'per_1' }, { id: 'que_1' }] },
+      },
+    })
 
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.replied', {
       requestID: 'per_1',
-    }))).toBeNull()
+    }))).toMatchObject({
+      status: {
+        status: 'needs_input',
+        details: { requests: [{ id: 'que_1' }] },
+      },
+    })
     expect(registry.get(paneId)?.status).toBe('needs_input')
 
     expect(registry.applyOpenCodeEvent(paneId, openCodeEvent('question.replied', {
@@ -849,6 +859,56 @@ describe('AgentStatusRegistry', () => {
     }))).toMatchObject({ status: { status: 'working' } })
   })
 
+  it('preserves agent session names and resolves companion interaction requests', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('question.asked', {
+      id: 'question-1',
+      sessionName: 'Choose the deployment',
+      attention: 'Which target?',
+      request: {
+        id: 'question-1',
+        kind: 'question',
+        prompt: 'Which target?',
+        questions: [{
+          header: 'Target',
+          question: 'Which target?',
+          options: [{ label: 'Production', description: 'Deploy now' }],
+          multiple: false,
+          custom: false,
+        }],
+      },
+    }), 10)
+
+    expect(registry.get(paneId)).toMatchObject({
+      agentSessionId: openCodeSessionId,
+      agentSessionName: 'Choose the deployment',
+      details: {
+        requests: [{
+          id: 'question-1',
+          questions: [{ options: [{ label: 'Production' }] }],
+        }],
+      },
+    })
+    expect(registry.resolveInteractionRequest(paneId, 'question-1', 11)).toMatchObject({
+      status: {
+        status: 'working',
+        agentSessionName: 'Choose the deployment',
+        updatedAt: 11,
+      },
+    })
+    expect(registry.get(paneId)?.details?.requests).toBeUndefined()
+
+    registry.applyClaudeHook('%2', {
+      hook_event_name: 'SessionStart',
+      session_id: 'claude-session',
+      session_title: 'Review auth changes',
+    }, 12)
+    expect(registry.get('%2')).toMatchObject({
+      agentSessionId: 'claude-session',
+      agentSessionName: 'Review auth changes',
+    })
+  })
+
   it('replaces pending request state when the provider session changes', () => {
     const registry = new AgentStatusRegistry()
     registry.applyOpenCodeEvent(paneId, openCodeEvent('permission.asked', {
@@ -858,7 +918,12 @@ describe('AgentStatusRegistry', () => {
     expect(registry.applyOpenCodeEvent(paneId, {
       type: 'question.asked',
       properties: { sessionID: 'ses_opencode_2', id: 'que_new' },
-    })).toBeNull()
+    })).toMatchObject({
+      status: {
+        agentSessionId: 'ses_opencode_2',
+        details: { requests: [{ id: 'que_new' }] },
+      },
+    })
     expect(registry.applyOpenCodeEvent(paneId, {
       type: 'question.replied',
       properties: { sessionID: 'ses_opencode_2', requestID: 'que_new' },

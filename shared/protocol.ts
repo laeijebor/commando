@@ -48,6 +48,33 @@ export type AgentRecap = {
   completedAt: number
 }
 
+export type AgentQuestionOption = {
+  label: string
+  description?: string
+}
+
+export type AgentQuestion = {
+  header: string
+  question: string
+  options: AgentQuestionOption[]
+  multiple: boolean
+  custom: boolean
+}
+
+export type AgentInteractionRequest = {
+  id: string
+  kind: 'permission' | 'question'
+  prompt: string
+  toolName?: string
+  questions?: AgentQuestion[]
+  createdAt: number
+}
+
+export type AgentInteractionAnswer = {
+  action: 'allow_once' | 'allow_always' | 'deny' | 'answer' | 'reject'
+  answers?: string[][]
+}
+
 export type AgentDetails = {
   intent?: string
   currentActivity?: AgentActivity
@@ -57,11 +84,14 @@ export type AgentDetails = {
   checks: AgentCheck[]
   attention?: string
   recap?: AgentRecap
+  requests?: AgentInteractionRequest[]
 }
 
 export type AgentStatus = {
   paneId: string
   provider: AgentProvider
+  agentSessionId?: string
+  agentSessionName?: string
   status: AgentStatusKind
   summary: string
   source: 'hook' | 'heuristic' | 'process'
@@ -139,6 +169,63 @@ export type CommandoSnapshot = {
   panes: TmuxPane[]
   ports: OpenPort[]
 }
+
+export type UsageProvider = 'claude' | 'codex'
+
+export type UsageWindow = {
+  label: string
+  usedPercent: number
+  remainingPercent: number
+  resetsAt?: number
+}
+
+export type ProviderUsage = {
+  provider: UsageProvider
+  state: 'available' | 'unavailable' | 'error'
+  plan?: string
+  windows: UsageWindow[]
+  updatedAt: number
+  message?: string
+}
+
+export type CompanionSession = {
+  id: string
+  tmuxSessionId: string
+  tmuxSessionName: string
+  agentSessionId?: string
+  agentSessionName: string
+  provider: AgentProvider
+  status: AgentStatusKind
+  summary: string
+  intent?: string
+  activity?: AgentActivity
+  requests: AgentInteractionRequest[]
+  windowName?: string
+  paneId?: string
+  paneIndex?: number
+  updatedAt: number
+}
+
+export type CompanionSnapshot = {
+  revision: number
+  capturedAt: number
+  sessions: CompanionSession[]
+  usage: ProviderUsage[]
+}
+
+export type CompanionServerMessage =
+  | { type: 'companion_snapshot'; snapshot: CompanionSnapshot }
+  | { type: 'companion_error'; code: string; message: string; requestId?: string }
+
+export type CompanionClientMessage =
+  | {
+      type: 'answer_agent_request'
+      paneId: string
+      requestId: string
+      answer: AgentInteractionAnswer
+      requestIdempotencyKey: string
+    }
+  | { type: 'refresh_usage'; requestId: string }
 
 export type SavedGroup = {
   id: string

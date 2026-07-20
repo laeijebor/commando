@@ -3,7 +3,9 @@ import type {
   AgentActivityKind,
   AgentCheck,
   AgentDetails,
+  AgentInteractionRequest,
   AgentProvider,
+  AgentQuestion,
   AgentRecap,
   AgentStatus,
   AgentStatusKind,
@@ -21,6 +23,7 @@ type TaskState = {
 
 type PendingRequest = {
   attention: string
+  request: AgentInteractionRequest
 }
 
 type RegistryRecord = {
@@ -55,6 +58,12 @@ const MAX_TASK_SUBJECT_LENGTH = 240
 const MAX_TASKS = 100
 const MAX_TODOS = 20
 const MAX_PENDING_REQUESTS = 100
+const MAX_QUESTIONS = 8
+const MAX_QUESTION_OPTIONS = 12
+const MAX_QUESTION_HEADER_LENGTH = 30
+const MAX_QUESTION_TEXT_LENGTH = 300
+const MAX_OPTION_LABEL_LENGTH = 80
+const MAX_OPTION_DESCRIPTION_LENGTH = 200
 const MAX_FILE_PATH_LENGTH = 240
 const MAX_CHANGED_FILES = 20
 const MAX_CHANGE_TOTAL = 1_000_000_000
@@ -131,6 +140,15 @@ function cloneDetails(details: AgentDetails): AgentDetails {
   if (details.changes) clone.changes = { ...details.changes }
   if (details.attention !== undefined) clone.attention = details.attention
   if (details.recap) clone.recap = { ...details.recap }
+  if (details.requests) {
+    clone.requests = details.requests.map((request) => ({
+      ...request,
+      questions: request.questions?.map((question) => ({
+        ...question,
+        options: question.options.map((option) => ({ ...option })),
+      })),
+    }))
+  }
   return clone
 }
 
@@ -149,6 +167,8 @@ function statusWithoutDetails(status: AgentStatus): AgentStatus {
 function sameStatus(left: AgentStatus, right: AgentStatus): boolean {
   return left.paneId === right.paneId &&
     left.provider === right.provider &&
+    left.agentSessionId === right.agentSessionId &&
+    left.agentSessionName === right.agentSessionName &&
     left.status === right.status &&
     left.summary === right.summary &&
     left.source === right.source &&
@@ -160,6 +180,8 @@ function sameStatus(left: AgentStatus, right: AgentStatus): boolean {
 function hookStatus(
   paneId: string,
   provider: Exclude<AgentProvider, 'unknown'>,
+  agentSessionId: string,
+  agentSessionName: string | null,
   status: AgentStatusKind,
   updatedAt: number,
 ): AgentStatus {
@@ -194,6 +216,8 @@ function hookStatus(
   return {
     paneId,
     provider,
+    agentSessionId,
+    ...(agentSessionName ? { agentSessionName } : {}),
     status,
     ...descriptions[status],
     source: 'hook',
@@ -437,13 +461,68 @@ function setAttention(
   return attention
 }
 
+function parseQuestions(value: unknown): AgentQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const questions = value.slice(0, MAX_QUESTIONS).flatMap((candidate) => {
+    if (!isRecord(candidate)) return []
+    const question = boundedText(candidate.question, MAX_QUESTION_TEXT_LENGTH)
+    if (!question) return []
+    const header = boundedText(candidate.header, MAX_QUESTION_HEADER_LENGTH) ?? 'Question'
+    const options = Array.isArray(candidate.options)
+      ? candidate.options.slice(0, MAX_QUESTION_OPTIONS).flatMap((option) => {
+          if (!isRecord(option)) return []
+          const label = boundedText(option.label, MAX_OPTION_LABEL_LENGTH)
+          if (!label) return []
+          const description = boundedText(option.description, MAX_OPTION_DESCRIPTION_LENGTH)
+          return [{ label, ...(description ? { description } : {}) }]
+        })
+      : []
+    return [{
+      header,
+      question,
+      options,
+      multiple: candidate.multiple === true || candidate.multiSelect === true,
+      custom: candidate.custom !== false,
+    }]
+  })
+  return questions.length ? questions : undefined
+}
+
+function parseInteractionRequest(
+  value: unknown,
+  updatedAt: number,
+): AgentInteractionRequest | null {
+  if (!isRecord(value)) return null
+  const id = boundedText(value.id, 200)
+  const kind = value.kind
+  if (!id || (kind !== 'permission' && kind !== 'question')) return null
+  const questions = parseQuestions(value.questions)
+  const prompt = boundedText(value.prompt, MAX_QUESTION_TEXT_LENGTH)
+    ?? questions?.[0]?.question
+    ?? (kind === 'permission' ? 'Approve this agent action?' : 'Answer the agent question')
+  const toolName = boundedText(value.toolName, 80)
+  return {
+    id,
+    kind,
+    prompt,
+    ...(toolName ? { toolName } : {}),
+    ...(questions ? { questions } : {}),
+    createdAt: updatedAt,
+  }
+}
+
 function syncAttention(
   details: AgentDetails,
   pendingRequests: Map<string, PendingRequest>,
 ): void {
   const latest = [...pendingRequests.values()].at(-1)
-  if (latest) details.attention = latest.attention
-  else delete details.attention
+  if (latest) {
+    details.attention = latest.attention
+    details.requests = [...pendingRequests.values()].map(({ request }) => request)
+  } else {
+    delete details.attention
+    delete details.requests
+  }
 }
 
 function addPendingRequest(
@@ -451,6 +530,7 @@ function addPendingRequest(
   kind: 'permission' | 'question',
   requestId: string,
   attention: string,
+  request: AgentInteractionRequest,
 ): void {
   const key = `${kind}:${requestId}`
   if (!requests.has(key) && requests.size >= MAX_PENDING_REQUESTS) {
@@ -458,7 +538,7 @@ function addPendingRequest(
     if (oldestRequestId !== undefined) requests.delete(oldestRequestId)
   }
   requests.delete(key)
-  requests.set(key, { attention })
+  requests.set(key, { attention, request })
 }
 
 function messageLines(value: unknown): string[] {
@@ -669,6 +749,8 @@ export class AgentStatusRegistry {
     const previous = this.records.get(paneId)
     const sameSession = previous?.status.provider === 'claude' &&
       previous.providerSessionId === sessionId
+    const agentSessionName = stringProperty(payload, 'session_title', 120)
+      ?? (sameSession ? (previous.status.agentSessionName ?? null) : null)
     if (
       eventName === 'SessionStart' &&
       stringProperty(payload, 'source', 80) === 'compact' &&
@@ -769,7 +851,18 @@ export class AgentStatusRegistry {
       (eventName === 'PreToolUse' && status === 'needs_input') ||
       (eventName === 'Notification' && status === 'needs_input')
     ) {
-      setAttention(details, payload.attention, 'claude')
+      const attention = setAttention(details, payload.attention, 'claude')
+      const request = parseInteractionRequest(payload.request, updatedAt)
+      if (request) {
+        addPendingRequest(
+          pendingRequests,
+          request.kind,
+          request.id,
+          attention,
+          request,
+        )
+        syncAttention(details, pendingRequests)
+      }
     } else if (
       eventName === 'PermissionDenied' ||
       eventName === 'ElicitationResult' ||
@@ -805,7 +898,14 @@ export class AgentStatusRegistry {
     }
 
     return this.upsert({
-      status: attachDetails(hookStatus(paneId, 'claude', status, updatedAt), details),
+      status: attachDetails(hookStatus(
+        paneId,
+        'claude',
+        sessionId,
+        agentSessionName,
+        status,
+        updatedAt,
+      ), details),
       providerSessionId: sessionId,
       processCommand: status === 'unknown'
         ? null
@@ -842,6 +942,8 @@ export class AgentStatusRegistry {
     const previous = this.records.get(paneId)
     const sameSession = previous?.status.provider === 'opencode' &&
       previous.providerSessionId === sessionId
+    const agentSessionName = stringProperty(event.properties, 'sessionName', 120)
+      ?? (sameSession ? (previous.status.agentSessionName ?? null) : null)
     const startsNewTurn = event.type === 'commando.turn.started'
     const resetDetails = !sameSession || previous.retainedCompletion || startsNewTurn
     const intent = boundedText(event.properties.intent, MAX_INTENT_LENGTH)
@@ -875,13 +977,27 @@ export class AgentStatusRegistry {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
       const attention = setAttention(details, event.properties.attention, 'opencode')
-      addPendingRequest(pendingRequests, 'permission', requestId, attention)
+      const request = parseInteractionRequest(event.properties.request, updatedAt) ?? {
+        id: requestId,
+        kind: 'permission' as const,
+        prompt: attention,
+        createdAt: updatedAt,
+      }
+      addPendingRequest(pendingRequests, 'permission', requestId, attention, request)
+      syncAttention(details, pendingRequests)
       status = 'needs_input'
     } else if (event.type === 'question.asked') {
       const requestId = stringProperty(event.properties, 'id')
       if (!requestId) return null
       const attention = setAttention(details, event.properties.attention, 'opencode')
-      addPendingRequest(pendingRequests, 'question', requestId, attention)
+      const request = parseInteractionRequest(event.properties.request, updatedAt) ?? {
+        id: requestId,
+        kind: 'question' as const,
+        prompt: attention,
+        createdAt: updatedAt,
+      }
+      addPendingRequest(pendingRequests, 'question', requestId, attention, request)
+      syncAttention(details, pendingRequests)
       status = 'needs_input'
     } else if (
       event.type === 'permission.replied' ||
@@ -1000,7 +1116,14 @@ export class AgentStatusRegistry {
     }
 
     return this.upsert({
-      status: attachDetails(hookStatus(paneId, 'opencode', status, updatedAt), details),
+      status: attachDetails(hookStatus(
+        paneId,
+        'opencode',
+        sessionId,
+        agentSessionName,
+        status,
+        updatedAt,
+      ), details),
       providerSessionId: sessionId,
       processCommand: sameSession ? (previous?.processCommand ?? processCommand) : processCommand,
       pendingRequests,
@@ -1012,6 +1135,41 @@ export class AgentStatusRegistry {
         ? `${intent ?? 'turn'}:${updatedAt}`
         : sameSession ? previous.turnId : null,
       retainedCompletion: false,
+    })
+  }
+
+  resolveInteractionRequest(
+    paneId: string,
+    requestId: string,
+    updatedAt = Date.now(),
+  ): AgentStatusChange {
+    const previous = this.records.get(paneId)
+    if (!previous) return null
+    const pendingRequests = new Map(previous.pendingRequests)
+    const entry = [...pendingRequests.entries()].find(([, pending]) => (
+      pending.request.id === requestId
+    ))
+    if (!entry) return null
+    pendingRequests.delete(entry[0])
+
+    const details = cloneDetails(previous.status.details ?? emptyDetails())
+    syncAttention(details, pendingRequests)
+    const status = pendingRequests.size ? 'needs_input' : 'working'
+    const providerName = previous.status.provider === 'claude' ? 'Claude' : 'OpenCode'
+    return this.upsert({
+      ...previous,
+      status: attachDetails({
+        ...previous.status,
+        status,
+        summary: pendingRequests.size
+          ? `${providerName} needs input`
+          : `${providerName} is working`,
+        reason: pendingRequests.size
+          ? `${providerName} has another pending response`
+          : 'Companion answered the pending request',
+        updatedAt,
+      }, details),
+      pendingRequests,
     })
   }
 

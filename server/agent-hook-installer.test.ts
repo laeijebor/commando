@@ -429,7 +429,7 @@ describe('agent hook installer', () => {
         id: 'question-1',
         questions: [{
           question: 'Choose target\nSECRET=raw-question-secret',
-          options: [{ label: 'raw-question-option' }],
+          options: [{ label: 'Deploy\nTOKEN=raw-question-option-secret' }],
         }],
       }),
       send('session.status', 'main', {
@@ -578,7 +578,7 @@ describe('agent hook installer', () => {
       'raw-permission-secret',
       'raw-permission-pattern',
       'raw-question-secret',
-      'raw-question-option',
+      'raw-question-option-secret',
       'raw-retry-secret',
       'raw-retry-action',
       'raw-error-secret',

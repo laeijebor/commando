@@ -50,6 +50,9 @@ import {
 import { createNetworkAccess } from './network-access.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
+import { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { CompanionHub } from './companion.js'
+import { ProviderUsageService } from './provider-usage.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -406,6 +409,7 @@ async function main(): Promise<void> {
   const token = authToken()
   const digest = tokenDigest(token)
   const agentHookToken = await loadOrCreateAgentHookToken()
+  const companionTokenDigest = tokenDigest(agentHookToken)
   const ownerEmail = configuredOwnerEmail()
   const authBaseURL = process.env.BETTER_AUTH_URL ?? `http://127.0.0.1:${port}`
   const auth = ownerEmail
@@ -425,6 +429,7 @@ async function main(): Promise<void> {
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const agentStatuses = new AgentStatusRegistry()
+  let companion: CompanionHub | null = null
   let snapshot: CommandoSnapshot = {
     revision: 0,
     capturedAt: Date.now(),
@@ -466,6 +471,7 @@ async function main(): Promise<void> {
 
   const publishAgentStatusChange = (change: AgentStatusChange): void => {
     for (const client of clients) sendAgentStatusChange(client, change)
+    if (change) companion?.publish()
   }
 
   const reportTmuxError = (error: unknown): void => {
@@ -852,6 +858,7 @@ async function main(): Promise<void> {
 
         syncRequiredSessions()
         broadcast({ type: 'snapshot', snapshot })
+        companion?.publish()
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
         return snapshot
       })
@@ -914,12 +921,22 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const interactions = new AgentInteractionBroker()
+  const providerUsage = new ProviderUsageService()
+  companion = new CompanionHub({
+    interactions,
+    registry: agentStatuses,
+    usage: providerUsage,
+    snapshot: () => snapshot,
+    onStatusChange: publishAgentStatusChange,
+  })
   const agentStatusHooks = new AgentStatusHookApi({
     token: agentHookToken,
     registry: agentStatuses,
     paneExists,
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
+    interactions,
   })
 
   const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
@@ -1159,6 +1176,13 @@ async function main(): Promise<void> {
     maxPayload: MAX_CLIENT_MESSAGE_BYTES,
     perMessageDeflate: false,
   })
+  const companionWebSocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: 64 * 1024,
+    perMessageDeflate: false,
+  })
+
+  companionWebSocketServer.on('connection', (socket) => companion?.connect(socket))
 
   webSocketServer.on('connection', (socket) => {
     const client: ClientState = {
@@ -1336,8 +1360,18 @@ async function main(): Promise<void> {
           return
         }
         const url = requestUrl(request)
-        if (!url || url.pathname !== '/ws') {
+        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws')) {
           rejectUpgrade(socket, 404, 'Not Found')
+          return
+        }
+        if (url.pathname === '/companion/ws') {
+          if (!requestHasValidToken(request, url, companionTokenDigest)) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
+          companionWebSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+            companionWebSocketServer.emit('connection', webSocket, request)
+          })
           return
         }
         if (!(await requestIsAuthorized(request, url))) {
@@ -1388,9 +1422,11 @@ async function main(): Promise<void> {
     clearInterval(snapshotTimer)
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
+    companion?.close()
     void tmux.releaseAllPaneResizes().finally(() => {
       tmux.close()
       webSocketServer.close()
+      companionWebSocketServer.close()
       void Promise.all(httpServers.map(({ server }) => new Promise<void>((resolveClose) => {
         server.close(() => resolveClose())
       }))).finally(() => auth?.close())
