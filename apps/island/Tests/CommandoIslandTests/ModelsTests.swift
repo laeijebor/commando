@@ -95,6 +95,93 @@ import Testing
     #expect(expanded.midX == screen.midX)
     #expect(compact.maxY == screen.maxY)
     #expect(expanded.maxY == screen.maxY)
-    #expect(compact.size == IslandGeometry.compactSize)
+    #expect(compact.size == IslandGeometry.baseCompactSize)
     #expect(expanded.size == IslandGeometry.expandedSize)
+}
+
+@Test func reservesTheBuiltInDisplayCameraGap() {
+    let display = IslandGeometry.displayLayout(
+        leftAuxiliaryArea: CGRect(x: 0, y: 1_878, width: 1_336, height: 56),
+        rightAuxiliaryArea: CGRect(x: 1_656, y: 1_878, width: 1_336, height: 56),
+        safeAreaTop: 56
+    )
+
+    #expect(display.cameraGapWidth == 344)
+    #expect(display.compactSize == CGSize(width: 796, height: 56))
+}
+
+@Test func keepsStandardLayoutWhenDisplayHasNoCameraGap() {
+    let display = IslandGeometry.displayLayout(
+        leftAuxiliaryArea: nil,
+        rightAuxiliaryArea: nil,
+        safeAreaTop: 24
+    )
+
+    #expect(display == .standard)
+}
+
+@Test func keepsExpandedIslandAtLeastAsWideAsNotchedCompactIsland() {
+    let screen = CGRect(x: 0, y: 0, width: 2_992, height: 1_934)
+    let display = IslandGeometry.displayLayout(
+        leftAuxiliaryArea: CGRect(x: 0, y: 1_878, width: 1_336, height: 56),
+        rightAuxiliaryArea: CGRect(x: 1_656, y: 1_878, width: 1_336, height: 56),
+        safeAreaTop: 56
+    )
+    let expanded = IslandGeometry.frame(
+        screenFrame: screen,
+        expanded: true,
+        displayLayout: display
+    )
+
+    #expect(expanded.midX == screen.midX)
+    #expect(expanded.maxY == screen.maxY)
+    #expect(expanded.size == CGSize(width: 796, height: 540))
+}
+
+@Test @MainActor func hoverReentryCancelsScheduledCollapse() async throws {
+    let store = CompanionStore()
+    store.configureHoverTracking(
+        panelFrame: { CGRect(x: 0, y: 0, width: 100, height: 100) },
+        pointerLocation: { CGPoint(x: 150, y: 150) },
+        collapseDelay: .milliseconds(10)
+    )
+    store.isExpanded = true
+
+    store.hoverChanged(inside: false)
+    store.hoverChanged(inside: true)
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(store.isExpanded)
+}
+
+@Test @MainActor func hoverExitKeepsPanelOpenWhenPointerIsInsideFinalFrame() async throws {
+    let store = CompanionStore()
+    var frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    store.configureHoverTracking(
+        panelFrame: { frame },
+        pointerLocation: { CGPoint(x: 150, y: 50) },
+        collapseDelay: .milliseconds(10)
+    )
+    store.isExpanded = true
+
+    store.hoverChanged(inside: false)
+    frame = CGRect(x: 0, y: 0, width: 200, height: 100)
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(store.isExpanded)
+}
+
+@Test @MainActor func hoverExitCollapsesPanelWhenPointerRemainsOutside() async throws {
+    let store = CompanionStore()
+    store.configureHoverTracking(
+        panelFrame: { CGRect(x: 0, y: 0, width: 100, height: 100) },
+        pointerLocation: { CGPoint(x: 150, y: 150) },
+        collapseDelay: .milliseconds(10)
+    )
+    store.isExpanded = true
+
+    store.hoverChanged(inside: false)
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(!store.isExpanded)
 }

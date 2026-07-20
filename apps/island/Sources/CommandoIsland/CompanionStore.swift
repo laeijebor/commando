@@ -28,6 +28,11 @@ final class CompanionStore: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var collapseTask: Task<Void, Never>?
+    private var collapseGeneration = 0
+    private var collapseDelay: Duration = .milliseconds(450)
+    private var panelFrame: (() -> CGRect?)?
+    private var pointerLocation: (() -> CGPoint?)?
     private var intentionalStop = false
     private var reconnectAttempt = 0
 
@@ -59,6 +64,7 @@ final class CompanionStore: ObservableObject {
 
     func stop() {
         intentionalStop = true
+        cancelScheduledCollapse()
         reconnectTask?.cancel()
         receiveTask?.cancel()
         socket?.cancel(with: .goingAway, reason: nil)
@@ -66,20 +72,68 @@ final class CompanionStore: ObservableObject {
     }
 
     func toggleExpanded() {
+        cancelScheduledCollapse()
         withAnimation(.snappy(duration: 0.28)) {
             isExpanded.toggle()
         }
     }
 
+    func configureHoverTracking(
+        panelFrame: @escaping () -> CGRect?,
+        pointerLocation: @escaping () -> CGPoint?,
+        collapseDelay: Duration = .milliseconds(450)
+    ) {
+        self.panelFrame = panelFrame
+        self.pointerLocation = pointerLocation
+        self.collapseDelay = collapseDelay
+    }
+
+    func hoverChanged(inside: Bool) {
+        if inside {
+            cancelScheduledCollapse()
+            guard !isExpanded else { return }
+            withAnimation(.snappy(duration: 0.28)) {
+                isExpanded = true
+            }
+        } else {
+            collapseAfterHover()
+        }
+    }
+
     func collapseAfterHover() {
-        guard pendingSession == nil else { return }
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(450))
-            guard let self, self.pendingSession == nil else { return }
+        guard pendingSession == nil else {
+            cancelScheduledCollapse()
+            return
+        }
+        cancelScheduledCollapse()
+        let generation = collapseGeneration
+        let delay = collapseDelay
+        collapseTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self else { return }
+            guard generation == self.collapseGeneration,
+                  self.pendingSession == nil else { return }
+            if let frame = self.panelFrame?(),
+               let pointer = self.pointerLocation?(),
+               frame.contains(pointer) {
+                self.collapseTask = nil
+                return
+            }
+            self.collapseTask = nil
             withAnimation(.snappy(duration: 0.25)) {
                 self.isExpanded = false
             }
         }
+    }
+
+    private func cancelScheduledCollapse() {
+        collapseGeneration += 1
+        collapseTask?.cancel()
+        collapseTask = nil
     }
 
     func select(_ session: CompanionSession) {
@@ -189,6 +243,7 @@ final class CompanionStore: ObservableObject {
                 snapshot = next
                 if let pending = next.sessions.first(where: { !$0.requests.isEmpty }) {
                     selectedSessionID = pending.id
+                    cancelScheduledCollapse()
                     withAnimation(.snappy(duration: 0.3)) {
                         isExpanded = true
                     }

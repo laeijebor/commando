@@ -6,6 +6,7 @@ private let islandRaised = Color(red: 0.12, green: 0.105, blue: 0.15)
 
 struct IslandRootView: View {
     @ObservedObject var store: CompanionStore
+    @ObservedObject var layout: IslandLayoutModel
     let onExpansionChange: (Bool) -> Void
 
     var body: some View {
@@ -13,7 +14,7 @@ struct IslandRootView: View {
             if store.isExpanded {
                 expandedView
             } else {
-                CompactIsland(store: store)
+                CompactIsland(store: store, display: layout.display)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -40,11 +41,7 @@ struct IslandRootView: View {
             if !store.isExpanded { store.toggleExpanded() }
         }
         .onHover { inside in
-            if inside, !store.isExpanded {
-                withAnimation(.snappy(duration: 0.28)) { store.isExpanded = true }
-            } else if !inside {
-                store.collapseAfterHover()
-            }
+            store.hoverChanged(inside: inside)
         }
         .onChange(of: store.isExpanded) { _, expanded in
             onExpansionChange(expanded)
@@ -86,21 +83,67 @@ struct IslandRootView: View {
 
 private struct CompactIsland: View {
     @ObservedObject var store: CompanionStore
+    let display: IslandDisplayLayout
 
     var body: some View {
-        HStack(spacing: 12) {
-            if let session = store.snapshot.primarySession {
+        Group {
+            if display.cameraGapWidth > 0 {
+                HStack(spacing: 0) {
+                    leftContent
+                        .padding(.leading, IslandGeometry.compactHorizontalPadding)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipped()
+                    Color.clear
+                        .frame(width: display.cameraGapWidth)
+                    rightContent
+                        .padding(.trailing, IslandGeometry.compactHorizontalPadding)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .clipped()
+                }
+            } else {
+                HStack(spacing: 12) {
+                    leftContent
+                    Spacer(minLength: 8)
+                    rightContent
+                }
+                .padding(.horizontal, IslandGeometry.compactHorizontalPadding)
+            }
+        }
+        .frame(height: display.compactSize.height)
+    }
+
+    @ViewBuilder
+    private var leftContent: some View {
+        if let session = store.snapshot.primarySession {
+            HStack(spacing: 12) {
                 StatusGlyph(status: session.status, provider: session.provider)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.tmuxSessionName)
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
+                        .lineLimit(1)
                     Text(session.agentSessionName)
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
                 }
-                Spacer(minLength: 8)
+            }
+        } else {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(connectionColor(store.connection))
+                    .frame(width: 7, height: 7)
+                Text(store.connection.label)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rightContent: some View {
+        if let session = store.snapshot.primarySession {
+            HStack(spacing: 10) {
                 Text(session.status.displayName)
                     .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundStyle(statusColor(session.status))
@@ -108,21 +151,14 @@ private struct CompactIsland: View {
                 Text("\(store.snapshot.sessions.count) sessions")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.5))
-            } else {
-                Circle()
-                    .fill(connectionColor(store.connection))
-                    .frame(width: 7, height: 7)
-                Text(store.connection.label)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.7))
-                Spacer()
-                Text("Commando")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+        } else {
+            Text("Commando")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.45))
         }
-        .padding(.horizontal, 16)
-        .frame(height: 42)
     }
 }
 
