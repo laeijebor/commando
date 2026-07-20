@@ -89,7 +89,8 @@ import { PaneGitStats } from './PaneGitStats'
 import { PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
-import { storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
+import { createNotesApi } from './notesApi'
+import { pinnedNoteFrom, storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
   agentHudGroups,
   agentNeedsAttention,
@@ -681,6 +682,22 @@ export function App() {
     setPinnedNote(next)
     storePinnedNote(next)
   }, [])
+
+  const savePinnedNote = useCallback(async (note: PinnedNote) => {
+    const updated = await createNotesApi(token).update(note.vaultId, note.id, {
+      title: note.title,
+      body: note.body,
+      folder: note.folder,
+      expectedUpdatedAt: note.updatedAt,
+    })
+    const next = pinnedNoteFrom(note.vaultId, updated)
+    setPinnedNote((current) => {
+      if (current?.vaultId !== note.vaultId || current.id !== note.id) return current
+      storePinnedNote(next)
+      return next
+    })
+    return next
+  }, [token])
 
   useEffect(() => {
     let cancelled = false
@@ -1855,6 +1872,7 @@ export function App() {
                   requestId: (current?.requestId ?? 0) + 1,
                 }))
               }}
+              onSave={savePinnedNote}
               onUnpin={() => changePinnedNote(null)}
             />
           ) : null}

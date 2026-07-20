@@ -307,12 +307,12 @@ export function NotesSection({
       onPinnedNoteChange?.(null)
       return
     }
-    if (
+    if (latest.updatedAt >= pinnedNote.updatedAt && (
       latest.title !== pinnedNote.title ||
       latest.body !== pinnedNote.body ||
       latest.folder !== pinnedNote.folder ||
       latest.updatedAt !== pinnedNote.updatedAt
-    ) {
+    )) {
       onPinnedNoteChange?.(pinnedNoteFrom(vaultId, latest))
     }
   }, [notes, onPinnedNoteChange, phase, pinnedNote, vaultState?.activeVaultId])

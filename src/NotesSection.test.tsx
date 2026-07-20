@@ -230,6 +230,35 @@ describe('NotesSection', () => {
     expect(screen.getByText('Saved to vault')).toBeVisible()
   })
 
+  it('does not replace a newer pinned-note edit with an older Notes snapshot', async () => {
+    const onPinnedNoteChange = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/note-vaults' && !init?.method) return Response.json(vaultState)
+      if (url === '/api/notes?vault=vault-1' && !init?.method) return Response.json({ notes: [original], folders: [] })
+      return Response.json({ error: 'Unexpected request' }, { status: 500 })
+    })
+
+    render(
+      <NotesSection
+        token="test-token"
+        pinnedNote={{
+          vaultId: 'vault-1',
+          id: original.id,
+          title: original.title,
+          body: 'Edited from the HUD',
+          folder: original.folder,
+          updatedAt: original.updatedAt + 1,
+        }}
+        onPinnedNoteChange={onPinnedNoteChange}
+      />,
+    )
+
+    await screen.findByLabelText('Note body')
+    await act(async () => { await Promise.resolve() })
+    expect(onPinnedNoteChange).not.toHaveBeenCalled()
+  })
+
   it('pins the note targeted by the context menu', async () => {
     const other = { ...original, id: 'other-note', title: 'Other note', updatedAt: original.updatedAt + 1 }
     const onPinnedNoteChange = vi.fn()

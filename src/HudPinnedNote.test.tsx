@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,13 +16,17 @@ const note: PinnedNote = {
   updatedAt: 1_700_000_100_000,
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('HudPinnedNote', () => {
   it('renders Markdown and exposes open and unpin actions', () => {
     const onOpen = vi.fn()
+    const onSave = vi.fn().mockResolvedValue(note)
     const onUnpin = vi.fn()
-    render(<HudPinnedNote note={note} onOpen={onOpen} onUnpin={onUnpin} />)
+    render(<HudPinnedNote note={note} onOpen={onOpen} onSave={onSave} onUnpin={onUnpin} />)
 
     expect(screen.getByRole('region', { name: 'Pinned note: Release checklist' })).toBeVisible()
     expect(screen.getByText('Projects/Commando')).toBeVisible()
@@ -33,5 +37,57 @@ describe('HudPinnedNote', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unpin note Release checklist' }))
     expect(onOpen).toHaveBeenCalledOnce()
     expect(onUnpin).toHaveBeenCalledOnce()
+  })
+
+  it('toggles in-place editing and autosaves the title and Markdown body', async () => {
+    vi.useFakeTimers()
+    const saved = {
+      ...note,
+      title: 'Updated checklist',
+      body: '## Ready\n\n- [x] Ship it',
+      updatedAt: note.updatedAt + 1,
+    }
+    const onSave = vi.fn().mockResolvedValue(saved)
+    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} />)
+
+    expect(screen.queryByLabelText('Pinned note body')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit pinned note' }))
+    fireEvent.change(screen.getByLabelText('Pinned note title'), { target: { value: saved.title } })
+    fireEvent.change(screen.getByLabelText('Pinned note body'), { target: { value: saved.body } })
+    expect(screen.getByText('Unsaved')).toBeVisible()
+
+    await act(async () => {
+      vi.advanceTimersByTime(650)
+      await Promise.resolve()
+    })
+
+    expect(onSave).toHaveBeenCalledWith({ ...note, title: saved.title, body: saved.body })
+    expect(screen.queryByText('Unsaved')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'View pinned note' }))
+    expect(screen.getByText('Updated checklist')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Ready' })).toBeVisible()
+    expect(screen.getByRole('checkbox')).toBeChecked()
+  })
+
+  it('keeps a failed edit visible and supports an explicit retry', async () => {
+    const onSave = vi.fn()
+      .mockRejectedValueOnce(new Error('Note changed outside Commando'))
+      .mockResolvedValueOnce({ ...note, body: 'Retry me', updatedAt: note.updatedAt + 1 })
+    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit pinned note' }))
+    fireEvent.change(screen.getByLabelText('Pinned note body'), { target: { value: 'Retry me' } })
+    await act(async () => {
+      fireEvent.keyDown(screen.getByLabelText('Pinned note body'), { key: 's', metaKey: true })
+      await Promise.resolve()
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Save failed: Note changed outside Commando')
+    await act(async () => {
+      fireEvent.keyDown(screen.getByLabelText('Pinned note body'), { key: 's', metaKey: true })
+      await Promise.resolve()
+    })
+    expect(onSave).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
