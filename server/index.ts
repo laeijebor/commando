@@ -603,6 +603,7 @@ async function main(): Promise<void> {
   }
 
   const scheduleCompanionOutputRefresh = (paneId: string): void => {
+    if (companionOutputRefreshTimers.has(paneId)) return
     invalidateCompanionOutputRefresh(paneId)
     const generation = companionOutputGenerations.get(paneId) ?? 0
     const timer = setTimeout(() => {
