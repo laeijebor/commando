@@ -132,9 +132,12 @@ private struct CompactUsage: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(usage) { provider in
-                if let window = provider.windows.first {
-                    Text("\(provider.provider == .claude ? "CL" : "CX") \(Int(window.remainingPercent.rounded()))%")
+                if let window = provider.windows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
+                    Text("\(provider.provider == .claude ? "CL" : "CX") \(window.label) \(Int(window.remainingPercent.rounded()))%")
                         .foregroundStyle(usageColor(window.remainingPercent))
+                } else {
+                    Text("\(provider.provider == .claude ? "CL" : "CX") --")
+                        .foregroundStyle(.white.opacity(0.3))
                 }
             }
         }
@@ -183,19 +186,28 @@ private struct UsageStrip: View {
         TimelineView(.periodic(from: .now, by: 30)) { _ in
             HStack(spacing: 8) {
                 ForEach(usage) { provider in
-                    if let window = provider.windows.first {
-                        HStack(spacing: 4) {
-                            Text(provider.provider == .claude ? "CL" : "CX")
-                                .foregroundStyle(provider.provider == .claude ? .orange : .cyan)
-                            Text("\(Int(window.remainingPercent.rounded()))%")
-                                .foregroundStyle(usageColor(window.remainingPercent))
-                            if let resetsAt = window.resetsAt {
-                                Text(countdown(until: resetsAt))
-                                    .foregroundStyle(.white.opacity(0.42))
+                    HStack(spacing: 5) {
+                        Text(provider.provider == .claude ? "CL" : "CX")
+                            .foregroundStyle(provider.provider == .claude ? .orange : .cyan)
+                        if provider.windows.isEmpty {
+                            Text("--")
+                                .foregroundStyle(.white.opacity(0.3))
+                        } else {
+                            ForEach(provider.windows) { window in
+                                HStack(spacing: 3) {
+                                    Text(window.label)
+                                        .foregroundStyle(.white.opacity(0.45))
+                                    Text("\(Int(window.remainingPercent.rounded()))%")
+                                        .foregroundStyle(usageColor(window.remainingPercent))
+                                    if let resetsAt = window.resetsAt {
+                                        Text(countdown(until: resetsAt))
+                                            .foregroundStyle(.white.opacity(0.35))
+                                    }
+                                }
                             }
                         }
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
                     }
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
                 }
             }
         }
