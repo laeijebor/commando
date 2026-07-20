@@ -50,14 +50,17 @@ type GeneratedOpenCodeHooks = {
   ) => void
 }
 
-async function loadOpenCodePlugin(path: string): Promise<GeneratedOpenCodeHooks> {
+async function loadOpenCodePlugin(
+  path: string,
+  client?: Record<string, unknown>,
+): Promise<GeneratedOpenCodeHooks> {
   const source = await readFile(path, 'utf8')
   const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`) as {
     CommandoAgentStatusPlugin: (
-      context: { directory: string },
+      context: { directory: string; client?: Record<string, unknown> },
     ) => Promise<GeneratedOpenCodeHooks>
   }
-  return module.CommandoAgentStatusPlugin({ directory: '/workspace' })
+  return module.CommandoAgentStatusPlugin({ directory: '/workspace', client })
 }
 
 describe('agent hook token', () => {
@@ -361,6 +364,152 @@ describe('agent hook installer', () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
+  })
+
+  it('returns Claude question answers through PermissionRequest hook output', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const received: Record<string, unknown>[] = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push(JSON.parse(body) as Record<string, unknown>)
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({
+          answer: { action: 'answer', answers: [['Production']] },
+        }))
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+
+    try {
+      const child = spawn(process.execPath, [paths.claudeBridgePath], {
+        env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+        stdio: ['pipe', 'pipe', 'inherit'],
+      })
+      let output = ''
+      child.stdout.on('data', (chunk) => { output += chunk })
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'PermissionRequest',
+        session_id: 'claude-session',
+        session_title: 'Release review',
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [{
+            header: 'Target',
+            question: 'Which target?',
+            options: [
+              { label: 'Production', description: 'Ship now' },
+              { label: 'Staging', description: 'Review first' },
+            ],
+            multiSelect: false,
+          }],
+        },
+      }))
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (code) => code === 0
+          ? resolve()
+          : reject(new Error(`Bridge exited ${code}`)))
+      })
+
+      expect(received[0]).toMatchObject({
+        session_title: 'Release review',
+        request: {
+          kind: 'question',
+          prompt: 'Which target?',
+          questions: [{
+            question: 'Which target?',
+            options: [{ label: 'Production' }, { label: 'Staging' }],
+          }],
+        },
+      })
+      expect(JSON.parse(output)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PermissionRequest',
+          decision: {
+            behavior: 'allow',
+            updatedInput: {
+              questions: [{
+                header: 'Target',
+                question: 'Which target?',
+                options: [
+                  { label: 'Production', description: 'Ship now' },
+                  { label: 'Staging', description: 'Review first' },
+                ],
+                multiSelect: false,
+              }],
+              answers: { 'Which target?': 'Production' },
+            },
+          },
+        },
+      })
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('answers OpenCode permission and question events through its SDK client', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const permissionReply = vi.fn(async () => ({ data: true }))
+    const questionReply = vi.fn(async () => ({ data: true }))
+    vi.stubEnv('TMUX_PANE', '%42')
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { event: OpenCodeEvent }
+      const answer = body.event.type === 'permission.asked'
+        ? { action: 'allow_once' }
+        : { action: 'answer', answers: [['Production']] }
+      return new Response(JSON.stringify({ answer }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    const plugin = await loadOpenCodePlugin(paths.openCodePluginPath, {
+      permission: { reply: permissionReply },
+      question: { reply: questionReply },
+    })
+
+    plugin.event({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'main', title: 'Release review' } },
+      },
+    })
+    await plugin.event({
+      event: {
+        type: 'permission.asked',
+        properties: { sessionID: 'main', id: 'permission-1', permission: 'bash' },
+      },
+    })
+    await plugin.event({
+      event: {
+        type: 'question.asked',
+        properties: {
+          sessionID: 'main',
+          id: 'question-1',
+          questions: [{
+            header: 'Target',
+            question: 'Which target?',
+            options: [{ label: 'Production', description: 'Ship now' }],
+          }],
+        },
+      },
+    })
+
+    expect(permissionReply).toHaveBeenCalledWith({
+      requestID: 'permission-1',
+      directory: '/workspace',
+      reply: 'once',
+    })
+    expect(questionReply).toHaveBeenCalledWith({
+      requestID: 'question-1',
+      directory: '/workspace',
+      answers: [['Production']],
+    })
   })
 
   it('serializes sanitized OpenCode metadata and filters child sessions', async () => {

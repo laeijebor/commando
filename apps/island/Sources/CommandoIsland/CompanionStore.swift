@@ -44,6 +44,10 @@ final class CompanionStore: ObservableObject {
     }
 
     var daemonPort: Int {
+        if let value = ProcessInfo.processInfo.environment["COMMANDO_PORT"],
+           let port = Int(value), (1...65_535).contains(port) {
+            return port
+        }
         let configured = UserDefaults.standard.integer(forKey: "CommandoPort")
         return configured == 0 ? 4310 : configured
     }
