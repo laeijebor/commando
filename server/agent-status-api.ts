@@ -163,8 +163,13 @@ export class AgentStatusHookApi {
       }
 
       this.dependencies.onChange(change)
-      const requestId = isRecord(body.request) && typeof body.request.id === 'string'
-        ? body.request.id
+      const requestValue = provider === 'claude'
+        ? body.request
+        : isRecord(body.event) && isRecord(body.event.properties)
+          ? body.event.properties.request
+          : undefined
+      const requestId = isRecord(requestValue) && typeof requestValue.id === 'string'
+        ? requestValue.id
         : null
       const interaction = requestId
         ? this.dependencies.registry.get(targetPaneId)?.details?.requests?.find((request) => (
