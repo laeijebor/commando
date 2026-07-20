@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Ma
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { sessionShortcutIndex } from './sessionShortcuts'
 import { EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers } from './sessionTreePreferences'
 import './session-tree.css'
 
@@ -82,6 +83,21 @@ export function SessionTree(props: Props) {
   }
 
   const containers = sessionTreeContainers(preferences, props.sessions)
+  const shortcutSessionIds = containers
+    .flatMap((container) => container.sessionIds)
+    .filter((sessionId) => sessionMap.has(sessionId))
+
+  useEffect(() => {
+    const selectShortcutSession = (event: globalThis.KeyboardEvent) => {
+      const index = sessionShortcutIndex(event)
+      const sessionId = index === null ? undefined : shortcutSessionIds[index]
+      if (!sessionId) return
+      event.preventDefault()
+      props.onSelectSession(sessionId)
+    }
+    window.addEventListener('keydown', selectShortcutSession)
+    return () => window.removeEventListener('keydown', selectShortcutSession)
+  }, [props.onSelectSession, shortcutSessionIds])
 
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
     const groups = preferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))

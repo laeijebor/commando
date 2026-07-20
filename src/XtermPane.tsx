@@ -13,6 +13,7 @@ import {
 } from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
 import { semanticKeyForEvent } from './terminalInput'
+import { sessionShortcutIndex } from './sessionShortcuts'
 
 type XtermPaneProps = {
   paneId: string
@@ -192,7 +193,7 @@ export function XtermPane({
     })
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
-      if (event.metaKey && event.key.toLowerCase() === 'k') {
+      if ((event.metaKey && event.key.toLowerCase() === 'k') || sessionShortcutIndex(event) !== null) {
         return false
       }
       if (

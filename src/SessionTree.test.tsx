@@ -75,6 +75,89 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
 }
 
 describe('SessionTree', () => {
+  it('opens the first nine sessions by their session-tree order', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: ['$3', '$1', '$stale'] },
+        { id: 'vivi', name: 'VIVI', sessionIds: ['$4'] },
+      ],
+      ungroupedSessionIds: ['$2'],
+    })
+    const sessions = Array.from({ length: 10 }, (_, index) => ({
+      id: `$${index + 1}`,
+      name: `session-${index + 1}`,
+      attached: false,
+      activeWindowId: null,
+      windowIds: [],
+    }))
+    const onSelectSession = vi.fn()
+    render(
+      <SessionTree
+        token="token"
+        sessions={sessions}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={onSelectSession}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('GIZMO')
+    await waitFor(() => expect(screen.getByText('session-3')).toBeInTheDocument())
+    for (const key of ['1', '2', '3', '4', '5', '9']) {
+      fireEvent.keyDown(window, { key, metaKey: true })
+    }
+
+    expect(onSelectSession.mock.calls.map(([sessionId]) => sessionId)).toEqual([
+      '$3',
+      '$1',
+      '$4',
+      '$2',
+      '$5',
+      '$9',
+    ])
+  })
+
+  it('ignores session numbers outside Cmd+1 through Cmd+9', () => {
+    const onSelectSession = vi.fn()
+    render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: null, windowIds: [] }]}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={onSelectSession}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+
+    fireEvent.keyDown(window, { key: '1' })
+    fireEvent.keyDown(window, { key: '0', metaKey: true })
+    fireEvent.keyDown(window, { key: '1', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { key: '2', metaKey: true })
+
+    expect(onSelectSession).not.toHaveBeenCalled()
+  })
+
   it('moves named groups in their persisted display order', async () => {
     const onPreferencesChanged = vi.fn()
     sessionApi.loadPreferences.mockResolvedValue({
