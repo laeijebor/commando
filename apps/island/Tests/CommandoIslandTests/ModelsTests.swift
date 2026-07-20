@@ -146,6 +146,38 @@ import Testing
     #expect(expanded.size == CGSize(width: 796, height: 540))
 }
 
+@Test func resolvesPreferredCurrentAndPointerDisplaysInOrder() {
+    let displays = [
+        IslandScreenDescriptor(key: "built-in", frame: CGRect(x: 0, y: 0, width: 1_000, height: 800)),
+        IslandScreenDescriptor(key: "external", frame: CGRect(x: 1_000, y: 0, width: 1_000, height: 800)),
+    ]
+
+    #expect(IslandScreenSelection.targetDisplayKey(
+        displays: displays,
+        preferredDisplayKey: "external",
+        currentDisplayKey: "built-in",
+        pointerLocation: CGPoint(x: 100, y: 100)
+    ) == "external")
+    #expect(IslandScreenSelection.targetDisplayKey(
+        displays: displays,
+        preferredDisplayKey: "disconnected",
+        currentDisplayKey: "built-in",
+        pointerLocation: CGPoint(x: 1_100, y: 100)
+    ) == "built-in")
+    #expect(IslandScreenSelection.targetDisplayKey(
+        displays: displays,
+        preferredDisplayKey: nil,
+        currentDisplayKey: nil,
+        pointerLocation: CGPoint(x: 1_100, y: 100)
+    ) == "external")
+    #expect(IslandScreenSelection.targetDisplayKey(
+        displays: displays,
+        preferredDisplayKey: nil,
+        currentDisplayKey: nil,
+        pointerLocation: CGPoint(x: 3_000, y: 100)
+    ) == "built-in")
+}
+
 @Test @MainActor func hoverReentryCancelsScheduledCollapse() async throws {
     let store = CompanionStore()
     store.configureHoverTracking(
