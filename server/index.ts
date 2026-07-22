@@ -52,6 +52,7 @@ import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
+import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
 import { stripAnsi } from './terminal-text.js'
 import {
@@ -486,10 +487,11 @@ async function main(): Promise<void> {
         change.status.source === 'hook' &&
         (change.status.status === 'done' || change.status.status === 'failed')
       ) {
-        invalidateCompanionOutputRefresh(change.status.paneId)
-        const tail = paneTextTails.get(change.status.paneId)
-        if (tail) companionOutputTails.set(change.status.paneId, tail.content)
-        else primeStatusTail(change.status.paneId)
+        if (paneTextTails.has(change.status.paneId)) {
+          scheduleCompanionOutputRefresh(change.status.paneId)
+        } else {
+          primeStatusTail(change.status.paneId)
+        }
       }
       syncRequiredSessions()
       if (
@@ -611,12 +613,14 @@ async function main(): Promise<void> {
       void (async () => {
         const pane = paneForId(paneId)
         const status = agentStatuses.get(paneId)
-        const candidate = paneTextTails.get(paneId)?.content
-        if (!pane || !status || !candidate || companionClientCount === 0) return
+        const hasObservedOutput = Boolean(paneTextTails.get(paneId)?.content)
+        if (!pane || !status || !hasObservedOutput || companionClientCount === 0) return
         const completedByHook = status.source === 'hook' &&
           (status.status === 'done' || status.status === 'failed')
         if (!companionObservesLiveOutput(paneId) && !completedByHook) return
-        const currentCommand = await tmux.paneCurrentCommand(paneId)
+        // Control-mode output contains every cursor rewrite and animation frame. Capture tmux's
+        // rendered grid so the companion receives terminal state rather than the raw repaint stream.
+        const rendered = await captureRenderedCompanionOutput(tmux, pane.sessionId, paneId)
         if (companionOutputGenerations.get(paneId) !== generation) return
         const currentPane = paneForId(paneId)
         const currentStatus = agentStatuses.get(paneId)
@@ -626,13 +630,13 @@ async function main(): Promise<void> {
         if (!companionObservesLiveOutput(paneId) && !currentlyCompletedByHook) return
         const currentProcess = inferAgentProcessStatus({
           paneId,
-          command: currentCommand,
+          command: rendered.command,
           title: currentPane.title,
           dead: currentPane.dead,
           capturedAt: Date.now(),
         })
         if (currentProcess.provider === 'unknown') return
-        companionOutputTails.set(paneId, candidate)
+        companionOutputTails.set(paneId, rendered.output)
         scheduleCompanionPublish()
       })().catch(reportTmuxError)
     }, 300)
@@ -722,6 +726,12 @@ async function main(): Promise<void> {
   const primeStatusTail = (paneId: string): void => {
     if (paneTextTails.has(paneId)) {
       emitAgentStatus(paneId)
+      const status = agentStatuses.get(paneId)
+      const completedByHook = status?.source === 'hook' &&
+        (status.status === 'done' || status.status === 'failed')
+      if (companionObservesLiveOutput(paneId) || completedByHook) {
+        scheduleCompanionOutputRefresh(paneId)
+      }
       return
     }
     if (primingStatusTails.has(paneId)) return
@@ -745,14 +755,17 @@ async function main(): Promise<void> {
           (!observedByBrowser && !companionObservesLiveOutput(paneId) && !completedByHook)
         ) return
         const buffered = Buffer.from(paneTextTails.get(paneId)?.content ?? '')
+        const normalizedCapture = normalizeCaptureLineEndings(capture)
         observePaneSeed(
           paneId,
-          normalizeCaptureLineEndings(capture),
+          normalizedCapture,
           buffered,
           Date.now(),
         )
         if (companionObservesLiveOutput(paneId) || completedByHook) {
+          companionOutputTails.set(paneId, normalizedCapture.toString('utf8'))
           scheduleCompanionOutputRefresh(paneId)
+          scheduleCompanionPublish()
         }
         emitAgentStatus(paneId)
       })
