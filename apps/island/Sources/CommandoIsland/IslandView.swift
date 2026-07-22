@@ -215,6 +215,19 @@ private struct IslandHeader: View {
             UsageStrip(usage: store.snapshot.usage)
             Menu {
                 Button {
+                    store.toggleRequestInterruptions()
+                } label: {
+                    Label(
+                        store.requestInterruptionsEnabled
+                            ? "Disable Request Interruptions"
+                            : "Enable Request Interruptions",
+                        systemImage: store.requestInterruptionsEnabled
+                            ? "bell.slash.fill"
+                            : "bell.fill"
+                    )
+                }
+                Divider()
+                Button {
                     store.toggleMinimalMode()
                 } label: {
                     Label(

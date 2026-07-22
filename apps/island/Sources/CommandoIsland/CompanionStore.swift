@@ -20,6 +20,7 @@ enum CompanionConnection: Equatable {
 @MainActor
 final class CompanionStore: ObservableObject {
     static let minimalModeDefaultsKey = "CommandoIslandMinimalMode"
+    static let requestInterruptionsDefaultsKey = "CommandoIslandRequestInterruptionsEnabled"
 
     @Published private(set) var snapshot = CompanionSnapshot.empty
     @Published private(set) var connection: CompanionConnection = .connecting
@@ -28,6 +29,14 @@ final class CompanionStore: ObservableObject {
     @Published var isMinimalMode: Bool {
         didSet {
             defaults.set(isMinimalMode, forKey: Self.minimalModeDefaultsKey)
+        }
+    }
+    @Published var requestInterruptionsEnabled: Bool {
+        didSet {
+            defaults.set(
+                requestInterruptionsEnabled,
+                forKey: Self.requestInterruptionsDefaultsKey
+            )
         }
     }
     @Published var selectedSessionID: String?
@@ -49,6 +58,9 @@ final class CompanionStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         isMinimalMode = defaults.bool(forKey: Self.minimalModeDefaultsKey)
+        requestInterruptionsEnabled = defaults.object(
+            forKey: Self.requestInterruptionsDefaultsKey
+        ) == nil || defaults.bool(forKey: Self.requestInterruptionsDefaultsKey)
     }
 
     var selectedSession: CompanionSession? {
@@ -61,6 +73,10 @@ final class CompanionStore: ObservableObject {
 
     var pendingSession: CompanionSession? {
         snapshot.sessions.first(where: { !$0.requests.isEmpty })
+    }
+
+    private var shouldHoldOpenForPendingRequest: Bool {
+        requestInterruptionsEnabled && pendingSession != nil
     }
 
     var daemonPort: Int {
@@ -101,6 +117,10 @@ final class CompanionStore: ObservableObject {
         }
     }
 
+    func toggleRequestInterruptions() {
+        requestInterruptionsEnabled.toggle()
+    }
+
     func configureHoverTracking(
         panelFrame: @escaping () -> CGRect?,
         pointerLocation: @escaping () -> CGPoint?,
@@ -124,7 +144,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func collapseAfterHover() {
-        guard pendingSession == nil else {
+        guard !shouldHoldOpenForPendingRequest else {
             cancelScheduledCollapse()
             return
         }
@@ -139,7 +159,7 @@ final class CompanionStore: ObservableObject {
             }
             guard let self else { return }
             guard generation == self.collapseGeneration,
-                  self.pendingSession == nil else { return }
+                  !self.shouldHoldOpenForPendingRequest else { return }
             if let frame = self.panelFrame?(),
                let pointer = self.pointerLocation?(),
                frame.contains(pointer) {
@@ -267,25 +287,31 @@ final class CompanionStore: ObservableObject {
         do {
             let envelope = try JSONDecoder().decode(CompanionEnvelope.self, from: data)
             if envelope.type == "companion_snapshot", let next = envelope.snapshot {
-                snapshot = next
-                if let pending = next.sessions.first(where: { !$0.requests.isEmpty }) {
-                    selectedSessionID = pending.id
-                    cancelScheduledCollapse()
-                    withAnimation(.snappy(duration: 0.3)) {
-                        isExpanded = true
-                    }
-                } else if let selectedSessionID,
-                          !next.sessions.contains(where: { $0.id == selectedSessionID }) {
-                    self.selectedSessionID = next.primarySession?.id
-                }
-                syncFocusedOutput()
-                lastError = nil
+                applySnapshot(next)
             } else if envelope.type == "companion_error" {
                 lastError = envelope.message ?? envelope.code ?? "Companion request failed"
             }
         } catch {
             lastError = "Ignored an invalid daemon update"
         }
+    }
+
+    func applySnapshot(_ next: CompanionSnapshot) {
+        snapshot = next
+        if let pending = next.sessions.first(where: { !$0.requests.isEmpty }) {
+            selectedSessionID = pending.id
+            if requestInterruptionsEnabled {
+                cancelScheduledCollapse()
+                withAnimation(.snappy(duration: 0.3)) {
+                    isExpanded = true
+                }
+            }
+        } else if let selectedSessionID,
+                  !next.sessions.contains(where: { $0.id == selectedSessionID }) {
+            self.selectedSessionID = next.primarySession?.id
+        }
+        syncFocusedOutput()
+        lastError = nil
     }
 
     private func send(_ command: CompanionCommand) {

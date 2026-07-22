@@ -238,6 +238,54 @@ import Testing
     #expect(!defaults.bool(forKey: CompanionStore.minimalModeDefaultsKey))
 }
 
+@Test @MainActor func requestInterruptionsDefaultToEnabledAndPersist() throws {
+    let suiteName = "CommandoIslandTests.RequestInterruptions.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let store = CompanionStore(defaults: defaults)
+    #expect(store.requestInterruptionsEnabled)
+
+    store.toggleRequestInterruptions()
+    #expect(!store.requestInterruptionsEnabled)
+    #expect(!defaults.bool(forKey: CompanionStore.requestInterruptionsDefaultsKey))
+    #expect(!CompanionStore(defaults: defaults).requestInterruptionsEnabled)
+}
+
+@Test @MainActor func disabledRequestInterruptionsDoNotExpandOrPinPendingRequests() async throws {
+    let suiteName = "CommandoIslandTests.RequestInterruptions.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(false, forKey: CompanionStore.requestInterruptionsDefaultsKey)
+    let store = CompanionStore(defaults: defaults)
+    store.configureHoverTracking(
+        panelFrame: { CGRect(x: 0, y: 0, width: 100, height: 100) },
+        pointerLocation: { CGPoint(x: 150, y: 150) },
+        collapseDelay: .milliseconds(10)
+    )
+
+    store.applySnapshot(pendingRequestSnapshot())
+
+    #expect(!store.isExpanded)
+    #expect(store.pendingSession != nil)
+    store.isExpanded = true
+    store.collapseAfterHover()
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(!store.isExpanded)
+}
+
+@Test @MainActor func enabledRequestInterruptionsExpandPendingRequests() throws {
+    let suiteName = "CommandoIslandTests.RequestInterruptions.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = CompanionStore(defaults: defaults)
+
+    store.applySnapshot(pendingRequestSnapshot())
+
+    #expect(store.isExpanded)
+    #expect(store.pendingSession != nil)
+}
+
 @Test @MainActor func hoverExitKeepsPanelOpenWhenPointerIsInsideFinalFrame() async throws {
     let store = CompanionStore()
     var frame = CGRect(x: 0, y: 0, width: 100, height: 100)
@@ -268,4 +316,41 @@ import Testing
     try await Task.sleep(for: .milliseconds(30))
 
     #expect(!store.isExpanded)
+}
+
+private func pendingRequestSnapshot() -> CompanionSnapshot {
+    CompanionSnapshot(
+        revision: 1,
+        capturedAt: 1,
+        sessions: [
+            CompanionSession(
+                id: "$1:%1",
+                tmuxSessionId: "$1",
+                tmuxSessionName: "commando",
+                agentSessionId: "session-1",
+                agentSessionName: "Waiting for approval",
+                provider: .opencode,
+                status: .needsInput,
+                summary: "Permission required",
+                lastOutput: nil,
+                intent: nil,
+                activity: nil,
+                requests: [
+                    AgentInteractionRequest(
+                        id: "permission-1",
+                        kind: .permission,
+                        prompt: "Allow this action?",
+                        toolName: "external_directory",
+                        questions: nil,
+                        createdAt: 1
+                    ),
+                ],
+                windowName: "main",
+                paneId: "%1",
+                paneIndex: 0,
+                updatedAt: 1
+            ),
+        ],
+        usage: []
+    )
 }
