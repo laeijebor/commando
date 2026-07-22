@@ -253,7 +253,8 @@ private struct IslandHeader: View {
                     }
                     .shadow(color: islandPurple.opacity(0.4), radius: 4)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("Commando Island actions")
