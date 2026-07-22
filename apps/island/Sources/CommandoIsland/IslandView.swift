@@ -456,23 +456,29 @@ private struct QuestionRequestView: View {
                     Text(question.question)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                     if !question.options.isEmpty {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 7)], spacing: 7) {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 220), spacing: 7, alignment: .topLeading)],
+                            spacing: 7
+                        ) {
                             ForEach(question.options) { option in
                                 Button {
                                     choose(option.label, for: question, at: index)
                                 } label: {
-                                    HStack(spacing: 6) {
+                                    HStack(alignment: .top, spacing: 8) {
                                         Image(systemName: selections[index].contains(option.label)
                                             ? "checkmark.circle.fill" : "circle")
-                                        VStack(alignment: .leading, spacing: 1) {
+                                            .padding(.top, 1)
+                                        VStack(alignment: .leading, spacing: 2) {
                                             Text(option.label).fontWeight(.semibold)
                                             if let description = option.description {
                                                 Text(description)
                                                     .font(.system(size: 9))
                                                     .foregroundStyle(.white.opacity(0.45))
-                                                    .lineLimit(1)
+                                                    .lineLimit(3)
                                             }
                                         }
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .layoutPriority(1)
                                         Spacer(minLength: 0)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
