@@ -230,9 +230,15 @@ private struct IslandHeader: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 26, height: 26)
-                    .background(Color.white.opacity(0.08), in: Circle())
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(islandPurple.opacity(0.78), in: Circle())
+                    .overlay {
+                        Circle().stroke(Color.white.opacity(0.24), lineWidth: 1)
+                    }
+                    .shadow(color: islandPurple.opacity(0.4), radius: 4)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
