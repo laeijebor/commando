@@ -33,6 +33,7 @@ function validAnswer(
 export class AgentInteractionBroker {
   private readonly pending = new Map<string, PendingInteraction>()
   private consumers = 0
+  private onPendingChange: () => void = () => undefined
 
   constructor(private readonly timeoutMs = DEFAULT_TIMEOUT_MS) {}
 
@@ -45,20 +46,30 @@ export class AgentInteractionBroker {
     return this.consumers > 0
   }
 
+  setPendingChangeListener(listener: () => void): void {
+    this.onPendingChange = listener
+  }
+
+  hasPending(paneId: string, requestId: string): boolean {
+    return this.pending.has(this.key(paneId, requestId))
+  }
+
   wait(
     paneId: string,
     request: AgentInteractionRequest,
   ): Promise<AgentInteractionAnswer | null> {
     if (!this.hasConsumers()) return Promise.resolve(null)
     const key = this.key(paneId, request.id)
-    this.cancel(key)
+    this.cancelKey(key)
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(key)
+        this.onPendingChange()
         resolve(null)
       }, this.timeoutMs)
       timer.unref()
       this.pending.set(key, { request, resolve, timer })
+      this.onPendingChange()
     })
   }
 
@@ -72,20 +83,27 @@ export class AgentInteractionBroker {
     if (!pending || !validAnswer(pending.request, answer)) return false
     clearTimeout(pending.timer)
     this.pending.delete(key)
+    this.onPendingChange()
     pending.resolve(answer)
     return true
   }
 
-  cancelAll(): void {
-    for (const key of [...this.pending.keys()]) this.cancel(key)
+  cancel(paneId: string, requestId: string): boolean {
+    return this.cancelKey(this.key(paneId, requestId))
   }
 
-  private cancel(key: string): void {
+  cancelAll(): void {
+    for (const key of [...this.pending.keys()]) this.cancelKey(key)
+  }
+
+  private cancelKey(key: string): boolean {
     const pending = this.pending.get(key)
-    if (!pending) return
+    if (!pending) return false
     clearTimeout(pending.timer)
     this.pending.delete(key)
+    this.onPendingChange()
     pending.resolve(null)
+    return true
   }
 
   private key(paneId: string, requestId: string): string {

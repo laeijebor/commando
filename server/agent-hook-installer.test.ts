@@ -512,6 +512,59 @@ describe('agent hook installer', () => {
     })
   })
 
+  it('delivers OpenCode question replies while the original ask is still waiting', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const requests: OpenCodeEvent[] = []
+    let releaseAsk: (() => void) | undefined
+    let markAskStarted: (() => void) | undefined
+    const askStarted = new Promise<void>((resolve) => {
+      markAskStarted = resolve
+    })
+    const askReleased = new Promise<void>((resolve) => {
+      releaseAsk = resolve
+    })
+    vi.stubEnv('TMUX_PANE', '%42')
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { event: OpenCodeEvent }
+      requests.push(body.event)
+      if (body.event.type === 'question.asked') {
+        markAskStarted?.()
+        await askReleased
+      }
+      return new Response(null, { status: 200 })
+    }))
+    const plugin = await loadOpenCodePlugin(paths.openCodePluginPath)
+    plugin.event({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'main', title: 'Release review' } },
+      },
+    })
+
+    const asking = plugin.event({
+      event: {
+        type: 'question.asked',
+        properties: {
+          sessionID: 'main',
+          id: 'question-1',
+          questions: [{ question: 'Which target?', options: [] }],
+        },
+      },
+    })
+    await askStarted
+    await plugin.event({
+      event: {
+        type: 'question.replied',
+        properties: { sessionID: 'main', requestID: 'question-1' },
+      },
+    })
+
+    expect(requests.map((event) => event.type)).toEqual(['question.asked', 'question.replied'])
+    releaseAsk?.()
+    await asking
+  })
+
   it('serializes sanitized OpenCode metadata and filters child sessions', async () => {
     const home = await temporaryHome()
     const paths = await new AgentHookInstaller({ home }).install()

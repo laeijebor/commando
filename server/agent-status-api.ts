@@ -5,6 +5,7 @@ import type { AgentInteractionBroker } from './agent-interaction-broker.js'
 
 const API_ROOT = '/api/agent-status/hooks'
 const MAX_REQUEST_BYTES = 64 * 1024
+const MAX_RESOLVED_OPENCODE_INTERACTIONS = 500
 const PANE_ID = /^%\d+$/
 
 type AgentStatusApiDependencies = {
@@ -15,6 +16,12 @@ type AgentStatusApiDependencies = {
   onChange: (change: AgentStatusChange) => void
   interactions?: AgentInteractionBroker
   now?: () => number
+}
+
+type OpenCodeInteractionLifecycle = {
+  key: string
+  requestId: string
+  state: 'asked' | 'resolved'
 }
 
 class HttpError extends Error {
@@ -91,12 +98,44 @@ function requiredString(body: Record<string, unknown>, property: string): void {
   }
 }
 
+function openCodeInteractionLifecycle(
+  paneId: string,
+  event: Record<string, unknown>,
+): OpenCodeInteractionLifecycle | null {
+  const type = event.type
+  const properties = event.properties
+  if (typeof type !== 'string' || !isRecord(properties)) return null
+  const kind = type.startsWith('permission.')
+    ? 'permission'
+    : type.startsWith('question.')
+      ? 'question'
+      : null
+  const state = type === 'permission.asked' || type === 'question.asked'
+    ? 'asked'
+    : type === 'permission.replied' || type === 'question.replied' || type === 'question.rejected'
+      ? 'resolved'
+      : null
+  if (!kind || !state) return null
+  const sessionId = properties.sessionID
+  const requestId = properties[state === 'asked' ? 'id' : 'requestID']
+  if (
+    typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256 ||
+    typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 256
+  ) return null
+  return {
+    key: JSON.stringify([paneId, sessionId, kind, requestId]),
+    requestId,
+    state,
+  }
+}
+
 export function isAgentStatusHookPath(pathname: string): boolean {
   return pathname === API_ROOT || pathname.startsWith(`${API_ROOT}/`)
 }
 
 export class AgentStatusHookApi {
   private readonly tokenDigest: Buffer
+  private readonly resolvedOpenCodeInteractions = new Set<string>()
 
   constructor(private readonly dependencies: AgentStatusApiDependencies) {
     if (dependencies.token.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
@@ -131,6 +170,8 @@ export class AgentStatusHookApi {
       const body = await readJson(request)
       const updatedAt = this.dependencies.now?.() ?? Date.now()
       let change: AgentStatusChange
+      let openCodeInteraction: OpenCodeInteractionLifecycle | null = null
+      let resolvedBeforeAsk = false
       if (provider === 'claude') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
@@ -154,15 +195,25 @@ export class AgentStatusHookApi {
         ) {
           throw new HttpError(400, 'event.properties must be a JSON object')
         }
-        change = this.dependencies.registry.applyOpenCodeEvent(
-          targetPaneId,
-          event,
-          updatedAt,
-          processCommand,
-        )
+        openCodeInteraction = openCodeInteractionLifecycle(targetPaneId, eventRecord)
+        if (openCodeInteraction?.state === 'resolved') {
+          this.rememberResolvedOpenCodeInteraction(openCodeInteraction.key)
+        }
+        resolvedBeforeAsk = openCodeInteraction?.state === 'asked' &&
+          this.resolvedOpenCodeInteractions.has(openCodeInteraction.key)
+        change = resolvedBeforeAsk
+          ? null
+          : this.dependencies.registry.applyOpenCodeEvent(
+              targetPaneId,
+              event,
+              updatedAt,
+              processCommand,
+            )
       }
 
-      this.dependencies.onChange(change)
+      if (openCodeInteraction?.state === 'resolved') {
+        this.dependencies.interactions?.cancel(targetPaneId, openCodeInteraction.requestId)
+      }
       const requestValue = provider === 'claude'
         ? body.request
         : isRecord(body.event) && isRecord(body.event.properties)
@@ -171,14 +222,16 @@ export class AgentStatusHookApi {
       const requestId = isRecord(requestValue) && typeof requestValue.id === 'string'
         ? requestValue.id
         : null
-      const interaction = requestId
+      const interaction = requestId && !resolvedBeforeAsk
         ? this.dependencies.registry.get(targetPaneId)?.details?.requests?.find((request) => (
             request.id === requestId
           ))
         : undefined
-      const answer = interaction && this.dependencies.interactions?.hasConsumers()
-        ? await this.dependencies.interactions.wait(targetPaneId, interaction)
+      const answerPending = interaction && this.dependencies.interactions?.hasConsumers()
+        ? this.dependencies.interactions.wait(targetPaneId, interaction)
         : null
+      this.dependencies.onChange(change)
+      const answer = answerPending ? await answerPending : null
       writeJson(response, 200, {
         ok: true,
         changed: change !== null,
@@ -194,6 +247,14 @@ export class AgentStatusHookApi {
       writeJson(response, 500, { error: 'Unable to record agent status' })
       return true
     }
+  }
+
+  private rememberResolvedOpenCodeInteraction(key: string): void {
+    this.resolvedOpenCodeInteractions.delete(key)
+    this.resolvedOpenCodeInteractions.add(key)
+    if (this.resolvedOpenCodeInteractions.size <= MAX_RESOLVED_OPENCODE_INTERACTIONS) return
+    const oldest = this.resolvedOpenCodeInteractions.values().next().value
+    if (oldest !== undefined) this.resolvedOpenCodeInteractions.delete(oldest)
   }
 }
 

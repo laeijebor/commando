@@ -1074,6 +1074,7 @@ async function main(): Promise<void> {
     },
     onStatusChange: publishAgentStatusChange,
   })
+  interactions.setPendingChangeListener(() => companion?.publish())
   const agentStatusHooks = new AgentStatusHookApi({
     token: agentHookToken,
     registry: agentStatuses,
