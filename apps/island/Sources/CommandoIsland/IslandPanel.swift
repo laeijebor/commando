@@ -76,16 +76,28 @@ struct IslandGeometry {
     static func frame(
         screenFrame: CGRect,
         expanded: Bool,
+        minimalMode: Bool = false,
         displayLayout: IslandDisplayLayout = .standard
     ) -> CGRect {
-        let size = expanded
-            ? CGSize(
+        let size: CGSize
+        if expanded {
+            size = CGSize(
                 width: max(expandedSize.width, displayLayout.compactSize.width),
                 height: expandedSize.height
             )
-            : displayLayout.compactSize
+        } else if minimalMode {
+            size = CGSize(
+                width: minimumWingWidth + compactHorizontalPadding,
+                height: displayLayout.compactSize.height
+            )
+        } else {
+            size = displayLayout.compactSize
+        }
+        let originX = !expanded && minimalMode && displayLayout.cameraGapWidth > 0
+            ? screenFrame.midX - displayLayout.cameraGapWidth / 2 - size.width
+            : screenFrame.midX - size.width / 2
         return CGRect(
-            x: screenFrame.midX - size.width / 2,
+            x: originX,
             y: screenFrame.maxY - size.height,
             width: size.width,
             height: size.height
@@ -117,7 +129,7 @@ final class IslandPanelController {
     private var preferredDisplayKey: String?
     private var screenObserver: NSObjectProtocol?
 
-    init(store: CompanionStore) {
+    init(store: CompanionStore, onQuit: @escaping () -> Void) {
         self.store = store
         preferredDisplayKey = UserDefaults.standard.string(
             forKey: Self.preferredDisplayDefaultsKey
@@ -146,7 +158,11 @@ final class IslandPanelController {
         panel.contentView = NSHostingView(rootView: IslandRootView(
             store: store,
             layout: layout,
-            onExpansionChange: { [weak self] expanded in self?.setExpanded(expanded) }
+            onExpansionChange: { [weak self] expanded in self?.setExpanded(expanded) },
+            onMinimalModeChange: { [weak self] minimalMode in
+                self?.setMinimalMode(minimalMode)
+            },
+            onQuit: onQuit
         ))
         panel.contentView?.autoresizingMask = [.width, .height]
         store.configureHoverTracking(
@@ -220,9 +236,14 @@ final class IslandPanelController {
         else { panel.orderFrontRegardless() }
     }
 
+    private func setMinimalMode(_ minimalMode: Bool) {
+        placePanel(animated: true, minimalMode: minimalMode)
+    }
+
     private func placePanel(
         animated: Bool,
         expanded: Bool? = nil,
+        minimalMode: Bool? = nil,
         screen requestedScreen: NSScreen? = nil
     ) {
         let screen = requestedScreen ?? targetScreen()
@@ -235,6 +256,7 @@ final class IslandPanelController {
         let nextFrame = IslandGeometry.frame(
             screenFrame: screen.frame,
             expanded: expanded ?? store.isExpanded,
+            minimalMode: minimalMode ?? store.isMinimalMode,
             displayLayout: displayLayout
         )
         if animated {

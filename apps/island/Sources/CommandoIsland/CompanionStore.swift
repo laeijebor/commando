@@ -19,12 +19,20 @@ enum CompanionConnection: Equatable {
 
 @MainActor
 final class CompanionStore: ObservableObject {
+    static let minimalModeDefaultsKey = "CommandoIslandMinimalMode"
+
     @Published private(set) var snapshot = CompanionSnapshot.empty
     @Published private(set) var connection: CompanionConnection = .connecting
     @Published private(set) var lastError: String?
     @Published var isExpanded = false
+    @Published var isMinimalMode: Bool {
+        didSet {
+            defaults.set(isMinimalMode, forKey: Self.minimalModeDefaultsKey)
+        }
+    }
     @Published var selectedSessionID: String?
 
+    private let defaults: UserDefaults
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -37,6 +45,11 @@ final class CompanionStore: ObservableObject {
     private var focusedOutputPaneID: String?
     private var intentionalStop = false
     private var reconnectAttempt = 0
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        isMinimalMode = defaults.bool(forKey: Self.minimalModeDefaultsKey)
+    }
 
     var selectedSession: CompanionSession? {
         if let selectedSessionID,
@@ -79,6 +92,12 @@ final class CompanionStore: ObservableObject {
         cancelScheduledCollapse()
         withAnimation(.snappy(duration: 0.28)) {
             isExpanded.toggle()
+        }
+    }
+
+    func toggleMinimalMode() {
+        withAnimation(.snappy(duration: 0.28)) {
+            isMinimalMode.toggle()
         }
     }
 

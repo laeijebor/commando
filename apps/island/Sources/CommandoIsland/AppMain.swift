@@ -8,7 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var displayMenu: NSMenu?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let panelController = IslandPanelController(store: store)
+        let panelController = IslandPanelController(
+            store: store,
+            onQuit: { NSApplication.shared.terminate(nil) }
+        )
         self.panelController = panelController
         configureStatusItem()
         panelController.show()

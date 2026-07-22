@@ -8,6 +8,8 @@ struct IslandRootView: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var layout: IslandLayoutModel
     let onExpansionChange: (Bool) -> Void
+    let onMinimalModeChange: (Bool) -> Void
+    let onQuit: () -> Void
 
     var body: some View {
         Group {
@@ -46,13 +48,16 @@ struct IslandRootView: View {
         .onChange(of: store.isExpanded) { _, expanded in
             onExpansionChange(expanded)
         }
+        .onChange(of: store.isMinimalMode) { _, minimalMode in
+            onMinimalModeChange(minimalMode)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Commando Island")
     }
 
     private var expandedView: some View {
         VStack(spacing: 0) {
-            IslandHeader(store: store)
+            IslandHeader(store: store, onQuit: onQuit)
                 .padding(.horizontal, 22)
                 .padding(.top, 14)
                 .padding(.bottom, 12)
@@ -87,7 +92,13 @@ private struct CompactIsland: View {
 
     var body: some View {
         Group {
-            if display.cameraGapWidth > 0 {
+            if store.isMinimalMode {
+                leftContent
+                    .padding(.leading, IslandGeometry.compactHorizontalPadding)
+                    .padding(.trailing, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
+            } else if display.cameraGapWidth > 0 {
                 HStack(spacing: 0) {
                     leftContent
                         .padding(.leading, IslandGeometry.compactHorizontalPadding)
@@ -183,6 +194,7 @@ private struct CompactUsage: View {
 
 private struct IslandHeader: View {
     @ObservedObject var store: CompanionStore
+    let onQuit: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -201,6 +213,32 @@ private struct IslandHeader: View {
 
             Spacer()
             UsageStrip(usage: store.snapshot.usage)
+            Menu {
+                Button {
+                    store.toggleMinimalMode()
+                } label: {
+                    Label(
+                        store.isMinimalMode ? "Exit Minimal Mode" : "Enter Minimal Mode",
+                        systemImage: store.isMinimalMode
+                            ? "arrow.up.left.and.arrow.down.right"
+                            : "arrow.down.right.and.arrow.up.left"
+                    )
+                }
+                Divider()
+                Button(role: .destructive, action: onQuit) {
+                    Label("Quit Commando Island", systemImage: "power")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 26)
+                    .background(Color.white.opacity(0.08), in: Circle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Commando Island actions")
+            .help("Commando Island actions")
             Button {
                 store.toggleExpanded()
             } label: {

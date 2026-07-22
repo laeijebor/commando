@@ -146,6 +146,36 @@ import Testing
     #expect(expanded.size == CGSize(width: 796, height: 540))
 }
 
+@Test func minimalModeUsesOnlyTheLeftNotchWing() {
+    let screen = CGRect(x: 0, y: 0, width: 2_992, height: 1_934)
+    let display = IslandGeometry.displayLayout(
+        leftAuxiliaryArea: CGRect(x: 0, y: 1_878, width: 1_336, height: 56),
+        rightAuxiliaryArea: CGRect(x: 1_656, y: 1_878, width: 1_336, height: 56),
+        safeAreaTop: 56
+    )
+    let minimal = IslandGeometry.frame(
+        screenFrame: screen,
+        expanded: false,
+        minimalMode: true,
+        displayLayout: display
+    )
+
+    #expect(minimal.size == CGSize(width: 226, height: 56))
+    #expect(minimal.maxX == screen.midX - display.cameraGapWidth / 2)
+}
+
+@Test func minimalModeStaysCenteredWithoutANotch() {
+    let screen = CGRect(x: 100, y: 50, width: 1_600, height: 1_000)
+    let minimal = IslandGeometry.frame(
+        screenFrame: screen,
+        expanded: false,
+        minimalMode: true
+    )
+
+    #expect(minimal.midX == screen.midX)
+    #expect(minimal.size == CGSize(width: 226, height: 42))
+}
+
 @Test func resolvesPreferredCurrentAndPointerDisplaysInOrder() {
     let displays = [
         IslandScreenDescriptor(key: "built-in", frame: CGRect(x: 0, y: 0, width: 1_000, height: 800)),
@@ -192,6 +222,20 @@ import Testing
     try await Task.sleep(for: .milliseconds(30))
 
     #expect(store.isExpanded)
+}
+
+@Test @MainActor func restoresAndPersistsMinimalMode() throws {
+    let suiteName = "CommandoIslandTests.MinimalMode.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defaults.set(true, forKey: CompanionStore.minimalModeDefaultsKey)
+
+    let store = CompanionStore(defaults: defaults)
+    #expect(store.isMinimalMode)
+
+    store.toggleMinimalMode()
+    #expect(!store.isMinimalMode)
+    #expect(!defaults.bool(forKey: CompanionStore.minimalModeDefaultsKey))
 }
 
 @Test @MainActor func hoverExitKeepsPanelOpenWhenPointerIsInsideFinalFrame() async throws {
