@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { AgentStatusRegistry, type AgentStatusChange } from './agent-status-registry.js'
 
@@ -7,10 +8,12 @@ const token = 'agent-hook-token-that-is-at-least-32-characters'
 let server: Server
 let baseUrl: string
 let changes: AgentStatusChange[]
+let interactions: AgentInteractionBroker
 let registry: AgentStatusRegistry
 
 beforeEach(async () => {
   changes = []
+  interactions = new AgentInteractionBroker()
   registry = new AgentStatusRegistry()
   const api = new AgentStatusHookApi({
     token,
@@ -18,6 +21,7 @@ beforeEach(async () => {
     paneExists: (paneId) => paneId === '%1',
     paneCommand: () => 'opencode',
     onChange: (change) => changes.push(change),
+    interactions,
     now: () => 123,
   })
   server = createServer((request, response) => {
@@ -81,6 +85,81 @@ describe('AgentStatusHookApi', () => {
 
     expect(response.status).toBe(200)
     expect(registry.get('%1')).toMatchObject({ provider: 'opencode', status: 'working' })
+  })
+
+  it('clears an OpenCode question when the provider answers it elsewhere', async () => {
+    interactions.setConsumerCount(1)
+    const asked = post('/api/agent-status/hooks/opencode', {
+      directory: '/workspace',
+      event: {
+        type: 'question.asked',
+        properties: {
+          sessionID: 'ses_1',
+          id: 'question-1',
+          attention: 'Which target?',
+          request: {
+            id: 'question-1',
+            kind: 'question',
+            prompt: 'Which target?',
+            questions: [{
+              header: 'Target',
+              question: 'Which target?',
+              options: [{ label: 'Production' }],
+              multiple: false,
+              custom: false,
+            }],
+          },
+        },
+      },
+    })
+    await vi.waitFor(() => expect(interactions.hasPending('%1', 'question-1')).toBe(true))
+
+    const replied = await post('/api/agent-status/hooks/opencode', {
+      directory: '/workspace',
+      event: {
+        type: 'question.replied',
+        properties: { sessionID: 'ses_1', requestID: 'question-1' },
+      },
+    })
+
+    expect(replied.status).toBe(200)
+    expect(await asked.then((response) => response.json())).toEqual({ ok: true, changed: true })
+    expect(interactions.hasPending('%1', 'question-1')).toBe(false)
+    expect(registry.get('%1')).toMatchObject({ status: 'working' })
+    expect(registry.get('%1')?.details?.requests).toBeUndefined()
+  })
+
+  it('does not resurrect an OpenCode question when its reply arrives first', async () => {
+    interactions.setConsumerCount(1)
+    await post('/api/agent-status/hooks/opencode', {
+      directory: '/workspace',
+      event: {
+        type: 'question.replied',
+        properties: { sessionID: 'ses_1', requestID: 'question-1' },
+      },
+    })
+
+    const asked = await post('/api/agent-status/hooks/opencode', {
+      directory: '/workspace',
+      event: {
+        type: 'question.asked',
+        properties: {
+          sessionID: 'ses_1',
+          id: 'question-1',
+          attention: 'Which target?',
+          request: {
+            id: 'question-1',
+            kind: 'question',
+            prompt: 'Which target?',
+            questions: [],
+          },
+        },
+      },
+    })
+
+    expect(await asked.json()).toEqual({ ok: true, changed: false })
+    expect(interactions.hasPending('%1', 'question-1')).toBe(false)
+    expect(registry.get('%1')?.details?.requests).toBeUndefined()
   })
 
   it('rejects invalid credentials, pane ids, and unknown panes', async () => {

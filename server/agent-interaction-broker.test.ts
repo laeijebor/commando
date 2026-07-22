@@ -21,9 +21,21 @@ describe('AgentInteractionBroker', () => {
     broker.setConsumerCount(1)
     const waiting = broker.wait('%1', permission)
 
+    expect(broker.hasPending('%1', permission.id)).toBe(true)
     expect(broker.answer('%1', permission.id, { action: 'allow_once' })).toBe(true)
     await expect(waiting).resolves.toEqual({ action: 'allow_once' })
+    expect(broker.hasPending('%1', permission.id)).toBe(false)
     expect(broker.answer('%1', permission.id, { action: 'allow_once' })).toBe(false)
+  })
+
+  it('cancels a request when the provider answers it elsewhere', async () => {
+    const broker = new AgentInteractionBroker()
+    broker.setConsumerCount(1)
+    const waiting = broker.wait('%1', permission)
+
+    expect(broker.cancel('%1', permission.id)).toBe(true)
+    await expect(waiting).resolves.toBeNull()
+    expect(broker.cancel('%1', permission.id)).toBe(false)
   })
 
   it('rejects mismatched answer shapes and releases hooks on disconnect', async () => {

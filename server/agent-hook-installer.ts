@@ -774,7 +774,13 @@ function toolFailed(output) {
     result.error !== undefined
 }
 
-async function report(directory, event) {
+async function report(directory, event, onStarted) {
+  let started = false
+  const markStarted = () => {
+    if (started) return
+    started = true
+    onStarted?.()
+  }
   try {
     const pane = process.env.TMUX_PANE
     if (!pane || !/^%\\d+$/.test(pane)) return
@@ -783,7 +789,7 @@ async function report(directory, event) {
     const port = process.env.COMMANDO_PORT || '4310'
     if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
     const interactive = event.type === 'permission.asked' || event.type === 'question.asked'
-    const response = await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
+    const responsePending = fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/opencode\`, {
       method: 'POST',
       headers: {
         'Authorization': \`Bearer \${token}\`,
@@ -793,20 +799,24 @@ async function report(directory, event) {
       body: JSON.stringify({ directory, event }),
       signal: AbortSignal.timeout(interactive ? 590000 : 1000),
     })
+    markStarted()
+    const response = await responsePending
     if (!interactive || !response.ok) return undefined
     return asObject(await response.json()).answer
   } catch {
     // Status reporting is best-effort and must not block OpenCode.
+  } finally {
+    markStarted()
   }
 }
 
 function enqueue(directory, event) {
-  delivery = delivery.then(() => report(directory, event))
+  delivery = delivery.catch(() => undefined).then(() => report(directory, event))
   return delivery
 }
 
-async function answerInteraction(directory, event, client) {
-  const answer = asObject(await report(directory, event))
+async function answerInteraction(directory, event, client, onStarted) {
+  const answer = asObject(await report(directory, event, onStarted))
   const properties = asObject(event.properties)
   const requestID = boundedText(properties.id, 200)
   if (!requestID || !client) return
@@ -834,8 +844,12 @@ async function answerInteraction(directory, event, client) {
 }
 
 function enqueueInteraction(directory, event, client) {
-  delivery = delivery.then(() => answerInteraction(directory, event, client))
-  return delivery
+  let interaction
+  const started = delivery.catch(() => undefined).then(() => new Promise((resolve) => {
+    interaction = answerInteraction(directory, event, client, resolve)
+  }))
+  delivery = started
+  return started.then(() => interaction)
 }
 
 export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({

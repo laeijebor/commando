@@ -114,6 +114,18 @@ describe('buildCompanionSnapshot', () => {
     }], [])
     expect(result.sessions[0]?.agentSessionName).toBe('OpenCode · cdefgh')
   })
+
+  it('only includes requests the companion can still answer', () => {
+    const result = buildCompanionSnapshot(
+      snapshot,
+      [status],
+      [],
+      () => undefined,
+      (_paneId, requestId) => requestId !== 'question-1',
+    )
+
+    expect(result.sessions[0]?.requests).toEqual([])
+  })
 })
 
 describe('parseCompanionMessage', () => {

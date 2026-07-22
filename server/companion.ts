@@ -72,6 +72,7 @@ export function buildCompanionSnapshot(
   statuses: readonly AgentStatus[],
   usage: readonly ProviderUsage[],
   outputTail: (paneId: string) => string | undefined = () => undefined,
+  requestPending: (paneId: string, requestId: string) => boolean = () => true,
 ): CompanionSnapshot {
   const panes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
   const windows = new Map(snapshot.windows.map((window) => [window.id, window]))
@@ -115,13 +116,15 @@ export function buildCompanionSnapshot(
         ...(lastOutput ? { lastOutput } : {}),
         ...(details?.intent ? { intent: details.intent } : {}),
         ...(details?.currentActivity ? { activity: { ...details.currentActivity } } : {}),
-        requests: details?.requests?.map((request) => ({
-          ...request,
-          questions: request.questions?.map((question) => ({
-            ...question,
-            options: question.options.map((option) => ({ ...option })),
-          })),
-        })) ?? [],
+        requests: pane
+          ? details?.requests?.filter((request) => requestPending(pane.id, request.id)).map((request) => ({
+              ...request,
+              questions: request.questions?.map((question) => ({
+                ...question,
+                options: question.options.map((option) => ({ ...option })),
+              })),
+            })) ?? []
+          : [],
         ...(pane ? {
           windowName: windows.get(pane.windowId)?.name,
           paneId: pane.id,
@@ -264,6 +267,7 @@ export class CompanionHub {
           'The agent request is no longer pending',
           message.requestIdempotencyKey,
         )
+        this.sendSnapshot(socket)
         return
       }
       this.rememberIdempotencyKey(message.requestIdempotencyKey)
@@ -309,6 +313,7 @@ export class CompanionHub {
         (paneId) => paneId === focusedPaneId
           ? this.options.outputTail(paneId)
           : undefined,
+        (paneId, requestId) => this.options.interactions.hasPending(paneId, requestId),
       ),
     })
   }
