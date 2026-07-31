@@ -25,6 +25,24 @@
 .pane-git-stats .count::before { content: "\2022 "; color: var(--text-dim); }
 .pane-git-stats .git-clean { color: var(--muted-dim); }
 
+.pane-pull-request {
+  flex: 0 0 auto;
+  padding: 1px 3px;
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.pane-pull-request:hover,
+.pane-pull-request:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
 .git-diff-backdrop {
   position: fixed;
   inset: 0;

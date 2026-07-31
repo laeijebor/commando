@@ -6,10 +6,18 @@ export type GitChangedFile = {
   binary: boolean
 }
 
+export type GitPullRequest = {
+  number: number
+  title: string
+  url: string
+  isDraft: boolean
+}
+
 export type GitDiffSummary = {
   isRepo: boolean
   root?: string
   branch?: string
+  pullRequest?: GitPullRequest
   /** Human-readable label of what the diff is against. */
   target?: string | null
   /** 'auto' = branch point detected by the daemon; 'ref' = user-chosen target. */

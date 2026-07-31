@@ -9,6 +9,18 @@ const servers: Server[] = []
 
 function repoExecutor(): GitProcessExecutor {
   return async (file, args) => {
+    if (file === 'gh') {
+      return {
+        stdout: JSON.stringify({
+          number: 42,
+          title: 'Show pull requests in pane footers',
+          url: 'https://github.com/example/commando/pull/42',
+          state: 'OPEN',
+          isDraft: false,
+        }),
+        stderr: '',
+      }
+    }
     if (file === 'difft') return { stdout: 'DIFT-OUTPUT', stderr: '' }
     const joined = args.join(' ')
     if (joined === 'rev-parse --show-toplevel --abbrev-ref HEAD') {
@@ -77,6 +89,12 @@ describe('GitDiffApi', () => {
       targetMode: 'auto',
       additions: 3,
       deletions: 1,
+      pullRequest: {
+        number: 42,
+        title: 'Show pull requests in pane footers',
+        url: 'https://github.com/example/commando/pull/42',
+        isDraft: false,
+      },
     })
     expect(body.files).toHaveLength(1)
   })

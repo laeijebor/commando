@@ -19,6 +19,7 @@ const BASE = 'basesha'
 type Call = { file: string; args: string[]; options: GitExecutorOptions }
 
 type FakeRepoOptions = {
+  branch?: string
   refs?: string[]
   numstat?: string
   nameStatus?: string
@@ -31,6 +32,8 @@ type FakeRepoOptions = {
   autoUnique?: string[]
   autoBoundary?: string[]
   nameRev?: string
+  pullRequestOutput?: string
+  pullRequestFailure?: GitCommandFailure
 }
 
 function failure(stderr = '', missingBinary = false): GitCommandFailure {
@@ -39,6 +42,7 @@ function failure(stderr = '', missingBinary = false): GitCommandFailure {
 
 function fakeRepo(options: FakeRepoOptions = {}) {
   const {
+    branch = BRANCH,
     refs = ['main'],
     numstat = '',
     nameStatus = '',
@@ -50,15 +54,21 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     autoUnique = ['uniquesha'],
     autoBoundary = [BASE],
     nameRev = 'origin/main',
+    pullRequestOutput = '',
+    pullRequestFailure,
   } = options
   const calls: Call[] = []
   const execute: GitProcessExecutor = async (file, args, executorOptions) => {
     calls.push({ file, args: [...args], options: executorOptions })
     const joined = args.join(' ')
+    if (file === 'gh') {
+      if (pullRequestFailure) throw pullRequestFailure
+      return { stdout: pullRequestOutput, stderr: '' }
+    }
     if (file === 'difft') return { stdout: diffOutput, stderr: '' }
     if (file === 'delta') return { stdout: `DELTA:${executorOptions.input ?? ''}`, stderr: '' }
     if (joined === 'rev-parse --show-toplevel --abbrev-ref HEAD') {
-      return { stdout: `${ROOT}\n${BRANCH}\n`, stderr: '' }
+      return { stdout: `${ROOT}\n${branch}\n`, stderr: '' }
     }
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
       const ref = args[3].replace(/\^\{commit\}$/u, '')
@@ -170,6 +180,77 @@ describe('GitDiffInspector.summary', () => {
       { path: 'old.ts', status: 'D', additions: 0, deletions: 5, binary: false },
       { path: 'src/app.ts', status: 'M', additions: 10, deletions: 2, binary: false },
     ])
+  })
+
+  it('reports the open pull request associated with the current branch', async () => {
+    const repo = fakeRepo({
+      pullRequestOutput: JSON.stringify({
+        number: 42,
+        title: 'Show pull requests in pane footers',
+        url: 'https://github.com/example/commando/pull/42',
+        state: 'OPEN',
+        isDraft: true,
+      }),
+    })
+    const inspector = new GitDiffInspector(repo.execute, { PATH: '/bin' })
+
+    const summary = await inspector.summary('/repo')
+
+    expect(summary.pullRequest).toEqual({
+      number: 42,
+      title: 'Show pull requests in pane footers',
+      url: 'https://github.com/example/commando/pull/42',
+      isDraft: true,
+    })
+    const call = repo.calls.find((entry) => entry.file === 'gh')
+    expect(call?.args).toEqual(['pr', 'view', '--json', 'number,title,url,state,isDraft'])
+    expect(call?.options).toMatchObject({ cwd: ROOT, shell: false })
+    expect(call?.options.env).toMatchObject({ PATH: '/bin', GH_PROMPT_DISABLED: '1' })
+  })
+
+  it('ignores closed pull requests and malformed pull request URLs', async () => {
+    const closed = fakeRepo({
+      pullRequestOutput: JSON.stringify({
+        number: 42,
+        title: 'Already merged',
+        url: 'https://github.com/example/commando/pull/42',
+        state: 'MERGED',
+        isDraft: false,
+      }),
+    })
+    const malformed = fakeRepo({
+      pullRequestOutput: JSON.stringify({
+        number: 43,
+        title: 'Unsafe URL',
+        url: 'javascript:alert(1)',
+        state: 'OPEN',
+        isDraft: false,
+      }),
+    })
+
+    await expect(new GitDiffInspector(closed.execute, {}).summary('/repo'))
+      .resolves.not.toHaveProperty('pullRequest')
+    await expect(new GitDiffInspector(malformed.execute, {}).summary('/repo'))
+      .resolves.not.toHaveProperty('pullRequest')
+  })
+
+  it('keeps the Git summary available when GitHub CLI is unavailable', async () => {
+    const repo = fakeRepo({ pullRequestFailure: failure('', true) })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    const summary = await inspector.summary('/repo')
+
+    expect(summary).toMatchObject({ isRepo: true, branch: BRANCH, targetMode: 'auto' })
+    expect(summary.pullRequest).toBeUndefined()
+  })
+
+  it('skips pull request discovery for a detached HEAD', async () => {
+    const repo = fakeRepo({ branch: 'HEAD' })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await inspector.summary('/repo')
+
+    expect(repo.calls).not.toContainEqual(expect.objectContaining({ file: 'gh' }))
   })
 
   it('uses the merge base for an explicit target', async () => {

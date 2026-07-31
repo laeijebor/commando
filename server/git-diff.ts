@@ -53,10 +53,18 @@ export type GitChangedFile = {
   binary: boolean
 }
 
+export type GitPullRequest = {
+  number: number
+  title: string
+  url: string
+  isDraft: boolean
+}
+
 export type GitDiffSummary = {
   isRepo: boolean
   root?: string
   branch?: string
+  pullRequest?: GitPullRequest
   /** Human-readable label of what the diff is against. */
   target?: string | null
   /** 'auto' = branch point detected by the daemon; 'ref' = user-chosen target. */
@@ -152,6 +160,42 @@ function validateRepoRelativePath(root: string, file: unknown): string {
 
 function splitZeroTerminated(output: string): string[] {
   return output.split(NUL).filter((entry) => entry.length > 0)
+}
+
+function parsePullRequest(output: string): GitPullRequest | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(output)
+  } catch {
+    return undefined
+  }
+  if (typeof value !== 'object' || value === null) return undefined
+
+  const candidate = value as Record<string, unknown>
+  if (
+    !Number.isInteger(candidate.number) ||
+    (candidate.number as number) <= 0 ||
+    typeof candidate.title !== 'string' ||
+    candidate.title.trim() === '' ||
+    typeof candidate.url !== 'string' ||
+    typeof candidate.state !== 'string' ||
+    candidate.state.toUpperCase() !== 'OPEN' ||
+    typeof candidate.isDraft !== 'boolean'
+  ) return undefined
+
+  try {
+    const url = new URL(candidate.url)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined
+  } catch {
+    return undefined
+  }
+
+  return {
+    number: candidate.number as number,
+    title: candidate.title.trim(),
+    url: candidate.url,
+    isDraft: candidate.isDraft,
+  }
 }
 
 export type GitBranches = {
@@ -336,10 +380,11 @@ export class GitDiffInspector {
     const resolved = await this.resolveBase(repo.root, repo.branch, target)
     const base = resolved.base
 
-    const [numstat, nameStatus, untracked] = await Promise.all([
+    const [numstat, nameStatus, untracked, pullRequest] = await Promise.all([
       this.git(repo.root, ['diff', '--numstat', '--no-renames', '-z', base]),
       this.git(repo.root, ['diff', '--name-status', '--no-renames', '-z', base]),
       this.git(repo.root, ['ls-files', '--others', '--exclude-standard', '-z']),
+      target === undefined ? this.currentPullRequest(repo.root, repo.branch) : undefined,
     ])
 
     const statuses = new Map<string, string>()
@@ -377,6 +422,7 @@ export class GitDiffInspector {
       isRepo: true,
       root: repo.root,
       branch: repo.branch,
+      ...(pullRequest ? { pullRequest } : {}),
       target: resolved.label,
       targetMode: resolved.mode,
       baseCommit: resolved.commit,
@@ -492,6 +538,23 @@ export class GitDiffInspector {
 
   private git(cwd: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> {
     return this.execute('git', args, this.options(cwd, COMMAND_TIMEOUT_MS, COMMAND_BUFFER_BYTES))
+  }
+
+  private async currentPullRequest(root: string, branch: string): Promise<GitPullRequest | undefined> {
+    if (!branch || branch === 'HEAD') return undefined
+    try {
+      const { stdout } = await this.execute(
+        'gh',
+        ['pr', 'view', '--json', 'number,title,url,state,isDraft'],
+        this.options(root, COMMAND_TIMEOUT_MS, COMMAND_BUFFER_BYTES, {
+          ...this.environment,
+          GH_PROMPT_DISABLED: '1',
+        }),
+      )
+      return parsePullRequest(stdout)
+    } catch {
+      return undefined
+    }
   }
 
   private options(
