@@ -61,7 +61,7 @@ describe('open port discovery', () => {
       if (command === 'lsof') return lsofOutput
       return '200 100\n'
     })
-    const scanner = new OpenPortScanner(runner)
+    const scanner = new OpenPortScanner([], runner)
     const panes = [{ paneId: '%1', sessionId: '$1', processId: 100 }]
 
     await expect(scanner.scan(panes, 10_000)).resolves.toEqual([
@@ -79,7 +79,7 @@ describe('open port discovery', () => {
   it('freshly revalidates a listener before terminating its process', async () => {
     const runner = vi.fn(async (command: string) => command === 'lsof' ? lsofOutput : '200 100\n')
     const signaler = vi.fn()
-    const scanner = new OpenPortScanner(runner, signaler, vi.fn())
+    const scanner = new OpenPortScanner([], runner, signaler, vi.fn())
     const panes = [{ paneId: '%1', sessionId: '$1', processId: 100 }]
 
     await expect(scanner.terminatePort(panes, {
@@ -111,7 +111,7 @@ describe('open port discovery', () => {
       ? listeners
       : '200 100\n201 100\n')
     const signaler = vi.fn()
-    const scanner = new OpenPortScanner(runner, signaler, vi.fn())
+    const scanner = new OpenPortScanner([], runner, signaler, vi.fn())
     const expectedTargets = [
       { sessionId: '$1', paneId: '%1', port: 3000 },
       { sessionId: '$1', paneId: '%1', port: 3001 },
@@ -130,5 +130,38 @@ describe('open port discovery', () => {
       [200, 'SIGTERM'],
       [201, 'SIGTERM'],
     ])
+  })
+
+  it('does not expose or signal a process that owns a protected port', async () => {
+    const listeners = [
+      'p200', 'cnode', 'n*:3000', 'n*:5173',
+      'p201', 'cworkerd', 'n*:8787', '',
+    ].join('\n')
+    const runner = vi.fn(async (command: string) => command === 'lsof'
+      ? listeners
+      : '200 100\n201 100\n')
+    const signaler = vi.fn()
+    const scanner = new OpenPortScanner([5173], runner, signaler, vi.fn())
+    const panes = [{ paneId: '%1', sessionId: '$1', processId: 100 }]
+
+    await expect(scanner.scan(panes)).resolves.toEqual([
+      { port: 8787, processName: 'workerd', sessionId: '$1', paneId: '%1' },
+    ])
+    await expect(scanner.terminatePort(panes, {
+      sessionId: '$1',
+      paneId: '%1',
+      port: 3000,
+    })).rejects.toBeInstanceOf(OpenPortNotFoundError)
+    await expect(scanner.terminatePort(panes, {
+      sessionId: '$1',
+      paneId: '%1',
+      port: 5173,
+    })).rejects.toBeInstanceOf(OpenPortNotFoundError)
+    expect(signaler).not.toHaveBeenCalled()
+
+    await expect(scanner.terminateSessionPorts(panes, '$1', [
+      { sessionId: '$1', paneId: '%1', port: 8787 },
+    ])).resolves.toEqual({ processCount: 1, portCount: 1 })
+    expect(signaler).toHaveBeenCalledExactlyOnceWith(201, 'SIGTERM')
   })
 })

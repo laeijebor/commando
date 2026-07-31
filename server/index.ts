@@ -61,6 +61,7 @@ import {
 } from './agent-status-registry.js'
 
 const DEFAULT_PORT = 4310
+const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
 const MAX_WS_BUFFERED_BYTES = 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
@@ -415,7 +416,10 @@ async function main(): Promise<void> {
         trustedOrigins: [...new Set([...networkAccess.trustedOrigins, authBaseURL])],
       })
     : null
-  const tmux = new TmuxClient()
+  const protectedPorts = process.env.NODE_ENV === 'production'
+    ? [port]
+    : [port, DEVELOPMENT_WEB_PORT]
+  const tmux = new TmuxClient(protectedPorts)
   const workspaces = new WorkspaceStore()
   const notes = new NoteVaultManager()
   const linear = new LinearService()
@@ -1576,7 +1580,7 @@ async function main(): Promise<void> {
   }, SNAPSHOT_INTERVAL_MS)
 
   const encodedToken = encodeURIComponent(token)
-  console.log(`[commando] development: http://127.0.0.1:5173/${auth ? '' : `#token=${encodedToken}`}`)
+  console.log(`[commando] development: http://127.0.0.1:${DEVELOPMENT_WEB_PORT}/${auth ? '' : `#token=${encodedToken}`}`)
   for (const { listener } of httpServers) {
     const host = listener.includes(':') ? `[${listener}]` : listener
     console.log(`[commando] browser:     http://${host}:${port}/${auth ? '' : `#token=${encodedToken}`}`)

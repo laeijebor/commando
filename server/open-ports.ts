@@ -177,14 +177,28 @@ export class OpenPortScanner {
   private ports: OpenPort[] = []
   private scannedAt = 0
   private paneSignature = ''
+  private readonly protectedPorts: ReadonlySet<number>
 
   constructor(
+    protectedPorts: Iterable<number> = [],
     private readonly runner: OpenPortCommandRunner = runCommand,
     private readonly signaler: ProcessSignaler = (processId, signal) => process.kill(processId, signal),
     private readonly audit: ProcessTerminationAudit = (entry) => {
       console.info(`[commando] terminating port process ${entry.processId} for ${entry.sessionId} (${entry.ports.join(', ')})`)
     },
-  ) {}
+  ) {
+    this.protectedPorts = new Set(protectedPorts)
+  }
+
+  private async discoverManageableOpenPorts(panes: TmuxPaneProcess[]): Promise<ManagedOpenPort[]> {
+    const ports = await discoverManagedOpenPorts(panes, this.runner)
+    const protectedProcessIds = new Set(
+      ports
+        .filter((port) => this.protectedPorts.has(port.port))
+        .map((port) => port.processId),
+    )
+    return ports.filter((port) => !protectedProcessIds.has(port.processId))
+  }
 
   async scan(panes: TmuxPaneProcess[], capturedAt = Date.now()): Promise<OpenPort[]> {
     const paneIds = new Set(panes.map((pane) => pane.paneId))
@@ -202,7 +216,7 @@ export class OpenPortScanner {
 
     if (paneSignature !== this.paneSignature) this.ports = []
     try {
-      this.ports = await discoverOpenPorts(panes, this.runner)
+      this.ports = (await this.discoverManageableOpenPorts(panes)).map(publicPort)
       this.scannedAt = capturedAt
       this.paneSignature = paneSignature
     } catch {
@@ -212,7 +226,7 @@ export class OpenPortScanner {
   }
 
   async terminatePort(panes: TmuxPaneProcess[], target: OpenPortTarget): Promise<OpenPort> {
-    const ports = await discoverManagedOpenPorts(panes, this.runner)
+    const ports = await this.discoverManageableOpenPorts(panes)
     const match = ports.find((port) =>
       port.sessionId === target.sessionId &&
       port.paneId === target.paneId &&
@@ -234,7 +248,7 @@ export class OpenPortScanner {
     sessionId: string,
     expectedTargets: OpenPortTarget[],
   ): Promise<TerminatedSessionPorts> {
-    const ports = (await discoverManagedOpenPorts(panes, this.runner))
+    const ports = (await this.discoverManageableOpenPorts(panes))
       .filter((port) => port.sessionId === sessionId)
     if (ports.length === 0) {
       throw new OpenPortNotFoundError('No open port processes remain for this session')

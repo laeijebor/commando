@@ -128,10 +128,14 @@ function configuredSocketArgs(): string[] {
 export class TmuxClient {
   private readonly socketArgs = configuredSocketArgs()
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
-  private readonly openPorts = new OpenPortScanner()
+  private readonly openPorts: OpenPortScanner
   private readonly resizeLeases = new TmuxResizeLeaseManager((args) =>
     this.run(args, { timeout: 3_000, maxBuffer: 64 * 1024 }),
   )
+
+  constructor(protectedPorts: Iterable<number> = []) {
+    this.openPorts = new OpenPortScanner(protectedPorts)
+  }
 
   private run(
     args: readonly string[],
