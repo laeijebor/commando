@@ -1037,6 +1037,15 @@ async function main(): Promise<void> {
   })
   const gitDiffApi = new GitDiffApi({
     panePath: (paneId) => paneForId(paneId)?.path,
+    panePullRequestEvidence: async (paneId) => {
+      const status = agentStatuses.get(paneId)
+      if (!status || status.provider === 'unknown') return undefined
+      const evidence = [
+        paneTextTails.get(paneId)?.content,
+        status.details?.recap?.summary,
+      ].filter((value): value is string => Boolean(value))
+      return evidence.length > 0 ? evidence.join('\n') : undefined
+    },
   })
   const paneManagement = new PaneManagementApi({
     currentPaneIds: () => snapshot.panes.map((pane) => pane.id),

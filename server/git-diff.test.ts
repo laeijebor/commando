@@ -33,6 +33,7 @@ type FakeRepoOptions = {
   autoBoundary?: string[]
   nameRev?: string
   pullRequestOutput?: string
+  pullRequestsByNumber?: Record<string, string>
   pullRequestFailure?: GitCommandFailure
 }
 
@@ -55,6 +56,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     autoBoundary = [BASE],
     nameRev = 'origin/main',
     pullRequestOutput = '',
+    pullRequestsByNumber = {},
     pullRequestFailure,
   } = options
   const calls: Call[] = []
@@ -63,6 +65,12 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     const joined = args.join(' ')
     if (file === 'gh') {
       if (pullRequestFailure) throw pullRequestFailure
+      const requestedNumber = args[2] !== '--json' ? args[2] : undefined
+      if (requestedNumber) {
+        const output = pullRequestsByNumber[requestedNumber]
+        if (output === undefined) throw failure('pull request not found')
+        return { stdout: output, stderr: '' }
+      }
       return { stdout: pullRequestOutput, stderr: '' }
     }
     if (file === 'difft') return { stdout: diffOutput, stderr: '' }
@@ -250,6 +258,102 @@ describe('GitDiffInspector.summary', () => {
 
     await inspector.summary('/repo')
 
+    expect(repo.calls).not.toContainEqual(expect.objectContaining({ file: 'gh' }))
+  })
+
+  it('resolves the latest explicitly linked open pull request from pane evidence', async () => {
+    const repo = fakeRepo({
+      pullRequestsByNumber: {
+        '109': JSON.stringify({
+          number: 109,
+          title: 'Add video indicators to exercise picker',
+          url: 'https://github.com/laeijebor/vivifit/pull/109',
+          state: 'OPEN',
+          isDraft: false,
+        }),
+      },
+    })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    const evidence = '\u001b]8;id=pr;https://github.com/laeijebor/vivifit/pull/109\u001b\\PR #109\u001b]8;;\u001b\\'
+
+    await expect(inspector.pullRequestFromEvidence(ROOT, evidence)).resolves.toEqual({
+      number: 109,
+      title: 'Add video indicators to exercise picker',
+      url: 'https://github.com/laeijebor/vivifit/pull/109',
+      isDraft: false,
+    })
+    const call = repo.calls.find((entry) => entry.file === 'gh')
+    expect(call?.args).toEqual(['pr', 'view', '109', '--json', 'number,title,url,state,isDraft'])
+  })
+
+  it('rejects merged and foreign-repository pull request evidence', async () => {
+    const merged = fakeRepo({
+      pullRequestsByNumber: {
+        '109': JSON.stringify({
+          number: 109,
+          title: 'Already merged',
+          url: 'https://github.com/laeijebor/vivifit/pull/109',
+          state: 'MERGED',
+          isDraft: false,
+        }),
+      },
+    })
+    const foreign = fakeRepo({
+      pullRequestsByNumber: {
+        '109': JSON.stringify({
+          number: 109,
+          title: 'Different repository',
+          url: 'https://github.com/laeijebor/vivifit/pull/109',
+          state: 'OPEN',
+          isDraft: false,
+        }),
+      },
+    })
+
+    await expect(new GitDiffInspector(merged.execute, {}).pullRequestFromEvidence(
+      ROOT,
+      'https://github.com/laeijebor/vivifit/pull/109',
+    )).resolves.toBeUndefined()
+    await expect(new GitDiffInspector(foreign.execute, {}).pullRequestFromEvidence(
+      ROOT,
+      'https://github.com/example/another-repo/pull/109',
+    )).resolves.toBeUndefined()
+  })
+
+  it('does not fall back to an older open PR when the latest referenced PR is closed', async () => {
+    const repo = fakeRepo({
+      pullRequestsByNumber: {
+        '108': JSON.stringify({
+          number: 108,
+          title: 'Older open PR',
+          url: 'https://github.com/laeijebor/vivifit/pull/108',
+          state: 'OPEN',
+          isDraft: false,
+        }),
+        '109': JSON.stringify({
+          number: 109,
+          title: 'Latest merged PR',
+          url: 'https://github.com/laeijebor/vivifit/pull/109',
+          state: 'MERGED',
+          isDraft: false,
+        }),
+      },
+    })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await expect(inspector.pullRequestFromEvidence(
+      ROOT,
+      'Earlier https://github.com/laeijebor/vivifit/pull/108 then https://github.com/laeijebor/vivifit/pull/109',
+    )).resolves.toBeUndefined()
+    expect(repo.calls.filter((entry) => entry.file === 'gh')).toHaveLength(1)
+    expect(repo.calls.find((entry) => entry.file === 'gh')?.args[2]).toBe('109')
+  })
+
+  it('ignores evidence without an explicit pull request URL', async () => {
+    const repo = fakeRepo()
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await expect(inspector.pullRequestFromEvidence(ROOT, 'PR #109 is open')).resolves.toBeUndefined()
     expect(repo.calls).not.toContainEqual(expect.objectContaining({ file: 'gh' }))
   })
 

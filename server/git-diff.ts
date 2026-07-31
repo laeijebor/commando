@@ -6,11 +6,13 @@ const DIFF_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
 const DIFF_BUFFER_BYTES = 32 * 1024 * 1024
 const SUMMARY_CACHE_TTL_MS = 5_000
+const MAX_PULL_REQUEST_EVIDENCE_CHARS = 128 * 1024
 const MAX_AUTO_BASE_REFS = 4_000
 const MIN_DIFF_WIDTH = 60
 const MAX_DIFF_WIDTH = 500
 const NUL = '\u0000'
 const REF_FORBIDDEN = /[\s~^:?*[\\]/u
+const PULL_REQUEST_URL = /https?:\/\/[a-z0-9.-]+\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/pull\/([1-9]\d*)/giu
 
 export type GitExecutorOptions = {
   cwd: string
@@ -198,6 +200,25 @@ function parsePullRequest(output: string): GitPullRequest | undefined {
   }
 }
 
+function canonicalPullRequestUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/u, '').toLowerCase()}`
+  } catch {
+    return undefined
+  }
+}
+
+function latestPullRequestReference(evidence: string): { number: number; url: string } | undefined {
+  let latest: { number: number; url: string } | undefined
+  for (const match of evidence.slice(-MAX_PULL_REQUEST_EVIDENCE_CHARS).matchAll(PULL_REQUEST_URL)) {
+    const number = Number(match[1])
+    if (Number.isSafeInteger(number)) latest = { number, url: match[0] }
+  }
+  return latest
+}
+
 export type GitBranches = {
   isRepo: boolean
   current?: string
@@ -223,6 +244,27 @@ export class GitDiffInspector {
     this.summaryCache.set(key, { at: this.now(), result })
     result.catch(() => this.summaryCache.delete(key))
     return result
+  }
+
+  async pullRequestFromEvidence(root: string, evidence: string): Promise<GitPullRequest | undefined> {
+    const reference = latestPullRequestReference(evidence)
+    if (!reference) return undefined
+    try {
+      const { stdout } = await this.execute(
+        'gh',
+        ['pr', 'view', String(reference.number), '--json', 'number,title,url,state,isDraft'],
+        this.options(root, COMMAND_TIMEOUT_MS, COMMAND_BUFFER_BYTES, {
+          ...this.environment,
+          GH_PROMPT_DISABLED: '1',
+        }),
+      )
+      const pullRequest = parsePullRequest(stdout)
+      return pullRequest && canonicalPullRequestUrl(pullRequest.url) === canonicalPullRequestUrl(reference.url)
+        ? pullRequest
+        : undefined
+    } catch {
+      return undefined
+    }
   }
 
   async branches(cwd: string): Promise<GitBranches> {

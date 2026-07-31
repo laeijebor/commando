@@ -21,6 +21,7 @@ const ERROR_STATUS: Record<GitDiffError['kind'], number> = {
 type GitApiDependencies = {
   inspector?: GitDiffInspector
   panePath: (paneId: string) => string | undefined
+  panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
 }
 
 class HttpError extends Error {
@@ -57,11 +58,24 @@ export class GitDiffApi {
       }
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
 
-      const panePath = this.resolvePanePath(url)
+      const { paneId, path: panePath } = this.resolvePane(url)
       const target = url.searchParams.get('target')?.trim() || undefined
 
       if (url.pathname === `${API_ROOT}/summary`) {
-        writeJson(response, 200, await this.inspector.summary(panePath, target))
+        let summary = await this.inspector.summary(panePath, target)
+        if (
+          target === undefined &&
+          !summary.pullRequest &&
+          summary.root &&
+          this.dependencies.panePullRequestEvidence
+        ) {
+          const evidence = await this.dependencies.panePullRequestEvidence(paneId).catch(() => undefined)
+          const pullRequest = evidence
+            ? await this.inspector.pullRequestFromEvidence(summary.root, evidence)
+            : undefined
+          if (pullRequest) summary = { ...summary, pullRequest }
+        }
+        writeJson(response, 200, summary)
         return true
       }
 
@@ -95,7 +109,7 @@ export class GitDiffApi {
     }
   }
 
-  private resolvePanePath(url: URL): string {
+  private resolvePane(url: URL): { paneId: string; path: string } {
     let paneId: string
     try {
       paneId = validateTmuxPaneId(url.searchParams.get('paneId'))
@@ -104,6 +118,6 @@ export class GitDiffApi {
     }
     const path = this.dependencies.panePath(paneId)
     if (!path) throw new HttpError(404, 'Tmux pane does not exist')
-    return path
+    return { paneId, path }
   }
 }

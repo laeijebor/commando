@@ -1,30 +1,43 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffApi } from './git-api.js'
 import { GitCommandFailure, GitDiffInspector, type GitProcessExecutor } from './git-diff.js'
 
 const NUL = String.fromCharCode(0)
 const servers: Server[] = []
 
-function repoExecutor(): GitProcessExecutor {
+type RepoExecutorOptions = {
+  branch?: string
+  currentPullRequest?: Record<string, unknown> | null
+  pullRequestsByNumber?: Record<string, Record<string, unknown>>
+}
+
+const DEFAULT_PULL_REQUEST = {
+  number: 42,
+  title: 'Show pull requests in pane footers',
+  url: 'https://github.com/example/commando/pull/42',
+  state: 'OPEN',
+  isDraft: false,
+}
+
+function repoExecutor(options: RepoExecutorOptions = {}): GitProcessExecutor {
+  const currentPullRequest = options.currentPullRequest === undefined
+    ? DEFAULT_PULL_REQUEST
+    : options.currentPullRequest
   return async (file, args) => {
     if (file === 'gh') {
-      return {
-        stdout: JSON.stringify({
-          number: 42,
-          title: 'Show pull requests in pane footers',
-          url: 'https://github.com/example/commando/pull/42',
-          state: 'OPEN',
-          isDraft: false,
-        }),
-        stderr: '',
-      }
+      const requestedNumber = args[2] !== '--json' ? args[2] : undefined
+      const pullRequest = requestedNumber
+        ? options.pullRequestsByNumber?.[requestedNumber]
+        : currentPullRequest
+      if (!pullRequest) throw new GitCommandFailure('gh failed', 'pull request not found', false)
+      return { stdout: JSON.stringify(pullRequest), stderr: '' }
     }
     if (file === 'difft') return { stdout: 'DIFT-OUTPUT', stderr: '' }
     const joined = args.join(' ')
     if (joined === 'rev-parse --show-toplevel --abbrev-ref HEAD') {
-      return { stdout: '/repo\nfeature\n', stderr: '' }
+      return { stdout: `/repo\n${options.branch ?? 'feature'}\n`, stderr: '' }
     }
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
       if (args[3] === 'main^{commit}') return { stdout: 'sha\n', stderr: '' }
@@ -50,10 +63,17 @@ function repoExecutor(): GitProcessExecutor {
   }
 }
 
-async function startApi(executor: GitProcessExecutor = repoExecutor()): Promise<string> {
+type ApiOptions = {
+  executor?: GitProcessExecutor
+  panePath?: (paneId: string) => string | undefined
+  panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
+}
+
+async function startApi(options: ApiOptions = {}): Promise<string> {
   const api = new GitDiffApi({
-    inspector: new GitDiffInspector(executor, {}),
-    panePath: (paneId) => (paneId === '%1' ? '/repo' : undefined),
+    inspector: new GitDiffInspector(options.executor ?? repoExecutor(), {}),
+    panePath: options.panePath ?? ((paneId) => (paneId === '%1' ? '/repo' : undefined)),
+    panePullRequestEvidence: options.panePullRequestEvidence,
   })
   const server = createServer((request, response) => {
     void (async () => {
@@ -97,6 +117,101 @@ describe('GitDiffApi', () => {
       },
     })
     expect(body.files).toHaveLength(1)
+  })
+
+  it('falls back to the pane agent session when the current branch has no PR', async () => {
+    const evidence = vi.fn(async () => (
+      '\u001b]8;;https://github.com/laeijebor/vivifit/pull/109\u001b\\PR #109\u001b]8;;\u001b\\'
+    ))
+    const base = await startApi({
+      executor: repoExecutor({
+        branch: 'main',
+        currentPullRequest: null,
+        pullRequestsByNumber: {
+          '109': {
+            number: 109,
+            title: 'Add video indicators to exercise picker',
+            url: 'https://github.com/laeijebor/vivifit/pull/109',
+            state: 'OPEN',
+            isDraft: false,
+          },
+        },
+      }),
+      panePullRequestEvidence: evidence,
+    })
+
+    const response = await fetch(`${base}/api/git/summary?paneId=%251`)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      branch: 'main',
+      pullRequest: {
+        number: 109,
+        title: 'Add video indicators to exercise picker',
+        url: 'https://github.com/laeijebor/vivifit/pull/109',
+      },
+    })
+    expect(evidence).toHaveBeenCalledWith('%1')
+  })
+
+  it('keeps pane PR fallbacks isolated when panes share a cwd', async () => {
+    const evidence = vi.fn(async (paneId: string) => (
+      paneId === '%1'
+        ? 'https://github.com/example/commando/pull/109'
+        : 'https://github.com/example/commando/pull/110'
+    ))
+    const base = await startApi({
+      executor: repoExecutor({
+        branch: 'main',
+        currentPullRequest: null,
+        pullRequestsByNumber: {
+          '109': { ...DEFAULT_PULL_REQUEST, number: 109, url: 'https://github.com/example/commando/pull/109' },
+          '110': { ...DEFAULT_PULL_REQUEST, number: 110, url: 'https://github.com/example/commando/pull/110' },
+        },
+      }),
+      panePath: (paneId) => (paneId === '%1' || paneId === '%2' ? '/repo' : undefined),
+      panePullRequestEvidence: evidence,
+    })
+
+    const first = await fetch(`${base}/api/git/summary?paneId=%251`)
+    const second = await fetch(`${base}/api/git/summary?paneId=%252`)
+
+    await expect(first.json()).resolves.toMatchObject({ pullRequest: { number: 109 } })
+    await expect(second.json()).resolves.toMatchObject({ pullRequest: { number: 110 } })
+  })
+
+  it('keeps summaries available when pane evidence fails', async () => {
+    const base = await startApi({
+      executor: repoExecutor({ currentPullRequest: null }),
+      panePullRequestEvidence: vi.fn().mockRejectedValue(new Error('capture failed')),
+    })
+
+    const response = await fetch(`${base}/api/git/summary?paneId=%251`)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ isRepo: true, branch: 'feature' })
+  })
+
+  it('does not inspect pane evidence when the branch already has a PR', async () => {
+    const evidence = vi.fn(async () => 'https://github.com/example/commando/pull/109')
+    const base = await startApi({ panePullRequestEvidence: evidence })
+
+    await fetch(`${base}/api/git/summary?paneId=%251`)
+
+    expect(evidence).not.toHaveBeenCalled()
+  })
+
+  it('does not inspect pane evidence for an explicit diff target', async () => {
+    const evidence = vi.fn(async () => 'https://github.com/example/commando/pull/109')
+    const base = await startApi({
+      executor: repoExecutor({ currentPullRequest: null }),
+      panePullRequestEvidence: evidence,
+    })
+
+    const response = await fetch(`${base}/api/git/summary?paneId=%251&target=main`)
+
+    expect(response.status).toBe(200)
+    expect(evidence).not.toHaveBeenCalled()
   })
 
   it('rejects invalid pane ids', async () => {
