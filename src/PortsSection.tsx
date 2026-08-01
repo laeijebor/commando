@@ -124,9 +124,12 @@ export function PortsSection({ token, sessions, ports, selectedSessionId, onSele
                   href={openPortUrl(port.port)}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label={`Focus pane for ${port.processName} on port ${port.port} and open service`}
-                  title={`${port.processName} listening on port ${port.port}. Opens the service and focuses its pane. Option-right-click for process actions.`}
-                  onClick={() => onSelectPane(port.paneId)}
+                  aria-label={`Focus pane for ${port.processName} on port ${port.port}`}
+                  title={`${port.processName} listening on port ${port.port}. Click to focus its pane; Command-click to open the service. Option-right-click for process actions.`}
+                  onClick={(event) => {
+                    onSelectPane(port.paneId)
+                    if (!event.metaKey && !event.ctrlKey && !event.shiftKey) event.preventDefault()
+                  }}
                   onContextMenu={(event) => {
                     if (!event.altKey) return
                     event.preventDefault()

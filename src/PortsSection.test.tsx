@@ -52,8 +52,8 @@ describe('PortsSection', () => {
     expect(screen.getByText('3')).toBeVisible()
     expect(within(screen.getByLabelText('Open ports for frontend')).getAllByRole('link').map((link) => link.textContent)).toEqual(['3000', '5173'])
     expect(within(screen.getByLabelText('Open ports for api')).getAllByRole('link').map((link) => link.textContent)).toEqual(['8787'])
-    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).toHaveAttribute('href', 'http://localhost:3000/')
-    expect(screen.getByRole('link', { name: 'Focus pane for workerd on port 8787 and open service' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000' })).toHaveAttribute('href', 'http://localhost:3000/')
+    expect(screen.getByRole('link', { name: 'Focus pane for workerd on port 8787' })).toHaveAttribute('target', '_blank')
   })
 
   it('focuses the owning session and pane while preserving port links', () => {
@@ -70,11 +70,12 @@ describe('PortsSection', () => {
     const session = screen.getByRole('button', { name: 'Select session frontend' })
     expect(session).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(session)
-    const port = screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })
-    fireEvent.click(port)
+    const port = screen.getByRole('link', { name: 'Focus pane for node on port 3000' })
+    const followedLink = fireEvent.click(port)
 
     expect(navigationProps.onSelectSession).toHaveBeenCalledWith('$1')
     expect(navigationProps.onSelectPane).toHaveBeenCalledWith('%2')
+    expect(followedLink).toBe(false)
     expect(port).toHaveAttribute('href', 'http://localhost:3000/')
     expect(port).toHaveAttribute('target', '_blank')
   })
@@ -96,12 +97,12 @@ describe('PortsSection', () => {
     const reopen = screen.getByRole('button', { name: 'Reopen ports section' })
     expect(reopen).toHaveAttribute('aria-expanded', 'false')
     expect(document.getElementById('sidebar-port-groups')).toHaveAttribute('hidden')
-    expect(screen.queryByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Focus pane for node on port 3000' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Ports' })).toBeVisible()
     expect(screen.getByText('1')).toBeVisible()
 
     fireEvent.click(reopen)
-    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000' })).toBeVisible()
   })
 
   it('opens process actions only for Option-right-click and kills the current listener', async () => {
@@ -114,7 +115,7 @@ describe('PortsSection', () => {
         ports={[port]}
       />,
     )
-    const link = screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })
+    const link = screen.getByRole('link', { name: 'Focus pane for node on port 3000' })
 
     fireEvent.contextMenu(link, { clientX: 40, clientY: 50 })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
