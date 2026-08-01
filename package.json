@@ -12,6 +12,13 @@
     "island:test": "swift test --package-path apps/island",
     "island:build": "bash scripts/build-island-app.sh",
     "island:install": "bash scripts/install-island-app.sh",
+    "spike:native-ui": "vite --config spikes/native-terminal/ui/vite.config.ts",
+    "spike:native-ui:build": "tsc -p spikes/native-terminal/ui/tsconfig.json && vite build --config spikes/native-terminal/ui/vite.config.ts",
+    "spike:native-swift": "concurrently -k -n web,swift -c cyan,magenta \"npm run spike:native-ui\" \"npm run spike:native-swift:shell\"",
+    "spike:native-swift:shell": "swift run --package-path spikes/native-terminal/swift NativeTerminalSwiftSpike",
+    "spike:native-swift:test": "swift test --package-path spikes/native-terminal/swift",
+    "spike:native-tauri": "PATH=\"$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH\" tauri dev --config spikes/native-terminal/tauri/tauri.conf.json",
+    "spike:native-tauri:check": "PATH=\"$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH\" cargo check --manifest-path spikes/native-terminal/tauri/Cargo.toml",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:e2e:terminal": "playwright test e2e/terminal-fidelity.pw.ts --workers=1"
@@ -33,6 +40,8 @@
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
     "@types/node": "^24.0.0",

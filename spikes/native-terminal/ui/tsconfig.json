@@ -1,0 +1,7 @@
+{
+  "extends": "../../../tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.native-terminal-spike.tsbuildinfo"
+  },
+  "include": ["*.ts", "*.tsx"]
+}
