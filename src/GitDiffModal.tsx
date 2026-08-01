@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Columns2,
   FileDiff,
   FolderClosed,
@@ -9,9 +10,11 @@ import {
   ListTree,
   LoaderCircle,
   Rows3,
+  Search,
   X,
 } from 'lucide-react'
 import {
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -26,6 +29,7 @@ import type {
   DiffEngine,
   GitChangedFile,
   GitDiffApiClient,
+  GitDiffSearchResult,
   GitDiffSummary,
 } from './gitApi'
 
@@ -49,6 +53,8 @@ const MAX_FILE_PANEL_WIDTH = 640
 const MIN_DIFF_OUTPUT_WIDTH = 320
 
 type FileView = 'tree' | 'list'
+type SearchScope = 'file' | 'all'
+type TextMatch = { start: number; end: number }
 
 type FileTreeFolder = {
   name: string
@@ -113,6 +119,21 @@ function fileName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1)
 }
 
+function findTextMatches(text: string, query: string): TextMatch[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return []
+  const haystack = text.toLowerCase()
+  const matches: TextMatch[] = []
+  let cursor = 0
+  while (cursor <= haystack.length - needle.length) {
+    const start = haystack.indexOf(needle, cursor)
+    if (start < 0) break
+    matches.push({ start, end: start + needle.length })
+    cursor = start + needle.length
+  }
+  return matches
+}
+
 function segmentClassName(segment: AnsiSegment): string | undefined {
   const classes: string[] = []
   if (typeof segment.foreground === 'number') classes.push(`ansi-fg-${segment.foreground}`)
@@ -124,22 +145,64 @@ function segmentClassName(segment: AnsiSegment): string | undefined {
   return classes.length ? classes.join(' ') : undefined
 }
 
-export function AnsiText({ text }: { text: string }) {
+export function AnsiText({ text, query = '', activeMatch = 0 }: {
+  text: string
+  query?: string
+  activeMatch?: number
+}) {
   const segments = useMemo(() => parseAnsi(text), [text])
+  const matches = useMemo(
+    () => findTextMatches(segments.map((segment) => segment.text).join(''), query),
+    [segments, query],
+  )
+  let offset = 0
+  let firstMatch = 0
   return (
     <>
-      {segments.map((segment, index) => (
-        <span
-          key={index}
-          className={segmentClassName(segment)}
-          style={{
-            ...(typeof segment.foreground === 'string' ? { color: segment.foreground } : {}),
-            ...(typeof segment.background === 'string' ? { backgroundColor: segment.background } : {}),
-          }}
-        >
-          {segment.text}
-        </span>
-      ))}
+      {segments.map((segment, index) => {
+        const start = offset
+        const end = start + segment.text.length
+        offset = end
+        while (matches[firstMatch]?.end <= start) firstMatch += 1
+        const overlapping: Array<{ match: TextMatch; matchIndex: number }> = []
+        for (let matchIndex = firstMatch; matchIndex < matches.length; matchIndex += 1) {
+          const match = matches[matchIndex]
+          if (match.start >= end) break
+          overlapping.push({ match, matchIndex })
+        }
+        let cursor = start
+        const content: ReactNode[] = []
+        for (const { match, matchIndex } of overlapping) {
+          const overlapStart = Math.max(start, match.start)
+          const overlapEnd = Math.min(end, match.end)
+          if (overlapStart > cursor) {
+            content.push(segment.text.slice(cursor - start, overlapStart - start))
+          }
+          content.push(
+            <mark
+              className={`git-diff-search-match${matchIndex === activeMatch ? ' active' : ''}`}
+              data-diff-search-match={match.start >= start && match.start < end ? matchIndex : undefined}
+              key={`${index}-${matchIndex}`}
+            >
+              {segment.text.slice(overlapStart - start, overlapEnd - start)}
+            </mark>,
+          )
+          cursor = overlapEnd
+        }
+        if (cursor < end) content.push(segment.text.slice(cursor - start))
+        return (
+          <span
+            key={index}
+            className={segmentClassName(segment)}
+            style={{
+              ...(typeof segment.foreground === 'string' ? { color: segment.foreground } : {}),
+              ...(typeof segment.background === 'string' ? { backgroundColor: segment.background } : {}),
+            }}
+          >
+            {content.length ? content : segment.text}
+          </span>
+        )
+      })}
     </>
   )
 }
@@ -168,6 +231,13 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   const [diff, setDiff] = useState('')
   const [diffError, setDiffError] = useState('')
   const [diffLoading, setDiffLoading] = useState(false)
+  const [fileFilter, setFileFilter] = useState('')
+  const [diffSearch, setDiffSearch] = useState('')
+  const [searchScope, setSearchScope] = useState<SearchScope>('file')
+  const [activeDiffMatch, setActiveDiffMatch] = useState(0)
+  const [allSearchResult, setAllSearchResult] = useState<GitDiffSearchResult | null>(null)
+  const [allSearchLoading, setAllSearchLoading] = useState(false)
+  const [allSearchError, setAllSearchError] = useState('')
   const [engine, setEngine] = useState<DiffEngine>(
     () => storedChoice(ENGINE_STORAGE_KEY, ['difftastic', 'delta'], 'difftastic'),
   )
@@ -192,10 +262,12 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   apiRef.current = api
   const bodyRef = useRef<HTMLDivElement>(null)
   const outputRef = useRef<HTMLDivElement>(null)
+  const diffSearchInputRef = useRef<HTMLInputElement>(null)
   const filePanelWidthRef = useRef(filePanelWidth)
   const resizeCleanup = useRef<(() => void) | null>(null)
   const generation = useRef(0)
   const diffGeneration = useRef(0)
+  const searchGeneration = useRef(0)
 
   const maximumFilePanelWidth = () => {
     const bodyWidth = bodyRef.current?.clientWidth
@@ -252,6 +324,12 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        diffSearchInputRef.current?.focus()
+        diffSearchInputRef.current?.select()
+        return
+      }
       if (event.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', closeOnEscape)
@@ -297,7 +375,33 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   }, [paneId, appliedTarget])
 
   const files = summary?.files ?? []
-  const fileTree = useMemo(() => buildFileTree(files), [files])
+  const deferredFileFilter = useDeferredValue(fileFilter)
+  const normalizedFileFilter = deferredFileFilter.trim().toLowerCase()
+  const contentQuery = diffSearch.trim()
+  const plainDiff = useMemo(
+    () => parseAnsi(diff).map((segment) => segment.text).join(''),
+    [diff],
+  )
+  const diffMatches = useMemo(
+    () => findTextMatches(plainDiff, contentQuery),
+    [plainDiff, contentQuery],
+  )
+  const currentDiffMatch = Math.min(activeDiffMatch, Math.max(0, diffMatches.length - 1))
+  const allSearchCurrent = allSearchResult?.query.toLowerCase() === contentQuery.toLowerCase()
+  const allFileMatchCounts = useMemo(() => {
+    if (!allSearchResult || !allSearchCurrent) return new Map<string, number>()
+    return new Map(allSearchResult.files.map((file) => [file.file, file.matches]))
+  }, [allSearchCurrent, allSearchResult])
+  const filterByAllSearch = searchScope === 'all' && contentQuery !== '' && allSearchCurrent && !allSearchLoading
+  const visibleFiles = useMemo(
+    () => files.filter((file) => (
+      (!normalizedFileFilter || file.path.toLowerCase().includes(normalizedFileFilter)) &&
+      (!filterByAllSearch || allFileMatchCounts.has(file.path))
+    )),
+    [allFileMatchCounts, files, filterByAllSearch, normalizedFileFilter],
+  )
+  const fileTree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles])
+  const forceExpandTree = normalizedFileFilter !== '' || filterByAllSearch
 
   useEffect(() => {
     if (selectedFile && files.some((file) => file.path === selectedFile)) return
@@ -333,6 +437,59 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       })
   }, [paneId, appliedTarget, selectedFile, engine, display, diffViewportVersion])
 
+  useEffect(() => {
+    const query = diffSearch.trim()
+    const request = ++searchGeneration.current
+    if (searchScope !== 'all' || query === '') {
+      setAllSearchResult(null)
+      setAllSearchLoading(false)
+      setAllSearchError('')
+      return
+    }
+
+    setAllSearchResult(null)
+    setAllSearchLoading(true)
+    setAllSearchError('')
+    const timeout = window.setTimeout(() => {
+      apiRef.current
+        .search(paneId, query, appliedTarget)
+        .then((next) => {
+          if (request !== searchGeneration.current) return
+          setAllSearchResult(next)
+          const matching = new Set(next.files.map((file) => file.file))
+          setSelectedFile((current) => (
+            current && matching.has(current) ? current : next.files[0]?.file ?? current
+          ))
+        })
+        .catch((cause: unknown) => {
+          if (request !== searchGeneration.current) return
+          setAllSearchError(cause instanceof Error ? cause.message : 'Unable to search changed files')
+        })
+        .finally(() => {
+          if (request === searchGeneration.current) setAllSearchLoading(false)
+        })
+    }, 200)
+
+    return () => {
+      window.clearTimeout(timeout)
+      if (searchGeneration.current === request) searchGeneration.current += 1
+    }
+  }, [paneId, appliedTarget, diffSearch, searchScope])
+
+  useEffect(() => {
+    setActiveDiffMatch(0)
+  }, [diff, contentQuery])
+
+  useEffect(() => {
+    if (!diffMatches.length) return
+    const match = outputRef.current?.querySelector<HTMLElement>(
+      `[data-diff-search-match="${currentDiffMatch}"]`,
+    )
+    if (match && typeof match.scrollIntoView === 'function') {
+      match.scrollIntoView({ block: 'center', inline: 'nearest' })
+    }
+  }, [currentDiffMatch, diffMatches.length])
+
   const chooseEngine = (next: DiffEngine) => {
     setEngine(next)
     storeChoice(ENGINE_STORAGE_KEY, next)
@@ -347,6 +504,29 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
     setFileView(next)
     setPathTooltip(null)
     storeChoice(FILE_VIEW_STORAGE_KEY, next)
+  }
+
+  const chooseSearchScope = (next: SearchScope) => {
+    setSearchScope(next)
+    setActiveDiffMatch(0)
+  }
+
+  const moveDiffMatch = (direction: 1 | -1) => {
+    if (!diffMatches.length) return
+    setActiveDiffMatch((current) => (
+      (Math.min(current, diffMatches.length - 1) + direction + diffMatches.length) % diffMatches.length
+    ))
+  }
+
+  const onDiffSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      moveDiffMatch(event.shiftKey ? -1 : 1)
+    } else if (event.key === 'Escape' && diffSearch !== '') {
+      event.preventDefault()
+      event.stopPropagation()
+      setDiffSearch('')
+    }
   }
 
   const toggleFolder = (path: string) => {
@@ -417,6 +597,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
 
   const renderFile = (file: GitChangedFile, label: string, depth = 0, treeItem = false): ReactNode => {
     const status = statusLabel(file)
+    const searchMatches = allFileMatchCounts.get(file.path)
     const button = (
       <button
         type="button"
@@ -431,6 +612,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       >
         <span className={`git-diff-file-status ${status.className}`} title={status.title}>{status.letter}</span>
         <span className="git-diff-file-path">{label}</span>
+        {searchMatches ? <span className="git-diff-file-search-count">{searchMatches}</span> : null}
         <span className="git-diff-file-stats">
           {file.binary
             ? 'bin'
@@ -446,7 +628,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   }
 
   const renderFolder = (folder: FileTreeFolder, depth: number): ReactNode => {
-    const expanded = !collapsedFolders.has(folder.path)
+    const expanded = forceExpandTree || !collapsedFolders.has(folder.path)
     const folders = [...folder.folders.values()].sort((left, right) => left.name.localeCompare(right.name))
     const folderFiles = [...folder.files].sort((left, right) => fileName(left.path).localeCompare(fileName(right.path)))
     return (
@@ -455,12 +637,14 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
           type="button"
           className="git-diff-folder"
           style={{ paddingLeft: 8 + depth * 14 }}
-          onClick={() => toggleFolder(folder.path)}
+          onClick={() => { if (!forceExpandTree) toggleFolder(folder.path) }}
           onMouseEnter={(event) => showPathTooltip(folder.path, event.currentTarget)}
           onMouseLeave={() => setPathTooltip(null)}
           onFocus={(event) => showPathTooltip(folder.path, event.currentTarget)}
           onBlur={() => setPathTooltip(null)}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} folder ${folder.path}`}
+          aria-label={forceExpandTree
+            ? `Folder ${folder.path}, expanded by search`
+            : `${expanded ? 'Collapse' : 'Expand'} folder ${folder.path}`}
           aria-describedby={pathTooltip?.path === folder.path ? 'git-diff-path-tooltip' : undefined}
         >
           {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
@@ -593,7 +777,10 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
         <div className="git-diff-body" ref={bodyRef}>
           <aside className="git-diff-files" aria-label="Changed files" style={{ width: filePanelWidth }}>
             <header className="git-diff-files-header">
-              <span>{files.length} {files.length === 1 ? 'file' : 'files'}</span>
+              <span>
+                {visibleFiles.length !== files.length ? `${visibleFiles.length} / ` : ''}
+                {files.length} {files.length === 1 ? 'file' : 'files'}
+              </span>
               <div className="git-diff-file-view-toggle" role="group" aria-label="File view">
                 <button
                   type="button"
@@ -617,13 +804,39 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
                 </button>
               </div>
             </header>
+            <div className="git-diff-file-filter">
+              <Search aria-hidden="true" />
+              <input
+                type="search"
+                value={fileFilter}
+                onChange={(event) => setFileFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && fileFilter !== '') {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setFileFilter('')
+                  }
+                }}
+                placeholder="Filter paths"
+                aria-label="Filter changed file paths"
+                spellCheck={false}
+              />
+              {fileFilter ? (
+                <button type="button" onClick={() => setFileFilter('')} aria-label="Clear file path filter">
+                  <X aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
             <div className="git-diff-file-scroll">
               {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
               {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}</div> : null}
               {!summaryLoading && !summaryError && files.length === 0
                 ? <div className="git-diff-status">No changes vs {summary?.target ?? 'target'}</div>
                 : null}
-              {!summaryLoading && !summaryError && fileView === 'tree' ? (
+              {!summaryLoading && !summaryError && files.length > 0 && visibleFiles.length === 0
+                ? <div className="git-diff-status">No changed files match this search</div>
+                : null}
+              {!summaryLoading && !summaryError && visibleFiles.length > 0 && fileView === 'tree' ? (
                 <div className="git-diff-file-tree" role="tree" aria-label="Changed file tree">
                   {[...fileTree.folders.values()]
                     .sort((left, right) => left.name.localeCompare(right.name))
@@ -634,7 +847,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
                 </div>
               ) : null}
               {!summaryLoading && !summaryError && fileView === 'list'
-                ? files.map((file) => renderFile(file, file.path))
+                ? visibleFiles.map((file) => renderFile(file, file.path))
                 : null}
             </div>
           </aside>
@@ -653,15 +866,92 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
             onKeyDown={resizeFilePanelWithKeyboard}
             onDoubleClick={() => changeFilePanelWidth(DEFAULT_FILE_PANEL_WIDTH, true, true)}
           />
-          <div className="git-diff-output" ref={outputRef}>
-            {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}
-            {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}</div> : null}
-            {!diffLoading && !diffError && selectedFile && diff.trim() === ''
-              ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
-              : null}
-            {!diffLoading && !diffError && diff.trim() !== ''
-              ? <pre><AnsiText text={diff} /></pre>
-              : null}
+          <div className="git-diff-content">
+            <div className="git-diff-content-search">
+              <div className="git-diff-content-search-input">
+                <Search aria-hidden="true" />
+                <input
+                  ref={diffSearchInputRef}
+                  type="search"
+                  value={diffSearch}
+                  onChange={(event) => {
+                    setDiffSearch(event.target.value)
+                    setActiveDiffMatch(0)
+                  }}
+                  onKeyDown={onDiffSearchKeyDown}
+                  placeholder={searchScope === 'all' ? 'Search all changed files' : 'Search current diff'}
+                  aria-label="Search diff contents"
+                  spellCheck={false}
+                />
+                {diffSearch ? (
+                  <button type="button" onClick={() => setDiffSearch('')} aria-label="Clear diff search">
+                    <X aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+              <span
+                className={`git-diff-search-status${allSearchError ? ' error' : ''}`}
+                role={allSearchError ? 'alert' : 'status'}
+              >
+                {allSearchLoading
+                  ? <><LoaderCircle className="spin" />Searching</>
+                  : allSearchError
+                    ? allSearchError
+                    : searchScope === 'all' && contentQuery && allSearchCurrent && allSearchResult
+                      ? <>{diffMatches.length ? `${currentDiffMatch + 1}/${diffMatches.length} here · ` : ''}{allSearchResult.totalMatches} across {allSearchResult.matchingFiles} files{allSearchResult.truncated ? '+' : ''}</>
+                      : contentQuery
+                        ? `${diffMatches.length ? currentDiffMatch + 1 : 0} / ${diffMatches.length}`
+                        : 'Cmd F'}
+              </span>
+              <button
+                type="button"
+                className="git-diff-search-nav"
+                onClick={() => moveDiffMatch(-1)}
+                disabled={!diffMatches.length}
+                aria-label="Previous diff match"
+                title="Previous match (Shift+Enter)"
+              >
+                <ChevronUp aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="git-diff-search-nav"
+                onClick={() => moveDiffMatch(1)}
+                disabled={!diffMatches.length}
+                aria-label="Next diff match"
+                title="Next match (Enter)"
+              >
+                <ChevronDown aria-hidden="true" />
+              </button>
+              <div className="git-diff-search-scope" role="group" aria-label="Diff search scope">
+                <button
+                  type="button"
+                  className={searchScope === 'file' ? 'active' : undefined}
+                  aria-pressed={searchScope === 'file'}
+                  onClick={() => chooseSearchScope('file')}
+                >
+                  file
+                </button>
+                <button
+                  type="button"
+                  className={searchScope === 'all' ? 'active' : undefined}
+                  aria-pressed={searchScope === 'all'}
+                  onClick={() => chooseSearchScope('all')}
+                >
+                  all
+                </button>
+              </div>
+            </div>
+            <div className="git-diff-output" ref={outputRef}>
+              {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}
+              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}</div> : null}
+              {!diffLoading && !diffError && selectedFile && diff.trim() === ''
+                ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
+                : null}
+              {!diffLoading && !diffError && diff.trim() !== ''
+                ? <pre><AnsiText text={diff} query={contentQuery} activeMatch={currentDiffMatch} /></pre>
+                : null}
+            </div>
           </div>
         </div>
       </section>

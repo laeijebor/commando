@@ -553,6 +553,7 @@ describe('GitDiffInspector.search', () => {
         { file: 'src/app.ts', line: 10, side: 'added', preview: 'new needle', occurrences: 1 },
         { file: 'src/app.ts', line: 11, side: 'added', preview: 'needle twice needle', occurrences: 2 },
       ],
+      files: [{ file: 'src/app.ts', matches: 4 }],
       totalMatches: 4,
       matchingFiles: 1,
       truncated: false,
@@ -579,6 +580,7 @@ describe('GitDiffInspector.search', () => {
         { file: 'notes.md', line: 1, side: 'added', preview: 'First needle', occurrences: 1 },
         { file: 'notes.md', line: 3, side: 'added', preview: 'NEEDLE again', occurrences: 1 },
       ],
+      files: [{ file: 'notes.md', matches: 2 }],
     })
   })
 })

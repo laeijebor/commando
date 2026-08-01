@@ -12,7 +12,7 @@ function apiWithSummary(summary: GitDiffSummary): GitDiffApiClient {
   return {
     summary: vi.fn().mockResolvedValue(summary),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
-    search: vi.fn().mockResolvedValue({ query: '', matches: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
+    search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: true, branches: [] }),
   }
 }

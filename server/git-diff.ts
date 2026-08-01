@@ -52,9 +52,15 @@ export type GitDiffSearchMatch = {
   occurrences: number
 }
 
+export type GitDiffSearchFile = {
+  file: string
+  matches: number
+}
+
 export type GitDiffSearchResult = {
   query: string
   matches: GitDiffSearchMatch[]
+  files: GitDiffSearchFile[]
   totalMatches: number
   matchingFiles: number
   truncated: boolean
@@ -230,9 +236,9 @@ function decodePatchPath(line: string, prefix: string): string | undefined {
 function searchPatch(
   output: string,
   query: string,
-): Omit<GitDiffSearchResult, 'query'> & { filePaths: Set<string> } {
+): Omit<GitDiffSearchResult, 'query'> {
   const matches: GitDiffSearchMatch[] = []
-  const files = new Set<string>()
+  const files = new Map<string, number>()
   let totalMatches = 0
   let truncated = false
   let oldPath: string | undefined
@@ -244,7 +250,7 @@ function searchPatch(
     const occurrences = countOccurrences(preview, query)
     if (!occurrences) return
     totalMatches += occurrences
-    files.add(file)
+    files.set(file, (files.get(file) ?? 0) + occurrences)
     if (matches.length < MAX_SEARCH_MATCH_LINES) {
       matches.push({
         file,
@@ -291,10 +297,10 @@ function searchPatch(
 
   return {
     matches,
+    files: [...files].map(([file, matchCount]) => ({ file, matches: matchCount })),
     totalMatches,
     matchingFiles: files.size,
     truncated,
-    filePaths: files,
   }
 }
 
@@ -472,7 +478,8 @@ export class GitDiffInspector {
         ),
         this.summary(cwd, target),
       ])
-      const { filePaths: matchingFiles, ...result } = searchPatch(stdout, query)
+      const result = searchPatch(stdout, query)
+      const matchingFiles = new Map(result.files.map((file) => [file.file, file.matches]))
 
       for (const file of summary.files ?? []) {
         if (file.status[0] !== 'U' || file.binary) continue
@@ -487,7 +494,7 @@ export class GitDiffInspector {
           const occurrences = countOccurrences(line, query)
           if (!occurrences) continue
           result.totalMatches += occurrences
-          matchingFiles.add(file.path)
+          matchingFiles.set(file.path, (matchingFiles.get(file.path) ?? 0) + occurrences)
           if (result.matches.length < MAX_SEARCH_MATCH_LINES) {
             result.matches.push({
               file: file.path,
@@ -502,7 +509,12 @@ export class GitDiffInspector {
         }
       }
 
-      return { query, ...result, matchingFiles: matchingFiles.size }
+      return {
+        query,
+        ...result,
+        files: [...matchingFiles].map(([file, matches]) => ({ file, matches })),
+        matchingFiles: matchingFiles.size,
+      }
     } catch (error) {
       if (error instanceof GitDiffError) throw error
       if (error instanceof GitCommandFailure) {

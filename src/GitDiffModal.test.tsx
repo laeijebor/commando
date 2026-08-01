@@ -31,6 +31,7 @@ function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
     search: vi.fn(async (_paneId: string, query: string) => ({
       query,
       matches: [],
+      files: [],
       totalMatches: 0,
       matchingFiles: 0,
       truncated: false,
@@ -150,6 +151,107 @@ describe('GitDiffModal changed file navigation', () => {
     window.localStorage.setItem('commando-diff-file-panel-width', '420')
     renderModal(fakeApi(nestedSummary), vi.fn(), nestedSummary)
     expect(screen.getByRole('complementary', { name: 'Changed files' })).toHaveStyle({ width: '420px' })
+  })
+
+  it('filters file paths in both tree and list views while preserving matching ancestors', async () => {
+    renderModal(fakeApi(nestedSummary), vi.fn(), nestedSummary)
+    await screen.findByText('Button.tsx')
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter changed file paths' }), {
+      target: { value: 'components/button' },
+    })
+
+    await waitFor(() => expect(screen.queryByText('client.ts')).not.toBeInTheDocument())
+    expect(screen.getByText('Button.tsx')).toBeInTheDocument()
+    expect(screen.queryByText('README.md')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Folder src, expanded by search')).toBeInTheDocument()
+    expect(screen.getByLabelText('Folder src/components, expanded by search')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
+    expect(screen.getByText('src/components/Button.tsx')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter changed file paths' }), {
+      target: { value: 'does-not-exist' },
+    })
+    expect(await screen.findByText('No changed files match this search')).toBeInTheDocument()
+  })
+})
+
+describe('GitDiffModal content search', () => {
+  it('highlights ANSI-spanning matches in the current diff and navigates between them', async () => {
+    const api = fakeApi()
+    ;(api.fileDiff as ReturnType<typeof vi.fn>).mockResolvedValue({
+      file: 'a.ts',
+      diff: 'prefix \u001b[31mNeed\u001b[32mle\u001b[0m suffix needle',
+    })
+    renderModal(api)
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), {
+      target: { value: 'needle' },
+    })
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-diff-search-match]')).toHaveLength(2)
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('1 / 2')
+    expect(document.querySelector('[data-diff-search-match="0"]')).toHaveClass('active')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next diff match' }))
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 2')
+    expect(document.querySelector('[data-diff-search-match="1"]')).toHaveClass('active')
+    fireEvent.click(screen.getByRole('button', { name: 'Previous diff match' }))
+    expect(screen.getByRole('status')).toHaveTextContent('1 / 2')
+  })
+
+  it('searches all changed files, narrows the tree, and exposes per-file match counts', async () => {
+    const nestedSummary: GitDiffSummary = {
+      ...summary,
+      files: [
+        { path: 'src/components/Button.tsx', status: 'M', additions: 3, deletions: 1, binary: false },
+        { path: 'src/api/client.ts', status: 'A', additions: 20, deletions: 0, binary: false },
+        { path: 'README.md', status: 'M', additions: 1, deletions: 1, binary: false },
+      ],
+    }
+    const api = fakeApi(nestedSummary)
+    ;(api.fileDiff as ReturnType<typeof vi.fn>).mockImplementation(async (_paneId: string, file: string) => ({
+      file,
+      diff: file.includes('Button') ? 'needle and needle' : 'needle',
+    }))
+    ;(api.search as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: 'needle',
+      files: [
+        { file: 'src/components/Button.tsx', matches: 2 },
+        { file: 'README.md', matches: 1 },
+      ],
+      matches: [
+        { file: 'src/components/Button.tsx', line: 3, side: 'added', preview: 'needle and needle', occurrences: 2 },
+        { file: 'README.md', line: 1, side: 'added', preview: 'needle', occurrences: 1 },
+      ],
+      totalMatches: 3,
+      matchingFiles: 2,
+      truncated: false,
+    })
+    renderModal(api, vi.fn(), nestedSummary)
+    await screen.findByText('Button.tsx')
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), {
+      target: { value: 'needle' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+
+    await waitFor(() => expect(api.search).toHaveBeenCalledWith('%1', 'needle', undefined))
+    await waitFor(() => expect(screen.queryByText('client.ts')).not.toBeInTheDocument())
+    expect(screen.getByText('Button.tsx')).toBeInTheDocument()
+    expect(screen.getByText('README.md')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('3 across 2 files')
+    expect(document.querySelectorAll('.git-diff-file-search-count')).toHaveLength(2)
+
+    fireEvent.click(screen.getByText('README.md').closest('button')!)
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalledWith(
+      '%1',
+      'README.md',
+      expect.objectContaining({ engine: 'difftastic' }),
+    ))
   })
 })
 

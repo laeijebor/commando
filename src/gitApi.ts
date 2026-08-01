@@ -41,9 +41,15 @@ export type GitDiffSearchMatch = {
   occurrences: number
 }
 
+export type GitDiffSearchFile = {
+  file: string
+  matches: number
+}
+
 export type GitDiffSearchResult = {
   query: string
   matches: GitDiffSearchMatch[]
+  files: GitDiffSearchFile[]
   totalMatches: number
   matchingFiles: number
   truncated: boolean
