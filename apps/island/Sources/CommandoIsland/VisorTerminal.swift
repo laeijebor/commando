@@ -214,13 +214,15 @@ private final class VisorContentView: NSView {
 
 @MainActor
 final class VisorTerminalController: NSObject,
-    NSWindowDelegate,
     @preconcurrency LocalProcessTerminalViewDelegate
 {
     private let panel: VisorPanel
     private let terminalView: LocalProcessTerminalView
     private var previousApplication: NSRunningApplication?
     private var screenObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
     private var hasLaunchedShell = false
     private var isShuttingDown = false
 
@@ -235,7 +237,6 @@ final class VisorTerminalController: NSObject,
         super.init()
 
         configureTerminal()
-        panel.delegate = self
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -261,6 +262,33 @@ final class VisorTerminalController: NSObject,
             MainActor.assumeIsolated {
                 guard let self, self.panel.isVisible else { return }
                 self.placePanel()
+            }
+        }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApplication.shared,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.hide(restoringPreviousApplication: false)
+            }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self,
+                      self.panel.isVisible,
+                      event.window !== self.panel else { return }
+                self.hide(restoringPreviousApplication: false)
+            }
+            return event
+        }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.hide(restoringPreviousApplication: false)
             }
         }
     }
@@ -293,13 +321,14 @@ final class VisorTerminalController: NSObject,
     func shutdown() {
         isShuttingDown = true
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         screenObserver = nil
+        activationObserver = nil
+        localMouseMonitor = nil
+        globalMouseMonitor = nil
         if terminalView.process.running { terminalView.terminate() }
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        guard !isShuttingDown else { return }
-        hide(restoringPreviousApplication: false)
     }
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
