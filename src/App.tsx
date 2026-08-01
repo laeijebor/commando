@@ -85,6 +85,7 @@ import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
+import { PanePathMenu } from './PanePathMenu'
 import { PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
@@ -230,6 +231,7 @@ type TerminalPaneProps = {
   connected: boolean
   renaming: boolean
   gitApi: GitDiffApiClient
+  onOpenPath: () => Promise<void>
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onRename: (title: string) => Promise<void>
@@ -260,6 +262,7 @@ export function TerminalPaneCard({
   connected,
   renaming,
   gitApi,
+  onOpenPath,
   onFocus,
   onOpenMenu,
   onRename,
@@ -282,7 +285,8 @@ export function TerminalPaneCard({
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
   const [renameError, setRenameError] = useState('')
-  const [pathCopyState, setPathCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [pathActionState, setPathActionState] = useState<'idle' | 'copied' | 'copy-failed' | 'opened' | 'open-failed'>('idle')
+  const [pathMenu, setPathMenu] = useState<{ x: number; y: number } | null>(null)
   const [selectionCopied, setSelectionCopied] = useState(false)
   const pathCopyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const selectionCopyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -334,11 +338,22 @@ export function TerminalPaneCard({
     clearTimeout(pathCopyResetTimer.current)
     try {
       await navigator.clipboard.writeText(pane.path)
-      setPathCopyState('copied')
+      setPathActionState('copied')
     } catch {
-      setPathCopyState('failed')
+      setPathActionState('copy-failed')
     }
-    pathCopyResetTimer.current = setTimeout(() => setPathCopyState('idle'), 1500)
+    pathCopyResetTimer.current = setTimeout(() => setPathActionState('idle'), 1500)
+  }
+
+  const openPath = async () => {
+    clearTimeout(pathCopyResetTimer.current)
+    try {
+      await onOpenPath()
+      setPathActionState('opened')
+    } catch {
+      setPathActionState('open-failed')
+    }
+    pathCopyResetTimer.current = setTimeout(() => setPathActionState('idle'), 1500)
   }
 
   const showSelectionCopied = () => {
@@ -470,17 +485,48 @@ export function TerminalPaneCard({
         <button
           type="button"
           className="pane-path"
-          data-copy-state={pathCopyState}
-          onClick={() => void copyPath()}
-          aria-label={`Copy path ${pane.path}`}
-          title={pathCopyState === 'copied' ? 'Copied path' : pathCopyState === 'failed' ? 'Unable to copy path' : `Copy path: ${pane.path}`}
+          data-action-state={pathActionState}
+          onClick={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect()
+            setPathMenu({ x: bounds.right - 132, y: bounds.bottom + 4 })
+          }}
+          aria-haspopup="menu"
+          aria-expanded={pathMenu !== null}
+          aria-label={`Path actions for ${pane.path}`}
+          title={pathActionState === 'copied'
+            ? 'Copied path'
+            : pathActionState === 'copy-failed'
+              ? 'Unable to copy path'
+              : pathActionState === 'opened'
+                ? 'Opened folder in Finder'
+                : pathActionState === 'open-failed'
+                  ? 'Unable to open folder in Finder'
+                  : `Path actions: ${pane.path}`}
         >
           <span className="pane-path-status" aria-live="polite">
-            {pathCopyState === 'copied' ? 'Copied' : pathCopyState === 'failed' ? 'Copy failed' : null}
+            {pathActionState === 'copied'
+              ? 'Copied'
+              : pathActionState === 'copy-failed'
+                ? 'Copy failed'
+                : pathActionState === 'opened'
+                  ? 'Opened'
+                  : pathActionState === 'open-failed'
+                    ? 'Open failed'
+                    : null}
           </span>
           <span className="pane-path-value">{pane.path}</span>
         </button>
       </footer>
+      {pathMenu ? (
+        <PanePathMenu
+          path={pane.path}
+          x={pathMenu.x}
+          y={pathMenu.y}
+          onClose={() => setPathMenu(null)}
+          onCopy={() => void copyPath()}
+          onOpen={() => void openPath()}
+        />
+      ) : null}
       {selectionCopied ? (
         <div className="terminal-copy-toast" role="status" aria-live="polite">
           <Check aria-hidden="true" />
@@ -1728,6 +1774,7 @@ export function App() {
                           connected={connected}
                           renaming={renamingPaneId === pane.id}
                           gitApi={gitDiffApi}
+                          onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                           onFocus={() => setFocusedPaneId(pane.id)}
                           onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                           onRename={(title) => renamePane(pane.id, title)}
