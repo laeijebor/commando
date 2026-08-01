@@ -991,12 +991,15 @@ export function App() {
       setActiveTabs((current) => ({ ...current, [pane.sessionId]: group.windowId }))
       return
     }
-    const node = paneRefs.current.get(pendingFocusPaneId)
-    if (!node) return
-    node.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    node.focus({ preventScroll: true })
-    setFocusedPaneId(pendingFocusPaneId)
-    setPendingFocusPaneId(null)
+    const frame = window.requestAnimationFrame(() => {
+      const node = paneRefs.current.get(pendingFocusPaneId)
+      if (!node?.isConnected) return
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      node.focus({ preventScroll: true })
+      setFocusedPaneId(pendingFocusPaneId)
+      setPendingFocusPaneId(null)
+    })
+    return () => window.cancelAnimationFrame(frame)
   })
 
   useEffect(() => {
