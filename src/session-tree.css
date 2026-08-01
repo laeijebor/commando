@@ -1,4 +1,4 @@
-.managed-session-tree { min-height: 0; overflow: auto; padding: 0 8px 14px; font-size: 10px; }
+.managed-session-tree { min-height: 0; padding: 0 8px 14px; font-size: 10px; }
 .session-tree-tools { padding: 7px 6px; display: flex; align-items: center; justify-content: space-between; color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
 .session-tree-tools button, .session-pref-group header button, .session-row-actions button, .managed-session-tree button { color: inherit; background: transparent; border: 0; cursor: pointer; }
 .session-tree-tools button { display: flex; gap: 5px; align-items: center; color: var(--muted); font-size: 9px; }
@@ -7,8 +7,14 @@
 .session-tree-error { width: 100%; padding: 7px; color: #eb6f92 !important; text-align: left; font-size: 9px; }
 .session-pref-group { margin-bottom: 9px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
 .session-pref-group > header { padding: 7px 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); background: var(--surface); }
-.session-pref-group > header strong { font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.session-pref-group > header small { margin-right: auto; color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
+.session-pref-group > header .session-pref-toggle { min-width: 0; flex: 1; padding: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
+.session-pref-group > header .session-pref-toggle:hover { color: var(--text); }
+.session-pref-group > header .session-pref-toggle svg { flex: 0 0 auto; }
+.session-pref-group > header strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+.session-pref-group > header small { color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
+.session-pref-group > header > button:not(.session-pref-toggle) { width: 20px; height: 20px; flex: 0 0 20px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
+.session-pref-group > header > button:not(.session-pref-toggle):hover { color: var(--text); background: var(--surface-hover); }
+.session-pref-group > header > button[title^='Create a new session']:hover { color: var(--accent); }
 .managed-session { border-top: 1px solid var(--surface-hover); background: var(--surface-raised); }
 .managed-session.selected { background: var(--surface-soft); }
 .managed-session-row { display: flex; align-items: center; }
@@ -56,6 +62,8 @@
 .session-context-menu button:hover { background: var(--border); }
 .session-context-menu button.danger { color: #eb6f92; }
 .session-context-menu svg { width: 14px; height: 14px; }
+.managed-session-tree > .tmux-create { margin-top: 2px; }
+.managed-session-tree .tmux-create__submit { border: 1px solid #9ccfd8; background: #3e8fb0; color: var(--surface-soft); }
 
 @keyframes session-status-pulse {
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }

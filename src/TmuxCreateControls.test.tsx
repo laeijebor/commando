@@ -21,7 +21,7 @@ const created: TmuxCreatedTarget = {
 const options = {
   sessions: [{ id: '$1', name: 'work' }],
   windows: [{ id: '@2', name: 'editor', sessionId: '$1', index: 0 }],
-  panes: [{ id: '%3', title: 'shell', windowId: '@2', index: 0 }],
+  panes: [{ id: '%3', title: 'shell', windowId: '@2', sessionId: '$1', index: 0, path: '/Users/dev/project' }],
 }
 
 afterEach(() => {
@@ -72,7 +72,7 @@ describe('TmuxCreateControls', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(
       'Created session %3 in work',
     )
-    expect(onCreated).toHaveBeenCalledWith(created)
+    expect(onCreated).toHaveBeenCalledWith(created, 'ungrouped')
     expect(JSON.parse(window.localStorage.getItem(TMUX_CWD_HISTORY_STORAGE_KEY) ?? 'null')).toEqual([
       '/Users/dev/project',
     ])
@@ -112,7 +112,7 @@ describe('TmuxCreateControls', () => {
 
     const input = screen.getByRole('combobox', { name: /Working directory/ })
     fireEvent.focus(input)
-    expect(screen.getByRole('listbox', { name: 'Recent working directories' })).toBeInTheDocument()
+    expect(screen.getByRole('listbox', { name: 'Suggested working directories' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '/tmp/project' })).toBeInTheDocument()
 
     fireEvent.change(input, { target: { value: '/tmp' } })
@@ -233,5 +233,46 @@ describe('TmuxCreateControls', () => {
         cwd: '',
       })
     })
+  })
+
+  it('opens in a requested group and prioritizes that group directory', async () => {
+    window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, JSON.stringify(['/Users/dev/recent']))
+    const onCreated = vi.fn()
+    render(
+      <TmuxCreateControls
+        {...options}
+        sessionCreateRequest={{
+          id: 1,
+          groupId: 'gizmo',
+          groupName: 'GIZMO',
+          suggestedDirectories: ['/Users/dev/gizmo', '/Users/dev/shared'],
+        }}
+        onCreateSession={vi.fn(async () => created)}
+        onCreateWindow={vi.fn()}
+        onCreatePane={vi.fn()}
+        onCreated={onCreated}
+      />,
+    )
+
+    expect(await screen.findByText('New session in GIZMO')).toBeVisible()
+    expect(screen.getByText('GIZMO', { selector: '.tmux-create__destination strong' })).toBeVisible()
+    expect(screen.getByLabelText('Session name')).toHaveFocus()
+    const directory = screen.getByRole('combobox', { name: /Working directory/ })
+    expect(directory).toHaveValue('/Users/dev/gizmo')
+    fireEvent.click(screen.getByRole('button', { name: 'Window' }))
+    expect(directory).toHaveValue('/Users/dev/recent')
+    fireEvent.click(screen.getByRole('button', { name: 'Session' }))
+    expect(directory).toHaveValue('/Users/dev/gizmo')
+    fireEvent.focus(directory)
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '/Users/dev/gizmo',
+      '/Users/dev/shared',
+      '/Users/dev/recent',
+    ])
+
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'new-gizmo-session' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created, 'gizmo'))
   })
 })

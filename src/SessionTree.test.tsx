@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { SessionTree } from './SessionTree'
 
 const sessionApi = vi.hoisted(() => ({
@@ -203,6 +204,182 @@ describe('SessionTree', () => {
       groups: [
         { id: 'gizmo', name: 'GIZMO', sessionIds: [] },
         { id: 'vivi', name: 'VIVI', sessionIds: [] },
+      ],
+      ungroupedSessionIds: [],
+    })
+  })
+
+  it('collapses and expands every session group from its title', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }],
+      ungroupedSessionIds: ['$2'],
+    })
+    render(
+      <SessionTree
+        token="token"
+        sessions={[
+          { id: '$1', name: 'gizmo-work', attached: true, activeWindowId: null, windowIds: [] },
+          { id: '$2', name: 'loose-work', attached: false, activeWindowId: null, windowIds: [] },
+        ]}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+
+    const gizmoToggle = await screen.findByRole('button', { name: 'Collapse GIZMO' })
+    const ungroupedToggle = screen.getByRole('button', { name: 'Collapse Ungrouped' })
+    expect(gizmoToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(ungroupedToggle).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(gizmoToggle)
+    expect(gizmoToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('gizmo-work')).not.toBeVisible()
+    expect(screen.getByText('loose-work')).toBeVisible()
+
+    fireEvent.click(gizmoToggle)
+    fireEvent.click(ungroupedToggle)
+    expect(screen.getByText('gizmo-work')).toBeVisible()
+    expect(screen.getByText('loose-work')).not.toBeVisible()
+  })
+
+  it('creates a session in a group using a directory from that group', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }],
+      ungroupedSessionIds: [],
+    })
+    const created: TmuxCreatedTarget = {
+      kind: 'session',
+      sessionId: '$2',
+      sessionName: 'new-gizmo-work',
+      windowId: '@2',
+      windowIndex: 0,
+      windowName: 'shell',
+      paneId: '%2',
+      paneIndex: 0,
+      panePath: '/Users/dev/gizmo',
+    }
+    const onCreateSession = vi.fn(async () => created)
+    const onCreated = vi.fn()
+    render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'gizmo-work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'shell', active: true, layout: 'layout', paneIds: ['%1'] }]}
+        panes={[{ ...pane('%1', 0, 'Gizmo shell'), path: '/Users/dev/gizmo' }]}
+        displayedPaneIds={['%1']}
+        statuses={{}}
+        selectedSessionId="$1"
+        focusedPaneId="%1"
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+        creation={{
+          onCreateSession,
+          onCreateWindow: vi.fn(),
+          onCreatePane: vi.fn(),
+          onCreated,
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in GIZMO' }))
+    expect(await screen.findByText('New session in GIZMO')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: /Working directory/ })).toHaveValue('/Users/dev/gizmo')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'new-gizmo-work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledWith({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2'] }],
+      ungroupedSessionIds: [],
+    }))
+    expect(onCreateSession).toHaveBeenCalledWith({
+      name: 'new-gizmo-work',
+      windowName: '',
+      cwd: '/Users/dev/gizmo',
+    })
+    expect(onCreated).toHaveBeenCalledWith(created)
+  })
+
+  it('preserves group changes made while session creation is pending', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] },
+        { id: 'vivi', name: 'VIVI', sessionIds: [] },
+      ],
+      ungroupedSessionIds: [],
+    })
+    let resolveCreate: ((created: TmuxCreatedTarget) => void) | undefined
+    const onCreateSession = vi.fn(() => new Promise<TmuxCreatedTarget>((resolve) => {
+      resolveCreate = resolve
+    }))
+    render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'gizmo-work', attached: true, activeWindowId: null, windowIds: [] }]}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId="$1"
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+        creation={{
+          onCreateSession,
+          onCreateWindow: vi.fn(),
+          onCreatePane: vi.fn(),
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in GIZMO' }))
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'pending-session' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Move GIZMO down' }))
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledTimes(1))
+
+    resolveCreate?.({
+      kind: 'session',
+      sessionId: '$2',
+      sessionName: 'pending-session',
+      windowId: '@2',
+      windowIndex: 0,
+      windowName: 'shell',
+      paneId: '%2',
+      paneIndex: 0,
+      panePath: '/workspace',
+    })
+
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledTimes(2))
+    expect(sessionApi.savePreferences).toHaveBeenLastCalledWith({
+      version: 1,
+      groups: [
+        { id: 'vivi', name: 'VIVI', sessionIds: [] },
+        { id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2'] },
       ],
       ungroupedSessionIds: [],
     })

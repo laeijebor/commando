@@ -80,7 +80,6 @@ import { XtermPane } from './XtermPane'
 import { LinearSection } from './LinearSection'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
-import { TmuxCreateControls } from './TmuxCreateControls'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
@@ -1552,18 +1551,14 @@ export function App() {
               onWindowDeleting={clearLayoutTimers}
               onSessionsChanged={refresh}
               onPreferencesChanged={setSessionTreePreferences}
-            />
-            <TmuxCreateControls
-              sessions={snapshot?.sessions ?? []}
-              windows={snapshot?.windows ?? []}
-              panes={snapshot?.panes ?? []}
-              disabled={!connected}
-              defaultSessionId={selectedSessionId ?? ''}
-              defaultTargetId={focusedPaneId ?? activeWindow?.id ?? ''}
-              onCreateSession={tmuxCreateApi.createSession}
-              onCreateWindow={tmuxCreateApi.createWindow}
-              onCreatePane={tmuxCreateApi.createPane}
-              onCreated={(created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() }}
+              creation={{
+                disabled: !connected,
+                defaultTargetId: focusedPaneId ?? activeWindow?.id ?? '',
+                onCreateSession: tmuxCreateApi.createSession,
+                onCreateWindow: tmuxCreateApi.createWindow,
+                onCreatePane: tmuxCreateApi.createPane,
+                onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
+              }}
             />
           </div>
           <PortsSection token={token} sessions={snapshot?.sessions ?? []} ports={snapshot?.ports ?? []} />

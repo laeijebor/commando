@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useState } from 'react'
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import type {
   CreateTmuxPaneRequest,
   CreateTmuxSessionRequest,
@@ -10,8 +10,15 @@ import './tmux-create.css'
 
 type SessionOption = { id: string; name: string }
 type WindowOption = { id: string; name: string; sessionId: string; index: number }
-type PaneOption = { id: string; windowId: string; index: number; title: string }
+type PaneOption = { id: string; windowId: string; sessionId: string; index: number; title: string; path: string }
 type CreateMode = 'session' | 'window' | 'pane'
+
+export type SessionCreateRequest = {
+  id: number
+  groupId: string
+  groupName: string
+  suggestedDirectories: string[]
+}
 
 export const TMUX_CWD_HISTORY_STORAGE_KEY = 'commando.tmux-create.cwd'
 const MAX_WORKING_DIRECTORY_HISTORY = 10
@@ -24,10 +31,11 @@ export type TmuxCreateControlsProps = {
   initialMode?: CreateMode
   defaultSessionId?: string
   defaultTargetId?: string
+  sessionCreateRequest?: SessionCreateRequest | null
   onCreateSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreatedTarget>
   onCreateWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   onCreatePane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
-  onCreated?: (created: TmuxCreatedTarget) => void
+  onCreated?: (created: TmuxCreatedTarget, sessionGroupId?: string) => void
 }
 
 const modeLabels: Record<CreateMode, string> = {
@@ -81,17 +89,23 @@ export function TmuxCreateControls({
   initialMode = 'session',
   defaultSessionId = '',
   defaultTargetId = '',
+  sessionCreateRequest = null,
   onCreateSession,
   onCreateWindow,
   onCreatePane,
   onCreated,
 }: TmuxCreateControlsProps) {
+  const detailsRef = useRef<HTMLDetailsElement>(null)
+  const sessionNameRef = useRef<HTMLInputElement>(null)
   const [mode, setMode] = useState<CreateMode>(initialMode)
   const [sessionId, setSessionId] = useState(defaultSessionId)
   const [targetId, setTargetId] = useState(defaultTargetId)
   const [direction, setDirection] = useState<TmuxSplitDirection>('horizontal')
   const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
   const [workingDirectory, setWorkingDirectory] = useState(workingDirectoryHistory[0] ?? '')
+  const [sessionGroupId, setSessionGroupId] = useState('ungrouped')
+  const [sessionGroupName, setSessionGroupName] = useState('Ungrouped')
+  const [groupDirectorySuggestions, setGroupDirectorySuggestions] = useState<string[]>([])
   const [directoryHistoryOpen, setDirectoryHistoryOpen] = useState(false)
   const [directoryHistoryFiltering, setDirectoryHistoryFiltering] = useState(false)
   const [directoryHistoryHighlight, setDirectoryHistoryHighlight] = useState(0)
@@ -115,8 +129,11 @@ export function TmuxCreateControls({
     ? targetId
     : (targets[0]?.id ?? '')
   const unavailable = disabled || pending
+  const availableDirectories = mode === 'session'
+    ? [...groupDirectorySuggestions, ...workingDirectoryHistory.filter((directory) => !groupDirectorySuggestions.includes(directory))]
+    : workingDirectoryHistory
   const directoryQuery = directoryHistoryFiltering ? workingDirectory.toLowerCase() : ''
-  const directorySuggestions = workingDirectoryHistory.filter(
+  const directorySuggestions = availableDirectories.filter(
     (directory) => directoryQuery === '' || directory.toLowerCase().includes(directoryQuery),
   )
   const activeDirectoryHighlight = Math.min(
@@ -124,7 +141,32 @@ export function TmuxCreateControls({
     Math.max(0, directorySuggestions.length - 1),
   )
 
+  useEffect(() => {
+    if (!sessionCreateRequest) return
+    setMode('session')
+    setSessionGroupId(sessionCreateRequest.groupId)
+    setSessionGroupName(sessionCreateRequest.groupName)
+    setGroupDirectorySuggestions(sessionCreateRequest.suggestedDirectories)
+    setWorkingDirectory(sessionCreateRequest.suggestedDirectories[0] ?? workingDirectoryHistory[0] ?? '')
+    setDirectoryHistoryFiltering(false)
+    setDirectoryHistoryHighlight(0)
+    setError('')
+    setStatus('')
+  }, [sessionCreateRequest])
+
+  useEffect(() => {
+    if (!sessionCreateRequest || mode !== 'session' || !detailsRef.current) return
+    detailsRef.current.open = true
+    detailsRef.current.scrollIntoView?.({ block: 'nearest' })
+    sessionNameRef.current?.focus()
+  }, [mode, sessionCreateRequest])
+
   const changeMode = (nextMode: CreateMode) => {
+    if (sessionGroupId !== 'ungrouped') {
+      setWorkingDirectory(nextMode === 'session'
+        ? (groupDirectorySuggestions[0] ?? workingDirectoryHistory[0] ?? '')
+        : (workingDirectoryHistory[0] ?? ''))
+    }
     setMode(nextMode)
     setError('')
     setStatus('')
@@ -190,7 +232,7 @@ export function TmuxCreateControls({
       setWorkingDirectoryHistory(nextHistory)
       setDirectoryHistoryOpen(false)
       setStatus(`Created ${created.kind} ${created.paneId} in ${created.sessionName}`)
-      onCreated?.(created)
+      onCreated?.(created, mode === 'session' ? sessionGroupId : undefined)
       formElement.reset()
     } catch (submitError) {
       setError(errorMessage(submitError))
@@ -200,8 +242,18 @@ export function TmuxCreateControls({
   }
 
   return (
-    <details className="tmux-create">
-      <summary>New tmux target</summary>
+    <details
+      className="tmux-create"
+      ref={detailsRef}
+      onToggle={(event) => {
+        if (event.currentTarget.open) return
+        if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')
+        setSessionGroupId('ungrouped')
+        setSessionGroupName('Ungrouped')
+        setGroupDirectorySuggestions([])
+      }}
+    >
+      <summary>{sessionGroupId === 'ungrouped' ? 'New tmux target' : `New session in ${sessionGroupName}`}</summary>
       <div className="tmux-create__panel">
         <div className="tmux-create__modes" role="group" aria-label="Target type">
           {(Object.keys(modeLabels) as CreateMode[]).map((candidate) => (
@@ -221,9 +273,10 @@ export function TmuxCreateControls({
         <form onSubmit={submit} aria-busy={pending}>
           {mode === 'session' && (
             <>
+              <p className="tmux-create__destination">Session group <strong>{sessionGroupName}</strong></p>
               <label>
                 Session name
-                <input name="sessionName" required maxLength={128} autoComplete="off" />
+                <input ref={sessionNameRef} name="sessionName" required maxLength={128} autoComplete="off" />
               </label>
               <label>
                 Initial window name <span>optional</span>
@@ -344,7 +397,7 @@ export function TmuxCreateControls({
                   className="tmux-create__cwd-history"
                   id="tmux-create-cwd-history"
                   role="listbox"
-                  aria-label="Recent working directories"
+                  aria-label="Suggested working directories"
                 >
                   {directorySuggestions.map((directory, index) => (
                     <button
