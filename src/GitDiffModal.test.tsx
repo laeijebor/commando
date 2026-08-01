@@ -28,6 +28,13 @@ function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
       target: target ?? nextSummary.target ?? 'main',
     })),
     fileDiff: vi.fn(async (_paneId: string, file: string) => ({ file, diff: 'DIFF' })),
+    search: vi.fn(async (_paneId: string, query: string) => ({
+      query,
+      matches: [],
+      totalMatches: 0,
+      matchingFiles: 0,
+      truncated: false,
+    })),
     branches: vi.fn(async () => ({
       isRepo: true,
       current: 'feature',

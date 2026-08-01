@@ -11,6 +11,7 @@ type RepoExecutorOptions = {
   branch?: string
   currentPullRequest?: Record<string, unknown> | null
   pullRequestsByNumber?: Record<string, Record<string, unknown>>
+  searchPatch?: string
 }
 
 const DEFAULT_PULL_REQUEST = {
@@ -57,6 +58,7 @@ function repoExecutor(options: RepoExecutorOptions = {}): GitProcessExecutor {
     if (args[0] === 'name-rev') return { stdout: 'main\n', stderr: '' }
     if (args.includes('--numstat')) return { stdout: `3\t1\ta.ts${NUL}`, stderr: '' }
     if (args.includes('--name-status')) return { stdout: `M${NUL}a.ts${NUL}`, stderr: '' }
+    if (args.includes('--unified=0')) return { stdout: options.searchPatch ?? '', stderr: '' }
     if (args[0] === 'ls-files') return { stdout: '', stderr: '' }
     if (args[0] === 'diff' && args[1] === '--ext-diff') return { stdout: 'STRUCTURAL', stderr: '' }
     throw new Error(`Unexpected command: ${file} ${joined}`)
@@ -252,6 +254,37 @@ describe('GitDiffApi', () => {
       current: 'feature',
       branches: ['main', 'origin/main'],
     })
+  })
+
+  it('searches changed content across files', async () => {
+    const base = await startApi({
+      executor: repoExecutor({
+        searchPatch: [
+          'diff --git a/a.ts b/a.ts',
+          '--- a/a.ts',
+          '+++ b/a.ts',
+          '@@ -1 +1 @@',
+          '-before',
+          '+search term',
+        ].join('\n'),
+      }),
+    })
+
+    const response = await fetch(`${base}/api/git/search?paneId=%251&query=search%20term`)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      query: 'search term',
+      totalMatches: 1,
+      matchingFiles: 1,
+      matches: [{ file: 'a.ts', line: 1, side: 'added', preview: 'search term' }],
+    })
+  })
+
+  it('requires a non-empty search query', async () => {
+    const base = await startApi()
+    const response = await fetch(`${base}/api/git/search?paneId=%251&query=`)
+    expect(response.status).toBe(400)
   })
 
   it('rejects unknown engines and layouts', async () => {

@@ -33,6 +33,22 @@ export type GitFileDiff = {
   diff: string
 }
 
+export type GitDiffSearchMatch = {
+  file: string
+  line: number
+  side: 'added' | 'removed'
+  preview: string
+  occurrences: number
+}
+
+export type GitDiffSearchResult = {
+  query: string
+  matches: GitDiffSearchMatch[]
+  totalMatches: number
+  matchingFiles: number
+  truncated: boolean
+}
+
 export type GitBranches = {
   isRepo: boolean
   current?: string
@@ -52,6 +68,7 @@ export type GitFileDiffOptions = {
 export interface GitDiffApiClient {
   summary(paneId: string, target?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
+  search(paneId: string, query: string, target?: string): Promise<GitDiffSearchResult>
   branches(paneId: string): Promise<GitBranches>
 }
 
@@ -94,6 +111,7 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
         engine: options.engine,
         display: options.display,
       }),
+    search: (paneId, query, target) => request<GitDiffSearchResult>('search', { paneId, query, target }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
   }
 }

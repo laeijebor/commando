@@ -5,6 +5,7 @@ import {
   GitDiffInspector,
   validateDiffDisplay,
   validateDiffEngine,
+  validateDiffSearchQuery,
   validateDiffWidth,
   validateGitTarget,
   type GitExecutorOptions,
@@ -26,6 +27,7 @@ type FakeRepoOptions = {
   untracked?: string[]
   diffOutput?: string
   diffFailure?: GitCommandFailure
+  searchPatch?: string
   refList?: string[]
   /** Lines for the auto-base for-each-ref call: `sha<TAB>shortname<TAB>symref`. */
   refTips?: string[]
@@ -50,6 +52,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     untracked = [],
     diffOutput = 'DIFF',
     diffFailure,
+    searchPatch = '',
     refList = [],
     refTips = ['mainsha\tmain\t'],
     autoUnique = ['uniquesha'],
@@ -98,6 +101,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     if (args[0] === 'name-rev') return { stdout: `${nameRev}\n`, stderr: '' }
     if (args[0] === 'diff' && args.includes('--numstat')) return { stdout: numstat, stderr: '' }
     if (args[0] === 'diff' && args.includes('--name-status')) return { stdout: nameStatus, stderr: '' }
+    if (args[0] === 'diff' && args.includes('--unified=0')) return { stdout: searchPatch, stderr: '' }
     if (args[0] === 'ls-files' && args.includes('--')) {
       const target = args[args.length - 1]
       const listed = untracked.includes(target) ? `${target}${NUL}` : ''
@@ -155,6 +159,14 @@ describe('validateDiffWidth', () => {
     expect(validateDiffWidth('10')).toBe(60)
     expect(validateDiffWidth('9999')).toBe(500)
     expect(validateDiffWidth('120')).toBe(120)
+  })
+})
+
+describe('validateDiffSearchQuery', () => {
+  it('trims valid queries and rejects empty or oversized values', () => {
+    expect(validateDiffSearchQuery('  needle  ')).toBe('needle')
+    expect(() => validateDiffSearchQuery('   ')).toThrow(GitDiffError)
+    expect(() => validateDiffSearchQuery('x'.repeat(201))).toThrow(GitDiffError)
   })
 })
 
@@ -516,5 +528,57 @@ describe('GitDiffInspector.fileDiff', () => {
     const inspector = new GitDiffInspector(repo.execute, {})
     await expect(inspector.fileDiff('/repo', 'src/app.ts', undefined, 100))
       .rejects.toMatchObject({ kind: 'tool-missing' })
+  })
+})
+
+describe('GitDiffInspector.search', () => {
+  it('finds case-insensitive matches on both sides of changed tracked lines', async () => {
+    const repo = fakeRepo({
+      searchPatch: [
+        'diff --git a/src/app.ts b/src/app.ts',
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -10 +10,2 @@',
+        '-old Needle',
+        '+new needle',
+        '+needle twice needle',
+      ].join('\n'),
+    })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await expect(inspector.search('/repo', 'needle')).resolves.toEqual({
+      query: 'needle',
+      matches: [
+        { file: 'src/app.ts', line: 10, side: 'removed', preview: 'old Needle', occurrences: 1 },
+        { file: 'src/app.ts', line: 10, side: 'added', preview: 'new needle', occurrences: 1 },
+        { file: 'src/app.ts', line: 11, side: 'added', preview: 'needle twice needle', occurrences: 2 },
+      ],
+      totalMatches: 4,
+      matchingFiles: 1,
+      truncated: false,
+    })
+    expect(repo.calls).toContainEqual(expect.objectContaining({
+      file: 'git',
+      args: ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', BASE, '--'],
+    }))
+  })
+
+  it('includes untracked text files in the same search result', async () => {
+    const repo = fakeRepo({ untracked: ['notes.md'] })
+    const inspector = new GitDiffInspector(
+      repo.execute,
+      {},
+      Date.now,
+      async (file) => file.endsWith('notes.md') ? 'First needle\nNo match\nNEEDLE again' : '',
+    )
+
+    await expect(inspector.search('/repo', 'needle')).resolves.toMatchObject({
+      totalMatches: 2,
+      matchingFiles: 1,
+      matches: [
+        { file: 'notes.md', line: 1, side: 'added', preview: 'First needle', occurrences: 1 },
+        { file: 'notes.md', line: 3, side: 'added', preview: 'NEEDLE again', occurrences: 1 },
+      ],
+    })
   })
 })

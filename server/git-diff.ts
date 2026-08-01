@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const COMMAND_TIMEOUT_MS = 5_000
@@ -10,6 +11,10 @@ const MAX_PULL_REQUEST_EVIDENCE_CHARS = 128 * 1024
 const MAX_AUTO_BASE_REFS = 4_000
 const MIN_DIFF_WIDTH = 60
 const MAX_DIFF_WIDTH = 500
+const MAX_SEARCH_QUERY_LENGTH = 200
+const MAX_SEARCH_MATCH_LINES = 500
+const MAX_SEARCH_PREVIEW_LENGTH = 240
+const MAX_SEARCHED_UNTRACKED_CHARS = 2 * 1024 * 1024
 const NUL = '\u0000'
 const REF_FORBIDDEN = /[\s~^:?*[\\]/u
 const PULL_REQUEST_URL = /https?:\/\/[a-z0-9.-]+\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/pull\/([1-9]\d*)/giu
@@ -38,6 +43,22 @@ export type GitDiffErrorKind = 'bad-target' | 'bad-file' | 'bad-param' | 'tool-m
 
 export type DiffEngine = 'difftastic' | 'delta'
 export type DiffDisplay = 'side-by-side' | 'inline'
+
+export type GitDiffSearchMatch = {
+  file: string
+  line: number
+  side: 'added' | 'removed'
+  preview: string
+  occurrences: number
+}
+
+export type GitDiffSearchResult = {
+  query: string
+  matches: GitDiffSearchMatch[]
+  totalMatches: number
+  matchingFiles: number
+  truncated: boolean
+}
 
 export class GitDiffError extends Error {
   constructor(readonly kind: GitDiffErrorKind, message: string) {
@@ -133,6 +154,20 @@ export function validateDiffWidth(value: unknown): number {
   return Math.min(MAX_DIFF_WIDTH, Math.max(MIN_DIFF_WIDTH, width))
 }
 
+export function validateDiffSearchQuery(value: unknown): string {
+  if (typeof value !== 'string') throw new GitDiffError('bad-param', 'query parameter is required')
+  const query = value.trim()
+  if (
+    query.length === 0 ||
+    query.length > MAX_SEARCH_QUERY_LENGTH ||
+    query.includes(NUL) ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(query)
+  ) {
+    throw new GitDiffError('bad-param', `query must contain 1-${MAX_SEARCH_QUERY_LENGTH} printable characters`)
+  }
+  return query
+}
+
 export function validateGitTarget(value: unknown): string {
   if (
     typeof value !== 'string' ||
@@ -162,6 +197,105 @@ function validateRepoRelativePath(root: string, file: unknown): string {
 
 function splitZeroTerminated(output: string): string[] {
   return output.split(NUL).filter((entry) => entry.length > 0)
+}
+
+function countOccurrences(value: string, query: string): number {
+  const haystack = value.toLowerCase()
+  const needle = query.toLowerCase()
+  let count = 0
+  let cursor = 0
+  while (cursor <= haystack.length - needle.length) {
+    const match = haystack.indexOf(needle, cursor)
+    if (match < 0) break
+    count += 1
+    cursor = match + needle.length
+  }
+  return count
+}
+
+function decodePatchPath(line: string, prefix: string): string | undefined {
+  const raw = line.slice(4)
+  if (raw === '/dev/null') return undefined
+  let value = raw
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      value = JSON.parse(value) as string
+    } catch {
+      value = value.slice(1, -1)
+    }
+  }
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value
+}
+
+function searchPatch(
+  output: string,
+  query: string,
+): Omit<GitDiffSearchResult, 'query'> & { filePaths: Set<string> } {
+  const matches: GitDiffSearchMatch[] = []
+  const files = new Set<string>()
+  let totalMatches = 0
+  let truncated = false
+  let oldPath: string | undefined
+  let currentPath: string | undefined
+  let oldLine = 0
+  let newLine = 0
+
+  const addMatch = (file: string, line: number, side: 'added' | 'removed', preview: string) => {
+    const occurrences = countOccurrences(preview, query)
+    if (!occurrences) return
+    totalMatches += occurrences
+    files.add(file)
+    if (matches.length < MAX_SEARCH_MATCH_LINES) {
+      matches.push({
+        file,
+        line,
+        side,
+        preview: preview.slice(0, MAX_SEARCH_PREVIEW_LENGTH),
+        occurrences,
+      })
+    } else truncated = true
+  }
+
+  for (const line of output.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      oldPath = undefined
+      currentPath = undefined
+      continue
+    }
+    if (line.startsWith('--- ')) {
+      oldPath = decodePatchPath(line, 'a/')
+      continue
+    }
+    if (line.startsWith('+++ ')) {
+      currentPath = decodePatchPath(line, 'b/') ?? oldPath
+      continue
+    }
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+      continue
+    }
+    if (!currentPath) continue
+    if (line.startsWith('+')) {
+      addMatch(currentPath, newLine, 'added', line.slice(1))
+      newLine += 1
+    } else if (line.startsWith('-')) {
+      addMatch(currentPath, oldLine, 'removed', line.slice(1))
+      oldLine += 1
+    } else if (!line.startsWith('\\')) {
+      oldLine += 1
+      newLine += 1
+    }
+  }
+
+  return {
+    matches,
+    totalMatches,
+    matchingFiles: files.size,
+    truncated,
+    filePaths: files,
+  }
 }
 
 function parsePullRequest(output: string): GitPullRequest | undefined {
@@ -234,6 +368,7 @@ export class GitDiffInspector {
     private readonly execute: GitProcessExecutor = defaultExecutor,
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly now: () => number = Date.now,
+    private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
   ) {}
 
   async summary(cwd: string, target?: string): Promise<GitDiffSummary> {
@@ -319,6 +454,61 @@ export class GitDiffInspector {
         : await this.difftasticDiff(repo.root, relative, base, width, display, untracked)
     } catch (error) {
       throw this.asDiffError(error, engine)
+    }
+  }
+
+  async search(cwd: string, value: unknown, target?: string): Promise<GitDiffSearchResult> {
+    const query = validateDiffSearchQuery(value)
+    const repo = await this.repoContext(cwd)
+    if (!repo) throw new GitDiffError('exec', 'Not a git repository')
+    const { base } = await this.resolveBase(repo.root, repo.branch, target)
+
+    try {
+      const [{ stdout }, summary] = await Promise.all([
+        this.execute(
+          'git',
+          ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', base, '--'],
+          this.options(repo.root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
+        ),
+        this.summary(cwd, target),
+      ])
+      const { filePaths: matchingFiles, ...result } = searchPatch(stdout, query)
+
+      for (const file of summary.files ?? []) {
+        if (file.status[0] !== 'U' || file.binary) continue
+        let contents: string
+        try {
+          contents = await this.readTextFile(path.join(repo.root, file.path))
+        } catch {
+          continue
+        }
+        if (contents.includes(NUL) || contents.length > MAX_SEARCHED_UNTRACKED_CHARS) continue
+        for (const [index, line] of contents.split('\n').entries()) {
+          const occurrences = countOccurrences(line, query)
+          if (!occurrences) continue
+          result.totalMatches += occurrences
+          matchingFiles.add(file.path)
+          if (result.matches.length < MAX_SEARCH_MATCH_LINES) {
+            result.matches.push({
+              file: file.path,
+              line: index + 1,
+              side: 'added',
+              preview: line.slice(0, MAX_SEARCH_PREVIEW_LENGTH),
+              occurrences,
+            })
+          } else {
+            result.truncated = true
+          }
+        }
+      }
+
+      return { query, ...result, matchingFiles: matchingFiles.size }
+    } catch (error) {
+      if (error instanceof GitDiffError) throw error
+      if (error instanceof GitCommandFailure) {
+        throw new GitDiffError('exec', `git diff search failed: ${error.stderr || error.message}`)
+      }
+      throw new GitDiffError('exec', error instanceof Error ? error.message : 'git diff search failed')
     }
   }
 

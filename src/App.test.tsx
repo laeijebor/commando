@@ -81,6 +81,7 @@ const paneProps = {
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
+    search: vi.fn().mockResolvedValue({ query: '', matches: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
   },
   onOpenPath: vi.fn().mockResolvedValue(undefined),
