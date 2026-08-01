@@ -21,9 +21,12 @@ const summary: GitDiffSummary = {
   files: [{ path: 'a.ts', status: 'M', additions: 3, deletions: 1, binary: false }],
 }
 
-function fakeApi(): GitDiffApiClient {
+function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
   return {
-    summary: vi.fn(async (_paneId: string, target?: string) => ({ ...summary, target: target ?? 'main' })),
+    summary: vi.fn(async (_paneId: string, target?: string) => ({
+      ...nextSummary,
+      target: target ?? nextSummary.target ?? 'main',
+    })),
     fileDiff: vi.fn(async (_paneId: string, file: string) => ({ file, diff: 'DIFF' })),
     branches: vi.fn(async () => ({
       isRepo: true,
@@ -33,9 +36,9 @@ function fakeApi(): GitDiffApiClient {
   }
 }
 
-function renderModal(api = fakeApi(), onClose = vi.fn()) {
+function renderModal(api = fakeApi(), onClose = vi.fn(), initialSummary = summary) {
   render(
-    <GitDiffModal paneId="%1" panePath="/repo" api={api} initialSummary={summary} onClose={onClose} />,
+    <GitDiffModal paneId="%1" panePath="/repo" api={api} initialSummary={initialSummary} onClose={onClose} />,
   )
   return { api, onClose }
 }
@@ -59,6 +62,87 @@ describe('GitDiffModal engine and layout toggles', () => {
 
     expect(window.localStorage.getItem('commando-diff-engine')).toBe('delta')
     expect(window.localStorage.getItem('commando-diff-display')).toBe('inline')
+  })
+})
+
+describe('GitDiffModal changed file navigation', () => {
+  const nestedSummary: GitDiffSummary = {
+    ...summary,
+    files: [
+      { path: 'src/components/Button.tsx', status: 'M', additions: 3, deletions: 1, binary: false },
+      { path: 'src/api/client.ts', status: 'A', additions: 20, deletions: 0, binary: false },
+      { path: 'README.md', status: 'M', additions: 1, deletions: 1, binary: false },
+    ],
+  }
+
+  it('shows an expanded folder tree by default and exposes full paths in tooltips', async () => {
+    renderModal(fakeApi(nestedSummary), vi.fn(), nestedSummary)
+
+    expect(screen.getByRole('button', { name: 'Tree view' })).toHaveAttribute('aria-pressed', 'true')
+    expect(await screen.findByRole('tree', { name: 'Changed file tree' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Collapse folder src')).toBeInTheDocument()
+    expect(screen.getByLabelText('Collapse folder src/components')).toBeInTheDocument()
+
+    fireEvent.mouseEnter(screen.getByText('Button.tsx').closest('button')!)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('src/components/Button.tsx')
+  })
+
+  it('collapses folders and persists the alternate flat list view', async () => {
+    const view = render(
+      <GitDiffModal
+        paneId="%1"
+        panePath="/repo"
+        api={fakeApi(nestedSummary)}
+        initialSummary={nestedSummary}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByLabelText('Collapse folder src'))
+    expect(screen.queryByText('Button.tsx')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Expand folder src')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
+    expect(screen.queryByRole('tree', { name: 'Changed file tree' })).not.toBeInTheDocument()
+    expect(screen.getByText('src/components/Button.tsx')).toBeInTheDocument()
+    expect(window.localStorage.getItem('commando-diff-file-view')).toBe('list')
+
+    view.unmount()
+    renderModal(fakeApi(nestedSummary), vi.fn(), nestedSummary)
+    expect(screen.getByRole('button', { name: 'List view' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('resizes the file panel with pointer and keyboard controls and restores its width', () => {
+    const view = render(
+      <GitDiffModal
+        paneId="%1"
+        panePath="/repo"
+        api={fakeApi(nestedSummary)}
+        initialSummary={nestedSummary}
+        onClose={vi.fn()}
+      />,
+    )
+    const panel = screen.getByRole('complementary', { name: 'Changed files' })
+    const handle = screen.getByRole('separator', { name: 'Resize changed files panel' })
+
+    expect(panel).toHaveStyle({ width: '300px' })
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(panel).toHaveStyle({ width: '308px' })
+    expect(window.localStorage.getItem('commando-diff-file-panel-width')).toBe('308')
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 300 })
+    fireEvent.pointerMove(window, { clientX: 380 })
+    fireEvent.pointerUp(window)
+    expect(panel).toHaveStyle({ width: '388px' })
+    expect(window.localStorage.getItem('commando-diff-file-panel-width')).toBe('388')
+
+    fireEvent.doubleClick(handle)
+    expect(panel).toHaveStyle({ width: '300px' })
+    view.unmount()
+
+    window.localStorage.setItem('commando-diff-file-panel-width', '420')
+    renderModal(fakeApi(nestedSummary), vi.fn(), nestedSummary)
+    expect(screen.getByRole('complementary', { name: 'Changed files' })).toHaveStyle({ width: '420px' })
   })
 })
 
