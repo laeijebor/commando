@@ -8,8 +8,16 @@ let package = Package(
     products: [
         .executable(name: "CommandoIsland", targets: ["CommandoIsland"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.15.0"),
+    ],
     targets: [
-        .executableTarget(name: "CommandoIsland"),
+        .executableTarget(
+            name: "CommandoIsland",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
+        ),
         .testTarget(
             name: "CommandoIslandTests",
             dependencies: ["CommandoIsland"]
