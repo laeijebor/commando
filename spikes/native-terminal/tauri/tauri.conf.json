@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Native Terminal Tauri Spike",
+  "version": "0.1.0",
+  "identifier": "dev.commando.native-terminal-tauri-spike",
+  "build": {
+    "beforeDevCommand": "npm run spike:native-ui",
+    "devUrl": "http://127.0.0.1:5190/?shell=tauri",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Commando Native Terminal - Tauri",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 760,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}
