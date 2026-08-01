@@ -1582,7 +1582,8 @@ kbd {
   color: var(--accent);
 }
 
-.pane-path[data-copy-state="failed"] .pane-path-status {
+.pane-path[data-action-state="copy-failed"] .pane-path-status,
+.pane-path[data-action-state="open-failed"] .pane-path-status {
   color: var(--red);
 }
 
@@ -1591,6 +1592,46 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pane-path-menu {
+  position: fixed;
+  z-index: 100;
+  width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border-mid);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+
+.pane-path-menu button {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 4px;
+  outline: 0;
+  color: var(--text-soft);
+  background: transparent;
+  cursor: pointer;
+  font: 500 9px/1.2 var(--sans);
+  text-align: left;
+}
+
+.pane-path-menu button:hover,
+.pane-path-menu button:focus-visible {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.pane-path-menu svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
 }
 
 .workspace-empty {

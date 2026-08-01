@@ -83,6 +83,7 @@ const paneProps = {
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
   },
+  onOpenPath: vi.fn().mockResolvedValue(undefined),
   onFocus: vi.fn(),
   onOpenMenu: vi.fn(),
   onRename: vi.fn().mockResolvedValue(undefined),
@@ -110,15 +111,29 @@ describe('terminal pane actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Copied')
   })
 
-  it('copies the pane path to the clipboard', async () => {
+  it('opens path actions and copies the pane path to the clipboard', async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     render(<TerminalPaneCard {...paneProps} />)
 
-    fireEvent.click(screen.getByRole('button', { name: `Copy path ${pane.path}` }))
+    fireEvent.click(screen.getByRole('button', { name: `Path actions for ${pane.path}` }))
+    expect(screen.getByRole('menu', { name: `Path actions for ${pane.path}` })).toBeVisible()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(pane.path))
     expect(screen.getByText('Copied')).toBeVisible()
+  })
+
+  it('opens the pane folder from the path actions', async () => {
+    const onOpenPath = vi.fn().mockResolvedValue(undefined)
+    render(<TerminalPaneCard {...paneProps} onOpenPath={onOpenPath} />)
+
+    fireEvent.click(screen.getByRole('button', { name: `Path actions for ${pane.path}` }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open' }))
+
+    await waitFor(() => expect(onOpenPath).toHaveBeenCalledOnce())
+    expect(screen.queryByRole('menu', { name: `Path actions for ${pane.path}` })).not.toBeInTheDocument()
+    expect(screen.getByText('Opened')).toBeVisible()
   })
 
   it('leaves an unmodified right click to the terminal application', () => {
