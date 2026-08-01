@@ -14,13 +14,14 @@
 .sidebar-port-groups[hidden] { display: none; }
 .sidebar-port-group { min-width: 0; }
 .sidebar-port-group-header { display: flex; align-items: center; gap: 5px; }
-.sidebar-port-group-header > strong { min-width: 0; flex: 1; overflow: hidden; color: var(--muted); font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
-.sidebar-port-group-header > button { width: 20px; height: 20px; padding: 0; display: inline-grid; place-items: center; border: 0; border-radius: 4px; color: var(--muted-dim); background: transparent; cursor: pointer; opacity: .65; }
-.sidebar-port-group:hover .sidebar-port-group-header > button, .sidebar-port-group:focus-within .sidebar-port-group-header > button { opacity: 1; }
-.sidebar-port-group-header > button:hover { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
-.sidebar-port-group-header > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.sidebar-port-group-header > button:disabled { cursor: default; opacity: .35; }
-.sidebar-port-group-header > button svg { width: 11px; height: 11px; }
+.sidebar-port-session { min-width: 0; flex: 1; overflow: hidden; padding: 2px 0; border: 0; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 9px; font-weight: 700; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
+.sidebar-port-session:hover { color: var(--text); }
+.sidebar-port-session:focus-visible, .sidebar-port-kill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sidebar-port-kill { width: 20px; height: 20px; padding: 0; display: inline-grid; place-items: center; border: 0; border-radius: 4px; color: var(--muted-dim); background: transparent; cursor: pointer; opacity: .65; }
+.sidebar-port-group:hover .sidebar-port-kill, .sidebar-port-group:focus-within .sidebar-port-kill { opacity: 1; }
+.sidebar-port-kill:hover { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.sidebar-port-kill:disabled { cursor: default; opacity: .35; }
+.sidebar-port-kill svg { width: 11px; height: 11px; }
 .sidebar-port-links { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 5px; }
 .sidebar-port-link { min-width: 34px; height: 22px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border)); border-radius: 4px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-family: var(--mono); font-size: 8px; line-height: 1; text-decoration: none; }
 .sidebar-port-link:hover { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }

@@ -1030,6 +1030,7 @@ export function App() {
     const pane = paneMap.get(paneId)
     if (!pane) return
     setArea('workspace')
+    setMaximizedPaneId(null)
     setSelectedSessionId(pane.sessionId)
     setPendingFocusPaneId(paneId)
     setPaletteOpen(false)
@@ -1607,7 +1608,14 @@ export function App() {
               }}
             />
           </div>
-          <PortsSection token={token} sessions={snapshot?.sessions ?? []} ports={snapshot?.ports ?? []} />
+          <PortsSection
+            token={token}
+            sessions={snapshot?.sessions ?? []}
+            ports={snapshot?.ports ?? []}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={selectSession}
+            onSelectPane={jumpToPane}
+          />
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />
             <span>

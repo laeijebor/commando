@@ -9,6 +9,9 @@ type Props = {
   token: string
   sessions: TmuxSession[]
   ports: OpenPort[]
+  selectedSessionId: string | null
+  onSelectSession: (sessionId: string) => void
+  onSelectPane: (paneId: string) => void
 }
 
 export function openPortUrl(port: number): string {
@@ -18,7 +21,7 @@ export function openPortUrl(port: number): string {
   return url.toString()
 }
 
-export function PortsSection({ token, sessions, ports }: Props) {
+export function PortsSection({ token, sessions, ports, selectedSessionId, onSelectSession, onSelectPane }: Props) {
   const api = useRef(createPortManagementApi(token)).current
   const [collapsed, setCollapsed] = useState(false)
   const [menu, setMenu] = useState<{ port: OpenPort; x: number; y: number } | null>(null)
@@ -93,9 +96,19 @@ export function PortsSection({ token, sessions, ports }: Props) {
         {groups.map(({ session, ports: sessionPorts }) => (
           <div className="sidebar-port-group" key={session.id}>
             <div className="sidebar-port-group-header">
-              <strong title={session.name}>{session.name}</strong>
               <button
                 type="button"
+                className="sidebar-port-session"
+                onClick={() => onSelectSession(session.id)}
+                aria-label={`Select session ${session.name}`}
+                aria-pressed={session.id === selectedSessionId}
+                title={`Select session ${session.name}`}
+              >
+                {session.name}
+              </button>
+              <button
+                type="button"
+                className="sidebar-port-kill"
                 disabled={pending}
                 onClick={() => void killSessionPorts(session, sessionPorts)}
                 aria-label={`Kill all port processes for ${session.name}`}
@@ -111,8 +124,9 @@ export function PortsSection({ token, sessions, ports }: Props) {
                   href={openPortUrl(port.port)}
                   target="_blank"
                   rel="noreferrer"
-                  aria-label={`Open ${port.processName} on port ${port.port}`}
-                  title={`${port.processName} listening on port ${port.port}. Option-right-click for process actions.`}
+                  aria-label={`Focus pane for ${port.processName} on port ${port.port} and open service`}
+                  title={`${port.processName} listening on port ${port.port}. Opens the service and focuses its pane. Option-right-click for process actions.`}
+                  onClick={() => onSelectPane(port.paneId)}
                   onContextMenu={(event) => {
                     if (!event.altKey) return
                     event.preventDefault()

@@ -12,6 +12,12 @@ const portApi = vi.hoisted(() => ({
 
 vi.mock('./portManagementApi', () => ({ createPortManagementApi: () => portApi }))
 
+const navigationProps = {
+  selectedSessionId: null,
+  onSelectSession: vi.fn(),
+  onSelectPane: vi.fn(),
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   portApi.killPort.mockResolvedValue(undefined)
@@ -27,6 +33,8 @@ describe('PortsSection', () => {
   it('groups sorted port links under their session names', () => {
     render(
       <PortsSection
+        {...navigationProps}
+        selectedSessionId="$1"
         token="token"
         sessions={[
           { id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] },
@@ -44,13 +52,37 @@ describe('PortsSection', () => {
     expect(screen.getByText('3')).toBeVisible()
     expect(within(screen.getByLabelText('Open ports for frontend')).getAllByRole('link').map((link) => link.textContent)).toEqual(['3000', '5173'])
     expect(within(screen.getByLabelText('Open ports for api')).getAllByRole('link').map((link) => link.textContent)).toEqual(['8787'])
-    expect(screen.getByRole('link', { name: 'Open node on port 3000' })).toHaveAttribute('href', 'http://localhost:3000/')
-    expect(screen.getByRole('link', { name: 'Open workerd on port 8787' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).toHaveAttribute('href', 'http://localhost:3000/')
+    expect(screen.getByRole('link', { name: 'Focus pane for workerd on port 8787 and open service' })).toHaveAttribute('target', '_blank')
+  })
+
+  it('focuses the owning session and pane while preserving port links', () => {
+    render(
+      <PortsSection
+        {...navigationProps}
+        selectedSessionId="$1"
+        token="token"
+        sessions={[{ id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] }]}
+        ports={[{ port: 3000, processName: 'node', sessionId: '$1', paneId: '%2' }]}
+      />,
+    )
+
+    const session = screen.getByRole('button', { name: 'Select session frontend' })
+    expect(session).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(session)
+    const port = screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })
+    fireEvent.click(port)
+
+    expect(navigationProps.onSelectSession).toHaveBeenCalledWith('$1')
+    expect(navigationProps.onSelectPane).toHaveBeenCalledWith('%2')
+    expect(port).toHaveAttribute('href', 'http://localhost:3000/')
+    expect(port).toHaveAttribute('target', '_blank')
   })
 
   it('minimizes and reopens the grouped port links', () => {
     render(
       <PortsSection
+        {...navigationProps}
         token="token"
         sessions={[{ id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] }]}
         ports={[{ port: 3000, processName: 'node', sessionId: '$1', paneId: '%1' }]}
@@ -64,24 +96,25 @@ describe('PortsSection', () => {
     const reopen = screen.getByRole('button', { name: 'Reopen ports section' })
     expect(reopen).toHaveAttribute('aria-expanded', 'false')
     expect(document.getElementById('sidebar-port-groups')).toHaveAttribute('hidden')
-    expect(screen.queryByRole('link', { name: 'Open node on port 3000' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Ports' })).toBeVisible()
     expect(screen.getByText('1')).toBeVisible()
 
     fireEvent.click(reopen)
-    expect(screen.getByRole('link', { name: 'Open node on port 3000' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })).toBeVisible()
   })
 
   it('opens process actions only for Option-right-click and kills the current listener', async () => {
     const port = { port: 3000, processName: 'node', sessionId: '$1', paneId: '%1' }
     render(
       <PortsSection
+        {...navigationProps}
         token="token"
         sessions={[{ id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] }]}
         ports={[port]}
       />,
     )
-    const link = screen.getByRole('link', { name: 'Open node on port 3000' })
+    const link = screen.getByRole('link', { name: 'Focus pane for node on port 3000 and open service' })
 
     fireEvent.contextMenu(link, { clientX: 40, clientY: 50 })
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
@@ -96,6 +129,7 @@ describe('PortsSection', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(
       <PortsSection
+        {...navigationProps}
         token="token"
         sessions={[{ id: '$1', name: 'frontend', attached: true, activeWindowId: null, windowIds: [] }]}
         ports={[
@@ -121,6 +155,7 @@ describe('PortsSection', () => {
   it('stays hidden when no session owns an open port', () => {
     const { container } = render(
       <PortsSection
+        {...navigationProps}
         token="token"
         sessions={[]}
         ports={[{ port: 3000, processName: 'node', sessionId: '$1', paneId: '%1' }]}
