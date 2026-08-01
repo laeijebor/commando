@@ -4,6 +4,7 @@ import {
   validateTmuxPaneId,
   validateTmuxPaneTitle,
 } from './tmux-pane-actions.js'
+import { openFolderInFinder } from './open-folder.js'
 
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -11,6 +12,8 @@ const MAX_REQUEST_BYTES = 16 * 1024
 type PaneManagementDependencies = {
   actions?: TmuxPaneActions
   currentPaneIds: () => readonly string[]
+  panePath: (paneId: string) => string | undefined
+  openFolder?: (path: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
   onPanesChanged?: () => void | Promise<void>
 }
@@ -59,13 +62,13 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-function paneRoute(pathname: string): { paneId: string; action: 'rename' | 'delete' } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete)$/.exec(pathname)
+function paneRoute(pathname: string): { paneId: string; action: 'rename' | 'delete' | 'open' } | null {
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open)$/.exec(pathname)
   if (!match) return null
   try {
     return {
       paneId: validateTmuxPaneId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete',
+      action: match[2] as 'rename' | 'delete' | 'open',
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux pane id')
@@ -74,9 +77,11 @@ function paneRoute(pathname: string): { paneId: string; action: 'rename' | 'dele
 
 export class PaneManagementApi {
   private readonly actions: TmuxPaneActions
+  private readonly openFolder: (path: string) => Promise<void>
 
   constructor(private readonly dependencies: PaneManagementDependencies) {
     this.actions = dependencies.actions ?? new TmuxPaneActions()
+    this.openFolder = dependencies.openFolder ?? openFolderInFinder
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -104,6 +109,15 @@ export class PaneManagementApi {
         return true
       }
 
+      if (route.action === 'open') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const path = this.dependencies.panePath(route.paneId)
+        if (!path) throw new HttpError(404, 'Pane path is unavailable')
+        await this.openFolder(path)
+        writeJson(response, 200, { ok: true, paneId: route.paneId })
+        return true
+      }
+
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
       const body = await readJson(request)
       if (body.confirmPaneId !== route.paneId) {
@@ -117,7 +131,7 @@ export class PaneManagementApi {
     } catch (error) {
       if (error instanceof HttpError) {
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname.endsWith('/rename') ? 'POST' : 'DELETE')
+          response.setHeader('Allow', url.pathname.endsWith('/delete') ? 'DELETE' : 'POST')
         }
         writeJson(response, error.status, { error: error.message })
         return true

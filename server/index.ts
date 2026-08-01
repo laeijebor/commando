@@ -1053,6 +1053,7 @@ async function main(): Promise<void> {
   })
   const paneManagement = new PaneManagementApi({
     currentPaneIds: () => snapshot.panes.map((pane) => pane.id),
+    panePath: (paneId) => paneForId(paneId)?.path,
     beforePaneDeleted: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId
       if (windowId) await tmux.releaseWindowPaneResizes(windowId)
