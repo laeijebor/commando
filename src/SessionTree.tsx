@@ -5,6 +5,7 @@ import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers } from './sessionTreePreferences'
+import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-tree.css'
 
@@ -132,7 +133,17 @@ export function SessionTree(props: Props) {
       props.onSelectSession(sessionId)
     }
     window.addEventListener('keydown', selectShortcutSession)
-    return () => window.removeEventListener('keydown', selectShortcutSession)
+    const selectNativeShortcutSession = (event: Event) => {
+      const key = (event as CustomEvent<{ key?: string }>).detail?.key
+      const index = key && /^[1-9]$/.test(key) ? Number(key) - 1 : null
+      const sessionId = index === null ? undefined : shortcutSessionIds[index]
+      if (sessionId) props.onSelectSession(sessionId)
+    }
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, selectNativeShortcutSession)
+    return () => {
+      window.removeEventListener('keydown', selectShortcutSession)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, selectNativeShortcutSession)
+    }
   }, [props.onSelectSession, shortcutSessionIds])
 
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
@@ -291,7 +302,7 @@ export function SessionTree(props: Props) {
           props.creation?.onCreated?.(created)
         }}
       /> : null}
-      {menu ? <div className="session-context-menu" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button></div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button></div> : null}
     </div>
   )
 }

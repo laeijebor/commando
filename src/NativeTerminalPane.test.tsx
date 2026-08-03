@@ -1,0 +1,617 @@
+// @vitest-environment jsdom
+
+import { StrictMode, useEffect } from 'react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { PaneTerminalState } from '../shared/protocol'
+import { NativeTerminalPane } from './NativeTerminalPane'
+import {
+  NativeTerminalBridge,
+  REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
+  resetNativeTerminalBridge,
+  type NativeTerminalMessage,
+} from './nativeTerminalBridge'
+import type { PaneTerminalSink } from './paneStream'
+import {
+  PANE_RESET_MAX_REQUESTS,
+  PANE_RESET_RETRY_MS,
+  TerminalPaneRenderer,
+} from './TerminalPaneRenderer'
+
+vi.mock('./XtermPane', () => ({
+  XtermPane: ({
+    paneId,
+    registerSink,
+  }: {
+    paneId: string
+    registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
+  }) => {
+    useEffect(() => registerSink(paneId, { reset: () => {}, write: () => {} }), [paneId, registerSink])
+    return <div data-testid={`xterm-${paneId}`} />
+  },
+}))
+
+const terminalState: PaneTerminalState = {
+  width: 80,
+  height: 24,
+  cursorX: 0,
+  cursorY: 0,
+  alternateSavedX: 0,
+  alternateSavedY: 0,
+  alternateOn: false,
+  cursorVisible: true,
+  cursorShape: 'default',
+  cursorBlinking: false,
+  scrollRegionUpper: 0,
+  scrollRegionLower: 23,
+  wrapFlag: true,
+  originFlag: false,
+  insertFlag: false,
+  keypadFlag: false,
+  keypadCursorFlag: false,
+  mouseAnyFlag: false,
+  mouseSgrFlag: false,
+  paneTabs: [],
+}
+
+function rect(left: number, top: number, right: number, bottom: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+    toJSON: () => ({}),
+  }
+}
+
+let placeholderBounds = rect(10, 10, 90, 80)
+
+function installHandler(messages: NativeTerminalMessage[]) {
+  Object.defineProperty(window, 'webkit', {
+    configurable: true,
+    value: {
+      messageHandlers: {
+        commandoNativeTerminal: {
+          postMessage: (message: NativeTerminalMessage) => messages.push(message),
+        },
+      },
+    },
+  })
+}
+
+function receiver(bridge: NativeTerminalBridge) {
+  let eventSequence = 0
+  return (type: string, payload: object) => {
+    eventSequence += 1
+    window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: bridge.pageId,
+      eventSequence,
+      type,
+      payload,
+    })
+  }
+}
+
+async function connectBridge(bridge: NativeTerminalBridge, receive: ReturnType<typeof receiver>) {
+  const pending = bridge.connect()
+  receive('bridge.connected', {
+    capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES],
+    maxPanes: 8,
+  })
+  await pending
+}
+
+function nativeProps(bridge: NativeTerminalBridge) {
+  let sink: PaneTerminalSink | undefined
+  const props = {
+    bridge,
+    paneId: '%1',
+    connected: true,
+    resizeOwner: true,
+    order: 2,
+    ariaLabel: 'Pane 1 terminal input',
+    onFocus: vi.fn(),
+    onInputBytes: vi.fn(),
+    onResize: vi.fn(),
+    onFailure: vi.fn(),
+    registerSink: vi.fn((_paneId: string, nextSink: PaneTerminalSink) => {
+      sink = nextSink
+      return vi.fn()
+    }),
+    registerFocusable: vi.fn(),
+  }
+  return { props, getSink: () => sink }
+}
+
+function rendererFixture(connected = true) {
+  let sink: PaneTerminalSink | undefined
+  const props = {
+    paneId: '%1',
+    cols: 80,
+    rows: 24,
+    terminalState,
+    connected,
+    resizeOwner: true,
+    measurementKey: 'layout',
+    ariaLabel: `Pane 1 terminal input${connected ? '' : ', disconnected'}`,
+    order: 0,
+    onFocus: vi.fn(),
+    onInput: vi.fn(),
+    onInputBytes: vi.fn(),
+    onKey: vi.fn(),
+    onPaste: vi.fn(),
+    onSelectionCopied: vi.fn(),
+    onResize: vi.fn(),
+    onRequestReset: vi.fn(),
+    registerSink: vi.fn((_paneId: string, nextSink: PaneTerminalSink) => {
+      sink = nextSink
+      return () => {
+        if (sink === nextSink) sink = undefined
+      }
+    }),
+    registerFocusable: vi.fn(),
+  }
+  return { props, getSink: () => sink }
+}
+
+beforeEach(() => {
+  resetNativeTerminalBridge()
+  Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+  delete window.__commandoNativeTerminalReceive
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 100 })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 90 })
+  Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 })
+  placeholderBounds = rect(10, 10, 90, 80)
+  Object.defineProperty(window, 'requestAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: vi.fn((callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    )),
+  })
+  Object.defineProperty(window, 'cancelAnimationFrame', {
+    configurable: true,
+    writable: true,
+    value: vi.fn((handle: number) => window.clearTimeout(handle)),
+  })
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds(this: HTMLElement) {
+    if (this.dataset.occluderPosition === 'far') return rect(0, 0, 5, 5)
+    if (this.hasAttribute('data-native-terminal-occluder')) return rect(20, 20, 40, 40)
+    if (this.dataset.clippingAncestor === 'fractional') return rect(0, 0, 100, 90)
+    if (this.hasAttribute('data-clipping-ancestor')) return rect(0, 0, 60, 90)
+    if (this.hasAttribute('data-native-terminal-pane')) return placeholderBounds
+    return rect(0, 0, 0, 0)
+  })
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+})
+
+afterEach(() => {
+  cleanup()
+  resetNativeTerminalBridge()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+  Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+  delete window.__commandoNativeTerminalReceive
+  delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver
+  document.querySelectorAll('[data-native-terminal-occluder]').forEach((node) => node.remove())
+})
+
+describe('NativeTerminalPane', () => {
+  it('forwards canonical sink bytes, binary input, native resize, focus, and clipped frames', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props, getSink } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    const attachmentId = attach.payload.attachmentId as string
+    act(() => receive('pane.attached', { paneId: '%1', attachmentId }))
+
+    act(() => getSink()!.reset({
+      data: new Uint8Array([0, 255, 128, 1, 2]),
+      cols: 91,
+      rows: 31,
+      terminalState,
+      revision: 7,
+    }))
+    expect(messages.at(-1)).toMatchObject({
+      type: 'pane.reset',
+      payload: { paneId: '%1', attachmentId, data: 'AP+AAQI=', cols: 91, rows: 31, revision: 7 },
+    })
+    act(() => receive('pane.seeded', { paneId: '%1', attachmentId, revision: 7 }))
+    act(() => getSink()!.write(new Uint8Array([255, 0, 65]), 8))
+    expect(messages.at(-1)).toMatchObject({
+      type: 'pane.data',
+      payload: { paneId: '%1', attachmentId, data: '/wBB', revision: 8 },
+    })
+
+    act(() => receive('pane.input_bytes', { paneId: '%1', attachmentId, data: 'AP+A' }))
+    expect(props.onInputBytes).toHaveBeenCalledWith('AP+A')
+    act(() => receive('pane.resize', { paneId: '%1', attachmentId, cols: 77, rows: 22 }))
+    expect(props.onResize).toHaveBeenCalledWith(77, 22)
+    act(() => receive('pane.focus_changed', { paneId: '%1', attachmentId, focused: true }))
+    expect(props.onFocus).toHaveBeenCalledOnce()
+
+    fireEvent.focus(screen.getByRole('application', { name: 'Pane 1 terminal input' }))
+    expect(messages.at(-1)).toMatchObject({
+      type: 'pane.focus',
+      payload: { paneId: '%1', attachmentId },
+    })
+    await waitFor(() => expect(messages.some((message) => (
+      message.type === 'pane.frame' &&
+      message.payload.x === 10 &&
+      message.payload.y === 10 &&
+      message.payload.width === 80 &&
+      message.payload.height === 70 &&
+      message.payload.scale === 2 &&
+      message.payload.visible === true &&
+      message.payload.resizeOwner === true &&
+      message.payload.order === 2
+    ))).toBe(true))
+    bridge.dispose()
+  })
+
+  it('keeps the populated native attachment while connection accessibility state changes', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props, getSink } = nativeProps(bridge)
+    const view = render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    const attachmentId = attach.payload.attachmentId as string
+    act(() => receive('pane.attached', { paneId: '%1', attachmentId }))
+    act(() => getSink()!.reset({
+      data: new Uint8Array([65]),
+      cols: 80,
+      rows: 24,
+      terminalState,
+      revision: 1,
+    }))
+    act(() => receive('pane.seeded', { paneId: '%1', attachmentId, revision: 1 }))
+
+    view.rerender(
+      <NativeTerminalPane
+        {...props}
+        connected={false}
+        ariaLabel="Pane 1 terminal input, disconnected"
+      />,
+    )
+
+    expect(screen.getByRole('application', { name: 'Pane 1 terminal input, disconnected' }))
+      .toHaveAttribute('aria-disabled', 'true')
+    const attachMessages = messages.filter((message) => message.type === 'pane.attach')
+    expect(attachMessages).toHaveLength(2)
+    expect(attachMessages[1]).toMatchObject({
+      payload: {
+        paneId: '%1',
+        attachmentId,
+        ariaLabel: 'Pane 1 terminal input, disconnected',
+      },
+    })
+    expect(props.registerSink).toHaveBeenCalledOnce()
+    expect(messages.filter((message) => message.type === 'pane.detach')).toHaveLength(0)
+    bridge.dispose()
+  })
+
+  it('hides only for intersecting occluders, not unrelated note surfaces', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+
+    const note = document.createElement('div')
+    note.className = 'notes-editor popped-out'
+    note.dataset.occluderPosition = 'far'
+    note.setAttribute('data-native-terminal-occluder', '')
+    document.body.append(note)
+    fireEvent.scroll(window)
+
+    await waitFor(() => {
+      const frames = messages.filter((message) => message.type === 'pane.frame')
+      expect(frames.at(-1)?.payload.visible).toBe(true)
+    })
+
+    const contextMenu = document.createElement('div')
+    contextMenu.className = 'pane-context-menu'
+    contextMenu.setAttribute('data-native-terminal-occluder', '')
+    document.body.append(contextMenu)
+    fireEvent.scroll(window)
+    await waitFor(() => {
+      const frames = messages.filter((message) => message.type === 'pane.frame')
+      expect(frames.at(-1)?.payload.visible).toBe(false)
+    })
+    bridge.dispose()
+  })
+
+  it('sends the full frame as hidden when a scroll ancestor partially clips the pane', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    const view = render(
+      <div data-clipping-ancestor="" style={{ overflow: 'auto' }}>
+        <NativeTerminalPane {...props} />
+      </div>,
+    )
+    const clippingAncestor = view.container.querySelector<HTMLElement>('[data-clipping-ancestor]')!
+    Object.defineProperties(clippingAncestor, {
+      clientLeft: { configurable: true, value: 0 },
+      clientTop: { configurable: true, value: 0 },
+      clientWidth: { configurable: true, value: 60 },
+      clientHeight: { configurable: true, value: 90 },
+    })
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+    fireEvent.scroll(clippingAncestor)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({
+        x: 10,
+        y: 10,
+        width: 80,
+        height: 70,
+        visible: false,
+      })
+    })
+    bridge.dispose()
+  })
+
+  it('tolerates fractional layout rounding but still hides a genuinely clipped pane', async () => {
+    placeholderBounds = rect(0, 0, 100.390625, 80)
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    const view = render(
+      <div data-clipping-ancestor="fractional" style={{ overflow: 'hidden' }}>
+        <NativeTerminalPane {...props} />
+      </div>,
+    )
+    const clippingAncestor = view.container.querySelector<HTMLElement>('[data-clipping-ancestor]')!
+    Object.defineProperties(clippingAncestor, {
+      clientLeft: { configurable: true, value: 0 },
+      clientTop: { configurable: true, value: 0 },
+      clientWidth: { configurable: true, value: 100 },
+      clientHeight: { configurable: true, value: 90 },
+    })
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+    fireEvent.scroll(clippingAncestor)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ width: 100.390625, visible: true })
+    })
+
+    placeholderBounds = rect(0, 0, 102, 80)
+    fireEvent.scroll(clippingAncestor)
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ width: 102, visible: false })
+    })
+    bridge.dispose()
+  })
+
+  it('uses a new attachment for the StrictMode replay so stale cleanup cannot detach its replacement', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    const view = render(<StrictMode><NativeTerminalPane {...props} /></StrictMode>)
+
+    const attaches = messages.filter((message) => message.type === 'pane.attach')
+    const detaches = messages.filter((message) => message.type === 'pane.detach')
+    expect(attaches).toHaveLength(2)
+    expect(detaches).toHaveLength(1)
+    expect(attaches[0]?.payload.attachmentId).not.toBe(attaches[1]?.payload.attachmentId)
+    expect(detaches[0]?.payload.attachmentId).toBe(attaches[0]?.payload.attachmentId)
+
+    act(() => receive('pane.detached', {
+      paneId: '%1',
+      attachmentId: attaches[0]?.payload.attachmentId,
+    }))
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attaches[1]?.payload.attachmentId,
+    }))
+    await act(async () => {})
+    expect(props.onFailure).not.toHaveBeenCalled()
+    view.unmount()
+    expect(messages.filter((message) => message.type === 'pane.detach').at(-1)?.payload.attachmentId)
+      .toBe(attaches[1]?.payload.attachmentId)
+    bridge.dispose()
+  })
+})
+
+describe('TerminalPaneRenderer fallback', () => {
+  it('stays xterm-only without a WebKit handler and emits no console error', async () => {
+    vi.useFakeTimers()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { props } = rendererFixture()
+    render(<TerminalPaneRenderer {...props} />)
+
+    expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  it('falls only the failed native pane back to xterm and reseeds the replacement sink', async () => {
+    vi.useFakeTimers()
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const { props } = rendererFixture()
+    render(<TerminalPaneRenderer {...props} />)
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    expect(messages.some((message) => message.type === 'bridge.connect')).toBe(true)
+    const connectMessage = messages.find((message) => message.type === 'bridge.connect')!
+    await act(async () => {
+      window.__commandoNativeTerminalReceive?.({
+        version: 1,
+        pageId: connectMessage.pageId,
+        eventSequence: 1,
+        type: 'bridge.connected',
+        payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
+      })
+    })
+    expect(screen.getByRole('application', { name: 'Pane 1 terminal input' })).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(0))
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: attach.pageId,
+      eventSequence: 2,
+      type: 'pane.attached',
+      payload: { paneId: '%1', attachmentId: attach.payload.attachmentId },
+    }))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(2)
+
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: attach.pageId,
+      eventSequence: 3,
+      type: 'pane.failed',
+      payload: {
+        paneId: '%1',
+        attachmentId: attach.payload.attachmentId,
+        code: 'native-runtime-failed',
+        fatal: false,
+      },
+    }))
+
+    expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('terminal reset watchdog', () => {
+  it('bounds retries when no reset arrives', () => {
+    vi.useFakeTimers()
+    const { props } = rendererFixture()
+    const view = render(<TerminalPaneRenderer {...props} />)
+
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * (PANE_RESET_MAX_REQUESTS + 2)))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(PANE_RESET_MAX_REQUESTS)
+    view.unmount()
+  })
+
+  it('stops retrying when the sink receives its first reset', () => {
+    vi.useFakeTimers()
+    const { props, getSink } = rendererFixture()
+    render(<TerminalPaneRenderer {...props} />)
+
+    act(() => getSink()!.reset({
+      data: new Uint8Array([65]),
+      cols: 80,
+      rows: 24,
+      terminalState,
+      revision: 1,
+    }))
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * PANE_RESET_MAX_REQUESTS))
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+  })
+
+  it('waits past the server gate before retrying a rate-limited-like request', () => {
+    vi.useFakeTimers()
+    const { props, getSink } = rendererFixture()
+    render(<TerminalPaneRenderer {...props} />)
+
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    act(() => vi.advanceTimersByTime(2_000))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS - 2_000))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(2)
+    act(() => getSink()!.reset({
+      data: new Uint8Array([65]),
+      cols: 80,
+      rows: 24,
+      terminalState,
+      revision: 1,
+    }))
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * 2))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(2)
+  })
+
+  it('stays quiet offline and restarts the watchdog on reconnect', () => {
+    vi.useFakeTimers()
+    const { props } = rendererFixture(false)
+    const view = render(<TerminalPaneRenderer {...props} />)
+
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * 2))
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    view.rerender(<TerminalPaneRenderer {...props} connected ariaLabel="Pane 1 terminal input" />)
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    view.rerender(
+      <TerminalPaneRenderer
+        {...props}
+        connected={false}
+        ariaLabel="Pane 1 terminal input, disconnected"
+      />,
+    )
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * 2))
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    view.rerender(<TerminalPaneRenderer {...props} connected ariaLabel="Pane 1 terminal input" />)
+    expect(props.onRequestReset).toHaveBeenCalledOnce()
+    act(() => vi.advanceTimersByTime(0))
+    expect(props.onRequestReset).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears pending retries when the renderer unmounts', () => {
+    vi.useFakeTimers()
+    const { props } = rendererFixture()
+    const view = render(<TerminalPaneRenderer {...props} />)
+    view.unmount()
+
+    act(() => vi.advanceTimersByTime(PANE_RESET_RETRY_MS * PANE_RESET_MAX_REQUESTS))
+    expect(props.onRequestReset).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})

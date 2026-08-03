@@ -309,7 +309,7 @@ export function LinearSection({ token }: { token: string }) {
         </>
       )}
       {issue ? (
-        <aside className="linear-issue-drawer">
+        <aside className="linear-issue-drawer" data-native-terminal-occluder="">
           <header><div><div className="linear-issue-copy-actions"><button type="button" onClick={() => void copyToClipboard(issue.identifier, 'issue-id', 'issue ID')} title={copiedTarget === 'issue-id' ? 'Copied issue ID' : `Copy issue ID: ${issue.identifier}`} aria-label={copiedTarget === 'issue-id' ? 'Copied issue ID' : `Copy issue ID: ${issue.identifier}`}><span>{issue.identifier}</span>{copiedTarget === 'issue-id' ? <Check aria-hidden="true" /> : null}</button><button type="button" className="linear-issue-url-copy" onClick={() => void copyToClipboard(issue.url, 'issue-url', 'issue URL')} title={copiedTarget === 'issue-url' ? 'Copied issue URL' : 'Copy issue URL'} aria-label={copiedTarget === 'issue-url' ? 'Copied issue URL' : 'Copy issue URL'}>{copiedTarget === 'issue-url' ? <Check aria-hidden="true" /> : <Link aria-hidden="true" />}</button></div><h2>{issue.title}</h2></div><button type="button" onClick={() => setIssue(null)} aria-label="Close issue"><X /></button></header>
           <div className="linear-issue-meta"><select value={issue.state.id} onChange={(event) => void moveIssueToState(issue.id, event.target.value)}>{issue.availableStates.map((state) => <option value={state.id} key={state.id}>{state.name}</option>)}</select><PriorityBadge priority={issue.priority} label={issue.priorityLabel} /><span>{issue.assignee?.name ?? 'Unassigned'}</span><a href={issue.url} target="_blank" rel="noreferrer">Open in Linear <ArrowUpRight /></a></div>
           <div className="linear-issue-scroll">

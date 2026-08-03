@@ -45,6 +45,7 @@ export function PortContextMenu({ port, x, y, busy, onClose, onKill }: Props) {
     <div
       ref={menuRef}
       className="port-context-menu"
+      data-native-terminal-occluder=""
       style={{ left: position.x, top: position.y }}
       role="menu"
       aria-label={`Port actions for ${port.port}`}

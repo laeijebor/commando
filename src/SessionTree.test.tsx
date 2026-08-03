@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { SessionTree } from './SessionTree'
+import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 
 const sessionApi = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
@@ -127,6 +128,12 @@ describe('SessionTree', () => {
       '$5',
       '$9',
     ])
+
+    onSelectSession.mockClear()
+    fireEvent(window, new CustomEvent(NATIVE_TERMINAL_SHORTCUT_EVENT, {
+      detail: { key: '2', metaKey: true },
+    }))
+    expect(onSelectSession).toHaveBeenCalledWith('$1')
   })
 
   it('ignores session numbers outside Cmd+1 through Cmd+9', () => {

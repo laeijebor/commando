@@ -1058,6 +1058,7 @@ export function NotesSection({
       ) : null}
       <div
         className={`notes-editor${poppedOut ? ' popped-out' : ''}`}
+        data-native-terminal-occluder={poppedOut ? '' : undefined}
         style={poppedOut ? { left: windowBounds.x, top: windowBounds.y, width: windowBounds.width, height: windowBounds.height } : undefined}
         role={poppedOut ? 'dialog' : undefined}
         aria-label={poppedOut ? `Popped-out note: ${active?.title || 'Untitled note'}` : undefined}
@@ -1169,6 +1170,7 @@ export function NotesSection({
       {menu ? (
         <div
           className="notes-context-menu"
+          data-native-terminal-occluder=""
           style={{ left: menu.x, top: menu.y }}
           role="menu"
           onPointerDown={(event) => event.stopPropagation()}

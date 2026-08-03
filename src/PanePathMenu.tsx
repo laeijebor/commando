@@ -65,6 +65,7 @@ export function PanePathMenu({ path, x, y, onClose, onCopy, onOpen }: PanePathMe
     <div
       ref={menuRef}
       className="pane-path-menu"
+      data-native-terminal-occluder=""
       style={{ left: position.x, top: position.y }}
       role="menu"
       aria-label={`Path actions for ${path}`}

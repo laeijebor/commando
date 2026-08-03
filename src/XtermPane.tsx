@@ -15,7 +15,7 @@ import type { PaneTerminalSink } from './paneStream'
 import { semanticKeyForEvent } from './terminalInput'
 import { sessionShortcutIndex } from './sessionShortcuts'
 
-type XtermPaneProps = {
+export type XtermPaneProps = {
   paneId: string
   cols: number
   rows: number

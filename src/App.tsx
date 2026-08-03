@@ -76,7 +76,7 @@ import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './
 import { dispatchBoundedPaste } from './terminalInput'
 import { THEMES, applyTheme, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
-import { XtermPane } from './XtermPane'
+import { TerminalPaneRenderer } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
@@ -102,6 +102,7 @@ import {
 } from './agentHud'
 import type { SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
+import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import {
   createOwner,
   getAuthBootstrap,
@@ -243,9 +244,11 @@ type TerminalPaneProps = {
   onDragOver: (event: DragEvent<HTMLElement>) => void
   onDrop: (event: DragEvent<HTMLElement>) => void
   onInput: (data: string) => void
+  onInputBytes: (data: string) => void
   onKey: (key: SpecialKey) => void
   onPaste: (data: string) => void
   onResize: (cols: number, rows: number) => void
+  onRequestReset: () => void
   registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
 }
@@ -274,9 +277,11 @@ export function TerminalPaneCard({
   onDragOver,
   onDrop,
   onInput,
+  onInputBytes,
   onKey,
   onPaste,
   onResize,
+  onRequestReset,
   registerSink,
   registerFocusable,
 }: TerminalPaneProps) {
@@ -459,7 +464,7 @@ export function TerminalPaneCard({
           </button>
         </span>
       </header>
-      <XtermPane
+      <TerminalPaneRenderer
         paneId={pane.id}
         cols={pane.width}
         rows={pane.height}
@@ -468,12 +473,15 @@ export function TerminalPaneCard({
         resizeOwner={resizeOwner}
         measurementKey={measurementKey}
         ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
+        order={index}
         onFocus={onFocus}
         onInput={onInput}
+        onInputBytes={onInputBytes}
         onKey={onKey}
         onPaste={onPaste}
         onSelectionCopied={showSelectionCopied}
         onResize={onResize}
+        onRequestReset={onRequestReset}
         registerSink={registerSink}
         registerFocusable={registerFocusable}
       />
@@ -1011,8 +1019,17 @@ export function App() {
         setPaletteOpen(false)
       }
     }
+    const handleNativeShortcut = (event: Event) => {
+      if ((event as CustomEvent<{ key?: string }>).detail?.key === 'k') {
+        setPaletteOpen((current) => !current)
+      }
+    }
     window.addEventListener('keydown', handleGlobalKeyDown)
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, handleNativeShortcut)
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, handleNativeShortcut)
+    }
   }, [paletteOpen])
 
   useEffect(() => {
@@ -1109,6 +1126,22 @@ export function App() {
         requestId: requestId('input'),
       })
     }
+  }
+
+  const sendPaneInputBytes = (paneId: string, data: string) => {
+    if (!connected) return
+    send({
+      type: 'input_bytes',
+      paneId,
+      data,
+      encoding: 'base64',
+      requestId: requestId('input-bytes'),
+    })
+  }
+
+  const requestPaneReset = (paneId: string) => {
+    if (!connected) return
+    send({ type: 'request_pane_reset', paneId, requestId: requestId('pane-reset') })
   }
 
   const sendPaneKey = (paneId: string, key: SpecialKey) => {
@@ -1542,6 +1575,7 @@ export function App() {
         <button
           type="button"
           className={`drawer-scrim${leftPanelOpen || rightPanelOpen ? ' visible' : ''}`}
+          data-native-terminal-occluder={leftPanelOpen || rightPanelOpen ? '' : undefined}
           onClick={() => {
             setLeftPanelOpen(false)
             setRightPanelOpen(false)
@@ -1817,6 +1851,7 @@ export function App() {
                             dropPane(group.windowId, group.id, pane.id)
                           }}
                           onInput={(data) => sendPaneInput(pane.id, data)}
+                          onInputBytes={(data) => sendPaneInputBytes(pane.id, data)}
                           onKey={(key) => sendPaneKey(pane.id, key)}
                           onPaste={(data) => sendPanePaste(pane.id, data)}
                           onResize={(cols, rows) => sendPaneResize(
@@ -1826,6 +1861,7 @@ export function App() {
                             cols,
                             rows,
                           )}
+                          onRequestReset={() => requestPaneReset(pane.id)}
                           registerSink={registerTerminalSink}
                           registerFocusable={registerFocusable}
                         />,
@@ -2003,6 +2039,7 @@ export function App() {
       {paletteOpen ? (
         <div
           className="palette-backdrop"
+          data-native-terminal-occluder=""
           role="presentation"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setPaletteOpen(false)

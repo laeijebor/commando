@@ -77,6 +77,7 @@ export function PaneContextMenu({
     <div
       ref={menuRef}
       className="pane-context-menu"
+      data-native-terminal-occluder=""
       style={{ left: position.x, top: position.y }}
       role="menu"
       aria-label={`Pane actions for ${paneLabel}`}

@@ -662,7 +662,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   }
 
   return (
-    <div className="git-diff-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <div className="git-diff-backdrop" data-native-terminal-occluder="" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <section className="git-diff-modal" role="dialog" aria-modal="true" aria-labelledby="git-diff-title">
         <header className="git-diff-header">
           <div className="git-diff-heading">

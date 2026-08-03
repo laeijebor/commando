@@ -96,9 +96,11 @@ const paneProps = {
   onDragOver: vi.fn(),
   onDrop: vi.fn(),
   onInput: vi.fn(),
+  onInputBytes: vi.fn(),
   onKey: vi.fn(),
   onPaste: vi.fn(),
   onResize: vi.fn(),
+  onRequestReset: vi.fn(),
   registerSink: vi.fn(() => () => undefined),
   registerFocusable: vi.fn(),
 }

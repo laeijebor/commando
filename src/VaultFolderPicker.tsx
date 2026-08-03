@@ -60,7 +60,7 @@ export function VaultFolderPicker({ mode, initialPath, browse, onCancel, onConfi
   }
 
   return (
-    <div className="vault-picker-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
+    <div className="vault-picker-backdrop" data-native-terminal-occluder="" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
       <section className="vault-picker" role="dialog" aria-modal="true" aria-labelledby="vault-picker-title">
         <header>
           <div>

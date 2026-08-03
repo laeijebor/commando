@@ -1463,6 +1463,12 @@ kbd {
   user-select: text;
 }
 
+.native-terminal-placeholder {
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
 .xterm-host,
 .terminal-source-grid .xterm {
   width: max-content;
