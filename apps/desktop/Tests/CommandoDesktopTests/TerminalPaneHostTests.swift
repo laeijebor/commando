@@ -77,6 +77,11 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(shortcuts, ["k", "4"])
     }
 
+    func testTerminalAcceptsTheActivationClick() {
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        XCTAssertTrue(view.acceptsFirstMouse(for: nil))
+    }
+
     func testOverlayOnlyHitTestsTerminalChildren() {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
         XCTAssertNil(overlay.hitTest(NSPoint(x: 10, y: 10)))
