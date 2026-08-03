@@ -1,8 +1,32 @@
 import AppKit
+import SwiftTerm
 import WebKit
 
 private let nativeTerminalHandlerName = "nativeTerminal"
-private let webInterfaceURL = URL(string: "http://127.0.0.1:5190/?shell=swift")!
+private let shouldUseMetalRendering: Bool = {
+    #if DEBUG
+    ProcessInfo.processInfo.environment["COMMANDO_NATIVE_TERMINAL_METAL"] == "1"
+    #else
+    ProcessInfo.processInfo.environment["COMMANDO_NATIVE_TERMINAL_METAL"] != "0"
+    #endif
+}()
+private let webInterfaceURL: URL = {
+    let uiPort = ProcessInfo.processInfo.environment["COMMANDO_NATIVE_UI_PORT"] ?? "5190"
+    var components = URLComponents(string: "http://127.0.0.1:\(uiPort)/")!
+    components.queryItems = [URLQueryItem(name: "shell", value: "swift")]
+    if let paneId = ProcessInfo.processInfo.environment["COMMANDO_PANE_ID"], !paneId.isEmpty {
+        components.queryItems?.append(URLQueryItem(name: "pane", value: paneId))
+    }
+    if let token = ProcessInfo.processInfo.environment["COMMANDO_TOKEN"], !token.isEmpty {
+        var fragment = URLComponents()
+        fragment.queryItems = [URLQueryItem(name: "token", value: token)]
+        components.percentEncodedFragment = fragment.percentEncodedQuery?.replacingOccurrences(
+            of: "+",
+            with: "%2B"
+        )
+    }
+    return components.url!
+}()
 
 @MainActor
 private protocol NativeTerminalMessageReceiving: AnyObject {
@@ -28,24 +52,25 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
 @MainActor
 private final class NativeTerminalCoordinator: NSObject,
     NativeTerminalMessageReceiving,
-    WKNavigationDelegate
+    WKNavigationDelegate,
+    @preconcurrency TerminalViewDelegate
 {
     let rootView: NSView
 
     private let webView: WKWebView
-    private let terminalScrollView: NSScrollView
-    private let terminalTextView: NSTextView
+    private let terminalView: TerminalView
     private var scriptMessageHandler: WeakScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var latestFrame: TerminalFramePayload?
+    private var terminalOrderGate = NativeTerminalOrderGate()
+    private var metalRenderingAttempted = false
 
     override init() {
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 760))
 
         let configuration = WKWebViewConfiguration()
         webView = WKWebView(frame: rootView.bounds, configuration: configuration)
-        terminalScrollView = NSScrollView(frame: .zero)
-        terminalTextView = NSTextView(frame: .zero)
+        terminalView = TerminalView(frame: .zero)
 
         super.init()
 
@@ -57,7 +82,7 @@ private final class NativeTerminalCoordinator: NSObject,
         configureTerminalSurface()
 
         rootView.addSubview(webView)
-        rootView.addSubview(terminalScrollView, positioned: .above, relativeTo: webView)
+        rootView.addSubview(terminalView, positioned: .above, relativeTo: webView)
         loadWebInterface()
     }
 
@@ -70,11 +95,31 @@ private final class NativeTerminalCoordinator: NSObject,
             forName: nativeTerminalHandlerName
         )
         scriptMessageHandler = nil
+        terminalView.terminalDelegate = nil
+        if terminalView.isUsingMetalRenderer {
+            try? terminalView.setUseMetal(false)
+        }
+        terminalView.removeFromSuperview()
     }
 
     func reapplyTerminalFrame() {
         guard let latestFrame else { return }
         apply(frame: latestFrame)
+    }
+
+    private func enableMetalRenderingIfAvailable() {
+        guard !metalRenderingAttempted, terminalView.window != nil else { return }
+        metalRenderingAttempted = true
+        guard shouldUseMetalRendering else { return }
+
+        do {
+            try terminalView.setUseMetal(true)
+        } catch {
+            NSLog(
+                "NativeTerminalSwiftSpike continuing with CoreGraphics rendering: %@",
+                String(describing: error)
+            )
+        }
     }
 
     func receiveNativeTerminalMessage(body: Any) {
@@ -84,7 +129,11 @@ private final class NativeTerminalCoordinator: NSObject,
                 latestFrame = frame
                 apply(frame: frame)
             case .focus:
-                terminalTextView.window?.makeFirstResponder(terminalTextView)
+                terminalView.window?.makeFirstResponder(terminalView)
+            case let .reset(reset):
+                apply(reset: reset)
+            case let .data(data):
+                apply(data: data)
             }
         } catch {
             NSLog("NativeTerminalSwiftSpike ignored malformed nativeTerminal message: %@", String(describing: error))
@@ -130,61 +179,29 @@ private final class NativeTerminalCoordinator: NSObject,
     }
 
     private func configureTerminalSurface() {
-        terminalScrollView.isHidden = true
-        terminalScrollView.borderType = .noBorder
-        terminalScrollView.drawsBackground = true
-        terminalScrollView.backgroundColor = NSColor(
+        let backgroundColor = NSColor(
             calibratedRed: 0.035,
             green: 0.031,
             blue: 0.059,
             alpha: 1
         )
-        terminalScrollView.hasVerticalScroller = true
-        terminalScrollView.autohidesScrollers = true
-
-        terminalTextView.isEditable = true
-        terminalTextView.isSelectable = true
-        terminalTextView.isRichText = false
-        terminalTextView.allowsUndo = true
-        terminalTextView.drawsBackground = true
-        terminalTextView.backgroundColor = terminalScrollView.backgroundColor
-        terminalTextView.textColor = NSColor(
+        let foregroundColor = NSColor(
             calibratedRed: 0.82,
             green: 0.95,
             blue: 0.87,
             alpha: 1
         )
-        terminalTextView.insertionPointColor = .white
-        terminalTextView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        terminalTextView.textContainerInset = NSSize(width: 12, height: 10)
-        terminalTextView.minSize = NSSize(width: 0, height: 0)
-        terminalTextView.maxSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        terminalTextView.isVerticallyResizable = true
-        terminalTextView.isHorizontallyResizable = false
-        terminalTextView.autoresizingMask = [.width]
-        terminalTextView.textContainer?.widthTracksTextView = true
-        terminalTextView.textContainer?.containerSize = NSSize(
-            width: 0,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        terminalTextView.string = """
-        Last login: Sat Aug  1 09:41:12 on ttys003
-        commando native-terminal spike
 
-        $ pwd
-        /Users/developer/commando
-        $ git status --short
-         M spikes/native-terminal/swift/Sources/NativeTerminalSwiftSpike/AppMain.swift
-        $ swift run NativeTerminalSwiftSpike
-        Native AppKit surface attached to the shared WebKit shell.
-
-        $ _
-        """
-
-        terminalScrollView.documentView = terminalTextView
+        terminalView.isHidden = true
+        terminalView.clipsToBounds = true
+        terminalView.terminalDelegate = self
+        terminalView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        terminalView.nativeBackgroundColor = backgroundColor
+        terminalView.nativeForegroundColor = foregroundColor
+        terminalView.caretColor = .white
+        terminalView.caretViewTracksFocus = true
+        terminalView.scrollerStyle = .overlay
+        terminalView.layer?.backgroundColor = backgroundColor.cgColor
     }
 
     private func apply(frame: TerminalFramePayload) {
@@ -203,19 +220,59 @@ private final class NativeTerminalCoordinator: NSObject,
             backingScale: backingScale
         )
 
-        terminalScrollView.frame = NSRect(
+        if placement.isHidden, terminalView.isUsingMetalRenderer {
+            try? terminalView.setUseMetal(false)
+            metalRenderingAttempted = false
+        }
+        terminalView.frame = NSRect(
             x: placement.x,
             y: placement.y,
             width: placement.width,
             height: placement.height
         )
-        terminalScrollView.isHidden = placement.isHidden
-
+        terminalView.isHidden = placement.isHidden
         if !placement.isHidden {
-            var documentFrame = terminalTextView.frame
-            documentFrame.size.width = terminalScrollView.contentSize.width
-            documentFrame.size.height = max(documentFrame.height, terminalScrollView.contentSize.height)
-            terminalTextView.frame = documentFrame
+            enableMetalRenderingIfAvailable()
+        }
+    }
+
+    private func apply(reset: TerminalResetPayload) {
+        guard terminalOrderGate.accept(reset: reset) else { return }
+
+        terminalView.resize(cols: reset.cols, rows: reset.rows)
+        terminalView.getTerminal().resetToInitialState()
+        feed(reset.data)
+        // Parse the seed at its captured grid, then restore the actual viewport capacity.
+        terminalView.setFrameSize(terminalView.frame.size)
+    }
+
+    private func apply(data: TerminalDataPayload) {
+        guard terminalOrderGate.accept(data: data) else { return }
+        feed(data.data)
+    }
+
+    private func feed(_ data: Data) {
+        let bytes = [UInt8](data)
+        terminalView.feed(byteArray: bytes[...])
+    }
+
+    private func sendNativeEvent(_ event: [String: Any]) {
+        webView.callAsyncJavaScript(
+            """
+            if (typeof window.__commandoNativeTerminalEvent === "function") {
+                window.__commandoNativeTerminalEvent(event);
+            }
+            """,
+            arguments: ["event": event],
+            in: nil,
+            in: .page
+        ) { result in
+            if case let .failure(error) = result {
+                NSLog(
+                    "NativeTerminalSwiftSpike failed to deliver terminal event: %@",
+                    String(describing: error)
+                )
+            }
         }
     }
 
@@ -247,6 +304,45 @@ private final class NativeTerminalCoordinator: NSObject,
         navigationRetryTimer = nil
         loadWebInterface()
     }
+
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        guard newCols > 0, newRows > 0 else { return }
+        sendNativeEvent(["kind": "resize", "cols": newCols, "rows": newRows])
+    }
+
+    func setTerminalTitle(source: TerminalView, title: String) {}
+
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+
+    func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        sendNativeEvent([
+            "kind": "input",
+            "data": Data(data).base64EncodedString(),
+        ])
+    }
+
+    func scrolled(source: TerminalView, position: Double) {}
+
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+
+    func bell(source: TerminalView) {
+        NSSound.beep()
+    }
+
+    func clipboardCopy(source: TerminalView, content: Data) {
+        guard let string = String(data: content, encoding: .utf8) else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([string as NSString])
+    }
+
+    func clipboardRead(source: TerminalView) -> Data? {
+        nil
+    }
+
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
+
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
 @MainActor

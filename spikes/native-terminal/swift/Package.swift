@@ -13,9 +13,15 @@ let package = Package(
             targets: ["NativeTerminalSwiftSpike"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.15.0"),
+    ],
     targets: [
         .executableTarget(
             name: "NativeTerminalSwiftSpike",
+            dependencies: [
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug)),
             ]

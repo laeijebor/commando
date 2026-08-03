@@ -14,7 +14,7 @@
     "island:install": "bash scripts/install-island-app.sh",
     "spike:native-ui": "vite --config spikes/native-terminal/ui/vite.config.ts",
     "spike:native-ui:build": "tsc -p spikes/native-terminal/ui/tsconfig.json && vite build --config spikes/native-terminal/ui/vite.config.ts",
-    "spike:native-swift": "concurrently -k -n web,swift -c cyan,magenta \"npm run spike:native-ui\" \"npm run spike:native-swift:shell\"",
+    "spike:native-swift": "COMMANDO_PORT=${COMMANDO_PORT:-4310} COMMANDO_NATIVE_UI_PORT=${COMMANDO_NATIVE_UI_PORT:-5190} COMMANDO_TOKEN=${COMMANDO_TOKEN:-commando-native-terminal-spike} concurrently -k -n daemon,web,swift -c green,cyan,magenta \"tsx server/index.ts\" \"npm run spike:native-ui\" \"npm run spike:native-swift:shell\"",
     "spike:native-swift:shell": "swift run --package-path spikes/native-terminal/swift NativeTerminalSwiftSpike",
     "spike:native-swift:test": "swift test --package-path spikes/native-terminal/swift",
     "spike:native-tauri": "PATH=\"$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH\" tauri dev --config spikes/native-terminal/tauri/tauri.conf.json",
