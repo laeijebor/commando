@@ -275,13 +275,20 @@ export class ControlModeLineBuffer {
   }
 }
 
-export function encodeLiteralInputCommand(paneId: string, data: string): string | null {
+export function encodeLiteralBytesCommand(
+  paneId: string,
+  bytes: Uint8Array,
+): string | null {
   assertPaneId(paneId)
-  if (data.includes('\0')) throw new Error('Input contains a null byte')
-  const bytes = Buffer.from(data, 'utf8')
   if (bytes.length === 0) return null
   const hexBytes = [...bytes].map((byte) => byte.toString(16).padStart(2, '0'))
   return `send-keys -H -t ${paneId} ${hexBytes.join(' ')}`
+}
+
+export function encodeLiteralInputCommand(paneId: string, data: string): string | null {
+  assertPaneId(paneId)
+  if (data.includes('\0')) throw new Error('Input contains a null byte')
+  return encodeLiteralBytesCommand(paneId, Buffer.from(data, 'utf8'))
 }
 
 export function encodeSpecialKeyCommand(paneId: string, key: SpecialKey): string {
@@ -644,6 +651,12 @@ export class TmuxControllerPool {
 
   async sendText(sessionId: string, paneId: string, data: string): Promise<void> {
     const command = encodeLiteralInputCommand(paneId, data)
+    if (!command) return
+    await this.execute(sessionId, command, 64 * 1024)
+  }
+
+  async sendBytes(sessionId: string, paneId: string, bytes: Uint8Array): Promise<void> {
+    const command = encodeLiteralBytesCommand(paneId, bytes)
     if (!command) return
     await this.execute(sessionId, command, 64 * 1024)
   }

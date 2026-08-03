@@ -231,6 +231,10 @@ export class TmuxClient {
     return this.controllers.sendText(sessionId, paneId, data)
   }
 
+  sendBytes(sessionId: string, paneId: string, bytes: Uint8Array): Promise<void> {
+    return this.controllers.sendBytes(sessionId, paneId, bytes)
+  }
+
   sendKey(sessionId: string, paneId: string, key: SpecialKey): Promise<void> {
     return this.controllers.sendKey(sessionId, paneId, key)
   }

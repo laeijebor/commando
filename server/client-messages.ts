@@ -1,4 +1,5 @@
 import {
+  MAX_INPUT_BYTES,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
   MAX_PASTE_BYTES,
@@ -15,9 +16,10 @@ import {
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
-export const MAX_INPUT_BYTES = 8 * 1024
 export const MAX_SUBSCRIBED_PANES = 64
 
+const PANE_RESET_BURST = 2
+const PANE_RESET_REFILL_PER_SECOND = 0.5
 const PANE_ID = /^%\d+$/
 const WINDOW_ID = /^@\d+$/
 const SESSION_ID = /^\$\d+$/
@@ -54,9 +56,63 @@ const SPECIAL_KEYS = new Set<SpecialKey>([
   'C-l',
 ])
 
+type ParsedInputBytesMessage = Extract<ClientMessage, { type: 'input_bytes' }> & {
+  bytes: Buffer
+}
+
+export type ParsedClientMessage =
+  | Exclude<ClientMessage, { type: 'input_bytes' }>
+  | ParsedInputBytesMessage
+
 type ParseResult =
-  | { ok: true; message: ClientMessage }
+  | { ok: true; message: ParsedClientMessage }
   | { ok: false; error: string; requestId?: string }
+
+export class TokenBucketRateLimiter {
+  private tokens: number
+  private lastRefill: number
+
+  constructor(
+    private readonly capacity = 80,
+    private readonly refillPerSecond = 40,
+    private readonly now = Date.now,
+  ) {
+    this.tokens = capacity
+    this.lastRefill = now()
+  }
+
+  take(cost: number): boolean {
+    const now = this.now()
+    const elapsed = Math.max(0, now - this.lastRefill)
+    this.tokens = Math.min(
+      this.capacity,
+      this.tokens + (elapsed / 1_000) * this.refillPerSecond,
+    )
+    this.lastRefill = now
+    if (this.tokens < cost) return false
+    this.tokens -= cost
+    return true
+  }
+}
+
+export type PaneResetDecision = 'allow' | 'coalesce' | 'rate_limited'
+
+export class PaneResetGate {
+  private readonly limiter: TokenBucketRateLimiter
+
+  constructor(now = Date.now) {
+    this.limiter = new TokenBucketRateLimiter(
+      PANE_RESET_BURST,
+      PANE_RESET_REFILL_PER_SECOND,
+      now,
+    )
+  }
+
+  decide(seedPending: boolean): PaneResetDecision {
+    if (seedPending) return 'coalesce'
+    return this.limiter.take(1) ? 'allow' : 'rate_limited'
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -66,6 +122,27 @@ function requestId(value: unknown): string | null {
   return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value)
     ? value
     : null
+}
+
+function parseCanonicalBase64(value: unknown): Buffer | null {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > Math.ceil(MAX_INPUT_BYTES / 3) * 4 ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null
+  }
+  const bytes = Buffer.from(value, 'base64')
+  if (
+    bytes.length === 0 ||
+    bytes.length > MAX_INPUT_BYTES ||
+    bytes.toString('base64') !== value
+  ) {
+    return null
+  }
+  return bytes
 }
 
 function boundedInteger(value: unknown, minimum: number, maximum: number): value is number {
@@ -171,6 +248,33 @@ export function parseClientMessage(value: unknown): ParseResult {
         },
       }
     }
+    case 'input_bytes': {
+      const id = requestId(value.requestId)
+      const bytes = parseCanonicalBase64(value.data)
+      if (
+        !id ||
+        !isPaneId(value.paneId) ||
+        value.encoding !== 'base64' ||
+        !bytes
+      ) {
+        return {
+          ok: false,
+          error: 'Invalid byte input message',
+          requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+        }
+      }
+      return {
+        ok: true,
+        message: {
+          type: 'input_bytes',
+          paneId: value.paneId,
+          data: value.data as string,
+          encoding: 'base64',
+          requestId: id,
+          bytes,
+        },
+      }
+    }
     case 'paste': {
       const id = requestId(value.requestId)
       if (
@@ -220,6 +324,19 @@ export function parseClientMessage(value: unknown): ParseResult {
           requestId: id,
         },
       }
+    }
+    case 'request_pane_reset': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId)
+        ? {
+            ok: true,
+            message: { type: 'request_pane_reset', paneId: value.paneId, requestId: id },
+          }
+        : {
+            ok: false,
+            error: 'Invalid pane reset request',
+            requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+          }
     }
     case 'resize_pane': {
       const id = requestId(value.requestId)

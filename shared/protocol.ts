@@ -290,6 +290,7 @@ export type ServerMessage =
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
+export const MAX_INPUT_BYTES = 8 * 1024
 export const TERMINAL_SCROLLBACK_LINES = 5_000
 export const MIN_TERMINAL_COLS = 2
 export const MAX_TERMINAL_COLS = 500
@@ -331,8 +332,16 @@ export type SpecialKey =
 export type ClientMessage =
   | { type: 'subscribe'; paneIds: string[]; statusPaneIds?: string[] }
   | { type: 'input'; paneId: string; data: string; requestId: string }
+  | {
+      type: 'input_bytes'
+      paneId: string
+      data: string
+      encoding: 'base64'
+      requestId: string
+    }
   | { type: 'paste'; paneId: string; data: string; requestId: string }
   | { type: 'key'; paneId: string; key: SpecialKey; requestId: string }
+  | { type: 'request_pane_reset'; paneId: string; requestId: string }
   | { type: 'resize_pane'; paneId: string; cols: number; rows: number; requestId: string }
   | { type: 'release_resize'; paneId: string; requestId: string }
   | {

@@ -16,6 +16,7 @@ import {
   capturePaneSeedProcess,
   capturePausedPane,
   decodeControlEscapes,
+  encodeLiteralBytesCommand,
   encodeLiteralInputCommand,
   encodeSpecialKeyCommand,
   normalizeCaptureLineEndings,
@@ -292,6 +293,14 @@ describe('tmux pane capture', () => {
 })
 
 describe('tmux control-mode input encoding', () => {
+  it('encodes arbitrary bytes as exact lowercase hexadecimal arguments', () => {
+    expect(encodeLiteralBytesCommand('%7', Buffer.from([0x00, 0x01, 0x7f, 0x80, 0xff]))).toBe(
+      'send-keys -H -t %7 00 01 7f 80 ff',
+    )
+    expect(encodeLiteralBytesCommand('%7', Buffer.alloc(0))).toBeNull()
+    expect(() => encodeLiteralBytesCommand('7', Buffer.from([0x00]))).toThrow(/pane id/)
+  })
+
   it('encodes literal UTF-8 as fixed hexadecimal byte arguments', () => {
     expect(encodeLiteralInputCommand('%7', 'Aé\n')).toBe(
       'send-keys -H -t %7 41 c3 a9 0a',

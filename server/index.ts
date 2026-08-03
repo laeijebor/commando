@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   AgentStatus,
-  ClientMessage,
   CommandoSnapshot,
   SavedWorkspace,
   ServerMessage,
@@ -22,7 +21,10 @@ import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
   MAX_CLIENT_MESSAGE_BYTES,
+  PaneResetGate,
+  TokenBucketRateLimiter,
   parseClientMessage,
+  type ParsedClientMessage,
 } from './client-messages.js'
 import { TmuxClient } from './tmux.js'
 import { normalizeCaptureLineEndings } from './tmux-control.js'
@@ -87,7 +89,8 @@ type ClientState = {
   statusPaneIds: Set<string>
   paneStreams: Map<string, PaneStreamState>
   lastStatus: Map<string, string>
-  inputLimiter: RateLimiter
+  inputLimiter: TokenBucketRateLimiter
+  paneResetGate: PaneResetGate
   inputQueue: Promise<void>
   violations: number
 }
@@ -106,19 +109,8 @@ type PaneTextTail = {
   lastChangedAt: number
 }
 
-class RateLimiter {
-  private tokens = 80
-  private lastRefill = Date.now()
-
-  take(cost: number): boolean {
-    const now = Date.now()
-    const elapsed = Math.max(0, now - this.lastRefill)
-    this.tokens = Math.min(80, this.tokens + (elapsed / 1_000) * 40)
-    this.lastRefill = now
-    if (this.tokens < cost) return false
-    this.tokens -= cost
-    return true
-  }
+function inputRateCost(byteLength: number): number {
+  return 1 + Math.ceil(byteLength / 256)
 }
 
 function configuredPort(): number {
@@ -1111,7 +1103,7 @@ async function main(): Promise<void> {
     interactions,
   })
 
-  const handleClientMessage = (client: ClientState, message: ClientMessage): void => {
+  const handleClientMessage = (client: ClientState, message: ParsedClientMessage): void => {
     switch (message.type) {
       case 'subscribe': {
         const statusPaneIds = message.statusPaneIds ?? []
@@ -1153,7 +1145,7 @@ async function main(): Promise<void> {
         return
       }
       case 'input': {
-        const cost = 1 + Math.ceil(Buffer.byteLength(message.data, 'utf8') / 256)
+        const cost = inputRateCost(Buffer.byteLength(message.data, 'utf8'))
         if (!client.inputLimiter.take(cost)) {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
@@ -1165,6 +1157,22 @@ async function main(): Promise<void> {
         }
         queueInput(client, message.paneId, message.requestId, () =>
           tmux.sendText(pane.sessionId, message.paneId, message.data),
+        )
+        return
+      }
+      case 'input_bytes': {
+        const cost = inputRateCost(message.bytes.length)
+        if (!client.inputLimiter.take(cost)) {
+          sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
+          return
+        }
+        const pane = paneForId(message.paneId)
+        if (!pane) {
+          sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
+          return
+        }
+        queueInput(client, message.paneId, message.requestId, () =>
+          tmux.sendBytes(pane.sessionId, message.paneId, message.bytes),
         )
         return
       }
@@ -1193,6 +1201,33 @@ async function main(): Promise<void> {
           tmux.sendKey(pane.sessionId, message.paneId, message.key),
         )
         return
+      case 'request_pane_reset': {
+        const pane = paneForId(message.paneId)
+        if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
+          sendError(
+            client,
+            'invalid_pane',
+            'Pane reset references an unavailable pane',
+            message.requestId,
+          )
+          return
+        }
+        const decision = client.paneResetGate.decide(
+          Boolean(client.paneStreams.get(message.paneId)?.task),
+        )
+        if (decision === 'coalesce') return
+        if (decision === 'rate_limited') {
+          sendError(
+            client,
+            'rate_limited',
+            'Pane reset rate limit exceeded',
+            message.requestId,
+          )
+          return
+        }
+        requestPaneSeed(client, message.paneId)
+        return
+      }
       case 'resize_pane': {
         const pane = paneForId(message.paneId)
         if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
@@ -1364,7 +1399,8 @@ async function main(): Promise<void> {
       statusPaneIds: new Set(),
       paneStreams: new Map(),
       lastStatus: new Map(),
-      inputLimiter: new RateLimiter(),
+      inputLimiter: new TokenBucketRateLimiter(),
+      paneResetGate: new PaneResetGate(),
       inputQueue: Promise.resolve(),
       violations: 0,
     }

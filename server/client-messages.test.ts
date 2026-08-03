@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_INPUT_BYTES,
   MAX_PASTE_BYTES,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
@@ -7,7 +8,7 @@ import {
   MIN_TERMINAL_ROWS,
   type SpecialKey,
 } from '../shared/protocol.js'
-import { MAX_INPUT_BYTES, parseClientMessage } from './client-messages.js'
+import { PaneResetGate, parseClientMessage } from './client-messages.js'
 
 describe('client message validation', () => {
   it('accepts only the fixed special-key set', () => {
@@ -111,6 +112,108 @@ describe('client message validation', () => {
         requestId: 'input-3',
       }).ok,
     ).toBe(false)
+  })
+
+  it('accepts canonical base64 byte input and preserves arbitrary decoded bytes', () => {
+    const bytes = Buffer.from([0x00, 0x41, 0x80, 0xff])
+    const data = bytes.toString('base64')
+
+    expect(parseClientMessage({
+      type: 'input_bytes',
+      paneId: '%7',
+      data,
+      encoding: 'base64',
+      requestId: 'bytes-1',
+    })).toEqual({
+      ok: true,
+      message: {
+        type: 'input_bytes',
+        paneId: '%7',
+        data,
+        encoding: 'base64',
+        requestId: 'bytes-1',
+        bytes,
+      },
+    })
+  })
+
+  it('accepts one decoded byte at the lower bound', () => {
+    const bytes = Buffer.from([0x00])
+    expect(parseClientMessage({
+      type: 'input_bytes',
+      paneId: '%7',
+      data: bytes.toString('base64'),
+      encoding: 'base64',
+      requestId: 'bytes-min',
+    })).toMatchObject({
+      ok: true,
+      message: { bytes },
+    })
+  })
+
+  it('enforces the decoded byte input bound', () => {
+    const maximum = Buffer.alloc(MAX_INPUT_BYTES, 0xff).toString('base64')
+    const oversized = Buffer.alloc(MAX_INPUT_BYTES + 1, 0xff).toString('base64')
+
+    expect(parseClientMessage({
+      type: 'input_bytes',
+      paneId: '%1',
+      data: maximum,
+      encoding: 'base64',
+      requestId: 'bytes-max',
+    }).ok).toBe(true)
+    expect(parseClientMessage({
+      type: 'input_bytes',
+      paneId: '%1',
+      data: oversized,
+      encoding: 'base64',
+      requestId: 'bytes-oversized',
+    }).ok).toBe(false)
+  })
+
+  it('rejects empty, malformed, noncanonical, and incorrectly encoded byte input', () => {
+    for (const [data, encoding] of [
+      ['', 'base64'],
+      ['T Q==', 'base64'],
+      ['_w==', 'base64'],
+      ['TQ', 'base64'],
+      ['TQ=', 'base64'],
+      ['TQ===', 'base64'],
+      ['=TQ=', 'base64'],
+      ['T!Q=', 'base64'],
+      ['TR==', 'base64'],
+      ['TWF=', 'base64'],
+      ['TQ==', 'BASE64'],
+    ]) {
+      expect(parseClientMessage({
+        type: 'input_bytes',
+        paneId: '%1',
+        data,
+        encoding,
+        requestId: 'bytes-invalid',
+      }).ok).toBe(false)
+    }
+  })
+
+  it('validates correlated pane reset requests', () => {
+    expect(parseClientMessage({
+      type: 'request_pane_reset',
+      paneId: '%7',
+      requestId: 'reset-1',
+    })).toEqual({
+      ok: true,
+      message: { type: 'request_pane_reset', paneId: '%7', requestId: 'reset-1' },
+    })
+    expect(parseClientMessage({
+      type: 'request_pane_reset',
+      paneId: '7',
+      requestId: 'reset-2',
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      type: 'request_pane_reset',
+      paneId: '%7',
+      requestId: '',
+    }).ok).toBe(false)
   })
 
   it('correlates workspace loads with a validated request id', () => {
@@ -257,5 +360,23 @@ describe('subscribe messages', () => {
     expect(
       parseClientMessage({ type: 'subscribe', paneIds: [], statusPaneIds: 'x' }).ok,
     ).toBe(false)
+  })
+})
+
+describe('pane reset limiting', () => {
+  it('coalesces pending resets without consuming the bounded reset quota', () => {
+    let now = 0
+    const gate = new PaneResetGate(() => now)
+
+    expect(gate.decide(true)).toBe('coalesce')
+    expect(gate.decide(true)).toBe('coalesce')
+    expect(gate.decide(false)).toBe('allow')
+    expect(gate.decide(false)).toBe('allow')
+    expect(gate.decide(false)).toBe('rate_limited')
+
+    now = 1_999
+    expect(gate.decide(false)).toBe('rate_limited')
+    now = 2_000
+    expect(gate.decide(false)).toBe('allow')
   })
 })
