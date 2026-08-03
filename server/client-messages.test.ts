@@ -368,15 +368,38 @@ describe('pane reset limiting', () => {
     let now = 0
     const gate = new PaneResetGate(() => now)
 
-    expect(gate.decide(true)).toBe('coalesce')
-    expect(gate.decide(true)).toBe('coalesce')
-    expect(gate.decide(false)).toBe('allow')
-    expect(gate.decide(false)).toBe('allow')
-    expect(gate.decide(false)).toBe('rate_limited')
+    expect(gate.decide('%1', true)).toBe('coalesce')
+    expect(gate.decide('%1', true)).toBe('coalesce')
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('rate_limited')
 
     now = 1_999
-    expect(gate.decide(false)).toBe('rate_limited')
+    expect(gate.decide('%1', false)).toBe('rate_limited')
     now = 2_000
-    expect(gate.decide(false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('allow')
+  })
+
+  it('tracks quota independently for each pane', () => {
+    const gate = new PaneResetGate(() => 0)
+
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('rate_limited')
+    expect(gate.decide('%2', false)).toBe('allow')
+    expect(gate.decide('%2', false)).toBe('allow')
+    expect(gate.decide('%2', false)).toBe('rate_limited')
+  })
+
+  it('forgets limiter state when a pane leaves the subscription', () => {
+    const gate = new PaneResetGate(() => 0)
+
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('allow')
+    expect(gate.decide('%1', false)).toBe('rate_limited')
+
+    gate.forget('%1')
+
+    expect(gate.decide('%1', false)).toBe('allow')
   })
 })

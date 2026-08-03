@@ -970,6 +970,7 @@ async function main(): Promise<void> {
             if (!paneIds.has(paneId)) {
               client.subscribedPaneIds.delete(paneId)
               client.paneStreams.delete(paneId)
+              client.paneResetGate.forget(paneId)
               client.lastStatus.delete(paneId)
               continue
             }
@@ -1123,6 +1124,7 @@ async function main(): Promise<void> {
         for (const paneId of previous) {
           if (!client.subscribedPaneIds.has(paneId)) {
             client.paneStreams.delete(paneId)
+            client.paneResetGate.forget(paneId)
           }
         }
         const newlySubscribed = message.paneIds.filter(
@@ -1213,6 +1215,7 @@ async function main(): Promise<void> {
           return
         }
         const decision = client.paneResetGate.decide(
+          message.paneId,
           Boolean(client.paneStreams.get(message.paneId)?.task),
         )
         if (decision === 'coalesce') return

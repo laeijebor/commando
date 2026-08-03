@@ -98,19 +98,26 @@ export class TokenBucketRateLimiter {
 export type PaneResetDecision = 'allow' | 'coalesce' | 'rate_limited'
 
 export class PaneResetGate {
-  private readonly limiter: TokenBucketRateLimiter
+  private readonly limiters = new Map<string, TokenBucketRateLimiter>()
 
-  constructor(now = Date.now) {
-    this.limiter = new TokenBucketRateLimiter(
-      PANE_RESET_BURST,
-      PANE_RESET_REFILL_PER_SECOND,
-      now,
-    )
+  constructor(private readonly now = Date.now) {}
+
+  decide(paneId: string, seedPending: boolean): PaneResetDecision {
+    if (seedPending) return 'coalesce'
+    let limiter = this.limiters.get(paneId)
+    if (!limiter) {
+      limiter = new TokenBucketRateLimiter(
+        PANE_RESET_BURST,
+        PANE_RESET_REFILL_PER_SECOND,
+        this.now,
+      )
+      this.limiters.set(paneId, limiter)
+    }
+    return limiter.take(1) ? 'allow' : 'rate_limited'
   }
 
-  decide(seedPending: boolean): PaneResetDecision {
-    if (seedPending) return 'coalesce'
-    return this.limiter.take(1) ? 'allow' : 'rate_limited'
+  forget(paneId: string): void {
+    this.limiters.delete(paneId)
   }
 }
 
