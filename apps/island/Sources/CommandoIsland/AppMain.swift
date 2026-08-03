@@ -4,6 +4,8 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let store = CompanionStore()
     private var panelController: IslandPanelController?
+    private var visorController: VisorTerminalController?
+    private var visorHotKey: VisorGlobalHotKey?
     private var statusItem: NSStatusItem?
     private var displayMenu: NSMenu?
 
@@ -13,12 +15,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onQuit: { NSApplication.shared.terminate(nil) }
         )
         self.panelController = panelController
+        visorController = VisorTerminalController()
+        visorHotKey = VisorGlobalHotKey()
+        if visorHotKey == nil {
+            NSLog("Commando Island could not register the Option-F12 visor shortcut")
+        }
         configureStatusItem()
         panelController.show()
         store.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        visorHotKey?.invalidate()
+        visorController?.shutdown()
         store.stop()
     }
 
@@ -31,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(withTitle: "Show Commando Island", action: #selector(showIsland), keyEquivalent: "i")
+        menu.addItem(withTitle: "Toggle Visor Terminal", action: #selector(toggleVisor), keyEquivalent: "")
         let displayItem = NSMenuItem(title: "Move to Display", action: nil, keyEquivalent: "")
         let displayMenu = NSMenu(title: "Move to Display")
         displayMenu.delegate = self
@@ -80,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showIsland() {
         panelController?.toggle()
+    }
+
+    @objc private func toggleVisor() {
+        visorController?.toggle()
+    }
+
+    func toggleVisorFromShortcut() {
+        visorController?.toggle()
     }
 
     @objc private func refreshUsage() {
