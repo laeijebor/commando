@@ -238,29 +238,12 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     }
 
     private func configureView(ariaLabel: String) {
-        let backgroundColor = NSColor(
-            calibratedRed: 0.035,
-            green: 0.031,
-            blue: 0.059,
-            alpha: 1
-        )
-        let foregroundColor = NSColor(
-            calibratedRed: 0.82,
-            green: 0.95,
-            blue: 0.87,
-            alpha: 1
-        )
-
         view.isHidden = true
         view.clipsToBounds = true
         view.terminalDelegate = self
-        view.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        view.nativeBackgroundColor = backgroundColor
-        view.nativeForegroundColor = foregroundColor
-        view.caretColor = .white
+        TerminalProfile.apply(to: view)
         view.caretViewTracksFocus = true
         view.scrollerStyle = .overlay
-        view.layer?.backgroundColor = backgroundColor.cgColor
         view.changeScrollback(5_000)
         view.setAccessibilityLabel(ariaLabel)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
