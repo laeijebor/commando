@@ -32,10 +32,17 @@ struct AppKitJavaScriptConfirmationPresenter: JavaScriptConfirmationPresenting {
 
 @MainActor
 final class DesktopWebHost: NSObject, WKNavigationDelegate {
+    static let minimumZoomPercent = 50
+    static let maximumZoomPercent = 200
+    static let zoomStepPercent = 10
+
     let rootView: NSView
     let webView: WKWebView
     let overlay: TerminalOverlayView
     let connectionStatusView: ConnectionStatusView
+    private(set) var zoomPercent = 100
+
+    var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
 
     private let configuration: DesktopConfiguration
     private let admission: WebContentAdmission
@@ -89,6 +96,14 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func reapplyTerminalFrames() {
         bridge.reapplyFrames()
+    }
+
+    @objc func zoomOut(_ sender: Any?) {
+        setZoomPercent(max(Self.minimumZoomPercent, zoomPercent - Self.zoomStepPercent))
+    }
+
+    @objc func zoomIn(_ sender: Any?) {
+        setZoomPercent(min(Self.maximumZoomPercent, zoomPercent + Self.zoomStepPercent))
     }
 
     func cleanUp() {
@@ -174,6 +189,13 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             cachePolicy: .reloadIgnoringLocalCacheData,
             timeoutInterval: 10
         ))
+    }
+
+    private func setZoomPercent(_ percent: Int) {
+        guard percent != zoomPercent else { return }
+        zoomPercent = percent
+        webView.pageZoom = zoomScale
+        bridge.setZoomScale(zoomScale)
     }
 
     private func scheduleNavigationRetry() {

@@ -128,6 +128,10 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
         paneHost.reapplyFrames()
     }
 
+    func setZoomScale(_ scale: CGFloat) {
+        paneHost.setZoomScale(scale)
+    }
+
     func cleanUp() {
         pageWasReplaced()
     }

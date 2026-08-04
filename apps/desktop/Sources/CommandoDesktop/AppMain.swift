@@ -29,7 +29,7 @@ final class DesktopWindow: NSWindow {
 
 @MainActor
 enum DesktopMainMenu {
-    static func make() -> NSMenu {
+    static func make(zoomTarget: AnyObject? = nil) -> NSMenu {
         let mainMenu = NSMenu()
         let applicationItem = NSMenuItem(title: "Commando", action: nil, keyEquivalent: "")
         let applicationMenu = NSMenu(title: "Commando")
@@ -64,6 +64,25 @@ enum DesktopMainMenu {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
+
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+        let zoomOutItem = viewMenu.addItem(
+            withTitle: "Zoom Out",
+            action: #selector(DesktopWebHost.zoomOut(_:)),
+            keyEquivalent: "-"
+        )
+        zoomOutItem.target = zoomTarget
+        zoomOutItem.keyEquivalentModifierMask = .command
+        let zoomInItem = viewMenu.addItem(
+            withTitle: "Zoom In",
+            action: #selector(DesktopWebHost.zoomIn(_:)),
+            keyEquivalent: "="
+        )
+        zoomInItem.target = zoomTarget
+        zoomInItem.keyEquivalentModifierMask = .command
+        viewItem.submenu = viewMenu
+        mainMenu.addItem(viewItem)
         return mainMenu
     }
 }
@@ -74,9 +93,8 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private var webHost: DesktopWebHost?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = DesktopMainMenu.make()
-
         let webHost = DesktopWebHost()
+        NSApp.mainMenu = DesktopMainMenu.make(zoomTarget: webHost)
         let window = DesktopWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],

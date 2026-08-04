@@ -4,15 +4,21 @@ import XCTest
 
 @MainActor
 final class DesktopApplicationTests: XCTestCase {
-    func testMainMenuIdentifiesCommandoAndProvidesClipboardActions() throws {
-        let menu = DesktopMainMenu.make()
+    func testMainMenuIdentifiesCommandoAndProvidesClipboardAndZoomActions() throws {
+        let zoomTarget = NSObject()
+        let menu = DesktopMainMenu.make(zoomTarget: zoomTarget)
 
-        XCTAssertEqual(menu.items.map(\.title), ["Commando", "Edit"])
+        XCTAssertEqual(menu.items.map(\.title), ["Commando", "Edit", "View"])
         let applicationMenu = try XCTUnwrap(menu.items[0].submenu)
         XCTAssertEqual(applicationMenu.items.first?.title, "About Commando")
         XCTAssertEqual(applicationMenu.items.last?.title, "Quit Commando")
         let editMenu = try XCTUnwrap(menu.items[1].submenu)
         XCTAssertEqual(editMenu.items.map(\.title), ["Copy", "Paste"])
+        let viewMenu = try XCTUnwrap(menu.items[2].submenu)
+        XCTAssertEqual(viewMenu.items.map(\.title), ["Zoom Out", "Zoom In"])
+        XCTAssertEqual(viewMenu.items.map(\.keyEquivalent), ["-", "="])
+        XCTAssertTrue(viewMenu.items.allSatisfy { $0.keyEquivalentModifierMask == .command })
+        XCTAssertTrue(viewMenu.items.allSatisfy { $0.target === zoomTarget })
     }
 
     func testWindowRoutesControlVToTheFocusedTerminal() throws {

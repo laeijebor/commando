@@ -19,6 +19,25 @@ private final class ConfirmationPresenterSpy: JavaScriptConfirmationPresenting {
 
 @MainActor
 final class DesktopWebHostTests: XCTestCase {
+    func testZoomActionsScaleWebContentInBoundedSteps() {
+        let host = DesktopWebHost()
+
+        host.zoomIn(nil)
+        XCTAssertEqual(host.zoomPercent, 110)
+        XCTAssertEqual(host.webView.pageZoom, 1.1, accuracy: 0.001)
+        host.zoomOut(nil)
+        XCTAssertEqual(host.zoomPercent, 100)
+        XCTAssertEqual(host.webView.pageZoom, 1, accuracy: 0.001)
+
+        for _ in 0..<20 { host.zoomOut(nil) }
+        XCTAssertEqual(host.zoomPercent, DesktopWebHost.minimumZoomPercent)
+        XCTAssertEqual(host.webView.pageZoom, 0.5, accuracy: 0.001)
+        for _ in 0..<20 { host.zoomIn(nil) }
+        XCTAssertEqual(host.zoomPercent, DesktopWebHost.maximumZoomPercent)
+        XCTAssertEqual(host.webView.pageZoom, 2, accuracy: 0.001)
+        host.cleanUp()
+    }
+
     func testInstallsUIDelegateAndRoutesJavaScriptConfirmation() async {
         let presenter = ConfirmationPresenterSpy()
         presenter.result = true

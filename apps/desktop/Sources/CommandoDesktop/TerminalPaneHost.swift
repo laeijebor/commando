@@ -33,6 +33,7 @@ final class TerminalPaneHost {
     private weak var fallbackResponder: NSResponder?
     private let prefersMetal: Bool
     private let eventSink: (PaneIdentity, TerminalSurfaceEvent) -> Void
+    private(set) var zoomScale: CGFloat = 1
 
     init(
         overlay: TerminalOverlayView,
@@ -63,6 +64,7 @@ final class TerminalPaneHost {
         ) { [weak self] event in
             self?.eventSink(payload.identity, event)
         }
+        surface.setZoomScale(zoomScale)
         overlay.addSubview(surface.view)
         let replaced = registry.insert(surface, for: payload.identity)
         let replacedWasFocused = replaced?.value.isFocused == true
@@ -130,6 +132,14 @@ final class TerminalPaneHost {
             }
         }
         reorderSurfaces()
+    }
+
+    func setZoomScale(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0, scale != zoomScale else { return }
+        zoomScale = scale
+        for record in registry.records.values {
+            record.value.setZoomScale(scale)
+        }
     }
 
     func destroyAll() {

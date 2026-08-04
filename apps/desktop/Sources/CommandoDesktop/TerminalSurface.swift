@@ -159,6 +159,11 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.setAccessibilityLabel(ariaLabel)
     }
 
+    func setZoomScale(_ scale: CGFloat) {
+        guard !destroyed, scale.isFinite, scale > 0 else { return }
+        view.font = TerminalProfile.font(size: TerminalProfile.fontSize * scale)
+    }
+
     func applyFrame(_ payload: PaneFramePayload, viewportSize: CGSize, backingScale: CGFloat) {
         guard !destroyed else { return }
         latestFrame = payload

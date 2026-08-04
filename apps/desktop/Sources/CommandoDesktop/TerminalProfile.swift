@@ -46,13 +46,13 @@ enum TerminalProfile {
         view.layer?.backgroundColor = backgroundColor.cgColor
     }
 
-    static func font() -> NSFont {
+    static func font(size: CGFloat = fontSize) -> NSFont {
         for name in fontNames {
-            if let font = NSFont(name: name, size: fontSize) {
+            if let font = NSFont(name: name, size: size) {
                 return font
             }
         }
-        return NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     private static func nativeColor(_ hex: UInt32) -> NSColor {
