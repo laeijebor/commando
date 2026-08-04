@@ -39,7 +39,7 @@ final class DesktopWindow: NSWindow {
 
 @MainActor
 enum DesktopMainMenu {
-    static func make(zoomTarget: AnyObject? = nil) -> NSMenu {
+    static func make(actionTarget: AnyObject? = nil) -> NSMenu {
         let mainMenu = NSMenu()
         let applicationItem = NSMenuItem(title: "Commando", action: nil, keyEquivalent: "")
         let applicationMenu = NSMenu(title: "Commando")
@@ -68,6 +68,17 @@ enum DesktopMainMenu {
         applicationItem.submenu = applicationMenu
         mainMenu.addItem(applicationItem)
 
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        let newWindowItem = fileMenu.addItem(
+            withTitle: "New Window",
+            action: #selector(DesktopAppDelegate.newWindow(_:)),
+            keyEquivalent: "n"
+        )
+        newWindowItem.target = actionTarget
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -77,35 +88,86 @@ enum DesktopMainMenu {
 
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         let viewMenu = NSMenu(title: "View")
-        viewMenu.autoenablesItems = false
+        let reloadItem = viewMenu.addItem(
+            withTitle: "Reload",
+            action: #selector(DesktopAppDelegate.reload(_:)),
+            keyEquivalent: "r"
+        )
+        reloadItem.target = actionTarget
+        viewMenu.addItem(.separator())
         let zoomOutItem = viewMenu.addItem(
             withTitle: "Zoom Out",
-            action: #selector(DesktopWebHost.zoomOut(_:)),
+            action: #selector(DesktopAppDelegate.zoomOut(_:)),
             keyEquivalent: "-"
         )
-        zoomOutItem.target = zoomTarget
-        zoomOutItem.keyEquivalentModifierMask = .command
+        zoomOutItem.target = actionTarget
         let zoomInItem = viewMenu.addItem(
             withTitle: "Zoom In",
-            action: #selector(DesktopWebHost.zoomIn(_:)),
+            action: #selector(DesktopAppDelegate.zoomIn(_:)),
             keyEquivalent: "="
         )
-        zoomInItem.target = zoomTarget
-        zoomInItem.keyEquivalentModifierMask = .command
+        zoomInItem.target = actionTarget
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
+
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        windowMenu.addItem(
+            withTitle: "Zoom",
+            action: #selector(NSWindow.performZoom(_:)),
+            keyEquivalent: ""
+        )
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(
+            withTitle: "Bring All to Front",
+            action: #selector(NSApplication.arrangeInFront(_:)),
+            keyEquivalent: ""
+        )
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
         return mainMenu
     }
 }
 
 @MainActor
-final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private var window: NSWindow?
-    private var webHost: DesktopWebHost?
+protocol DesktopWebHosting: AnyObject {
+    var rootView: NSView { get }
+    func reload(_ sender: Any?)
+    func zoomOut(_ sender: Any?)
+    func zoomIn(_ sender: Any?)
+    func reapplyTerminalFrames()
+    func cleanUp()
+}
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        let webHost = DesktopWebHost()
-        NSApp.mainMenu = DesktopMainMenu.make(zoomTarget: webHost)
+extension DesktopWebHost: DesktopWebHosting {}
+
+@MainActor
+protocol DesktopWindowControlling: AnyObject {
+    var window: NSWindow { get }
+    func show()
+    func reload()
+    func zoomOut()
+    func zoomIn()
+    func reapplyTerminalFrames()
+    func cleanUp()
+}
+
+@MainActor
+final class DesktopWindowSession: DesktopWindowControlling {
+    let window: NSWindow
+    private let webHost: any DesktopWebHosting
+    private var cleanedUp = false
+
+    init(
+        restoredFrame: NSRect? = nil,
+        webHost: any DesktopWebHosting = DesktopWebHost()
+    ) {
+        self.webHost = webHost
         let window = DesktopWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -113,52 +175,239 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             defer: false
         )
         window.title = "Commando"
-        window.minSize = NSSize(width: 760, height: 540)
+        window.minSize = WindowRestorationCodec.minimumWindowSize
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.contentView = webHost.rootView
-        window.delegate = self
-        window.zoomShortcutWasPressed = { [weak webHost] key in
+        self.window = window
+        window.zoomShortcutWasPressed = { [weak self] key in
             if key == "-" {
-                webHost?.zoomOut(nil)
+                self?.zoomOut()
             } else {
-                webHost?.zoomIn(nil)
+                self?.zoomIn()
             }
         }
-        window.center()
+        if let restoredFrame {
+            window.setFrame(restoredFrame, display: false)
+        } else {
+            window.center()
+        }
+    }
 
-        self.webHost = webHost
-        self.window = window
+    func show() {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func reload() {
+        webHost.reload(nil)
+    }
+
+    func zoomOut() {
+        webHost.zoomOut(nil)
+    }
+
+    func zoomIn() {
+        webHost.zoomIn(nil)
+    }
+
+    func reapplyTerminalFrames() {
+        webHost.reapplyTerminalFrames()
+    }
+
+    func cleanUp() {
+        guard !cleanedUp else { return }
+        cleanedUp = true
+        (window as? DesktopWindow)?.zoomShortcutWasPressed = nil
+        webHost.cleanUp()
+        window.contentView = nil
+    }
+}
+
+@MainActor
+final class DesktopWindowRegistry {
+    private var controllers: [ObjectIdentifier: any DesktopWindowControlling] = [:]
+    private var order: [ObjectIdentifier] = []
+
+    var count: Int { controllers.count }
+
+    var all: [any DesktopWindowControlling] {
+        order.compactMap { controllers[$0] }
+    }
+
+    var last: (any DesktopWindowControlling)? {
+        order.last.flatMap { controllers[$0] }
+    }
+
+    func register(_ controller: any DesktopWindowControlling) {
+        let identifier = ObjectIdentifier(controller.window)
+        if controllers[identifier] == nil {
+            order.append(identifier)
+        }
+        controllers[identifier] = controller
+    }
+
+    func controller(for window: NSWindow?) -> (any DesktopWindowControlling)? {
+        guard let window else { return nil }
+        return controllers[ObjectIdentifier(window)]
+    }
+
+    @discardableResult
+    func remove(window: NSWindow) -> (any DesktopWindowControlling)? {
+        let identifier = ObjectIdentifier(window)
+        order.removeAll { $0 == identifier }
+        return controllers.removeValue(forKey: identifier)
+    }
+
+    func removeAll() -> [any DesktopWindowControlling] {
+        let removed = all
+        controllers.removeAll()
+        order.removeAll()
+        return removed
+    }
+}
+
+@MainActor
+final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    typealias SessionFactory = @MainActor (NSRect?) -> any DesktopWindowControlling
+
+    let registry = DesktopWindowRegistry()
+    private let sessionFactory: SessionFactory
+    private let restorationStore: any WindowRestorationStoring
+    private let keyWindowProvider: @MainActor () -> NSWindow?
+    private let visibleFramesProvider: @MainActor () -> [NSRect]
+
+    init(
+        sessionFactory: @escaping SessionFactory = { DesktopWindowSession(restoredFrame: $0) },
+        restorationStore: any WindowRestorationStoring = UserDefaultsWindowRestorationStore(),
+        keyWindowProvider: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
+        visibleFramesProvider: @escaping @MainActor () -> [NSRect] = {
+            NSScreen.screens.map(\.visibleFrame)
+        }
+    ) {
+        self.sessionFactory = sessionFactory
+        self.restorationStore = restorationStore
+        self.keyWindowProvider = keyWindowProvider
+        self.visibleFramesProvider = visibleFramesProvider
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let mainMenu = DesktopMainMenu.make(actionTarget: self)
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = mainMenu.items.first(where: { $0.title == "Window" })?.submenu
+        restoreWindows()
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
     }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        handleReopen(hasVisibleWindows: flag)
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        cleanUp()
+        persistWindowState()
+        for controller in registry.removeAll() {
+            controller.window.delegate = nil
+            controller.cleanUp()
+        }
+    }
+
+    @objc func newWindow(_ sender: Any?) {
+        _ = openWindow()
+    }
+
+    @objc func reload(_ sender: Any?) {
+        activeController?.reload()
+    }
+
+    @objc func zoomOut(_ sender: Any?) {
+        activeController?.zoomOut()
+    }
+
+    @objc func zoomIn(_ sender: Any?) {
+        activeController?.zoomIn()
+    }
+
+    @discardableResult
+    func openWindow(restoredFrame: NSRect? = nil) -> any DesktopWindowControlling {
+        let controller = sessionFactory(restoredFrame)
+        controller.window.delegate = self
+        registry.register(controller)
+        controller.show()
+        return controller
+    }
+
+    func restoreWindows() {
+        let frames = restorationStore.loadFrames(visibleFrames: visibleFramesProvider())
+        if frames.isEmpty {
+            _ = openWindow()
+            return
+        }
+        for frame in frames {
+            _ = openWindow(restoredFrame: frame)
+        }
+    }
+
+    func handleReopen(hasVisibleWindows: Bool) {
+        guard !hasVisibleWindows else { return }
+        if let controller = activeController ?? registry.last {
+            controller.show()
+        } else {
+            _ = openWindow()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
-        cleanUp()
+        guard let window = notification.object as? NSWindow,
+              let controller = registry.remove(window: window)
+        else {
+            return
+        }
+        window.delegate = nil
+        controller.cleanUp()
+        persistWindowState()
     }
 
     func windowDidResize(_ notification: Notification) {
-        webHost?.reapplyTerminalFrames()
+        controller(from: notification)?.reapplyTerminalFrames()
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
-        webHost?.reapplyTerminalFrames()
+        controller(from: notification)?.reapplyTerminalFrames()
     }
 
-    private func cleanUp() {
-        webHost?.cleanUp()
-        webHost = nil
-        window?.delegate = nil
-        window = nil
+    func windowDidMove(_ notification: Notification) {
+        persistWindowState()
     }
 
+    func windowDidEndLiveResize(_ notification: Notification) {
+        persistWindowState()
+    }
+
+    private var activeController: (any DesktopWindowControlling)? {
+        registry.controller(for: keyWindowProvider())
+    }
+
+    private func controller(from notification: Notification) -> (any DesktopWindowControlling)? {
+        registry.controller(for: notification.object as? NSWindow)
+    }
+
+    private func persistWindowState() {
+        restorationStore.saveFrames(registry.all.map { $0.window.frame })
+    }
 }
 
 @main

@@ -113,6 +113,16 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         setZoomPercent(min(Self.maximumZoomPercent, zoomPercent + Self.zoomStepPercent))
     }
 
+    @objc func reload(_ sender: Any?) {
+        guard !cleanedUp else { return }
+        navigationRetryTimer?.invalidate()
+        navigationRetryTimer = nil
+        isRetrying = false
+        if webView.reload() == nil {
+            loadWebApplication()
+        }
+    }
+
     func cleanUp() {
         guard !cleanedUp else { return }
         cleanedUp = true
