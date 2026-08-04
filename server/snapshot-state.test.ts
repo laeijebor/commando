@@ -65,10 +65,32 @@ describe('snapshotsHaveSameState', () => {
     })).toBe(true)
   })
 
+  it('ignores terminal cursor movement and animated title frames', () => {
+    const left = {
+      ...snapshot,
+      panes: [{ ...snapshot.panes[0], title: '\u2802 Working' }],
+    }
+    const right = {
+      ...snapshot,
+      panes: [{
+        ...snapshot.panes[0],
+        title: '\u2810 Working',
+        cursorX: 12,
+        cursorY: 8,
+        alternateSavedX: 4,
+        alternateSavedY: 5,
+      }],
+    }
+
+    expect(snapshotsHaveSameState(left, right)).toBe(true)
+  })
+
   it.each([
     ['sessions', { ...snapshot, sessions: [{ ...snapshot.sessions[0], name: 'renamed' }] }],
     ['windows', { ...snapshot, windows: [{ ...snapshot.windows[0], layout: 'layout-2' }] }],
-    ['panes', { ...snapshot, panes: [{ ...snapshot.panes[0], cursorX: 1 }] }],
+    ['pane titles', { ...snapshot, panes: [{ ...snapshot.panes[0], title: 'renamed' }] }],
+    ['pane dimensions', { ...snapshot, panes: [{ ...snapshot.panes[0], width: 120 }] }],
+    ['pane terminal modes', { ...snapshot, panes: [{ ...snapshot.panes[0], mouseAnyFlag: true }] }],
     ['ports', { ...snapshot, ports: [{ ...snapshot.ports[0], processName: 'vite' }] }],
   ] satisfies Array<[string, CommandoSnapshot]>)('detects changes to %s', (_collection, next) => {
     expect(snapshotsHaveSameState(snapshot, next)).toBe(false)
