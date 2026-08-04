@@ -539,12 +539,34 @@ export function TerminalPaneCard({
         />
       ) : null}
       {selectionCopied ? (
-        <div className="terminal-copy-toast" role="status" aria-live="polite">
+        <div
+          className="terminal-copy-toast"
+          role="status"
+          aria-live="polite"
+          data-native-terminal-occluder=""
+        >
           <Check aria-hidden="true" />
           <span>Copied</span>
         </div>
       ) : null}
     </article>
+  )
+}
+
+export function PaneActionErrorFeedback({
+  message,
+  onDismiss,
+}: {
+  message: string
+  onDismiss: () => void
+}) {
+  return (
+    <div className="pane-action-error" role="alert" data-native-terminal-occluder="">
+      <span>{message}</span>
+      <button type="button" onClick={onDismiss} aria-label="Dismiss pane action error">
+        <X aria-hidden="true" />
+      </button>
+    </div>
   )
 }
 
@@ -2039,12 +2061,7 @@ export function App() {
       </div>
 
       {paneActionError ? (
-        <div className="pane-action-error" role="alert">
-          <span>{paneActionError}</span>
-          <button type="button" onClick={() => setPaneActionError('')} aria-label="Dismiss pane action error">
-            <X aria-hidden="true" />
-          </button>
-        </div>
+        <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
       ) : null}
 
       {paneMenu && contextPane ? (

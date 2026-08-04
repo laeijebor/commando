@@ -54,11 +54,34 @@ final class HostedTerminalView: TerminalView {
     var modifiedArrowWasPressed: ((Data) -> Void)?
     var controlVWasPressed: (() -> Void)?
     var hostOrderRank = 0
+    private(set) var visibleHitRegions: [CGRect] = []
+    private let visibleMask = CAShapeLayer()
 
     override var tag: Int { hostOrderRank }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
+    }
+
+    func setVisibleRegions(_ regions: [CGRect]) {
+        visibleHitRegions = regions.compactMap { region in
+            let clipped = region.intersection(bounds)
+            return clipped.isNull || clipped.width <= 0 || clipped.height <= 0 ? nil : clipped
+        }
+        let path = CGMutablePath()
+        visibleHitRegions.forEach { path.addRect($0) }
+        visibleMask.frame = bounds
+        visibleMask.path = path
+        layer?.mask = visibleMask
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let localPoint = NSPoint(
+            x: point.x - frame.minX + bounds.minX,
+            y: point.y - frame.minY + bounds.minY
+        )
+        guard visibleHitRegions.contains(where: { $0.contains(localPoint) }) else { return nil }
+        return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -124,6 +147,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private let eventSink: (TerminalSurfaceEvent) -> Void
     private var dataOrderGate = TerminalDataOrderGate()
     private var resizeGate = ResizeEmissionGate()
+    private var latestPlacement: TerminalPlacement?
+    private var sourceGrid: GridSize?
     private var isVisible = false
     private var isResizeOwner = false
     private var suppressResize = false
@@ -161,7 +186,13 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
 
     func setZoomScale(_ scale: CGFloat) {
         guard !destroyed, scale.isFinite, scale > 0 else { return }
+        let preserveSourceGrid = !isResizeOwner
+        if preserveSourceGrid { suppressResize = true }
         view.font = TerminalProfile.font(size: TerminalProfile.fontSize * scale)
+        if preserveSourceGrid {
+            restoreSourceGrid()
+            suppressResize = false
+        }
     }
 
     func applyFrame(
@@ -184,6 +215,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             backingScale: backingScale,
             contentScale: contentScale
         )
+        latestPlacement = placement
         isVisible = !placement.isHidden
         isResizeOwner = payload.resizeOwner
         if placement.isHidden || !payload.resizeOwner {
@@ -202,8 +234,11 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             metalAttempted = false
         }
         view.isHidden = placement.isHidden
-        if !placement.isHidden {
-            view.frame = placement.frame
+        if placement.isHidden {
+            view.setVisibleRegions([])
+        } else {
+            layoutView(for: placement)
+            view.setVisibleRegions(localVisibleRegions(for: placement))
         }
 
         switch rendererAction {
@@ -225,10 +260,16 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         guard !destroyed, dataOrderGate.acceptReset(revision: payload.revision) else { return false }
 
         suppressResize = true
+        sourceGrid = .init(cols: payload.cols, rows: payload.rows)
         view.resize(cols: payload.cols, rows: payload.rows)
         view.getTerminal().resetToInitialState()
         feed(payload.data)
-        view.setFrameSize(view.frame.size)
+        if let latestPlacement, !latestPlacement.isHidden {
+            layoutView(for: latestPlacement)
+            view.setVisibleRegions(localVisibleRegions(for: latestPlacement))
+        } else {
+            restoreSourceGrid()
+        }
         suppressResize = false
         emitCurrentResizeIfNeeded()
         return true
@@ -320,6 +361,39 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         } catch {
             NSLog("CommandoDesktop continuing with CoreGraphics rendering: %@", String(describing: error))
         }
+    }
+
+    private func layoutView(for placement: TerminalPlacement) {
+        let preserveSourceGrid = !isResizeOwner
+        let wasSuppressingResize = suppressResize
+        if preserveSourceGrid { suppressResize = true }
+        if preserveSourceGrid, sourceGrid == nil {
+            let terminal = view.getTerminal()
+            sourceGrid = .init(cols: terminal.cols, rows: terminal.rows)
+        }
+        if preserveSourceGrid { restoreSourceGrid() }
+        let sourceContentSize = view.getOptimalFrameSize().size
+        view.frame = TerminalSourceGridLayout.frame(
+            viewport: placement.frame,
+            sourceContentSize: sourceContentSize,
+            resizeOwner: isResizeOwner
+        )
+        if preserveSourceGrid { restoreSourceGrid() }
+        suppressResize = wasSuppressingResize
+    }
+
+    private func localVisibleRegions(for placement: TerminalPlacement) -> [CGRect] {
+        placement.visibleFrames.map {
+            $0.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
+        }
+    }
+
+    private func restoreSourceGrid() {
+        guard let sourceGrid else { return }
+        let terminal = view.getTerminal()
+        terminal.resize(cols: sourceGrid.cols, rows: sourceGrid.rows)
+        view.sizeChanged(source: terminal)
+        view.needsDisplay = true
     }
 
     private func feed(_ data: Data) {

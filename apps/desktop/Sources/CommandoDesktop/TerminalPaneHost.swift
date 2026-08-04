@@ -5,8 +5,11 @@ final class TerminalOverlayView: NSView {
     override var isOpaque: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let result = super.hitTest(point)
-        return result === self ? nil : result
+        guard bounds.contains(point) else { return nil }
+        for subview in subviews.reversed() where !subview.isHidden {
+            if let result = subview.hitTest(point) { return result }
+        }
+        return nil
     }
 }
 

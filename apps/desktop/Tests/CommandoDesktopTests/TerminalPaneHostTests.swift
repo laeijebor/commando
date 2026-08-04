@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import XCTest
 @testable import CommandoDesktop
 
@@ -90,8 +91,15 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
-    func testZoomScaleReappliesTheLatestTerminalFrame() throws {
+    func testNonOwnerSourceGridSurvivesFrameZoomFocusAndReseed() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
         let host = TerminalPaneHost(
             overlay: overlay,
             fallbackResponder: nil,
@@ -100,18 +108,54 @@ final class TerminalPaneHostTests: XCTestCase {
         )
         let identity = PaneIdentity(paneId: "%1", attachmentId: "zoom-frame")
         host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("source grid".utf8),
+            cols: 120,
+            rows: 40,
+            revision: 1
+        )))
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
             visible: true,
-            resizeOwner: false
+            resizeOwner: false,
+            scale: Double(window.backingScaleFactor)
         )))
         let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
-        XCTAssertEqual(surface.view.frame, NSRect(x: 10, y: 290, width: 400, height: 300))
+        XCTAssertEqual(surface.view.getTerminal().cols, 120)
+        XCTAssertEqual(surface.view.getTerminal().rows, 40)
+        XCTAssertGreaterThan(surface.view.frame.width, 400)
+        XCTAssertGreaterThan(surface.view.frame.height, 300)
+        XCTAssertEqual(surface.view.frame.minX, 10, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.maxY, 590, accuracy: 0.001)
+        let unzoomedSize = surface.view.frame.size
+
+        XCTAssertTrue(host.focus(identity))
+        XCTAssertTrue(surface.isFocused)
 
         host.setZoomScale(1.2)
 
-        XCTAssertEqual(surface.view.frame, NSRect(x: 12, y: 228, width: 480, height: 360))
+        XCTAssertEqual(surface.view.getTerminal().cols, 120)
+        XCTAssertEqual(surface.view.getTerminal().rows, 40)
+        XCTAssertGreaterThan(surface.view.frame.width, unzoomedSize.width)
+        XCTAssertGreaterThan(surface.view.frame.height, unzoomedSize.height)
+        XCTAssertEqual(surface.view.frame.minX, 12, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.maxY, 588, accuracy: 0.001)
+        XCTAssertTrue(surface.isFocused)
+
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("replacement grid".utf8),
+            cols: 91,
+            rows: 31,
+            revision: 2
+        )))
+        XCTAssertEqual(surface.view.getTerminal().cols, 91)
+        XCTAssertEqual(surface.view.getTerminal().rows, 31)
+        XCTAssertTrue(surface.isFocused)
         host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
     }
 
     func testTerminalInterceptsOnlyProductCommandShortcuts() throws {
@@ -196,6 +240,53 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertNil(overlay.hitTest(NSPoint(x: 10, y: 10)))
     }
 
+    func testTerminalMaskAndHitTestingExposeOnlyVisibleRegions() {
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        view.setVisibleRegions([
+            NSRect(x: 0, y: 0, width: 50, height: 100),
+            NSRect(x: 150, y: 0, width: 50, height: 100),
+        ])
+
+        XCTAssertEqual(view.visibleHitRegions, [
+            NSRect(x: 0, y: 0, width: 50, height: 100),
+            NSRect(x: 150, y: 0, width: 50, height: 100),
+        ])
+        XCTAssertNotNil(view.hitTest(NSPoint(x: 25, y: 50)))
+        XCTAssertNil(view.hitTest(NSPoint(x: 100, y: 50)))
+        XCTAssertNotNil(view.hitTest(NSPoint(x: 175, y: 50)))
+        XCTAssertEqual(view.layer?.mask?.frame, view.bounds)
+    }
+
+    func testTerminalMaskSurvivesMetalRendererToggleWhenAvailable() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal is unavailable") }
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
+        defer {
+            if view.isUsingMetalRenderer { try? view.setUseMetal(false) }
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+        view.setVisibleRegions([NSRect(x: 0, y: 0, width: 50, height: 100)])
+        let mask = try XCTUnwrap(view.layer?.mask)
+
+        do {
+            try view.setUseMetal(true)
+        } catch {
+            throw XCTSkip("SwiftTerm Metal test resources are unavailable: \(error)")
+        }
+        XCTAssertTrue(view.isUsingMetalRenderer)
+        XCTAssertTrue(view.layer?.mask === mask)
+        try view.setUseMetal(false)
+        XCTAssertFalse(view.isUsingMetalRenderer)
+        XCTAssertTrue(view.layer?.mask === mask)
+    }
+
     func testFrameHideShowAndResizeOwnerRules() {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var resizeEvents: [GridSize] = []
@@ -219,6 +310,12 @@ final class TerminalPaneHostTests: XCTestCase {
 
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
         XCTAssertEqual(resizeEvents.count, 1)
+        let surface = host.registry.record(for: identity)!.value
+        XCTAssertEqual(surface.view.frame, NSRect(x: 10, y: 290, width: 400, height: 300))
+        XCTAssertEqual(
+            resizeEvents.last,
+            GridSize(cols: surface.view.getTerminal().cols, rows: surface.view.getTerminal().rows)
+        )
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: false)))
         XCTAssertEqual(resizeEvents.count, 1)
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
@@ -255,8 +352,16 @@ final class TerminalPaneHostTests: XCTestCase {
 
         let highView = host.registry.record(for: high)!.value.view
         XCTAssertTrue(overlay.subviews.last === highView)
-        let hit = overlay.hitTest(NSPoint(x: highView.frame.midX, y: highView.frame.midY))
-        XCTAssertTrue(hit === highView || hit?.isDescendant(of: highView) == true)
+        let visibleRegion = highView.visibleHitRegions[0]
+        let hitPoint = NSPoint(
+            x: highView.frame.minX + visibleRegion.midX,
+            y: highView.frame.minY + visibleRegion.midY
+        )
+        let hit = overlay.hitTest(hitPoint)
+        XCTAssertTrue(
+            hit === highView || hit?.isDescendant(of: highView) == true,
+            "Expected high surface, got \(String(describing: hit)) from \(overlay.subviews)"
+        )
         host.destroyAll()
     }
 
@@ -265,7 +370,8 @@ final class TerminalPaneHostTests: XCTestCase {
         width: Double = 400,
         visible: Bool,
         resizeOwner: Bool,
-        order: Int = 0
+        order: Int = 0,
+        scale: Double = 1
     ) -> PaneFramePayload {
         .init(
             identity: identity,
@@ -273,8 +379,11 @@ final class TerminalPaneHostTests: XCTestCase {
             y: 10,
             width: width,
             height: 300,
-            scale: 1,
+            scale: scale,
             visible: visible,
+            visibleRegions: [
+                .init(x: 10, y: 10, width: width, height: 300),
+            ],
             resizeOwner: resizeOwner,
             order: order
         )

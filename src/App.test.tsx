@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, ServerMessage, TmuxPane } from '../shared/protocol'
-import { App, AuthGate, TerminalPaneCard } from './App'
+import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
 
@@ -226,6 +226,16 @@ describe('terminal pane actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Simulate terminal selection copy' }))
 
     expect(screen.getByRole('status')).toHaveTextContent('Copied')
+    expect(screen.getByRole('status')).toHaveAttribute('data-native-terminal-occluder')
+  })
+
+  it('marks pane action errors as native terminal occluders', () => {
+    const onDismiss = vi.fn()
+    render(<PaneActionErrorFeedback message="Unable to split pane" onDismiss={onDismiss} />)
+
+    expect(screen.getByRole('alert')).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss pane action error' }))
+    expect(onDismiss).toHaveBeenCalledOnce()
   })
 
   it('opens path actions and copies the pane path to the clipboard', async () => {

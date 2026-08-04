@@ -10,6 +10,7 @@ enum NativeTerminalProtocol {
     static let maxResetBytes = 5 * 1_024 * 1_024
     static let maxDataBytes = 64 * 1_024
     static let maxInputBytes = 8 * 1_024
+    static let maxVisibleRegions = 64
     static let minCols = 2
     static let maxCols = 500
     static let minRows = 1
@@ -20,6 +21,7 @@ enum NativeTerminalProtocol {
         "terminal.binaryInput.v1",
         "terminal.cssPixelGeometry.v1",
         "terminal.attachmentLifecycle.v1",
+        "terminal.visibleRegions.v1",
         "terminal.coreGraphics",
     ]
 }
@@ -53,8 +55,16 @@ struct PaneFramePayload: Equatable, Sendable {
     let height: Double
     let scale: Double
     let visible: Bool
+    let visibleRegions: [PaneVisibleRegion]
     let resizeOwner: Bool
     let order: Int
+}
+
+struct PaneVisibleRegion: Equatable, Sendable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
 }
 
 struct PaneResetPayload: Equatable, Sendable {
@@ -157,7 +167,7 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
         case "pane.frame":
             try payload.require(keys: [
                 "paneId", "attachmentId", "x", "y", "width", "height", "scale",
-                "visible", "resizeOwner", "order",
+                "visible", "visibleRegions", "resizeOwner", "order",
             ])
             let identity = try decodeIdentity(payload)
             let x = try payload.finiteDouble("x")
@@ -171,6 +181,26 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                     message: "Frame dimensions must be nonnegative and scale must be positive."
                 )
             }
+            let visibleRegions = try payload.objectArray(
+                "visibleRegions",
+                maximumCount: NativeTerminalProtocol.maxVisibleRegions
+            ).map { region in
+                try region.require(keys: ["x", "y", "width", "height"])
+                let width = try region.finiteDouble("width")
+                let height = try region.finiteDouble("height")
+                guard width > 0, height > 0 else {
+                    throw ProtocolValidationError(
+                        code: "invalid_geometry",
+                        message: "Visible region dimensions must be positive."
+                    )
+                }
+                return PaneVisibleRegion(
+                    x: try region.finiteDouble("x"),
+                    y: try region.finiteDouble("y"),
+                    width: width,
+                    height: height
+                )
+            }
             return .frame(.init(
                 identity: identity,
                 x: x,
@@ -179,6 +209,7 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                 height: height,
                 scale: scale,
                 visible: try payload.boolean("visible"),
+                visibleRegions: visibleRegions,
                 resizeOwner: try payload.boolean("resizeOwner"),
                 order: try payload.javascriptSafeInteger("order")
             ))
@@ -362,6 +393,13 @@ private struct StrictObject {
             let item = try StrictObject(["value": value], context: key)
             return try item.safeInteger("value")
         }
+    }
+
+    func objectArray(_ key: String, maximumCount: Int) throws -> [StrictObject] {
+        guard let values = storage[key] as? [Any], values.count <= maximumCount else {
+            throw fieldError(key, expected: "a bounded object array")
+        }
+        return try values.map { try StrictObject($0, context: "\(context).\(key)") }
     }
 
     func canonicalBase64(_ key: String, maximumBytes: Int) throws -> Data {
