@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Pencil, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Pencil, Terminal, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export type PaneSplitDirection = 'up' | 'down' | 'left' | 'right'
@@ -8,9 +8,12 @@ type PaneContextMenuProps = {
   x: number
   y: number
   busy?: boolean
+  nativeTerminalAvailable?: boolean
+  useXtermFallback?: boolean
   onClose: () => void
   onRename: () => void
   onSplit: (direction: PaneSplitDirection) => void
+  onUseXtermFallbackChange?: (useXtermFallback: boolean) => void
   onKill: () => void
 }
 
@@ -19,9 +22,12 @@ export function PaneContextMenu({
   x,
   y,
   busy = false,
+  nativeTerminalAvailable = false,
+  useXtermFallback = false,
   onClose,
   onRename,
   onSplit,
+  onUseXtermFallbackChange,
   onKill,
 }: PaneContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -104,6 +110,16 @@ export function PaneContextMenu({
           <ArrowRight aria-hidden="true" /> Right
         </button>
       </div>
+      {(nativeTerminalAvailable || useXtermFallback) && onUseXtermFallbackChange ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => choose(() => onUseXtermFallbackChange(!useXtermFallback))}
+        >
+          <Terminal aria-hidden="true" />
+          {useXtermFallback ? 'Use native terminal' : 'Use xterm fallback'}
+        </button>
+      ) : null}
       <button type="button" className="danger" role="menuitem" disabled={busy} onClick={() => choose(onKill)}>
         <Trash2 aria-hidden="true" />
         Kill pane

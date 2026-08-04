@@ -17,12 +17,14 @@ type ResetWatchdog = {
 
 type TerminalPaneRendererProps = XtermPaneProps & {
   order: number
+  useXtermFallback?: boolean
   onInputBytes: (data: string) => void
   onRequestReset: () => void
 }
 
 export function TerminalPaneRenderer({
   order,
+  useXtermFallback = false,
   onInputBytes,
   onRequestReset,
   ...xtermProps
@@ -134,7 +136,9 @@ export function TerminalPaneRenderer({
     if (xtermProps.connected) deferResetRef.current(watchdog)
   }, [xtermProps.connected])
 
-  if (!nativeBridge) return <XtermPane {...xtermProps} registerSink={registerRendererSink} />
+  if (useXtermFallback || !nativeBridge) {
+    return <XtermPane {...xtermProps} registerSink={registerRendererSink} />
+  }
 
   return (
     <NativeTerminalPane
