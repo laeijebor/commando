@@ -2,6 +2,35 @@ import AppKit
 import WebKit
 
 @MainActor
+protocol JavaScriptConfirmationPresenting {
+    func present(
+        message: String,
+        in window: NSWindow?
+    ) async -> Bool
+}
+
+@MainActor
+struct AppKitJavaScriptConfirmationPresenter: JavaScriptConfirmationPresenting {
+    func present(
+        message: String,
+        in window: NSWindow?
+    ) async -> Bool {
+        guard let window else { return false }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { response in
+                continuation.resume(returning: response == .alertFirstButtonReturn)
+            }
+        }
+    }
+}
+
+@MainActor
 final class DesktopWebHost: NSObject, WKNavigationDelegate {
     let rootView: NSView
     let webView: WKWebView
@@ -11,13 +40,18 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let configuration: DesktopConfiguration
     private let admission: WebContentAdmission
     private let bridge: NativeTerminalBridge
+    private let confirmationPresenter: any JavaScriptConfirmationPresenting
     private var scriptMessageHandler: WeakScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
     private var isRetrying = false
 
-    init(configuration: DesktopConfiguration = .current()) {
+    init(
+        configuration: DesktopConfiguration = .current(),
+        confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter()
+    ) {
         self.configuration = configuration
+        self.confirmationPresenter = confirmationPresenter
         admission = WebContentAdmission(origin: configuration.webOrigin)
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1_180, height: 760))
         let webConfiguration = WKWebViewConfiguration()
@@ -42,6 +76,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         overlay.autoresizingMask = [.width, .height]
         connectionStatusView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         #if DEBUG
         webView.isInspectable = true
         #endif
@@ -64,6 +99,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         bridge.cleanUp()
         webView.stopLoading()
         webView.navigationDelegate = nil
+        webView.uiDelegate = nil
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: NativeTerminalProtocol.handlerName
         )
@@ -82,6 +118,13 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             return
         }
         decisionHandler(.allow)
+    }
+
+    func presentJavaScriptConfirmation(_ message: String) async -> Bool {
+        await confirmationPresenter.present(
+            message: message,
+            in: webView.window
+        )
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -150,5 +193,15 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private func retryNavigation(_ timer: Timer) {
         navigationRetryTimer = nil
         loadWebApplication()
+    }
+}
+
+extension DesktopWebHost: WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo
+    ) async -> Bool {
+        await presentJavaScriptConfirmation(message)
     }
 }
