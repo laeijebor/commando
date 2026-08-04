@@ -55,7 +55,7 @@ ${affectedMarkdown}`}
   })
 
   it('keeps unsupported tables read-only', async () => {
-    render(
+    const view = render(
       <NoteBlockEditor
         markdown={'| Project | Status |\n| --- | --- |\n| Commando | Safe |'}
         onChange={vi.fn()}
@@ -67,6 +67,19 @@ ${affectedMarkdown}`}
 
     expect(await screen.findByText(/cannot preserve/)).toBeVisible()
     expect(screen.getByLabelText('Note body')).toHaveAttribute('contenteditable', 'false')
+
+    view.rerender(
+      <NoteBlockEditor
+        markdown={'ProjectStatusCommandoSafe\n'}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        uploadImage={vi.fn()}
+        resolveImageUrl={(url) => url}
+      />,
+    )
+
+    await waitFor(() => expect(screen.queryByText(/cannot preserve/)).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Note body')).toHaveAttribute('contenteditable', 'true')
   })
 
   it('does not ignore hard breaks or whitespace inside fenced code', () => {

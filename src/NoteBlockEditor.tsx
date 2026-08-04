@@ -85,7 +85,10 @@ export function NoteBlockEditor({
   })
 
   useEffect(() => {
-    if (lastEmittedMarkdown.current === markdown) return
+    if (lastEmittedMarkdown.current === markdown) {
+      setCompatible(true)
+      return
+    }
     applyingMarkdown.current = true
     editor.replaceBlocks(editor.document, editor.tryParseMarkdownToBlocks(markdown))
     const canonical = editor.blocksToMarkdownLossy(editor.document)
