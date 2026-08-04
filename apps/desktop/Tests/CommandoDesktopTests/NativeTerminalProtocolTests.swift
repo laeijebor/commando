@@ -31,6 +31,7 @@ final class NativeTerminalProtocolTests: XCTestCase {
             "height": 400,
             "scale": 2,
             "visible": true,
+            "visibleRegions": [["x": 10, "y": 20, "width": 800, "height": 400]],
             "resizeOwner": false,
             "order": 3,
         ]) { _, new in new })
@@ -44,6 +45,7 @@ final class NativeTerminalProtocolTests: XCTestCase {
                 height: 400,
                 scale: 2,
                 visible: true,
+                visibleRegions: [.init(x: 10, y: 20, width: 800, height: 400)],
                 resizeOwner: false,
                 order: 3
             ))
@@ -176,12 +178,35 @@ final class NativeTerminalProtocolTests: XCTestCase {
             assertError(
                 envelope("pane.frame", payload: identity.merging(invalidGeometry.merging([
                     "visible": true,
+                    "visibleRegions": [["x": 0, "y": 0, "width": 1, "height": 1]],
                     "resizeOwner": true,
                     "order": 0,
                 ]) { _, new in new }) { _, new in new }),
                 code: invalidGeometry["x"] as? Double == Double.infinity
                     ? "invalid_payload"
                     : "invalid_geometry"
+            )
+        }
+
+        for (visibleRegions, code): (Any, String) in [
+            ([["x": 0, "y": 0, "width": 0, "height": 1]], "invalid_geometry"),
+            ([["x": 0, "y": 0, "width": 1, "height": -1]], "invalid_geometry"),
+            (Array(repeating: ["x": 0, "y": 0, "width": 1, "height": 1],
+                   count: NativeTerminalProtocol.maxVisibleRegions + 1), "invalid_payload"),
+        ] {
+            assertError(
+                envelope("pane.frame", payload: identity.merging([
+                    "x": 0,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100,
+                    "scale": 1,
+                    "visible": true,
+                    "visibleRegions": visibleRegions,
+                    "resizeOwner": true,
+                    "order": 0,
+                ]) { _, new in new }),
+                code: code
             )
         }
 

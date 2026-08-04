@@ -7,7 +7,15 @@ export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.binaryInput.v1',
   'terminal.cssPixelGeometry.v1',
   'terminal.attachmentLifecycle.v1',
+  'terminal.visibleRegions.v1',
 ] as const
+
+export type NativeTerminalVisibleRegion = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 type NativeMessageHandler = {
   postMessage: (message: NativeTerminalMessage) => void
@@ -308,6 +316,7 @@ export class NativeTerminalBridge {
     height: number
     scale: number
     visible: boolean
+    visibleRegions: NativeTerminalVisibleRegion[]
     resizeOwner: boolean
     order: number
   }): boolean {

@@ -41,6 +41,14 @@ final class DesktopSecurityPolicyTests: XCTestCase {
             ),
             .redraw
         )
+        XCTAssertEqual(
+            TerminalRendererVisibilityPolicy.action(
+                isHidden: false,
+                prefersMetal: true,
+                isUsingMetal: true
+            ),
+            .redraw
+        )
     }
 
     func testOnlyHidingTheFocusedSurfaceTransfersFocusToWebFallback() {

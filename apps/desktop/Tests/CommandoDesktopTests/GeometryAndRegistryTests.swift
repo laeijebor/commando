@@ -10,25 +10,31 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
         XCTAssertEqual(
             placement,
-            .init(frame: .init(x: 100, y: 450, width: 400, height: 200), isHidden: false)
+            .init(
+                frame: .init(x: 100, y: 450, width: 400, height: 200),
+                visibleFrames: [.init(x: 100, y: 450, width: 400, height: 200)],
+                isHidden: false
+            )
         )
     }
 
-    func testHidesPartiallyClippedFrameInsteadOfReflowingIt() {
+    func testPreservesPartiallyClippedVisibleRegions() {
         let partial = TerminalGeometry.placement(
             for: frame(x: 950, y: 650, width: 100, height: 100, scale: 2),
             viewportSize: .init(width: 1_000, height: 700),
             backingScale: 2
         )
-        XCTAssertTrue(partial.isHidden)
-        XCTAssertEqual(partial.frame, .zero)
+        XCTAssertFalse(partial.isHidden)
+        XCTAssertEqual(partial.frame, .init(x: 950, y: -50, width: 100, height: 100))
+        XCTAssertEqual(partial.visibleFrames, [.init(x: 950, y: 0, width: 50, height: 50)])
 
         let negativeOrigin = TerminalGeometry.placement(
             for: frame(x: -1, y: 20, width: 100, height: 50, scale: 2),
             viewportSize: .init(width: 800, height: 600),
             backingScale: 2
         )
-        XCTAssertTrue(negativeOrigin.isHidden)
+        XCTAssertFalse(negativeOrigin.isHidden)
+        XCTAssertEqual(negativeOrigin.visibleFrames, [.init(x: 0, y: 530, width: 99, height: 50)])
     }
 
     func testAccountsForScaleWhenFrameIsFullyContained() {
@@ -39,7 +45,11 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
         XCTAssertEqual(
             scaled,
-            .init(frame: .init(x: 15, y: 495, width: 150, height: 75), isHidden: false)
+            .init(
+                frame: .init(x: 15, y: 495, width: 150, height: 75),
+                visibleFrames: [.init(x: 15, y: 495, width: 150, height: 75)],
+                isHidden: false
+            )
         )
     }
 
@@ -52,7 +62,11 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
         XCTAssertEqual(
             zoomed,
-            .init(frame: .init(x: 125, y: 387.5, width: 500, height: 250), isHidden: false)
+            .init(
+                frame: .init(x: 125, y: 387.5, width: 500, height: 250),
+                visibleFrames: [.init(x: 125, y: 387.5, width: 500, height: 250)],
+                isHidden: false
+            )
         )
     }
 
@@ -82,6 +96,26 @@ final class GeometryAndRegistryTests: XCTestCase {
         XCTAssertTrue(gate.shouldEmit(cols: 100, rows: 30, isVisible: true, isResizeOwner: true))
         XCTAssertFalse(gate.shouldEmit(cols: 100, rows: 30, isVisible: true, isResizeOwner: false))
         XCTAssertTrue(gate.shouldEmit(cols: 100, rows: 30, isVisible: true, isResizeOwner: true))
+    }
+
+    func testSourceGridLayoutFitsOwnersAndExposesNonOwnerOverflow() {
+        let viewport = CGRect(x: 10, y: 100, width: 400, height: 300)
+        XCTAssertEqual(
+            TerminalSourceGridLayout.frame(
+                viewport: viewport,
+                sourceContentSize: .init(width: 700, height: 500),
+                resizeOwner: false
+            ),
+            CGRect(x: 10, y: -100, width: 700, height: 500)
+        )
+        XCTAssertEqual(
+            TerminalSourceGridLayout.frame(
+                viewport: viewport,
+                sourceContentSize: .init(width: 700, height: 500),
+                resizeOwner: true
+            ),
+            viewport
+        )
     }
 
     func testAttachmentReplacementAndStaleDetach() {
@@ -130,7 +164,8 @@ final class GeometryAndRegistryTests: XCTestCase {
         width: Double = 100,
         height: Double = 100,
         scale: Double = 2,
-        visible: Bool = true
+        visible: Bool = true,
+        visibleRegions: [PaneVisibleRegion]? = nil
     ) -> PaneFramePayload {
         .init(
             identity: .init(paneId: "%1", attachmentId: "a"),
@@ -140,6 +175,9 @@ final class GeometryAndRegistryTests: XCTestCase {
             height: height,
             scale: scale,
             visible: visible,
+            visibleRegions: visibleRegions ?? [
+                .init(x: x, y: y, width: width, height: height),
+            ],
             resizeOwner: true,
             order: 0
         )

@@ -5,6 +5,7 @@ import {
   encodeBase64Bytes,
   type NativeTerminalAttachmentEvent,
   type NativeTerminalBridge,
+  type NativeTerminalVisibleRegion,
 } from './nativeTerminalBridge'
 
 type NativeTerminalPaneProps = {
@@ -23,6 +24,7 @@ type NativeTerminalPaneProps = {
 }
 
 const SEED_TIMEOUT_MS = 1_500
+export const MAX_NATIVE_TERMINAL_VISIBLE_REGIONS = 64
 let attachmentSequence = 0
 
 function nextAttachmentId(pageId: string): string {
@@ -38,16 +40,71 @@ function isVisibleElement(element: Element): boolean {
   return bounds.width > 0 && bounds.height > 0
 }
 
-type RectEdges = Pick<DOMRect, 'bottom' | 'left' | 'right' | 'top'>
+export type RectEdges = Pick<DOMRect, 'bottom' | 'left' | 'right' | 'top'>
 
 function rectanglesIntersect(left: RectEdges, right: RectEdges): boolean {
   return left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top
 }
 
-function hasIntersectingOccluder(bounds: DOMRect): boolean {
-  return [...document.querySelectorAll('[data-native-terminal-occluder]')].some((element) => (
-    isVisibleElement(element) && rectanglesIntersect(bounds, element.getBoundingClientRect())
-  ))
+function intersectRect(left: RectEdges, right: RectEdges): RectEdges | null {
+  const intersection = {
+    left: Math.max(left.left, right.left),
+    top: Math.max(left.top, right.top),
+    right: Math.min(left.right, right.right),
+    bottom: Math.min(left.bottom, right.bottom),
+  }
+  return intersection.left < intersection.right && intersection.top < intersection.bottom
+    ? intersection
+    : null
+}
+
+function subtractRect(source: RectEdges, occluder: RectEdges): RectEdges[] {
+  const overlap = intersectRect(source, occluder)
+  if (!overlap) return [source]
+
+  return [
+    { left: source.left, top: source.top, right: source.right, bottom: overlap.top },
+    { left: source.left, top: overlap.bottom, right: source.right, bottom: source.bottom },
+    { left: source.left, top: overlap.top, right: overlap.left, bottom: overlap.bottom },
+    { left: overlap.right, top: overlap.top, right: source.right, bottom: overlap.bottom },
+  ].filter((region) => region.left < region.right && region.top < region.bottom)
+}
+
+function regionPayload(region: RectEdges): NativeTerminalVisibleRegion {
+  return {
+    x: region.left,
+    y: region.top,
+    width: region.right - region.left,
+    height: region.bottom - region.top,
+  }
+}
+
+export function computeNativeTerminalVisibleRegions(
+  bounds: RectEdges,
+  clip: RectEdges,
+  occluders: readonly RectEdges[],
+  maximumCount = MAX_NATIVE_TERMINAL_VISIBLE_REGIONS,
+): NativeTerminalVisibleRegion[] {
+  if (maximumCount < 1) return []
+  const scale = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
+    ? window.devicePixelRatio
+    : 1
+  const tolerance = 1 / scale
+  const base = intersectRect(bounds, {
+    left: clip.left - tolerance,
+    top: clip.top - tolerance,
+    right: clip.right + tolerance,
+    bottom: clip.bottom + tolerance,
+  })
+  if (!base) return []
+
+  let regions = [base]
+  for (const occluder of occluders) {
+    if (!rectanglesIntersect(bounds, occluder)) continue
+    regions = regions.flatMap((region) => subtractRect(region, occluder)).slice(0, maximumCount)
+    if (regions.length === 0) break
+  }
+  return regions.map(regionPayload)
 }
 
 function clipsAxis(value: string): boolean {
@@ -85,17 +142,6 @@ function clippingRect(element: HTMLElement): RectEdges {
     }
   }
   return clip
-}
-
-function isFullyInside(bounds: RectEdges, clip: RectEdges): boolean {
-  const scale = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
-    ? window.devicePixelRatio
-    : 1
-  const tolerance = 1 / scale
-  return bounds.left >= clip.left - tolerance &&
-    bounds.top >= clip.top - tolerance &&
-    bounds.right <= clip.right + tolerance &&
-    bounds.bottom <= clip.bottom + tolerance
 }
 
 export function NativeTerminalPane({
@@ -247,16 +293,20 @@ export function NativeTerminalPane({
       if (!attachmentId) return
       const bounds = placeholder.getBoundingClientRect()
       const clip = clippingRect(placeholder)
-      const visible = isVisibleElement(placeholder) &&
-        isFullyInside(bounds, clip) &&
-        !hasIntersectingOccluder(bounds)
+      const occluders = [...document.querySelectorAll('[data-native-terminal-occluder]')]
+        .filter(isVisibleElement)
+        .map((element) => element.getBoundingClientRect())
+      const visibleRegions = isVisibleElement(placeholder)
+        ? computeNativeTerminalVisibleRegions(bounds, clip, occluders)
+        : []
       const payload = {
         x: bounds.left,
         y: bounds.top,
         width: bounds.width,
         height: bounds.height,
         scale: Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1,
-        visible,
+        visible: visibleRegions.length > 0,
+        visibleRegions,
         resizeOwner,
         order,
       }

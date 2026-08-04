@@ -6,7 +6,11 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PaneTerminalState } from '../shared/protocol'
-import { NativeTerminalPane } from './NativeTerminalPane'
+import {
+  computeNativeTerminalVisibleRegions,
+  MAX_NATIVE_TERMINAL_VISIBLE_REGIONS,
+  NativeTerminalPane,
+} from './NativeTerminalPane'
 import {
   NativeTerminalBridge,
   REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
@@ -183,6 +187,7 @@ beforeEach(() => {
   })
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getBounds(this: HTMLElement) {
     if (this.dataset.occluderPosition === 'far') return rect(0, 0, 5, 5)
+    if (this.dataset.occluderPosition === 'full') return placeholderBounds
     if (this.hasAttribute('data-native-terminal-occluder')) return rect(20, 20, 40, 40)
     if (this.dataset.clippingAncestor === 'fractional') return rect(0, 0, 100, 90)
     if (this.hasAttribute('data-clipping-ancestor')) return rect(0, 0, 60, 90)
@@ -259,6 +264,12 @@ describe('NativeTerminalPane', () => {
       message.payload.height === 70 &&
       message.payload.scale === 2 &&
       message.payload.visible === true &&
+      JSON.stringify(message.payload.visibleRegions) === JSON.stringify([{
+        x: 10,
+        y: 10,
+        width: 80,
+        height: 70,
+      }]) &&
       message.payload.resizeOwner === true &&
       message.payload.order === 2
     ))).toBe(true))
@@ -334,7 +345,7 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
-  it('hides only for intersecting occluders, not unrelated note surfaces', async () => {
+  it('subtracts intersecting occluders while keeping uncovered regions visible', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
     const bridge = new NativeTerminalBridge()
@@ -367,12 +378,20 @@ describe('NativeTerminalPane', () => {
     fireEvent.scroll(window)
     await waitFor(() => {
       const frames = messages.filter((message) => message.type === 'pane.frame')
-      expect(frames.at(-1)?.payload.visible).toBe(false)
+      expect(frames.at(-1)?.payload).toMatchObject({
+        visible: true,
+        visibleRegions: [
+          { x: 10, y: 10, width: 80, height: 10 },
+          { x: 10, y: 40, width: 80, height: 40 },
+          { x: 10, y: 20, width: 10, height: 20 },
+          { x: 40, y: 20, width: 50, height: 20 },
+        ],
+      })
     })
     bridge.dispose()
   })
 
-  it('sends the full frame as hidden when a scroll ancestor partially clips the pane', async () => {
+  it('sends the clipped visible region when a scroll ancestor partially clips the pane', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
     const bridge = new NativeTerminalBridge()
@@ -405,13 +424,41 @@ describe('NativeTerminalPane', () => {
         y: 10,
         width: 80,
         height: 70,
-        visible: false,
+        visible: true,
+        visibleRegions: [{ x: 10, y: 10, width: 50.5, height: 70 }],
       })
     })
     bridge.dispose()
   })
 
-  it('tolerates fractional layout rounding but still hides a genuinely clipped pane', async () => {
+  it('hides a surface only when an occluder covers every visible region', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+
+    const cover = document.createElement('div')
+    cover.dataset.occluderPosition = 'full'
+    cover.setAttribute('data-native-terminal-occluder', '')
+    document.body.append(cover)
+    fireEvent.scroll(window)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ visible: false, visibleRegions: [] })
+    })
+    bridge.dispose()
+  })
+
+  it('tolerates fractional layout rounding and reports genuine clipping as a partial region', async () => {
     placeholderBounds = rect(0, 0, 100.390625, 80)
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
@@ -447,9 +494,31 @@ describe('NativeTerminalPane', () => {
     fireEvent.scroll(clippingAncestor)
     await waitFor(() => {
       const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
-      expect(frame?.payload).toMatchObject({ width: 102, visible: false })
+      expect(frame?.payload).toMatchObject({
+        width: 102,
+        visible: true,
+        visibleRegions: [{ x: 0, y: 0, width: 100.5, height: 80 }],
+      })
     })
     bridge.dispose()
+  })
+
+  it('bounds region fragmentation conservatively', () => {
+    const occluders = Array.from({ length: MAX_NATIVE_TERMINAL_VISIBLE_REGIONS }, (_, index) => ({
+      left: index * 2 + 1,
+      top: 0,
+      right: index * 2 + 2,
+      bottom: 100,
+    }))
+
+    const regions = computeNativeTerminalVisibleRegions(
+      { left: 0, top: 0, right: 200, bottom: 100 },
+      { left: 0, top: 0, right: 200, bottom: 100 },
+      occluders,
+    )
+
+    expect(regions.length).toBeLessThanOrEqual(MAX_NATIVE_TERMINAL_VISIBLE_REGIONS)
+    expect(regions.every((region) => region.width > 0 && region.height > 0)).toBe(true)
   })
 
   it('uses a new attachment for the StrictMode replay so stale cleanup cannot detach its replacement', async () => {
