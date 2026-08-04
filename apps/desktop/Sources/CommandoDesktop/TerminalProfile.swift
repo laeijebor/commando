@@ -3,7 +3,14 @@ import SwiftTerm
 
 enum TerminalProfile {
     static let preferredFontName = "JetBrains Mono"
-    static let fallbackFontName = "SFMono-Regular"
+    static let fontNames = [
+        preferredFontName,
+        "SFMono-Regular",
+        "Cascadia Mono",
+        "Menlo",
+        "Consolas",
+        "Liberation Mono",
+    ]
     static let fontSize: CGFloat = 10
 
     static let backgroundHex: UInt32 = 0x232136
@@ -40,9 +47,12 @@ enum TerminalProfile {
     }
 
     static func font() -> NSFont {
-        NSFont(name: preferredFontName, size: fontSize)
-            ?? NSFont(name: fallbackFontName, size: fontSize)
-            ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        for name in fontNames {
+            if let font = NSFont(name: name, size: fontSize) {
+                return font
+            }
+        }
+        return NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
     }
 
     private static func nativeColor(_ hex: UInt32) -> NSColor {

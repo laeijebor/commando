@@ -6,6 +6,14 @@ import XCTest
 final class TerminalProfileTests: XCTestCase {
     func testRosePineMoonProfileMatchesXtermSettings() {
         XCTAssertEqual(TerminalProfile.preferredFontName, "JetBrains Mono")
+        XCTAssertEqual(TerminalProfile.fontNames, [
+            "JetBrains Mono",
+            "SFMono-Regular",
+            "Cascadia Mono",
+            "Menlo",
+            "Consolas",
+            "Liberation Mono",
+        ])
         XCTAssertEqual(TerminalProfile.fontSize, 10)
         XCTAssertEqual(TerminalProfile.backgroundHex, 0x232136)
         XCTAssertEqual(TerminalProfile.foregroundHex, 0xe0def4)
