@@ -40,27 +40,30 @@ enum BundledTerminalFont {
     }
 
     static func resourceURL(for face: Face) -> URL? {
-        Bundle.module.url(
-            forResource: face.resourceName,
-            withExtension: "ttf",
-            subdirectory: resourceDirectory
-        )
+        packagedResourceURL(forResource: face.resourceName, withExtension: "ttf")
+            ?? Bundle.module.url(
+                forResource: face.resourceName,
+                withExtension: "ttf",
+                subdirectory: resourceDirectory
+            )
     }
 
     static var licenseURL: URL? {
-        Bundle.module.url(
-            forResource: "OFL",
-            withExtension: "txt",
-            subdirectory: resourceDirectory
-        )
+        packagedResourceURL(forResource: "OFL", withExtension: "txt")
+            ?? Bundle.module.url(
+                forResource: "OFL",
+                withExtension: "txt",
+                subdirectory: resourceDirectory
+            )
     }
 
     static var provenanceURL: URL? {
-        Bundle.module.url(
-            forResource: "PROVENANCE",
-            withExtension: "md",
-            subdirectory: resourceDirectory
-        )
+        packagedResourceURL(forResource: "PROVENANCE", withExtension: "md")
+            ?? Bundle.module.url(
+                forResource: "PROVENANCE",
+                withExtension: "md",
+                subdirectory: resourceDirectory
+            )
     }
 
     private static var descriptors: [String: CTFontDescriptor]?
@@ -133,5 +136,17 @@ enum BundledTerminalFont {
 
     static func sourceURL(for font: NSFont) -> URL? {
         CTFontCopyAttribute(font as CTFont, kCTFontURLAttribute) as? URL
+    }
+
+    private static func packagedResourceURL(
+        forResource name: String,
+        withExtension extensionName: String
+    ) -> URL? {
+        guard let resourcesURL = Bundle.main.resourceURL else { return nil }
+        let candidate = resourcesURL
+            .appendingPathComponent("CommandoDesktop_CommandoDesktop.bundle", isDirectory: true)
+            .appendingPathComponent(resourceDirectory, isDirectory: true)
+            .appendingPathComponent("\(name).\(extensionName)")
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
     }
 }

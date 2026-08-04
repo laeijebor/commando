@@ -33,6 +33,13 @@ cp "$bin_path/CommandoDesktop" "$contents/MacOS/CommandoDesktop"
 cp "$package/Resources/Info.plist" "$contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$bundle_id" "$contents/Info.plist"
 
+desktop_bundle="$bin_path/CommandoDesktop_CommandoDesktop.bundle"
+if [[ ! -d "$desktop_bundle" ]]; then
+    printf 'Missing CommandoDesktop SwiftPM resource bundle at %s\n' "$desktop_bundle" >&2
+    exit 1
+fi
+cp -R "$desktop_bundle" "$contents/Resources/CommandoDesktop_CommandoDesktop.bundle"
+
 swiftterm_bundle="$bin_path/SwiftTerm_SwiftTerm.bundle"
 if [[ -d "$swiftterm_bundle" ]]; then
     cp -R "$swiftterm_bundle" "$contents/Resources/SwiftTerm_SwiftTerm.bundle"

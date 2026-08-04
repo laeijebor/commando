@@ -181,7 +181,7 @@ Pane groups have independent right-edge, bottom-edge, and corner drag handles in
 
 Unfocused browser terminals preserve the source tmux pane's columns and rows. If the source grid is larger than its card, the grid scrolls instead of reflowing or clipping. Focused terminals request a real tmux resize and wait for the authoritative reseed instead of resizing xterm optimistically. Seeds restore the normal and alternate screens, tab stops, scroll margins, wrapping, keypad, mouse, and cursor state before live output resumes. xterm.js owns local scrollback, terminal attributes, Unicode cell widths, cursor state, and IME input. Literal input and semantic special keys use the persistent controller so tmux can preserve pane application-key modes without spawning a process for each key. Paste is sent through a dedicated tmux buffer with a 256 KiB UTF-8 limit.
 
-The terminal renderer bundles JetBrains Mono and uses the Rosé Pine Moon palette from the local WezTerm profile. Production CSP allows inline styles because xterm.js requires measured inline canvas and viewport styles; scripts remain restricted to the application origin. The Refresh action also requests authoritative pane reseeds.
+The browser terminal renderer bundles JetBrains Mono and uses the Rosé Pine Moon palette from the local WezTerm profile. Production CSP allows inline styles because xterm.js requires measured inline canvas and viewport styles; scripts remain restricted to the application origin. The Refresh action also requests authoritative pane reseeds.
 
 Tmux-generated copy-mode UI is not emitted by control mode. Page Up, Page Down, and the mouse wheel therefore navigate xterm.js scrollback and the source-sized current screen instead of entering tmux copy mode.
 
@@ -191,7 +191,7 @@ Selecting text in a Workspace terminal copies it to the browser device's clipboa
 
 The browser terminal mirrors the local WezTerm profile with a 10 px font size and the Rosé Pine Moon palette. It uses the scheme's original muted ANSI and bright colors without browser contrast correction, and bold ANSI colors use their bright variants to match WezTerm's default bold-color behavior.
 
-The font stack starts with `JetBrains Mono`, then falls back to `SFMono-Regular`, `Cascadia Mono`, `Menlo`, `Consolas`, `Liberation Mono`, and the browser's generic monospace font. Commando does not currently bundle a web font, so exact JetBrains Mono rendering requires that font to be installed and available to the browser. Bundled browser font loading remains a follow-up.
+The font stack starts with `JetBrains Mono`, then falls back to `SFMono-Regular`, `Cascadia Mono`, `Menlo`, `Consolas`, `Liberation Mono`, and the browser's generic monospace font. The browser bundles Fontsource's JetBrains Mono 400 and 700 faces. The AppKit desktop bundles matching Google Fonts Regular and Bold TTFs, registers them only for the app process, and resolves its terminal profile from those bundled files rather than requiring a system installation.
 
 ## Security
 
