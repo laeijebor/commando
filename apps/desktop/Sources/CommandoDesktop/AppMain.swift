@@ -8,6 +8,8 @@ extension Notification.Name {
 
 @MainActor
 final class DesktopWindow: NSWindow {
+    var zoomShortcutWasPressed: ((String) -> Void)?
+
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let previous = firstResponder
         let accepted = super.makeFirstResponder(responder)
@@ -18,10 +20,18 @@ final class DesktopWindow: NSWindow {
     }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown,
-           let terminalView = firstResponder as? HostedTerminalView,
-           (terminalView.handleOptionArrow(event) || terminalView.handleControlV(event)) {
-            return
+        if event.type == .keyDown {
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if modifiers == .command,
+               let key = event.charactersIgnoringModifiers,
+               key == "-" || key == "=" {
+                zoomShortcutWasPressed?(key)
+                return
+            }
+            if let terminalView = firstResponder as? HostedTerminalView,
+               terminalView.handleOptionArrow(event) || terminalView.handleControlV(event) {
+                return
+            }
         }
         super.sendEvent(event)
     }
@@ -67,6 +77,7 @@ enum DesktopMainMenu {
 
         let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
         let viewMenu = NSMenu(title: "View")
+        viewMenu.autoenablesItems = false
         let zoomOutItem = viewMenu.addItem(
             withTitle: "Zoom Out",
             action: #selector(DesktopWebHost.zoomOut(_:)),
@@ -106,6 +117,13 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         window.isReleasedWhenClosed = false
         window.contentView = webHost.rootView
         window.delegate = self
+        window.zoomShortcutWasPressed = { [weak webHost] key in
+            if key == "-" {
+                webHost?.zoomOut(nil)
+            } else {
+                webHost?.zoomIn(nil)
+            }
+        }
         window.center()
 
         self.webHost = webHost

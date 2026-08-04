@@ -64,4 +64,45 @@ final class DesktopApplicationTests: XCTestCase {
         window.contentView = nil
         window.orderOut(nil)
     }
+
+    func testWindowRoutesOnlyUnshiftedCommandZoomShortcuts() throws {
+        var shortcuts: [String] = []
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.zoomShortcutWasPressed = { shortcuts.append($0) }
+        let commandMinus = try XCTUnwrap(keyEvent(key: "-", modifiers: .command, keyCode: 27))
+        let commandEquals = try XCTUnwrap(keyEvent(key: "=", modifiers: .command, keyCode: 24))
+        let commandPlus = try XCTUnwrap(keyEvent(key: "+", modifiers: [.command, .shift], keyCode: 24))
+
+        window.sendEvent(commandMinus)
+        window.sendEvent(commandEquals)
+        window.sendEvent(commandPlus)
+
+        XCTAssertEqual(shortcuts, ["-", "="])
+        window.zoomShortcutWasPressed = nil
+        window.orderOut(nil)
+    }
+
+    private func keyEvent(
+        key: String,
+        modifiers: NSEvent.ModifierFlags,
+        keyCode: UInt16
+    ) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: key,
+            charactersIgnoringModifiers: key,
+            isARepeat: false,
+            keyCode: keyCode
+        )
+    }
 }
