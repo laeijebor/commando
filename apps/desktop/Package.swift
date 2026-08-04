@@ -20,6 +20,9 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
+            resources: [
+                .copy("Resources/JetBrainsMono"),
+            ],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug)),
             ]
