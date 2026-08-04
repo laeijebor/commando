@@ -35,6 +35,7 @@ final class TerminalPaneHost {
 
     private weak var fallbackResponder: NSResponder?
     private let prefersMetal: Bool
+    private let externalURLHandler: any ExternalURLHandling
     private let eventSink: (PaneIdentity, TerminalSurfaceEvent) -> Void
     private(set) var zoomScale: CGFloat = 1
 
@@ -42,11 +43,13 @@ final class TerminalPaneHost {
         overlay: TerminalOverlayView,
         fallbackResponder: NSResponder?,
         prefersMetal: Bool,
+        externalURLHandler: (any ExternalURLHandling)? = nil,
         eventSink: @escaping (PaneIdentity, TerminalSurfaceEvent) -> Void
     ) {
         self.overlay = overlay
         self.fallbackResponder = fallbackResponder
         self.prefersMetal = prefersMetal
+        self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
         self.eventSink = eventSink
     }
 
@@ -65,7 +68,8 @@ final class TerminalPaneHost {
             ariaLabel: payload.metadata.ariaLabel,
             accessibilityEnabled: payload.metadata.accessibilityEnabled,
             keyShortcuts: payload.metadata.keyShortcuts,
-            prefersMetal: prefersMetal
+            prefersMetal: prefersMetal,
+            externalURLHandler: externalURLHandler
         ) { [weak self] event in
             self?.eventSink(payload.identity, event)
         }

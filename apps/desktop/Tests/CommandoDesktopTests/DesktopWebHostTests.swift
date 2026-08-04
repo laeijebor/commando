@@ -94,6 +94,11 @@ final class DesktopWebHostTests: XCTestCase {
                 _:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:
             )
         )))
+        XCTAssertTrue(host.responds(to: #selector(
+            WKUIDelegate.webView(
+                _:createWebViewWith:for:windowFeatures:
+            )
+        )))
 
         let result = await host.presentJavaScriptConfirmation("Kill pane api?")
         XCTAssertEqual(presenter.messages, ["Kill pane api?"])
