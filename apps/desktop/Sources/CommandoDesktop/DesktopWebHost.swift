@@ -196,6 +196,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         zoomPercent = percent
         webView.pageZoom = zoomScale
         bridge.setZoomScale(zoomScale)
+        webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))")
     }
 
     private func scheduleNavigationRetry() {

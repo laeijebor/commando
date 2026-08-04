@@ -265,6 +265,31 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
+  it('republishes changed bounds when the host reports a zoom layout change', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+    await waitFor(() => expect(messages.filter((message) => message.type === 'pane.frame')).toHaveLength(1))
+
+    placeholderBounds = rect(15, 12, 95, 82)
+    fireEvent.resize(window)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ x: 15, y: 12, width: 80, height: 70 })
+    })
+    bridge.dispose()
+  })
+
   it('keeps the populated native attachment while connection accessibility state changes', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)

@@ -19,6 +19,51 @@ private final class ConfirmationPresenterSpy: JavaScriptConfirmationPresenting {
 
 @MainActor
 final class DesktopWebHostTests: XCTestCase {
+    func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
+        let url = URL(string: "http://127.0.0.1:5173")!
+        let host = DesktopWebHost(configuration: .init(webURL: url, prefersMetal: false))
+        host.webView.stopLoading()
+        host.webView.loadHTMLString(
+            """
+            <script>
+              window.zoomLayoutEvents = 0;
+              window.addEventListener('resize', () => { window.zoomLayoutEvents += 1; });
+            </script>
+            """,
+            baseURL: url
+        )
+
+        var isReady = false
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript(
+                "typeof window.zoomLayoutEvents === 'number'"
+            ),
+               let ready = result as? NSNumber,
+               ready.boolValue {
+                isReady = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(isReady)
+
+        host.zoomIn(nil)
+        var layoutEvents = 0
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript("window.zoomLayoutEvents"),
+               let count = result as? NSNumber,
+               count.intValue > 0
+            {
+                layoutEvents = count.intValue
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(layoutEvents, 1)
+        host.cleanUp()
+    }
+
     func testZoomActionsScaleWebContentInBoundedSteps() {
         let host = DesktopWebHost()
 
