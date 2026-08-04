@@ -93,6 +93,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
     func testNonOwnerSourceGridSurvivesFrameZoomFocusAndReseed() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        var contextMenuPoints: [CGPoint] = []
         let window = NSWindow(
             contentRect: overlay.frame,
             styleMask: [.titled],
@@ -104,7 +105,9 @@ final class TerminalPaneHostTests: XCTestCase {
             overlay: overlay,
             fallbackResponder: nil,
             prefersMetal: false,
-            eventSink: { _, _ in }
+            eventSink: { _, event in
+                if case let .contextMenu(point) = event { contextMenuPoints.append(point) }
+            }
         )
         let identity = PaneIdentity(paneId: "%1", attachmentId: "zoom-frame")
         host.attach(.init(identity: identity, ariaLabel: "Terminal"))
@@ -128,6 +131,12 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertGreaterThan(surface.view.frame.height, 300)
         XCTAssertEqual(surface.view.frame.minX, 10, accuracy: 0.001)
         XCTAssertEqual(surface.view.frame.maxY, 590, accuracy: 0.001)
+        surface.view.rightMouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .rightMouseDown,
+            location: CGPoint(x: 210, y: 440),
+            modifiers: .option
+        )))
+        XCTAssertEqual(contextMenuPoints, [CGPoint(x: 210, y: 160)])
         let unzoomedSize = surface.view.frame.size
 
         XCTAssertTrue(host.focus(identity))
@@ -266,6 +275,114 @@ final class TerminalPaneHostTests: XCTestCase {
     func testTerminalAcceptsTheActivationClick() {
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         XCTAssertTrue(view.acceptsFirstMouse(for: nil))
+    }
+
+    func testPageUpAndDownScrollNormalBufferButReachAlternateScreen() {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "page-keys"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        surface.view.resize(cols: 20, rows: 3)
+        for line in 0..<12 {
+            surface.view.feed(text: "line \(line)\r\n")
+        }
+        let bottom = surface.view.scrollPosition
+
+        surface.view.pageUp()
+        XCTAssertLessThan(surface.view.scrollPosition, bottom)
+        surface.view.pageDown()
+        XCTAssertEqual(surface.view.scrollPosition, bottom)
+        XCTAssertTrue(inputs.isEmpty)
+
+        surface.view.feed(text: "\u{1b}[?1049h")
+        XCTAssertTrue(surface.view.getTerminal().isCurrentBufferAlternate)
+        surface.view.pageUp()
+        surface.view.pageDown()
+        XCTAssertEqual(inputs, [
+            Data([0x1b, 0x5b, 0x35, 0x7e]),
+            Data([0x1b, 0x5b, 0x36, 0x7e]),
+        ])
+        surface.destroy()
+    }
+
+    func testOptionDragBypassesMouseReportingAndCommandCCopiesSelection() throws {
+        let pasteboard = NSPasteboard(name: .init("CommandoSelectionTests.\(UUID().uuidString)"))
+        defer { pasteboard.clearContents() }
+        var inputs: [Data] = []
+        var copiedCount = 0
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "selection"),
+            ariaLabel: "Terminal",
+            prefersMetal: false,
+            pasteboard: pasteboard
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+            if case .selectionCopied = event { copiedCount += 1 }
+        }
+        surface.view.feed(text: "alpha beta gamma")
+        surface.view.feed(text: "\u{1b}[?1000h")
+        surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDown,
+            location: CGPoint(x: 10, y: 290)
+        )))
+        surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseUp,
+            location: CGPoint(x: 10, y: 290)
+        )))
+        XCTAssertFalse(inputs.isEmpty)
+        inputs.removeAll()
+
+        surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDown,
+            location: CGPoint(x: 10, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 12, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseUp,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .option
+        )))
+        XCTAssertTrue(inputs.isEmpty)
+        XCTAssertTrue(surface.view.selectionActive)
+        XCTAssertEqual(copiedCount, 1)
+        XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
+
+        let commandC = try XCTUnwrap(keyEvent(key: "c", modifiers: .command, keyCode: 8))
+        XCTAssertTrue(surface.view.performKeyEquivalent(with: commandC))
+        XCTAssertEqual(copiedCount, 2)
+        surface.destroy()
+    }
+
+    func testOnlyOptionRightClickRequestsNormalizedContextMenu() throws {
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        var points: [CGPoint] = []
+        view.contextMenuWasRequested = { points.append($0) }
+
+        view.rightMouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .rightMouseDown,
+            location: CGPoint(x: 100, y: 75)
+        )))
+        XCTAssertTrue(points.isEmpty)
+        view.rightMouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .rightMouseDown,
+            location: CGPoint(x: 100, y: 75),
+            modifiers: .option
+        )))
+        XCTAssertEqual(points, [CGPoint(x: 0.25, y: 0.75)])
     }
 
     func testOverlayOnlyHitTestsTerminalChildren() {
@@ -442,6 +559,24 @@ final class TerminalPaneHostTests: XCTestCase {
             charactersIgnoringModifiers: key.lowercased(),
             isARepeat: false,
             keyCode: keyCode
+        )
+    }
+
+    private func mouseEvent(
+        type: NSEvent.EventType,
+        location: CGPoint,
+        modifiers: NSEvent.ModifierFlags = []
+    ) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: type,
+            location: location,
+            modifierFlags: modifiers,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
         )
     }
 }

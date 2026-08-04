@@ -2,6 +2,19 @@ import XCTest
 @testable import CommandoDesktop
 
 final class GeometryAndRegistryTests: XCTestCase {
+    func testConvertsNormalizedNativePointBackToCSSClientCoordinates() {
+        let payload = frame(x: 100, y: 50, width: 400, height: 200, scale: 2)
+        XCTAssertEqual(
+            TerminalGeometry.clientPoint(for: CGPoint(x: 0.25, y: 0.75), in: payload),
+            CGPoint(x: 200, y: 200)
+        )
+        XCTAssertNil(TerminalGeometry.clientPoint(for: CGPoint(x: -0.1, y: 0.5), in: payload))
+        XCTAssertNil(TerminalGeometry.clientPoint(
+            for: CGPoint(x: 0.5, y: 0.5),
+            in: frame(x: 100, y: 50, width: 0, height: 200, scale: 2)
+        ))
+    }
+
     func testConvertsTopLeftCSSFrameToAppKitCoordinates() {
         let placement = TerminalGeometry.placement(
             for: frame(x: 100, y: 50, width: 400, height: 200, scale: 2),

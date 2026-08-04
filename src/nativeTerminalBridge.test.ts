@@ -243,4 +243,64 @@ describe('NativeTerminalBridge event isolation', () => {
     })
     bridge.dispose()
   })
+
+  it('strictly validates native paste, copied-selection, and context-menu events', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    await connect(bridge)
+    const listener = vi.fn()
+    const attachment = bridge.attach('%1', 'attachment-actions', {
+      ariaLabel: 'Pane 1 terminal',
+      accessibilityEnabled: true,
+      keyShortcuts: ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'],
+    }, listener)
+    receive(bridge, 2, 'pane.attached', { paneId: '%1', attachmentId: 'attachment-actions' })
+    await attachment.ready
+    listener.mockClear()
+
+    receive(bridge, 3, 'pane.paste_text', {
+      paneId: '%1', attachmentId: 'attachment-actions', data: '',
+    })
+    receive(bridge, 3, 'pane.paste_text', {
+      paneId: '%1', attachmentId: 'attachment-actions', data: 'bad\0paste',
+    })
+    receive(bridge, 3, 'pane.paste_text', {
+      paneId: '%1', attachmentId: 'attachment-actions', data: 'x'.repeat(256 * 1024 + 1),
+    })
+    receive(bridge, 3, 'pane.paste_text', {
+      paneId: '%1', attachmentId: 'attachment-actions', data: 'paste text', extra: true,
+    })
+    receive(bridge, 3, 'pane.paste_text', {
+      paneId: '%1', attachmentId: 'attachment-actions', data: 'paste text',
+    })
+    receive(bridge, 4, 'pane.selection_copied', {
+      paneId: '%1', attachmentId: 'attachment-actions', copied: true,
+    })
+    receive(bridge, 4, 'pane.selection_copied', {
+      paneId: '%1', attachmentId: 'attachment-actions',
+    })
+    receive(bridge, 5, 'pane.context_menu', {
+      paneId: '%1', attachmentId: 'attachment-actions', x: -1, y: 80,
+    })
+    receive(bridge, 5, 'pane.context_menu', {
+      paneId: '%1', attachmentId: 'attachment-actions', x: 120.5, y: 80.25,
+    })
+
+    expect(listener.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({
+        type: 'pane.paste_text',
+        payload: { paneId: '%1', attachmentId: 'attachment-actions', data: 'paste text' },
+      }),
+      expect.objectContaining({
+        type: 'pane.selection_copied',
+        payload: { paneId: '%1', attachmentId: 'attachment-actions' },
+      }),
+      expect.objectContaining({
+        type: 'pane.context_menu',
+        payload: { paneId: '%1', attachmentId: 'attachment-actions', x: 120.5, y: 80.25 },
+      }),
+    ])
+    bridge.dispose()
+  })
 })

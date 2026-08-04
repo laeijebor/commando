@@ -480,6 +480,10 @@ export function TerminalPaneCard({
         onFocus={onFocus}
         onInput={onInput}
         onInputBytes={onInputBytes}
+        onOpenMenu={(x, y) => {
+          onFocus()
+          onOpenMenu(x, y)
+        }}
         onKey={onKey}
         onPaste={onPaste}
         onSelectionCopied={showSelectionCopied}

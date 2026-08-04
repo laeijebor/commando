@@ -91,6 +91,59 @@ final class TerminalClipboardBridgeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "plain text")
     }
 
+    func testReadsOnlyBoundedNonemptyPlainText() {
+        let pasteboard = makePasteboard()
+        let maximumUTF8Text = String(
+            repeating: "\u{e9}",
+            count: NativeTerminalProtocol.maxPasteBytes / 2
+        )
+        pasteboard.setString(maximumUTF8Text, forType: .string)
+        XCTAssertEqual(TerminalClipboardBridge.boundedPlainText(in: pasteboard), maximumUTF8Text)
+
+        for invalid in [
+            "",
+            "bad\0paste",
+            maximumUTF8Text + "x",
+        ] {
+            pasteboard.clearContents()
+            pasteboard.setString(invalid, forType: .string)
+            XCTAssertNil(TerminalClipboardBridge.boundedPlainText(in: pasteboard))
+        }
+    }
+
+    func testCommandVPastesOneTextEventWithoutSendingTerminalInput() throws {
+        let pasteboard = makePasteboard()
+        pasteboard.setString("line one\nline two", forType: .string)
+        var pasted: [String] = []
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "command-v"),
+            ariaLabel: "Terminal",
+            prefersMetal: false,
+            pasteboard: pasteboard
+        ) { event in
+            if case let .paste(text) = event { pasted.append(text) }
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let commandV = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            isARepeat: false,
+            keyCode: 9
+        ))
+
+        XCTAssertTrue(surface.view.performKeyEquivalent(with: commandV))
+        XCTAssertEqual(pasted, ["line one\nline two"])
+        XCTAssertTrue(inputs.isEmpty)
+        surface.destroy()
+    }
+
     private func makePasteboard() -> NSPasteboard {
         let pasteboard = NSPasteboard(name: .init("CommandoClipboardTests.\(UUID().uuidString)"))
         pasteboard.clearContents()

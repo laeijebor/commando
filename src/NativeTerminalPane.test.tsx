@@ -123,6 +123,9 @@ function nativeProps(bridge: NativeTerminalBridge) {
     ariaLabel: 'Pane 1 terminal input',
     onFocus: vi.fn(),
     onInputBytes: vi.fn(),
+    onPaste: vi.fn(),
+    onSelectionCopied: vi.fn(),
+    onOpenMenu: vi.fn(),
     onResize: vi.fn(),
     onFailure: vi.fn(),
     registerSink: vi.fn((_paneId: string, nextSink: PaneTerminalSink) => {
@@ -149,6 +152,7 @@ function rendererFixture(connected = true, paneId = '%1') {
     onFocus: vi.fn(),
     onInput: vi.fn(),
     onInputBytes: vi.fn(),
+    onOpenMenu: vi.fn(),
     onKey: vi.fn(),
     onPaste: vi.fn(),
     onSelectionCopied: vi.fn(),
@@ -246,6 +250,12 @@ describe('NativeTerminalPane', () => {
 
     act(() => receive('pane.input_bytes', { paneId: '%1', attachmentId, data: 'AP+A' }))
     expect(props.onInputBytes).toHaveBeenCalledWith('AP+A')
+    act(() => receive('pane.paste_text', { paneId: '%1', attachmentId, data: 'paste text' }))
+    expect(props.onPaste).toHaveBeenCalledWith('paste text')
+    act(() => receive('pane.selection_copied', { paneId: '%1', attachmentId }))
+    expect(props.onSelectionCopied).toHaveBeenCalledOnce()
+    act(() => receive('pane.context_menu', { paneId: '%1', attachmentId, x: 120.5, y: 80.25 }))
+    expect(props.onOpenMenu).toHaveBeenCalledWith(120.5, 80.25)
     act(() => receive('pane.resize', { paneId: '%1', attachmentId, cols: 77, rows: 22 }))
     expect(props.onResize).toHaveBeenCalledWith(77, 22)
     act(() => receive('pane.focus_changed', { paneId: '%1', attachmentId, focused: true }))

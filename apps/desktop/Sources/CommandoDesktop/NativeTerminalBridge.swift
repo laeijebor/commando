@@ -198,6 +198,11 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
                 type: "pane.input_bytes",
                 payload: NativeTerminalEventBuilder.paneInput(identity, data: data)
             )
+        case let .paste(text):
+            emit(
+                type: "pane.paste_text",
+                payload: NativeTerminalEventBuilder.panePaste(identity, text: text)
+            )
         case let .resize(size):
             emit(
                 type: "pane.resize",
@@ -207,6 +212,16 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
             emit(
                 type: "pane.focus_changed",
                 payload: NativeTerminalEventBuilder.paneFocusChanged(identity, focused: focused)
+            )
+        case .selectionCopied:
+            emit(
+                type: "pane.selection_copied",
+                payload: NativeTerminalEventBuilder.paneIdentity(identity)
+            )
+        case let .contextMenu(point):
+            emit(
+                type: "pane.context_menu",
+                payload: NativeTerminalEventBuilder.paneContextMenu(identity, point: point)
             )
         case let .shortcut(key):
             emit(type: "host.shortcut", payload: NativeTerminalEventBuilder.hostShortcut(key: key))

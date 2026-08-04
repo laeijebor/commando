@@ -11,6 +11,7 @@ enum NativeTerminalProtocol {
     static let maxDataBytes = 64 * 1_024
     static let maxInputBytes = 8 * 1_024
     static let maxVisibleRegions = 64
+    static let maxPasteBytes = 256 * 1_024
     static let maxKeyShortcuts = 16
     static let minCols = 2
     static let maxCols = 500
