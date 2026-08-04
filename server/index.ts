@@ -56,6 +56,7 @@ import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { snapshotsHaveSameState } from './snapshot-state.js'
 import { stripAnsi } from './terminal-text.js'
 import {
   AgentStatusRegistry,
@@ -927,6 +928,7 @@ async function main(): Promise<void> {
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then((nextSnapshot) => {
+        const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
         const previousRenderingState = new Map(
           snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
         )
@@ -989,8 +991,10 @@ async function main(): Promise<void> {
         }
 
         syncRequiredSessions()
-        broadcast({ type: 'snapshot', snapshot })
-        companion?.publish()
+        if (snapshotStateChanged) {
+          broadcast({ type: 'snapshot', snapshot })
+          companion?.publish()
+        }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
         return snapshot
       })
@@ -1311,9 +1315,13 @@ async function main(): Promise<void> {
             )
           })
         return
-      case 'refresh':
+      case 'refresh': {
+        const previousSnapshot = snapshot
         void refreshSnapshot()
-          .then(() => {
+          .then((currentSnapshot) => {
+            if (snapshotsHaveSameState(previousSnapshot, currentSnapshot)) {
+              send(client, { type: 'snapshot', snapshot: currentSnapshot })
+            }
             for (const paneId of client.subscribedPaneIds) {
               requestPaneSeed(client, paneId)
             }
@@ -1328,6 +1336,7 @@ async function main(): Promise<void> {
             )
           })
         return
+      }
       case 'load_workspace':
         void workspaces
           .load(message.sessionId)
