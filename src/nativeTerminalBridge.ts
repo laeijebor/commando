@@ -1,6 +1,7 @@
 export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
 export const NATIVE_TERMINAL_SHORTCUT_EVENT = 'commando:native-terminal-shortcut'
+export const NATIVE_TERMINAL_KEY_SHORTCUTS = ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'] as const
 
 export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.multiPane.v1',
@@ -44,6 +45,12 @@ export type NativeTerminalMessage = {
 type PaneIdentity = {
   paneId: string
   attachmentId: string
+}
+
+export type NativeTerminalMetadata = {
+  ariaLabel: string
+  accessibilityEnabled: boolean
+  keyShortcuts: string[]
 }
 
 export type NativeTerminalAttachmentEvent =
@@ -264,7 +271,7 @@ export class NativeTerminalBridge {
   attach(
     paneId: string,
     attachmentId: string,
-    ariaLabel: string,
+    metadata: NativeTerminalMetadata,
     listener: (event: NativeTerminalAttachmentEvent) => void,
   ): NativeTerminalAttachment {
     if (!this.connected) throw new Error('Native terminal bridge is not connected')
@@ -295,7 +302,7 @@ export class NativeTerminalBridge {
       this.post('pane.detach', { paneId, attachmentId })
     }, this.attachTimeoutMs)
 
-    if (!this.post('pane.attach', { paneId, attachmentId, ariaLabel })) {
+    if (!this.post('pane.attach', { paneId, attachmentId, ...metadata })) {
       this.attachments.delete(attachmentId)
       window.clearTimeout(record.timer)
       record.settled = true
@@ -327,8 +334,8 @@ export class NativeTerminalBridge {
     return this.postForAttachment('pane.focus', attachmentId, {})
   }
 
-  updateAccessibilityLabel(attachmentId: string, ariaLabel: string): boolean {
-    return this.postForAttachment('pane.attach', attachmentId, { ariaLabel })
+  updateMetadata(attachmentId: string, metadata: NativeTerminalMetadata): boolean {
+    return this.postForAttachment('pane.update', attachmentId, metadata)
   }
 
   reset(attachmentId: string, payload: {

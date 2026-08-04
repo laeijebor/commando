@@ -119,6 +119,44 @@ describe('NativeTerminalBridge negotiation', () => {
 })
 
 describe('NativeTerminalBridge event isolation', () => {
+  it('posts exact attach and metadata update envelopes without a second attach', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    await connect(bridge)
+    const metadata = {
+      ariaLabel: 'Pane 1 terminal',
+      accessibilityEnabled: true,
+      keyShortcuts: ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'],
+    }
+
+    const attachment = bridge.attach('%1', 'attachment-1', metadata, vi.fn())
+    expect(messages[1]).toEqual({
+      protocol: NATIVE_TERMINAL_PROTOCOL,
+      version: 1,
+      pageId: bridge.pageId,
+      sequence: 2,
+      type: 'pane.attach',
+      payload: { paneId: '%1', attachmentId: 'attachment-1', ...metadata },
+    })
+
+    const updated = { ...metadata, ariaLabel: 'Pane 1 terminal, disconnected', accessibilityEnabled: false }
+    expect(bridge.updateMetadata('attachment-1', updated)).toBe(true)
+    expect(messages[2]).toEqual({
+      protocol: NATIVE_TERMINAL_PROTOCOL,
+      version: 1,
+      pageId: bridge.pageId,
+      sequence: 3,
+      type: 'pane.update',
+      payload: { paneId: '%1', attachmentId: 'attachment-1', ...updated },
+    })
+    expect(messages.filter((message) => message.type === 'pane.attach')).toHaveLength(1)
+
+    receive(bridge, 2, 'pane.attached', { paneId: '%1', attachmentId: 'attachment-1' })
+    await expect(attachment.ready).resolves.toBeUndefined()
+    bridge.dispose()
+  })
+
   it('ignores malformed, stale-page, and non-monotonic shortcut events', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
@@ -154,7 +192,12 @@ describe('NativeTerminalBridge event isolation', () => {
     const bridge = new NativeTerminalBridge(100, 40)
     await connect(bridge)
     const listener = vi.fn()
-    const attachment = bridge.attach('%1', 'attachment-current', 'Pane 1 terminal', listener)
+    const metadata = {
+      ariaLabel: 'Pane 1 terminal',
+      accessibilityEnabled: true,
+      keyShortcuts: ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'],
+    }
+    const attachment = bridge.attach('%1', 'attachment-current', metadata, listener)
 
     receive(bridge, 2, 'pane.attached', { paneId: '%1', attachmentId: 'attachment-stale' })
     expect(listener).not.toHaveBeenCalled()
@@ -187,7 +230,10 @@ describe('NativeTerminalBridge event isolation', () => {
     })
     expect(listener).toHaveBeenCalledOnce()
 
-    const timeoutAttachment = bridge.attach('%2', 'attachment-timeout', 'Pane 2 terminal', vi.fn())
+    const timeoutAttachment = bridge.attach('%2', 'attachment-timeout', {
+      ...metadata,
+      ariaLabel: 'Pane 2 terminal',
+    }, vi.fn())
     const timeoutResult = timeoutAttachment.ready.catch((error: Error) => error.message)
     await vi.advanceTimersByTimeAsync(41)
     await expect(timeoutResult).resolves.toBe('Native terminal attach timed out')

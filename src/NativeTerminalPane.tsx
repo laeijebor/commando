@@ -3,6 +3,7 @@ import { type FocusEvent, useEffect, useRef } from 'react'
 import type { PaneTerminalSink } from './paneStream'
 import {
   encodeBase64Bytes,
+  NATIVE_TERMINAL_KEY_SHORTCUTS,
   type NativeTerminalAttachmentEvent,
   type NativeTerminalBridge,
   type NativeTerminalVisibleRegion,
@@ -165,7 +166,7 @@ export function NativeTerminalPane({
   const inputBytesRef = useRef(onInputBytes)
   const resizeRef = useRef(onResize)
   const ariaLabelRef = useRef(ariaLabel)
-  const attachedAriaLabelRef = useRef(ariaLabel)
+  const attachedMetadataRef = useRef({ ariaLabel, accessibilityEnabled: connected })
   const failureRef = useRef(onFailure)
   const activeFailureRef = useRef<() => void>(() => {})
   connectedRef.current = connected
@@ -189,7 +190,10 @@ export function NativeTerminalPane({
     let seedTimer: number | undefined
 
     attachmentIdRef.current = attachmentId
-    attachedAriaLabelRef.current = ariaLabelRef.current
+    attachedMetadataRef.current = {
+      ariaLabel: ariaLabelRef.current,
+      accessibilityEnabled: connectedRef.current,
+    }
     if (placeholder) placeholder.dataset.nativeTerminalAttachmentId = attachmentId
 
     const fail = () => {
@@ -227,7 +231,10 @@ export function NativeTerminalPane({
 
     let attachment
     try {
-      attachment = bridge.attach(paneId, attachmentId, ariaLabelRef.current, receive)
+      attachment = bridge.attach(paneId, attachmentId, {
+        ...attachedMetadataRef.current,
+        keyShortcuts: [...NATIVE_TERMINAL_KEY_SHORTCUTS],
+      }, receive)
     } catch {
       fail()
       return () => {
@@ -276,10 +283,18 @@ export function NativeTerminalPane({
 
   useEffect(() => {
     const attachmentId = attachmentIdRef.current
-    if (!attachmentId || attachedAriaLabelRef.current === ariaLabel) return
-    attachedAriaLabelRef.current = ariaLabel
-    if (!bridge.updateAccessibilityLabel(attachmentId, ariaLabel)) activeFailureRef.current()
-  }, [ariaLabel, bridge])
+    const metadata = { ariaLabel, accessibilityEnabled: connected }
+    if (
+      !attachmentId ||
+      (attachedMetadataRef.current.ariaLabel === metadata.ariaLabel &&
+        attachedMetadataRef.current.accessibilityEnabled === metadata.accessibilityEnabled)
+    ) return
+    attachedMetadataRef.current = metadata
+    if (!bridge.updateMetadata(attachmentId, {
+      ...metadata,
+      keyShortcuts: [...NATIVE_TERMINAL_KEY_SHORTCUTS],
+    })) activeFailureRef.current()
+  }, [ariaLabel, bridge, connected])
 
   useEffect(() => {
     const placeholder = placeholderRef.current
@@ -357,6 +372,7 @@ export function NativeTerminalPane({
       tabIndex={0}
       aria-label={ariaLabel}
       aria-disabled={!connected}
+      aria-keyshortcuts={NATIVE_TERMINAL_KEY_SHORTCUTS.join(' ')}
       data-native-terminal-pane={paneId}
       onFocus={handleFocus}
     />

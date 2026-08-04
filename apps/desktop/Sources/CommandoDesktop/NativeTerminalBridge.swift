@@ -162,6 +162,8 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
                 type: "pane.attached",
                 payload: NativeTerminalEventBuilder.paneIdentity(payload.identity)
             )
+        case let .update(payload):
+            _ = paneHost.update(payload)
         case let .frame(payload):
             _ = paneHost.applyFrame(payload)
         case let .focus(identity):

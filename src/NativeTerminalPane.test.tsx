@@ -331,13 +331,19 @@ describe('NativeTerminalPane', () => {
 
     expect(screen.getByRole('application', { name: 'Pane 1 terminal input, disconnected' }))
       .toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('application', { name: 'Pane 1 terminal input, disconnected' }))
+      .toHaveAttribute('aria-keyshortcuts', 'Meta+C Meta+V PageUp PageDown')
     const attachMessages = messages.filter((message) => message.type === 'pane.attach')
-    expect(attachMessages).toHaveLength(2)
-    expect(attachMessages[1]).toMatchObject({
+    expect(attachMessages).toHaveLength(1)
+    const updates = messages.filter((message) => message.type === 'pane.update')
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({
       payload: {
         paneId: '%1',
         attachmentId,
         ariaLabel: 'Pane 1 terminal input, disconnected',
+        accessibilityEnabled: false,
+        keyShortcuts: ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'],
       },
     })
     expect(props.registerSink).toHaveBeenCalledOnce()

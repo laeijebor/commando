@@ -11,6 +11,7 @@ enum NativeTerminalProtocol {
     static let maxDataBytes = 64 * 1_024
     static let maxInputBytes = 8 * 1_024
     static let maxVisibleRegions = 64
+    static let maxKeyShortcuts = 16
     static let minCols = 2
     static let maxCols = 500
     static let minRows = 1
@@ -44,7 +45,32 @@ struct BridgeConnectPayload: Equatable, Sendable {
 
 struct PaneAttachPayload: Equatable, Sendable {
     let identity: PaneIdentity
+    let metadata: PaneMetadata
+
+    init(
+        identity: PaneIdentity,
+        ariaLabel: String,
+        accessibilityEnabled: Bool = true,
+        keyShortcuts: [String] = []
+    ) {
+        self.identity = identity
+        metadata = .init(
+            ariaLabel: ariaLabel,
+            accessibilityEnabled: accessibilityEnabled,
+            keyShortcuts: keyShortcuts
+        )
+    }
+}
+
+struct PaneMetadata: Equatable, Sendable {
     let ariaLabel: String
+    let accessibilityEnabled: Bool
+    let keyShortcuts: [String]
+}
+
+struct PaneUpdatePayload: Equatable, Sendable {
+    let identity: PaneIdentity
+    let metadata: PaneMetadata
 }
 
 struct PaneFramePayload: Equatable, Sendable {
@@ -84,6 +110,7 @@ struct PaneDataPayload: Equatable, Sendable {
 enum NativeTerminalCommand: Equatable, Sendable {
     case connect(BridgeConnectPayload)
     case attach(PaneAttachPayload)
+    case update(PaneUpdatePayload)
     case frame(PaneFramePayload)
     case focus(PaneIdentity)
     case reset(PaneResetPayload)
@@ -94,6 +121,7 @@ enum NativeTerminalCommand: Equatable, Sendable {
         switch self {
         case .connect: "bridge.connect"
         case .attach: "pane.attach"
+        case .update: "pane.update"
         case .frame: "pane.frame"
         case .focus: "pane.focus"
         case .reset: "pane.reset"
@@ -160,10 +188,28 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
             }
             return .connect(.init(supportedVersions: versions))
         case "pane.attach":
-            try payload.require(keys: ["paneId", "attachmentId", "ariaLabel"])
+            try payload.require(keys: [
+                "paneId", "attachmentId", "ariaLabel", "accessibilityEnabled", "keyShortcuts",
+            ])
             let identity = try decodeIdentity(payload)
-            let ariaLabel = try validateAriaLabel(try payload.string("ariaLabel"))
-            return .attach(.init(identity: identity, ariaLabel: ariaLabel))
+            return .attach(.init(
+                identity: identity,
+                ariaLabel: try validateAriaLabel(try payload.string("ariaLabel")),
+                accessibilityEnabled: try payload.boolean("accessibilityEnabled"),
+                keyShortcuts: try validateKeyShortcuts(payload)
+            ))
+        case "pane.update":
+            try payload.require(keys: [
+                "paneId", "attachmentId", "ariaLabel", "accessibilityEnabled", "keyShortcuts",
+            ])
+            return .update(.init(
+                identity: try decodeIdentity(payload),
+                metadata: .init(
+                    ariaLabel: try validateAriaLabel(try payload.string("ariaLabel")),
+                    accessibilityEnabled: try payload.boolean("accessibilityEnabled"),
+                    keyShortcuts: try validateKeyShortcuts(payload)
+                )
+            ))
         case "pane.frame":
             try payload.require(keys: [
                 "paneId", "attachmentId", "x", "y", "width", "height", "scale",
@@ -301,6 +347,28 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
         }
         return value
     }
+
+    private static func validateKeyShortcuts(_ payload: StrictObject) throws -> [String] {
+        let shortcuts = try payload.stringArray(
+            "keyShortcuts",
+            maximumCount: NativeTerminalProtocol.maxKeyShortcuts
+        )
+        guard !shortcuts.isEmpty,
+              Set(shortcuts).count == shortcuts.count,
+              shortcuts.allSatisfy({ shortcut in
+                  (1...64).contains(shortcut.utf8.count) &&
+                      shortcut.unicodeScalars.allSatisfy({
+                          !CharacterSet.controlCharacters.contains($0)
+                      })
+              })
+        else {
+            throw ProtocolValidationError(
+                code: "invalid_payload",
+                message: "keyShortcuts must contain unique, bounded shortcut labels."
+            )
+        }
+        return shortcuts
+    }
 }
 
 private struct StrictObject {
@@ -400,6 +468,18 @@ private struct StrictObject {
             throw fieldError(key, expected: "a bounded object array")
         }
         return try values.map { try StrictObject($0, context: "\(context).\(key)") }
+    }
+
+    func stringArray(_ key: String, maximumCount: Int) throws -> [String] {
+        guard let values = storage[key] as? [Any], values.count <= maximumCount else {
+            throw fieldError(key, expected: "a bounded string array")
+        }
+        return try values.map { value in
+            guard let string = value as? String else {
+                throw fieldError(key, expected: "a bounded string array")
+            }
+            return string
+        }
     }
 
     func canonicalBase64(_ key: String, maximumBytes: Int) throws -> Data {

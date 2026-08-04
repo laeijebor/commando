@@ -158,6 +158,43 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testMetadataUpdateAppliesNativeAccessibilityWithoutReattaching() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "metadata")
+        let shortcuts = ["Meta+C", "Meta+V", "PageUp", "PageDown"]
+        XCTAssertEqual(host.attach(.init(
+            identity: identity,
+            ariaLabel: "Terminal",
+            accessibilityEnabled: true,
+            keyShortcuts: shortcuts
+        )), .attached)
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+
+        XCTAssertEqual(surface.view.accessibilityLabel(), "Terminal")
+        XCTAssertTrue(surface.view.isAccessibilityEnabled())
+        XCTAssertEqual(surface.view.accessibilityRole(), .textArea)
+        XCTAssertTrue(surface.view.accessibilityHelp()?.contains("Meta+C, Meta+V, PageUp, PageDown") == true)
+
+        XCTAssertTrue(host.update(.init(
+            identity: identity,
+            metadata: .init(
+                ariaLabel: "Terminal, disconnected",
+                accessibilityEnabled: false,
+                keyShortcuts: shortcuts
+            )
+        )))
+        XCTAssertEqual(host.surfaceCount, 1)
+        XCTAssertEqual(surface.view.accessibilityLabel(), "Terminal, disconnected")
+        XCTAssertFalse(surface.view.isAccessibilityEnabled())
+        host.destroyAll()
+    }
+
     func testTerminalInterceptsOnlyProductCommandShortcuts() throws {
         var shortcuts: [String] = []
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))

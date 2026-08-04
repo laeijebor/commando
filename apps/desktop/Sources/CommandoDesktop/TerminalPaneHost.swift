@@ -55,14 +55,16 @@ final class TerminalPaneHost {
     @discardableResult
     func attach(_ payload: PaneAttachPayload) -> PaneAttachmentResult {
         if let existing = registry.record(for: payload.identity) {
-            existing.value.updateAccessibilityLabel(payload.ariaLabel)
+            existing.value.updateMetadata(payload.metadata)
             return .alreadyAttached
         }
         guard registry.canInsert(payload.identity) else { return .capacityExceeded }
 
         let surface = TerminalSurface(
             identity: payload.identity,
-            ariaLabel: payload.ariaLabel,
+            ariaLabel: payload.metadata.ariaLabel,
+            accessibilityEnabled: payload.metadata.accessibilityEnabled,
+            keyShortcuts: payload.metadata.keyShortcuts,
             prefersMetal: prefersMetal
         ) { [weak self] event in
             self?.eventSink(payload.identity, event)
@@ -77,6 +79,12 @@ final class TerminalPaneHost {
             transferFocus(preferred: surface)
         }
         return replaced == nil ? .attached : .replaced
+    }
+
+    func update(_ payload: PaneUpdatePayload) -> Bool {
+        guard let surface = registry.record(for: payload.identity)?.value else { return false }
+        surface.updateMetadata(payload.metadata)
+        return true
     }
 
     func applyFrame(_ payload: PaneFramePayload) -> Bool {

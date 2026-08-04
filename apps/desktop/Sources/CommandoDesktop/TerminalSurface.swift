@@ -159,6 +159,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     init(
         identity: PaneIdentity,
         ariaLabel: String,
+        accessibilityEnabled: Bool = true,
+        keyShortcuts: [String] = [],
         prefersMetal: Bool,
         clipboardPolicy: TerminalClipboardPolicy = .defaultDeny,
         pasteboard: NSPasteboard = .general,
@@ -173,15 +175,19 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         orderKey = .init(order: 0, paneId: identity.paneId, attachmentId: identity.attachmentId)
         super.init()
 
-        configureView(ariaLabel: ariaLabel)
+        configureView(metadata: .init(
+            ariaLabel: ariaLabel,
+            accessibilityEnabled: accessibilityEnabled,
+            keyShortcuts: keyShortcuts
+        ))
     }
 
     var isFocused: Bool {
         view.window?.firstResponder === view
     }
 
-    func updateAccessibilityLabel(_ ariaLabel: String) {
-        view.setAccessibilityLabel(ariaLabel)
+    func updateMetadata(_ metadata: PaneMetadata) {
+        applyMetadata(metadata)
     }
 
     func setZoomScale(_ scale: CGFloat) {
@@ -305,7 +311,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.removeFromSuperview()
     }
 
-    private func configureView(ariaLabel: String) {
+    private func configureView(metadata: PaneMetadata) {
         view.isHidden = true
         view.clipsToBounds = true
         view.terminalDelegate = self
@@ -313,7 +319,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.caretViewTracksFocus = true
         view.scrollerStyle = .overlay
         view.changeScrollback(5_000)
-        view.setAccessibilityLabel(ariaLabel)
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.textArea)
+        applyMetadata(metadata)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
         view.modifiedArrowWasPressed = { [weak self] data in self?.emitInput(data) }
         view.controlVWasPressed = { [weak self] in
@@ -338,6 +346,15 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             selector: #selector(windowFocusDidChange(_:)),
             name: NSWindow.didResignKeyNotification,
             object: nil
+        )
+    }
+
+    private func applyMetadata(_ metadata: PaneMetadata) {
+        view.setAccessibilityLabel(metadata.ariaLabel)
+        view.setAccessibilityEnabled(metadata.accessibilityEnabled)
+        view.setAccessibilityHelp(
+            "Keyboard shortcuts: \(metadata.keyShortcuts.joined(separator: ", ")). " +
+                "Option-drag selects text; Option-right-click opens pane actions."
         )
     }
 
