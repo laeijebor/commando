@@ -77,6 +77,24 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(shortcuts, ["k", "4"])
     }
 
+    func testTerminalSendsXtermOptionArrowSequences() throws {
+        var inputs: [Data] = []
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        view.modifiedArrowWasPressed = { inputs.append($0) }
+
+        let optionUp = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 126))
+        let optionDown = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 125))
+        let plainUp = try XCTUnwrap(keyEvent(key: "", modifiers: [], keyCode: 126))
+        XCTAssertTrue(view.handleOptionArrow(optionUp))
+        XCTAssertTrue(view.handleOptionArrow(optionDown))
+
+        XCTAssertEqual(inputs, [
+            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x41]),
+            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42]),
+        ])
+        XCTAssertFalse(view.handleOptionArrow(plainUp))
+    }
+
     func testTerminalAcceptsTheActivationClick() {
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         XCTAssertTrue(view.acceptsFirstMouse(for: nil))

@@ -51,6 +51,7 @@ enum TerminalRendererVisibilityPolicy {
 @MainActor
 final class HostedTerminalView: TerminalView {
     var shortcutWasPressed: ((String) -> Void)?
+    var modifiedArrowWasPressed: ((Data) -> Void)?
     var hostOrderRank = 0
 
     override var tag: Int { hostOrderRank }
@@ -75,6 +76,26 @@ final class HostedTerminalView: TerminalView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    func handleOptionArrow(_ event: NSEvent) -> Bool {
+        guard let sequence = Self.optionArrowSequence(for: event) else { return false }
+        modifiedArrowWasPressed?(sequence)
+        return true
+    }
+
+    static func optionArrowSequence(for event: NSEvent) -> Data? {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers == .option else { return nil }
+
+        switch event.keyCode {
+        case 126:
+            return Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x41])
+        case 125:
+            return Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42])
+        default:
+            return nil
+        }
     }
 }
 
@@ -208,6 +229,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         destroyed = true
         view.terminalDelegate = nil
         view.shortcutWasPressed = nil
+        view.modifiedArrowWasPressed = nil
         NotificationCenter.default.removeObserver(self)
         if view.isUsingMetalRenderer {
             try? view.setUseMetal(false)
@@ -242,6 +264,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.changeScrollback(5_000)
         view.setAccessibilityLabel(ariaLabel)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
+        view.modifiedArrowWasPressed = { [weak self] data in self?.emitInput(data) }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(firstResponderDidChange(_:)),
@@ -323,7 +346,10 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        let bytes = Data(data)
+        emitInput(Data(data))
+    }
+
+    private func emitInput(_ bytes: Data) {
         var offset = 0
         while offset < bytes.count {
             let end = min(offset + NativeTerminalProtocol.maxInputBytes, bytes.count)

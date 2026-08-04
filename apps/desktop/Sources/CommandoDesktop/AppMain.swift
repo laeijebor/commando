@@ -16,6 +16,15 @@ final class DesktopWindow: NSWindow {
         }
         return accepted
     }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown,
+           let terminalView = firstResponder as? HostedTerminalView,
+           terminalView.handleOptionArrow(event) {
+            return
+        }
+        super.sendEvent(event)
+    }
 }
 
 @MainActor
