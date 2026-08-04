@@ -7,6 +7,9 @@ import {
 import { BlockNoteView } from '@blocknote/ariakit'
 import { useCreateBlockNote } from '@blocknote/react'
 import { useEffect, useRef, useState } from 'react'
+import remarkGfm from 'remark-gfm'
+import remarkParse from 'remark-parse'
+import { unified } from 'unified'
 import '@blocknote/ariakit/style.css'
 
 const markdownSchema = BlockNoteSchema.create({
@@ -38,43 +41,12 @@ type NoteBlockEditorProps = {
   resolveImageUrl(url: string): string
 }
 
+const markdownParser = unified().use(remarkParse).use(remarkGfm)
+
 export function comparableMarkdown(markdown: string): string {
-  const comparable: string[] = []
-  let fence: { marker: string; length: number } | null = null
-  let previousWasBlank = false
-
-  for (const line of markdown.replaceAll('\r\n', '\n').split('\n')) {
-    if (fence) {
-      comparable.push(line)
-      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
-      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) fence = null
-      continue
-    }
-
-    const opening = /^ {0,3}(`{3,}|~{3,})/.exec(line)
-    if (opening) {
-      comparable.push(line)
-      fence = { marker: opening[1][0], length: opening[1].length }
-      previousWasBlank = false
-      continue
-    }
-
-    const normalized = /^[ \t]*$/.test(line)
-      ? ''
-      : line.endsWith(' ') && !line.endsWith('  ')
-        ? line.slice(0, -1)
-        : line
-    if (normalized) {
-      comparable.push(normalized)
-      previousWasBlank = false
-    } else if (!previousWasBlank && comparable.length) {
-      comparable.push('')
-      previousWasBlank = true
-    }
-  }
-
-  while (comparable.at(-1) === '') comparable.pop()
-  return comparable.join('\n')
+  return JSON.stringify(markdownParser.parse(markdown), (key, value) => (
+    key === 'position' || key === 'spread' ? undefined : value
+  ))
 }
 
 export function NoteBlockEditor({

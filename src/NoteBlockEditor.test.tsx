@@ -24,10 +24,15 @@ const affectedMarkdown = `## Sessions
 afterEach(cleanup)
 
 describe('NoteBlockEditor Markdown compatibility', () => {
-  it('allows insignificant blank lines and single trailing spaces to be normalized', async () => {
+  it('allows semantically equivalent Markdown to be canonicalized', async () => {
     render(
       <NoteBlockEditor
-        markdown={affectedMarkdown}
+        markdown={`Paragraph before a list
+- [x] Hyphen task marker
+
+- [ ] Blank line within the list
+
+${affectedMarkdown}`}
         onChange={vi.fn()}
         onSave={vi.fn()}
         uploadImage={vi.fn()}
@@ -37,6 +42,16 @@ describe('NoteBlockEditor Markdown compatibility', () => {
 
     await waitFor(() => expect(screen.queryByText(/cannot preserve/)).not.toBeInTheDocument())
     expect(screen.getByLabelText('Note body')).toHaveAttribute('contenteditable', 'true')
+  })
+
+  it('compares Markdown structure rather than source formatting', () => {
+    expect(comparableMarkdown('- [x] Verify')).toBe(comparableMarkdown('* [x] Verify'))
+    expect(comparableMarkdown('Paragraph\n* [ ] Verify')).toBe(
+      comparableMarkdown('Paragraph\n\n* [ ] Verify'),
+    )
+    expect(comparableMarkdown('* [x] First\n\n* [ ] Second')).toBe(
+      comparableMarkdown('* [x] First\n* [ ] Second'),
+    )
   })
 
   it('keeps unsupported tables read-only', async () => {
