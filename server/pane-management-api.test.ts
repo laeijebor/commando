@@ -2,7 +2,8 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneManagementApi } from './pane-management-api.js'
-import { TmuxPaneActions, type TmuxProcessExecutor } from './tmux-pane-actions.js'
+import { TmuxPaneActions } from './tmux-pane-actions.js'
+import type { TmuxProcessExecutor } from './tmux-session-actions.js'
 
 const servers: Server[] = []
 
