@@ -102,7 +102,7 @@ import {
 } from './agentHud'
 import type { SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
-import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
+import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import {
   createOwner,
   getAuthBootstrap,
@@ -231,6 +231,7 @@ type TerminalPaneProps = {
   measurementKey: string
   connected: boolean
   renaming: boolean
+  useXtermFallback: boolean
   gitApi: GitDiffApiClient
   onOpenPath: () => Promise<void>
   onFocus: () => void
@@ -264,6 +265,7 @@ export function TerminalPaneCard({
   measurementKey,
   connected,
   renaming,
+  useXtermFallback,
   gitApi,
   onOpenPath,
   onFocus,
@@ -474,6 +476,7 @@ export function TerminalPaneCard({
         measurementKey={measurementKey}
         ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
         order={index}
+        useXtermFallback={useXtermFallback}
         onFocus={onFocus}
         onInput={onInput}
         onInputBytes={onInputBytes}
@@ -725,6 +728,8 @@ export function App() {
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
+  const [xtermPaneOverrides, setXtermPaneOverrides] = useState<ReadonlySet<string>>(() => new Set())
+  const [nativeTerminalAvailable, setNativeTerminalAvailable] = useState(false)
   const [paneActionPending, setPaneActionPending] = useState(false)
   const [paneActionError, setPaneActionError] = useState('')
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
@@ -775,6 +780,18 @@ export function App() {
 
   useEffect(() => storePanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY, leftPanelHidden), [leftPanelHidden])
   useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
+
+  useEffect(() => {
+    const bridge = getNativeTerminalBridge()
+    if (!bridge) return
+    let active = true
+    void bridge.connect().then((result) => {
+      if (active) setNativeTerminalAvailable(result.available)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
   const [notesMounted, setNotesMounted] = useState(false)
@@ -985,6 +1002,12 @@ export function App() {
     if (renamingPaneId && !snapshot?.panes.some((pane) => pane.id === renamingPaneId)) {
       setRenamingPaneId(null)
     }
+    setXtermPaneOverrides((current) => {
+      if (current.size === 0) return current
+      const paneIds = new Set(snapshot?.panes.map((pane) => pane.id) ?? [])
+      const next = new Set([...current].filter((paneId) => paneIds.has(paneId)))
+      return next.size === current.size ? current : next
+    })
   }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot])
 
   useEffect(() => {
@@ -1818,6 +1841,7 @@ export function App() {
                           measurementKey={measurementKey}
                           connected={connected}
                           renaming={renamingPaneId === pane.id}
+                          useXtermFallback={xtermPaneOverrides.has(pane.id)}
                           gitApi={gitDiffApi}
                           onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                           onFocus={() => setFocusedPaneId(pane.id)}
@@ -2029,9 +2053,19 @@ export function App() {
           x={paneMenu.x}
           y={paneMenu.y}
           busy={paneActionPending || !connected}
+          nativeTerminalAvailable={nativeTerminalAvailable}
+          useXtermFallback={xtermPaneOverrides.has(paneMenu.paneId)}
           onClose={() => setPaneMenu(null)}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
+          onUseXtermFallbackChange={(useXtermFallback) => {
+            setXtermPaneOverrides((current) => {
+              const next = new Set(current)
+              if (useXtermFallback) next.add(paneMenu.paneId)
+              else next.delete(paneMenu.paneId)
+              return next
+            })
+          }}
           onKill={() => { void killPane(paneMenu.paneId) }}
         />
       ) : null}

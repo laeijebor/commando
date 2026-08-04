@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { TmuxPane } from '../shared/protocol'
-import { AuthGate, TerminalPaneCard } from './App'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { CommandoSnapshot, ServerMessage, TmuxPane } from '../shared/protocol'
+import { App, AuthGate, TerminalPaneCard } from './App'
+import { getAuthBootstrap, getAuthUser } from './authClient'
+import type { ConnectionState } from './useDaemon'
+
+const appMocks = vi.hoisted(() => ({
+  nativeConnect: vi.fn(),
+  send: vi.fn(),
+  useDaemon: vi.fn(),
+}))
 
 vi.mock('./authClient', () => ({
   createOwner: vi.fn(),
@@ -13,13 +21,76 @@ vi.mock('./authClient', () => ({
   signInWithEmail: vi.fn(),
   signOut: vi.fn(),
 }))
-vi.mock('./XtermPane', () => ({
-  XtermPane: ({ onSelectionCopied }: { onSelectionCopied: () => void }) => (
-    <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
+vi.mock('./useDaemon', () => ({
+  useDaemon: appMocks.useDaemon,
+}))
+vi.mock('./nativeTerminalBridge', () => ({
+  NATIVE_TERMINAL_SHORTCUT_EVENT: 'commando:native-terminal-shortcut',
+  getNativeTerminalBridge: () => ({ connect: appMocks.nativeConnect }),
+}))
+vi.mock('./TerminalPaneRenderer', () => ({
+  TerminalPaneRenderer: ({
+    paneId,
+    useXtermFallback,
+    onSelectionCopied,
+  }: {
+    paneId: string
+    useXtermFallback?: boolean
+    onSelectionCopied: () => void
+  }) => (
+    <div data-testid={`renderer-${paneId}`} data-xterm-fallback={String(Boolean(useXtermFallback))}>
+      <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
+    </div>
   ),
 }))
+vi.mock('./ResizablePaneLayout', () => ({
+  ResizablePaneLayout: ({ panes }: { panes: ReadonlyMap<string, React.ReactNode> }) => (
+    <div>{[...panes.values()]}</div>
+  ),
+}))
+vi.mock('./PaneGitStats', () => ({ PaneGitStats: () => null }))
+vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
+vi.mock('./PortsSection', () => ({ PortsSection: () => null }))
 
-afterEach(cleanup)
+let daemonMessage: ((message: ServerMessage) => void) | undefined
+let daemonConnection: ConnectionState = {
+  phase: 'live',
+  detail: 'Authenticated local stream',
+  attempt: 0,
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  window.sessionStorage.clear()
+  window.localStorage.clear()
+  daemonMessage = undefined
+  daemonConnection = {
+    phase: 'live',
+    detail: 'Authenticated local stream',
+    attempt: 0,
+  }
+  appMocks.nativeConnect.mockResolvedValue({
+    available: true,
+    capabilities: [],
+    maxPanes: 8,
+  })
+  appMocks.useDaemon.mockImplementation((
+    _token: string,
+    _sessionAuthenticated: boolean,
+    onMessage: (message: ServerMessage) => void,
+  ) => {
+    daemonMessage = onMessage
+    return { connection: daemonConnection, send: appMocks.send }
+  })
+  vi.mocked(getAuthBootstrap).mockResolvedValue({ enabled: false, needsOwner: false, ownerEmail: null })
+  vi.mocked(getAuthUser).mockResolvedValue(null)
+})
+
+afterEach(() => {
+  cleanup()
+  window.sessionStorage.clear()
+  window.localStorage.clear()
+})
 
 describe('owner authentication form', () => {
   it('hydrates a late bootstrap email and keeps it editable', async () => {
@@ -66,6 +137,48 @@ const pane = {
   height: 30,
 } as TmuxPane
 
+const adjacentPane = {
+  ...pane,
+  id: '%13',
+  index: 2,
+  title: 'worker',
+} as TmuxPane
+
+function snapshotWith(panes: TmuxPane[]): CommandoSnapshot {
+  return {
+    revision: 1,
+    capturedAt: 1,
+    sessions: [{
+      id: '$3',
+      name: 'work',
+      attached: true,
+      activeWindowId: '@2',
+      windowIds: ['@2'],
+    }],
+    windows: [{
+      id: '@2',
+      index: 0,
+      sessionId: '$3',
+      name: 'editor',
+      active: true,
+      layout: panes.length === 1
+        ? `dbde,80x24,0,0,${panes[0]!.id.slice(1)}`
+        : 'dbde,161x24,0,0{80x24,0,0,12,80x24,81,0,13}',
+      paneIds: panes.map((candidate) => candidate.id),
+    }],
+    panes,
+    ports: [],
+  }
+}
+
+async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane])) {
+  window.sessionStorage.setItem('commando.session-token', 'test-token')
+  const view = render(<App />)
+  act(() => daemonMessage?.({ type: 'snapshot', snapshot }))
+  await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
+  return view
+}
+
 const paneProps = {
   pane,
   index: 0,
@@ -78,6 +191,7 @@ const paneProps = {
   fillIncompleteRows: false,
   connected: true,
   renaming: false,
+  useXtermFallback: false,
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
@@ -205,5 +319,58 @@ describe('terminal pane actions', () => {
 
     await waitFor(() => expect(onRename).toHaveBeenCalledWith('api tests'))
     await waitFor(() => expect(onRenameFinished).toHaveBeenCalled())
+  })
+})
+
+describe('pane renderer overrides', () => {
+  it('switches only the selected pane and reverses locally while offline', async () => {
+    const view = await renderAppWithSnapshot()
+
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      altKey: true,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use xterm fallback' }))
+
+    expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'true')
+    expect(screen.getByTestId('renderer-%13')).toHaveAttribute('data-xterm-fallback', 'false')
+
+    daemonConnection = {
+      phase: 'reconnecting',
+      detail: 'Reconnecting locally',
+      attempt: 1,
+    }
+    view.rerender(<App />)
+    appMocks.send.mockClear()
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      altKey: true,
+    })
+    const useNative = screen.getByRole('menuitem', { name: 'Use native terminal' })
+    expect(useNative).toBeEnabled()
+    fireEvent.click(useNative)
+
+    expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'false')
+    expect(screen.getByTestId('renderer-%13')).toHaveAttribute('data-xterm-fallback', 'false')
+    expect(appMocks.send).not.toHaveBeenCalled()
+  })
+
+  it('prunes an override when its pane ID is removed', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      altKey: true,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use xterm fallback' }))
+    expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'true')
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([adjacentPane]) }))
+    await waitFor(() => expect(screen.queryByTestId('renderer-%12')).not.toBeInTheDocument())
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane, adjacentPane]) }))
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'false')
+    })
   })
 })

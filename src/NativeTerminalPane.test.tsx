@@ -130,17 +130,17 @@ function nativeProps(bridge: NativeTerminalBridge) {
   return { props, getSink: () => sink }
 }
 
-function rendererFixture(connected = true) {
+function rendererFixture(connected = true, paneId = '%1') {
   let sink: PaneTerminalSink | undefined
   const props = {
-    paneId: '%1',
+    paneId,
     cols: 80,
     rows: 24,
     terminalState,
     connected,
     resizeOwner: true,
     measurementKey: 'layout',
-    ariaLabel: `Pane 1 terminal input${connected ? '' : ', disconnected'}`,
+    ariaLabel: `${paneId} terminal input${connected ? '' : ', disconnected'}`,
     order: 0,
     onFocus: vi.fn(),
     onInput: vi.fn(),
@@ -519,7 +519,7 @@ describe('TerminalPaneRenderer fallback', () => {
         payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
       })
     })
-    expect(screen.getByRole('application', { name: 'Pane 1 terminal input' })).toBeInTheDocument()
+    expect(screen.getByRole('application', { name: '%1 terminal input' })).toBeInTheDocument()
     act(() => vi.advanceTimersByTime(0))
     const attach = messages.find((message) => message.type === 'pane.attach')!
     act(() => window.__commandoNativeTerminalReceive?.({
@@ -547,6 +547,85 @@ describe('TerminalPaneRenderer fallback', () => {
     expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
     act(() => vi.advanceTimersByTime(0))
     expect(props.onRequestReset).toHaveBeenCalledTimes(3)
+  })
+
+  it('detaches and reseeds only the pane whose renderer override changes', async () => {
+    vi.useFakeTimers()
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const first = rendererFixture(true, '%1')
+    const second = rendererFixture(true, '%2')
+    const view = render(
+      <>
+        <TerminalPaneRenderer {...first.props} />
+        <TerminalPaneRenderer {...second.props} />
+      </>,
+    )
+    const connectMessage = messages.find((message) => message.type === 'bridge.connect')!
+    await act(async () => {
+      window.__commandoNativeTerminalReceive?.({
+        version: 1,
+        pageId: connectMessage.pageId,
+        eventSequence: 1,
+        type: 'bridge.connected',
+        payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
+      })
+    })
+
+    const initialAttaches = messages.filter((message) => message.type === 'pane.attach')
+    expect(initialAttaches.map((message) => message.payload.paneId)).toEqual(['%1', '%2'])
+    initialAttaches.forEach((attach, index) => {
+      act(() => window.__commandoNativeTerminalReceive?.({
+        version: 1,
+        pageId: attach.pageId,
+        eventSequence: index + 2,
+        type: 'pane.attached',
+        payload: { paneId: attach.payload.paneId, attachmentId: attach.payload.attachmentId },
+      }))
+    })
+    act(() => vi.advanceTimersByTime(0))
+    first.props.onRequestReset.mockClear()
+    second.props.onRequestReset.mockClear()
+    messages.splice(0)
+
+    view.rerender(
+      <>
+        <TerminalPaneRenderer {...first.props} useXtermFallback />
+        <TerminalPaneRenderer {...second.props} />
+      </>,
+    )
+
+    expect(messages.filter((message) => message.type === 'pane.detach').map((message) => message.payload.paneId))
+      .toEqual(['%1'])
+    expect(messages.some((message) => message.type === 'pane.attach')).toBe(false)
+    act(() => vi.advanceTimersByTime(0))
+    expect(first.props.onRequestReset).toHaveBeenCalledOnce()
+    expect(second.props.onRequestReset).not.toHaveBeenCalled()
+    first.props.onRequestReset.mockClear()
+    messages.splice(0)
+
+    view.rerender(
+      <>
+        <TerminalPaneRenderer {...first.props} />
+        <TerminalPaneRenderer {...second.props} />
+      </>,
+    )
+
+    const replacementAttach = messages.find((message) => message.type === 'pane.attach')!
+    expect(replacementAttach.payload.paneId).toBe('%1')
+    expect(messages.some((message) => (
+      message.type === 'pane.attach' && message.payload.paneId === '%2'
+    ))).toBe(false)
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: replacementAttach.pageId,
+      eventSequence: 4,
+      type: 'pane.attached',
+      payload: { paneId: '%1', attachmentId: replacementAttach.payload.attachmentId },
+    }))
+    act(() => vi.advanceTimersByTime(0))
+    expect(first.props.onRequestReset).toHaveBeenCalledOnce()
+    expect(second.props.onRequestReset).not.toHaveBeenCalled()
   })
 })
 

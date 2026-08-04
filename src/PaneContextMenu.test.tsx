@@ -52,4 +52,64 @@ describe('PaneContextMenu', () => {
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(3)
   })
+
+  it('switches renderer locally even when daemon-backed actions are busy', () => {
+    const onClose = vi.fn()
+    const onUseXtermFallbackChange = vi.fn()
+    const view = render(
+      <PaneContextMenu
+        paneLabel="worker"
+        x={50}
+        y={60}
+        busy
+        nativeTerminalAvailable
+        onClose={onClose}
+        onRename={vi.fn()}
+        onSplit={vi.fn()}
+        onUseXtermFallbackChange={onUseXtermFallbackChange}
+        onKill={vi.fn()}
+      />,
+    )
+
+    const fallback = screen.getByRole('menuitem', { name: 'Use xterm fallback' })
+    expect(fallback).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeDisabled()
+    fireEvent.click(fallback)
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onUseXtermFallbackChange).toHaveBeenCalledWith(true)
+
+    view.rerender(
+      <PaneContextMenu
+        paneLabel="worker"
+        x={50}
+        y={60}
+        useXtermFallback
+        onClose={onClose}
+        onRename={vi.fn()}
+        onSplit={vi.fn()}
+        onUseXtermFallbackChange={onUseXtermFallbackChange}
+        onKill={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Use native terminal' }))
+    expect(onUseXtermFallbackChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('hides the renderer action when no native host is available or overridden', () => {
+    render(
+      <PaneContextMenu
+        paneLabel="worker"
+        x={50}
+        y={60}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onSplit={vi.fn()}
+        onUseXtermFallbackChange={vi.fn()}
+        onKill={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole('menuitem', { name: /Use (?:xterm|native)/ })).not.toBeInTheDocument()
+  })
 })
