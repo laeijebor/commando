@@ -17,10 +17,15 @@ final class DesktopApplicationTests: XCTestCase {
 
     func testWindowRoutesControlVToTheFocusedTerminal() throws {
         var inputs: [Data] = []
+        let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setString("text", forType: .string)
+        defer { pasteboard.clearContents() }
         let surface = TerminalSurface(
             identity: .init(paneId: "%1", attachmentId: "window-control-v"),
             ariaLabel: "Terminal",
-            prefersMetal: false
+            prefersMetal: false,
+            pasteboard: pasteboard
         ) { event in
             if case let .input(data) = event { inputs.append(data) }
         }

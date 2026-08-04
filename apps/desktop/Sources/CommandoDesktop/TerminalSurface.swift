@@ -120,6 +120,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
 
     private let prefersMetal: Bool
     private let clipboardPolicy: TerminalClipboardPolicy
+    private let pasteboard: NSPasteboard
     private let eventSink: (TerminalSurfaceEvent) -> Void
     private var dataOrderGate = TerminalDataOrderGate()
     private var resizeGate = ResizeEmissionGate()
@@ -135,11 +136,13 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         ariaLabel: String,
         prefersMetal: Bool,
         clipboardPolicy: TerminalClipboardPolicy = .defaultDeny,
+        pasteboard: NSPasteboard = .general,
         eventSink: @escaping (TerminalSurfaceEvent) -> Void
     ) {
         self.identity = identity
         self.prefersMetal = prefersMetal
         self.clipboardPolicy = clipboardPolicy
+        self.pasteboard = pasteboard
         self.eventSink = eventSink
         view = HostedTerminalView(frame: .zero)
         orderKey = .init(order: 0, paneId: identity.paneId, attachmentId: identity.attachmentId)
@@ -261,7 +264,11 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.setAccessibilityLabel(ariaLabel)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
         view.modifiedArrowWasPressed = { [weak self] data in self?.emitInput(data) }
-        view.controlVWasPressed = { [weak self] in self?.emitInput(Data([0x16])) }
+        view.controlVWasPressed = { [weak self] in
+            guard let self else { return }
+            _ = TerminalClipboardBridge.ensurePNGRepresentation(in: self.pasteboard)
+            self.emitInput(Data([0x16]))
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(firstResponderDidChange(_:)),
