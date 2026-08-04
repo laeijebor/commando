@@ -52,6 +52,7 @@ enum TerminalRendererVisibilityPolicy {
 final class HostedTerminalView: TerminalView {
     var shortcutWasPressed: ((String) -> Void)?
     var modifiedArrowWasPressed: ((Data) -> Void)?
+    var controlVWasPressed: (() -> Void)?
     var hostOrderRank = 0
 
     override var tag: Int { hostOrderRank }
@@ -96,6 +97,17 @@ final class HostedTerminalView: TerminalView {
         default:
             return nil
         }
+    }
+
+    func handleControlV(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers == .control,
+              event.charactersIgnoringModifiers?.lowercased() == "v"
+        else {
+            return false
+        }
+        controlVWasPressed?()
+        return true
     }
 }
 
@@ -230,6 +242,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.terminalDelegate = nil
         view.shortcutWasPressed = nil
         view.modifiedArrowWasPressed = nil
+        view.controlVWasPressed = nil
         NotificationCenter.default.removeObserver(self)
         if view.isUsingMetalRenderer {
             try? view.setUseMetal(false)
@@ -248,6 +261,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.setAccessibilityLabel(ariaLabel)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
         view.modifiedArrowWasPressed = { [weak self] data in self?.emitInput(data) }
+        view.controlVWasPressed = { [weak self] in self?.emitInput(Data([0x16])) }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(firstResponderDidChange(_:)),

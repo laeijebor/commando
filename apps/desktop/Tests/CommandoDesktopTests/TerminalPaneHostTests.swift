@@ -95,6 +95,33 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertFalse(view.handleOptionArrow(plainUp))
     }
 
+    func testTerminalSendsRawControlVToThePaneInKittyKeyboardMode() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "control-v"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let controlV = try XCTUnwrap(keyEvent(key: "v", modifiers: .control, keyCode: 9))
+        let commandV = try XCTUnwrap(keyEvent(key: "v", modifiers: .command, keyCode: 9))
+        let shiftedControlV = try XCTUnwrap(keyEvent(
+            key: "V",
+            modifiers: [.control, .shift],
+            keyCode: 9
+        ))
+        let kittyMode = Array("\u{1b}[>31u".utf8)
+        surface.view.feed(byteArray: kittyMode[...])
+
+        XCTAssertTrue(surface.view.handleControlV(controlV))
+
+        XCTAssertEqual(inputs, [Data([0x16])])
+        XCTAssertFalse(surface.view.handleControlV(commandV))
+        XCTAssertFalse(surface.view.handleControlV(shiftedControlV))
+        surface.destroy()
+    }
+
     func testTerminalAcceptsTheActivationClick() {
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         XCTAssertTrue(view.acceptsFirstMouse(for: nil))
