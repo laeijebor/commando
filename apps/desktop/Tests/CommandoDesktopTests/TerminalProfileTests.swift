@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import XCTest
 @testable import CommandoDesktop
 
@@ -42,5 +43,78 @@ final class TerminalProfileTests: XCTestCase {
         XCTAssertEqual(surface.view.nativeBackgroundColor, TerminalProfile.backgroundColor)
         XCTAssertEqual(surface.view.nativeForegroundColor, TerminalProfile.foregroundColor)
         surface.destroy()
+    }
+
+    func testBundledJetBrainsMonoResourcesExistAndMatchProvenance() throws {
+        let fontURL = try XCTUnwrap(BundledTerminalFont.resourceURL)
+        let boldFontURL = try XCTUnwrap(BundledTerminalFont.boldResourceURL)
+        let licenseURL = try XCTUnwrap(BundledTerminalFont.licenseURL)
+        let provenanceURL = try XCTUnwrap(BundledTerminalFont.provenanceURL)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fontURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: boldFontURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: licenseURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: provenanceURL.path))
+
+        let regularDigest = SHA256.hash(data: try Data(contentsOf: fontURL))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertEqual(regularDigest, BundledTerminalFont.expectedSHA256)
+        let boldDigest = SHA256.hash(data: try Data(contentsOf: boldFontURL))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertEqual(boldDigest, BundledTerminalFont.expectedBoldSHA256)
+
+        let license = try String(contentsOf: licenseURL, encoding: .utf8)
+        XCTAssertTrue(license.contains("SIL OPEN FONT LICENSE Version 1.1"))
+
+        let provenance = try String(contentsOf: provenanceURL, encoding: .utf8)
+        XCTAssertTrue(provenance.contains("@fontsource/jetbrains-mono@5.2.8"))
+        XCTAssertTrue(provenance.contains("version `v24`"))
+        XCTAssertTrue(provenance.contains(BundledTerminalFont.expectedSHA256))
+        XCTAssertTrue(provenance.contains(BundledTerminalFont.expectedBoldSHA256))
+    }
+
+    func testBundledRegistrationProvidesRegularAndBoldFromResource() throws {
+        XCTAssertTrue(
+            BundledTerminalFont.register(),
+            BundledTerminalFont.registrationFailure ?? "registration failed"
+        )
+        let resourceURL = try XCTUnwrap(BundledTerminalFont.resourceURL).standardizedFileURL
+        let boldResourceURL = try XCTUnwrap(
+            BundledTerminalFont.boldResourceURL
+        ).standardizedFileURL
+
+        let regular = try XCTUnwrap(BundledTerminalFont.font(size: 10, face: .regular))
+        XCTAssertEqual(regular.fontName, "JetBrainsMono-Regular")
+        XCTAssertEqual(
+            BundledTerminalFont.sourceURL(for: regular)?.standardizedFileURL,
+            resourceURL
+        )
+
+        let bold = try XCTUnwrap(BundledTerminalFont.font(size: 10, face: .bold))
+        XCTAssertEqual(bold.fontName, "JetBrainsMono-Bold")
+        XCTAssertEqual(
+            BundledTerminalFont.sourceURL(for: bold)?.standardizedFileURL,
+            boldResourceURL
+        )
+
+        let swiftTermBold = NSFontManager.shared.convert(regular, toHaveTrait: .boldFontMask)
+        XCTAssertEqual(swiftTermBold.fontName, "JetBrainsMono-Bold")
+        XCTAssertEqual(
+            BundledTerminalFont.sourceURL(for: swiftTermBold)?.standardizedFileURL,
+            boldResourceURL
+        )
+    }
+
+    func testProfileSelectsBundledFontInsteadOfGlobalNameLookup() throws {
+        let resourceURL = try XCTUnwrap(BundledTerminalFont.resourceURL).standardizedFileURL
+        let font = TerminalProfile.font()
+
+        XCTAssertEqual(font.fontName, "JetBrainsMono-Regular")
+        XCTAssertEqual(
+            BundledTerminalFont.sourceURL(for: font)?.standardizedFileURL,
+            resourceURL
+        )
     }
 }

@@ -165,6 +165,12 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 @MainActor
 struct CommandoDesktopApp {
     static func main() {
+        if !BundledTerminalFont.register() {
+            NSLog(
+                "CommandoDesktop failed to register bundled JetBrains Mono: %@",
+                BundledTerminalFont.registrationFailure ?? "unknown error"
+            )
+        }
         let application = NSApplication.shared
         let delegate = DesktopAppDelegate()
         application.setActivationPolicy(.regular)

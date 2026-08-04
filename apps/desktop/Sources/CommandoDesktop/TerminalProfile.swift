@@ -46,7 +46,11 @@ enum TerminalProfile {
         view.layer?.backgroundColor = backgroundColor.cgColor
     }
 
+    @MainActor
     static func font(size: CGFloat = fontSize) -> NSFont {
+        if let bundledFont = BundledTerminalFont.font(size: size) {
+            return bundledFont
+        }
         for name in fontNames {
             if let font = NSFont(name: name, size: size) {
                 return font
