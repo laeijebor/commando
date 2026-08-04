@@ -10,18 +10,21 @@ enum TerminalGeometry {
     static func placement(
         for payload: PaneFramePayload,
         viewportSize: CGSize,
-        backingScale: CGFloat
+        backingScale: CGFloat,
+        contentScale: CGFloat = 1
     ) -> TerminalPlacement {
         guard payload.visible,
               viewportSize.width > 0,
               viewportSize.height > 0,
               backingScale.isFinite,
-              backingScale > 0
+              backingScale > 0,
+              contentScale.isFinite,
+              contentScale > 0
         else {
             return hiddenPlacement
         }
 
-        let pointsPerCSSPixel = CGFloat(payload.scale) / backingScale
+        let pointsPerCSSPixel = CGFloat(payload.scale) / backingScale * contentScale
         let values = [payload.x, payload.y, payload.width, payload.height].map {
             CGFloat($0) * pointsPerCSSPixel
         }

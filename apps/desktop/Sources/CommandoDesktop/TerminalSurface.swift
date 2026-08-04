@@ -164,7 +164,12 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.font = TerminalProfile.font(size: TerminalProfile.fontSize * scale)
     }
 
-    func applyFrame(_ payload: PaneFramePayload, viewportSize: CGSize, backingScale: CGFloat) {
+    func applyFrame(
+        _ payload: PaneFramePayload,
+        viewportSize: CGSize,
+        backingScale: CGFloat,
+        contentScale: CGFloat = 1
+    ) {
         guard !destroyed else { return }
         latestFrame = payload
         orderKey = .init(
@@ -176,7 +181,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         let placement = TerminalGeometry.placement(
             for: payload,
             viewportSize: viewportSize,
-            backingScale: backingScale
+            backingScale: backingScale,
+            contentScale: contentScale
         )
         isVisible = !placement.isHidden
         isResizeOwner = payload.resizeOwner

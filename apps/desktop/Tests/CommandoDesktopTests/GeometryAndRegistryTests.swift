@@ -43,6 +43,19 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
     }
 
+    func testAccountsForWebKitPageZoomInLayoutCoordinates() {
+        let zoomed = TerminalGeometry.placement(
+            for: frame(x: 100, y: 50, width: 400, height: 200, scale: 2),
+            viewportSize: .init(width: 1_000, height: 700),
+            backingScale: 2,
+            contentScale: 1.25
+        )
+        XCTAssertEqual(
+            zoomed,
+            .init(frame: .init(x: 125, y: 387.5, width: 500, height: 250), isHidden: false)
+        )
+    }
+
     func testHidesInvisibleZeroSizedAndOutsideFrames() {
         let viewport = CGSize(width: 800, height: 600)
         XCTAssertTrue(TerminalGeometry.placement(

@@ -90,6 +90,30 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
+    func testZoomScaleReappliesTheLatestTerminalFrame() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "zoom-frame")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            visible: true,
+            resizeOwner: false
+        )))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        XCTAssertEqual(surface.view.frame, NSRect(x: 10, y: 290, width: 400, height: 300))
+
+        host.setZoomScale(1.2)
+
+        XCTAssertEqual(surface.view.frame, NSRect(x: 12, y: 228, width: 480, height: 360))
+        host.destroyAll()
+    }
+
     func testTerminalInterceptsOnlyProductCommandShortcuts() throws {
         var shortcuts: [String] = []
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
