@@ -50,9 +50,11 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
     private let externalURLHandler: any ExternalURLHandling
     private var scriptMessageHandler: WeakScriptMessageHandler?
+    private var trustedLinkMessageHandler: TrustedLinkScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
     private var isRetrying = false
+    private(set) var windowActive = false
 
     init(
         configuration: DesktopConfiguration = .current(),
@@ -85,6 +87,17 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             handler,
             name: NativeTerminalProtocol.handlerName
         )
+        let trustedLinkHandler = TrustedLinkScriptMessageHandler(
+            admission: admission,
+            externalURLHandler: externalURLHandler
+        )
+        trustedLinkMessageHandler = trustedLinkHandler
+        webConfiguration.userContentController.add(
+            trustedLinkHandler,
+            contentWorld: TrustedLinkBridge.contentWorld,
+            name: TrustedLinkBridge.handlerName
+        )
+        webConfiguration.userContentController.addUserScript(TrustedLinkBridge.userScript)
 
         webView.autoresizingMask = [.width, .height]
         overlay.autoresizingMask = [.width, .height]
@@ -103,6 +116,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func reapplyTerminalFrames() {
         bridge.reapplyFrames()
+    }
+
+    func setWindowActive(_ active: Bool) {
+        guard !cleanedUp, active != windowActive else { return }
+        windowActive = active
+        publishWindowActivity()
     }
 
     @objc func zoomOut(_ sender: Any?) {
@@ -135,7 +154,13 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: NativeTerminalProtocol.handlerName
         )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: TrustedLinkBridge.handlerName,
+            contentWorld: TrustedLinkBridge.contentWorld
+        )
+        webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil
+        trustedLinkMessageHandler = nil
     }
 
     func webView(
@@ -146,7 +171,6 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         let disposition = externalURLHandler.handle(
             navigationAction.request.url,
             source: .webNavigation(
-                userActivated: navigationAction.navigationType == .linkActivated,
                 opensInNewWindow: navigationAction.targetFrame == nil
             )
         )
@@ -174,6 +198,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         navigationRetryTimer = nil
         isRetrying = false
         connectionStatusView.hide()
+        publishWindowActivity()
     }
 
     func webView(
@@ -221,6 +246,18 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))")
     }
 
+    private func publishWindowActivity() {
+        webView.callAsyncJavaScript(
+            """
+            window.__commandoDesktopWindowActive = active;
+            window.dispatchEvent(new CustomEvent("commando:desktop-window-active", { detail: active }));
+            """,
+            arguments: ["active": windowActive],
+            in: nil,
+            in: .page
+        ) { _ in }
+    }
+
     private func scheduleNavigationRetry() {
         guard !cleanedUp, navigationRetryTimer == nil else { return }
         isRetrying = true
@@ -251,7 +288,6 @@ extension DesktopWebHost: WKUIDelegate {
         let disposition = externalURLHandler.handle(
             navigationAction.request.url,
             source: .webNavigation(
-                userActivated: navigationAction.navigationType == .linkActivated,
                 opensInNewWindow: navigationAction.targetFrame == nil
             )
         )

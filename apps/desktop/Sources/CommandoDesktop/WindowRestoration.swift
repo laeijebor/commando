@@ -50,6 +50,7 @@ enum WindowRestorationCodec {
         }
 
         let screens = visibleFrames.filter(isFiniteUsableFrame)
+        guard !screens.isEmpty else { return [] }
         return snapshot.frames.prefix(maximumWindowCount).compactMap { stored in
             constrain(stored.rect, to: screens)
         }
@@ -75,8 +76,6 @@ enum WindowRestorationCodec {
         else {
             return nil
         }
-        guard !screens.isEmpty else { return frame }
-
         let target = screens.max { left, right in
             intersectionArea(frame, left) < intersectionArea(frame, right)
         } ?? screens[0]

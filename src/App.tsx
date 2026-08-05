@@ -103,6 +103,7 @@ import {
 import type { SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
+import { useDesktopWindowActivity } from './desktopWindowActivity'
 import {
   createOwner,
   getAuthBootstrap,
@@ -129,6 +130,7 @@ const PRESETS: Array<{
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
+export const RESIZE_LEASE_RETRY_LIMIT = 4
 
 type PaneRendererControl = {
   identity: string
@@ -742,6 +744,7 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 }
 
 export function App() {
+  const desktopWindowActive = useDesktopWindowActivity()
   const [token, setToken] = useState(getInitialToken)
   const [authBootstrap, setAuthBootstrap] = useState<AuthBootstrap | null>(null)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
@@ -779,8 +782,14 @@ export function App() {
   const [paneActionError, setPaneActionError] = useState('')
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
+  const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
   const pendingMaximizePaneId = useRef<string | null>(null)
   const previousSnapshotRef = useRef<CommandoSnapshot | null>(null)
+  const resizeAuthorityActiveRef = useRef(false)
+  const previousResizeAuthorityActive = useRef(false)
+  const previousResizeSessionId = useRef<string | null>(null)
+  const resizeRetryAttempts = useRef(0)
+  const resizeRetryTimer = useRef<number | null>(null)
 
   const changePinnedNote = useCallback((next: PinnedNote | null) => {
     setPinnedNote(next)
@@ -935,17 +944,33 @@ export function App() {
         ) {
           setWebLayoutError(message.message)
         }
+        if (
+          message.code === 'resize_window_busy' &&
+          resizeAuthorityActiveRef.current &&
+          resizeRetryAttempts.current < RESIZE_LEASE_RETRY_LIMIT &&
+          resizeRetryTimer.current === null
+        ) {
+          resizeRetryAttempts.current += 1
+          resizeRetryTimer.current = window.setTimeout(() => {
+            resizeRetryTimer.current = null
+            if (resizeAuthorityActiveRef.current) {
+              setResizeRetryVersion((current) => current + 1)
+            }
+          }, 150 * resizeRetryAttempts.current)
+        }
         break
     }
   }
 
   const { connection, send } = useDaemon(token, authUser !== null, handleServerMessage)
   const connected = connection.phase === 'live'
+  const resizeAuthorityActive = desktopWindowActive && connected && area === 'workspace'
+  resizeAuthorityActiveRef.current = resizeAuthorityActive
 
   useEffect(() => {
     if (!token && connection.phase === 'unauthorized') setAuthUser(null)
   }, [connection.phase, token])
-  const activeResizePaneId = connected && area === 'workspace'
+  const activeResizePaneId = resizeAuthorityActive
     ? maximizedPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
     : null
 
@@ -964,6 +989,61 @@ export function App() {
     }
     previousResizePaneId.current = activeResizePaneId
   }, [activeResizePaneId, send, webLayoutAuthoritative])
+
+  useEffect(() => {
+    const wasActive = previousResizeAuthorityActive.current
+    previousResizeAuthorityActive.current = resizeAuthorityActive
+    if (resizeAuthorityActive) {
+      if (!wasActive) {
+        resizeRetryAttempts.current = 0
+        setResizeRetryVersion((current) => current + 1)
+      }
+      return
+    }
+
+    for (const timer of layoutTimers.current.values()) window.clearTimeout(timer)
+    layoutTimers.current.clear()
+    paneLayoutCapacities.current.clear()
+    previousResizePaneId.current = null
+    resizeRetryAttempts.current = 0
+    if (resizeRetryTimer.current !== null) {
+      window.clearTimeout(resizeRetryTimer.current)
+      resizeRetryTimer.current = null
+    }
+    if (wasActive && connected) {
+      send({ type: 'release_all_resizes', requestId: requestId('window-inactive-release') })
+    }
+  }, [connected, resizeAuthorityActive, send])
+
+  useEffect(() => {
+    const previousSessionId = previousResizeSessionId.current
+    previousResizeSessionId.current = selectedSessionId
+    if (!previousSessionId || previousSessionId === selectedSessionId) return
+
+    previousResizePaneId.current = null
+    paneLayoutCapacities.current.clear()
+    for (const timer of layoutTimers.current.values()) window.clearTimeout(timer)
+    layoutTimers.current.clear()
+    resizeRetryAttempts.current = 0
+    if (resizeRetryTimer.current !== null) {
+      window.clearTimeout(resizeRetryTimer.current)
+      resizeRetryTimer.current = null
+    }
+    if (resizeAuthorityActiveRef.current) {
+      send({ type: 'release_all_resizes', requestId: requestId('session-release') })
+      setResizeRetryVersion((current) => current + 1)
+    }
+  }, [selectedSessionId, send])
+
+  useEffect(() => {
+    const releaseOnPageHide = () => {
+      if (!resizeAuthorityActiveRef.current) return
+      resizeAuthorityActiveRef.current = false
+      send({ type: 'release_all_resizes', requestId: requestId('page-hide-release') })
+    }
+    window.addEventListener('pagehide', releaseOnPageHide)
+    return () => window.removeEventListener('pagehide', releaseOnPageHide)
+  }, [send])
 
   const registerTerminalSink = useCallback((paneId: string, sink: PaneTerminalSink) => (
     paneStreamsRef.current!.register(paneId, sink)
@@ -1176,7 +1256,7 @@ export function App() {
   }
 
   const sendWindowLayout = (windowId: string, spec: LayoutSpec | null) => {
-    if (!connected || !spec) return
+    if (!resizeAuthorityActive || !spec) return
     setWebLayoutError('')
     send({
       type: 'set_window_layout',
@@ -1271,7 +1351,7 @@ export function App() {
     cols: number,
     rows: number,
   ) => {
-    if (!connected) return
+    if (!resizeAuthorityActive) return
     if (webLayoutAuthoritative && !maximizedPaneId) {
       paneLayoutCapacities.current.set(paneId, { paneId, cols, rows, key: measurementKey })
       const existingTimer = layoutTimers.current.get(windowId)
@@ -1321,7 +1401,7 @@ export function App() {
    * authoritative; leaf weights come from the panes' current DOM extents.
    */
   const commitWindowLayout = (windowId: string) => {
-    if (!connected || webLayoutAuthoritative || maximizedPaneId) return
+    if (!resizeAuthorityActive || webLayoutAuthoritative || maximizedPaneId) return
     const tree = windowLayoutTree(windowId)
     if (!tree) return
     const sizes = new Map<string, { cols: number; rows: number }>()
@@ -1883,6 +1963,8 @@ export function App() {
                     layoutShapeKey(windowTree),
                     maximizedPaneId ?? 'grid',
                     webLayoutAuthoritative ? 'authoritative' : 'focused',
+                    desktopWindowActive ? 'active-window' : 'inactive-window',
+                    `retry-${resizeRetryVersion}`,
                   ].join(':')
                 : ''
               return (
@@ -1936,8 +2018,10 @@ export function App() {
                             maximized={maximizedPaneId === pane.id}
                             focused={focusedPaneId === pane.id}
                             resizeOwner={
-                              activeResizePaneId === pane.id ||
-                              (webLayoutAuthoritative && !maximizedPaneId)
+                              resizeAuthorityActive && (
+                                activeResizePaneId === pane.id ||
+                                (webLayoutAuthoritative && !maximizedPaneId)
+                              )
                             }
                             measurementKey={measurementKey}
                             connected={connected}

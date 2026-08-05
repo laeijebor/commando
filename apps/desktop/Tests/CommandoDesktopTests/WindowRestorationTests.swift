@@ -42,6 +42,13 @@ final class WindowRestorationTests: XCTestCase {
         XCTAssertEqual(WindowRestorationCodec.decode(nil, visibleFrames: [visibleFrame]), [])
     }
 
+    func testValidSnapshotIsIgnoredWhenNoScreensAreReported() throws {
+        let frame = NSRect(x: 20, y: 30, width: 800, height: 600)
+        let data = try XCTUnwrap(WindowRestorationCodec.encode(frames: [frame]))
+
+        XCTAssertEqual(WindowRestorationCodec.decode(data, visibleFrames: []), [])
+    }
+
     func testOffscreenAndOversizedFramesAreConstrainedToAVisibleScreen() throws {
         let frames = [
             NSRect(x: 50_000, y: 50_000, width: 900, height: 700),

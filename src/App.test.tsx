@@ -8,6 +8,7 @@ import type { CommandoSnapshot, ServerMessage, TmuxPane } from '../shared/protoc
 import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
+import { DESKTOP_WINDOW_ACTIVITY_EVENT } from './desktopWindowActivity'
 
 const appMocks = vi.hoisted(() => ({
   nativeConnect: vi.fn(),
@@ -37,6 +38,8 @@ vi.mock('./TerminalPaneRenderer', () => ({
     onRendererChange,
     onSelectionCopied,
     registerFocusable,
+    resizeOwner,
+    measurementKey,
   }: {
     paneId: string
     nativeRetryKey?: number
@@ -44,6 +47,8 @@ vi.mock('./TerminalPaneRenderer', () => ({
     onRendererChange: (renderer: 'native' | 'xterm') => void
     onSelectionCopied: () => void
     registerFocusable: (paneId: string, node: HTMLElement | null) => void
+    resizeOwner: boolean
+    measurementKey: string
   }) => {
     const [failed, setFailed] = useState(false)
     const previousRetryKey = useRef(nativeRetryKey)
@@ -65,6 +70,8 @@ vi.mock('./TerminalPaneRenderer', () => ({
         data-renderer={renderer}
         data-native-retry-key={nativeRetryKey}
         data-xterm-fallback={String(Boolean(useXtermFallback))}
+        data-resize-owner={String(resizeOwner)}
+        data-measurement-key={measurementKey}
       >
         <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
         <button type="button" onClick={() => setFailed(true)}>Simulate native failure {paneId}</button>
@@ -92,6 +99,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   window.sessionStorage.clear()
   window.localStorage.clear()
+  window.__commandoDesktopWindowActive = true
   daemonMessage = undefined
   daemonConnection = {
     phase: 'live',
@@ -119,6 +127,7 @@ afterEach(() => {
   cleanup()
   window.sessionStorage.clear()
   window.localStorage.clear()
+  delete window.__commandoDesktopWindowActive
 })
 
 describe('owner authentication form', () => {
@@ -209,6 +218,112 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
   return view
 }
+
+describe('desktop resize authority', () => {
+  it('releases all leases on resign-key and republishes ownership on focus', async () => {
+    await renderAppWithSnapshot()
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    expect(renderer).toHaveAttribute('data-resize-owner', 'true')
+    const initialMeasurementKey = renderer.getAttribute('data-measurement-key')
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: false }))
+    })
+
+    await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'false'))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'release_all_resizes' }))
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: true }))
+    })
+
+    await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'true'))
+    await waitFor(() => {
+      expect(renderer.getAttribute('data-measurement-key')).not.toBe(initialMeasurementKey)
+    })
+  })
+
+  it('retries a busy lease only while the desktop window remains active', async () => {
+    await renderAppWithSnapshot()
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    const initialMeasurementKey = renderer.getAttribute('data-measurement-key')
+
+    act(() => daemonMessage?.({
+      type: 'error',
+      code: 'resize_window_busy',
+      message: 'Another desktop window owns this tmux window',
+    }))
+
+    await waitFor(() => {
+      expect(renderer.getAttribute('data-measurement-key')).not.toBe(initialMeasurementKey)
+    })
+    const retriedMeasurementKey = renderer.getAttribute('data-measurement-key')
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: false }))
+      daemonMessage?.({
+        type: 'error',
+        code: 'resize_window_busy',
+        message: 'Stale contention after resign-key',
+      })
+    })
+    await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'false'))
+    const inactiveMeasurementKey = renderer.getAttribute('data-measurement-key')
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+
+    expect(inactiveMeasurementKey).not.toBe(retriedMeasurementKey)
+    expect(renderer.getAttribute('data-measurement-key')).toBe(inactiveMeasurementKey)
+    expect(renderer).toHaveAttribute('data-resize-owner', 'false')
+  })
+
+  it('releases leases before changing the selected tmux session', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    appMocks.send.mockClear()
+    const nextPane = {
+      ...pane,
+      id: '%22',
+      processId: 2_200,
+      windowId: '@4',
+      sessionId: '$4',
+    }
+    const nextSnapshot: CommandoSnapshot = {
+      ...snapshotWith([nextPane]),
+      revision: 2,
+      sessions: [{
+        id: '$4',
+        name: 'other',
+        attached: true,
+        activeWindowId: '@4',
+        windowIds: ['@4'],
+      }],
+      windows: [{
+        id: '@4',
+        index: 0,
+        sessionId: '$4',
+        name: 'other',
+        active: true,
+        layout: 'dbde,80x24,0,0,22',
+        paneIds: [nextPane.id],
+      }],
+    }
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: nextSnapshot }))
+
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'release_all_resizes',
+      requestId: expect.stringContaining('session-release'),
+    })))
+  })
+
+  it('releases leases when the page is hidden for window close', async () => {
+    await renderAppWithSnapshot()
+    appMocks.send.mockClear()
+
+    act(() => window.dispatchEvent(new Event('pagehide')))
+
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'release_all_resizes' }))
+  })
+})
 
 const paneProps = {
   pane,

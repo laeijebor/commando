@@ -10,11 +10,13 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     private(set) var zoomInCount = 0
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
+    private(set) var windowActivity: [Bool] = []
 
     func reload(_ sender: Any?) { reloadCount += 1 }
     func zoomOut(_ sender: Any?) { zoomOutCount += 1 }
     func zoomIn(_ sender: Any?) { zoomInCount += 1 }
     func reapplyTerminalFrames() { reapplyCount += 1 }
+    func setWindowActive(_ active: Bool) { windowActivity.append(active) }
     func cleanUp() { cleanUpCount += 1 }
 }
 
@@ -28,6 +30,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     private(set) var zoomInCount = 0
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
+    private(set) var windowActivity: [Bool] = []
 
     init(restoredFrame: NSRect? = nil) {
         self.restoredFrame = restoredFrame
@@ -44,6 +47,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     func zoomOut() { zoomOutCount += 1 }
     func zoomIn() { zoomInCount += 1 }
     func reapplyTerminalFrames() { reapplyCount += 1 }
+    func setWindowActive(_ active: Bool) { windowActivity.append(active) }
 
     func cleanUp() {
         cleanUpCount += 1
@@ -89,6 +93,9 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(newWindow.keyEquivalent, "n")
         XCTAssertEqual(newWindow.action, #selector(DesktopAppDelegate.newWindow(_:)))
         XCTAssertTrue(newWindow.target === actionTarget)
+        let closeWindow = try XCTUnwrap(fileMenu.item(withTitle: "Close Window"))
+        XCTAssertEqual(closeWindow.keyEquivalent, "w")
+        XCTAssertEqual(closeWindow.action, #selector(NSWindow.performClose(_:)))
 
         let editMenu = try XCTUnwrap(menu.items[2].submenu)
         XCTAssertEqual(editMenu.items.map(\.title), ["Copy", "Paste"])
@@ -196,6 +203,7 @@ final class DesktopApplicationTests: XCTestCase {
         ))
 
         XCTAssertEqual(first.cleanUpCount, 1)
+        XCTAssertEqual(first.windowActivity, [false])
         XCTAssertEqual(second.cleanUpCount, 0)
         XCTAssertEqual(delegate.registry.count, 1)
         XCTAssertEqual(store.savedFrames.last, [second.window.frame])
@@ -204,6 +212,31 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(first.cleanUpCount, 1)
         XCTAssertEqual(second.cleanUpCount, 1)
         XCTAssertTrue(created.allSatisfy { $0.cleanUpCount == 1 })
+    }
+
+    func testKeyWindowNotificationsPublishActivityOnlyToTheirSession() {
+        var created: [DesktopWindowControllerSpy] = []
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { frame in
+                let controller = DesktopWindowControllerSpy(restoredFrame: frame)
+                created.append(controller)
+                return controller
+            },
+            restorationStore: WindowRestorationStoreSpy(),
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        let first = delegate.openWindow() as! DesktopWindowControllerSpy
+        let second = delegate.openWindow() as! DesktopWindowControllerSpy
+
+        delegate.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: first.window))
+        delegate.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: first.window))
+
+        XCTAssertEqual(first.windowActivity, [true, false])
+        XCTAssertTrue(second.windowActivity.isEmpty)
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        XCTAssertEqual(second.windowActivity, [false])
+        XCTAssertEqual(created.count, 2)
     }
 
     func testDesktopWindowSessionCleanupIsIdempotentAndReleasesItsContentView() {
@@ -224,6 +257,7 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(webHost.zoomInCount, 1)
         XCTAssertEqual(webHost.reapplyCount, 1)
         XCTAssertEqual(webHost.cleanUpCount, 1)
+        XCTAssertEqual(webHost.windowActivity, [false])
         XCTAssertNil(session.window.contentView)
         XCTAssertFalse(session.window.isRestorable)
         session.window.orderOut(nil)
