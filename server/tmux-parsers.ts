@@ -280,6 +280,7 @@ export function parsePanes(output: string): TmuxPane[] {
       deadValue,
     ] = fields
     const index = integer(indexValue)
+    const processId = integer(fields.at(-1) ?? '')
     const active = flag(activeValue)
     const dead = flag(deadValue)
     const terminalState = parseTerminalState(
@@ -291,6 +292,8 @@ export function parsePanes(output: string): TmuxPane[] {
       !WINDOW_ID.test(windowId) ||
       !SESSION_ID.test(sessionId) ||
       index === null ||
+      processId === null ||
+      processId < 1 ||
       active === null ||
       dead === null ||
       terminalState === null
@@ -300,6 +303,7 @@ export function parsePanes(output: string): TmuxPane[] {
 
     panes.push({
       id,
+      processId,
       index,
       windowId,
       sessionId,

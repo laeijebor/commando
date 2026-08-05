@@ -126,6 +126,7 @@ export type PaneTerminalState = {
 
 export type TmuxPane = PaneTerminalState & {
   id: string
+  processId?: number
   index: number
   windowId: string
   sessionId: string
