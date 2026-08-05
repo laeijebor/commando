@@ -132,6 +132,18 @@ describe('PrsSection', () => {
     expect(screen.getByText(/✗ Lint/)).toBeInTheDocument()
   })
 
+  it('falls back to a countless fail label when reruns cleared every named failure', async () => {
+    stubFetch({
+      list: () => jsonResponse({
+        list: listWith([
+          pr({ checks: { state: 'fail', runs: [{ name: 'CI', state: 'pass' }], failed: 0, pending: 0, total: 1, truncated: true } }),
+        ]),
+      }),
+    })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByText('✗ checks')).toBeInTheDocument()
+  })
+
   it('persists filter changes and refetches with the new state', async () => {
     stubFetch()
     render(<PrsSection token="t" />)

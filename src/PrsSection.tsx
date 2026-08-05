@@ -42,8 +42,8 @@ export function prsNeedAttention(list: PrList | null): boolean {
 function ChecksChip({ checks }: { checks: PrSummary['checks'] }) {
   if (!checks) return <span className="pr-chip dim">no checks</span>
   const label = checks.state === 'fail'
-    ? `✗ ${checks.failed} failing`
-    : checks.state === 'pending' ? `● ${checks.pending} running` : '✓ checks'
+    ? (checks.failed > 0 ? `✗ ${checks.failed} failing` : '✗ checks')
+    : checks.state === 'pending' ? (checks.pending > 0 ? `● ${checks.pending} running` : '● running') : '✓ checks'
   const detail = checks.runs
     .filter((run) => run.state !== 'pass')
     .slice(0, 8)
