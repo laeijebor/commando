@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { PaneTerminalState } from '../../../shared/protocol'
+import {
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
+  type PaneTerminalState,
+} from '../../../shared/protocol'
 import {
   boundedTerminalSize,
   chunkTerminalInput,
@@ -146,10 +150,17 @@ describe('native terminal events', () => {
       kind: 'input',
       data: 'Gw==',
     })
-    const resize = parseNativeTerminalEvent({ kind: 'resize', cols: 1_000, rows: 500 })
+    const resize = parseNativeTerminalEvent({
+      kind: 'resize',
+      cols: MAX_TERMINAL_COLS + 1,
+      rows: MAX_TERMINAL_ROWS + 1,
+    })
     expect(resize?.kind).toBe('resize')
     if (resize?.kind === 'resize') {
-      expect(boundedTerminalSize(resize)).toEqual({ cols: 500, rows: 200 })
+      expect(boundedTerminalSize(resize)).toEqual({
+        cols: MAX_TERMINAL_COLS,
+        rows: MAX_TERMINAL_ROWS,
+      })
     }
   })
 
