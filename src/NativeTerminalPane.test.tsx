@@ -169,6 +169,7 @@ function rendererFixture(connected = true, paneId = '%1') {
     onSelectionCopied: vi.fn(),
     onResize: vi.fn(),
     onRequestReset: vi.fn(),
+    onRendererChange: vi.fn(),
     registerSink: vi.fn((_paneId: string, nextSink: PaneTerminalSink) => {
       sink = nextSink
       return () => {
@@ -599,12 +600,12 @@ describe('TerminalPaneRenderer fallback', () => {
     expect(consoleError).not.toHaveBeenCalled()
   })
 
-  it('falls only the failed native pane back to xterm and reseeds the replacement sink', async () => {
+  it('reports automatic fallback and explicitly retries with a fresh attachment and seed', async () => {
     vi.useFakeTimers()
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
-    const { props } = rendererFixture()
-    render(<TerminalPaneRenderer {...props} />)
+    const { props, getSink } = rendererFixture()
+    const view = render(<TerminalPaneRenderer {...props} />)
     expect(props.onRequestReset).not.toHaveBeenCalled()
     act(() => vi.advanceTimersByTime(0))
     expect(props.onRequestReset).toHaveBeenCalledOnce()
@@ -630,6 +631,7 @@ describe('TerminalPaneRenderer fallback', () => {
       payload: { paneId: '%1', attachmentId: attach.payload.attachmentId },
     }))
     expect(props.onRequestReset).toHaveBeenCalledTimes(2)
+    props.onRendererChange.mockClear()
 
     act(() => window.__commandoNativeTerminalReceive?.({
       version: 1,
@@ -646,8 +648,74 @@ describe('TerminalPaneRenderer fallback', () => {
 
     expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
     expect(screen.getByRole('application', { name: '%1 terminal input' })).toBeInTheDocument()
+    expect(props.onRendererChange).toHaveBeenLastCalledWith('xterm')
+    expect(messages.filter((message) => message.type === 'pane.attach')).toHaveLength(1)
     act(() => vi.advanceTimersByTime(0))
     expect(props.onRequestReset).toHaveBeenCalledTimes(3)
+
+    view.rerender(<TerminalPaneRenderer {...props} nativeRetryKey={1} />)
+    await act(async () => {})
+
+    const attaches = messages.filter((message) => message.type === 'pane.attach')
+    expect(attaches).toHaveLength(2)
+    const replacementAttach = attaches[1]!
+    expect(replacementAttach.payload.attachmentId).not.toBe(attach.payload.attachmentId)
+    expect(messages.filter((message) => (
+      message.type === 'pane.detach' && message.payload.attachmentId === attach.payload.attachmentId
+    ))).toHaveLength(1)
+
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: attach.pageId,
+      eventSequence: 4,
+      type: 'pane.seeded',
+      payload: { paneId: '%1', attachmentId: attach.payload.attachmentId, revision: 9 },
+    }))
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: replacementAttach.pageId,
+      eventSequence: 5,
+      type: 'pane.attached',
+      payload: { paneId: '%1', attachmentId: replacementAttach.payload.attachmentId },
+    }))
+    act(() => vi.advanceTimersByTime(0))
+    act(() => getSink()!.reset({
+      data: new Uint8Array([65]),
+      cols: 80,
+      rows: 24,
+      terminalState,
+      revision: 9,
+    }))
+    expect(messages.at(-1)).toMatchObject({
+      type: 'pane.reset',
+      payload: { attachmentId: replacementAttach.payload.attachmentId, revision: 9 },
+    })
+
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: attach.pageId,
+      eventSequence: 6,
+      type: 'pane.seeded',
+      payload: { paneId: '%1', attachmentId: attach.payload.attachmentId, revision: 9 },
+    }))
+    act(() => vi.advanceTimersByTime(1_000))
+    expect(document.querySelector('[data-native-terminal-pane="%1"]')).toBeInTheDocument()
+    act(() => window.__commandoNativeTerminalReceive?.({
+      version: 1,
+      pageId: replacementAttach.pageId,
+      eventSequence: 7,
+      type: 'pane.seeded',
+      payload: { paneId: '%1', attachmentId: replacementAttach.payload.attachmentId, revision: 9 },
+    }))
+    act(() => vi.advanceTimersByTime(1_000))
+    expect(props.onRendererChange).toHaveBeenLastCalledWith('native')
+
+    view.unmount()
+    expect(messages.filter((message) => (
+      message.type === 'pane.detach' &&
+      message.payload.attachmentId === replacementAttach.payload.attachmentId
+    ))).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('detaches and reseeds only the pane whose renderer override changes', async () => {

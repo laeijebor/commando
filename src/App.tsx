@@ -76,7 +76,7 @@ import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './
 import { dispatchBoundedPaste } from './terminalInput'
 import { THEMES, applyTheme, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
-import { TerminalPaneRenderer } from './TerminalPaneRenderer'
+import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
@@ -129,6 +129,17 @@ const PRESETS: Array<{
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
+
+type PaneRendererControl = {
+  identity: string
+  actual: TerminalRendererKind
+  manualXterm: boolean
+  retryKey: number
+}
+
+function paneRendererIdentity(pane: TmuxPane): string {
+  return JSON.stringify([pane.sessionId, pane.windowId, pane.id, pane.processId ?? null])
+}
 
 function storedPanelHidden(key: string): boolean {
   try {
@@ -231,6 +242,7 @@ type TerminalPaneProps = {
   measurementKey: string
   connected: boolean
   renaming: boolean
+  nativeRetryKey: number
   useXtermFallback: boolean
   gitApi: GitDiffApiClient
   onOpenPath: () => Promise<void>
@@ -250,6 +262,7 @@ type TerminalPaneProps = {
   onPaste: (data: string) => void
   onResize: (cols: number, rows: number) => void
   onRequestReset: () => void
+  onRendererChange: (renderer: TerminalRendererKind) => void
   registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
 }
@@ -265,6 +278,7 @@ export function TerminalPaneCard({
   measurementKey,
   connected,
   renaming,
+  nativeRetryKey,
   useXtermFallback,
   gitApi,
   onOpenPath,
@@ -284,6 +298,7 @@ export function TerminalPaneCard({
   onPaste,
   onResize,
   onRequestReset,
+  onRendererChange,
   registerSink,
   registerFocusable,
 }: TerminalPaneProps) {
@@ -476,6 +491,7 @@ export function TerminalPaneCard({
         measurementKey={measurementKey}
         ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
         order={index}
+        nativeRetryKey={nativeRetryKey}
         useXtermFallback={useXtermFallback}
         onFocus={onFocus}
         onInput={onInput}
@@ -489,6 +505,7 @@ export function TerminalPaneCard({
         onSelectionCopied={showSelectionCopied}
         onResize={onResize}
         onRequestReset={onRequestReset}
+        onRendererChange={onRendererChange}
         registerSink={registerSink}
         registerFocusable={registerFocusable}
       />
@@ -754,13 +771,16 @@ export function App() {
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
-  const [xtermPaneOverrides, setXtermPaneOverrides] = useState<ReadonlySet<string>>(() => new Set())
+  const [paneRendererControls, setPaneRendererControls] = useState<ReadonlyMap<string, PaneRendererControl>>(
+    () => new Map(),
+  )
   const [nativeTerminalAvailable, setNativeTerminalAvailable] = useState(false)
   const [paneActionPending, setPaneActionPending] = useState(false)
   const [paneActionError, setPaneActionError] = useState('')
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const pendingMaximizePaneId = useRef<string | null>(null)
+  const previousSnapshotRef = useRef<CommandoSnapshot | null>(null)
 
   const changePinnedNote = useCallback((next: PinnedNote | null) => {
     setPinnedNote(next)
@@ -832,6 +852,13 @@ export function App() {
   const handleServerMessage = (message: ServerMessage) => {
     switch (message.type) {
       case 'snapshot':
+        if (
+          previousSnapshotRef.current &&
+          message.snapshot.revision < previousSnapshotRef.current.revision
+        ) {
+          setPaneRendererControls(new Map())
+        }
+        previousSnapshotRef.current = message.snapshot
         setSnapshot(message.snapshot)
         break
       case 'pane_reset':
@@ -1028,13 +1055,35 @@ export function App() {
     if (renamingPaneId && !snapshot?.panes.some((pane) => pane.id === renamingPaneId)) {
       setRenamingPaneId(null)
     }
-    setXtermPaneOverrides((current) => {
+    setPaneRendererControls((current) => {
       if (current.size === 0) return current
-      const paneIds = new Set(snapshot?.panes.map((pane) => pane.id) ?? [])
-      const next = new Set([...current].filter((paneId) => paneIds.has(paneId)))
+      const identities = new Map(
+        snapshot?.panes.map((pane) => [pane.id, paneRendererIdentity(pane)]) ?? [],
+      )
+      const next = new Map(
+        [...current].filter(([paneId, control]) => identities.get(paneId) === control.identity),
+      )
       return next.size === current.size ? current : next
     })
   }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot])
+
+  const updatePaneRendererControl = (
+    paneId: string,
+    identity: string,
+    update: (control: PaneRendererControl) => PaneRendererControl,
+  ) => {
+    setPaneRendererControls((current) => {
+      const existing = current.get(paneId)
+      const control: PaneRendererControl = existing?.identity === identity
+        ? existing
+        : { identity, actual: 'xterm', manualXterm: false, retryKey: 0 }
+      const nextControl = update(control)
+      if (nextControl === control) return current
+      const next = new Map(current)
+      next.set(paneId, nextControl)
+      return next
+    })
+  }
 
   useEffect(() => {
     if (!pendingFocusPaneId) return
@@ -1505,6 +1554,14 @@ export function App() {
     ? windowMap.get(selectedSession.activeWindowId)
     : undefined
   const contextPane = paneMenu ? paneMap.get(paneMenu.paneId) : undefined
+  const contextPaneIdentity = contextPane ? paneRendererIdentity(contextPane) : null
+  const storedContextRendererControl = paneMenu ? paneRendererControls.get(paneMenu.paneId) : undefined
+  const contextRendererControl = storedContextRendererControl?.identity === contextPaneIdentity
+    ? storedContextRendererControl
+    : undefined
+  const contextUsesXterm = Boolean(
+    contextRendererControl?.manualXterm || contextRendererControl?.actual === 'xterm',
+  )
 
   if (authPending && (!token || connection.phase === 'unauthorized')) {
     return (
@@ -1862,72 +1919,85 @@ export function App() {
                         : window?.layout ?? ''}
                       tree={visibleTree}
                       onCommit={() => commitWindowLayout(group.windowId)}
-                      panes={new Map(visibleGroupPanes.map((pane) => [
-                        pane.id,
-                        <TerminalPaneCard
-                          key={pane.id}
-                          pane={pane}
-                          status={agentStatuses[pane.id]}
-                          index={leafPaneIds.indexOf(pane.id)}
-                          count={leafPaneIds.length}
-                          maximized={maximizedPaneId === pane.id}
-                          focused={focusedPaneId === pane.id}
-                          resizeOwner={
-                            activeResizePaneId === pane.id ||
-                            (webLayoutAuthoritative && !maximizedPaneId)
-                          }
-                          measurementKey={measurementKey}
-                          connected={connected}
-                          renaming={renamingPaneId === pane.id}
-                          useXtermFallback={xtermPaneOverrides.has(pane.id)}
-                          gitApi={gitDiffApi}
-                          onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
-                          onFocus={() => setFocusedPaneId(pane.id)}
-                          onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
-                          onRename={(title) => renamePane(pane.id, title)}
-                          onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
-                          onMove={(direction) => {
-                            clearLayoutTimers()
-                            movePane(group.windowId, pane.id, direction)
-                          }}
-                          onMaximize={() => {
-                            clearLayoutTimers()
-                            setFocusedPaneId(pane.id)
-                            setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
-                          }}
-                          onDragStart={(event) => {
-                            setDraggedPane({ groupId: group.id, paneId: pane.id })
-                            event.dataTransfer.effectAllowed = 'move'
-                            event.dataTransfer.setData('text/plain', pane.id)
-                          }}
-                          onDragEnd={() => setDraggedPane(null)}
-                          onDragOver={(event) => {
-                            if (draggedPane?.groupId === group.id) {
-                              event.preventDefault()
-                              event.dataTransfer.dropEffect = 'move'
+                      panes={new Map(visibleGroupPanes.map((pane) => {
+                        const rendererIdentity = paneRendererIdentity(pane)
+                        const storedRendererControl = paneRendererControls.get(pane.id)
+                        const rendererControl = storedRendererControl?.identity === rendererIdentity
+                          ? storedRendererControl
+                          : undefined
+                        return [
+                          pane.id,
+                          <TerminalPaneCard
+                            key={rendererIdentity}
+                            pane={pane}
+                            status={agentStatuses[pane.id]}
+                            index={leafPaneIds.indexOf(pane.id)}
+                            count={leafPaneIds.length}
+                            maximized={maximizedPaneId === pane.id}
+                            focused={focusedPaneId === pane.id}
+                            resizeOwner={
+                              activeResizePaneId === pane.id ||
+                              (webLayoutAuthoritative && !maximizedPaneId)
                             }
-                          }}
-                          onDrop={(event) => {
-                            event.preventDefault()
-                            clearLayoutTimers()
-                            dropPane(group.windowId, group.id, pane.id)
-                          }}
-                          onInput={(data) => sendPaneInput(pane.id, data)}
-                          onInputBytes={(data) => sendPaneInputBytes(pane.id, data)}
-                          onKey={(key) => sendPaneKey(pane.id, key)}
-                          onPaste={(data) => sendPanePaste(pane.id, data)}
-                          onResize={(cols, rows) => sendPaneResize(
-                            group.windowId,
-                            pane.id,
-                            measurementKey,
-                            cols,
-                            rows,
-                          )}
-                          onRequestReset={() => requestPaneReset(pane.id)}
-                          registerSink={registerTerminalSink}
-                          registerFocusable={registerFocusable}
-                        />,
-                      ]))}
+                            measurementKey={measurementKey}
+                            connected={connected}
+                            renaming={renamingPaneId === pane.id}
+                            nativeRetryKey={rendererControl?.retryKey ?? 0}
+                            useXtermFallback={rendererControl?.manualXterm ?? false}
+                            gitApi={gitDiffApi}
+                            onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
+                            onFocus={() => setFocusedPaneId(pane.id)}
+                            onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
+                            onRename={(title) => renamePane(pane.id, title)}
+                            onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
+                            onMove={(direction) => {
+                              clearLayoutTimers()
+                              movePane(group.windowId, pane.id, direction)
+                            }}
+                            onMaximize={() => {
+                              clearLayoutTimers()
+                              setFocusedPaneId(pane.id)
+                              setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
+                            }}
+                            onDragStart={(event) => {
+                              setDraggedPane({ groupId: group.id, paneId: pane.id })
+                              event.dataTransfer.effectAllowed = 'move'
+                              event.dataTransfer.setData('text/plain', pane.id)
+                            }}
+                            onDragEnd={() => setDraggedPane(null)}
+                            onDragOver={(event) => {
+                              if (draggedPane?.groupId === group.id) {
+                                event.preventDefault()
+                                event.dataTransfer.dropEffect = 'move'
+                              }
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault()
+                              clearLayoutTimers()
+                              dropPane(group.windowId, group.id, pane.id)
+                            }}
+                            onInput={(data) => sendPaneInput(pane.id, data)}
+                            onInputBytes={(data) => sendPaneInputBytes(pane.id, data)}
+                            onKey={(key) => sendPaneKey(pane.id, key)}
+                            onPaste={(data) => sendPanePaste(pane.id, data)}
+                            onResize={(cols, rows) => sendPaneResize(
+                              group.windowId,
+                              pane.id,
+                              measurementKey,
+                              cols,
+                              rows,
+                            )}
+                            onRequestReset={() => requestPaneReset(pane.id)}
+                            onRendererChange={(actual) => {
+                              updatePaneRendererControl(pane.id, rendererIdentity, (current) => (
+                                current.actual === actual ? current : { ...current, actual }
+                              ))
+                            }}
+                            registerSink={registerTerminalSink}
+                            registerFocusable={registerFocusable}
+                          />,
+                          ] as const
+                      }))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
@@ -2086,18 +2156,18 @@ export function App() {
           x={paneMenu.x}
           y={paneMenu.y}
           busy={paneActionPending || !connected}
-          nativeTerminalAvailable={nativeTerminalAvailable}
-          useXtermFallback={xtermPaneOverrides.has(paneMenu.paneId)}
+          nativeTerminalAvailable={nativeTerminalAvailable || Boolean(contextRendererControl?.manualXterm)}
+          useXtermFallback={contextUsesXterm}
           onClose={closePaneMenu}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
           onUseXtermFallbackChange={(useXtermFallback) => {
-            setXtermPaneOverrides((current) => {
-              const next = new Set(current)
-              if (useXtermFallback) next.add(paneMenu.paneId)
-              else next.delete(paneMenu.paneId)
-              return next
-            })
+            if (!contextPaneIdentity) return
+            updatePaneRendererControl(paneMenu.paneId, contextPaneIdentity, (current) => ({
+              ...current,
+              manualXterm: useXtermFallback,
+              retryKey: useXtermFallback ? current.retryKey : current.retryKey + 1,
+            }))
           }}
           onKill={() => { void killPane(paneMenu.paneId) }}
         />

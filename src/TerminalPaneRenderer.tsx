@@ -17,18 +17,24 @@ type ResetWatchdog = {
 
 type TerminalPaneRendererProps = XtermPaneProps & {
   order: number
+  nativeRetryKey?: number
   useXtermFallback?: boolean
   onInputBytes: (data: string) => void
   onOpenMenu: (x: number, y: number) => void
   onRequestReset: () => void
+  onRendererChange?: (renderer: TerminalRendererKind) => void
 }
+
+export type TerminalRendererKind = 'native' | 'xterm'
 
 export function TerminalPaneRenderer({
   order,
+  nativeRetryKey = 0,
   useXtermFallback = false,
   onInputBytes,
   onOpenMenu,
   onRequestReset,
+  onRendererChange,
   ...xtermProps
 }: TerminalPaneRendererProps) {
   const bridge = getNativeTerminalBridge()
@@ -36,6 +42,7 @@ export function TerminalPaneRenderer({
   const connectedRef = useRef(xtermProps.connected)
   const requestResetRef = useRef(onRequestReset)
   const registerSinkRef = useRef(xtermProps.registerSink)
+  const rendererChangeRef = useRef(onRendererChange)
   const activeWatchdogRef = useRef<ResetWatchdog | null>(null)
   const previousConnectedRef = useRef(xtermProps.connected)
   const scheduleResetRef = useRef<(watchdog: ResetWatchdog) => void>(() => {})
@@ -43,6 +50,7 @@ export function TerminalPaneRenderer({
   connectedRef.current = xtermProps.connected
   requestResetRef.current = onRequestReset
   registerSinkRef.current = xtermProps.registerSink
+  rendererChangeRef.current = onRendererChange
 
   scheduleResetRef.current = (watchdog) => {
     if (
@@ -122,7 +130,7 @@ export function TerminalPaneRenderer({
     return () => {
       active = false
     }
-  }, [bridge])
+  }, [bridge, nativeRetryKey])
 
   useEffect(() => {
     const wasConnected = previousConnectedRef.current
@@ -137,6 +145,12 @@ export function TerminalPaneRenderer({
     watchdog.requests = 0
     if (xtermProps.connected) deferResetRef.current(watchdog)
   }, [xtermProps.connected])
+
+  const renderer: TerminalRendererKind = useXtermFallback || !nativeBridge ? 'xterm' : 'native'
+
+  useEffect(() => {
+    rendererChangeRef.current?.(renderer)
+  }, [renderer])
 
   if (useXtermFallback || !nativeBridge) {
     return <XtermPane {...xtermProps} registerSink={registerRendererSink} />

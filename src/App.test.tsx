@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
+import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, ServerMessage, TmuxPane } from '../shared/protocol'
 import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
@@ -31,24 +32,45 @@ vi.mock('./nativeTerminalBridge', () => ({
 vi.mock('./TerminalPaneRenderer', () => ({
   TerminalPaneRenderer: ({
     paneId,
+    nativeRetryKey = 0,
     useXtermFallback,
+    onRendererChange,
     onSelectionCopied,
     registerFocusable,
   }: {
     paneId: string
+    nativeRetryKey?: number
     useXtermFallback?: boolean
+    onRendererChange: (renderer: 'native' | 'xterm') => void
     onSelectionCopied: () => void
     registerFocusable: (paneId: string, node: HTMLElement | null) => void
-  }) => (
-    <div
-      ref={(node) => registerFocusable(paneId, node)}
-      tabIndex={-1}
-      data-testid={`renderer-${paneId}`}
-      data-xterm-fallback={String(Boolean(useXtermFallback))}
-    >
-      <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
-    </div>
-  ),
+  }) => {
+    const [failed, setFailed] = useState(false)
+    const previousRetryKey = useRef(nativeRetryKey)
+    const renderer = useXtermFallback || failed ? 'xterm' : 'native'
+
+    useEffect(() => {
+      if (previousRetryKey.current === nativeRetryKey) return
+      previousRetryKey.current = nativeRetryKey
+      setFailed(false)
+    }, [nativeRetryKey])
+
+    useEffect(() => onRendererChange(renderer), [onRendererChange, renderer])
+
+    return (
+      <div
+        ref={(node) => registerFocusable(paneId, node)}
+        tabIndex={-1}
+        data-testid={`renderer-${paneId}`}
+        data-renderer={renderer}
+        data-native-retry-key={nativeRetryKey}
+        data-xterm-fallback={String(Boolean(useXtermFallback))}
+      >
+        <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
+        <button type="button" onClick={() => setFailed(true)}>Simulate native failure {paneId}</button>
+      </div>
+    )
+  },
 }))
 vi.mock('./ResizablePaneLayout', () => ({
   ResizablePaneLayout: ({ panes }: { panes: ReadonlyMap<string, React.ReactNode> }) => (
@@ -132,6 +154,7 @@ describe('owner authentication form', () => {
 
 const pane = {
   id: '%12',
+  processId: 1_200,
   index: 1,
   windowId: '@2',
   sessionId: '$3',
@@ -147,6 +170,7 @@ const pane = {
 const adjacentPane = {
   ...pane,
   id: '%13',
+  processId: 1_300,
   index: 2,
   title: 'worker',
 } as TmuxPane
@@ -198,6 +222,7 @@ const paneProps = {
   fillIncompleteRows: false,
   connected: true,
   renaming: false,
+  nativeRetryKey: 0,
   useXtermFallback: false,
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
@@ -222,6 +247,7 @@ const paneProps = {
   onPaste: vi.fn(),
   onResize: vi.fn(),
   onRequestReset: vi.fn(),
+  onRendererChange: vi.fn(),
   registerSink: vi.fn(() => () => undefined),
   registerFocusable: vi.fn(),
 }
@@ -390,6 +416,28 @@ describe('pane renderer overrides', () => {
     expect(appMocks.send).not.toHaveBeenCalled()
   })
 
+  it('shows automatic xterm fallback and retries only the failed pane', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate native failure %12' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-renderer', 'xterm')
+    })
+
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      altKey: true,
+    })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Use native terminal' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-renderer', 'native')
+    })
+    expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-native-retry-key', '1')
+    expect(screen.getByTestId('renderer-%13')).toHaveAttribute('data-renderer', 'native')
+    expect(screen.getByTestId('renderer-%13')).toHaveAttribute('data-native-retry-key', '0')
+  })
+
   it('prunes an override when its pane ID is removed', async () => {
     await renderAppWithSnapshot()
     fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
@@ -402,6 +450,47 @@ describe('pane renderer overrides', () => {
     await waitFor(() => expect(screen.queryByTestId('renderer-%12')).not.toBeInTheDocument())
 
     act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane, adjacentPane]) }))
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'false')
+    })
+  })
+
+  it('does not carry an override into a replacement pane with the same tmux ID', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      altKey: true,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use xterm fallback' }))
+    expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'true')
+
+    const replacement = {
+      ...pane,
+      processId: 9_912,
+      title: 'replacement',
+    }
+    act(() => daemonMessage?.({
+      type: 'snapshot',
+      snapshot: { ...snapshotWith([replacement, adjacentPane]), revision: 2, capturedAt: 2 },
+    }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'false')
+      expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-native-retry-key', '0')
+    })
+  })
+
+  it('clears transient renderer state when the daemon snapshot revision rolls back', async () => {
+    await renderAppWithSnapshot({ ...snapshotWith([pane, adjacentPane]), revision: 8 })
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      altKey: true,
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use xterm fallback' }))
+
+    act(() => daemonMessage?.({
+      type: 'snapshot',
+      snapshot: { ...snapshotWith([pane, adjacentPane]), revision: 1, capturedAt: 20 },
+    }))
+
     await waitFor(() => {
       expect(screen.getByTestId('renderer-%12')).toHaveAttribute('data-xterm-fallback', 'false')
     })
