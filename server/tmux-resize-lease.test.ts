@@ -12,6 +12,7 @@ function fakeRunner(options?: {
   activePaneId?: string
   zoomed?: boolean
   explicitWindowSize?: string
+  terminalClients?: number
 }) {
   const commands: string[][] = []
   let currentActivePaneId = options?.activePaneId ?? '%1'
@@ -43,6 +44,10 @@ function fakeRunner(options?: {
       ].join(separator)).join('\n')
     }
     if (command[0] === 'show-options') return options?.explicitWindowSize ?? ''
+    if (command[0] === 'list-clients') {
+      // One commando control-mode client plus any plain terminal attachments.
+      return ['1', ...Array(options?.terminalClients ?? 1).fill('0')].join('\n')
+    }
     if (command[0] === 'select-pane') currentActivePaneId = command[2]
     if (command[0] === 'resize-pane' && command[1] === '-Z') currentZoomed = !currentZoomed
     if (command[0] === 'resize-window') {
@@ -312,6 +317,68 @@ describe('tmux focused-pane resize leases', () => {
     await expect(manager.resize('client-1', '%1', 100, 30)).rejects.toBeInstanceOf(
       TmuxResizeLeaseBusyError,
     )
+  })
+
+  it('keeps the last applied geometry when the grace lapses with only commando clients', async () => {
+    const fake = fakeRunner({ terminalClients: 0 })
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.resize('client-1', '%2', 120, 40)
+    await manager.release('client-1')
+    await fireTimers()
+
+    // No baseline snap-back, no window-size handoff to `latest`.
+    expect(fake.commands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).not.toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+    // The zoom this focused lease created is still cleared.
+    expect(fake.commands.filter((command) => command[0] === 'resize-pane' && command[1] === '-Z'))
+      .toHaveLength(2)
+    // The window is free for the next owner.
+    await expect(manager.resize('client-2', '%1', 90, 30)).resolves.toBe(true)
+  })
+
+  it('keeps an authoritative layout in place when the grace lapses without terminal clients', async () => {
+    const fake = fakeRunner({ terminalClients: 0 })
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.applyLayout('client-1', '@1', {
+      kind: 'split',
+      direction: 'row',
+      children: [
+        { kind: 'pane', paneId: '%1', cols: 40, rows: 20 },
+        { kind: 'pane', paneId: '%2', cols: 40, rows: 20 },
+      ],
+    })
+    await manager.release('client-1')
+    await fireTimers()
+
+    expect(fake.commands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).not.toContainEqual(['select-layout', '-t', '@1', 'layout-before'])
+    expect(fake.commands).not.toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+  })
+
+  it('still restores the baseline for terminal-attached sessions after the grace', async () => {
+    const fake = fakeRunner({ terminalClients: 1 })
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.resize('client-1', '%2', 120, 40)
+    await manager.release('client-1')
+    await fireTimers()
+
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+  })
+
+  it('releaseAll keeps commando-only windows at their applied geometry', async () => {
+    const fake = fakeRunner({ terminalClients: 0 })
+    const manager = new TmuxResizeLeaseManager(fake.run, { schedule: () => () => undefined })
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await manager.releaseAll()
+
+    expect(fake.commands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).not.toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+    await expect(manager.resize('client-2', '%2', 90, 30)).resolves.toBe(true)
   })
 
   it('releaseAll flushes deferred restores immediately', async () => {

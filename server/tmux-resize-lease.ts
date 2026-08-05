@@ -267,13 +267,13 @@ export class TmuxResizeLeaseManager {
     return this.enqueue(async () => {
       for (const [windowId] of [...this.pendingRestores]) {
         const pending = this.consumePendingRestore(windowId)
-        if (pending) await this.restore(pending).catch(() => undefined)
+        if (pending) await this.finalRelease(pending).catch(() => undefined)
       }
       const leases = [...this.leasesByOwner.values()].flatMap((ownerLeases) => [
         ...ownerLeases.values(),
       ])
       for (const lease of leases) {
-        await this.restore(lease).catch(() => undefined)
+        await this.finalRelease(lease).catch(() => undefined)
       }
     })
   }
@@ -301,10 +301,60 @@ export class TmuxResizeLeaseManager {
       void this.enqueue(async () => {
         if (entry.cancelled) return
         this.pendingRestores.delete(lease.windowId)
-        await this.restore(lease).catch(() => undefined)
+        await this.finalRelease(lease).catch(() => undefined)
       })
     }, this.restoreGraceMs)
     this.pendingRestores.set(lease.windowId, entry)
+  }
+
+  /**
+   * Ends a lease with no successor. The pre-commando baseline is only worth
+   * restoring when a plain terminal client is attached to the session and
+   * will drive sizing again; for a commando-only session, snapping back (and
+   * re-enabling `window-size latest`) would reflow every pane to a size
+   * nobody is looking at. There, keep the last applied geometry and only
+   * clear a zoom this lease created.
+   */
+  private async finalRelease(lease: ResizeLease): Promise<void> {
+    let hasTerminalClient = true
+    try {
+      const output = await this.run([
+        'list-clients',
+        '-t',
+        lease.windowId,
+        '-F',
+        '#{client_control_mode}',
+      ])
+      hasTerminalClient = output
+        .trim()
+        .split(/\r?\n/)
+        .some((line) => line.trim() === '0')
+    } catch {
+      // Unable to inspect clients: keep the conservative restore behavior.
+    }
+    if (hasTerminalClient) {
+      await this.restore(lease)
+      return
+    }
+    try {
+      if (lease.mode.kind === 'focused') {
+        const state = await this.inspectCurrentWindow(lease.windowId)
+        if (state.zoomed && state.activePaneId) {
+          await this.run(['resize-pane', '-Z', '-t', state.activePaneId])
+        }
+      }
+    } finally {
+      this.forgetLease(lease)
+    }
+  }
+
+  private forgetLease(lease: ResizeLease): void {
+    const ownerLeases = this.leasesByOwner.get(lease.ownerId)
+    ownerLeases?.delete(lease.windowId)
+    if (ownerLeases?.size === 0) this.leasesByOwner.delete(lease.ownerId)
+    if (this.ownersByWindow.get(lease.windowId) === lease.ownerId) {
+      this.ownersByWindow.delete(lease.windowId)
+    }
   }
 
   private consumePendingRestore(windowId: string): ResizeLease | null {
