@@ -48,6 +48,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let admission: WebContentAdmission
     private let bridge: NativeTerminalBridge
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
+    private let externalURLHandler: any ExternalURLHandling
     private var scriptMessageHandler: WeakScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
@@ -55,11 +56,16 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     init(
         configuration: DesktopConfiguration = .current(),
-        confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter()
+        confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter(),
+        externalURLHandler: (any ExternalURLHandling)? = nil
     ) {
         self.configuration = configuration
         self.confirmationPresenter = confirmationPresenter
         admission = WebContentAdmission(origin: configuration.webOrigin)
+        let externalURLHandler = externalURLHandler ?? SafeExternalURLHandler(
+            privilegedOrigin: configuration.webOrigin
+        )
+        self.externalURLHandler = externalURLHandler
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1_180, height: 760))
         let webConfiguration = WKWebViewConfiguration()
         webView = WKWebView(frame: rootView.bounds, configuration: webConfiguration)
@@ -68,7 +74,8 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         bridge = NativeTerminalBridge(
             webView: webView,
             overlay: overlay,
-            prefersMetal: configuration.prefersMetal
+            prefersMetal: configuration.prefersMetal,
+            externalURLHandler: externalURLHandler
         )
         super.init()
 
@@ -106,6 +113,16 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         setZoomPercent(min(Self.maximumZoomPercent, zoomPercent + Self.zoomStepPercent))
     }
 
+    @objc func reload(_ sender: Any?) {
+        guard !cleanedUp else { return }
+        navigationRetryTimer?.invalidate()
+        navigationRetryTimer = nil
+        isRetrying = false
+        if webView.reload() == nil {
+            loadWebApplication()
+        }
+    }
+
     func cleanUp() {
         guard !cleanedUp else { return }
         cleanedUp = true
@@ -126,9 +143,14 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
-        guard let url = navigationAction.request.url,
-              admission.allowsNavigation(to: url)
-        else {
+        let disposition = externalURLHandler.handle(
+            navigationAction.request.url,
+            source: .webNavigation(
+                userActivated: navigationAction.navigationType == .linkActivated,
+                opensInNewWindow: navigationAction.targetFrame == nil
+            )
+        )
+        guard disposition == .allowInWebView else {
             decisionHandler(.cancel)
             return
         }
@@ -220,6 +242,25 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 }
 
 extension DesktopWebHost: WKUIDelegate {
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        let disposition = externalURLHandler.handle(
+            navigationAction.request.url,
+            source: .webNavigation(
+                userActivated: navigationAction.navigationType == .linkActivated,
+                opensInNewWindow: navigationAction.targetFrame == nil
+            )
+        )
+        if disposition == .allowInWebView {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
+
     func webView(
         _ webView: WKWebView,
         runJavaScriptConfirmPanelWithMessage message: String,

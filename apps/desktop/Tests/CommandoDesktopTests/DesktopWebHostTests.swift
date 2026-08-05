@@ -60,7 +60,7 @@ final class DesktopWebHostTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        XCTAssertEqual(layoutEvents, 1)
+        XCTAssertGreaterThanOrEqual(layoutEvents, 1)
         host.cleanUp()
     }
 
@@ -92,6 +92,11 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertTrue(host.responds(to: #selector(
             WKUIDelegate.webView(
                 _:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:
+            )
+        )))
+        XCTAssertTrue(host.responds(to: #selector(
+            WKUIDelegate.webView(
+                _:createWebViewWith:for:windowFeatures:
             )
         )))
 

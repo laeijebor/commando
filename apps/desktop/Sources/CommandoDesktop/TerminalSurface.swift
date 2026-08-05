@@ -238,6 +238,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private let prefersMetal: Bool
     private let clipboardPolicy: TerminalClipboardPolicy
     private let pasteboard: NSPasteboard
+    private let externalURLHandler: any ExternalURLHandling
     private let eventSink: (TerminalSurfaceEvent) -> Void
     private var dataOrderGate = TerminalDataOrderGate()
     private var resizeGate = ResizeEmissionGate()
@@ -258,12 +259,14 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         prefersMetal: Bool,
         clipboardPolicy: TerminalClipboardPolicy = .defaultDeny,
         pasteboard: NSPasteboard = .general,
+        externalURLHandler: (any ExternalURLHandling)? = nil,
         eventSink: @escaping (TerminalSurfaceEvent) -> Void
     ) {
         self.identity = identity
         self.prefersMetal = prefersMetal
         self.clipboardPolicy = clipboardPolicy
         self.pasteboard = pasteboard
+        self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
         self.eventSink = eventSink
         view = HostedTerminalView(frame: .zero)
         orderKey = .init(order: 0, paneId: identity.paneId, attachmentId: identity.attachmentId)
@@ -593,7 +596,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
 
     func scrolled(source: TerminalView, position: Double) {}
 
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        externalURLHandler.handle(URL(string: link), source: .terminalHyperlink)
+    }
 
     func bell(source: TerminalView) {
         NSSound.beep()
