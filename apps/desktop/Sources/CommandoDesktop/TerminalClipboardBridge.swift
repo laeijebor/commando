@@ -10,6 +10,23 @@ enum TerminalClipboardBridgeResult: Equatable {
 enum TerminalClipboardBridge {
     static let maxConvertedPNGBytes = 32 * 1_024 * 1_024
 
+    static func boundedPlainText(in pasteboard: NSPasteboard) -> String? {
+        guard let text = pasteboard.string(forType: .string),
+              !text.isEmpty,
+              !text.utf8.contains(0),
+              text.utf8.count <= NativeTerminalProtocol.maxPasteBytes
+        else {
+            return nil
+        }
+        return text
+    }
+
+    static func writePlainText(_ text: String, to pasteboard: NSPasteboard) -> Bool {
+        guard !text.isEmpty else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+    }
+
     static func ensurePNGRepresentation(in pasteboard: NSPasteboard) -> TerminalClipboardBridgeResult {
         if let png = pasteboard.data(forType: .png), !png.isEmpty {
             return .unchanged

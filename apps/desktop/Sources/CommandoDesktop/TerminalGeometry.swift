@@ -8,6 +8,27 @@ struct TerminalPlacement: Equatable, Sendable {
 }
 
 enum TerminalGeometry {
+    static func clientPoint(
+        for normalizedPoint: CGPoint,
+        in payload: PaneFramePayload
+    ) -> CGPoint? {
+        guard normalizedPoint.x.isFinite,
+              normalizedPoint.y.isFinite,
+              (0...1).contains(normalizedPoint.x),
+              (0...1).contains(normalizedPoint.y),
+              payload.x.isFinite,
+              payload.y.isFinite,
+              payload.width > 0,
+              payload.height > 0
+        else {
+            return nil
+        }
+        return CGPoint(
+            x: payload.x + Double(normalizedPoint.x) * payload.width,
+            y: payload.y + Double(normalizedPoint.y) * payload.height
+        )
+    }
+
     static func placement(
         for payload: PaneFramePayload,
         viewportSize: CGSize,

@@ -3,8 +3,11 @@ import SwiftTerm
 
 enum TerminalSurfaceEvent {
     case input(Data)
+    case paste(String)
     case resize(GridSize)
     case focusChanged(Bool)
+    case selectionCopied
+    case contextMenu(CGPoint)
     case shortcut(String)
 }
 
@@ -53,9 +56,15 @@ final class HostedTerminalView: TerminalView {
     var shortcutWasPressed: ((String) -> Void)?
     var modifiedArrowWasPressed: ((Data) -> Void)?
     var controlVWasPressed: (() -> Void)?
+    var pasteWasRequested: (() -> Void)?
+    var copySelection: ((String) -> Bool)?
+    var selectionWasCopied: (() -> Void)?
+    var contextMenuWasRequested: ((CGPoint) -> Void)?
     var hostOrderRank = 0
     private(set) var visibleHitRegions: [CGRect] = []
     private let visibleMask = CAShapeLayer()
+    private var optionSelectionActive = false
+    private var contextMenuViewport: CGRect?
 
     override var tag: Int { hostOrderRank }
 
@@ -75,6 +84,10 @@ final class HostedTerminalView: TerminalView {
         layer?.mask = visibleMask
     }
 
+    func setContextMenuViewport(_ viewport: CGRect?) {
+        contextMenuViewport = viewport
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         let localPoint = NSPoint(
             x: point.x - frame.minX + bounds.minX,
@@ -88,11 +101,61 @@ final class HostedTerminalView: TerminalView {
         window?.makeKeyAndOrderFront(nil)
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
         window?.makeFirstResponder(self)
-        super.mouseDown(with: event)
+        optionSelectionActive = hasExactOptionModifier(event)
+        if optionSelectionActive {
+            withoutMouseReporting { super.mouseDown(with: event) }
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if optionSelectionActive {
+            withoutMouseReporting { super.mouseDragged(with: event) }
+        } else {
+            super.mouseDragged(with: event)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard optionSelectionActive else {
+            super.mouseUp(with: event)
+            return
+        }
+        withoutMouseReporting { super.mouseUp(with: event) }
+        optionSelectionActive = false
+        copy(self)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let viewport = contextMenuViewport ?? bounds
+        guard hasExactOptionModifier(event),
+              viewport.width > 0,
+              viewport.height > 0
+        else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        contextMenuWasRequested?(CGPoint(
+            x: min(1, max(0, (point.x - viewport.minX) / viewport.width)),
+            y: min(1, max(0, (viewport.maxY - point.y) / viewport.height))
+        ))
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let shortcutModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if shortcutModifiers == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            if key == "c" {
+                copy(self)
+                return true
+            }
+            if key == "v" {
+                paste(self)
+                return true
+            }
+        }
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased(),
            key == "k" || (key.count == 1 && ("1"..."9").contains(key)) {
@@ -100,6 +163,26 @@ final class HostedTerminalView: TerminalView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func paste(_ sender: Any) {
+        guard let pasteWasRequested else {
+            super.paste(sender)
+            return
+        }
+        pasteWasRequested()
+    }
+
+    override func copy(_ sender: Any) {
+        guard let selection = getSelection(), !selection.isEmpty else { return }
+        let copied: Bool
+        if let copySelection {
+            copied = copySelection(selection)
+        } else {
+            super.copy(sender)
+            copied = NSPasteboard.general.string(forType: .string) == selection
+        }
+        if copied { selectionWasCopied?() }
     }
 
     func handleOptionArrow(_ event: NSEvent) -> Bool {
@@ -132,6 +215,17 @@ final class HostedTerminalView: TerminalView {
         controlVWasPressed?()
         return true
     }
+
+    private func hasExactOptionModifier(_ event: NSEvent) -> Bool {
+        event.modifierFlags.intersection([.command, .option, .control, .shift]) == .option
+    }
+
+    private func withoutMouseReporting(_ operation: () -> Void) {
+        let previous = allowMouseReporting
+        allowMouseReporting = false
+        operation()
+        allowMouseReporting = previous
+    }
 }
 
 @MainActor
@@ -159,6 +253,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     init(
         identity: PaneIdentity,
         ariaLabel: String,
+        accessibilityEnabled: Bool = true,
+        keyShortcuts: [String] = [],
         prefersMetal: Bool,
         clipboardPolicy: TerminalClipboardPolicy = .defaultDeny,
         pasteboard: NSPasteboard = .general,
@@ -173,15 +269,19 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         orderKey = .init(order: 0, paneId: identity.paneId, attachmentId: identity.attachmentId)
         super.init()
 
-        configureView(ariaLabel: ariaLabel)
+        configureView(metadata: .init(
+            ariaLabel: ariaLabel,
+            accessibilityEnabled: accessibilityEnabled,
+            keyShortcuts: keyShortcuts
+        ))
     }
 
     var isFocused: Bool {
         view.window?.firstResponder === view
     }
 
-    func updateAccessibilityLabel(_ ariaLabel: String) {
-        view.setAccessibilityLabel(ariaLabel)
+    func updateMetadata(_ metadata: PaneMetadata) {
+        applyMetadata(metadata)
     }
 
     func setZoomScale(_ scale: CGFloat) {
@@ -236,6 +336,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.isHidden = placement.isHidden
         if placement.isHidden {
             view.setVisibleRegions([])
+            view.setContextMenuViewport(nil)
         } else {
             layoutView(for: placement)
             view.setVisibleRegions(localVisibleRegions(for: placement))
@@ -298,6 +399,10 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.shortcutWasPressed = nil
         view.modifiedArrowWasPressed = nil
         view.controlVWasPressed = nil
+        view.pasteWasRequested = nil
+        view.copySelection = nil
+        view.selectionWasCopied = nil
+        view.contextMenuWasRequested = nil
         NotificationCenter.default.removeObserver(self)
         if view.isUsingMetalRenderer {
             try? view.setUseMetal(false)
@@ -305,7 +410,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.removeFromSuperview()
     }
 
-    private func configureView(ariaLabel: String) {
+    private func configureView(metadata: PaneMetadata) {
         view.isHidden = true
         view.clipsToBounds = true
         view.terminalDelegate = self
@@ -313,13 +418,40 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.caretViewTracksFocus = true
         view.scrollerStyle = .overlay
         view.changeScrollback(5_000)
-        view.setAccessibilityLabel(ariaLabel)
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.textArea)
+        applyMetadata(metadata)
         view.shortcutWasPressed = { [weak self] key in self?.eventSink(.shortcut(key)) }
         view.modifiedArrowWasPressed = { [weak self] data in self?.emitInput(data) }
         view.controlVWasPressed = { [weak self] in
             guard let self else { return }
             _ = TerminalClipboardBridge.ensurePNGRepresentation(in: self.pasteboard)
             self.emitInput(Data([0x16]))
+        }
+        view.pasteWasRequested = { [weak self] in
+            guard let self,
+                  let text = TerminalClipboardBridge.boundedPlainText(in: self.pasteboard)
+            else {
+                return
+            }
+            self.eventSink(.paste(text))
+        }
+        view.copySelection = { [weak self] text in
+            guard let self else { return false }
+            return TerminalClipboardBridge.writePlainText(text, to: self.pasteboard)
+        }
+        view.selectionWasCopied = { [weak self] in
+            self?.eventSink(.selectionCopied)
+        }
+        view.contextMenuWasRequested = { [weak self] normalizedPoint in
+            guard let self,
+                  self.isVisible,
+                  let frame = self.latestFrame,
+                  let clientPoint = TerminalGeometry.clientPoint(for: normalizedPoint, in: frame)
+            else {
+                return
+            }
+            self.eventSink(.contextMenu(clientPoint))
         }
         NotificationCenter.default.addObserver(
             self,
@@ -338,6 +470,15 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             selector: #selector(windowFocusDidChange(_:)),
             name: NSWindow.didResignKeyNotification,
             object: nil
+        )
+    }
+
+    private func applyMetadata(_ metadata: PaneMetadata) {
+        view.setAccessibilityLabel(metadata.ariaLabel)
+        view.setAccessibilityEnabled(metadata.accessibilityEnabled)
+        view.setAccessibilityHelp(
+            "Keyboard shortcuts: \(metadata.keyShortcuts.joined(separator: ", ")). " +
+                "Option-drag selects text; Option-right-click opens pane actions."
         )
     }
 
@@ -377,6 +518,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             viewport: placement.frame,
             sourceContentSize: sourceContentSize,
             resizeOwner: isResizeOwner
+        )
+        view.setContextMenuViewport(
+            placement.frame.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
         )
         if preserveSourceGrid { restoreSourceGrid() }
         suppressResize = wasSuppressingResize

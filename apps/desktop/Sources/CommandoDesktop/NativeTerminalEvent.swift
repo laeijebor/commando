@@ -40,6 +40,12 @@ enum NativeTerminalEventBuilder {
         return payload
     }
 
+    static func panePaste(_ identity: PaneIdentity, text: String) -> [String: Any] {
+        var payload = paneIdentity(identity)
+        payload["data"] = text
+        return payload
+    }
+
     static func paneResize(_ identity: PaneIdentity, size: GridSize) -> [String: Any] {
         var payload = paneIdentity(identity)
         payload["cols"] = size.cols
@@ -50,6 +56,13 @@ enum NativeTerminalEventBuilder {
     static func paneFocusChanged(_ identity: PaneIdentity, focused: Bool) -> [String: Any] {
         var payload = paneIdentity(identity)
         payload["focused"] = focused
+        return payload
+    }
+
+    static func paneContextMenu(_ identity: PaneIdentity, point: CGPoint) -> [String: Any] {
+        var payload = paneIdentity(identity)
+        payload["x"] = Double(point.x)
+        payload["y"] = Double(point.y)
         return payload
     }
 

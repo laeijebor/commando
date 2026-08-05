@@ -19,6 +19,7 @@ type TerminalPaneRendererProps = XtermPaneProps & {
   order: number
   useXtermFallback?: boolean
   onInputBytes: (data: string) => void
+  onOpenMenu: (x: number, y: number) => void
   onRequestReset: () => void
 }
 
@@ -26,6 +27,7 @@ export function TerminalPaneRenderer({
   order,
   useXtermFallback = false,
   onInputBytes,
+  onOpenMenu,
   onRequestReset,
   ...xtermProps
 }: TerminalPaneRendererProps) {
@@ -150,6 +152,9 @@ export function TerminalPaneRenderer({
       ariaLabel={xtermProps.ariaLabel}
       onFocus={xtermProps.onFocus}
       onInputBytes={onInputBytes}
+      onPaste={xtermProps.onPaste}
+      onSelectionCopied={xtermProps.onSelectionCopied}
+      onOpenMenu={onOpenMenu}
       onResize={xtermProps.onResize}
       onFailure={() => setNativeBridge(null)}
       registerSink={registerRendererSink}

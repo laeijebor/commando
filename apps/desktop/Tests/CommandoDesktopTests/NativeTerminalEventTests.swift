@@ -29,6 +29,11 @@ final class NativeTerminalEventTests: XCTestCase {
                 ["paneId", "attachmentId", "data"]
             ),
             (
+                "pane.paste_text",
+                NativeTerminalEventBuilder.panePaste(identity, text: "paste text"),
+                ["paneId", "attachmentId", "data"]
+            ),
+            (
                 "pane.resize",
                 NativeTerminalEventBuilder.paneResize(identity, size: .init(cols: 90, rows: 30)),
                 ["paneId", "attachmentId", "cols", "rows"]
@@ -37,6 +42,19 @@ final class NativeTerminalEventTests: XCTestCase {
                 "pane.focus_changed",
                 NativeTerminalEventBuilder.paneFocusChanged(identity, focused: true),
                 ["paneId", "attachmentId", "focused"]
+            ),
+            (
+                "pane.selection_copied",
+                NativeTerminalEventBuilder.paneIdentity(identity),
+                ["paneId", "attachmentId"]
+            ),
+            (
+                "pane.context_menu",
+                NativeTerminalEventBuilder.paneContextMenu(
+                    identity,
+                    point: CGPoint(x: 120.5, y: 80.25)
+                ),
+                ["paneId", "attachmentId", "x", "y"]
             ),
             ("pane.detached", NativeTerminalEventBuilder.paneIdentity(identity), ["paneId", "attachmentId"]),
             (
@@ -107,6 +125,11 @@ final class NativeTerminalEventTests: XCTestCase {
         )
         XCTAssertEqual(input["data"] as? String, "AP+A")
 
+        let paste = try roundTripPayload(
+            NativeTerminalEventBuilder.panePaste(identity, text: "h\u{e9}llo")
+        )
+        XCTAssertEqual(paste["data"] as? String, "h\u{e9}llo")
+
         let resize = try roundTripPayload(
             NativeTerminalEventBuilder.paneResize(identity, size: .init(cols: 90, rows: 30))
         )
@@ -117,6 +140,15 @@ final class NativeTerminalEventTests: XCTestCase {
             NativeTerminalEventBuilder.paneFocusChanged(identity, focused: true)
         )
         XCTAssertEqual(focus["focused"] as? Bool, true)
+
+        let contextMenu = try roundTripPayload(
+            NativeTerminalEventBuilder.paneContextMenu(
+                identity,
+                point: CGPoint(x: 120.5, y: 80.25)
+            )
+        )
+        XCTAssertEqual(contextMenu["x"] as? Double, 120.5)
+        XCTAssertEqual(contextMenu["y"] as? Double, 80.25)
     }
 
     private func roundTripPayload(_ payload: [String: Any]) throws -> [String: Any] {

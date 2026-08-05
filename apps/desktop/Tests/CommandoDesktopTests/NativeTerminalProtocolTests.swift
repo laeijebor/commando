@@ -12,8 +12,30 @@ final class NativeTerminalProtocolTests: XCTestCase {
         XCTAssertEqual(
             try decode("pane.attach", payload: identityPayload(identity).merging([
                 "ariaLabel": "Terminal 12",
+                "accessibilityEnabled": true,
+                "keyShortcuts": ["Meta+C", "Meta+V", "PageUp", "PageDown"],
             ]) { _, new in new }).command,
-            .attach(.init(identity: identity, ariaLabel: "Terminal 12"))
+            .attach(.init(
+                identity: identity,
+                ariaLabel: "Terminal 12",
+                accessibilityEnabled: true,
+                keyShortcuts: ["Meta+C", "Meta+V", "PageUp", "PageDown"]
+            ))
+        )
+        XCTAssertEqual(
+            try decode("pane.update", payload: identityPayload(identity).merging([
+                "ariaLabel": "Terminal 12, disconnected",
+                "accessibilityEnabled": false,
+                "keyShortcuts": ["Meta+C", "Meta+V", "PageUp", "PageDown"],
+            ]) { _, new in new }).command,
+            .update(.init(
+                identity: identity,
+                metadata: .init(
+                    ariaLabel: "Terminal 12, disconnected",
+                    accessibilityEnabled: false,
+                    keyShortcuts: ["Meta+C", "Meta+V", "PageUp", "PageDown"]
+                )
+            ))
         )
         XCTAssertEqual(
             try decode("pane.focus", payload: identityPayload(identity)).command,
@@ -111,9 +133,23 @@ final class NativeTerminalProtocolTests: XCTestCase {
                 "paneId": "%1",
                 "attachmentId": "a",
                 "ariaLabel": "",
+                "accessibilityEnabled": true,
+                "keyShortcuts": ["Meta+C"],
             ]),
             code: "invalid_payload"
         )
+        for keyShortcuts: [Any] in [[], ["Meta+C", "Meta+C"], ["bad\nshortcut"]] {
+            assertError(
+                envelope("pane.update", payload: [
+                    "paneId": "%1",
+                    "attachmentId": "a",
+                    "ariaLabel": "Terminal",
+                    "accessibilityEnabled": true,
+                    "keyShortcuts": keyShortcuts,
+                ]),
+                code: "invalid_payload"
+            )
+        }
     }
 
     func testCanonicalBase64PreservesArbitraryBytesAndEnforcesDataLimit() throws {

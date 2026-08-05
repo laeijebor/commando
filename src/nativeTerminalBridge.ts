@@ -1,6 +1,9 @@
+import { MAX_PASTE_BYTES } from '../shared/protocol'
+
 export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
 export const NATIVE_TERMINAL_SHORTCUT_EVENT = 'commando:native-terminal-shortcut'
+export const NATIVE_TERMINAL_KEY_SHORTCUTS = ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'] as const
 
 export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.multiPane.v1',
@@ -46,12 +49,21 @@ type PaneIdentity = {
   attachmentId: string
 }
 
+export type NativeTerminalMetadata = {
+  ariaLabel: string
+  accessibilityEnabled: boolean
+  keyShortcuts: string[]
+}
+
 export type NativeTerminalAttachmentEvent =
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.attached'; payload: PaneIdentity }
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.seeded'; payload: PaneIdentity & { revision: number } }
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.input_bytes'; payload: PaneIdentity & { data: string } }
+  | { version: 1; pageId: string; eventSequence: number; type: 'pane.paste_text'; payload: PaneIdentity & { data: string } }
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.resize'; payload: PaneIdentity & { cols: number; rows: number } }
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.focus_changed'; payload: PaneIdentity & { focused: boolean } }
+  | { version: 1; pageId: string; eventSequence: number; type: 'pane.selection_copied'; payload: PaneIdentity }
+  | { version: 1; pageId: string; eventSequence: number; type: 'pane.context_menu'; payload: PaneIdentity & { x: number; y: number } }
   | { version: 1; pageId: string; eventSequence: number; type: 'pane.detached'; payload: PaneIdentity }
   | {
       version: 1
@@ -133,6 +145,17 @@ function isInteger(value: unknown, minimum = 0): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum
 }
 
+function isClientCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000
+}
+
+function isBoundedPasteText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    !value.includes('\0') &&
+    new TextEncoder().encode(value).byteLength <= MAX_PASTE_BYTES
+}
+
 export function isCanonicalBase64(value: unknown): value is string {
   if (typeof value !== 'string' || value.length % 4 !== 0) return false
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false
@@ -174,10 +197,18 @@ function validatePayload(type: string, payload: Record<string, unknown>): boolea
       return paneIdentity(payload, ['revision']) && isInteger(payload.revision)
     case 'pane.input_bytes':
       return paneIdentity(payload, ['data']) && isCanonicalBase64(payload.data)
+    case 'pane.paste_text':
+      return paneIdentity(payload, ['data']) && isBoundedPasteText(payload.data)
     case 'pane.resize':
       return paneIdentity(payload, ['cols', 'rows']) && isInteger(payload.cols, 1) && isInteger(payload.rows, 1)
     case 'pane.focus_changed':
       return paneIdentity(payload, ['focused']) && typeof payload.focused === 'boolean'
+    case 'pane.selection_copied':
+      return paneIdentity(payload)
+    case 'pane.context_menu':
+      return paneIdentity(payload, ['x', 'y']) &&
+        isClientCoordinate(payload.x) &&
+        isClientCoordinate(payload.y)
     case 'pane.failed':
       return hasOnlyKeys(payload, ['paneId', 'attachmentId', 'code', 'fatal']) &&
         (payload.paneId === undefined || isNonEmptyString(payload.paneId)) &&
@@ -264,7 +295,7 @@ export class NativeTerminalBridge {
   attach(
     paneId: string,
     attachmentId: string,
-    ariaLabel: string,
+    metadata: NativeTerminalMetadata,
     listener: (event: NativeTerminalAttachmentEvent) => void,
   ): NativeTerminalAttachment {
     if (!this.connected) throw new Error('Native terminal bridge is not connected')
@@ -295,7 +326,7 @@ export class NativeTerminalBridge {
       this.post('pane.detach', { paneId, attachmentId })
     }, this.attachTimeoutMs)
 
-    if (!this.post('pane.attach', { paneId, attachmentId, ariaLabel })) {
+    if (!this.post('pane.attach', { paneId, attachmentId, ...metadata })) {
       this.attachments.delete(attachmentId)
       window.clearTimeout(record.timer)
       record.settled = true
@@ -327,8 +358,8 @@ export class NativeTerminalBridge {
     return this.postForAttachment('pane.focus', attachmentId, {})
   }
 
-  updateAccessibilityLabel(attachmentId: string, ariaLabel: string): boolean {
-    return this.postForAttachment('pane.attach', attachmentId, { ariaLabel })
+  updateMetadata(attachmentId: string, metadata: NativeTerminalMetadata): boolean {
+    return this.postForAttachment('pane.update', attachmentId, metadata)
   }
 
   reset(attachmentId: string, payload: {
