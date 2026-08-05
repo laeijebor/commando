@@ -70,15 +70,41 @@ function fakeRunner(options?: {
   }
 }
 
+/**
+ * Builds a manager whose grace timers are captured for manual firing. After
+ * firing, `await barrier()` flushes the queued restore (a release for an
+ * unknown owner runs no tmux commands but serializes behind the queue).
+ */
+function deferredManager(fake: ReturnType<typeof fakeRunner>) {
+  const timers: Array<() => void> = []
+  const manager = new TmuxResizeLeaseManager(fake.run, {
+    schedule: (callback) => {
+      timers.push(callback)
+      return () => {
+        const index = timers.indexOf(callback)
+        if (index >= 0) timers.splice(index, 1)
+      }
+    },
+  })
+  return {
+    manager,
+    fireTimers: async () => {
+      for (const fire of timers.splice(0)) fire()
+      await manager.release('queue-barrier')
+    },
+  }
+}
+
 describe('tmux focused-pane resize leases', () => {
   it('zooms a focused pane, updates it without replacing the baseline, and restores tmux', async () => {
     const fake = fakeRunner()
-    const manager = new TmuxResizeLeaseManager(fake.run)
+    const { manager, fireTimers } = deferredManager(fake)
 
     await expect(manager.resize('client-1', '%2', 120, 40)).resolves.toBe(true)
     await expect(manager.resize('client-1', '%2', 140, 50)).resolves.toBe(true)
     await expect(manager.resize('client-1', '%2', 140, 50)).resolves.toBe(false)
     await expect(manager.release('client-1', '%2')).resolves.toBe(true)
+    await fireTimers()
 
     expect(fake.commands.filter((command) => command[0] === 'show-options')).toHaveLength(1)
     expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '120', '-y', '40'])
@@ -90,10 +116,11 @@ describe('tmux focused-pane resize leases', () => {
 
   it('restores a previously zoomed pane and explicit window size policy', async () => {
     const fake = fakeRunner({ activePaneId: '%1', zoomed: true, explicitWindowSize: 'largest' })
-    const manager = new TmuxResizeLeaseManager(fake.run)
+    const { manager, fireTimers } = deferredManager(fake)
 
     await manager.resize('client-1', '%2', 100, 30)
     await manager.release('client-1')
+    await fireTimers()
 
     expect(fake.commands).toContainEqual(['resize-pane', '-Z', '-t', '%1'])
     expect(fake.commands.slice(-3)).toEqual([
@@ -135,14 +162,16 @@ describe('tmux focused-pane resize leases', () => {
 
   it('continues restoring later window state after one tmux command fails', async () => {
     const fake = fakeRunner()
-    const manager = new TmuxResizeLeaseManager(async (args) => {
+    const failing = { ...fake, run: (async (args) => {
       const output = await fake.run(args)
       if (args[0] === 'select-layout') throw new Error('layout changed externally')
       return output
-    })
+    }) as TmuxResizeCommandRunner }
+    const { manager, fireTimers } = deferredManager(failing as ReturnType<typeof fakeRunner>)
     await manager.resize('client-1', '%2', 100, 30)
 
-    await expect(manager.release('client-1')).rejects.toThrow('layout changed externally')
+    await expect(manager.release('client-1')).resolves.toBe(true)
+    await fireTimers()
     expect(fake.commands.slice(-2)).toEqual([
       ['select-pane', '-t', '%1'],
       ['set-option', '-wu', '-t', '@1', 'window-size'],
@@ -151,7 +180,7 @@ describe('tmux focused-pane resize leases', () => {
 
   it('applies browser pane order and restores the baseline order on release', async () => {
     const fake = fakeRunner()
-    const manager = new TmuxResizeLeaseManager(fake.run)
+    const { manager, fireTimers } = deferredManager(fake)
 
     await manager.applyLayout('client-1', '@1', {
       kind: 'split',
@@ -162,6 +191,7 @@ describe('tmux focused-pane resize leases', () => {
       ],
     })
     await manager.release('client-1')
+    await fireTimers()
 
     expect(fake.commands).toContainEqual(['swap-pane', '-d', '-s', '%2', '-t', '%1'])
     expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '81', '-y', '20'])
@@ -194,7 +224,7 @@ describe('tmux focused-pane resize leases', () => {
 
   it('folds one-shot layouts into a held lease baseline', async () => {
     const fake = fakeRunner()
-    const manager = new TmuxResizeLeaseManager(fake.run)
+    const { manager, fireTimers } = deferredManager(fake)
     await manager.resize('client-1', '%2', 120, 40)
 
     await manager.setLayout('@1', {
@@ -206,6 +236,7 @@ describe('tmux focused-pane resize leases', () => {
       ],
     })
     await manager.release('client-1')
+    await fireTimers()
 
     const layouts = fake.commands.filter((command) => command[0] === 'select-layout')
     const restored = layouts.at(-1)?.[3] ?? ''
@@ -223,6 +254,88 @@ describe('tmux focused-pane resize leases', () => {
       cols: 1,
       rows: 1,
     })).rejects.toThrow(/every pane/)
+  })
+
+  it('defers the baseline restore across an owner handoff', async () => {
+    const fake = fakeRunner()
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await expect(manager.release('client-1')).resolves.toBe(true)
+    const commandCountAfterRelease = fake.commands.length
+
+    // The next active client takes over within the grace window: no busy
+    // error, no intermediate baseline restore, no window-size flap.
+    await expect(manager.resize('client-2', '%2', 200, 60)).resolves.toBe(true)
+    const handoffCommands = fake.commands.slice(commandCountAfterRelease)
+    expect(handoffCommands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(handoffCommands).not.toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '200', '-y', '60'])
+
+    // Releasing the new owner (and letting the grace period lapse) restores
+    // the original pre-commando baseline, not client-1's applied size.
+    await manager.release('client-2')
+    await fireTimers()
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).toContainEqual(['select-layout', '-t', '@1', 'layout-before'])
+    expect(fake.commands).toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+  })
+
+  it('restores the baseline after the grace period when no new owner arrives', async () => {
+    const fake = fakeRunner()
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await manager.release('client-1')
+    expect(fake.commands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+
+    await fireTimers()
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+
+    // A later acquire starts from the restored window, not the stale lease.
+    await expect(manager.resize('client-2', '%2', 150, 45)).resolves.toBe(true)
+    await expect(manager.release('client-2')).resolves.toBe(true)
+  })
+
+  it('cancels a lapsed grace timer that fires after a new owner acquired', async () => {
+    const fake = fakeRunner()
+    const { manager, fireTimers } = deferredManager(fake)
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await manager.release('client-1')
+    await manager.resize('client-2', '%2', 200, 60)
+
+    // Any stale timer firing late must not clobber client-2's lease.
+    await fireTimers()
+    expect(fake.commands).not.toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    await expect(manager.resize('client-1', '%1', 100, 30)).rejects.toBeInstanceOf(
+      TmuxResizeLeaseBusyError,
+    )
+  })
+
+  it('releaseAll flushes deferred restores immediately', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run, { schedule: () => () => undefined })
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await manager.release('client-1')
+    await manager.releaseAll()
+
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
+  })
+
+  it('releaseWindowForAll restores a deferred window immediately', async () => {
+    const fake = fakeRunner()
+    const manager = new TmuxResizeLeaseManager(fake.run, { schedule: () => () => undefined })
+
+    await manager.resize('client-1', '%1', 120, 40)
+    await manager.release('client-1')
+    await expect(manager.releaseWindowForAll('@1')).resolves.toBe(true)
+
+    expect(fake.commands).toContainEqual(['resize-window', '-t', '@1', '-x', '80', '-y', '24'])
+    expect(fake.commands).toContainEqual(['set-option', '-wu', '-t', '@1', 'window-size'])
   })
 
   it('reasserts an unchanged browser layout after an external tmux change', async () => {

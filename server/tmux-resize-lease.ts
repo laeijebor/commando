@@ -54,12 +54,36 @@ function positiveInteger(value: string, label: string): number {
   return parsed
 }
 
+type ScheduleRestore = (callback: () => void, delayMs: number) => () => void
+
+type PendingRestore = {
+  lease: ResizeLease
+  cancelled: boolean
+  cancel: () => void
+}
+
+const RESTORE_GRACE_MS = 2_000
+
+const defaultSchedule: ScheduleRestore = (callback, delayMs) => {
+  const timer = setTimeout(callback, delayMs)
+  return () => clearTimeout(timer)
+}
+
 export class TmuxResizeLeaseManager {
   private readonly leasesByOwner = new Map<string, Map<string, ResizeLease>>()
   private readonly ownersByWindow = new Map<string, string>()
+  private readonly pendingRestores = new Map<string, PendingRestore>()
   private queue: Promise<void> = Promise.resolve()
+  private readonly schedule: ScheduleRestore
+  private readonly restoreGraceMs: number
 
-  constructor(private readonly run: TmuxResizeCommandRunner) {}
+  constructor(
+    private readonly run: TmuxResizeCommandRunner,
+    options?: { schedule?: ScheduleRestore; restoreGraceMs?: number },
+  ) {
+    this.schedule = options?.schedule ?? defaultSchedule
+    this.restoreGraceMs = options?.restoreGraceMs ?? RESTORE_GRACE_MS
+  }
 
   resize(ownerId: string, paneId: string, cols: number, rows: number): Promise<boolean> {
     if (!ownerId || !PANE_ID.test(paneId)) return Promise.reject(new Error('Invalid resize owner or pane'))
@@ -178,10 +202,13 @@ export class TmuxResizeLeaseManager {
       if (current.activePaneId && paneIds.includes(current.activePaneId)) {
         await this.run(['select-pane', '-t', current.activePaneId])
       }
-      // A held lease restores its baseline on release; fold the new structure
-      // into that baseline so releasing does not undo an explicit layout edit.
+      // A held (or grace-pending) lease restores its baseline later; fold the
+      // new structure into that baseline so the restore does not undo an
+      // explicit layout edit.
       const ownerId = this.ownersByWindow.get(windowId)
-      const lease = ownerId ? this.leasesByOwner.get(ownerId)?.get(windowId) : undefined
+      const pending = this.pendingRestores.get(windowId)
+      const lease = (ownerId ? this.leasesByOwner.get(ownerId)?.get(windowId) : undefined) ??
+        (pending && !pending.cancelled ? pending.lease : undefined)
       if (lease) {
         lease.layout = buildScaledTmuxLayout(spec, lease.width, lease.height).layout
         lease.paneOrder = [...paneIds]
@@ -201,18 +228,12 @@ export class TmuxResizeLeaseManager {
             candidate.mode.kind === 'focused' && candidate.mode.paneId === expectedPaneId,
         )
         if (!lease) return false
-        await this.restore(lease)
+        this.deferRestore(lease)
         return true
       }
-      let firstError: unknown
       for (const lease of [...leases.values()]) {
-        try {
-          await this.restore(lease)
-        } catch (error) {
-          firstError ??= error
-        }
+        this.deferRestore(lease)
       }
-      if (firstError) throw firstError
       return true
     })
   }
@@ -221,7 +242,7 @@ export class TmuxResizeLeaseManager {
     return this.enqueue(async () => {
       const lease = this.leasesByOwner.get(ownerId)?.get(windowId)
       if (!lease) return false
-      await this.restore(lease)
+      this.deferRestore(lease)
       return true
     })
   }
@@ -229,6 +250,11 @@ export class TmuxResizeLeaseManager {
   releaseWindowForAll(windowId: string): Promise<boolean> {
     if (!WINDOW_ID.test(windowId)) return Promise.reject(new Error('Invalid tmux window id'))
     return this.enqueue(async () => {
+      const pending = this.consumePendingRestore(windowId)
+      if (pending) {
+        await this.restore(pending)
+        return true
+      }
       const ownerId = this.ownersByWindow.get(windowId)
       const lease = ownerId ? this.leasesByOwner.get(ownerId)?.get(windowId) : undefined
       if (!lease) return false
@@ -239,6 +265,10 @@ export class TmuxResizeLeaseManager {
 
   releaseAll(): Promise<void> {
     return this.enqueue(async () => {
+      for (const [windowId] of [...this.pendingRestores]) {
+        const pending = this.consumePendingRestore(windowId)
+        if (pending) await this.restore(pending).catch(() => undefined)
+      }
       const leases = [...this.leasesByOwner.values()].flatMap((ownerLeases) => [
         ...ownerLeases.values(),
       ])
@@ -246,6 +276,44 @@ export class TmuxResizeLeaseManager {
         await this.restore(lease).catch(() => undefined)
       }
     })
+  }
+
+  /**
+   * Releasing on a focus switch is almost always followed by the next active
+   * client acquiring the same window. Restoring the baseline in between makes
+   * tmux flap through `window-size latest` (snapping shared windows to any
+   * plain terminal attachment) and races the successor's acquire into
+   * `resize_window_busy`. Instead, free the lease immediately but hold the
+   * baseline for a grace period: a successor inherits it, and only a lapsed
+   * timer actually restores tmux. Restore failures here are best-effort, as
+   * in releaseAll — there is no requester left to report them to.
+   */
+  private deferRestore(lease: ResizeLease): void {
+    const ownerLeases = this.leasesByOwner.get(lease.ownerId)
+    ownerLeases?.delete(lease.windowId)
+    if (ownerLeases?.size === 0) this.leasesByOwner.delete(lease.ownerId)
+    if (this.ownersByWindow.get(lease.windowId) === lease.ownerId) {
+      this.ownersByWindow.delete(lease.windowId)
+    }
+
+    const entry: PendingRestore = { lease, cancelled: false, cancel: () => undefined }
+    entry.cancel = this.schedule(() => {
+      void this.enqueue(async () => {
+        if (entry.cancelled) return
+        this.pendingRestores.delete(lease.windowId)
+        await this.restore(lease).catch(() => undefined)
+      })
+    }, this.restoreGraceMs)
+    this.pendingRestores.set(lease.windowId, entry)
+  }
+
+  private consumePendingRestore(windowId: string): ResizeLease | null {
+    const pending = this.pendingRestores.get(windowId)
+    if (!pending || pending.cancelled) return null
+    pending.cancelled = true
+    pending.cancel()
+    this.pendingRestores.delete(windowId)
+    return pending.lease
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -261,9 +329,25 @@ export class TmuxResizeLeaseManager {
   }
 
   private async acquire(ownerId: string, paneId: string): Promise<ResizeLease> {
-    const baseline = await this.inspectBaseline(paneId)
-    const currentOwner = this.ownersByWindow.get(baseline.windowId)
+    const inspected = await this.inspectBaseline(paneId)
+    const currentOwner = this.ownersByWindow.get(inspected.windowId)
     if (currentOwner && currentOwner !== ownerId) throw new TmuxResizeLeaseBusyError()
+    // A pending restore means the previous owner's applied layout is still on
+    // the window; the live inspection reflects that layout, not the true
+    // pre-commando state. Inherit the held baseline instead of re-reading it.
+    const carried = this.consumePendingRestore(inspected.windowId)
+    const baseline = carried
+      ? {
+          windowId: carried.windowId,
+          width: carried.width,
+          height: carried.height,
+          layout: carried.layout,
+          activePaneId: carried.activePaneId,
+          paneOrder: carried.paneOrder,
+          zoomed: carried.zoomed,
+          explicitWindowSize: carried.explicitWindowSize,
+        }
+      : inspected
     const lease: ResizeLease = {
       ...baseline,
       ownerId,
