@@ -93,6 +93,7 @@ describe('tmux format parsers', () => {
     )
     expect(snapshot.windows.some((window) => window.id === '@6')).toBe(false)
     expect(snapshot.panes.find((pane) => pane.id === '%8')).toMatchObject({
+      processId: 1234,
       cursorX: 17,
       cursorY: 8,
       cursorVisible: true,
