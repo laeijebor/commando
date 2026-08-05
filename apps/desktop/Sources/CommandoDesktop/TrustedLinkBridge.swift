@@ -27,7 +27,7 @@ enum TrustedLinkBridge {
         source: """
         (() => {
           document.addEventListener("click", (event) => {
-            if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
+            if (!event.isTrusted || event.button !== 0) return;
             const target = event.target;
             if (!(target instanceof Element)) return;
             const anchor = target.closest("a[href]");
@@ -38,11 +38,13 @@ enum TrustedLinkBridge {
             const opensInNewWindow =
               (targetName !== "" && targetName !== "_self") || event.metaKey || event.shiftKey;
             if (url.origin === location.origin && !opensInNewWindow) return;
-            event.preventDefault();
-            window.webkit.messageHandlers.commandoTrustedLink.postMessage({
-              url: url.href,
-              opensInNewWindow,
-            });
+            setTimeout(() => {
+              if (event.defaultPrevented) return;
+              window.webkit.messageHandlers.commandoTrustedLink.postMessage({
+                url: url.href,
+                opensInNewWindow,
+              });
+            }, 0);
           }, true);
         })();
         """,

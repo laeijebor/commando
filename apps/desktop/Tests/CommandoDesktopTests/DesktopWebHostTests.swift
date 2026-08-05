@@ -183,7 +183,7 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(result, false)
     }
 
-    func testScriptClicksCannotOpenExternalOrSameOriginPopupLinks() async throws {
+    func testTrustedPortLinksWaitForBubbleCancellationAndRejectSyntheticClicks() async throws {
         let origin = URL(string: "http://127.0.0.1:5173")!
         let opener = WebHostURLOpenerSpy()
         let handler = SafeExternalURLHandler(
@@ -195,20 +195,50 @@ final class DesktopWebHostTests: XCTestCase {
             configuration: .init(webURL: origin, prefersMetal: false),
             externalURLHandler: handler
         )
+        let window = NSWindow(
+            contentRect: host.rootView.bounds,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.contentView = host.rootView
+        window.orderFront(nil)
         host.webView.stopLoading()
         host.webView.loadHTMLString(
             """
-            <a id="external" href="https://example.com" target="_blank">External</a>
-            <a id="same-origin" href="/other" target="_blank">Same origin popup</a>
-            <script>window.testPageReady = true;</script>
+            <style>
+              html, body { margin: 0; width: 100%; height: 100%; }
+              #port { position: fixed; inset: 0; display: block; }
+            </style>
+            <a id="port" href="https://example.com/port" target="_blank">3000</a>
+            <script>
+              window.portClicks = [];
+              const port = document.getElementById("port");
+              port.addEventListener("click", (event) => {
+                if (!event.metaKey && !event.ctrlKey && !event.shiftKey) event.preventDefault();
+                window.portClicks.push({
+                  trusted: event.isTrusted,
+                  modified: event.metaKey,
+                  prevented: event.defaultPrevented,
+                });
+              });
+              window.testPageReady = true;
+            </script>
             """,
             baseURL: origin
         )
-        defer { host.cleanUp() }
+        defer {
+            host.cleanUp()
+            window.contentView = nil
+            window.orderOut(nil)
+        }
 
         var ready = false
         for _ in 0..<100 {
-            if let result = try? await host.webView.evaluateJavaScript("window.testPageReady === true"),
+            if let result = try? await host.webView.evaluateJavaScript(
+                "window.testPageReady === true && document.readyState === 'complete'"
+            ),
                (result as? NSNumber)?.boolValue == true {
                 ready = true
                 break
@@ -217,13 +247,82 @@ final class DesktopWebHostTests: XCTestCase {
         }
         XCTAssertTrue(ready)
 
-        _ = try await host.webView.evaluateJavaScript(
-            "document.getElementById('external').click(); document.getElementById('same-origin').click();"
-        )
-        try await Task.sleep(for: .milliseconds(100))
+        func clickPort(modifiers: NSEvent.ModifierFlags = []) throws {
+            let location = host.webView.convert(
+                NSPoint(x: host.webView.bounds.midX, y: host.webView.bounds.midY),
+                to: nil
+            )
+            for (index, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(
+                    with: type,
+                    location: location,
+                    modifierFlags: modifiers,
+                    timestamp: TimeInterval(index),
+                    windowNumber: window.windowNumber,
+                    context: nil,
+                    eventNumber: index,
+                    clickCount: 1,
+                    pressure: 1
+                ))
+                if type == .leftMouseDown {
+                    host.webView.mouseDown(with: event)
+                } else {
+                    host.webView.mouseUp(with: event)
+                }
+            }
+        }
 
+        try clickPort()
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript("window.portClicks.length"),
+               (result as? NSNumber)?.intValue == 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(opener.openedURLs.isEmpty)
-        XCTAssertEqual(host.webView.url?.host, origin.host)
+
+        try clickPort(modifiers: .command)
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript("window.portClicks.length"),
+               (result as? NSNumber)?.intValue == 2,
+               opener.openedURLs.count == 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(opener.openedURLs, [URL(string: "https://example.com/port")!])
+
+        _ = try await host.webView.evaluateJavaScript(
+            """
+            document.getElementById("port").dispatchEvent(new MouseEvent("click", {
+              bubbles: true,
+              cancelable: true,
+              button: 0,
+              metaKey: true,
+            }));
+            """
+        )
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript("window.portClicks.length"),
+               (result as? NSNumber)?.intValue == 3 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let clickValue = try await host.webView.evaluateJavaScript("window.portClicks")
+        let clicks = try XCTUnwrap(clickValue as? [[String: Any]])
+        XCTAssertEqual(clicks.count, 3)
+        XCTAssertEqual(clicks[0]["trusted"] as? Bool, true)
+        XCTAssertEqual(clicks[0]["prevented"] as? Bool, true)
+        XCTAssertEqual(clicks[1]["trusted"] as? Bool, true)
+        XCTAssertEqual(clicks[1]["modified"] as? Bool, true)
+        XCTAssertEqual(clicks[1]["prevented"] as? Bool, false)
+        XCTAssertEqual(clicks[2]["trusted"] as? Bool, false)
+        XCTAssertEqual(opener.openedURLs, [URL(string: "https://example.com/port")!])
         XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
     }
 
