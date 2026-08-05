@@ -137,6 +137,7 @@ final class TerminalPaneHostTests: XCTestCase {
             modifiers: .option
         )))
         XCTAssertEqual(contextMenuPoints, [CGPoint(x: 210, y: 160)])
+        XCTAssertTrue(window.firstResponder === surface.view)
         let unzoomedSize = surface.view.frame.size
 
         XCTAssertTrue(host.focus(identity))
@@ -494,7 +495,7 @@ final class TerminalPaneHostTests: XCTestCase {
         surface.destroy()
     }
 
-    func testOptionDragBypassesMouseReportingAndCommandCCopiesSelection() throws {
+    func testSelectionAutoCopiesWithoutMouseReportingAndShiftBypassesReporting() throws {
         let pasteboard = NSPasteboard(name: .init("CommandoSelectionTests.\(UUID().uuidString)"))
         defer { pasteboard.clearContents() }
         var inputs: [Data] = []
@@ -509,6 +510,27 @@ final class TerminalPaneHostTests: XCTestCase {
             if case .selectionCopied = event { copiedCount += 1 }
         }
         surface.view.feed(text: "alpha beta gamma")
+        surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDown,
+            location: CGPoint(x: 10, y: 290)
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 12, y: 290)
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 80, y: 290)
+        )))
+        surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseUp,
+            location: CGPoint(x: 80, y: 290)
+        )))
+        XCTAssertTrue(inputs.isEmpty)
+        XCTAssertTrue(surface.view.selectionActive)
+        XCTAssertEqual(copiedCount, 1)
+        XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
+
         surface.view.feed(text: "\u{1b}[?1000h")
         surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseDown,
@@ -519,43 +541,55 @@ final class TerminalPaneHostTests: XCTestCase {
             location: CGPoint(x: 10, y: 290)
         )))
         XCTAssertFalse(inputs.isEmpty)
+        XCTAssertEqual(copiedCount, 1)
         inputs.removeAll()
 
         surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseDown,
             location: CGPoint(x: 10, y: 290),
-            modifiers: .option
+            modifiers: .shift
         )))
         surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseDragged,
             location: CGPoint(x: 12, y: 290),
-            modifiers: .option
+            modifiers: .shift
         )))
         surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseDragged,
             location: CGPoint(x: 80, y: 290),
-            modifiers: .option
+            modifiers: .shift
         )))
         surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseUp,
             location: CGPoint(x: 80, y: 290),
-            modifiers: .option
+            modifiers: .shift
         )))
         XCTAssertTrue(inputs.isEmpty)
         XCTAssertTrue(surface.view.selectionActive)
-        XCTAssertEqual(copiedCount, 1)
+        XCTAssertEqual(copiedCount, 2)
         XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
 
         let commandC = try XCTUnwrap(keyEvent(key: "c", modifiers: .command, keyCode: 8))
         XCTAssertTrue(surface.view.performKeyEquivalent(with: commandC))
-        XCTAssertEqual(copiedCount, 2)
+        XCTAssertEqual(copiedCount, 3)
         surface.destroy()
     }
 
     func testOnlyOptionRightClickRequestsNormalizedContextMenu() throws {
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = view
         var points: [CGPoint] = []
-        view.contextMenuWasRequested = { points.append($0) }
+        var responderAtRequest: NSResponder?
+        view.contextMenuWasRequested = {
+            responderAtRequest = window.firstResponder
+            points.append($0)
+        }
 
         view.rightMouseDown(with: try XCTUnwrap(mouseEvent(
             type: .rightMouseDown,
@@ -568,6 +602,9 @@ final class TerminalPaneHostTests: XCTestCase {
             modifiers: .option
         )))
         XCTAssertEqual(points, [CGPoint(x: 0.25, y: 0.75)])
+        XCTAssertTrue(responderAtRequest === view)
+        window.contentView = nil
+        window.orderOut(nil)
     }
 
     func testOverlayOnlyHitTestsTerminalChildren() {

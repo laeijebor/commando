@@ -14,8 +14,8 @@ final class NativeTerminalEventTests: XCTestCase {
             ),
             (
                 "bridge.rejected",
-                NativeTerminalEventBuilder.bridgeRejected(reason: "unsupported_version"),
-                ["reason"]
+                NativeTerminalEventBuilder.bridgeRejected(reason: "unsupported_version", identity: identity),
+                ["reason", "paneId", "attachmentId"]
             ),
             ("pane.attached", NativeTerminalEventBuilder.paneIdentity(identity), ["paneId", "attachmentId"]),
             (
@@ -94,6 +94,13 @@ final class NativeTerminalEventTests: XCTestCase {
         )
         XCTAssertEqual(rejection.count, 1)
         XCTAssertEqual(rejection["reason"] as? String, "invalid_protocol")
+
+        let attachmentRejection = try roundTripPayload(
+            NativeTerminalEventBuilder.bridgeRejected(reason: "invalid_grid", identity: identity)
+        )
+        XCTAssertEqual(Set(attachmentRejection.keys), ["reason", "paneId", "attachmentId"])
+        XCTAssertEqual(attachmentRejection["paneId"] as? String, "%7")
+        XCTAssertEqual(attachmentRejection["attachmentId"] as? String, "page-id:4")
 
         let failure = try roundTripPayload(
             NativeTerminalEventBuilder.paneFailed(identity, code: "max_panes", fatal: false)

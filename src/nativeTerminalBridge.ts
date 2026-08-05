@@ -12,12 +12,24 @@ export const NATIVE_TERMINAL_FRAME_LIMITS = {
   maxVisibleRegions: 64,
 } as const
 
+export const NATIVE_TERMINAL_EVENT_LIMITS = {
+  maxInputBytes: 8 * 1_024,
+  minCols: 2,
+  maxCols: 500,
+  minRows: 1,
+  maxRows: 200,
+} as const
+
 export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.multiPane.v1',
   'terminal.binaryInput.v1',
   'terminal.cssPixelGeometry.v1',
   'terminal.attachmentLifecycle.v1',
   'terminal.visibleRegions.v1',
+  'terminal.metadataUpdates.v1',
+  'terminal.pasteText.v1',
+  'terminal.selectionCopy.v1',
+  'terminal.contextMenu.v1',
 ] as const
 
 export type NativeTerminalVisibleRegion = {
@@ -105,7 +117,7 @@ type NativeTerminalBridgeEvent =
       pageId: string
       eventSequence: number
       type: 'bridge.rejected'
-      payload: { reason: string }
+      payload: { reason: string; paneId?: string; attachmentId?: string }
     }
   | NativeTerminalAttachmentEvent
   | {
@@ -209,6 +221,13 @@ function isBoundedPasteText(value: unknown): value is string {
     new TextEncoder().encode(value).byteLength <= MAX_PASTE_BYTES
 }
 
+function isCanonicalBase64WithinBytes(value: unknown, maximumBytes: number): value is string {
+  return typeof value === 'string' &&
+    value.length <= Math.ceil(maximumBytes / 3) * 4 &&
+    isCanonicalBase64(value) &&
+    globalThis.atob(value).length <= maximumBytes
+}
+
 export function isCanonicalBase64(value: unknown): value is string {
   if (typeof value !== 'string' || value.length % 4 !== 0) return false
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false
@@ -242,18 +261,26 @@ function validatePayload(type: string, payload: Record<string, unknown>): boolea
         payload.capabilities.every(isNonEmptyString) &&
         isInteger(payload.maxPanes, 1)
     case 'bridge.rejected':
-      return hasOnlyKeys(payload, ['reason']) && isNonEmptyString(payload.reason)
+      return hasOnlyKeys(payload, ['reason', 'paneId', 'attachmentId']) &&
+        isNonEmptyString(payload.reason) &&
+        ((payload.paneId === undefined && payload.attachmentId === undefined) ||
+          (isNonEmptyString(payload.paneId) && isNonEmptyString(payload.attachmentId)))
     case 'pane.attached':
     case 'pane.detached':
       return paneIdentity(payload)
     case 'pane.seeded':
       return paneIdentity(payload, ['revision']) && isInteger(payload.revision)
     case 'pane.input_bytes':
-      return paneIdentity(payload, ['data']) && isCanonicalBase64(payload.data)
+      return paneIdentity(payload, ['data']) &&
+        isCanonicalBase64WithinBytes(payload.data, NATIVE_TERMINAL_EVENT_LIMITS.maxInputBytes)
     case 'pane.paste_text':
       return paneIdentity(payload, ['data']) && isBoundedPasteText(payload.data)
     case 'pane.resize':
-      return paneIdentity(payload, ['cols', 'rows']) && isInteger(payload.cols, 1) && isInteger(payload.rows, 1)
+      return paneIdentity(payload, ['cols', 'rows']) &&
+        isInteger(payload.cols, NATIVE_TERMINAL_EVENT_LIMITS.minCols) &&
+        payload.cols <= NATIVE_TERMINAL_EVENT_LIMITS.maxCols &&
+        isInteger(payload.rows, NATIVE_TERMINAL_EVENT_LIMITS.minRows) &&
+        payload.rows <= NATIVE_TERMINAL_EVENT_LIMITS.maxRows
     case 'pane.focus_changed':
       return paneIdentity(payload, ['focused']) && typeof payload.focused === 'boolean'
     case 'pane.selection_copied':
@@ -510,7 +537,31 @@ export class NativeTerminalBridge {
       return
     }
     if (event.type === 'bridge.rejected') {
-      this.completeNegotiation({ available: false, reason: event.payload.reason })
+      if (!this.connected) {
+        this.completeNegotiation({ available: false, reason: event.payload.reason })
+        return
+      }
+      const attachmentId = event.payload.attachmentId
+      if (!attachmentId) return
+      const record = this.attachments.get(attachmentId)
+      if (!record || event.payload.paneId !== record.paneId) return
+      window.clearTimeout(record.timer)
+      if (!record.settled) {
+        record.settled = true
+        record.reject(new Error(`Native terminal command rejected: ${event.payload.reason}`))
+      }
+      record.listener({
+        version: event.version,
+        pageId: event.pageId,
+        eventSequence: event.eventSequence,
+        type: 'pane.failed',
+        payload: {
+          paneId: record.paneId,
+          attachmentId: record.attachmentId,
+          code: event.payload.reason,
+          fatal: false,
+        },
+      })
       return
     }
     if (!this.connected) return

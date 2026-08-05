@@ -20,8 +20,10 @@ enum NativeTerminalEventBuilder {
         ["capabilities": capabilities, "maxPanes": maxPanes]
     }
 
-    static func bridgeRejected(reason: String) -> [String: Any] {
-        ["reason": reason]
+    static func bridgeRejected(reason: String, identity: PaneIdentity? = nil) -> [String: Any] {
+        var payload = identity.map(paneIdentity) ?? [:]
+        payload["reason"] = reason
+        return payload
     }
 
     static func paneIdentity(_ identity: PaneIdentity) -> [String: Any] {

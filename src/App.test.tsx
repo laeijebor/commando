@@ -33,12 +33,19 @@ vi.mock('./TerminalPaneRenderer', () => ({
     paneId,
     useXtermFallback,
     onSelectionCopied,
+    registerFocusable,
   }: {
     paneId: string
     useXtermFallback?: boolean
     onSelectionCopied: () => void
+    registerFocusable: (paneId: string, node: HTMLElement | null) => void
   }) => (
-    <div data-testid={`renderer-${paneId}`} data-xterm-fallback={String(Boolean(useXtermFallback))}>
+    <div
+      ref={(node) => registerFocusable(paneId, node)}
+      tabIndex={-1}
+      data-testid={`renderer-${paneId}`}
+      data-xterm-fallback={String(Boolean(useXtermFallback))}
+    >
       <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
     </div>
   ),
@@ -333,6 +340,22 @@ describe('terminal pane actions', () => {
 })
 
 describe('pane renderer overrides', () => {
+  it('restores terminal focus when the pane menu is dismissed', async () => {
+    await renderAppWithSnapshot()
+    const renderer = screen.getByTestId('renderer-%12')
+
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      altKey: true,
+    })
+    await screen.findByRole('menu')
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await waitFor(() => expect(renderer).toHaveFocus())
+  })
+
   it('switches only the selected pane and reverses locally while offline', async () => {
     const view = await renderAppWithSnapshot()
 

@@ -27,13 +27,24 @@ import {
 vi.mock('./XtermPane', () => ({
   XtermPane: ({
     paneId,
+    connected,
+    ariaLabel,
     registerSink,
   }: {
     paneId: string
+    connected: boolean
+    ariaLabel: string
     registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
   }) => {
     useEffect(() => registerSink(paneId, { reset: () => {}, write: () => {} }), [paneId, registerSink])
-    return <div data-testid={`xterm-${paneId}`} />
+    return (
+      <div
+        data-testid={`xterm-${paneId}`}
+        role="application"
+        aria-label={ariaLabel}
+        aria-disabled={!connected}
+      />
+    )
   },
 }))
 
@@ -261,7 +272,10 @@ describe('NativeTerminalPane', () => {
     act(() => receive('pane.focus_changed', { paneId: '%1', attachmentId, focused: true }))
     expect(props.onFocus).toHaveBeenCalledOnce()
 
-    fireEvent.focus(screen.getByRole('application', { name: 'Pane 1 terminal input' }))
+    const placeholder = document.querySelector<HTMLElement>('[data-native-terminal-pane="%1"]')!
+    expect(placeholder).toHaveAttribute('aria-hidden', 'true')
+    expect(placeholder).not.toHaveAttribute('role')
+    fireEvent.focus(placeholder)
     expect(messages.at(-1)).toMatchObject({
       type: 'pane.focus',
       payload: { paneId: '%1', attachmentId },
@@ -339,10 +353,10 @@ describe('NativeTerminalPane', () => {
       />,
     )
 
-    expect(screen.getByRole('application', { name: 'Pane 1 terminal input, disconnected' }))
-      .toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByRole('application', { name: 'Pane 1 terminal input, disconnected' }))
-      .toHaveAttribute('aria-keyshortcuts', 'Meta+C Meta+V PageUp PageDown')
+    const placeholder = document.querySelector<HTMLElement>('[data-native-terminal-pane="%1"]')!
+    expect(placeholder).toHaveAttribute('aria-hidden', 'true')
+    expect(placeholder).not.toHaveAttribute('aria-disabled')
+    expect(placeholder).not.toHaveAttribute('aria-keyshortcuts')
     const attachMessages = messages.filter((message) => message.type === 'pane.attach')
     expect(attachMessages).toHaveLength(1)
     const updates = messages.filter((message) => message.type === 'pane.update')
@@ -578,6 +592,7 @@ describe('TerminalPaneRenderer fallback', () => {
     render(<TerminalPaneRenderer {...props} />)
 
     expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
+    expect(screen.getByRole('application', { name: '%1 terminal input' })).toHaveAttribute('aria-disabled', 'false')
     expect(props.onRequestReset).not.toHaveBeenCalled()
     act(() => vi.advanceTimersByTime(0))
     expect(props.onRequestReset).toHaveBeenCalledOnce()
@@ -604,7 +619,7 @@ describe('TerminalPaneRenderer fallback', () => {
         payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
       })
     })
-    expect(screen.getByRole('application', { name: '%1 terminal input' })).toBeInTheDocument()
+    expect(document.querySelector('[data-native-terminal-pane="%1"]')).toHaveAttribute('aria-hidden', 'true')
     act(() => vi.advanceTimersByTime(0))
     const attach = messages.find((message) => message.type === 'pane.attach')!
     act(() => window.__commandoNativeTerminalReceive?.({
@@ -630,6 +645,7 @@ describe('TerminalPaneRenderer fallback', () => {
     }))
 
     expect(screen.getByTestId('xterm-%1')).toBeInTheDocument()
+    expect(screen.getByRole('application', { name: '%1 terminal input' })).toBeInTheDocument()
     act(() => vi.advanceTimersByTime(0))
     expect(props.onRequestReset).toHaveBeenCalledTimes(3)
   })

@@ -77,7 +77,8 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
             sendRejection(
                 code: error.code,
                 message: error.message,
-                pageId: NativeTerminalEnvelope.recoverablePageId(from: body)
+                pageId: NativeTerminalEnvelope.recoverablePageId(from: body),
+                identity: NativeTerminalEnvelope.recoverableIdentity(from: body)
             )
             return
         } catch {
@@ -115,7 +116,8 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
             sendRejection(
                 code: code,
                 message: "Native terminal message was stale or out of sequence.",
-                pageId: envelope.pageId
+                pageId: envelope.pageId,
+                identity: identity(for: envelope.command)
             )
         }
     }
@@ -240,13 +242,39 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
         NSLog("CommandoDesktop native terminal pane failed: %@", message)
     }
 
-    private func sendRejection(code: String, message: String, pageId: String? = nil) {
+    private func sendRejection(
+        code: String,
+        message: String,
+        pageId: String? = nil,
+        identity: PaneIdentity? = nil
+    ) {
         emit(
             type: "bridge.rejected",
-            payload: NativeTerminalEventBuilder.bridgeRejected(reason: code),
+            payload: NativeTerminalEventBuilder.bridgeRejected(reason: code, identity: identity),
             pageId: pageId ?? sequenceGate.pageId ?? ""
         )
         NSLog("CommandoDesktop rejected native terminal message: %@", message)
+    }
+
+    private func identity(for command: NativeTerminalCommand) -> PaneIdentity? {
+        switch command {
+        case .connect:
+            nil
+        case let .attach(payload):
+            payload.identity
+        case let .update(payload):
+            payload.identity
+        case let .frame(payload):
+            payload.identity
+        case let .focus(identity):
+            identity
+        case let .reset(payload):
+            payload.identity
+        case let .data(payload):
+            payload.identity
+        case let .detach(identity):
+            identity
+        }
     }
 
     private func emit(type: String, payload: [String: Any], pageId: String? = nil) {

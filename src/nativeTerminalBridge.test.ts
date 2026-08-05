@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  encodeBase64Bytes,
   NativeTerminalBridge,
   NATIVE_TERMINAL_PROTOCOL,
   REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
@@ -300,6 +301,38 @@ describe('NativeTerminalBridge event isolation', () => {
     bridge.dispose()
   })
 
+  it('routes a post-connect command rejection to its attachment immediately', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    await connect(bridge)
+    const listener = vi.fn()
+    const attachment = bridge.attach('%1', 'attachment-rejected', {
+      ariaLabel: 'Pane 1 terminal',
+      accessibilityEnabled: true,
+      keyShortcuts: ['Meta+C'],
+    }, listener)
+    const readyResult = attachment.ready.catch((error: Error) => error.message)
+
+    receive(bridge, 2, 'bridge.rejected', {
+      reason: 'invalid_payload',
+      paneId: '%1',
+      attachmentId: 'attachment-rejected',
+    })
+
+    await expect(readyResult).resolves.toBe('Native terminal command rejected: invalid_payload')
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'pane.failed',
+      payload: {
+        paneId: '%1',
+        attachmentId: 'attachment-rejected',
+        code: 'invalid_payload',
+        fatal: false,
+      },
+    }))
+    bridge.dispose()
+  })
+
   it('strictly validates native paste, copied-selection, and context-menu events', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
@@ -342,6 +375,20 @@ describe('NativeTerminalBridge event isolation', () => {
     receive(bridge, 5, 'pane.context_menu', {
       paneId: '%1', attachmentId: 'attachment-actions', x: 120.5, y: 80.25,
     })
+    receive(bridge, 6, 'pane.input_bytes', {
+      paneId: '%1',
+      attachmentId: 'attachment-actions',
+      data: encodeBase64Bytes(new Uint8Array(8 * 1_024 + 1)),
+    })
+    receive(bridge, 6, 'pane.resize', {
+      paneId: '%1', attachmentId: 'attachment-actions', cols: 1, rows: 24,
+    })
+    receive(bridge, 6, 'pane.resize', {
+      paneId: '%1', attachmentId: 'attachment-actions', cols: 80, rows: 201,
+    })
+    receive(bridge, 6, 'pane.resize', {
+      paneId: '%1', attachmentId: 'attachment-actions', cols: 500, rows: 200,
+    })
 
     expect(listener.mock.calls.map(([event]) => event)).toEqual([
       expect.objectContaining({
@@ -355,6 +402,10 @@ describe('NativeTerminalBridge event isolation', () => {
       expect.objectContaining({
         type: 'pane.context_menu',
         payload: { paneId: '%1', attachmentId: 'attachment-actions', x: 120.5, y: 80.25 },
+      }),
+      expect.objectContaining({
+        type: 'pane.resize',
+        payload: { paneId: '%1', attachmentId: 'attachment-actions', cols: 500, rows: 200 },
       }),
     ])
     bridge.dispose()

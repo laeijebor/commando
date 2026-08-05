@@ -98,7 +98,7 @@ final class HostedTerminalView: TerminalView {
     var hostOrderRank = 0
     private(set) var visibleHitRegions: [CGRect] = []
     private let visibleMask = CAShapeLayer()
-    private var optionSelectionActive = false
+    private var autoCopySelectionActive = false
     private var contextMenuViewport: CGRect?
 
     override var tag: Int { hostOrderRank }
@@ -136,8 +136,9 @@ final class HostedTerminalView: TerminalView {
         window?.makeKeyAndOrderFront(nil)
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
         window?.makeFirstResponder(self)
-        optionSelectionActive = hasExactOptionModifier(event)
-        if optionSelectionActive {
+        let mouseReportingActive = allowMouseReporting && getTerminal().mouseMode != .off
+        autoCopySelectionActive = !mouseReportingActive || hasExactShiftModifier(event)
+        if autoCopySelectionActive {
             withoutMouseReporting { super.mouseDown(with: event) }
         } else {
             super.mouseDown(with: event)
@@ -145,7 +146,7 @@ final class HostedTerminalView: TerminalView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if optionSelectionActive {
+        if autoCopySelectionActive {
             withoutMouseReporting { super.mouseDragged(with: event) }
         } else {
             super.mouseDragged(with: event)
@@ -153,12 +154,12 @@ final class HostedTerminalView: TerminalView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard optionSelectionActive else {
+        guard autoCopySelectionActive else {
             super.mouseUp(with: event)
             return
         }
         withoutMouseReporting { super.mouseUp(with: event) }
-        optionSelectionActive = false
+        autoCopySelectionActive = false
         copy(self)
     }
 
@@ -171,6 +172,9 @@ final class HostedTerminalView: TerminalView {
             super.rightMouseDown(with: event)
             return
         }
+        window?.makeKeyAndOrderFront(nil)
+        _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
+        window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         contextMenuWasRequested?(CGPoint(
             x: min(1, max(0, (point.x - viewport.minX) / viewport.width)),
@@ -267,6 +271,10 @@ final class HostedTerminalView: TerminalView {
 
     private func hasExactOptionModifier(_ event: NSEvent) -> Bool {
         event.modifierFlags.intersection([.command, .option, .control, .shift]) == .option
+    }
+
+    private func hasExactShiftModifier(_ event: NSEvent) -> Bool {
+        event.modifierFlags.intersection([.command, .option, .control, .shift]) == .shift
     }
 
     private func withoutMouseReporting(_ operation: () -> Void) {

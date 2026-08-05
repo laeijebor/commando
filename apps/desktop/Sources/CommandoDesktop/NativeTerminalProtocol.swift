@@ -28,6 +28,10 @@ enum NativeTerminalProtocol {
         "terminal.cssPixelGeometry.v1",
         "terminal.attachmentLifecycle.v1",
         "terminal.visibleRegions.v1",
+        "terminal.metadataUpdates.v1",
+        "terminal.pasteText.v1",
+        "terminal.selectionCopy.v1",
+        "terminal.contextMenu.v1",
         "terminal.coreGraphics",
     ]
 
@@ -189,6 +193,22 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
             return nil
         }
         return validated
+    }
+
+    static func recoverableIdentity(from jsonObject: Any) -> PaneIdentity? {
+        guard let dictionary = jsonObject as? [String: Any],
+              let payload = dictionary["payload"] as? [String: Any],
+              let paneId = payload["paneId"] as? String,
+              let attachmentId = payload["attachmentId"] as? String,
+              let validatedPaneId = try? validatePaneId(paneId),
+              let validatedAttachmentId = try? validateGenericIdentifier(
+                  attachmentId,
+                  field: "attachmentId"
+              )
+        else {
+            return nil
+        }
+        return PaneIdentity(paneId: validatedPaneId, attachmentId: validatedAttachmentId)
     }
 
     private static func decodeCommand(
