@@ -8,6 +8,15 @@ struct TerminalPlacement: Equatable, Sendable {
 }
 
 enum TerminalGeometry {
+    static let maxViewportDimension: CGFloat = 16_384
+    static let minBackingScale: CGFloat = 0.5
+    static let maxBackingScale: CGFloat = 8
+    static let minContentScale: CGFloat = 0.25
+    static let maxContentScale: CGFloat = 4
+    private static let maxPointsPerCSSPixel = 16.0
+    private static let maxDerivedCoordinate = 1_000_000.0
+    private static let maxDerivedDimension = 131_072.0
+
     static func clientPoint(
         for normalizedPoint: CGPoint,
         in payload: PaneFramePayload
@@ -16,17 +25,22 @@ enum TerminalGeometry {
               normalizedPoint.y.isFinite,
               (0...1).contains(normalizedPoint.x),
               (0...1).contains(normalizedPoint.y),
-              payload.x.isFinite,
-              payload.y.isFinite,
-              payload.width > 0,
-              payload.height > 0
+              NativeTerminalProtocol.isValidFrameCoordinate(payload.x),
+              NativeTerminalProtocol.isValidFrameCoordinate(payload.y),
+              NativeTerminalProtocol.isValidFrameDimension(payload.width, allowsZero: false),
+              NativeTerminalProtocol.isValidFrameDimension(payload.height, allowsZero: false)
         else {
             return nil
         }
-        return CGPoint(
-            x: payload.x + Double(normalizedPoint.x) * payload.width,
-            y: payload.y + Double(normalizedPoint.y) * payload.height
-        )
+        let x = payload.x + Double(normalizedPoint.x) * payload.width
+        let y = payload.y + Double(normalizedPoint.y) * payload.height
+        guard x.isFinite, y.isFinite,
+              abs(x) <= NativeTerminalProtocol.maxFrameCoordinate + NativeTerminalProtocol.maxFrameDimension,
+              abs(y) <= NativeTerminalProtocol.maxFrameCoordinate + NativeTerminalProtocol.maxFrameDimension
+        else {
+            return nil
+        }
+        return CGPoint(x: x, y: y)
     }
 
     static func placement(
@@ -36,17 +50,38 @@ enum TerminalGeometry {
         contentScale: CGFloat = 1
     ) -> TerminalPlacement {
         guard payload.visible,
-              viewportSize.width > 0,
-              viewportSize.height > 0,
-              backingScale.isFinite,
-              backingScale > 0,
-              contentScale.isFinite,
-              contentScale > 0
+               viewportSize.width > 0,
+               viewportSize.height > 0,
+               viewportSize.width <= maxViewportDimension,
+               viewportSize.height <= maxViewportDimension,
+               viewportSize.width.isFinite,
+               viewportSize.height.isFinite,
+               backingScale.isFinite,
+               (minBackingScale...maxBackingScale).contains(backingScale),
+               contentScale.isFinite,
+               (minContentScale...maxContentScale).contains(contentScale),
+               NativeTerminalProtocol.isValidFrameCoordinate(payload.x),
+               NativeTerminalProtocol.isValidFrameCoordinate(payload.y),
+               NativeTerminalProtocol.isValidFrameDimension(payload.width, allowsZero: true),
+               NativeTerminalProtocol.isValidFrameDimension(payload.height, allowsZero: true),
+               NativeTerminalProtocol.isValidFrameScale(payload.scale),
+               payload.visibleRegions.allSatisfy({ region in
+                   NativeTerminalProtocol.isValidFrameCoordinate(region.x) &&
+                       NativeTerminalProtocol.isValidFrameCoordinate(region.y) &&
+                       NativeTerminalProtocol.isValidFrameDimension(region.width, allowsZero: false) &&
+                       NativeTerminalProtocol.isValidFrameDimension(region.height, allowsZero: false)
+               })
         else {
             return hiddenPlacement
         }
 
-        let pointsPerCSSPixel = CGFloat(payload.scale) / backingScale * contentScale
+        let pointsPerCSSPixel = payload.scale / Double(backingScale) * Double(contentScale)
+        guard pointsPerCSSPixel.isFinite,
+              pointsPerCSSPixel > 0,
+              pointsPerCSSPixel <= maxPointsPerCSSPixel
+        else {
+            return hiddenPlacement
+        }
         guard let topLeftFrame = scaledRect(
             x: payload.x,
             y: payload.y,
@@ -89,11 +124,25 @@ enum TerminalGeometry {
         y: Double,
         width: Double,
         height: Double,
-        scale: CGFloat
+        scale: Double
     ) -> CGRect? {
-        let values = [x, y, width, height].map { CGFloat($0) * scale }
-        guard values.allSatisfy(\.isFinite) else { return nil }
-        return CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
+        let values = [x, y, width, height].map { $0 * scale }
+        guard values.allSatisfy(\.isFinite),
+              abs(values[0]) <= maxDerivedCoordinate,
+              abs(values[1]) <= maxDerivedCoordinate,
+              values[2] >= 0,
+              values[3] >= 0,
+              values[2] <= maxDerivedDimension,
+              values[3] <= maxDerivedDimension
+        else {
+            return nil
+        }
+        return CGRect(
+            x: CGFloat(values[0]),
+            y: CGFloat(values[1]),
+            width: CGFloat(values[2]),
+            height: CGFloat(values[3])
+        )
     }
 
     private static func appKitFrame(fromTopLeft frame: CGRect, viewportHeight: CGFloat) -> CGRect {
@@ -113,11 +162,60 @@ enum TerminalGeometry {
 }
 
 enum TerminalSourceGridLayout {
-    static func frame(viewport: CGRect, sourceContentSize: CGSize, resizeOwner: Bool) -> CGRect {
-        guard !resizeOwner else { return viewport }
-        let width = max(viewport.width, sourceContentSize.width)
-        let height = max(viewport.height, sourceContentSize.height)
-        return CGRect(x: viewport.minX, y: viewport.maxY - height, width: width, height: height)
+    static func frame(
+        viewport: CGRect,
+        sourceContentSize: CGSize,
+        resizeOwner: Bool,
+        maximumSurfaceSize: CGSize = .init(width: 16_384, height: 16_384),
+        scrollOffset: CGPoint = .zero
+    ) -> CGRect {
+        guard isValid(viewport.size),
+              isValid(sourceContentSize),
+              isValid(maximumSurfaceSize),
+              viewport.origin.x.isFinite,
+              viewport.origin.y.isFinite
+        else {
+            return .zero
+        }
+        let viewportSize = CGSize(
+            width: min(viewport.width, maximumSurfaceSize.width),
+            height: min(viewport.height, maximumSurfaceSize.height)
+        )
+        let surfaceSize = resizeOwner ? viewportSize : CGSize(
+            width: min(max(viewportSize.width, sourceContentSize.width), maximumSurfaceSize.width),
+            height: min(max(viewportSize.height, sourceContentSize.height), maximumSurfaceSize.height)
+        )
+        let offset = resizeOwner ? CGPoint.zero : clampedOffset(
+            scrollOffset,
+            viewportSize: viewportSize,
+            surfaceSize: surfaceSize
+        )
+        return CGRect(
+            x: viewport.minX - offset.x,
+            y: viewport.maxY - surfaceSize.height + offset.y,
+            width: surfaceSize.width,
+            height: surfaceSize.height
+        )
+    }
+
+    static func clampedOffset(
+        _ offset: CGPoint,
+        viewportSize: CGSize,
+        surfaceSize: CGSize
+    ) -> CGPoint {
+        guard offset.x.isFinite, offset.y.isFinite,
+              isValid(viewportSize), isValid(surfaceSize)
+        else {
+            return .zero
+        }
+        return CGPoint(
+            x: min(max(0, offset.x), max(0, surfaceSize.width - viewportSize.width)),
+            y: min(max(0, offset.y), max(0, surfaceSize.height - viewportSize.height))
+        )
+    }
+
+    private static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
     }
 }
 

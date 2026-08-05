@@ -152,7 +152,12 @@ final class TerminalPaneHost {
     }
 
     func setZoomScale(_ scale: CGFloat) {
-        guard scale.isFinite, scale > 0, scale != zoomScale else { return }
+        guard scale.isFinite,
+              (TerminalGeometry.minContentScale...TerminalGeometry.maxContentScale).contains(scale),
+              scale != zoomScale
+        else {
+            return
+        }
         zoomScale = scale
         for record in registry.records.values {
             record.value.setZoomScale(scale)
