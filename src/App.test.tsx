@@ -119,6 +119,18 @@ beforeEach(() => {
     onchange: null,
     dispatchEvent: () => false,
   })) as typeof window.matchMedia
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.includes('/api/prs/prefs')) {
+      return json({ prefs: { version: 1, pinnedRepos: [], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+    }
+    if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
+    if (url.includes('/api/prs')) {
+      return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, fetchedAt: 0 } })
+    }
+    return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+  }))
   daemonMessage = undefined
   daemonConnection = {
     phase: 'live',
@@ -144,6 +156,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   window.sessionStorage.clear()
   window.localStorage.clear()
   delete window.__commandoDesktopWindowActive
@@ -259,6 +272,33 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
   return view
 }
+
+describe('HUD tabs', () => {
+  it('switches between agents and PRs content and persists the choice', async () => {
+    await renderAppWithSnapshot()
+    const agentsTab = screen.getByRole('tab', { name: /Notes & Agents/ })
+    const prsTab = screen.getByRole('tab', { name: 'PRs' })
+    expect(agentsTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Agent status filters')).toBeVisible()
+
+    fireEvent.click(prsTab)
+    expect(prsTab).toHaveAttribute('aria-selected', 'true')
+    expect(window.localStorage.getItem('commando.hud.tab')).toBe('prs')
+    expect(screen.getByLabelText('Agent status filters')).not.toBeVisible()
+    expect(await screen.findByLabelText('Pull request filters')).toBeVisible()
+
+    fireEvent.click(agentsTab)
+    expect(window.localStorage.getItem('commando.hud.tab')).toBe('agents')
+    expect(screen.getByLabelText('Agent status filters')).toBeVisible()
+  })
+
+  it('restores the persisted PRs tab on load', async () => {
+    window.localStorage.setItem('commando.hud.tab', 'prs')
+    await renderAppWithSnapshot()
+    expect(screen.getByRole('tab', { name: 'PRs' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByLabelText('Pull request filters')).toBeVisible()
+  })
+})
 
 describe('desktop resize authority', () => {
   it('keeps focused split weights stable across tmux resize echoes', async () => {
