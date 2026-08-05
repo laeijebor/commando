@@ -30,6 +30,7 @@ type NativeTerminalPaneProps = {
 }
 
 const SEED_TIMEOUT_MS = 1_500
+const FRAME_PUBLISH_FALLBACK_MS = 100
 export const MAX_NATIVE_TERMINAL_VISIBLE_REGIONS = NATIVE_TERMINAL_FRAME_LIMITS.maxVisibleRegions
 let attachmentSequence = 0
 
@@ -330,9 +331,13 @@ export function NativeTerminalPane({
     if (!placeholder || typeof ResizeObserver === 'undefined') return
 
     let frame: number | null = null
+    let fallbackTimer: number | null = null
     let fingerprint = ''
     const publish = () => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
       frame = null
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+      fallbackTimer = null
       const attachmentId = attachmentIdRef.current
       if (!attachmentId) return
       const bounds = placeholder.getBoundingClientRect()
@@ -360,8 +365,9 @@ export function NativeTerminalPane({
       if (!bridge.frame(attachmentId, payload)) activeFailureRef.current()
     }
     const schedule = () => {
-      if (frame !== null) return
+      if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
+      fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
     }
     const resizeObserver = new ResizeObserver(schedule)
     for (let element: HTMLElement | null = placeholder; element; element = element.parentElement) {
@@ -384,6 +390,7 @@ export function NativeTerminalPane({
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
       if (frame !== null) window.cancelAnimationFrame(frame)
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
     }
   }, [bridge, measurementKey, order, resizeOwner])
 

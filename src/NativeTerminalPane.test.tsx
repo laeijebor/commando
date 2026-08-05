@@ -326,6 +326,24 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
+  it('publishes through the timer fallback when WebKit suspends animation frames', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    vi.mocked(window.requestAnimationFrame).mockImplementation(() => 47)
+
+    render(<NativeTerminalPane {...props} />)
+
+    await waitFor(() => {
+      expect(messages.filter((message) => message.type === 'pane.frame')).toHaveLength(1)
+    })
+    expect(window.cancelAnimationFrame).toHaveBeenCalledWith(47)
+    bridge.dispose()
+  })
+
   it('keeps the populated native attachment while connection accessibility state changes', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
