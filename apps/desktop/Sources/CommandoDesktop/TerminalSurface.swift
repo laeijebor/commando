@@ -86,6 +86,76 @@ enum SourceGridScrollPolicy {
 }
 
 @MainActor
+final class TerminalSurfaceHostView: NSView {
+    var hostOrderRank = 0
+
+    override var isOpaque: Bool { false }
+    override var tag: Int { hostOrderRank }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        for subview in subviews.reversed() where !subview.isHidden {
+            if let result = subview.hitTest(point) { return result }
+        }
+        return nil
+    }
+
+    func visuallyCovers(_ point: NSPoint) -> Bool {
+        let localPoint = NSPoint(
+            x: point.x - frame.minX + bounds.minX,
+            y: point.y - frame.minY + bounds.minY
+        )
+        return subviews
+            .compactMap { $0 as? TerminalBackdropView }
+            .contains(where: { $0.visuallyCovers(localPoint) })
+    }
+}
+
+@MainActor
+final class TerminalBackdropView: NSView {
+    private let visibleMask = CAShapeLayer()
+    private var visibleRegions: [CGRect] = []
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    func apply(_ placement: TerminalPlacement) {
+        guard !placement.isHidden,
+              let visibleBounds = placement.visibleFrames.reduce(nil, { partial, frame in
+                  partial?.union(frame) ?? frame
+              })
+        else {
+            isHidden = true
+            visibleRegions = []
+            visibleMask.path = nil
+            return
+        }
+
+        isHidden = false
+        frame = visibleBounds
+        visibleRegions = placement.visibleFrames.map {
+            $0.offsetBy(dx: -frame.minX, dy: -frame.minY)
+        }
+        let path = CGMutablePath()
+        visibleRegions.forEach { path.addRect($0) }
+        visibleMask.frame = bounds
+        visibleMask.path = path
+        layer?.mask = visibleMask
+    }
+
+    func visuallyCovers(_ point: NSPoint) -> Bool {
+        let localPoint = NSPoint(
+            x: point.x - frame.minX + bounds.minX,
+            y: point.y - frame.minY + bounds.minY
+        )
+        return visibleRegions.contains(where: { $0.contains(localPoint) })
+    }
+}
+
+@MainActor
 final class HostedTerminalView: TerminalView {
     static let maxAccessibilityValueBytes = 64 * 1_024
     static let maxAccessibilityValueLines = 200
@@ -349,6 +419,8 @@ final class HostedTerminalView: TerminalView {
 @MainActor
 final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     let identity: PaneIdentity
+    let hostView: TerminalSurfaceHostView
+    let backdropView: TerminalBackdropView
     let view: HostedTerminalView
     private(set) var latestFrame: PaneFramePayload?
     private(set) var orderKey: SurfaceOrderKey
@@ -388,10 +460,17 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         self.pasteboard = pasteboard
         self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
         self.eventSink = eventSink
+        hostView = TerminalSurfaceHostView(frame: .zero)
+        backdropView = TerminalBackdropView(frame: .zero)
         view = HostedTerminalView(frame: .zero)
         orderKey = .init(order: 0, paneId: identity.paneId, attachmentId: identity.attachmentId)
         super.init()
 
+        hostView.autoresizingMask = [.width, .height]
+        backdropView.wantsLayer = true
+        backdropView.layer?.backgroundColor = TerminalProfile.backgroundColor.cgColor
+        hostView.addSubview(backdropView)
+        hostView.addSubview(view)
         configureView(metadata: .init(
             ariaLabel: ariaLabel,
             accessibilityEnabled: accessibilityEnabled,
@@ -460,7 +539,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         if placement.isHidden {
             metalAttempted = false
         }
+        hostView.isHidden = placement.isHidden
         view.isHidden = placement.isHidden
+        backdropView.apply(placement)
         if placement.isHidden {
             view.setVisibleRegions([])
             view.setContextMenuViewport(nil)
@@ -537,7 +618,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         if view.isUsingMetalRenderer {
             try? view.setUseMetal(false)
         }
-        view.removeFromSuperview()
+        hostView.removeFromSuperview()
     }
 
     private func configureView(metadata: PaneMetadata) {
@@ -747,6 +828,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private func feed(_ data: Data) {
         let bytes = [UInt8](data)
         view.feed(byteArray: bytes[...])
+        backdropView.layer?.backgroundColor = view.nativeBackgroundColor.cgColor
         view.postAccessibilityValueChanged()
     }
 

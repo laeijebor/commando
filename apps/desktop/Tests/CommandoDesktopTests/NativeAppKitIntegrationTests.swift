@@ -250,7 +250,12 @@ private final class NativeAppKitHarness {
                 "order": 0,
             ], uniquingKeysWith: { _, new in new })
         ))
-        return try XCTUnwrap(overlay.subviews.compactMap { $0 as? HostedTerminalView }.first)
+        return try XCTUnwrap(
+            overlay.subviews
+                .flatMap(\.subviews)
+                .compactMap { $0 as? HostedTerminalView }
+                .first
+        )
     }
 
     func sendMouseGesture(

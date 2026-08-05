@@ -168,6 +168,76 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testWideZoomedPaneKeepsItsViewportWidthWhenFocusTransfersResizeOwnership() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
+        var resizeEvents: [GridSize] = []
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false
+        ) { _, event in
+            if case let .resize(size) = event { resizeEvents.append(size) }
+        }
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "wide-zoom-focus")
+        let zoomScale = 0.7
+        let viewportWidth = 4_600.0
+        host.setZoomScale(zoomScale)
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("wide source grid".utf8),
+            cols: 352,
+            rows: 55,
+            revision: 1
+        )))
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: viewportWidth / zoomScale,
+            height: 300,
+            visible: true,
+            resizeOwner: false,
+            scale: Double(window.backingScaleFactor)
+        )))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        XCTAssertEqual(surface.backdropView.frame.width, viewportWidth, accuracy: 0.001)
+        XCTAssertLessThan(surface.view.frame.width, viewportWidth)
+        XCTAssertEqual(surface.view.getTerminal().cols, 352)
+        XCTAssertNotNil(surface.backdropView.layer?.mask)
+        XCTAssertNil(surface.hostView.hitTest(NSPoint(
+            x: surface.backdropView.frame.maxX - 10,
+            y: surface.backdropView.frame.midY
+        )))
+        let readableValue = try XCTUnwrap(surface.view.accessibilityValue() as? String)
+
+        XCTAssertTrue(host.focus(identity))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: viewportWidth / zoomScale,
+            height: 300,
+            visible: true,
+            resizeOwner: true,
+            scale: Double(window.backingScaleFactor)
+        )))
+
+        XCTAssertEqual(surface.backdropView.frame.width, viewportWidth, accuracy: 0.001)
+        XCTAssertLessThan(surface.view.frame.width, viewportWidth)
+        XCTAssertEqual(surface.view.getTerminal().cols, NativeTerminalProtocol.maxCols)
+        XCTAssertEqual(resizeEvents.last?.cols, NativeTerminalProtocol.maxCols)
+        XCTAssertEqual(surface.view.accessibilityValue() as? String, readableValue)
+        XCTAssertTrue(surface.isFocused)
+        host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testOwnerResizeBecomesSourceGridBeforeOwnershipIsReleased() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         var resizeEvents: [GridSize] = []
@@ -760,16 +830,18 @@ final class TerminalPaneHostTests: XCTestCase {
         host.attach(.init(identity: identity, ariaLabel: "Terminal"))
 
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: false, resizeOwner: true)))
-        XCTAssertTrue(overlay.subviews[0].isHidden)
+        let surface = host.registry.record(for: identity)!.value
+        XCTAssertTrue(surface.hostView.isHidden)
+        XCTAssertTrue(surface.view.isHidden)
         XCTAssertTrue(resizeEvents.isEmpty)
 
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: false)))
-        XCTAssertFalse(overlay.subviews[0].isHidden)
+        XCTAssertFalse(surface.hostView.isHidden)
+        XCTAssertFalse(surface.view.isHidden)
         XCTAssertTrue(resizeEvents.isEmpty)
 
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
         XCTAssertEqual(resizeEvents.count, 1)
-        let surface = host.registry.record(for: identity)!.value
         XCTAssertEqual(surface.view.frame, NSRect(x: 10, y: 290, width: 400, height: 300))
         XCTAssertEqual(
             resizeEvents.last,
@@ -779,15 +851,16 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(resizeEvents.count, 1)
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
         XCTAssertEqual(resizeEvents.count, 2)
-        let visibleFrame = overlay.subviews[0].frame
+        let visibleFrame = surface.view.frame
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
             width: 0,
             visible: true,
             resizeOwner: true
         )))
-        XCTAssertTrue(overlay.subviews[0].isHidden)
-        XCTAssertEqual(overlay.subviews[0].frame, visibleFrame)
+        XCTAssertTrue(surface.hostView.isHidden)
+        XCTAssertTrue(surface.view.isHidden)
+        XCTAssertEqual(surface.view.frame, visibleFrame)
         XCTAssertEqual(resizeEvents.count, 2)
         XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
         XCTAssertEqual(resizeEvents.count, 3)
@@ -809,8 +882,9 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.applyFrame(frame(identity: high, visible: true, resizeOwner: false, order: 10)))
         XCTAssertTrue(host.applyFrame(frame(identity: low, visible: true, resizeOwner: false, order: 1)))
 
-        let highView = host.registry.record(for: high)!.value.view
-        XCTAssertTrue(overlay.subviews.last === highView)
+        let highSurface = host.registry.record(for: high)!.value
+        let highView = highSurface.view
+        XCTAssertTrue(overlay.subviews.last === highSurface.hostView)
         let visibleRegion = highView.visibleHitRegions[0]
         let hitPoint = NSPoint(
             x: highView.frame.minX + visibleRegion.midX,
@@ -824,8 +898,46 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
+    func testTopBackdropDoesNotExposeAnOverlappedLowerTerminal() {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let low = PaneIdentity(paneId: "%1", attachmentId: "low")
+        let high = PaneIdentity(paneId: "%2", attachmentId: "high")
+        host.setZoomScale(0.7)
+        host.attach(.init(identity: low, ariaLabel: "Low"))
+        host.attach(.init(identity: high, ariaLabel: "High"))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: low,
+            x: 4_300,
+            width: 1_400,
+            visible: true,
+            resizeOwner: false,
+            order: 1
+        )))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: high,
+            x: 0,
+            width: 6_800,
+            visible: true,
+            resizeOwner: false,
+            order: 10
+        )))
+
+        let lowerView = host.registry.record(for: low)!.value.view
+        let overlapPoint = NSPoint(x: 3_500, y: 850)
+        XCTAssertNotNil(lowerView.hitTest(overlapPoint))
+        XCTAssertNil(overlay.hitTest(overlapPoint))
+        host.destroyAll()
+    }
+
     private func frame(
         identity: PaneIdentity,
+        x: Double = 10,
         width: Double = 400,
         height: Double = 300,
         visible: Bool,
@@ -835,14 +947,14 @@ final class TerminalPaneHostTests: XCTestCase {
     ) -> PaneFramePayload {
         .init(
             identity: identity,
-            x: 10,
+            x: x,
             y: 10,
             width: width,
             height: height,
             scale: scale,
             visible: visible,
             visibleRegions: [
-                .init(x: 10, y: 10, width: width, height: height),
+                .init(x: x, y: 10, width: width, height: height),
             ],
             resizeOwner: resizeOwner,
             order: order
