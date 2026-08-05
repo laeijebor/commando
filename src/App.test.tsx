@@ -40,6 +40,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
     registerFocusable,
     resizeOwner,
     measurementKey,
+    onFocus,
   }: {
     paneId: string
     nativeRetryKey?: number
@@ -49,6 +50,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
     registerFocusable: (paneId: string, node: HTMLElement | null) => void
     resizeOwner: boolean
     measurementKey: string
+    onFocus: () => void
   }) => {
     const [failed, setFailed] = useState(false)
     const previousRetryKey = useRef(nativeRetryKey)
@@ -72,6 +74,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
         data-xterm-fallback={String(Boolean(useXtermFallback))}
         data-resize-owner={String(resizeOwner)}
         data-measurement-key={measurementKey}
+        onFocus={onFocus}
       >
         <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
         <button type="button" onClick={() => setFailed(true)}>Simulate native failure {paneId}</button>
@@ -80,8 +83,11 @@ vi.mock('./TerminalPaneRenderer', () => ({
   },
 }))
 vi.mock('./ResizablePaneLayout', () => ({
-  ResizablePaneLayout: ({ panes }: { panes: ReadonlyMap<string, React.ReactNode> }) => (
-    <div>{[...panes.values()]}</div>
+  ResizablePaneLayout: ({ layoutKey, panes }: {
+    layoutKey: string
+    panes: ReadonlyMap<string, React.ReactNode>
+  }) => (
+    <div data-testid="pane-layout" data-layout-key={layoutKey}>{[...panes.values()]}</div>
   ),
 }))
 vi.mock('./PaneGitStats', () => ({ PaneGitStats: () => null }))
@@ -242,6 +248,37 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
 }
 
 describe('desktop resize authority', () => {
+  it('keeps focused split weights stable across tmux resize echoes', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Web owns tmux' }))
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    const layout = screen.getByTestId('pane-layout')
+    const tmuxLayoutKey = layout.getAttribute('data-layout-key')
+
+    fireEvent.focus(renderer)
+
+    await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'true'))
+    const focusedLayoutKey = layout.getAttribute('data-layout-key')
+    expect(focusedLayoutKey).not.toBe(tmuxLayoutKey)
+
+    act(() => daemonMessage?.({
+      type: 'snapshot',
+      snapshot: {
+        ...snapshotWith([
+          { ...pane, width: 159 },
+          { ...adjacentPane, width: 161 },
+        ]),
+        revision: 2,
+        windows: [{
+          ...snapshotWith([pane, adjacentPane]).windows[0]!,
+          layout: 'dbde,321x24,0,0{159x24,0,0,12,161x24,160,0,13}',
+        }],
+      },
+    }))
+
+    await waitFor(() => expect(layout).toHaveAttribute('data-layout-key', focusedLayoutKey))
+  })
+
   it('releases all leases on resign-key and republishes ownership on focus', async () => {
     await renderAppWithSnapshot()
     const renderer = screen.getByTestId(`renderer-${pane.id}`)

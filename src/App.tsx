@@ -2065,10 +2065,9 @@ export function App() {
                   {visibleTree && visibleGroupPanes.length ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
-                      layoutKey={webLayoutAuthoritative
-                        // The DOM owns geometry while authoritative: only a shape
-                        // change may discard local splitter weights, else the echo
-                        // of an in-flight apply undoes a fresh drag.
+                      layoutKey={webLayoutAuthoritative || activeResizePaneId !== null
+                        // While the browser owns geometry, only a shape change may
+                        // discard local weights; tmux cell rounding must not feed back.
                         ? `shape:${layoutShapeKey(visibleTree)}`
                         : window?.layout ?? ''}
                       tree={visibleTree}
