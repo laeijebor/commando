@@ -283,6 +283,72 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
+    func testVisibleResizeOwnerRefitsUnchangedFrameAfterMismatchedReset() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 800))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
+        var resizeEvents: [GridSize] = []
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false
+        ) { _, event in
+            if case let .resize(size) = event { resizeEvents.append(size) }
+        }
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "owner-reseed")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: 478.5,
+            height: 603,
+            visible: true,
+            resizeOwner: true
+        )))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        let ownerFrame = surface.view.frame
+        let ownerGrid = GridSize(
+            cols: surface.view.getTerminal().cols,
+            rows: surface.view.getTerminal().rows
+        )
+        XCTAssertNotEqual(ownerGrid, GridSize(cols: 241, rows: 133))
+        resizeEvents.removeAll()
+
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("replacement grid".utf8),
+            cols: 241,
+            rows: 133,
+            revision: 1
+        )))
+
+        XCTAssertEqual(surface.view.frame, ownerFrame)
+        XCTAssertEqual(
+            GridSize(cols: surface.view.getTerminal().cols, rows: surface.view.getTerminal().rows),
+            ownerGrid
+        )
+        XCTAssertFalse(resizeEvents.contains(GridSize(cols: 241, rows: 133)))
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: 478.5,
+            height: 603,
+            visible: true,
+            resizeOwner: false
+        )))
+        XCTAssertEqual(
+            GridSize(cols: surface.view.getTerminal().cols, rows: surface.view.getTerminal().rows),
+            ownerGrid
+        )
+        host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testOwnerZoomSuppressesTransientResizeEvents() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
         var resizeEvents: [GridSize] = []

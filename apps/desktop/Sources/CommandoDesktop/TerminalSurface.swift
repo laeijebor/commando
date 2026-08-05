@@ -576,6 +576,12 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         if let latestPlacement, !latestPlacement.isHidden {
             layoutView(for: latestPlacement)
             view.setVisibleRegions(localVisibleRegions(for: latestPlacement))
+            if isResizeOwner {
+                // A reseed can arrive after the owner frame. Refit even when that frame is unchanged.
+                view.setFrameSize(view.frame.size)
+                let terminal = view.getTerminal()
+                sourceGrid = .init(cols: terminal.cols, rows: terminal.rows)
+            }
         } else {
             restoreSourceGrid()
         }
