@@ -45,6 +45,28 @@ final class TerminalProfileTests: XCTestCase {
         surface.destroy()
     }
 
+    func testSurfaceKeepsBackdropInSyncWithTerminalBackgroundChanges() throws {
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "dynamic-background")
+        let surface = TerminalSurface(
+            identity: identity,
+            ariaLabel: "Terminal",
+            prefersMetal: false,
+            eventSink: { _ in }
+        )
+
+        XCTAssertTrue(surface.applyReset(.init(
+            identity: identity,
+            data: Data("\u{1b}]11;#123456\u{7}".utf8),
+            cols: 80,
+            rows: 24,
+            revision: 1
+        )))
+
+        let backdropColor = try XCTUnwrap(surface.backdropView.layer?.backgroundColor)
+        XCTAssertEqual(backdropColor, surface.view.nativeBackgroundColor.cgColor)
+        surface.destroy()
+    }
+
     func testBundledJetBrainsMonoResourcesExistAndMatchProvenance() throws {
         let fontURL = try XCTUnwrap(BundledTerminalFont.resourceURL)
         let boldFontURL = try XCTUnwrap(BundledTerminalFont.boldResourceURL)

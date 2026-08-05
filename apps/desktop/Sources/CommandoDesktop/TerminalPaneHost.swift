@@ -8,6 +8,9 @@ final class TerminalOverlayView: NSView {
         guard bounds.contains(point) else { return nil }
         for subview in subviews.reversed() where !subview.isHidden {
             if let result = subview.hitTest(point) { return result }
+            if let host = subview as? TerminalSurfaceHostView, host.visuallyCovers(point) {
+                return nil
+            }
         }
         return nil
     }
@@ -78,7 +81,8 @@ final class TerminalPaneHost {
             self?.eventSink(payload.identity, event)
         }
         surface.setZoomScale(zoomScale)
-        overlay.addSubview(surface.view)
+        surface.hostView.frame = overlay.bounds
+        overlay.addSubview(surface.hostView)
         let replaced = registry.insert(surface, for: payload.identity)
         let replacedWasFocused = replaced?.value.isFocused == true
         replaced?.value.destroy()
@@ -196,8 +200,8 @@ final class TerminalPaneHost {
     private func reorderSurfaces() {
         let ordered = registry.records.values.map(\.value).sorted { $0.orderKey < $1.orderKey }
         for (index, surface) in ordered.enumerated() {
-            surface.view.hostOrderRank = index
-            surface.view.layer?.zPosition = CGFloat(index)
+            surface.hostView.hostOrderRank = index
+            surface.hostView.layer?.zPosition = CGFloat(index)
         }
         overlay.sortSubviews({ left, right, _ in
             if left.tag == right.tag { return .orderedSame }
