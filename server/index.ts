@@ -32,6 +32,8 @@ import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
+import { PrService } from './prs.js'
+import { handlePrsApi } from './prs-api.js'
 import { handleNotesApi } from './notes-api.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
@@ -416,6 +418,7 @@ async function main(): Promise<void> {
   const workspaces = new WorkspaceStore()
   const notes = new NoteVaultManager()
   const linear = new LinearService()
+  const prs = new PrService()
   const tmuxCreator = new TmuxCreator()
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
@@ -1533,6 +1536,7 @@ async function main(): Promise<void> {
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
+        if (await handlePrsApi(request, response, url, prs)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
