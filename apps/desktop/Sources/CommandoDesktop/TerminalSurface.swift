@@ -87,6 +87,10 @@ enum SourceGridScrollPolicy {
 
 @MainActor
 final class HostedTerminalView: TerminalView {
+    static let maxAccessibilityValueBytes = 64 * 1_024
+    static let maxAccessibilityValueLines = 200
+    static let maxAccessibilitySelectionBytes = 8 * 1_024
+
     var shortcutWasPressed: ((String) -> Void)?
     var modifiedArrowWasPressed: ((Data) -> Void)?
     var controlVWasPressed: (() -> Void)?
@@ -99,6 +103,7 @@ final class HostedTerminalView: TerminalView {
     private(set) var visibleHitRegions: [CGRect] = []
     private let visibleMask = CAShapeLayer()
     private var autoCopySelectionActive = false
+    private var optionSelectionActive = false
     private var contextMenuViewport: CGRect?
 
     override var tag: Int { hostOrderRank }
@@ -136,9 +141,12 @@ final class HostedTerminalView: TerminalView {
         window?.makeKeyAndOrderFront(nil)
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
         window?.makeFirstResponder(self)
-        let mouseReportingActive = allowMouseReporting && getTerminal().mouseMode != .off
-        autoCopySelectionActive = !mouseReportingActive || hasExactShiftModifier(event)
-        if autoCopySelectionActive {
+        let terminal = getTerminal()
+        let mouseReportingActive = allowMouseReporting && terminal.mouseMode != .off
+        optionSelectionActive = hasExactOptionModifier(event)
+        let shiftSelectionActive = hasExactShiftModifier(event) && !terminal.mouseShiftCapture
+        autoCopySelectionActive = !mouseReportingActive || optionSelectionActive || shiftSelectionActive
+        if optionSelectionActive {
             withoutMouseReporting { super.mouseDown(with: event) }
         } else {
             super.mouseDown(with: event)
@@ -146,7 +154,7 @@ final class HostedTerminalView: TerminalView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if autoCopySelectionActive {
+        if optionSelectionActive {
             withoutMouseReporting { super.mouseDragged(with: event) }
         } else {
             super.mouseDragged(with: event)
@@ -158,9 +166,62 @@ final class HostedTerminalView: TerminalView {
             super.mouseUp(with: event)
             return
         }
-        withoutMouseReporting { super.mouseUp(with: event) }
+        if optionSelectionActive {
+            withoutMouseReporting { super.mouseUp(with: event) }
+        } else {
+            super.mouseUp(with: event)
+        }
         autoCopySelectionActive = false
+        optionSelectionActive = false
         copy(self)
+    }
+
+    override func accessibilityValue() -> Any? {
+        guard isAccessibilityEnabled() else { return nil }
+        let data = getTerminal().getBufferAsData(kind: .active)
+        return Self.boundedAccessibilityText(
+            String(decoding: data, as: UTF8.self),
+            maximumBytes: Self.maxAccessibilityValueBytes,
+            maximumLines: Self.maxAccessibilityValueLines
+        )
+    }
+
+    override func accessibilitySelectedText() -> String? {
+        guard isAccessibilityEnabled(), let selection = getSelection(), !selection.isEmpty else {
+            return nil
+        }
+        return Self.boundedAccessibilityText(
+            selection,
+            maximumBytes: Self.maxAccessibilitySelectionBytes,
+            maximumLines: Self.maxAccessibilityValueLines
+        )
+    }
+
+    func postAccessibilityValueChanged() {
+        guard isAccessibilityEnabled() else { return }
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+
+    static func boundedAccessibilityText(
+        _ text: String,
+        maximumBytes: Int,
+        maximumLines: Int
+    ) -> String {
+        guard maximumBytes > 0, maximumLines > 0 else { return "" }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        let lineBounded = lines.suffix(maximumLines).joined(separator: "\n")
+        guard lineBounded.utf8.count > maximumBytes else { return lineBounded }
+
+        var byteCount = 0
+        var suffix: [Character] = []
+        for character in lineBounded.reversed() {
+            let bytes = String(character).utf8.count
+            guard byteCount + bytes <= maximumBytes else { break }
+            suffix.append(character)
+            byteCount += bytes
+        }
+        return String(suffix.reversed())
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -686,6 +747,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private func feed(_ data: Data) {
         let bytes = [UInt8](data)
         view.feed(byteArray: bytes[...])
+        view.postAccessibilityValueChanged()
     }
 
     private func emitFocus(_ focused: Bool) {

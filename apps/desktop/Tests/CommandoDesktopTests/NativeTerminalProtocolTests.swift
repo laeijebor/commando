@@ -7,6 +7,7 @@ final class NativeTerminalProtocolTests: XCTestCase {
         XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.pasteText.v1"))
         XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.selectionCopy.v1"))
         XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.contextMenu.v1"))
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.accessibilityValue.v1"))
     }
 
     func testDecodesConnectAndAllPaneCommands() throws {

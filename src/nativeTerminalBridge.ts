@@ -30,6 +30,7 @@ export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.pasteText.v1',
   'terminal.selectionCopy.v1',
   'terminal.contextMenu.v1',
+  'terminal.accessibilityValue.v1',
 ] as const
 
 export type NativeTerminalVisibleRegion = {

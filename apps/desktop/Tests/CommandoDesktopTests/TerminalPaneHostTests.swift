@@ -375,6 +375,18 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(surface.view.isAccessibilityEnabled())
         XCTAssertEqual(surface.view.accessibilityRole(), .textArea)
         XCTAssertTrue(surface.view.accessibilityHelp()?.contains("Meta+C, Meta+V, PageUp, PageDown") == true)
+        XCTAssertEqual(surface.view.accessibilityValue() as? String, "")
+
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("first line\r\nsecond readable line".utf8),
+            cols: 80,
+            rows: 24,
+            revision: 1
+        )))
+        let readableValue = try XCTUnwrap(surface.view.accessibilityValue() as? String)
+        XCTAssertTrue(readableValue.contains("first line"))
+        XCTAssertTrue(readableValue.contains("second readable line"))
 
         XCTAssertTrue(host.update(.init(
             identity: identity,
@@ -387,7 +399,31 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(host.surfaceCount, 1)
         XCTAssertEqual(surface.view.accessibilityLabel(), "Terminal, disconnected")
         XCTAssertFalse(surface.view.isAccessibilityEnabled())
+        XCTAssertNil(surface.view.accessibilityValue())
+        XCTAssertNil(surface.view.accessibilitySelectedText())
         host.destroyAll()
+    }
+
+    func testAccessibilityValueBoundsRecentTerminalLinesAndUTF8Bytes() throws {
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "accessibility-bounds"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { _ in }
+        surface.view.resize(cols: 80, rows: 24)
+        for line in 0..<260 {
+            surface.view.feed(text: "line-\(line)-界\r\n")
+        }
+
+        let value = try XCTUnwrap(surface.view.accessibilityValue() as? String)
+        XCTAssertLessThanOrEqual(value.utf8.count, HostedTerminalView.maxAccessibilityValueBytes)
+        XCTAssertLessThanOrEqual(
+            value.split(separator: "\n", omittingEmptySubsequences: false).count,
+            HostedTerminalView.maxAccessibilityValueLines
+        )
+        XCTAssertFalse(value.contains("line-0-"))
+        XCTAssertTrue(value.contains("line-259-界"))
+        surface.destroy()
     }
 
     func testTerminalInterceptsOnlyProductCommandShortcuts() throws {
@@ -495,7 +531,7 @@ final class TerminalPaneHostTests: XCTestCase {
         surface.destroy()
     }
 
-    func testSelectionAutoCopiesWithoutMouseReportingAndShiftBypassesReporting() throws {
+    func testSelectionAutoCopiesPlainOptionAndCompatibleShiftGestures() throws {
         let pasteboard = NSPasteboard(name: .init("CommandoSelectionTests.\(UUID().uuidString)"))
         defer { pasteboard.clearContents() }
         var inputs: [Data] = []
@@ -547,6 +583,30 @@ final class TerminalPaneHostTests: XCTestCase {
         surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
             type: .leftMouseDown,
             location: CGPoint(x: 10, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 12, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .option
+        )))
+        surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseUp,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .option
+        )))
+        XCTAssertTrue(inputs.isEmpty)
+        XCTAssertEqual(copiedCount, 2)
+        surface.view.selectNone()
+
+        surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDown,
+            location: CGPoint(x: 10, y: 290),
             modifiers: .shift
         )))
         surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
@@ -566,12 +626,35 @@ final class TerminalPaneHostTests: XCTestCase {
         )))
         XCTAssertTrue(inputs.isEmpty)
         XCTAssertTrue(surface.view.selectionActive)
-        XCTAssertEqual(copiedCount, 2)
+        XCTAssertEqual(copiedCount, 3)
         XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
 
         let commandC = try XCTUnwrap(keyEvent(key: "c", modifiers: .command, keyCode: 8))
         XCTAssertTrue(surface.view.performKeyEquivalent(with: commandC))
-        XCTAssertEqual(copiedCount, 3)
+        XCTAssertEqual(copiedCount, 4)
+
+        surface.view.selectNone()
+        inputs.removeAll()
+        surface.view.feed(text: "\u{1b}[>1s")
+        XCTAssertTrue(surface.view.getTerminal().mouseShiftCapture)
+        surface.view.mouseDown(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDown,
+            location: CGPoint(x: 10, y: 290),
+            modifiers: .shift
+        )))
+        surface.view.mouseDragged(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseDragged,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .shift
+        )))
+        surface.view.mouseUp(with: try XCTUnwrap(mouseEvent(
+            type: .leftMouseUp,
+            location: CGPoint(x: 80, y: 290),
+            modifiers: .shift
+        )))
+        XCTAssertFalse(inputs.isEmpty)
+        XCTAssertFalse(surface.view.selectionActive)
+        XCTAssertEqual(copiedCount, 4)
         surface.destroy()
     }
 

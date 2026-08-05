@@ -355,9 +355,10 @@ describe('NativeTerminalPane', () => {
     )
 
     const placeholder = document.querySelector<HTMLElement>('[data-native-terminal-pane="%1"]')!
-    expect(placeholder).toHaveAttribute('aria-hidden', 'true')
-    expect(placeholder).not.toHaveAttribute('aria-disabled')
-    expect(placeholder).not.toHaveAttribute('aria-keyshortcuts')
+    expect(placeholder).not.toHaveAttribute('aria-hidden')
+    expect(placeholder).toHaveAttribute('role', 'application')
+    expect(placeholder).toHaveAttribute('aria-disabled', 'true')
+    expect(placeholder).toHaveAttribute('aria-keyshortcuts', 'Meta+C Meta+V PageUp PageDown')
     const attachMessages = messages.filter((message) => message.type === 'pane.attach')
     expect(attachMessages).toHaveLength(1)
     const updates = messages.filter((message) => message.type === 'pane.update')
@@ -620,7 +621,7 @@ describe('TerminalPaneRenderer fallback', () => {
         payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
       })
     })
-    expect(document.querySelector('[data-native-terminal-pane="%1"]')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByRole('application', { name: '%1 terminal input' })).not.toHaveAttribute('aria-hidden')
     act(() => vi.advanceTimersByTime(0))
     const attach = messages.find((message) => message.type === 'pane.attach')!
     act(() => window.__commandoNativeTerminalReceive?.({
