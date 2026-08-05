@@ -18,6 +18,21 @@ private final class ConfirmationPresenterSpy: JavaScriptConfirmationPresenting {
 }
 
 @MainActor
+private final class WebHostURLOpenerSpy: SystemURLOpening {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) -> Bool {
+        openedURLs.append(url)
+        return true
+    }
+}
+
+@MainActor
+private struct WebHostURLFailureReporterStub: ExternalURLOpenFailureReporting {
+    func reportFailure(opening url: URL) {}
+}
+
+@MainActor
 final class DesktopWebHostTests: XCTestCase {
     func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
         let url = URL(string: "http://127.0.0.1:5173")!
@@ -114,5 +129,49 @@ final class DesktopWebHostTests: XCTestCase {
         let result = await presenter.present(message: "Kill pane api?", in: nil)
 
         XCTAssertEqual(result, false)
+    }
+
+    func testScriptClicksCannotOpenExternalOrSameOriginPopupLinks() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let opener = WebHostURLOpenerSpy()
+        let handler = SafeExternalURLHandler(
+            privilegedOrigin: WebOrigin(url: origin),
+            opener: opener,
+            failureReporter: WebHostURLFailureReporterStub()
+        )
+        let host = DesktopWebHost(
+            configuration: .init(webURL: origin, prefersMetal: false),
+            externalURLHandler: handler
+        )
+        host.webView.stopLoading()
+        host.webView.loadHTMLString(
+            """
+            <a id="external" href="https://example.com" target="_blank">External</a>
+            <a id="same-origin" href="/other" target="_blank">Same origin popup</a>
+            <script>window.testPageReady = true;</script>
+            """,
+            baseURL: origin
+        )
+        defer { host.cleanUp() }
+
+        var ready = false
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript("window.testPageReady === true"),
+               (result as? NSNumber)?.boolValue == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(ready)
+
+        _ = try await host.webView.evaluateJavaScript(
+            "document.getElementById('external').click(); document.getElementById('same-origin').click();"
+        )
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(opener.openedURLs.isEmpty)
+        XCTAssertEqual(host.webView.url?.host, origin.host)
+        XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
     }
 }

@@ -76,6 +76,11 @@ enum DesktopMainMenu {
             keyEquivalent: "n"
         )
         newWindowItem.target = actionTarget
+        fileMenu.addItem(
+            withTitle: "Close Window",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 

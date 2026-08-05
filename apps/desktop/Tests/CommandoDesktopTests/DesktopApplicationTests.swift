@@ -89,6 +89,9 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(newWindow.keyEquivalent, "n")
         XCTAssertEqual(newWindow.action, #selector(DesktopAppDelegate.newWindow(_:)))
         XCTAssertTrue(newWindow.target === actionTarget)
+        let closeWindow = try XCTUnwrap(fileMenu.item(withTitle: "Close Window"))
+        XCTAssertEqual(closeWindow.keyEquivalent, "w")
+        XCTAssertEqual(closeWindow.action, #selector(NSWindow.performClose(_:)))
 
         let editMenu = try XCTUnwrap(menu.items[2].submenu)
         XCTAssertEqual(editMenu.items.map(\.title), ["Copy", "Paste"])

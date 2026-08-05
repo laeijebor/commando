@@ -50,6 +50,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
     private let externalURLHandler: any ExternalURLHandling
     private var scriptMessageHandler: WeakScriptMessageHandler?
+    private var trustedLinkMessageHandler: TrustedLinkScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
     private var isRetrying = false
@@ -85,6 +86,17 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             handler,
             name: NativeTerminalProtocol.handlerName
         )
+        let trustedLinkHandler = TrustedLinkScriptMessageHandler(
+            admission: admission,
+            externalURLHandler: externalURLHandler
+        )
+        trustedLinkMessageHandler = trustedLinkHandler
+        webConfiguration.userContentController.add(
+            trustedLinkHandler,
+            contentWorld: TrustedLinkBridge.contentWorld,
+            name: TrustedLinkBridge.handlerName
+        )
+        webConfiguration.userContentController.addUserScript(TrustedLinkBridge.userScript)
 
         webView.autoresizingMask = [.width, .height]
         overlay.autoresizingMask = [.width, .height]
@@ -135,7 +147,13 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: NativeTerminalProtocol.handlerName
         )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: TrustedLinkBridge.handlerName,
+            contentWorld: TrustedLinkBridge.contentWorld
+        )
+        webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil
+        trustedLinkMessageHandler = nil
     }
 
     func webView(
@@ -146,7 +164,6 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         let disposition = externalURLHandler.handle(
             navigationAction.request.url,
             source: .webNavigation(
-                userActivated: navigationAction.navigationType == .linkActivated,
                 opensInNewWindow: navigationAction.targetFrame == nil
             )
         )
@@ -251,7 +268,6 @@ extension DesktopWebHost: WKUIDelegate {
         let disposition = externalURLHandler.handle(
             navigationAction.request.url,
             source: .webNavigation(
-                userActivated: navigationAction.navigationType == .linkActivated,
                 opensInNewWindow: navigationAction.targetFrame == nil
             )
         )
