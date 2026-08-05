@@ -2,6 +2,13 @@ import XCTest
 @testable import CommandoDesktop
 
 final class NativeTerminalProtocolTests: XCTestCase {
+    func testRequiredCapabilitiesCoverEveryVersionOneAction() {
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.metadataUpdates.v1"))
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.pasteText.v1"))
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.selectionCopy.v1"))
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.contextMenu.v1"))
+    }
+
     func testDecodesConnectAndAllPaneCommands() throws {
         XCTAssertEqual(
             try decode("bridge.connect", payload: ["supportedVersions": [1]]).command,
@@ -150,6 +157,22 @@ final class NativeTerminalProtocolTests: XCTestCase {
                 code: "invalid_payload"
             )
         }
+    }
+
+    func testRecoversValidAttachmentIdentityFromRejectedPayload() {
+        let valid = envelope("pane.focus", payload: [
+            "paneId": "%1",
+            "attachmentId": "attachment-1",
+            "extra": true,
+        ])
+        XCTAssertEqual(
+            NativeTerminalEnvelope.recoverableIdentity(from: valid),
+            PaneIdentity(paneId: "%1", attachmentId: "attachment-1")
+        )
+        XCTAssertNil(NativeTerminalEnvelope.recoverableIdentity(from: envelope(
+            "pane.focus",
+            payload: ["paneId": "%bad", "attachmentId": "attachment-1"]
+        )))
     }
 
     func testCanonicalBase64PreservesArbitraryBytesAndEnforcesDataLimit() throws {
