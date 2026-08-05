@@ -490,6 +490,40 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
+  it('keeps a transparent transition occluder until its marker is removed, then republishes', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+
+    const cover = document.createElement('div')
+    cover.dataset.occluderPosition = 'full'
+    cover.style.opacity = '0'
+    cover.setAttribute('data-native-terminal-occluder', '')
+    document.body.append(cover)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ visible: false, visibleRegions: [] })
+    })
+
+    cover.removeAttribute('data-native-terminal-occluder')
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ visible: true })
+      expect(frame?.payload.visibleRegions).not.toEqual([])
+    })
+    bridge.dispose()
+  })
+
   it('tolerates fractional layout rounding and reports genuine clipping as a partial region', async () => {
     placeholderBounds = rect(0, 0, 100.390625, 80)
     const messages: NativeTerminalMessage[] = []

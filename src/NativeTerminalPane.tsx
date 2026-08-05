@@ -41,7 +41,8 @@ function nextAttachmentId(pageId: string): string {
 function isVisibleElement(element: Element): boolean {
   if (!(element instanceof HTMLElement) || element.hidden || !element.isConnected) return false
   const style = window.getComputedStyle(element)
-  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
+  if (style.display === 'none' || style.visibility === 'hidden') return false
+  if (style.opacity === '0' && !element.hasAttribute('data-native-terminal-occluder')) return false
   const bounds = element.getBoundingClientRect()
   return bounds.width > 0 && bounds.height > 0
 }
