@@ -39,6 +39,7 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
     private weak var webView: WKWebView?
     private let overlay: TerminalOverlayView
     private let prefersMetal: Bool
+    private let pasteboard: NSPasteboard
     private let externalURLHandler: any ExternalURLHandling
     private let eventObserver: (([String: Any]) -> Void)?
     private var sequenceGate = BridgeSequenceGate()
@@ -48,6 +49,7 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
         overlay: overlay,
         fallbackResponder: webView,
         prefersMetal: prefersMetal,
+        pasteboard: pasteboard,
         externalURLHandler: externalURLHandler
     ) { [weak self] identity, event in
         self?.receiveSurfaceEvent(identity: identity, event: event)
@@ -57,12 +59,14 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
         webView: WKWebView?,
         overlay: TerminalOverlayView,
         prefersMetal: Bool,
+        pasteboard: NSPasteboard = .general,
         externalURLHandler: (any ExternalURLHandling)? = nil,
         eventObserver: (([String: Any]) -> Void)? = nil
     ) {
         self.webView = webView
         self.overlay = overlay
         self.prefersMetal = prefersMetal
+        self.pasteboard = pasteboard
         self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
         self.eventObserver = eventObserver
     }
