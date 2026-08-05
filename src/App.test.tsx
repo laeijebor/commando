@@ -347,6 +347,38 @@ describe('desktop resize authority', () => {
   })
 })
 
+describe('responsive drawer native occlusion', () => {
+  it('retains the scrim occluder until the closing drawer transition ends', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Open session tree' }))
+    const scrim = screen.getByRole('button', { name: 'Close open panel' })
+    const sidebar = document.querySelector<HTMLElement>('.session-sidebar')!
+    expect(scrim).toHaveAttribute('data-native-terminal-occluder')
+    expect(sidebar).toHaveClass('panel-open')
+
+    fireEvent.click(scrim)
+    expect(sidebar).not.toHaveClass('panel-open')
+    expect(scrim).toHaveAttribute('data-native-terminal-occluder')
+
+    fireEvent.transitionEnd(sidebar, { propertyName: 'transform' })
+    await waitFor(() => expect(scrim).not.toHaveAttribute('data-native-terminal-occluder'))
+  })
+
+  it('releases drawer occlusion after the fallback when no transition event fires', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Open HUD' }))
+    const scrim = screen.getByRole('button', { name: 'Close open panel' })
+    expect(scrim).toHaveAttribute('data-native-terminal-occluder')
+
+    fireEvent.click(scrim)
+    expect(scrim).toHaveAttribute('data-native-terminal-occluder')
+    await waitFor(
+      () => expect(scrim).not.toHaveAttribute('data-native-terminal-occluder'),
+      { timeout: 1_000 },
+    )
+  })
+})
+
 const paneProps = {
   pane,
   index: 0,

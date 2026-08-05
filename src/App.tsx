@@ -39,6 +39,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type TransitionEvent,
   lazy,
   Suspense,
   useCallback,
@@ -114,6 +115,8 @@ import {
   type AuthBootstrap,
   type AuthUser,
 } from './authClient'
+
+const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 
 const TOKEN_STORAGE_KEY = 'commando.session-token'
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
@@ -770,6 +773,7 @@ export function App() {
   const [themeName, setThemeName] = useState<ThemeName>(() => storedTheme())
   const [leftPanelOpen, setLeftPanelOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
+  const [drawerTransitionOcclusion, setDrawerTransitionOcclusion] = useState(false)
   const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
@@ -792,6 +796,29 @@ export function App() {
   const previousResizeSessionId = useRef<string | null>(null)
   const resizeRetryAttempts = useRef(0)
   const resizeRetryTimer = useRef<number | null>(null)
+  const responsiveDrawersOpen = leftPanelOpen || rightPanelOpen
+  const drawerOcclusionActive = responsiveDrawersOpen || drawerTransitionOcclusion
+
+  useEffect(() => {
+    if (responsiveDrawersOpen) {
+      setDrawerTransitionOcclusion(true)
+      return
+    }
+    if (!drawerTransitionOcclusion) return
+    const timer = window.setTimeout(
+      () => setDrawerTransitionOcclusion(false),
+      RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [drawerTransitionOcclusion, responsiveDrawersOpen])
+
+  const finishResponsiveDrawerTransition = (event: TransitionEvent<HTMLElement>) => {
+    if (
+      event.target === event.currentTarget &&
+      event.propertyName === 'transform' &&
+      !responsiveDrawersOpen
+    ) setDrawerTransitionOcclusion(false)
+  }
 
   const changePinnedNote = useCallback((next: PinnedNote | null) => {
     setPinnedNote(next)
@@ -1812,7 +1839,7 @@ export function App() {
         <button
           type="button"
           className={`drawer-scrim${leftPanelOpen || rightPanelOpen ? ' visible' : ''}`}
-          data-native-terminal-occluder={leftPanelOpen || rightPanelOpen ? '' : undefined}
+          data-native-terminal-occluder={drawerOcclusionActive ? '' : undefined}
           onClick={() => {
             setLeftPanelOpen(false)
             setRightPanelOpen(false)
@@ -1820,7 +1847,10 @@ export function App() {
           aria-label="Close open panel"
         />
 
-        <aside className={`session-sidebar${leftPanelOpen ? ' panel-open' : ''}`}>
+        <aside
+          className={`session-sidebar${leftPanelOpen ? ' panel-open' : ''}`}
+          onTransitionEnd={finishResponsiveDrawerTransition}
+        >
           <div className="sidebar-header">
             <div>
               <span className="section-kicker">Machine</span>
@@ -2158,7 +2188,10 @@ export function App() {
           ) : null}
         </main>
 
-        {area === 'workspace' ? <aside className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}>
+        {area === 'workspace' ? <aside
+          className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}
+          onTransitionEnd={finishResponsiveDrawerTransition}
+        >
           <div className="hud-header">
             <div className="hud-heading">
               <span className={`hud-pulse${attentionCount ? ' attention' : ''}`} />

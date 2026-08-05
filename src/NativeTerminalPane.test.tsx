@@ -355,9 +355,10 @@ describe('NativeTerminalPane', () => {
     )
 
     const placeholder = document.querySelector<HTMLElement>('[data-native-terminal-pane="%1"]')!
-    expect(placeholder).toHaveAttribute('aria-hidden', 'true')
-    expect(placeholder).not.toHaveAttribute('aria-disabled')
-    expect(placeholder).not.toHaveAttribute('aria-keyshortcuts')
+    expect(placeholder).not.toHaveAttribute('aria-hidden')
+    expect(placeholder).toHaveAttribute('role', 'application')
+    expect(placeholder).toHaveAttribute('aria-disabled', 'true')
+    expect(placeholder).toHaveAttribute('aria-keyshortcuts', 'Meta+C Meta+V PageUp PageDown')
     const attachMessages = messages.filter((message) => message.type === 'pane.attach')
     expect(attachMessages).toHaveLength(1)
     const updates = messages.filter((message) => message.type === 'pane.update')
@@ -485,6 +486,40 @@ describe('NativeTerminalPane', () => {
     await waitFor(() => {
       const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
       expect(frame?.payload).toMatchObject({ visible: false, visibleRegions: [] })
+    })
+    bridge.dispose()
+  })
+
+  it('keeps a transparent transition occluder until its marker is removed, then republishes', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+
+    const cover = document.createElement('div')
+    cover.dataset.occluderPosition = 'full'
+    cover.style.opacity = '0'
+    cover.setAttribute('data-native-terminal-occluder', '')
+    document.body.append(cover)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ visible: false, visibleRegions: [] })
+    })
+
+    cover.removeAttribute('data-native-terminal-occluder')
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({ visible: true })
+      expect(frame?.payload.visibleRegions).not.toEqual([])
     })
     bridge.dispose()
   })
@@ -620,7 +655,7 @@ describe('TerminalPaneRenderer fallback', () => {
         payload: { capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES], maxPanes: 4 },
       })
     })
-    expect(document.querySelector('[data-native-terminal-pane="%1"]')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByRole('application', { name: '%1 terminal input' })).not.toHaveAttribute('aria-hidden')
     act(() => vi.advanceTimersByTime(0))
     const attach = messages.find((message) => message.type === 'pane.attach')!
     act(() => window.__commandoNativeTerminalReceive?.({

@@ -32,6 +32,7 @@ enum NativeTerminalProtocol {
         "terminal.pasteText.v1",
         "terminal.selectionCopy.v1",
         "terminal.contextMenu.v1",
+        "terminal.accessibilityValue.v1",
         "terminal.coreGraphics",
     ]
 

@@ -416,10 +416,12 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         XCTAssertEqual(harness.opener.openedURLs, [URL(string: "https://example.com/docs")!])
     }
 
-    func testNativeSelectionCopiesToInjectedPasteboardAndNotifiesPage() async throws {
+    func testExactOptionSelectionBypassesMouseReportingCopiesAndNotifiesPage() async throws {
         let harness = NativeAppKitHarness()
         try await harness.loadPage()
         let terminal = try harness.createTerminal()
+        terminal.feed(text: "\u{1b}[?1000h")
+        XCTAssertNotEqual(terminal.getTerminal().mouseMode, .off)
         let feedbackReceived = expectation(description: "page received selection-copy feedback")
         harness.feedback.receive = { message in
             guard message["channel"] as? String == "native",
@@ -433,22 +435,26 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         terminal.mouseDown(with: try harness.terminalMouseEvent(
             type: .leftMouseDown,
             localPoint: CGPoint(x: 10, y: rowY),
-            in: terminal
+            in: terminal,
+            modifiers: .option
         ))
         terminal.mouseDragged(with: try harness.terminalMouseEvent(
             type: .leftMouseDragged,
             localPoint: CGPoint(x: 12, y: rowY),
-            in: terminal
+            in: terminal,
+            modifiers: .option
         ))
         terminal.mouseDragged(with: try harness.terminalMouseEvent(
             type: .leftMouseDragged,
             localPoint: CGPoint(x: 100, y: rowY),
-            in: terminal
+            in: terminal,
+            modifiers: .option
         ))
         terminal.mouseUp(with: try harness.terminalMouseEvent(
             type: .leftMouseUp,
             localPoint: CGPoint(x: 100, y: rowY),
-            in: terminal
+            in: terminal,
+            modifiers: .option
         ))
         await fulfillment(of: [feedbackReceived], timeout: 2)
 
@@ -456,6 +462,11 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         XCTAssertFalse(copied.isEmpty)
         XCTAssertEqual(copied, terminal.getSelection())
         XCTAssertTrue(copied.contains("beta"), "Unexpected selection: \(copied)")
+        XCTAssertEqual(terminal.accessibilitySelectedText(), copied)
+        let nativeInputCount: Int = try await harness.evaluate(
+            "window.nativeEvents.filter((event) => event.type === 'pane.input_bytes').length"
+        )
+        XCTAssertEqual(nativeInputCount, 0)
         let pageFeedback: Bool = try await harness.evaluate("window.selectionFeedback === true")
         XCTAssertTrue(pageFeedback)
     }

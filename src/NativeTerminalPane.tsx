@@ -1,4 +1,4 @@
-import { type FocusEvent, useEffect, useRef } from 'react'
+import { type FocusEvent, useEffect, useRef, useState } from 'react'
 
 import type { PaneTerminalSink } from './paneStream'
 import {
@@ -41,7 +41,8 @@ function nextAttachmentId(pageId: string): string {
 function isVisibleElement(element: Element): boolean {
   if (!(element instanceof HTMLElement) || element.hidden || !element.isConnected) return false
   const style = window.getComputedStyle(element)
-  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
+  if (style.display === 'none' || style.visibility === 'hidden') return false
+  if (style.opacity === '0' && !element.hasAttribute('data-native-terminal-occluder')) return false
   const bounds = element.getBoundingClientRect()
   return bounds.width > 0 && bounds.height > 0
 }
@@ -168,6 +169,7 @@ export function NativeTerminalPane({
   registerSink,
   registerFocusable,
 }: NativeTerminalPaneProps) {
+  const [nativeReadable, setNativeReadable] = useState(false)
   const placeholderRef = useRef<HTMLDivElement>(null)
   const attachmentIdRef = useRef<string | null>(null)
   const connectedRef = useRef(connected)
@@ -204,6 +206,8 @@ export function NativeTerminalPane({
     let seedRevision: number | null = null
     let seedTimer: number | undefined
 
+    setNativeReadable(false)
+
     attachmentIdRef.current = attachmentId
     attachedMetadataRef.current = {
       ariaLabel: ariaLabelRef.current,
@@ -225,6 +229,7 @@ export function NativeTerminalPane({
           if (seedTimer !== undefined) window.clearTimeout(seedTimer)
           seedTimer = undefined
           seedRevision = null
+          setNativeReadable(true)
           break
         case 'pane.input_bytes':
           if (connectedRef.current) inputBytesRef.current(event.payload.data)
@@ -388,12 +393,18 @@ export function NativeTerminalPane({
     if (attachmentId && !bridge.focus(attachmentId)) activeFailureRef.current()
   }
 
+  const hideProxy = connected && nativeReadable
+
   return (
     <div
       ref={placeholderRef}
       className="terminal-source-grid native-terminal-placeholder"
-      tabIndex={-1}
-      aria-hidden="true"
+      role={hideProxy ? undefined : 'application'}
+      tabIndex={hideProxy ? -1 : 0}
+      aria-hidden={hideProxy ? 'true' : undefined}
+      aria-label={hideProxy ? undefined : ariaLabel}
+      aria-disabled={hideProxy ? undefined : !connected}
+      aria-keyshortcuts={hideProxy ? undefined : NATIVE_TERMINAL_KEY_SHORTCUTS.join(' ')}
       data-native-terminal-pane={paneId}
       onFocus={handleFocus}
     />
