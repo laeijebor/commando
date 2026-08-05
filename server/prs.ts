@@ -112,6 +112,9 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
   if (/gh auth login|not logged in|authentication required|HTTP 401|Bad credentials/i.test(stderr)) {
     return new PrServiceError(401, 'auth_required', 'gh is not authenticated — run `gh auth login` on the daemon host')
   }
+  if (/Could not resolve to a Repository/i.test(stderr)) {
+    return new PrServiceError(404, 'repo_not_found', 'Repository was not found')
+  }
   const detail = stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 200)
   return new PrServiceError(502, 'github_failed', detail ? `GitHub request failed: ${detail}` : 'GitHub request failed')
 }
@@ -491,9 +494,15 @@ export class PrService {
     } catch {
       // Suggestions are best-effort; auth problems surface on the PR list call instead.
     }
+    // GitHub repo names are case-insensitive; search returns canonical casing while
+    // pins keep whatever the user typed, so dedupe on the lowercased name.
+    const seen = new Set(pinned.map((nameWithOwner) => nameWithOwner.toLowerCase()))
     const options: PrRepoOption[] = pinned.map((nameWithOwner) => ({ nameWithOwner, pinned: true }))
     for (const nameWithOwner of suggested) {
-      if (!pinned.includes(nameWithOwner)) options.push({ nameWithOwner, pinned: false })
+      const key = nameWithOwner.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      options.push({ nameWithOwner, pinned: false })
     }
     return options
   }

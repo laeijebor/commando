@@ -233,6 +233,14 @@ describe('repo options', () => {
     ])
   })
 
+  it('dedupes suggestions against pins case-insensitively', async () => {
+    const path = await temporaryPrefsPath()
+    await new PrPreferencesStore(path).update({ pinnedRepos: ['laeijebor/viviFIT'] })
+    const runner = vi.fn(async () => JSON.stringify([{ repository: { nameWithOwner: 'laeijebor/vivifit' } }]))
+    const service = new PrService({ runner, preferencesPath: path })
+    expect(await service.listRepos()).toEqual([{ nameWithOwner: 'laeijebor/viviFIT', pinned: true }])
+  })
+
   it('falls back to pinned repos alone when suggestions fail', async () => {
     const path = await temporaryPrefsPath()
     await new PrPreferencesStore(path).update({ pinnedRepos: ['laeijebor/viviFIT'] })
