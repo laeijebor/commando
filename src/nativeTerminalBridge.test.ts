@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   encodeBase64Bytes,
   NativeTerminalBridge,
+  NATIVE_TERMINAL_EVENT_LIMITS,
   NATIVE_TERMINAL_PROTOCOL,
   REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
   resetNativeTerminalBridge,
@@ -384,10 +385,13 @@ describe('NativeTerminalBridge event isolation', () => {
       paneId: '%1', attachmentId: 'attachment-actions', cols: 1, rows: 24,
     })
     receive(bridge, 6, 'pane.resize', {
-      paneId: '%1', attachmentId: 'attachment-actions', cols: 80, rows: 201,
+      paneId: '%1', attachmentId: 'attachment-actions', cols: 80,
+      rows: NATIVE_TERMINAL_EVENT_LIMITS.maxRows + 1,
     })
     receive(bridge, 6, 'pane.resize', {
-      paneId: '%1', attachmentId: 'attachment-actions', cols: 500, rows: 200,
+      paneId: '%1', attachmentId: 'attachment-actions',
+      cols: NATIVE_TERMINAL_EVENT_LIMITS.maxCols,
+      rows: NATIVE_TERMINAL_EVENT_LIMITS.maxRows,
     })
 
     expect(listener.mock.calls.map(([event]) => event)).toEqual([
@@ -405,7 +409,12 @@ describe('NativeTerminalBridge event isolation', () => {
       }),
       expect.objectContaining({
         type: 'pane.resize',
-        payload: { paneId: '%1', attachmentId: 'attachment-actions', cols: 500, rows: 200 },
+        payload: {
+          paneId: '%1',
+          attachmentId: 'attachment-actions',
+          cols: NATIVE_TERMINAL_EVENT_LIMITS.maxCols,
+          rows: NATIVE_TERMINAL_EVENT_LIMITS.maxRows,
+        },
       }),
     ])
     bridge.dispose()

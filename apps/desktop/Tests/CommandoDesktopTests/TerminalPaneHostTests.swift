@@ -208,13 +208,13 @@ final class TerminalPaneHostTests: XCTestCase {
         )))
         let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
         XCTAssertEqual(surface.backdropView.frame.width, viewportWidth, accuracy: 0.001)
-        XCTAssertLessThan(surface.view.frame.width, viewportWidth)
+        XCTAssertEqual(surface.view.frame.width, viewportWidth, accuracy: 0.001)
         XCTAssertEqual(surface.view.getTerminal().cols, 352)
         XCTAssertNotNil(surface.backdropView.layer?.mask)
-        XCTAssertNil(surface.hostView.hitTest(NSPoint(
+        XCTAssertTrue(surface.hostView.hitTest(NSPoint(
             x: surface.backdropView.frame.maxX - 10,
             y: surface.backdropView.frame.midY
-        )))
+        )) === surface.view)
         let readableValue = try XCTUnwrap(surface.view.accessibilityValue() as? String)
 
         XCTAssertTrue(host.focus(identity))
@@ -228,11 +228,50 @@ final class TerminalPaneHostTests: XCTestCase {
         )))
 
         XCTAssertEqual(surface.backdropView.frame.width, viewportWidth, accuracy: 0.001)
-        XCTAssertLessThan(surface.view.frame.width, viewportWidth)
-        XCTAssertEqual(surface.view.getTerminal().cols, NativeTerminalProtocol.maxCols)
-        XCTAssertEqual(resizeEvents.last?.cols, NativeTerminalProtocol.maxCols)
+        XCTAssertEqual(surface.view.frame.width, viewportWidth, accuracy: 0.001)
+        XCTAssertGreaterThan(surface.view.getTerminal().cols, 500)
+        XCTAssertEqual(resizeEvents.last?.cols, surface.view.getTerminal().cols)
         XCTAssertEqual(surface.view.accessibilityValue() as? String, readableValue)
         XCTAssertTrue(surface.isFocused)
+        host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
+    func testMinimumZoomOwnerCoversA5KWorkspace() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 2_880))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "minimum-zoom-5k")
+        host.setZoomScale(0.5)
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            x: 0,
+            width: 9_200,
+            height: 5_200,
+            visible: true,
+            resizeOwner: true,
+            scale: Double(window.backingScaleFactor)
+        )))
+
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        XCTAssertFalse(surface.view.isHidden)
+        XCTAssertEqual(surface.view.frame, NSRect(x: 0, y: 275, width: 4_600, height: 2_600))
+        XCTAssertGreaterThan(surface.view.getTerminal().cols, 500)
+        XCTAssertGreaterThan(surface.view.getTerminal().rows, 200)
         host.destroyAll()
         window.contentView = nil
         window.orderOut(nil)
@@ -964,7 +1003,7 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
-    func testTopBackdropDoesNotExposeAnOverlappedLowerTerminal() {
+    func testTopSurfaceDoesNotExposeAnOverlappedLowerTerminal() {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
         let host = TerminalPaneHost(
             overlay: overlay,
@@ -997,7 +1036,8 @@ final class TerminalPaneHostTests: XCTestCase {
         let lowerView = host.registry.record(for: low)!.value.view
         let overlapPoint = NSPoint(x: 3_500, y: 850)
         XCTAssertNotNil(lowerView.hitTest(overlapPoint))
-        XCTAssertNil(overlay.hitTest(overlapPoint))
+        let higherView = host.registry.record(for: high)!.value.view
+        XCTAssertTrue(overlay.hitTest(overlapPoint) === higherView)
         host.destroyAll()
     }
 

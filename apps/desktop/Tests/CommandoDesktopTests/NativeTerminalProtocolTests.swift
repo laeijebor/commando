@@ -277,7 +277,12 @@ final class NativeTerminalProtocolTests: XCTestCase {
             )
         }
 
-        for (cols, rows) in [(1, 24), (501, 24), (80, 0), (80, 201)] {
+        for (cols, rows) in [
+            (1, 24),
+            (NativeTerminalProtocol.maxCols + 1, 24),
+            (80, 0),
+            (80, NativeTerminalProtocol.maxRows + 1),
+        ] {
             assertError(
                 envelope("pane.reset", payload: identity.merging([
                     "data": "",

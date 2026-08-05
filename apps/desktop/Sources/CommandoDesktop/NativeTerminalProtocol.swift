@@ -14,13 +14,13 @@ enum NativeTerminalProtocol {
     static let maxPasteBytes = 256 * 1_024
     static let maxKeyShortcuts = 16
     static let maxFrameCoordinate = 32_768.0
-    static let maxFrameDimension = 8_192.0
+    static let maxFrameDimension = 16_384.0
     static let minFrameScale = 0.25
     static let maxFrameScale = 8.0
     static let minCols = 2
-    static let maxCols = 500
+    static let maxCols = 2_048
     static let minRows = 1
-    static let maxRows = 200
+    static let maxRows = 512
 
     static let requiredCapabilities = [
         "terminal.multiPane.v1",

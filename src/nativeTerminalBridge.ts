@@ -1,4 +1,4 @@
-import { MAX_PASTE_BYTES } from '../shared/protocol'
+import { MAX_PASTE_BYTES, MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS } from '../shared/protocol'
 
 export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
@@ -6,7 +6,7 @@ export const NATIVE_TERMINAL_SHORTCUT_EVENT = 'commando:native-terminal-shortcut
 export const NATIVE_TERMINAL_KEY_SHORTCUTS = ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'] as const
 export const NATIVE_TERMINAL_FRAME_LIMITS = {
   maxCoordinate: 32_768,
-  maxDimension: 8_192,
+  maxDimension: 16_384,
   minScale: 0.25,
   maxScale: 8,
   maxVisibleRegions: 64,
@@ -15,9 +15,9 @@ export const NATIVE_TERMINAL_FRAME_LIMITS = {
 export const NATIVE_TERMINAL_EVENT_LIMITS = {
   maxInputBytes: 8 * 1_024,
   minCols: 2,
-  maxCols: 500,
+  maxCols: MAX_TERMINAL_COLS,
   minRows: 1,
-  maxRows: 200,
+  maxRows: MAX_TERMINAL_ROWS,
 } as const
 
 export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [

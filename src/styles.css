@@ -1516,7 +1516,7 @@ kbd {
 }
 
 .terminal-pane.is-solo:not(.is-maximized) .terminal-source-grid {
-  height: clamp(320px, calc(100vh - 200px), 1100px);
+  height: max(320px, calc(100vh - 200px));
 }
 
 .pane-footer {

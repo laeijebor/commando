@@ -294,9 +294,9 @@ export const MAX_PASTE_BYTES = 256 * 1024
 export const MAX_INPUT_BYTES = 8 * 1024
 export const TERMINAL_SCROLLBACK_LINES = 5_000
 export const MIN_TERMINAL_COLS = 2
-export const MAX_TERMINAL_COLS = 500
+export const MAX_TERMINAL_COLS = 2_048
 export const MIN_TERMINAL_ROWS = 1
-export const MAX_TERMINAL_ROWS = 200
+export const MAX_TERMINAL_ROWS = 512
 
 export type SpecialKey =
   | 'Enter'
