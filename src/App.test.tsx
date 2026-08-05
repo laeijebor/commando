@@ -159,6 +159,28 @@ describe('owner authentication form', () => {
     fireEvent.change(email, { target: { value: 'other@example.com' } })
     expect(email).toHaveValue('other@example.com')
   })
+
+  it('stores a manually entered token only in ephemeral session storage', () => {
+    const onToken = vi.fn()
+    render(
+      <AuthGate
+        bootstrap={{ enabled: false, needsOwner: false, ownerEmail: null }}
+        initialError=""
+        tokenRejected={false}
+        onAuthenticated={vi.fn()}
+        onToken={onToken}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Daemon automation token'), {
+      target: { value: 'manual-window-token' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+
+    expect(onToken).toHaveBeenCalledWith('manual-window-token')
+    expect(window.sessionStorage.getItem('commando.session-token')).toBe('manual-window-token')
+    expect(window.localStorage.getItem('commando.session-token')).toBeNull()
+  })
 })
 
 const pane = {

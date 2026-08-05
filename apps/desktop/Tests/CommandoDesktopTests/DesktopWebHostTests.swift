@@ -98,6 +98,58 @@ final class DesktopWebHostTests: XCTestCase {
         host.cleanUp()
     }
 
+    func testDesktopWindowsExchangeSameOriginBroadcastChannelMessages() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let channelName = "commando-window-test-\(UUID().uuidString)"
+        let first = DesktopWebHost(configuration: .init(webURL: origin, prefersMetal: false))
+        let second = DesktopWebHost(configuration: .init(webURL: origin, prefersMetal: false))
+        defer {
+            first.cleanUp()
+            second.cleanUp()
+        }
+        for host in [first, second] {
+            host.webView.stopLoading()
+            host.webView.loadHTMLString(
+                """
+                <script>
+                  window.receivedToken = null;
+                  window.tokenChannel = new BroadcastChannel('\(channelName)');
+                  window.tokenChannel.onmessage = (event) => { window.receivedToken = event.data; };
+                  window.channelReady = true;
+                </script>
+                """,
+                baseURL: origin
+            )
+        }
+
+        for host in [first, second] {
+            var ready = false
+            for _ in 0..<100 {
+                if let value = try? await host.webView.evaluateJavaScript("window.channelReady === true"),
+                   (value as? NSNumber)?.boolValue == true {
+                    ready = true
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertTrue(ready)
+        }
+        _ = try await first.webView.evaluateJavaScript(
+            "window.tokenChannel.postMessage('shared-in-memory-token')"
+        )
+
+        var received: String?
+        for _ in 0..<100 {
+            if let value = try? await second.webView.evaluateJavaScript("window.receivedToken"),
+               let token = value as? String {
+                received = token
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(received, "shared-in-memory-token")
+    }
+
     func testInstallsUIDelegateAndRoutesJavaScriptConfirmation() async {
         let presenter = ConfirmationPresenterSpy()
         presenter.result = true

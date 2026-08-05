@@ -104,6 +104,7 @@ import type { SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { useDesktopWindowActivity } from './desktopWindowActivity'
+import { SessionTokenBroker } from './sessionTokenBroker'
 import {
   createOwner,
   getAuthBootstrap,
@@ -783,6 +784,7 @@ export function App() {
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
+  const tokenBrokerRef = useRef<SessionTokenBroker | null>(null)
   const pendingMaximizePaneId = useRef<string | null>(null)
   const previousSnapshotRef = useRef<CommandoSnapshot | null>(null)
   const resizeAuthorityActiveRef = useRef(false)
@@ -811,6 +813,31 @@ export function App() {
     })
     return next
   }, [token])
+
+  useEffect(() => {
+    const broker = new SessionTokenBroker()
+    tokenBrokerRef.current = broker
+    let active = true
+    const removeClearListener = broker.onClear(() => {
+      clearToken()
+      setToken('')
+      setSnapshot(null)
+    })
+    if (!token) {
+      void broker.requestToken().then((sharedToken) => {
+        if (!active || !sharedToken) return
+        storeToken(sharedToken)
+        broker.setToken(sharedToken)
+        setToken(sharedToken)
+      })
+    }
+    return () => {
+      active = false
+      removeClearListener()
+      broker.close()
+      if (tokenBrokerRef.current === broker) tokenBrokerRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -969,6 +996,15 @@ export function App() {
 
   useEffect(() => {
     if (!token && connection.phase === 'unauthorized') setAuthUser(null)
+  }, [connection.phase, token])
+  useEffect(() => {
+    const broker = tokenBrokerRef.current
+    if (!broker) return
+    if (token && connection.phase !== 'unauthorized') {
+      broker.setToken(token)
+    } else {
+      broker.forgetToken()
+    }
   }, [connection.phase, token])
   const activeResizePaneId = resizeAuthorityActive
     ? maximizedPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
@@ -1588,6 +1624,7 @@ export function App() {
     setSnapshot(null)
     if (token) {
       clearToken()
+      tokenBrokerRef.current?.clear()
       setToken('')
       return
     }
@@ -1665,6 +1702,7 @@ export function App() {
         tokenRejected={Boolean(token && connection.phase === 'unauthorized')}
         onAuthenticated={(user) => {
           clearToken()
+          tokenBrokerRef.current?.clear()
           setToken('')
           setSnapshot(null)
           setAuthUser(user)
@@ -1672,6 +1710,7 @@ export function App() {
         }}
         onToken={(nextToken) => {
           setSnapshot(null)
+          tokenBrokerRef.current?.setToken(nextToken)
           setToken(nextToken)
         }}
       />
