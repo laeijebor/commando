@@ -656,18 +656,28 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private func layoutView(for placement: TerminalPlacement) {
         let preserveSourceGrid = !isResizeOwner
         let wasSuppressingResize = suppressResize
-        if preserveSourceGrid { suppressResize = true }
+        suppressResize = true
         if preserveSourceGrid, sourceGrid == nil {
             let terminal = view.getTerminal()
             sourceGrid = .init(cols: terminal.cols, rows: terminal.rows)
         }
         if preserveSourceGrid { restoreSourceGrid() }
         let sourceContentSize = view.getOptimalFrameSize().size
+        let maximumGridSize = maximumTerminalSurfaceSize()
         let targetFrame = TerminalSourceGridLayout.frame(
             viewport: placement.frame,
             sourceContentSize: sourceContentSize,
             resizeOwner: isResizeOwner,
-            maximumSurfaceSize: maximumTerminalSurfaceSize(),
+            maximumSurfaceSize: CGSize(
+                width: min(
+                    TerminalGeometry.maxViewportDimension,
+                    max(placement.frame.width, maximumGridSize.width)
+                ),
+                height: min(
+                    TerminalGeometry.maxViewportDimension,
+                    max(placement.frame.height, maximumGridSize.height)
+                )
+            ),
             scrollOffset: sourceScrollOffset
         )
         view.frame = targetFrame
@@ -678,7 +688,11 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.setContextMenuViewport(
             placement.frame.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
         )
-        if preserveSourceGrid { restoreSourceGrid() }
+        if preserveSourceGrid {
+            restoreSourceGrid()
+        } else {
+            clampGridToProtocolLimits()
+        }
         suppressResize = wasSuppressingResize
     }
 
@@ -712,6 +726,22 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         guard let sourceGrid else { return }
         let terminal = view.getTerminal()
         terminal.resize(cols: sourceGrid.cols, rows: sourceGrid.rows)
+        view.sizeChanged(source: terminal)
+        view.needsDisplay = true
+    }
+
+    private func clampGridToProtocolLimits() {
+        let terminal = view.getTerminal()
+        let cols = min(
+            max(terminal.cols, NativeTerminalProtocol.minCols),
+            NativeTerminalProtocol.maxCols
+        )
+        let rows = min(
+            max(terminal.rows, NativeTerminalProtocol.minRows),
+            NativeTerminalProtocol.maxRows
+        )
+        guard cols != terminal.cols || rows != terminal.rows else { return }
+        terminal.resize(cols: cols, rows: rows)
         view.sizeChanged(source: terminal)
         view.needsDisplay = true
     }

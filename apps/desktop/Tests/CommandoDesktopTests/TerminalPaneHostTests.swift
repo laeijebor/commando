@@ -168,6 +168,67 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testWideZoomedPaneKeepsItsViewportWidthWhenFocusTransfersResizeOwnership() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
+        var resizeEvents: [GridSize] = []
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false
+        ) { _, event in
+            if case let .resize(size) = event { resizeEvents.append(size) }
+        }
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "wide-zoom-focus")
+        let zoomScale = 0.7
+        let viewportWidth = 4_600.0
+        host.setZoomScale(zoomScale)
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("wide source grid".utf8),
+            cols: 352,
+            rows: 55,
+            revision: 1
+        )))
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: viewportWidth / zoomScale,
+            height: 300,
+            visible: true,
+            resizeOwner: false,
+            scale: Double(window.backingScaleFactor)
+        )))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        XCTAssertEqual(surface.view.frame.width, viewportWidth, accuracy: 0.001)
+        XCTAssertEqual(surface.view.getTerminal().cols, 352)
+
+        XCTAssertTrue(host.focus(identity))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: viewportWidth / zoomScale,
+            height: 300,
+            visible: true,
+            resizeOwner: true,
+            scale: Double(window.backingScaleFactor)
+        )))
+
+        XCTAssertEqual(surface.view.frame.width, viewportWidth, accuracy: 0.001)
+        XCTAssertEqual(surface.view.getTerminal().cols, NativeTerminalProtocol.maxCols)
+        XCTAssertEqual(resizeEvents.last?.cols, NativeTerminalProtocol.maxCols)
+        XCTAssertTrue(surface.isFocused)
+        host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testOwnerResizeBecomesSourceGridBeforeOwnershipIsReleased() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         var resizeEvents: [GridSize] = []
