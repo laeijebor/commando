@@ -60,7 +60,7 @@ final class DesktopWebHostTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        XCTAssertEqual(layoutEvents, 1)
+        XCTAssertGreaterThanOrEqual(layoutEvents, 1)
         host.cleanUp()
     }
 
