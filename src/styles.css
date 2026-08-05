@@ -1661,15 +1661,65 @@ kbd {
 }
 
 .agent-hud {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 8px;
   border-left: 1px solid var(--border);
 }
 
-.agent-hud:has(.hud-pinned-note) {
-  grid-template-rows: auto auto minmax(120px, auto) minmax(0, 1fr) auto auto;
+.hud-tabs {
+  display: flex;
+  gap: 5px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-tabs > button {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-raised);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.hud-tabs > button:hover {
+  border-color: var(--border-strong);
+  color: var(--text-soft);
+}
+
+.hud-tabs > button[aria-selected='true'] {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+
+.hud-tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--amber);
+}
+
+.hud-tab-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.hud-tab-content[hidden] {
+  display: none;
 }
 
 .hud-header {
@@ -2006,6 +2056,7 @@ body.is-resizing-hud-pinned-note {
 }
 
 .agent-stream {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;

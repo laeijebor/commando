@@ -102,7 +102,7 @@ const defaultRunner: GhRunner = (args) =>
     )
   })
 
-function classifyGhFailure(error: NodeJS.ErrnoException, stderr: string): PrServiceError {
+function classifyGhFailure(error: import('node:child_process').ExecFileException, stderr: string): PrServiceError {
   if (error.code === 'ENOENT') {
     return new PrServiceError(503, 'gh_unavailable', 'The gh CLI is not installed on the daemon host')
   }

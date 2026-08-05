@@ -79,6 +79,7 @@ import { THEMES, applyTheme, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
+import { PrsSection } from './PrsSection'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { createTmuxHttpApi } from './tmuxCreateApi'
@@ -134,6 +135,25 @@ const PRESETS: Array<{
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
+const HUD_TAB_STORAGE_KEY = 'commando.hud.tab'
+
+type HudTab = 'agents' | 'prs'
+
+function storedHudTab(): HudTab {
+  try {
+    return window.localStorage.getItem(HUD_TAB_STORAGE_KEY) === 'prs' ? 'prs' : 'agents'
+  } catch {
+    return 'agents'
+  }
+}
+
+function storeHudTab(tab: HudTab): void {
+  try {
+    window.localStorage.setItem(HUD_TAB_STORAGE_KEY, tab)
+  } catch {
+    // Tab selection still works in memory when storage is unavailable.
+  }
+}
 export const RESIZE_LEASE_RETRY_LIMIT = 12
 export const RESIZE_LEASE_RETRY_MAX_DELAY_MS = 1_000
 
@@ -777,6 +797,12 @@ export function App() {
   const [drawerTransitionOcclusion, setDrawerTransitionOcclusion] = useState(false)
   const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
+  const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
+  const [prsAttention, setPrsAttention] = useState(false)
+  const switchHudTab = useCallback((tab: HudTab) => {
+    setHudTab(tab)
+    storeHudTab(tab)
+  }, [])
   const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
@@ -2247,7 +2273,7 @@ export function App() {
           <div className="hud-header">
             <div className="hud-heading">
               <span className={`hud-pulse${attentionCount ? ' attention' : ''}`} />
-              <div><strong>HUD</strong><small>Notes and agents</small></div>
+              <div><strong>HUD</strong><small>{hudTab === 'prs' ? 'Pull requests' : 'Notes and agents'}</small></div>
             </div>
             <button
               type="button"
@@ -2258,6 +2284,44 @@ export function App() {
               <X aria-hidden="true" />
             </button>
           </div>
+          {pinnedNote ? (
+            <HudPinnedNote
+              note={pinnedNote}
+              onOpen={() => {
+                setNotesMounted(true)
+                setArea('notes')
+                setRightPanelOpen(false)
+                setRequestedNote((current) => ({
+                  vaultId: pinnedNote.vaultId,
+                  noteId: pinnedNote.id,
+                  requestId: (current?.requestId ?? 0) + 1,
+                }))
+              }}
+              onSave={savePinnedNote}
+              onUnpin={() => changePinnedNote(null)}
+            />
+          ) : null}
+          <nav className="hud-tabs" role="tablist" aria-label="HUD sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={hudTab === 'agents'}
+              onClick={() => switchHudTab('agents')}
+            >
+              Notes &amp; Agents
+              {attentionCount && hudTab !== 'agents' ? <span className="hud-tab-dot" aria-label="Agents need you" /> : null}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={hudTab === 'prs'}
+              onClick={() => switchHudTab('prs')}
+            >
+              PRs
+              {prsAttention && hudTab !== 'prs' ? <span className="hud-tab-dot" aria-label="Pull requests need you" /> : null}
+            </button>
+          </nav>
+          <div className="hud-tab-content" hidden={hudTab !== 'agents'}>
           <div className="hud-stats" aria-label="Agent status filters">
             <button
               type="button"
@@ -2288,23 +2352,6 @@ export function App() {
               <strong>{doneCount}</strong><span>Done</span>
             </button>
           </div>
-          {pinnedNote ? (
-            <HudPinnedNote
-              note={pinnedNote}
-              onOpen={() => {
-                setNotesMounted(true)
-                setArea('notes')
-                setRightPanelOpen(false)
-                setRequestedNote((current) => ({
-                  vaultId: pinnedNote.vaultId,
-                  noteId: pinnedNote.id,
-                  requestId: (current?.requestId ?? 0) + 1,
-                }))
-              }}
-              onSave={savePinnedNote}
-              onUnpin={() => changePinnedNote(null)}
-            />
-          ) : null}
           <div className="agent-stream">
             {visibleHudGroups.map((group) => (
               <section className="agent-group" key={group.id} aria-labelledby={`agent-group-${group.id}`}>
@@ -2341,6 +2388,10 @@ export function App() {
                 <p>{agentHudFilter ? `Select ${activeHudFilterLabel} again to show all current updates.` : hasKnownHudStatuses ? 'Cards return when their agent reports a new update.' : 'Provider hooks, process inspection, and heuristics will appear here with their source.'}</p>
               </div>
             ) : null}
+          </div>
+          </div>
+          <div className="hud-tab-content" hidden={hudTab !== 'prs'}>
+            <PrsSection token={token} onAttentionChange={setPrsAttention} />
           </div>
           <button type="button" className="quick-jump" onClick={() => setPaletteOpen(true)}>
             <Search aria-hidden="true" />
