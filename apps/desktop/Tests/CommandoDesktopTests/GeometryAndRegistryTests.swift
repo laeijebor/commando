@@ -96,6 +96,23 @@ final class GeometryAndRegistryTests: XCTestCase {
         ).isHidden)
     }
 
+    func testHidesEnormousFiniteFrameEvenWhenVisibleRegionIsTiny() {
+        let payload = frame(
+            width: Double.greatestFiniteMagnitude,
+            visibleRegions: [.init(x: 1, y: 1, width: 1, height: 1)]
+        )
+
+        XCTAssertTrue(TerminalGeometry.placement(
+            for: payload,
+            viewportSize: .init(width: 800, height: 600),
+            backingScale: 2
+        ).isHidden)
+        XCTAssertNil(TerminalGeometry.clientPoint(
+            for: CGPoint(x: 0.5, y: 0.5),
+            in: payload
+        ))
+    }
+
     func testResizeGateRequiresVisibleOwnerAndDeduplicates() {
         var gate = ResizeEmissionGate()
         XCTAssertFalse(gate.shouldEmit(cols: 80, rows: 24, isVisible: false, isResizeOwner: true))
@@ -128,6 +145,17 @@ final class GeometryAndRegistryTests: XCTestCase {
                 resizeOwner: true
             ),
             viewport
+        )
+
+        XCTAssertEqual(
+            TerminalSourceGridLayout.frame(
+                viewport: viewport,
+                sourceContentSize: .init(width: 700, height: 500),
+                resizeOwner: false,
+                maximumSurfaceSize: .init(width: 600, height: 450),
+                scrollOffset: .init(x: 1_000, y: 1_000)
+            ),
+            CGRect(x: -190, y: 100, width: 600, height: 450)
         )
     }
 

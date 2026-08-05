@@ -4,6 +4,7 @@ import type { PaneTerminalSink } from './paneStream'
 import {
   encodeBase64Bytes,
   NATIVE_TERMINAL_KEY_SHORTCUTS,
+  NATIVE_TERMINAL_FRAME_LIMITS,
   type NativeTerminalAttachmentEvent,
   type NativeTerminalBridge,
   type NativeTerminalVisibleRegion,
@@ -28,7 +29,7 @@ type NativeTerminalPaneProps = {
 }
 
 const SEED_TIMEOUT_MS = 1_500
-export const MAX_NATIVE_TERMINAL_VISIBLE_REGIONS = 64
+export const MAX_NATIVE_TERMINAL_VISIBLE_REGIONS = NATIVE_TERMINAL_FRAME_LIMITS.maxVisibleRegions
 let attachmentSequence = 0
 
 function nextAttachmentId(pageId: string): string {

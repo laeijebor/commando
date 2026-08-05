@@ -4,6 +4,13 @@ export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
 export const NATIVE_TERMINAL_SHORTCUT_EVENT = 'commando:native-terminal-shortcut'
 export const NATIVE_TERMINAL_KEY_SHORTCUTS = ['Meta+C', 'Meta+V', 'PageUp', 'PageDown'] as const
+export const NATIVE_TERMINAL_FRAME_LIMITS = {
+  maxCoordinate: 32_768,
+  maxDimension: 8_192,
+  minScale: 0.25,
+  maxScale: 8,
+  maxVisibleRegions: 64,
+} as const
 
 export const REQUIRED_NATIVE_TERMINAL_CAPABILITIES = [
   'terminal.multiPane.v1',
@@ -18,6 +25,18 @@ export type NativeTerminalVisibleRegion = {
   y: number
   width: number
   height: number
+}
+
+export type NativeTerminalFramePayload = {
+  x: number
+  y: number
+  width: number
+  height: number
+  scale: number
+  visible: boolean
+  visibleRegions: NativeTerminalVisibleRegion[]
+  resizeOwner: boolean
+  order: number
 }
 
 type NativeMessageHandler = {
@@ -143,6 +162,40 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isInteger(value: unknown, minimum = 0): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum
+}
+
+function isFrameCoordinate(value: unknown): value is number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Math.abs(value) <= NATIVE_TERMINAL_FRAME_LIMITS.maxCoordinate
+}
+
+function isFrameDimension(value: unknown, allowsZero: boolean): value is number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    (allowsZero ? value >= 0 : value > 0) &&
+    value <= NATIVE_TERMINAL_FRAME_LIMITS.maxDimension
+}
+
+export function isNativeTerminalFramePayload(value: NativeTerminalFramePayload): boolean {
+  return isFrameCoordinate(value.x) &&
+    isFrameCoordinate(value.y) &&
+    isFrameDimension(value.width, true) &&
+    isFrameDimension(value.height, true) &&
+    Number.isFinite(value.scale) &&
+    value.scale >= NATIVE_TERMINAL_FRAME_LIMITS.minScale &&
+    value.scale <= NATIVE_TERMINAL_FRAME_LIMITS.maxScale &&
+    typeof value.visible === 'boolean' &&
+    Array.isArray(value.visibleRegions) &&
+    value.visibleRegions.length <= NATIVE_TERMINAL_FRAME_LIMITS.maxVisibleRegions &&
+    value.visibleRegions.every((region) => (
+      isFrameCoordinate(region.x) &&
+      isFrameCoordinate(region.y) &&
+      isFrameDimension(region.width, false) &&
+      isFrameDimension(region.height, false)
+    )) &&
+    typeof value.resizeOwner === 'boolean' &&
+    Number.isSafeInteger(value.order)
 }
 
 function isClientCoordinate(value: unknown): value is number {
@@ -340,17 +393,8 @@ export class NativeTerminalBridge {
     }
   }
 
-  frame(attachmentId: string, payload: {
-    x: number
-    y: number
-    width: number
-    height: number
-    scale: number
-    visible: boolean
-    visibleRegions: NativeTerminalVisibleRegion[]
-    resizeOwner: boolean
-    order: number
-  }): boolean {
+  frame(attachmentId: string, payload: NativeTerminalFramePayload): boolean {
+    if (!isNativeTerminalFramePayload(payload)) return false
     return this.postForAttachment('pane.frame', attachmentId, payload)
   }
 

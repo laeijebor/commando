@@ -51,6 +51,40 @@ enum TerminalRendererVisibilityPolicy {
     }
 }
 
+enum SourceGridScrollPolicy {
+    static func delta(
+        horizontal: CGFloat,
+        vertical: CGFloat,
+        hasPreciseDeltas: Bool,
+        modifiers: NSEvent.ModifierFlags,
+        mouseReportingActive: Bool,
+        alternateBuffer: Bool,
+        scrollbackAtBottom: Bool
+    ) -> CGSize? {
+        guard horizontal.isFinite, vertical.isFinite else { return nil }
+        let activeModifiers = modifiers.intersection([.command, .option, .control, .shift])
+        let scale: CGFloat = hasPreciseDeltas ? 1 : 24
+
+        if activeModifiers == [.option, .shift] {
+            guard vertical != 0 else { return nil }
+            return CGSize(width: 0, height: -vertical * scale)
+        }
+        guard activeModifiers.isEmpty || activeModifiers == .shift else { return nil }
+        if mouseReportingActive && activeModifiers != .shift { return nil }
+
+        if activeModifiers == .shift || abs(horizontal) > abs(vertical) {
+            let source = horizontal != 0 ? horizontal : vertical
+            guard source != 0 else { return nil }
+            return CGSize(width: -source * scale, height: 0)
+        }
+        guard !alternateBuffer, vertical != 0 else { return nil }
+        if vertical > 0 || scrollbackAtBottom {
+            return CGSize(width: 0, height: -vertical * scale)
+        }
+        return nil
+    }
+}
+
 @MainActor
 final class HostedTerminalView: TerminalView {
     var shortcutWasPressed: ((String) -> Void)?
@@ -60,6 +94,7 @@ final class HostedTerminalView: TerminalView {
     var copySelection: ((String) -> Bool)?
     var selectionWasCopied: (() -> Void)?
     var contextMenuWasRequested: ((CGPoint) -> Void)?
+    var sourceGridScrollWasRequested: ((CGSize) -> Bool)?
     var hostOrderRank = 0
     private(set) var visibleHitRegions: [CGRect] = []
     private let visibleMask = CAShapeLayer()
@@ -141,6 +176,20 @@ final class HostedTerminalView: TerminalView {
             x: min(1, max(0, (point.x - viewport.minX) / viewport.width)),
             y: min(1, max(0, (viewport.maxY - point.y) / viewport.height))
         ))
+    }
+
+    func handleSourceGridScroll(_ event: NSEvent) -> Bool {
+        let terminal = getTerminal()
+        let delta = SourceGridScrollPolicy.delta(
+            horizontal: event.scrollingDeltaX,
+            vertical: event.scrollingDeltaY,
+            hasPreciseDeltas: event.hasPreciseScrollingDeltas,
+            modifiers: event.modifierFlags,
+            mouseReportingActive: allowMouseReporting && terminal.mouseMode != .off,
+            alternateBuffer: terminal.isCurrentBufferAlternate,
+            scrollbackAtBottom: !canScroll || scrollPosition >= 1
+        )
+        return delta.flatMap { sourceGridScrollWasRequested?($0) } == true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -244,6 +293,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     private var resizeGate = ResizeEmissionGate()
     private var latestPlacement: TerminalPlacement?
     private var sourceGrid: GridSize?
+    private(set) var sourceScrollOffset = CGPoint.zero
+    private var scrollEventMonitor: Any?
     private var isVisible = false
     private var isResizeOwner = false
     private var suppressResize = false
@@ -288,14 +339,18 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     }
 
     func setZoomScale(_ scale: CGFloat) {
-        guard !destroyed, scale.isFinite, scale > 0 else { return }
-        let preserveSourceGrid = !isResizeOwner
-        if preserveSourceGrid { suppressResize = true }
-        view.font = TerminalProfile.font(size: TerminalProfile.fontSize * scale)
-        if preserveSourceGrid {
-            restoreSourceGrid()
-            suppressResize = false
+        guard !destroyed,
+              scale.isFinite,
+              (TerminalGeometry.minContentScale...TerminalGeometry.maxContentScale).contains(scale)
+        else {
+            return
         }
+        let preserveSourceGrid = !isResizeOwner
+        let wasSuppressingResize = suppressResize
+        suppressResize = true
+        view.font = TerminalProfile.font(size: TerminalProfile.fontSize * scale)
+        if preserveSourceGrid { restoreSourceGrid() }
+        suppressResize = wasSuppressingResize
     }
 
     func applyFrame(
@@ -406,6 +461,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.copySelection = nil
         view.selectionWasCopied = nil
         view.contextMenuWasRequested = nil
+        view.sourceGridScrollWasRequested = nil
+        if let scrollEventMonitor { NSEvent.removeMonitor(scrollEventMonitor) }
+        scrollEventMonitor = nil
         NotificationCenter.default.removeObserver(self)
         if view.isUsingMetalRenderer {
             try? view.setUseMetal(false)
@@ -456,6 +514,24 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             }
             self.eventSink(.contextMenu(clientPoint))
         }
+        view.sourceGridScrollWasRequested = { [weak self] delta in
+            self?.scrollSourceGrid(by: delta) ?? false
+        }
+        scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            let handled = MainActor.assumeIsolated {
+                guard let self,
+                      self.isVisible,
+                      event.window === self.view.window,
+                      let superview = self.view.superview
+                else {
+                    return false
+                }
+                let point = superview.convert(event.locationInWindow, from: nil)
+                guard self.view.hitTest(point) != nil else { return false }
+                return self.view.handleSourceGridScroll(event)
+            }
+            return handled ? nil : event
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(firstResponderDidChange(_:)),
@@ -481,7 +557,8 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.setAccessibilityEnabled(metadata.accessibilityEnabled)
         view.setAccessibilityHelp(
             "Keyboard shortcuts: \(metadata.keyShortcuts.joined(separator: ", ")). " +
-                "Option-drag selects text; Option-right-click opens pane actions."
+                "Option-drag selects text; Option-right-click opens pane actions; " +
+                "Shift-scroll moves source columns and Option-Shift-scroll moves source rows."
         )
     }
 
@@ -517,16 +594,43 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         }
         if preserveSourceGrid { restoreSourceGrid() }
         let sourceContentSize = view.getOptimalFrameSize().size
-        view.frame = TerminalSourceGridLayout.frame(
+        let targetFrame = TerminalSourceGridLayout.frame(
             viewport: placement.frame,
             sourceContentSize: sourceContentSize,
-            resizeOwner: isResizeOwner
+            resizeOwner: isResizeOwner,
+            maximumSurfaceSize: maximumTerminalSurfaceSize(),
+            scrollOffset: sourceScrollOffset
+        )
+        view.frame = targetFrame
+        sourceScrollOffset = isResizeOwner ? .zero : CGPoint(
+            x: max(0, placement.frame.minX - targetFrame.minX),
+            y: max(0, targetFrame.minY - (placement.frame.maxY - targetFrame.height))
         )
         view.setContextMenuViewport(
             placement.frame.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
         )
         if preserveSourceGrid { restoreSourceGrid() }
         suppressResize = wasSuppressingResize
+    }
+
+    @discardableResult
+    func scrollSourceGrid(by delta: CGSize) -> Bool {
+        guard !destroyed, !isResizeOwner, isVisible,
+              delta.width.isFinite, delta.height.isFinite,
+              let latestPlacement, !latestPlacement.isHidden
+        else {
+            return false
+        }
+        let previous = sourceScrollOffset
+        sourceScrollOffset = CGPoint(
+            x: sourceScrollOffset.x + delta.width,
+            y: sourceScrollOffset.y + delta.height
+        )
+        layoutView(for: latestPlacement)
+        guard sourceScrollOffset != previous else { return false }
+        view.setVisibleRegions(localVisibleRegions(for: latestPlacement))
+        view.needsDisplay = true
+        return true
     }
 
     private func localVisibleRegions(for placement: TerminalPlacement) -> [CGRect] {
@@ -541,6 +645,34 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         terminal.resize(cols: sourceGrid.cols, rows: sourceGrid.rows)
         view.sizeChanged(source: terminal)
         view.needsDisplay = true
+    }
+
+    private func maximumTerminalSurfaceSize() -> CGSize {
+        let terminal = view.getTerminal()
+        let optimal = view.getOptimalFrameSize().size
+        let cols = max(terminal.cols, 1)
+        let rows = max(terminal.rows, 1)
+        let reservedScrollerWidth = NSScroller.scrollerWidth(
+            for: .regular,
+            scrollerStyle: view.scrollerStyle
+        )
+        let cellWidth = (optimal.width - reservedScrollerWidth) / CGFloat(cols)
+        let cellHeight = optimal.height / CGFloat(rows)
+        guard cellWidth.isFinite, cellHeight.isFinite,
+              cellWidth > 0, cellHeight > 0
+        else {
+            return CGSize(width: 4_096, height: 4_096)
+        }
+        return CGSize(
+            width: min(
+                TerminalGeometry.maxViewportDimension,
+                max(1, cellWidth * CGFloat(NativeTerminalProtocol.maxCols) + reservedScrollerWidth)
+            ),
+            height: min(
+                TerminalGeometry.maxViewportDimension,
+                max(1, cellHeight * CGFloat(NativeTerminalProtocol.maxRows))
+            )
+        )
     }
 
     private func feed(_ data: Data) {
@@ -570,7 +702,9 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         else {
             return
         }
-        eventSink(.resize(.init(cols: cols, rows: rows)))
+        let size = GridSize(cols: cols, rows: rows)
+        sourceGrid = size
+        eventSink(.resize(size))
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {

@@ -167,6 +167,191 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testOwnerResizeBecomesSourceGridBeforeOwnershipIsReleased() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        var resizeEvents: [GridSize] = []
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false
+        ) { _, event in
+            if case let .resize(size) = event { resizeEvents.append(size) }
+        }
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "owner-source")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("source A".utf8),
+            cols: 80,
+            rows: 24,
+            revision: 1
+        )))
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: 700,
+            visible: true,
+            resizeOwner: true
+        )))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        let ownerGrid = GridSize(
+            cols: surface.view.getTerminal().cols,
+            rows: surface.view.getTerminal().rows
+        )
+        XCTAssertNotEqual(ownerGrid, GridSize(cols: 80, rows: 24))
+        XCTAssertEqual(resizeEvents.last, ownerGrid)
+
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            width: 700,
+            visible: true,
+            resizeOwner: false
+        )))
+        XCTAssertEqual(surface.view.getTerminal().cols, ownerGrid.cols)
+        XCTAssertEqual(surface.view.getTerminal().rows, ownerGrid.rows)
+        host.destroyAll()
+    }
+
+    func testOwnerZoomSuppressesTransientResizeEvents() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        var resizeEvents: [GridSize] = []
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false
+        ) { _, event in
+            if case let .resize(size) = event { resizeEvents.append(size) }
+        }
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "owner-zoom")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
+        resizeEvents.removeAll()
+
+        host.setZoomScale(1.2)
+
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        let finalGrid = GridSize(
+            cols: surface.view.getTerminal().cols,
+            rows: surface.view.getTerminal().rows
+        )
+        XCTAssertLessThanOrEqual(resizeEvents.count, 1)
+        if let emitted = resizeEvents.last { XCTAssertEqual(emitted, finalGrid) }
+        host.destroyAll()
+    }
+
+    func testNonOwnerSourceGridOverflowScrollsOnBothAxesAndClamps() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "overflow")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyReset(.init(
+            identity: identity,
+            data: Data("overflow".utf8),
+            cols: 120,
+            rows: 40,
+            revision: 1
+        )))
+        XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: false)))
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        let initialFrame = surface.view.frame
+        let initialVisibleFrame = surface.view.visibleHitRegions[0].offsetBy(
+            dx: initialFrame.minX,
+            dy: initialFrame.minY
+        )
+
+        XCTAssertTrue(surface.scrollSourceGrid(by: CGSize(width: 60, height: 80)))
+        XCTAssertEqual(surface.sourceScrollOffset, CGPoint(x: 60, y: 80))
+        XCTAssertEqual(surface.view.frame.minX, initialFrame.minX - 60, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.minY, initialFrame.minY + 80, accuracy: 0.001)
+        XCTAssertEqual(
+            surface.view.visibleHitRegions[0].offsetBy(
+                dx: surface.view.frame.minX,
+                dy: surface.view.frame.minY
+            ),
+            initialVisibleFrame
+        )
+
+        XCTAssertTrue(surface.scrollSourceGrid(by: CGSize(width: 100_000, height: 100_000)))
+        XCTAssertEqual(
+            surface.sourceScrollOffset.x,
+            surface.view.frame.width - initialVisibleFrame.width,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            surface.sourceScrollOffset.y,
+            surface.view.frame.height - initialVisibleFrame.height,
+            accuracy: 0.001
+        )
+        XCTAssertFalse(surface.scrollSourceGrid(by: CGSize(width: 1, height: 1)))
+
+        XCTAssertTrue(host.applyFrame(frame(identity: identity, visible: true, resizeOwner: true)))
+        XCTAssertEqual(surface.sourceScrollOffset, .zero)
+        XCTAssertFalse(surface.scrollSourceGrid(by: CGSize(width: 10, height: 10)))
+        host.destroyAll()
+    }
+
+    func testSourceGridScrollPolicyPreservesOrdinaryTUIMouseInput() {
+        XCTAssertNil(SourceGridScrollPolicy.delta(
+            horizontal: 20,
+            vertical: -30,
+            hasPreciseDeltas: true,
+            modifiers: [],
+            mouseReportingActive: true,
+            alternateBuffer: false,
+            scrollbackAtBottom: true
+        ))
+        XCTAssertEqual(SourceGridScrollPolicy.delta(
+            horizontal: 0,
+            vertical: -2,
+            hasPreciseDeltas: false,
+            modifiers: .shift,
+            mouseReportingActive: true,
+            alternateBuffer: true,
+            scrollbackAtBottom: false
+        ), CGSize(width: 48, height: 0))
+        XCTAssertEqual(SourceGridScrollPolicy.delta(
+            horizontal: 0,
+            vertical: -2,
+            hasPreciseDeltas: false,
+            modifiers: [.option, .shift],
+            mouseReportingActive: true,
+            alternateBuffer: true,
+            scrollbackAtBottom: false
+        ), CGSize(width: 0, height: 48))
+        XCTAssertNil(SourceGridScrollPolicy.delta(
+            horizontal: 0,
+            vertical: -2,
+            hasPreciseDeltas: false,
+            modifiers: [],
+            mouseReportingActive: false,
+            alternateBuffer: true,
+            scrollbackAtBottom: true
+        ))
+        XCTAssertNil(SourceGridScrollPolicy.delta(
+            horizontal: 0,
+            vertical: -2,
+            hasPreciseDeltas: false,
+            modifiers: [],
+            mouseReportingActive: false,
+            alternateBuffer: false,
+            scrollbackAtBottom: false
+        ))
+        XCTAssertEqual(SourceGridScrollPolicy.delta(
+            horizontal: 0,
+            vertical: -2,
+            hasPreciseDeltas: false,
+            modifiers: [],
+            mouseReportingActive: false,
+            alternateBuffer: false,
+            scrollbackAtBottom: true
+        ), CGSize(width: 0, height: 48))
+    }
+
     func testMetadataUpdateAppliesNativeAccessibilityWithoutReattaching() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         let host = TerminalPaneHost(
@@ -522,6 +707,7 @@ final class TerminalPaneHostTests: XCTestCase {
     private func frame(
         identity: PaneIdentity,
         width: Double = 400,
+        height: Double = 300,
         visible: Bool,
         resizeOwner: Bool,
         order: Int = 0,
@@ -532,11 +718,11 @@ final class TerminalPaneHostTests: XCTestCase {
             x: 10,
             y: 10,
             width: width,
-            height: 300,
+            height: height,
             scale: scale,
             visible: visible,
             visibleRegions: [
-                .init(x: 10, y: 10, width: width, height: 300),
+                .init(x: 10, y: 10, width: width, height: height),
             ],
             resizeOwner: resizeOwner,
             order: order

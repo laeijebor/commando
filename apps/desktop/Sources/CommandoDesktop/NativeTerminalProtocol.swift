@@ -13,6 +13,10 @@ enum NativeTerminalProtocol {
     static let maxVisibleRegions = 64
     static let maxPasteBytes = 256 * 1_024
     static let maxKeyShortcuts = 16
+    static let maxFrameCoordinate = 32_768.0
+    static let maxFrameDimension = 8_192.0
+    static let minFrameScale = 0.25
+    static let maxFrameScale = 8.0
     static let minCols = 2
     static let maxCols = 500
     static let minRows = 1
@@ -26,6 +30,20 @@ enum NativeTerminalProtocol {
         "terminal.visibleRegions.v1",
         "terminal.coreGraphics",
     ]
+
+    static func isValidFrameCoordinate(_ value: Double) -> Bool {
+        value.isFinite && abs(value) <= maxFrameCoordinate
+    }
+
+    static func isValidFrameDimension(_ value: Double, allowsZero: Bool) -> Bool {
+        value.isFinite &&
+            (allowsZero ? value >= 0 : value > 0) &&
+            value <= maxFrameDimension
+    }
+
+    static func isValidFrameScale(_ value: Double) -> Bool {
+        value.isFinite && (minFrameScale...maxFrameScale).contains(value)
+    }
 }
 
 struct ProtocolValidationError: Error, Equatable, CustomStringConvertible {
@@ -222,10 +240,15 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
             let width = try payload.finiteDouble("width")
             let height = try payload.finiteDouble("height")
             let scale = try payload.finiteDouble("scale")
-            guard width >= 0, height >= 0, scale > 0 else {
+            guard NativeTerminalProtocol.isValidFrameCoordinate(x),
+                  NativeTerminalProtocol.isValidFrameCoordinate(y),
+                  NativeTerminalProtocol.isValidFrameDimension(width, allowsZero: true),
+                  NativeTerminalProtocol.isValidFrameDimension(height, allowsZero: true),
+                  NativeTerminalProtocol.isValidFrameScale(scale)
+            else {
                 throw ProtocolValidationError(
                     code: "invalid_geometry",
-                    message: "Frame dimensions must be nonnegative and scale must be positive."
+                    message: "Frame geometry is outside supported bounds."
                 )
             }
             let visibleRegions = try payload.objectArray(
@@ -235,15 +258,21 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                 try region.require(keys: ["x", "y", "width", "height"])
                 let width = try region.finiteDouble("width")
                 let height = try region.finiteDouble("height")
-                guard width > 0, height > 0 else {
+                let x = try region.finiteDouble("x")
+                let y = try region.finiteDouble("y")
+                guard NativeTerminalProtocol.isValidFrameCoordinate(x),
+                      NativeTerminalProtocol.isValidFrameCoordinate(y),
+                      NativeTerminalProtocol.isValidFrameDimension(width, allowsZero: false),
+                      NativeTerminalProtocol.isValidFrameDimension(height, allowsZero: false)
+                else {
                     throw ProtocolValidationError(
                         code: "invalid_geometry",
-                        message: "Visible region dimensions must be positive."
+                        message: "Visible region geometry is outside supported bounds."
                     )
                 }
                 return PaneVisibleRegion(
-                    x: try region.finiteDouble("x"),
-                    y: try region.finiteDouble("y"),
+                    x: x,
+                    y: y,
                     width: width,
                     height: height
                 )

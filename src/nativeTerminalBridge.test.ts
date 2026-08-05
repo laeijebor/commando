@@ -157,6 +157,62 @@ describe('NativeTerminalBridge event isolation', () => {
     bridge.dispose()
   })
 
+  it('rejects enormous finite frame geometry before posting it', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    await connect(bridge)
+    const attachment = bridge.attach('%1', 'attachment-frame', {
+      ariaLabel: 'Pane 1 terminal',
+      accessibilityEnabled: true,
+      keyShortcuts: ['Meta+C'],
+    }, vi.fn())
+    receive(bridge, 2, 'pane.attached', { paneId: '%1', attachmentId: 'attachment-frame' })
+    await attachment.ready
+    messages.splice(0)
+
+    expect(bridge.frame('attachment-frame', {
+      x: 0,
+      y: 0,
+      width: Number.MAX_VALUE,
+      height: 100,
+      scale: 1,
+      visible: true,
+      visibleRegions: [{ x: 1, y: 1, width: 1, height: 1 }],
+      resizeOwner: true,
+      order: 0,
+    })).toBe(false)
+    expect(messages).toEqual([])
+
+    expect(bridge.frame('attachment-frame', {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      scale: 2,
+      visible: true,
+      visibleRegions: [{ x: 1, y: 1, width: Number.MAX_VALUE, height: 1 }],
+      resizeOwner: true,
+      order: 0,
+    })).toBe(false)
+    expect(messages).toEqual([])
+
+    expect(bridge.frame('attachment-frame', {
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      scale: 2,
+      visible: true,
+      visibleRegions: [{ x: 1, y: 1, width: 1, height: 1 }],
+      resizeOwner: true,
+      order: 0,
+    })).toBe(true)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.type).toBe('pane.frame')
+    bridge.dispose()
+  })
+
   it('ignores malformed, stale-page, and non-monotonic shortcut events', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)
