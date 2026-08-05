@@ -210,6 +210,9 @@ final class NativeTerminalProtocolTests: XCTestCase {
             ["x": 0, "y": 0, "width": 1, "height": -1, "scale": 1],
             ["x": 0, "y": 0, "width": 1, "height": 1, "scale": 0],
             ["x": Double.infinity, "y": 0, "width": 1, "height": 1, "scale": 1],
+            ["x": Double.greatestFiniteMagnitude, "y": 0, "width": 1, "height": 1, "scale": 1],
+            ["x": 0, "y": 0, "width": Double.greatestFiniteMagnitude, "height": 1, "scale": 1],
+            ["x": 0, "y": 0, "width": 1, "height": 1, "scale": 9],
         ] {
             assertError(
                 envelope("pane.frame", payload: identity.merging(invalidGeometry.merging([
@@ -227,6 +230,10 @@ final class NativeTerminalProtocolTests: XCTestCase {
         for (visibleRegions, code): (Any, String) in [
             ([["x": 0, "y": 0, "width": 0, "height": 1]], "invalid_geometry"),
             ([["x": 0, "y": 0, "width": 1, "height": -1]], "invalid_geometry"),
+            ([["x": Double.greatestFiniteMagnitude, "y": 0, "width": 1, "height": 1]],
+             "invalid_geometry"),
+            ([["x": 0, "y": 0, "width": Double.greatestFiniteMagnitude, "height": 1]],
+             "invalid_geometry"),
             (Array(repeating: ["x": 0, "y": 0, "width": 1, "height": 1],
                    count: NativeTerminalProtocol.maxVisibleRegions + 1), "invalid_payload"),
         ] {
