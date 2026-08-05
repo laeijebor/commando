@@ -174,4 +174,34 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(host.webView.url?.host, origin.host)
         XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
     }
+
+    func testPublishesDesktopWindowActivityIntoThePage() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let host = DesktopWebHost(configuration: .init(webURL: origin, prefersMetal: false))
+        host.webView.stopLoading()
+        host.webView.loadHTMLString("<main>Ready</main>", baseURL: origin)
+        defer { host.cleanUp() }
+
+        for _ in 0..<100 {
+            if (try? await host.webView.evaluateJavaScript("document.readyState")) as? String == "complete" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        host.setWindowActive(true)
+
+        var active = false
+        for _ in 0..<100 {
+            if let value = try? await host.webView.evaluateJavaScript(
+                "window.__commandoDesktopWindowActive === true"
+            ),
+               (value as? NSNumber)?.boolValue == true {
+                active = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(active)
+        XCTAssertTrue(host.windowActive)
+    }
 }

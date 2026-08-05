@@ -15,6 +15,7 @@ type NativeTerminalPaneProps = {
   paneId: string
   connected: boolean
   resizeOwner: boolean
+  measurementKey?: string
   order: number
   ariaLabel: string
   onFocus: () => void
@@ -154,6 +155,7 @@ export function NativeTerminalPane({
   paneId,
   connected,
   resizeOwner,
+  measurementKey = '',
   order,
   ariaLabel,
   onFocus,
@@ -378,7 +380,7 @@ export function NativeTerminalPane({
       window.removeEventListener('scroll', schedule, true)
       if (frame !== null) window.cancelAnimationFrame(frame)
     }
-  }, [bridge, order, resizeOwner])
+  }, [bridge, measurementKey, order, resizeOwner])
 
   const handleFocus = (_event: FocusEvent<HTMLDivElement>) => {
     focusRef.current()

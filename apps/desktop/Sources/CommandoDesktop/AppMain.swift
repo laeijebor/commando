@@ -146,6 +146,7 @@ protocol DesktopWebHosting: AnyObject {
     func zoomOut(_ sender: Any?)
     func zoomIn(_ sender: Any?)
     func reapplyTerminalFrames()
+    func setWindowActive(_ active: Bool)
     func cleanUp()
 }
 
@@ -159,6 +160,7 @@ protocol DesktopWindowControlling: AnyObject {
     func zoomOut()
     func zoomIn()
     func reapplyTerminalFrames()
+    func setWindowActive(_ active: Bool)
     func cleanUp()
 }
 
@@ -222,10 +224,15 @@ final class DesktopWindowSession: DesktopWindowControlling {
         webHost.reapplyTerminalFrames()
     }
 
+    func setWindowActive(_ active: Bool) {
+        webHost.setWindowActive(active)
+    }
+
     func cleanUp() {
         guard !cleanedUp else { return }
         cleanedUp = true
         (window as? DesktopWindow)?.zoomShortcutWasPressed = nil
+        webHost.setWindowActive(false)
         webHost.cleanUp()
         window.contentView = nil
     }
@@ -326,6 +333,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         persistWindowState()
         for controller in registry.removeAll() {
             controller.window.delegate = nil
+            controller.setWindowActive(false)
             controller.cleanUp()
         }
     }
@@ -382,12 +390,21 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             return
         }
         window.delegate = nil
+        controller.setWindowActive(false)
         controller.cleanUp()
         persistWindowState()
     }
 
     func windowDidResize(_ notification: Notification) {
         controller(from: notification)?.reapplyTerminalFrames()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        controller(from: notification)?.setWindowActive(true)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        controller(from: notification)?.setWindowActive(false)
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {

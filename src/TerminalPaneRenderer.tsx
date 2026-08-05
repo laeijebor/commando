@@ -162,6 +162,7 @@ export function TerminalPaneRenderer({
       paneId={xtermProps.paneId}
       connected={xtermProps.connected}
       resizeOwner={xtermProps.resizeOwner}
+      measurementKey={xtermProps.measurementKey}
       order={order}
       ariaLabel={xtermProps.ariaLabel}
       onFocus={xtermProps.onFocus}

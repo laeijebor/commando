@@ -54,6 +54,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
     private var isRetrying = false
+    private(set) var windowActive = false
 
     init(
         configuration: DesktopConfiguration = .current(),
@@ -115,6 +116,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func reapplyTerminalFrames() {
         bridge.reapplyFrames()
+    }
+
+    func setWindowActive(_ active: Bool) {
+        guard !cleanedUp, active != windowActive else { return }
+        windowActive = active
+        publishWindowActivity()
     }
 
     @objc func zoomOut(_ sender: Any?) {
@@ -191,6 +198,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         navigationRetryTimer = nil
         isRetrying = false
         connectionStatusView.hide()
+        publishWindowActivity()
     }
 
     func webView(
@@ -236,6 +244,18 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         webView.pageZoom = zoomScale
         bridge.setZoomScale(zoomScale)
         webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))")
+    }
+
+    private func publishWindowActivity() {
+        webView.callAsyncJavaScript(
+            """
+            window.__commandoDesktopWindowActive = active;
+            window.dispatchEvent(new CustomEvent("commando:desktop-window-active", { detail: active }));
+            """,
+            arguments: ["active": windowActive],
+            in: nil,
+            in: .page
+        ) { _ in }
     }
 
     private func scheduleNavigationRetry() {
