@@ -1324,6 +1324,18 @@ export function App() {
     setPaneMenu({ paneId, x, y })
   }
 
+  const closePaneMenu = () => {
+    const paneId = paneMenu?.paneId
+    setPaneMenu(null)
+    if (!paneId) return
+    window.requestAnimationFrame(() => {
+      const node = paneRefs.current.get(paneId)
+      if (!node?.isConnected) return
+      node.focus({ preventScroll: true })
+      setFocusedPaneId(paneId)
+    })
+  }
+
   const renamePane = async (paneId: string, title: string) => {
     await paneManagementApi.renamePane(paneId, title)
   }
@@ -2076,7 +2088,7 @@ export function App() {
           busy={paneActionPending || !connected}
           nativeTerminalAvailable={nativeTerminalAvailable}
           useXtermFallback={xtermPaneOverrides.has(paneMenu.paneId)}
-          onClose={() => setPaneMenu(null)}
+          onClose={closePaneMenu}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
           onUseXtermFallbackChange={(useXtermFallback) => {

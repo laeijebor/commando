@@ -390,11 +390,8 @@ export function NativeTerminalPane({
     <div
       ref={placeholderRef}
       className="terminal-source-grid native-terminal-placeholder"
-      role="application"
-      tabIndex={0}
-      aria-label={ariaLabel}
-      aria-disabled={!connected}
-      aria-keyshortcuts={NATIVE_TERMINAL_KEY_SHORTCUTS.join(' ')}
+      tabIndex={-1}
+      aria-hidden="true"
       data-native-terminal-pane={paneId}
       onFocus={handleFocus}
     />

@@ -1501,7 +1501,6 @@ kbd {
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
   pointer-events: none;
   font: 700 8px/1 var(--mono);
-  animation: terminal-copy-toast-in 160ms ease-out;
 }
 
 .terminal-copy-toast svg {
@@ -1509,17 +1508,6 @@ kbd {
   height: 10px;
   color: var(--accent);
   stroke-width: 2.5;
-}
-
-@keyframes terminal-copy-toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .terminal-pane.is-maximized .terminal-source-grid,
