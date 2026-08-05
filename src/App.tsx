@@ -134,7 +134,8 @@ const PRESETS: Array<{
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
-export const RESIZE_LEASE_RETRY_LIMIT = 4
+export const RESIZE_LEASE_RETRY_LIMIT = 12
+export const RESIZE_LEASE_RETRY_MAX_DELAY_MS = 1_000
 
 type PaneRendererControl = {
   identity: string
@@ -913,6 +914,7 @@ export function App() {
   const paletteInputRef = useRef<HTMLInputElement>(null)
   const previousResizePaneId = useRef<string | null>(null)
   const paneLayoutCapacities = useRef(new Map<string, PaneLayoutCapacity & { key: string }>())
+  const lastFocusedResize = useRef<{ paneId: string; cols: number; rows: number } | null>(null)
   const layoutTimers = useRef(new Map<string, number>())
 
   const handleServerMessage = (message: ServerMessage) => {
@@ -1013,7 +1015,7 @@ export function App() {
             if (resizeAuthorityActiveRef.current) {
               setResizeRetryVersion((current) => current + 1)
             }
-          }, 150 * resizeRetryAttempts.current)
+          }, Math.min(150 * resizeRetryAttempts.current, RESIZE_LEASE_RETRY_MAX_DELAY_MS))
         }
         break
     }
@@ -1070,6 +1072,7 @@ export function App() {
     for (const timer of layoutTimers.current.values()) window.clearTimeout(timer)
     layoutTimers.current.clear()
     paneLayoutCapacities.current.clear()
+    lastFocusedResize.current = null
     previousResizePaneId.current = null
     resizeRetryAttempts.current = 0
     if (resizeRetryTimer.current !== null) {
@@ -1088,6 +1091,7 @@ export function App() {
 
     previousResizePaneId.current = null
     paneLayoutCapacities.current.clear()
+    lastFocusedResize.current = null
     for (const timer of layoutTimers.current.values()) window.clearTimeout(timer)
     layoutTimers.current.clear()
     resizeRetryAttempts.current = 0
@@ -1410,6 +1414,48 @@ export function App() {
     layoutTimers.current.clear()
   }
 
+  /**
+   * Sends the window layout built from the cached pane measurements, provided
+   * every leaf has a measurement recorded under the current measurement key.
+   * Called from the measurement debounce and re-invoked verbatim on
+   * `resize_window_busy` retries: native panes only emit a resize when their
+   * grid actually changes, so a retry cannot count on fresh pane echoes and
+   * must replay the cache instead.
+   */
+  const applyMeasuredWindowLayout = (windowId: string, measurementKey: string) => {
+    const tree = windowLayoutTree(windowId)
+    if (!tree) return
+    const leaves = layoutTreePanes(tree)
+    const capacities = leaves.map((leaf) => paneLayoutCapacities.current.get(leaf.paneId))
+    if (
+      capacities.some((capacity) => !capacity || capacity.key !== measurementKey)
+    ) return
+    const sizes = new Map(
+      (capacities as Array<PaneLayoutCapacity & { key: string }>).map((capacity) => [
+        capacity.paneId,
+        { cols: capacity.cols, rows: capacity.rows },
+      ]),
+    )
+    const stacked = window.matchMedia('(max-width: 680px)').matches && leaves.length > 1
+    const spec: LayoutSpec = stacked
+      ? {
+          kind: 'split',
+          direction: 'column',
+          children: leaves.map((leaf) => ({
+            kind: 'pane',
+            paneId: leaf.paneId,
+            ...(sizes.get(leaf.paneId) ?? { cols: leaf.cols, rows: leaf.rows }),
+          })),
+        }
+      : layoutSpecFromTree(tree, sizes)
+    send({
+      type: 'apply_window_layout',
+      windowId,
+      spec,
+      requestId: requestId('layout'),
+    })
+  }
+
   const sendPaneResize = (
     windowId: string,
     paneId: string,
@@ -1424,43 +1470,27 @@ export function App() {
       if (existingTimer !== undefined) window.clearTimeout(existingTimer)
       layoutTimers.current.set(windowId, window.setTimeout(() => {
         layoutTimers.current.delete(windowId)
-        const tree = windowLayoutTree(windowId)
-        if (!tree) return
-        const leaves = layoutTreePanes(tree)
-        const capacities = leaves.map((leaf) => paneLayoutCapacities.current.get(leaf.paneId))
-        if (
-          capacities.some((capacity) => !capacity || capacity.key !== measurementKey)
-        ) return
-        const sizes = new Map(
-          (capacities as Array<PaneLayoutCapacity & { key: string }>).map((capacity) => [
-            capacity.paneId,
-            { cols: capacity.cols, rows: capacity.rows },
-          ]),
-        )
-        const stacked = window.matchMedia('(max-width: 680px)').matches && leaves.length > 1
-        const spec: LayoutSpec = stacked
-          ? {
-              kind: 'split',
-              direction: 'column',
-              children: leaves.map((leaf) => ({
-                kind: 'pane',
-                paneId: leaf.paneId,
-                ...(sizes.get(leaf.paneId) ?? { cols: leaf.cols, rows: leaf.rows }),
-              })),
-            }
-          : layoutSpecFromTree(tree, sizes)
-        send({
-          type: 'apply_window_layout',
-          windowId,
-          spec,
-          requestId: requestId('layout'),
-        })
+        applyMeasuredWindowLayout(windowId, measurementKey)
       }, 120))
       return
     }
     if (activeResizePaneId !== paneId) return
+    lastFocusedResize.current = { paneId, cols, rows }
     send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('resize') })
   }
+
+  /**
+   * Measurements recorded under one key must never drive a layout produced
+   * for another shape, mode, or window-activity state. The key deliberately
+   * excludes the busy-retry counter: retries replay the same measurements.
+   */
+  const measurementKeyFor = (groupId: string, tree: WindowLayoutNode): string => [
+    groupId,
+    layoutShapeKey(tree),
+    maximizedPaneId ?? 'grid',
+    webLayoutAuthoritative ? 'authoritative' : 'focused',
+    desktopWindowActive ? 'active-window' : 'inactive-window',
+  ].join(':')
 
   /**
    * Writes splitter-drag proportions back to tmux while the web is not
@@ -1483,6 +1513,32 @@ export function App() {
     sendWindowLayout(windowId, layoutSpecFromTree(tree, sizes))
   }
 
+  // On a busy-lease retry, replay what was already measured. Fresh pane
+  // resize echoes cannot be relied on here: native surfaces gate emission on
+  // an actual grid change, and republishing an unchanged frame emits nothing.
+  useEffect(() => {
+    if (resizeRetryVersion === 0 || !resizeAuthorityActiveRef.current) return
+    if (webLayoutAuthoritative && !maximizedPaneId) {
+      for (const group of groups) {
+        const groupWindow = windowMap.get(group.windowId)
+        const tree = groupWindow ? parseWindowLayout(groupWindow.layout) : null
+        if (tree) applyMeasuredWindowLayout(group.windowId, measurementKeyFor(group.id, tree))
+      }
+      return
+    }
+    const stored = lastFocusedResize.current
+    if (stored && stored.paneId === activeResizePaneId) {
+      send({
+        type: 'resize_pane',
+        paneId: stored.paneId,
+        cols: stored.cols,
+        rows: stored.rows,
+        requestId: requestId('resize-retry'),
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resizeRetryVersion])
+
   const restructureWindow = (windowId: string, preset: GroupLayoutPreset) => {
     clearLayoutTimers()
     const tree = windowLayoutTree(windowId)
@@ -1494,6 +1550,7 @@ export function App() {
   const toggleWebLayoutAuthority = () => {
     clearLayoutTimers()
     paneLayoutCapacities.current.clear()
+    lastFocusedResize.current = null
     setWebLayoutError('')
     if (webLayoutAuthoritative) {
       send({ type: 'release_all_resizes', requestId: requestId('layout-release') })
@@ -2030,14 +2087,7 @@ export function App() {
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
               const measurementKey = windowTree
-                ? [
-                    group.id,
-                    layoutShapeKey(windowTree),
-                    maximizedPaneId ?? 'grid',
-                    webLayoutAuthoritative ? 'authoritative' : 'focused',
-                    desktopWindowActive ? 'active-window' : 'inactive-window',
-                    `retry-${resizeRetryVersion}`,
-                  ].join(':')
+                ? measurementKeyFor(group.id, windowTree)
                 : ''
               return (
                 <section className="pane-group" data-group-id={group.id} key={group.id}>

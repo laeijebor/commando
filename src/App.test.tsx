@@ -41,6 +41,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
     resizeOwner,
     measurementKey,
     onFocus,
+    onResize,
   }: {
     paneId: string
     nativeRetryKey?: number
@@ -51,6 +52,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
     resizeOwner: boolean
     measurementKey: string
     onFocus: () => void
+    onResize: (cols: number, rows: number) => void
   }) => {
     const [failed, setFailed] = useState(false)
     const previousRetryKey = useRef(nativeRetryKey)
@@ -78,6 +80,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
       >
         <button type="button" onClick={onSelectionCopied}>Simulate terminal selection copy</button>
         <button type="button" onClick={() => setFailed(true)}>Simulate native failure {paneId}</button>
+        <button type="button" onClick={() => onResize(150, 40)}>Simulate measured resize {paneId}</button>
       </div>
     )
   },
@@ -106,6 +109,16 @@ beforeEach(() => {
   window.sessionStorage.clear()
   window.localStorage.clear()
   window.__commandoDesktopWindowActive = true
+  window.matchMedia ??= ((query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    onchange: null,
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia
   daemonMessage = undefined
   daemonConnection = {
     phase: 'live',
@@ -291,32 +304,58 @@ describe('desktop resize authority', () => {
 
     await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'false'))
     expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'release_all_resizes' }))
+    expect(renderer.getAttribute('data-measurement-key')).toContain('inactive-window')
 
     act(() => {
       window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: true }))
     })
 
     await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'true'))
+    // The measurement key tracks window activity and settles back to its
+    // active form; ownership republish rides the resizeOwner flip, not a
+    // key rotation.
     await waitFor(() => {
-      expect(renderer.getAttribute('data-measurement-key')).not.toBe(initialMeasurementKey)
+      expect(renderer.getAttribute('data-measurement-key')).toBe(initialMeasurementKey)
     })
+    expect(initialMeasurementKey).toContain('active-window')
   })
 
-  it('retries a busy lease only while the desktop window remains active', async () => {
+  it('replays cached measurements when a busy lease retry fires', async () => {
     await renderAppWithSnapshot()
     const renderer = screen.getByTestId(`renderer-${pane.id}`)
-    const initialMeasurementKey = renderer.getAttribute('data-measurement-key')
+    const applyLayoutCalls = () => appMocks.send.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === 'apply_window_layout')
 
+    // The layout apply waits for a measurement from every leaf pane.
+    fireEvent.click(screen.getByText(`Simulate measured resize ${pane.id}`))
+    fireEvent.click(screen.getByText(`Simulate measured resize ${adjacentPane.id}`))
+    await waitFor(() => expect(applyLayoutCalls()).toHaveLength(1))
+    const applied = applyLayoutCalls()[0] as { spec: unknown }
+
+    // The busy retry must re-send the same measured layout: native panes emit
+    // no fresh resize echo for an unchanged grid, so the cache is all we have.
     act(() => daemonMessage?.({
       type: 'error',
       code: 'resize_window_busy',
       message: 'Another desktop window owns this tmux window',
     }))
+    await waitFor(() => expect(applyLayoutCalls()).toHaveLength(2))
+    expect(applyLayoutCalls()[1].spec).toEqual(applied.spec)
 
-    await waitFor(() => {
-      expect(renderer.getAttribute('data-measurement-key')).not.toBe(initialMeasurementKey)
-    })
-    const retriedMeasurementKey = renderer.getAttribute('data-measurement-key')
+    // Retries never rotate the measurement key — replay, not re-measure.
+    expect(renderer.getAttribute('data-measurement-key')).not.toContain('retry')
+  })
+
+  it('does not retry a busy lease after the desktop window resigns key', async () => {
+    await renderAppWithSnapshot()
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    const applyLayoutCount = () => appMocks.send.mock.calls
+      .filter(([message]) => message.type === 'apply_window_layout').length
+
+    fireEvent.click(screen.getByText(`Simulate measured resize ${pane.id}`))
+    fireEvent.click(screen.getByText(`Simulate measured resize ${adjacentPane.id}`))
+    await waitFor(() => expect(applyLayoutCount()).toBe(1))
 
     act(() => {
       window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: false }))
@@ -327,11 +366,9 @@ describe('desktop resize authority', () => {
       })
     })
     await waitFor(() => expect(renderer).toHaveAttribute('data-resize-owner', 'false'))
-    const inactiveMeasurementKey = renderer.getAttribute('data-measurement-key')
-    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    await new Promise((resolve) => window.setTimeout(resolve, 250))
 
-    expect(inactiveMeasurementKey).not.toBe(retriedMeasurementKey)
-    expect(renderer.getAttribute('data-measurement-key')).toBe(inactiveMeasurementKey)
+    expect(applyLayoutCount()).toBe(1)
     expect(renderer).toHaveAttribute('data-resize-owner', 'false')
   })
 
