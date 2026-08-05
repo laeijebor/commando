@@ -53,7 +53,9 @@ export class SessionTokenBroker {
   private readonly channel: SessionTokenChannel | null
   private readonly pending = new Map<string, PendingRequest>()
   private readonly clearListeners = new Set<() => void>()
+  private readonly tokenListeners = new Set<(token: string) => void>()
   private readonly receiveMessage = (event: ChannelMessageEvent) => this.receive(event.data)
+  private availabilityRequest: Promise<string> | null = null
   private heldToken = ''
   private closed = false
 
@@ -78,7 +80,17 @@ export class SessionTokenBroker {
 
   setToken(token: string): boolean {
     if (this.closed || !isBoundedSessionToken(token)) return false
+    if (this.heldToken === token) return true
+    this.availabilityRequest = null
+    this.resolvePending('')
     this.heldToken = token
+    if (isIdentifier(this.peerId)) {
+      this.post({
+        version: 1,
+        type: 'available',
+        senderId: this.peerId,
+      })
+    }
     return true
   }
 
@@ -116,6 +128,7 @@ export class SessionTokenBroker {
   clear(): void {
     if (this.closed) return
     this.heldToken = ''
+    this.availabilityRequest = null
     this.resolvePending('')
     this.post({
       version: 1,
@@ -130,12 +143,20 @@ export class SessionTokenBroker {
     return () => this.clearListeners.delete(listener)
   }
 
+  onToken(listener: (token: string) => void): () => void {
+    if (this.closed) return () => undefined
+    this.tokenListeners.add(listener)
+    return () => this.tokenListeners.delete(listener)
+  }
+
   close(): void {
     if (this.closed) return
     this.closed = true
     this.heldToken = ''
+    this.availabilityRequest = null
     this.resolvePending('')
     this.clearListeners.clear()
+    this.tokenListeners.clear()
     this.channel?.removeEventListener('message', this.receiveMessage)
     this.channel?.close()
   }
@@ -143,6 +164,11 @@ export class SessionTokenBroker {
   private receive(value: unknown): void {
     if (this.closed || !this.channel || !isObject(value) || value.version !== 1) return
     if (!isIdentifier(value.senderId) || value.senderId === this.peerId) return
+
+    if (value.type === 'available' && exactKeys(value, ['version', 'type', 'senderId'])) {
+      this.retryForAvailability()
+      return
+    }
 
     if (
       value.type === 'request' &&
@@ -172,15 +198,29 @@ export class SessionTokenBroker {
       if (!pending) return
       window.clearTimeout(pending.timer)
       this.pending.delete(value.requestId)
+      this.heldToken = value.token
       pending.resolve(value.token)
       return
     }
 
     if (value.type === 'clear' && exactKeys(value, ['version', 'type', 'senderId'])) {
       this.heldToken = ''
+      this.availabilityRequest = null
       this.resolvePending('')
       for (const listener of this.clearListeners) listener()
     }
+  }
+
+  private retryForAvailability(): void {
+    if (this.closed || this.heldToken || this.availabilityRequest) return
+    const request = this.requestToken()
+    this.availabilityRequest = request
+    void request.then((token) => {
+      if (this.availabilityRequest !== request) return
+      this.availabilityRequest = null
+      if (this.closed || !token) return
+      for (const listener of this.tokenListeners) listener(token)
+    })
   }
 
   private resolvePending(token: string): void {

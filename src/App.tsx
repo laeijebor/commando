@@ -850,17 +850,20 @@ export function App() {
       setToken('')
       setSnapshot(null)
     })
+    const acceptSharedToken = (sharedToken: string) => {
+      if (!active || !sharedToken) return
+      storeToken(sharedToken)
+      broker.setToken(sharedToken)
+      setToken(sharedToken)
+    }
+    const removeTokenListener = broker.onToken(acceptSharedToken)
     if (!token) {
-      void broker.requestToken().then((sharedToken) => {
-        if (!active || !sharedToken) return
-        storeToken(sharedToken)
-        broker.setToken(sharedToken)
-        setToken(sharedToken)
-      })
+      void broker.requestToken().then(acceptSharedToken)
     }
     return () => {
       active = false
       removeClearListener()
+      removeTokenListener()
       broker.close()
       if (tokenBrokerRef.current === broker) tokenBrokerRef.current = null
     }

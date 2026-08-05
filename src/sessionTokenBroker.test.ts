@@ -69,15 +69,21 @@ describe('session token broker', () => {
   it('shares a token only in response to a targeted peer request', async () => {
     const hub = new TestChannelHub()
     const holder = new SessionTokenBroker(hub.factory, identifiers('holder-peer'))
+    expect(holder.setToken('manual-token')).toBe(true)
+    expect(hub.messages).toEqual([{
+      version: 1,
+      type: 'available',
+      senderId: 'holder-peer-00000001',
+    }])
+    expect(hub.messages[0]).not.toHaveProperty('token')
     const newcomer = new SessionTokenBroker(hub.factory, identifiers('new-peer-id'))
     expect(hub.channels.every((channel) => channel.name === SESSION_TOKEN_CHANNEL_NAME)).toBe(true)
-    expect(holder.setToken('manual-token')).toBe(true)
-    expect(hub.messages).toEqual([])
 
     await expect(newcomer.requestToken()).resolves.toBe('manual-token')
 
-    expect(hub.messages).toHaveLength(2)
+    expect(hub.messages).toHaveLength(3)
     expect(hub.messages).toEqual([
+      expect.objectContaining({ type: 'available', senderId: 'holder-peer-00000001' }),
       expect.objectContaining({ type: 'request', senderId: 'new-peer-id-00000001' }),
       expect.objectContaining({
         type: 'response',
@@ -114,6 +120,61 @@ describe('session token broker', () => {
     peer.close()
   })
 
+  it('automatically retries after a late peer announces token availability', async () => {
+    vi.useFakeTimers()
+    try {
+      const hub = new TestChannelHub()
+      const waitingPeer = new SessionTokenBroker(hub.factory, identifiers('waiting-peer'))
+      const receivedToken = vi.fn()
+      const cleared = vi.fn()
+      waitingPeer.onToken(receivedToken)
+      waitingPeer.onClear(cleared)
+
+      const initialRequest = waitingPeer.requestToken(20)
+      await vi.advanceTimersByTimeAsync(20)
+      await expect(initialRequest).resolves.toBe('')
+
+      const loggedInPeer = new SessionTokenBroker(hub.factory, identifiers('logged-in-peer'))
+      expect(loggedInPeer.setToken('late-login-token')).toBe(true)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(receivedToken).toHaveBeenCalledOnce()
+      expect(receivedToken).toHaveBeenCalledWith('late-login-token')
+      expect(waitingPeer.hasToken).toBe(true)
+      expect(hub.messages).toEqual([
+        expect.objectContaining({ type: 'request', senderId: 'waiting-peer-00000001' }),
+        {
+          version: 1,
+          type: 'available',
+          senderId: 'logged-in-peer-00000001',
+        },
+        expect.objectContaining({ type: 'request', senderId: 'waiting-peer-00000001' }),
+        expect.objectContaining({
+          type: 'response',
+          senderId: 'logged-in-peer-00000001',
+          targetId: 'waiting-peer-00000001',
+          token: 'late-login-token',
+        }),
+      ])
+      expect(hub.messages[1]).not.toHaveProperty('token')
+
+      const messageCount = hub.messages.length
+      waitingPeer.setToken('late-login-token')
+      expect(hub.messages).toHaveLength(messageCount)
+
+      loggedInPeer.clear()
+      expect(cleared).toHaveBeenCalledOnce()
+      expect(waitingPeer.hasToken).toBe(false)
+      expect(hub.messages.slice(messageCount)).toEqual([
+        expect.objectContaining({ type: 'clear', senderId: 'logged-in-peer-00000001' }),
+      ])
+      loggedInPeer.close()
+      waitingPeer.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('rejects malformed and oversized responses', async () => {
     vi.useFakeTimers()
     const hub = new TestChannelHub()
@@ -138,6 +199,13 @@ describe('session token broker', () => {
       token: 'valid-looking-token',
       extra: true,
     })
+    hub.inject({
+      version: 1,
+      type: 'available',
+      senderId: 'malicious-peer-00000001',
+      extra: true,
+    })
+    expect(hub.messages).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(20)
 
     await expect(request).resolves.toBe('')
@@ -150,7 +218,9 @@ describe('session token broker', () => {
     const hub = new TestChannelHub()
     const peer = new SessionTokenBroker(hub.factory, identifiers('cleanup-peer'))
     const cleared = vi.fn()
+    const receivedToken = vi.fn()
     peer.onClear(cleared)
+    peer.onToken(receivedToken)
     const pending = peer.requestToken(5_000)
     const channel = hub.channels[0]!
 
@@ -160,6 +230,8 @@ describe('session token broker', () => {
     expect(channel.closed).toBe(true)
     expect(channel.listeners.size).toBe(0)
     hub.inject({ version: 1, type: 'clear', senderId: 'other-peer-00000001' })
+    hub.inject({ version: 1, type: 'available', senderId: 'other-peer-00000001' })
     expect(cleared).not.toHaveBeenCalled()
+    expect(receivedToken).not.toHaveBeenCalled()
   })
 })
