@@ -371,6 +371,8 @@ export class ChromiumEngine {
   private browserStarting: Promise<ChromiumLaunch> | null = null
   private readonly tiles = new Map<string, TileTarget>()
   private readonly targetStarting = new Map<string, Promise<TileTarget>>()
+  /** Last viewport per tile — buffered so a viewport sent before the target exists still applies. */
+  private readonly viewports = new Map<string, TileViewport>()
   private disposed = false
 
   constructor(private readonly options: ChromiumEngineOptions) {
@@ -425,8 +427,6 @@ export class ChromiumEngine {
   }
 
   async setViewport(webPaneId: string, viewport: TileViewport): Promise<void> {
-    const tile = this.tiles.get(webPaneId)
-    if (!tile) return
     const width = Math.floor(viewport.width)
     const height = Math.floor(viewport.height)
     const deviceScaleFactor = viewport.deviceScaleFactor
@@ -437,10 +437,18 @@ export class ChromiumEngine {
     ) {
       return
     }
-    await tile.cdp.send('Emulation.setDeviceMetricsOverride', {
-      width,
-      height,
-      deviceScaleFactor,
+    const normalized = { width, height, deviceScaleFactor }
+    this.viewports.set(webPaneId, normalized)
+    const tile = this.tiles.get(webPaneId)
+    if (!tile) return
+    await this.applyViewport(tile, normalized)
+  }
+
+  private applyViewport(tile: TileTarget, viewport: TileViewport): Promise<unknown> {
+    return tile.cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: viewport.deviceScaleFactor,
       mobile: false,
     })
   }
@@ -489,6 +497,7 @@ export class ChromiumEngine {
 
   /** Closes the target of a removed tile; safe to call for unknown ids. */
   closeTile(webPaneId: string): void {
+    this.viewports.delete(webPaneId)
     const tile = this.tiles.get(webPaneId)
     if (!tile) return
     this.tiles.delete(webPaneId)
@@ -604,6 +613,10 @@ export class ChromiumEngine {
       this.options.onTargetDown?.(webPaneId)
     })
     await cdp.send('Page.enable')
+    const bufferedViewport = this.viewports.get(webPaneId)
+    if (bufferedViewport) {
+      await this.applyViewport(tile, bufferedViewport).catch(() => undefined)
+    }
     this.tiles.set(webPaneId, tile)
     return tile
   }

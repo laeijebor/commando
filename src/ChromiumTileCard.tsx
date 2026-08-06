@@ -90,6 +90,11 @@ export function ChromiumTileCard({
           drawFrame(message.data)
           return
         }
+        if (message.type === 'ready') {
+          // The engine target exists now — (re)assert the tile's viewport.
+          sendViewport()
+          return
+        }
         if (message.type === 'engine_error') {
           setState('error')
           setDetail(message.message ?? 'Chromium engine failed')
