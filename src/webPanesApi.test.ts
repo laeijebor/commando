@@ -30,3 +30,17 @@ describe('webPanesApi.move', () => {
     await expect(api.move('w-0badcafe', '%40', 'right')).rejects.toThrow(/within their window/)
   })
 })
+
+describe('webPanesApi.navigate', () => {
+  it('posts the url to the navigate endpoint', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+    const api = createWebPanesApi('tok', fetcher as unknown as typeof fetch)
+
+    await api.navigate('w-0badcafe', 'http://localhost:4310/report')
+
+    const [path, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(path).toBe('/api/web-panes/w-0badcafe/navigate')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(JSON.stringify({ url: 'http://localhost:4310/report' }))
+  })
+})

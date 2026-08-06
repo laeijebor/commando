@@ -56,6 +56,7 @@ export function WebPaneCard({
   onOpenDevtools,
   onDragStart,
   onDragEnd,
+  onNavigate,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -66,8 +67,10 @@ export function WebPaneCard({
   onOpenDevtools?: () => void
   onDragStart?: (event: DragEvent<HTMLElement>) => void
   onDragEnd?: () => void
+  onNavigate?: (url: string) => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
   const [attributionVisible, setAttributionVisible] = useState(
     () => webPane.openedBy === 'agent' && Date.now() - webPane.createdAt < ATTRIBUTION_VISIBLE_MS,
@@ -126,10 +129,53 @@ export function WebPaneCard({
         title={onDragStart ? 'Drag onto a terminal pane to move this tile' : undefined}
       >
         <Globe className="web-pane-glyph" aria-hidden="true" />
-        <span className="web-pane-url" title={webPane.url}>
-          <span className="web-pane-host">{host}</span>
-          {path ? <span className="web-pane-path">{path}</span> : null}
-        </span>
+        {urlDraft !== null && onNavigate ? (
+          <form
+            className="web-pane-url-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const next = urlDraft.trim()
+              if (next && next !== webPane.url) onNavigate(next)
+              setUrlDraft(null)
+            }}
+          >
+            <input
+              value={urlDraft}
+              aria-label="Web pane URL"
+              autoFocus
+              onChange={(event) => setUrlDraft(event.target.value)}
+              onBlur={() => setUrlDraft(null)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setUrlDraft(null)
+                }
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  const next = urlDraft.trim()
+                  if (next && next !== webPane.url) onNavigate(next)
+                  setUrlDraft(null)
+                }
+              }}
+            />
+          </form>
+        ) : onNavigate ? (
+          <button
+            type="button"
+            className="web-pane-url is-editable"
+            title="Change URL"
+            aria-label="Change URL"
+            onClick={() => setUrlDraft(webPane.url)}
+          >
+            <span className="web-pane-host">{host}</span>
+            {path ? <span className="web-pane-path">{path}</span> : null}
+          </button>
+        ) : (
+          <span className="web-pane-url" title={webPane.url}>
+            <span className="web-pane-host">{host}</span>
+            {path ? <span className="web-pane-path">{path}</span> : null}
+          </span>
+        )}
         <span className={`web-pane-chip${webPane.openedBy === 'agent' ? ' is-agent' : ''}`}>
           {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
         </span>

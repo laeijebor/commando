@@ -58,6 +58,30 @@
   text-overflow: ellipsis;
 }
 
+.web-pane-url.is-editable {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: text;
+  font: inherit;
+  color: inherit;
+}
+
+.web-pane-url-form {
+  flex: 1;
+  min-width: 0;
+}
+
+.web-pane-url-form input {
+  width: 100%;
+  background: var(--surface-deep);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  padding: 1px 6px;
+}
+
 .web-pane-chip {
   flex: none;
   padding: 1px 7px;

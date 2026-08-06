@@ -57,3 +57,43 @@ describe('WebPaneCard dragging', () => {
     expect(document.querySelector('.web-pane-head')).toHaveAttribute('draggable', 'false')
   })
 })
+
+describe('WebPaneCard url editing', () => {
+  it('opens an inline editor and commits a new url on Enter', () => {
+    const onNavigate = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        wsToken=""
+        onNavigate={onNavigate}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change URL' }))
+    const input = screen.getByRole('textbox', { name: 'Web pane URL' })
+    expect(input).toHaveValue('http://localhost:5173/plan')
+    fireEvent.change(input, { target: { value: 'http://localhost:4310/report' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onNavigate).toHaveBeenCalledWith('http://localhost:4310/report')
+  })
+
+  it('cancels the editor on Escape without navigating', () => {
+    const onNavigate = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        wsToken=""
+        onNavigate={onNavigate}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change URL' }))
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Web pane URL' }), { key: 'Escape' })
+    expect(onNavigate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Web pane URL' })).toBeNull()
+  })
+})

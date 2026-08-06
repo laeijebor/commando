@@ -1691,6 +1691,15 @@ export function App() {
     }
   }
 
+  const navigateWebPane = async (webPaneId: string, url: string) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.navigate(webPaneId, url)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to change web pane URL')
+    }
+  }
+
   const confirmWebPane = async (webPaneId: string, allowOrigin: boolean) => {
     setPaneActionError('')
     try {
@@ -2422,6 +2431,7 @@ export function App() {
                             setDraggedPane(null)
                             setDropPreview(null)
                           }}
+                          onNavigate={(url) => void navigateWebPane(webPane.id, url)}
                         />,
                       ] as const)))}
                     />
