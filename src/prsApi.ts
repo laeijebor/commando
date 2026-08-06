@@ -30,6 +30,7 @@ export type PrList = {
   totalCount: number
   pullRequests: PrSummary[]
   truncated: boolean
+  mineTruncated: boolean
   fetchedAt: number
 }
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }

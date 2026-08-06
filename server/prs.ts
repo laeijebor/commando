@@ -56,6 +56,7 @@ export type PrList = {
   totalCount: number
   pullRequests: PrSummary[]
   truncated: boolean
+  mineTruncated: boolean
   fetchedAt: number
 }
 
@@ -165,6 +166,16 @@ function nodes(record: JsonRecord, key: string): JsonRecord[] {
   return value.filter(isRecord)
 }
 
+function searchConnection(data: JsonRecord, key: string): { nodes: JsonRecord[]; truncated: boolean } {
+  const connection = objectField(data, key)
+  const value = connection.nodes
+  if (!Array.isArray(value)) throw invalidUpstream()
+  // Non-PR search hits surface as empty objects from the inline fragment.
+  const prNodes = value.filter(isRecord).filter((node) => typeof node.number === 'number')
+  const issueCount = typeof connection.issueCount === 'number' ? connection.issueCount : value.length
+  return { nodes: prNodes, truncated: issueCount > value.length }
+}
+
 export function validateRepo(value: unknown): string {
   if (typeof value !== 'string' || !REPO_PATTERN.test(value)) {
     throw new PrServiceError(400, 'invalid_request', 'repo must look like owner/name')
@@ -184,31 +195,53 @@ function statesArgument(filter: PrStateFilter): string {
   return ''
 }
 
+// The repo-wide page only holds the ${PULL_REQUEST_PAGE_SIZE} most recently
+// updated PRs, so on a busy repo the viewer's own PRs fall out of it. The two
+// aliased searches fetch those directly and get merged into the list.
 function pullRequestQuery(filter: PrStateFilter): string {
   return `
-query($owner: String!, $name: String!) {
+query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequestedQuery: String!) {
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequests(first: ${PULL_REQUEST_PAGE_SIZE}, ${statesArgument(filter)}orderBy: {field: UPDATED_AT, direction: DESC}) {
       totalCount
-      nodes {
-        number title url state isDraft
-        author { login }
-        additions deletions changedFiles
-        reviewDecision mergeable updatedAt headRefName
-        reviewThreads(first: 50) { totalCount nodes { isResolved } }
-        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-        commits(last: 1) { nodes { commit { statusCheckRollup {
-          state
-          contexts(first: 50) {
-            totalCount
-            nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
-          }
-        } } } }
-      }
+      nodes { ...PrFields }
     }
   }
+  authored: search(query: $authoredQuery, type: ISSUE, first: ${PULL_REQUEST_PAGE_SIZE}) {
+    issueCount
+    nodes { ... on PullRequest { ...PrFields } }
+  }
+  reviewRequested: search(query: $reviewRequestedQuery, type: ISSUE, first: ${PULL_REQUEST_PAGE_SIZE}) {
+    issueCount
+    nodes { ... on PullRequest { ...PrFields } }
+  }
+}
+fragment PrFields on PullRequest {
+  number title url state isDraft
+  author { login }
+  additions deletions changedFiles
+  reviewDecision mergeable updatedAt headRefName
+  reviewThreads(first: 50) { totalCount nodes { isResolved } }
+  reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+  commits(last: 1) { nodes { commit { statusCheckRollup {
+    state
+    contexts(first: 50) {
+      totalCount
+      nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+    }
+  } } } }
 }`.trim()
+}
+
+function searchStateQualifier(filter: PrStateFilter): string {
+  if (filter === 'open') return ' is:open'
+  if (filter === 'closed') return ' is:closed'
+  return ''
+}
+
+function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested', filter: PrStateFilter): string {
+  return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
 }
 
 function checkRunState(node: JsonRecord): PrCheckRun | null {
@@ -454,6 +487,8 @@ export class PrService {
       '-f', `query=${pullRequestQuery(filter)}`,
       '-f', `owner=${owner}`,
       '-f', `name=${name}`,
+      '-f', `authoredQuery=${scopedSearchQuery(repo, 'author', filter)}`,
+      '-f', `reviewRequestedQuery=${scopedSearchQuery(repo, 'review-requested', filter)}`,
     ])
     let payload: unknown
     try {
@@ -473,7 +508,14 @@ export class PrService {
     if (!repository) throw new PrServiceError(404, 'repo_not_found', `Repository ${repo} was not found`)
     const connection = objectField(repository, 'pullRequests')
     const totalCount = requiredNumber(connection, 'totalCount')
-    const pullRequests = nodes(repository, 'pullRequests').map((node) => parsePullRequest(node, viewer))
+    const authored = searchConnection(data, 'authored')
+    const reviewRequested = searchConnection(data, 'reviewRequested')
+    const byNumber = new Map<number, PrSummary>()
+    for (const node of [...nodes(repository, 'pullRequests'), ...authored.nodes, ...reviewRequested.nodes]) {
+      const pullRequest = parsePullRequest(node, viewer)
+      if (!byNumber.has(pullRequest.number)) byNumber.set(pullRequest.number, pullRequest)
+    }
+    const pullRequests = [...byNumber.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return {
       repo,
       filter,
@@ -481,6 +523,7 @@ export class PrService {
       totalCount,
       pullRequests,
       truncated: totalCount > pullRequests.length,
+      mineTruncated: authored.truncated || reviewRequested.truncated,
       fetchedAt: this.now(),
     }
   }
