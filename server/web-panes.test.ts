@@ -307,4 +307,52 @@ describe('WebPaneService', () => {
     expect(restored.list()).toHaveLength(1)
     expect(restored.open({ ...anchor, url: 'https://ok.example/page' }).status).toBe('open')
   })
+
+  it('move re-anchors a tile with a new concrete placement and persists it', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    const moved = service.move(pane.id, {
+      anchorPaneId: '%40',
+      placement: 'below',
+      sessionId: '$1',
+      windowId: '@3',
+    })
+    expect(moved).toMatchObject({ id: pane.id, anchorPaneId: '%40', placement: 'below' })
+    expect(service.get(pane.id)).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+
+    await service.flush()
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as {
+      panes: Array<{ anchorPaneId: string; placement: string }>
+    }
+    expect(stored.panes[0]).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+  })
+
+  it('move rejects unknown tiles, bad anchor ids, and non-concrete placements', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const target = {
+      anchorPaneId: '%40',
+      placement: 'below' as const,
+      sessionId: '$1',
+      windowId: '@3',
+    }
+    expect(() => service.move('w-00000000', target)).toThrow(WebPaneError)
+    expect(() => service.move(pane.id, { ...target, anchorPaneId: 'nope' })).toThrow(/anchor/i)
+    expect(() => service.move(pane.id, { ...target, placement: 'auto' as never })).toThrow(/placement/i)
+  })
+
+  it('move rejects a target anchor in a different window', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    expect(() =>
+      service.move(pane.id, {
+        anchorPaneId: '%40',
+        placement: 'right',
+        sessionId: '$1',
+        windowId: '@9',
+      }),
+    ).toThrow(/window/i)
+  })
 })
