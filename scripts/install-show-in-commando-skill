@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Installs (or updates) the show-in-commando agent skill into every harness
+# skill directory that should have it. Safe to rerun after editing the
+# canonical copy at skills/show-in-commando/SKILL.md.
+set -euo pipefail
+
+source_dir="$(cd "$(dirname "$0")/../skills/show-in-commando" && pwd)"
+
+destinations=(
+  "$HOME/.claudep/skills/show-in-commando"
+  "$HOME/.claudey/skills/show-in-commando"
+  "$HOME/.config/opencode/skills/show-in-commando"
+)
+
+for destination in "${destinations[@]}"; do
+  mkdir -p "$destination"
+  cp "$source_dir/SKILL.md" "$destination/SKILL.md"
+  echo "installed $destination/SKILL.md"
+done
