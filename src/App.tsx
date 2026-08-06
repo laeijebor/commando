@@ -1655,6 +1655,17 @@ export function App() {
     }
   }
 
+  /** Opens a chromium tile's DevTools frontend as a sibling tile. */
+  const openWebPaneDevtools = async (webPane: WebPane) => {
+    setPaneActionError('')
+    try {
+      const { devtoolsFrontendUrl } = await webPanesApi.cdp(webPane.id)
+      await webPanesApi.open(devtoolsFrontendUrl, webPane.anchorPaneId, webPane.placement)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to open DevTools tile')
+    }
+  }
+
   const openPaneMenu = (paneId: string, x: number, y: number) => {
     setFocusedPaneId(paneId)
     setPaletteOpen(false)
@@ -2324,6 +2335,12 @@ export function App() {
                           webPane={webPane}
                           onClose={() => void closeWebPane(webPane.id)}
                           onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
+                          wsToken={token}
+                          onOpenDevtools={
+                            webPane.engine === 'chromium'
+                              ? () => void openWebPaneDevtools(webPane)
+                              : undefined
+                          }
                         />,
                       ] as const)))}
                     />

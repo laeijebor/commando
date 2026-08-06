@@ -1,9 +1,15 @@
-import type { WebPanePlacement } from '../shared/protocol'
+import type { WebPaneEngine, WebPanePlacement } from '../shared/protocol'
 
 export interface WebPanesApiClient {
-  open(url: string, anchor: string, placement?: WebPanePlacement): Promise<{ webPaneId: string; status: 'open' | 'pending' }>
+  open(
+    url: string,
+    anchor: string,
+    placement?: WebPanePlacement,
+    engine?: WebPaneEngine,
+  ): Promise<{ webPaneId: string; status: 'open' | 'pending' }>
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   close(webPaneId: string): Promise<void>
+  cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -37,10 +43,15 @@ export function createWebPanesApi(
   }
 
   return {
-    open: async (url, anchor, placement) => {
+    open: async (url, anchor, placement, engine) => {
       const body = await request('', {
         method: 'POST',
-        body: JSON.stringify({ url, anchor, ...(placement ? { placement } : {}) }),
+        body: JSON.stringify({
+          url,
+          anchor,
+          ...(placement ? { placement } : {}),
+          ...(engine ? { engine } : {}),
+        }),
       }) as { webPaneId: string; status: 'open' | 'pending' }
       return body
     },
@@ -52,6 +63,12 @@ export function createWebPanesApi(
     },
     close: async (webPaneId) => {
       await request(`/${encodeURIComponent(webPaneId)}`, { method: 'DELETE' })
+    },
+    cdp: async (webPaneId) => {
+      return await request(`/${encodeURIComponent(webPaneId)}/cdp`, { method: 'GET' }) as {
+        target: string
+        devtoolsFrontendUrl: string
+      }
     },
   }
 }

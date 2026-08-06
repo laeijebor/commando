@@ -41,6 +41,10 @@ type WebPanesApiDependencies = {
    * target if needed). Absent when no chromium engine is configured.
    */
   cdpInfo?: (webPaneId: string) => Promise<WebPaneCdpInfo>
+  /** Fired after the owner confirms a pending tile (chromium tiles resume navigation here). */
+  onConfirmed?: (pane: WebPane) => void
+  /** Fired after a tile is deleted so engine targets can be torn down. */
+  onClosed?: (webPaneId: string) => void
 }
 
 class HttpError extends Error {
@@ -172,6 +176,7 @@ export class WebPanesApi {
         const body = await readJson(request)
         const allowOrigin = body.allowOrigin === true
         const pane = this.dependencies.service.confirm(route.id, allowOrigin)
+        if (pane.status === 'open') this.dependencies.onConfirmed?.(pane)
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true, webPaneId: pane.id, status: pane.status })
         return true
@@ -181,6 +186,7 @@ export class WebPanesApi {
       if (!this.dependencies.service.close(route.id)) {
         throw new HttpError(404, 'Web pane does not exist')
       }
+      this.dependencies.onClosed?.(route.id)
       this.dependencies.onChange()
       writeJson(response, 200, { ok: true, webPaneId: route.id })
       return true

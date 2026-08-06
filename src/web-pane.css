@@ -261,3 +261,33 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ===== Chromium-engine tile (CDP screencast) ===== */
+
+.web-pane-chip.is-chromium {
+  color: var(--amber, #f3c66b);
+  background: color-mix(in srgb, var(--amber, #f3c66b) 13%, transparent);
+}
+
+.chromium-tile {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: #fff;
+}
+
+.chromium-tile-canvas {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: contain;
+  outline: none;
+  cursor: default;
+}
+
+.chromium-tile[data-stream-state='connecting'] {
+  background: var(--surface-deep, #0a0812);
+}

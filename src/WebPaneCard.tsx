@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, Globe, RotateCw, ShieldAlert, X } from 'lucide-react'
+import { ExternalLink, Globe, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
 import type { WebPane } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
+import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
@@ -51,21 +52,28 @@ export function WebPaneCard({
   webPane,
   onClose,
   onConfirm,
+  wsToken = '',
+  onOpenDevtools,
 }: {
   webPane: WebPane
   onClose: () => void
   onConfirm: (allowOrigin: boolean) => void
+  /** Session token for the chromium tile stream (empty with cookie auth). */
+  wsToken?: string
+  /** Opens the tile's DevTools frontend as a sibling tile (chromium only). */
+  onOpenDevtools?: () => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
   const [attributionVisible, setAttributionVisible] = useState(
     () => webPane.openedBy === 'agent' && Date.now() - webPane.createdAt < ATTRIBUTION_VISIBLE_MS,
   )
+  const chromium = webPane.engine === 'chromium'
   // External origins prefer the desktop shell's native WKWebView tier (no
   // framing limits); everything else — localhost, browsers, native failure —
-  // uses the sandboxed iframe.
+  // uses the sandboxed iframe. Chromium-engine tiles stream instead.
   const nativeBridge = useRef<NativeWebViewBridge | null>(
-    isLocalWebPaneUrl(webPane.url) ? null : getNativeWebViewBridge(),
+    chromium || isLocalWebPaneUrl(webPane.url) ? null : getNativeWebViewBridge(),
   ).current
   const [tier, setTier] = useState<'undecided' | 'native' | 'iframe'>(
     nativeBridge ? 'undecided' : 'iframe',
@@ -85,7 +93,7 @@ export function WebPaneCard({
   }, [nativeBridge])
 
   useEffect(() => {
-    if (webPane.status !== 'open' || tier !== 'iframe') return
+    if (webPane.status !== 'open' || tier !== 'iframe' || chromium) return
     setPhase('loading')
     const watchdog = window.setTimeout(() => {
       if (phaseRef.current === 'loading') setPhase('stalled')
@@ -115,6 +123,18 @@ export function WebPaneCard({
         <span className={`web-pane-chip${webPane.openedBy === 'agent' ? ' is-agent' : ''}`}>
           {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
         </span>
+        {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
+        {chromium && !pending && onOpenDevtools && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={onOpenDevtools}
+            title="Open DevTools as a tile"
+            aria-label="Open DevTools as a tile"
+          >
+            <Wrench aria-hidden="true" />
+          </button>
+        )}
         {!pending && (
           <button
             type="button"
@@ -171,7 +191,9 @@ export function WebPaneCard({
         </div>
       ) : (
         <div className="web-pane-body">
-          {tier === 'native' && nativeBridge ? (
+          {chromium ? (
+            <ChromiumTileCard webPane={webPane} wsToken={wsToken} reloadKey={reloadKey} />
+          ) : tier === 'native' && nativeBridge ? (
             <NativeWebViewTile
               bridge={nativeBridge}
               webPane={webPane}
@@ -189,7 +211,7 @@ export function WebPaneCard({
               onLoad={() => setPhase('loaded')}
             />
           ) : null}
-          {tier === 'iframe' && phase !== 'loaded' && (
+          {!chromium && tier === 'iframe' && phase !== 'loaded' && (
             <div className={`web-pane-overlay${phase === 'stalled' ? ' is-stalled' : ''}`}>
               {phase === 'loading' ? (
                 <span className="web-pane-overlay-note">Loading {host}…</span>
