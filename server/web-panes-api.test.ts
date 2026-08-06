@@ -288,4 +288,102 @@ describe('web panes API', () => {
     expect((await open()).status).toBe(201)
     expect((await open()).status).toBe(429)
   })
+
+  it('moves a tile to a new anchor with the previewed placement', async () => {
+    const service = await createService()
+    const { baseUrl, onChange } = await startApi(service, {
+      paneForId: (paneId) =>
+        paneId === '%12'
+          ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 }
+          : paneId === '%40'
+            ? { id: '%40', sessionId: '$1', windowId: '@3', width: 95, height: 55 }
+            : undefined,
+    })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%40', placement: 'below' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      webPaneId: opened.id,
+      beside: '%40',
+      placement: 'below',
+    })
+    expect(service.get(opened.id)).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a move whose target anchor lives in another window', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service, {
+      paneForId: (paneId) =>
+        paneId === '%12'
+          ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 }
+          : paneId === '%50'
+            ? { id: '%50', sessionId: '$1', windowId: '@9', width: 190, height: 55 }
+            : undefined,
+    })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%50', placement: 'right' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(400)
+    expect(service.get(opened.id)?.anchorPaneId).toBe('%12')
+  })
+
+  it('rejects a move to an unknown anchor pane or with a bad placement', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const unknownAnchor = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%99', placement: 'right' },
+      ownerAuth,
+    )
+    expect(unknownAnchor.status).toBe(404)
+
+    const autoPlacement = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%12', placement: 'auto' },
+      ownerAuth,
+    )
+    expect(autoPlacement.status).toBe(400)
+
+    const unauthenticated = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%12', placement: 'right' },
+    )
+    expect(unauthenticated.status).toBe(401)
+  })
 })

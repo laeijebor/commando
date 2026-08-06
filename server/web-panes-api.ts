@@ -185,6 +185,35 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'move') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
+        const body = await readJson(request)
+        const { anchor, placement } = body
+        if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {
+          throw new HttpError(400, 'anchor must be a tmux pane id')
+        }
+        if (placement !== 'right' && placement !== 'below') {
+          throw new HttpError(400, 'placement must be right or below')
+        }
+        const anchorPane = this.dependencies.paneForId(anchor)
+        if (!anchorPane) throw new HttpError(404, 'Anchor tmux pane does not exist')
+        const pane = this.dependencies.service.move(route.id, {
+          anchorPaneId: anchorPane.id,
+          placement,
+          sessionId: anchorPane.sessionId,
+          windowId: anchorPane.windowId,
+        })
+        this.dependencies.onChange()
+        writeJson(response, 200, {
+          ok: true,
+          webPaneId: pane.id,
+          beside: pane.anchorPaneId,
+          placement: pane.placement,
+        })
+        return true
+      }
+
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
       if (!this.dependencies.service.close(route.id)) {
         throw new HttpError(404, 'Web pane does not exist')
@@ -227,11 +256,15 @@ export class WebPanesApi {
     throw new HttpError(401, 'Unauthorized')
   }
 
-  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'delete' } {
+  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'move' | 'delete' } {
     if (pathname === API_ROOT) return { kind: 'collection' }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp))?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|move))?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
-    const action = match[2] === 'confirm' ? 'confirm' : match[2] === 'cdp' ? 'cdp' : 'delete'
+    const action = match[2] === 'confirm'
+      ? 'confirm'
+      : match[2] === 'cdp'
+        ? 'cdp'
+        : match[2] === 'move' ? 'move' : 'delete'
     return { kind: 'pane', id: match[1], action }
   }
 
