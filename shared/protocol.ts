@@ -244,6 +244,30 @@ export type SavedWorkspace = {
   updatedAt: number
 }
 
+export type WebPanePlacement = 'right' | 'below' | 'auto'
+
+/**
+ * A browser tile rendered among the tmux panes of a window. Web panes exist
+ * only in the app-side layout tree — tmux never sees them, and they must be
+ * stripped from any LayoutSpec before it is sent to the daemon.
+ */
+export type WebPane = {
+  id: string
+  url: string
+  sessionId: string
+  windowId: string
+  anchorPaneId: string
+  placement: WebPanePlacement
+  openedBy: 'agent' | 'user'
+  openerLabel?: string
+  /** 'pending' = external origin awaiting the owner's confirmation. */
+  status: 'open' | 'pending'
+  createdAt: number
+}
+
+export const MAX_WEB_PANES = 16
+export const MAX_WEB_PANE_URL_LENGTH = 2_048
+
 export type PaneLayoutCapacity = {
   paneId: string
   cols: number
@@ -288,6 +312,7 @@ export type ServerMessage =
       requestId: string
       reason: 'load' | 'save'
     }
+  | { type: 'web_panes'; webPanes: WebPane[] }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024

@@ -30,6 +30,8 @@ import { TmuxClient } from './tmux.js'
 import { normalizeCaptureLineEndings } from './tmux-control.js'
 import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
+import { WebPaneService } from './web-panes.js'
+import { WebPanesApi } from './web-panes-api.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
 import { PrService } from './prs.js'
@@ -79,6 +81,8 @@ const CONTENT_SECURITY_POLICY = [
   "font-src 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
+  // Web pane tiles embed localhost dev servers and confirmed https sites.
+  "frame-src http://localhost:* http://127.0.0.1:* https:",
   "img-src 'self' data:",
   "object-src 'none'",
   "script-src 'self'",
@@ -416,6 +420,10 @@ async function main(): Promise<void> {
     : [port, DEVELOPMENT_WEB_PORT]
   const tmux = new TmuxClient(protectedPorts)
   const workspaces = new WorkspaceStore()
+  const webPanes = new WebPaneService()
+  await webPanes.load().catch((error: unknown) => {
+    console.error('[commando] failed to load persisted web panes', error)
+  })
   const notes = new NoteVaultManager()
   const linear = new LinearService()
   const prs = new PrService()
@@ -998,6 +1006,9 @@ async function main(): Promise<void> {
           broadcast({ type: 'snapshot', snapshot })
           companion?.publish()
         }
+        if (webPanes.prune(snapshot.windows)) {
+          broadcast({ type: 'web_panes', webPanes: webPanes.list() })
+        }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
         return snapshot
       })
@@ -1109,6 +1120,25 @@ async function main(): Promise<void> {
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
     interactions,
+  })
+  const webPanesApi = new WebPanesApi({
+    service: webPanes,
+    agentToken: agentHookToken,
+    ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
+    paneForId: (paneId) => {
+      const pane = paneForId(paneId)
+      return pane
+        ? { id: pane.id, sessionId: pane.sessionId, windowId: pane.windowId }
+        : undefined
+    },
+    agentLabel: (paneId) => {
+      const status = agentStatuses.get(paneId)
+      if (!status || status.provider === 'unknown') return undefined
+      return status.agentSessionName
+        ? `${status.provider} · ${status.agentSessionName}`
+        : status.provider
+    },
+    onChange: () => broadcast({ type: 'web_panes', webPanes: webPanes.list() }),
   })
 
   const handleClientMessage = (client: ClientState, message: ParsedClientMessage): void => {
@@ -1421,6 +1451,7 @@ async function main(): Promise<void> {
     }
     clients.add(client)
     send(client, { type: 'snapshot', snapshot })
+    send(client, { type: 'web_panes', webPanes: webPanes.list() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
@@ -1499,6 +1530,7 @@ async function main(): Promise<void> {
       }
 
       if (await agentStatusHooks.handle(request, response, url)) return
+      if (await webPanesApi.handle(request, response, url)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {
