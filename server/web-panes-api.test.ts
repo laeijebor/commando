@@ -453,4 +453,53 @@ describe('web panes API', () => {
     expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:1/' })).status).toBe(401)
     expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 42 }, ownerAuth)).status).toBe(400)
   })
+
+  it('attributes an agent-driven navigate to the agent, not the tile owner', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      agentAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending' })
+    expect(service.get(opened.id)).toMatchObject({
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+  })
+
+  it('attributes an owner-driven navigate to the user', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    const stored = service.get(opened.id)
+    expect(stored?.openedBy).toBe('user')
+    expect(stored?.openerLabel).toBeUndefined()
+  })
 })

@@ -393,4 +393,48 @@ describe('WebPaneService', () => {
     expect(() => service.navigate(pane.id, 'ftp://example.com/')).toThrow(WebPaneError)
     expect(() => service.navigate('w-00000000', 'http://localhost:5173/')).toThrow(WebPaneError)
   })
+
+  it('navigate with attribution updates openedBy and openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other', {
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+    expect(navigated).toMatchObject({ openedBy: 'agent', openerLabel: 'claude · gizmo' })
+  })
+
+  it('navigate without attribution preserves the existing openedBy and openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other')
+    expect(navigated).toMatchObject({ openedBy: 'user' })
+    expect(navigated.openerLabel).toBeUndefined()
+  })
+
+  it('navigate with an agent attribution lacking a label drops openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+      openerLabel: 'stale-label',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other', {
+      openedBy: 'agent',
+    })
+    expect(navigated.openedBy).toBe('agent')
+    expect(navigated.openerLabel).toBeUndefined()
+  })
 })

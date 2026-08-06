@@ -219,7 +219,14 @@ export class WebPanesApi {
         if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
         const body = await readJson(request)
         if (typeof body.url !== 'string') throw new HttpError(400, 'url must be a string')
-        const pane = this.dependencies.service.navigate(route.id, body.url)
+        const existing = this.dependencies.service.get(route.id)
+        if (!existing) throw new HttpError(404, 'Web pane does not exist')
+        const pane = this.dependencies.service.navigate(route.id, body.url, {
+          openedBy: caller === 'owner' ? 'user' : 'agent',
+          openerLabel: caller === 'agent'
+            ? this.dependencies.agentLabel?.(existing.anchorPaneId)
+            : undefined,
+        })
         if (pane.status === 'open') this.dependencies.onConfirmed?.(pane)
         this.dependencies.onChange()
         writeJson(response, 200, {

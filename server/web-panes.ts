@@ -328,9 +328,16 @@ export class WebPaneService {
   /**
    * Swaps a tile's URL through the same trust policy as open: localhost and
    * allowlisted origins stay open; an unconfirmed external origin flips the
-   * tile to pending so URL editing cannot bypass the origin gate.
+   * tile to pending so URL editing cannot bypass the origin gate. An
+   * attribution re-stamps openedBy/openerLabel to whoever triggered this
+   * navigation, so the pending confirm card credits the right caller instead
+   * of preserving the tile's original opener.
    */
-  navigate(id: string, url: string): WebPane {
+  navigate(
+    id: string,
+    url: string,
+    attribution?: { openedBy: 'agent' | 'user'; openerLabel?: string },
+  ): WebPane {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
@@ -339,7 +346,14 @@ export class WebPaneService {
       ...pane,
       url: decision.url,
       status: decision.kind === 'open' ? 'open' : 'pending',
+      ...(attribution
+        ? {
+            openedBy: attribution.openedBy,
+            ...(attribution.openerLabel !== undefined ? { openerLabel: attribution.openerLabel } : {}),
+          }
+        : {}),
     }
+    if (attribution && attribution.openerLabel === undefined) delete navigated.openerLabel
     this.panes.set(id, navigated)
     this.persist()
     return navigated
