@@ -326,6 +326,26 @@ export class WebPaneService {
   }
 
   /**
+   * Swaps a tile's URL through the same trust policy as open: localhost and
+   * allowlisted origins stay open; an unconfirmed external origin flips the
+   * tile to pending so URL editing cannot bypass the origin gate.
+   */
+  navigate(id: string, url: string): WebPane {
+    const pane = this.panes.get(id)
+    if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    const decision = classifyWebPaneUrl(url, this.allowedOrigins)
+    if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
+    const navigated: WebPane = {
+      ...pane,
+      url: decision.url,
+      status: decision.kind === 'open' ? 'open' : 'pending',
+    }
+    this.panes.set(id, navigated)
+    this.persist()
+    return navigated
+  }
+
+  /**
    * Rewrites any persisted 'auto' placement (from before placements were
    * resolved at open) to a concrete direction once the anchor pane's
    * geometry is available. Returns true when anything changed.
