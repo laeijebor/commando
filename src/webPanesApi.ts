@@ -10,6 +10,7 @@ export interface WebPanesApiClient {
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
+  move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -69,6 +70,12 @@ export function createWebPanesApi(
         target: string
         devtoolsFrontendUrl: string
       }
+    },
+    move: async (webPaneId, anchor, placement) => {
+      await request(`/${encodeURIComponent(webPaneId)}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ anchor, placement }),
+      })
     },
   }
 }
