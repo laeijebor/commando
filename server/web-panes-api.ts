@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { WebPane, WebPaneEngine, WebPanePlacement } from '../shared/protocol.js'
+import { MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
+import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
@@ -38,6 +40,8 @@ type WebPanesApiDependencies = {
   /** Label for the agent occupying a pane, e.g. "claude · gizmo". */
   agentLabel?: (paneId: string) => string | undefined
   onChange: () => void
+  /** Owner-submit / agent-drain review feedback queue. */
+  feedback: WebPaneFeedbackStore
   openLimiter?: TokenBucketRateLimiter
   /**
    * Resolves the live CDP coordinates for a chromium tile (starting its
@@ -92,6 +96,43 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
     throw new HttpError(400, 'Request body must be a JSON object')
   }
   return value as Record<string, unknown>
+}
+
+const MAX_FEEDBACK_NOTES_PER_POST = 20
+const MAX_FEEDBACK_COMMENT = 4_096
+
+function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[] {
+  const raw = body.notes
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_FEEDBACK_NOTES_PER_POST) {
+    throw new HttpError(400, `notes must contain 1 to ${MAX_FEEDBACK_NOTES_PER_POST} entries`)
+  }
+  return raw.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) throw new HttpError(400, 'Each note must be an object')
+    const note = entry as Record<string, unknown>
+    const rect = note.rect as Record<string, unknown> | undefined
+    const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+    if (
+      typeof note.selector !== 'string' || note.selector.length === 0 || note.selector.length > MAX_INSPECT_SELECTOR ||
+      typeof note.tag !== 'string' || note.tag.length === 0 || note.tag.length > MAX_INSPECT_TAG ||
+      (note.text !== undefined && (typeof note.text !== 'string' || note.text.length > MAX_INSPECT_TEXT)) ||
+      typeof note.comment !== 'string' || note.comment.length === 0 || note.comment.length > MAX_FEEDBACK_COMMENT ||
+      typeof note.pageUrl !== 'string' || note.pageUrl.length > MAX_WEB_PANE_URL_LENGTH ||
+      typeof rect !== 'object' || rect === null ||
+      !finite(rect.x) || !finite(rect.y) || !finite(rect.width) || !finite(rect.height) ||
+      !finite(note.capturedAt) || note.capturedAt < 0
+    ) {
+      throw new HttpError(400, 'Note is malformed')
+    }
+    return {
+      selector: note.selector,
+      tag: note.tag,
+      ...(note.text !== undefined ? { text: note.text } : {}),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      comment: note.comment,
+      pageUrl: note.pageUrl,
+      capturedAt: note.capturedAt,
+    }
+  })
 }
 
 function digest(value: string): Buffer {
@@ -171,6 +212,40 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'feedback') {
+        if (!this.dependencies.service.get(route.id)) {
+          throw new HttpError(404, 'Web pane does not exist')
+        }
+        if (request.method === 'POST') {
+          if (caller !== 'owner') {
+            throw new HttpError(403, 'Only the owner can submit feedback')
+          }
+          const notes = parseFeedbackNotes(await readJson(request))
+          this.dependencies.feedback.enqueue(route.id, notes)
+          this.dependencies.onChange()
+          const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
+          writeJson(response, 200, { ok: true, webPaneId: route.id, queued })
+          return true
+        }
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'agent') throw new HttpError(403, 'Only agents poll feedback')
+        const waitRaw = url.searchParams.get('wait') ?? '0'
+        const wait = Number(waitRaw)
+        if (!Number.isFinite(wait) || wait < 0 || wait > MAX_FEEDBACK_WAIT_MS / 1_000) {
+          throw new HttpError(400, 'wait must be between 0 and 60 seconds')
+        }
+        const controller = new AbortController()
+        const onClose = (): void => controller.abort()
+        request.on('close', onClose)
+        try {
+          const notes = await this.dependencies.feedback.drain(route.id, wait * 1_000, controller.signal)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+        } finally {
+          request.off('close', onClose)
+        }
+        return true
+      }
+
       if (route.action === 'confirm') {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (caller !== 'owner') {
@@ -203,7 +278,9 @@ export class WebPanesApi {
             'Allow',
             url.pathname === API_ROOT
               ? 'GET, POST'
-              : url.pathname.endsWith('/cdp') ? 'GET' : 'POST, DELETE',
+              : url.pathname.endsWith('/cdp') ? 'GET'
+              : url.pathname.endsWith('/feedback') ? 'GET, POST'
+              : 'POST, DELETE',
           )
         }
         writeJson(response, error.status, { error: error.message })
@@ -227,11 +304,11 @@ export class WebPanesApi {
     throw new HttpError(401, 'Unauthorized')
   }
 
-  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'delete' } {
+  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'delete' } {
     if (pathname === API_ROOT) return { kind: 'collection' }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp))?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback))?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
-    const action = match[2] === 'confirm' ? 'confirm' : match[2] === 'cdp' ? 'cdp' : 'delete'
+    const action = match[2] === 'confirm' ? 'confirm' : match[2] === 'cdp' ? 'cdp' : match[2] === 'feedback' ? 'feedback' : 'delete'
     return { kind: 'pane', id: match[1], action }
   }
 

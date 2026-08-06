@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebPanesApi } from './web-panes-api.js'
+import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { WebPaneService } from './web-panes.js'
 
 const AGENT_TOKEN = 'agent-hook-token-with-at-least-32-characters'
@@ -35,8 +36,10 @@ type Overrides = Partial<ConstructorParameters<typeof WebPanesApi>[0]>
 async function startApi(service: WebPaneService, overrides: Overrides = {}): Promise<{
   baseUrl: string
   onChange: ReturnType<typeof vi.fn>
+  feedback: WebPaneFeedbackStore
 }> {
   const onChange = vi.fn()
+  const feedback = overrides.feedback ?? new WebPaneFeedbackStore(() => onChange())
   const api = new WebPanesApi({
     service,
     agentToken: AGENT_TOKEN,
@@ -48,6 +51,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     agentLabel: (paneId) => (paneId === '%12' ? 'claude · gizmo' : undefined),
     onChange,
     ...overrides,
+    feedback,
   })
   const server = createServer((request, response) => {
     void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
@@ -57,7 +61,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     server.once('error', reject)
     server.listen(0, '127.0.0.1', resolve)
   })
-  return { baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, onChange }
+  return { baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, onChange, feedback }
 }
 
 function post(baseUrl: string, path: string, body: unknown, headers: Record<string, string> = {}) {
@@ -287,5 +291,88 @@ describe('web panes API', () => {
     expect((await open()).status).toBe(201)
     expect((await open()).status).toBe(201)
     expect((await open()).status).toBe(429)
+  })
+})
+
+async function openChromiumPane(service: WebPaneService): Promise<string> {
+  return service.open({
+    url: 'http://127.0.0.1:5173/',
+    anchorPaneId: '%12',
+    sessionId: '$1',
+    windowId: '@3',
+    engine: 'chromium',
+    openedBy: 'agent',
+  }).id
+}
+
+function feedbackNote(comment = 'make this button larger') {
+  return {
+    selector: '#root > button',
+    tag: 'button',
+    rect: { x: 1, y: 2, width: 30, height: 10 },
+    comment,
+    pageUrl: 'http://127.0.0.1:5173/',
+    capturedAt: 1_000,
+  }
+}
+
+describe('feedback routes', () => {
+  it('owner submits, agent drains, and onChange fires on the drain', async () => {
+    const service = await createService()
+    const { baseUrl, onChange } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const posted = await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote()] }, ownerAuth)
+    expect(posted.status).toBe(200)
+    onChange.mockClear()
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    expect(drained.status).toBe(200)
+    const body = await drained.json() as { notes: unknown[] }
+    expect(body.notes).toHaveLength(1)
+    expect(onChange).toHaveBeenCalled()
+    const again = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    expect(((await again.json()) as { notes: unknown[] }).notes).toHaveLength(0)
+  })
+
+  it('long-poll wakes when the owner submits mid-wait', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const pending = fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=10`, { headers: agentAuth })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote()] }, ownerAuth)
+    const body = await (await pending).json() as { notes: unknown[] }
+    expect(body.notes).toHaveLength(1)
+  })
+
+  it('rejects agents submitting and owners draining', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const submit = await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote()] }, agentAuth)
+    expect(submit.status).toBe(403)
+    const drain = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: { 'x-test-owner': 'yes' } })
+    expect(drain.status).toBe(403)
+  })
+
+  it('rejects malformed notes, unknown panes, and bad wait values', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [] }, ownerAuth)).status).toBe(400)
+    expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [{ comment: 'no selector' }] }, ownerAuth)).status).toBe(400)
+    expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [{ ...feedbackNote(), comment: 'x'.repeat(5000) }] }, ownerAuth)).status).toBe(400)
+    expect((await post(baseUrl, '/api/web-panes/w-00000000/feedback', { notes: [feedbackNote()] }, ownerAuth)).status).toBe(404)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=999`, { headers: agentAuth })).status).toBe(400)
+  })
+
+  it('returns 429 once the tile queue is full', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    for (let i = 0; i < 5; i += 1) {
+      const batch = Array.from({ length: 10 }, () => feedbackNote(`note ${i}`))
+      expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: batch }, ownerAuth)).status).toBe(200)
+    }
+    expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote()] }, ownerAuth)).status).toBe(429)
   })
 })
