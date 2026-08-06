@@ -3,6 +3,7 @@ export type PrScope = 'mine' | 'everyone'
 export type PrCheckState = 'pass' | 'fail' | 'pending'
 export type PrCheckRun = { name: string; state: PrCheckState }
 export type PrChecks = { state: PrCheckState; runs: PrCheckRun[]; failed: number; pending: number; total: number; truncated: boolean } | null
+export type PrReview = { login: string; state: 'approved' | 'changes_requested' }
 export type PrSummary = {
   number: number
   title: string
@@ -10,19 +11,27 @@ export type PrSummary = {
   state: 'open' | 'merged' | 'closed'
   isDraft: boolean
   author: string | null
+  bodyExcerpt: string
   additions: number
   deletions: number
   changedFiles: number
+  commitCount: number
   unresolvedThreads: number
   threadsTruncated: boolean
   reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  reviews: PrReview[]
+  requestedReviewers: string[]
   conflicting: boolean
   checks: PrChecks
+  createdAt: string
   updatedAt: string
   headRefName: string
+  baseRefName: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
 }
+export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
+export type PrThreads = { repo: string; number: number; threads: PrThreadExcerpt[]; truncated: boolean; fetchedAt: number }
 export type PrList = {
   repo: string
   filter: PrStateFilter
@@ -65,6 +74,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
   return {
     list: async (repo: string, state: PrStateFilter) =>
       (await request<{ list: PrList }>(`?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}`)).list,
+    threads: async (repo: string, number: number) =>
+      (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,
     repos: async () => (await request<{ repos: PrRepoOption[] }>('/repos')).repos,
     prefs: async () => (await request<{ prefs: PrPreferences }>('/prefs')).prefs,
     updatePrefs: async (patch: Partial<Omit<PrPreferences, 'version'>>) =>

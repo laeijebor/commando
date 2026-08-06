@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PrsSection, prsNeedAttention } from './PrsSection'
@@ -14,16 +14,22 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
     state: 'open',
     isDraft: false,
     author: 'leo',
+    bodyExcerpt: 'Adds the thing behind a flag.',
     additions: 100,
     deletions: 25,
     changedFiles: 4,
+    commitCount: 3,
     unresolvedThreads: 0,
     threadsTruncated: false,
     reviewDecision: null,
+    reviews: [],
+    requestedReviewers: [],
     conflicting: false,
     checks: null,
+    createdAt: '2026-08-01T09:00:00Z',
     updatedAt: new Date().toISOString(),
     headRefName: 'leo/thing',
+    baseRefName: 'main',
     viewerIsAuthor: true,
     viewerReviewRequested: false,
     ...overrides,
@@ -40,6 +46,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 type Routes = {
   list?: (url: string) => Response
+  threads?: (url: string) => Response
   prefsPut?: (body: unknown) => Response
 }
 
@@ -54,6 +61,9 @@ function stubFetch(routes: Routes = {}): void {
     if (url.includes('/api/prs/prefs')) {
       if (method === 'PUT' && routes.prefsPut) return routes.prefsPut(body)
       return jsonResponse({ prefs: { version: 1, pinnedRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+    }
+    if (url.includes('/api/prs/threads')) {
+      return routes.threads?.(url) ?? jsonResponse({ threads: { repo: 'acme/widgets', number: 12, threads: [], truncated: false, fetchedAt: 0 } })
     }
     if (url.includes('/api/prs/repos')) {
       return jsonResponse({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }, { nameWithOwner: 'acme/gadgets', pinned: false }] })
@@ -100,6 +110,73 @@ describe('PrsSection', () => {
     })
   })
 
+  it('renders the PR number in its own id row instead of inside the title link', async () => {
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr()]) }) })
+    render(<PrsSection token="t" />)
+    const title = await screen.findByRole('link', { name: 'feat: add thing' })
+    expect(title).toBeInTheDocument()
+    const number = screen.getByText('#12')
+    expect(number).toBeInTheDocument()
+    expect(title.contains(number)).toBe(false)
+  })
+
+  it('opens a hover popover with details after a delay and lazily loads thread excerpts', async () => {
+    stubFetch({
+      list: () => jsonResponse({
+        list: listWith([pr({
+          unresolvedThreads: 2,
+          baseRefName: 'release/2.0',
+          reviews: [{ login: 'timgent', state: 'approved' }],
+          requestedReviewers: ['dana'],
+          checks: { state: 'pass', runs: [{ name: 'Build', state: 'pass' }], failed: 0, pending: 0, total: 1, truncated: false },
+        })]),
+      }),
+      threads: () => jsonResponse({
+        threads: {
+          repo: 'acme/widgets', number: 12, truncated: false, fetchedAt: 0,
+          threads: [{ path: 'src/SocialFeed.tsx', author: 'andrii', excerpt: 'should this cache key include the session' }],
+        },
+      }),
+    })
+    const { container } = render(<PrsSection token="t" />)
+    await screen.findByRole('link', { name: 'feat: add thing' })
+    expect(screen.queryByText('Adds the thing behind a flag.')).not.toBeInTheDocument()
+
+    vi.useFakeTimers()
+    fireEvent.mouseEnter(container.querySelector('.pr-card')!)
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    vi.useRealTimers()
+
+    expect(await screen.findByText('Adds the thing behind a flag.')).toBeInTheDocument()
+    expect(screen.getByText('release/2.0')).toBeInTheDocument()
+    expect(screen.getByText('timgent')).toBeInTheDocument()
+    expect(screen.getByText(/dana/)).toBeInTheDocument()
+    expect(screen.getByText('Build')).toBeInTheDocument()
+    expect(await screen.findByText(/should this cache key include the session/)).toBeInTheDocument()
+    expect(requests.some((request) => request.url.includes('/api/prs/threads') && request.url.includes('number=12'))).toBe(true)
+  })
+
+  it('keeps the popover working when the thread request fails, and copies the number', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    stubFetch({
+      list: () => jsonResponse({ list: listWith([pr({ unresolvedThreads: 1 })]) }),
+      threads: () => jsonResponse({ error: 'boom', code: 'github_failed' }, 502),
+    })
+    const { container } = render(<PrsSection token="t" />)
+    await screen.findByRole('link', { name: 'feat: add thing' })
+
+    vi.useFakeTimers()
+    fireEvent.mouseEnter(container.querySelector('.pr-card')!)
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    vi.useRealTimers()
+
+    expect(await screen.findByText('Adds the thing behind a flag.')).toBeInTheDocument()
+    expect(await screen.findByText(/comments unavailable/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy #' }))
+    expect(writeText).toHaveBeenCalledWith('12')
+  })
+
   it('notes when the viewer-scoped searches overflow a page', async () => {
     stubFetch({
       list: () => jsonResponse({ list: listWith([pr()], 1, { mineTruncated: true }) }),
@@ -137,7 +214,8 @@ describe('PrsSection', () => {
     expect(screen.getByText('changes requested')).toBeInTheDocument()
     expect(screen.getByText('⚠ conflicts')).toBeInTheDocument()
     expect(screen.getByText('✗ 1 failing')).toBeInTheDocument()
-    expect(screen.getByText(/✗ Lint/)).toBeInTheDocument()
+    // The per-run breakdown lives in the hover popover now, not a chip tooltip.
+    expect(screen.queryByText(/✗ Lint/)).not.toBeInTheDocument()
   })
 
   it('falls back to a countless fail label when reruns cleared every named failure', async () => {

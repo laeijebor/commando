@@ -169,11 +169,15 @@
   background: rgba(49, 39, 20, 0.38);
 }
 
-.pr-card-top {
+.pr-idrow {
   display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  justify-content: space-between;
+  gap: 6px;
+  align-items: center;
+}
+
+.pr-idrule {
+  flex: 1;
+  border-top: 1px dashed var(--border-mid);
 }
 
 .pr-card-title {
@@ -191,11 +195,12 @@
 }
 
 .pr-number {
-  margin-right: 4px;
-  color: var(--text-dim);
+  flex: 0 0 auto;
+  color: var(--accent);
   font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 400;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .pr-state {
@@ -243,44 +248,137 @@
 .pr-diffstat .plus { color: var(--green); }
 .pr-diffstat .minus { color: var(--red); }
 
-.pr-checks {
-  position: relative;
-  cursor: default;
+.pr-pop {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
 }
 
-.pr-checks-pop {
-  position: absolute;
-  bottom: calc(100% + 5px);
-  left: 0;
-  z-index: 30;
-  display: none;
+.pr-pop-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pr-pop-num {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.pr-pop-title {
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.pr-pop-body {
+  margin: 0;
+  padding-left: 7px;
+  border-left: 2px solid var(--border-mid);
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.pr-pop-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 7.5px;
+}
+
+.pr-pop-row.mono { font-family: var(--mono); }
+.pr-pop-strong { color: var(--text-soft); overflow-wrap: anywhere; }
+.pr-pop-dim { color: var(--text-faint); }
+
+.pr-pop-sec {
+  display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 140px;
-  max-width: 220px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  background: var(--surface-raised);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
 }
 
-.pr-checks:hover .pr-checks-pop,
-.pr-checks:focus-visible .pr-checks-pop {
+.pr-pop-label {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pr-pop-line {
   display: flex;
-}
-
-.pr-checks-run {
+  gap: 5px;
+  align-items: baseline;
   overflow: hidden;
   color: var(--text-soft);
-  font-size: 7px;
-  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 7.5px;
   white-space: nowrap;
 }
 
-.pr-checks-run.fail { color: var(--red); }
-.pr-checks-run.pending { color: var(--amber); }
-.pr-checks-run.dim { color: var(--text-dim); }
+.pr-pop-line > span { overflow: hidden; text-overflow: ellipsis; }
+.pr-pop-line.pass { color: var(--green); }
+.pr-pop-line.fail { color: var(--red); }
+.pr-pop-line.pending { color: var(--amber); }
+.pr-pop-line.dim { color: var(--text-dim); }
+
+.pr-pop-thread {
+  color: var(--muted);
+  font-size: 7.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.pr-pop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pr-pop-btn {
+  padding: 3px 7px;
+  border: 1px solid var(--border-mid);
+  border-radius: 999px;
+  color: var(--text-soft);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.pr-pop-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pr-pop-btn.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
 
 .pr-foot {
   display: flex;

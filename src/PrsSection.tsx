@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { GitPullRequestArrow, Pin, PinOff, Plus, RefreshCw } from 'lucide-react'
 import {
   createPrsApi,
@@ -6,10 +7,15 @@ import {
   type PrScope,
   type PrStateFilter,
   type PrSummary,
+  type PrThreads,
 } from './prsApi'
 import './prs-section.css'
 
 export const PRS_POLL_INTERVAL_MS = 30_000
+export const PR_HOVER_DELAY_MS = 350
+const PR_HOVER_CLOSE_DELAY_MS = 120
+const PR_POP_WIDTH = 260
+const PR_POP_MAX_CHECKS = 12
 
 function relativeTime(iso: string): string {
   const then = Date.parse(iso)
@@ -44,39 +50,195 @@ function ChecksChip({ checks }: { checks: PrSummary['checks'] }) {
   const label = checks.state === 'fail'
     ? (checks.failed > 0 ? `✗ ${checks.failed} failing` : '✗ checks')
     : checks.state === 'pending' ? (checks.pending > 0 ? `● ${checks.pending} running` : '● running') : '✓ checks'
-  const detail = checks.runs
-    .filter((run) => run.state !== 'pass')
-    .slice(0, 8)
-  return (
-    <span className={`pr-chip pr-checks ${checks.state}`} tabIndex={0}>
-      {label}
-      {detail.length > 0 ? (
-        <span className="pr-checks-pop" role="tooltip">
-          {detail.map((run) => (
-            <span key={run.name} className={`pr-checks-run ${run.state}`}>
-              {run.state === 'fail' ? '✗' : '●'} {run.name}
+  return <span className={`pr-chip ${checks.state}`}>{label}</span>
+}
+
+function fileName(path: string): string {
+  return path.split('/').pop() ?? path
+}
+
+function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave }: {
+  pr: PrSummary
+  position: { top: number; left: number }
+  threads: PrThreads | null
+  threadsFailed: boolean
+  onEnter: () => void
+  onLeave: () => void
+}) {
+  const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
+  const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
+  const pendingReviewers = pr.requestedReviewers.filter((login) => !pr.reviews.some((review) => review.login === login))
+  const checkRuns = pr.checks?.runs ?? []
+  return createPortal(
+    <div
+      className="pr-pop"
+      style={{ top: position.top, left: position.left, width: PR_POP_WIDTH }}
+      role="dialog"
+      aria-label={`Details for #${pr.number}`}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+    >
+      <div className="pr-pop-head">
+        <span className="pr-pop-num">#{pr.number}</span>
+        <span className={`pr-state ${stateClass}`}>{stateLabel}</span>
+      </div>
+      <div className="pr-pop-title">{pr.title}</div>
+      {pr.bodyExcerpt ? <p className="pr-pop-body">{pr.bodyExcerpt}</p> : null}
+      <div className="pr-pop-row mono">
+        <span className="pr-pop-strong">{pr.headRefName}</span>
+        <span className="pr-pop-dim">→</span>
+        <span>{pr.baseRefName}</span>
+      </div>
+      <div className="pr-pop-row">
+        {pr.createdAt ? `opened ${relativeTime(pr.createdAt)}` : 'opened'}
+        {pr.author ? ` by ${pr.author}` : ''} · {formatCount(pr.commitCount)} commits · {formatCount(pr.changedFiles)} files
+      </div>
+      {pr.reviews.length > 0 || pendingReviewers.length > 0 ? (
+        <div className="pr-pop-sec">
+          <span className="pr-pop-label">Reviews</span>
+          {pr.reviews.map((review) => (
+            <span key={review.login} className={`pr-pop-line ${review.state === 'approved' ? 'pass' : 'fail'}`}>
+              <span className="pr-pop-glyph">{review.state === 'approved' ? '✓' : '✗'}</span>
+              <span>{review.login}</span>
+              <span className="pr-pop-dim">{review.state === 'approved' ? 'approved' : 'changes requested'}</span>
             </span>
           ))}
-          {checks.truncated ? <span className="pr-checks-run dim">…more on GitHub</span> : null}
-        </span>
+          {pendingReviewers.map((login) => (
+            <span key={login} className="pr-pop-line pending">
+              <span className="pr-pop-glyph">●</span>
+              <span>{login} requested</span>
+            </span>
+          ))}
+        </div>
       ) : null}
-    </span>
+      {checkRuns.length > 0 ? (
+        <div className="pr-pop-sec">
+          <span className="pr-pop-label">
+            Checks{pr.checks && pr.checks.failed > 0 ? ` · ${pr.checks.failed} of ${pr.checks.total} failing` : ` · ${checkRuns.length}`}
+          </span>
+          {checkRuns.slice(0, PR_POP_MAX_CHECKS).map((run) => (
+            <span key={run.name} className={`pr-pop-line ${run.state}`}>
+              <span className="pr-pop-glyph">{run.state === 'fail' ? '✗' : run.state === 'pending' ? '●' : '✓'}</span>
+              <span>{run.name}</span>
+            </span>
+          ))}
+          {checkRuns.length > PR_POP_MAX_CHECKS || pr.checks?.truncated ? (
+            <span className="pr-pop-line dim">…more on GitHub</span>
+          ) : null}
+        </div>
+      ) : null}
+      {pr.unresolvedThreads > 0 ? (
+        <div className="pr-pop-sec">
+          <span className="pr-pop-label">Unresolved · {pr.unresolvedThreads}{pr.threadsTruncated ? '+' : ''}</span>
+          {threadsFailed ? (
+            <span className="pr-pop-line dim">comments unavailable</span>
+          ) : !threads ? (
+            <span className="pr-pop-line dim">loading comments…</span>
+          ) : (
+            threads.threads.map((thread, index) => (
+              <span key={index} className="pr-pop-thread">
+                <span className="pr-pop-strong">{thread.author ?? 'someone'}</span>
+                {thread.path ? <span className="pr-pop-dim"> on {fileName(thread.path)}</span> : null}
+                {thread.excerpt ? <>: “{thread.excerpt}”</> : null}
+              </span>
+            ))
+          )}
+          {threads?.truncated ? <span className="pr-pop-line dim">…more on GitHub</span> : null}
+        </div>
+      ) : null}
+      <div className="pr-pop-actions">
+        <a className="pr-pop-btn primary" href={pr.url} target="_blank" rel="noreferrer">Open on GitHub</a>
+        <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
+        <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
+        <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.url).catch(() => undefined) }}>Copy URL</button>
+      </div>
+    </div>,
+    document.body,
   )
 }
 
-function PrCard({ pr, viewer }: { pr: PrSummary; viewer: string }) {
+function PrCard({ pr, viewer, repo, api }: {
+  pr: PrSummary
+  viewer: string
+  repo: string
+  api: ReturnType<typeof createPrsApi>
+}) {
   const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
   const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
   const attention = pr.state === 'open' && (pr.conflicting || (pr.viewerIsAuthor && pr.checks?.state === 'fail'))
+
+  const cardRef = useRef<HTMLElement | null>(null)
+  const openTimer = useRef<number | null>(null)
+  const closeTimer = useRef<number | null>(null)
+  const [popover, setPopover] = useState<{ top: number; left: number } | null>(null)
+  const [threads, setThreads] = useState<PrThreads | null>(null)
+  const [threadsFailed, setThreadsFailed] = useState(false)
+
+  useEffect(() => () => {
+    if (openTimer.current !== null) window.clearTimeout(openTimer.current)
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+  }, [])
+
+  const openNow = () => {
+    const rect = cardRef.current?.getBoundingClientRect()
+    if (!rect) return
+    // The HUD hugs the right edge, so prefer opening leftward over the pane
+    // grid; drop below the card when there is no room.
+    const fitsLeft = rect.left >= PR_POP_WIDTH + 18
+    setPopover(fitsLeft
+      ? { top: Math.max(8, Math.min(rect.top - 8, window.innerHeight - 340)), left: rect.left - PR_POP_WIDTH - 10 }
+      : { top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - PR_POP_WIDTH - 8)) })
+  }
+  const cancelTimers = () => {
+    if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
+    if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
+  }
+  const scheduleOpen = () => {
+    if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
+    if (popover || openTimer.current !== null) return
+    openTimer.current = window.setTimeout(() => { openTimer.current = null; openNow() }, PR_HOVER_DELAY_MS)
+  }
+  const scheduleClose = () => {
+    if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
+    if (closeTimer.current !== null) return
+    closeTimer.current = window.setTimeout(() => { closeTimer.current = null; setPopover(null) }, PR_HOVER_CLOSE_DELAY_MS)
+  }
+  const keepOpen = () => cancelTimers()
+
+  useEffect(() => {
+    if (!popover || pr.unresolvedThreads === 0 || threads || threadsFailed) return
+    let active = true
+    api.threads(repo, pr.number)
+      .then((next) => { if (active) setThreads(next) })
+      .catch(() => { if (active) setThreadsFailed(true) })
+    return () => { active = false }
+  }, [popover, threads, threadsFailed, api, repo, pr.number, pr.unresolvedThreads])
+
   return (
-    <article className={`pr-card${attention ? ' attention' : ''}`}>
-      <div className="pr-card-top">
-        <a className="pr-card-title" href={pr.url} target="_blank" rel="noreferrer">
-          <span className="pr-number">#{pr.number}</span>
-          {pr.title}
-        </a>
+    <article
+      ref={cardRef}
+      className={`pr-card${attention ? ' attention' : ''}`}
+      onMouseEnter={scheduleOpen}
+      onMouseLeave={scheduleClose}
+      onFocus={scheduleOpen}
+      onBlur={scheduleClose}
+    >
+      <div className="pr-idrow">
+        <span className="pr-number">#{pr.number}</span>
+        <span className="pr-idrule" aria-hidden="true" />
         <span className={`pr-state ${stateClass}`}>{stateLabel}</span>
       </div>
+      <a className="pr-card-title" href={pr.url} target="_blank" rel="noreferrer">{pr.title}</a>
+      {popover ? (
+        <PrPopover
+          pr={pr}
+          position={popover}
+          threads={threads}
+          threadsFailed={threadsFailed}
+          onEnter={keepOpen}
+          onLeave={scheduleClose}
+        />
+      ) : null}
       <div className="pr-meta">
         <span className="pr-chip pr-diffstat">
           <span className="plus">+{formatCount(pr.additions)}</span>
@@ -337,19 +499,19 @@ export function PrsSection({
             {groups.yours.length > 0 ? (
               <section className="prs-group" aria-label="Your pull requests">
                 <header><strong>Yours</strong><small>{groups.yours.length}</small></header>
-                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} key={pr.number} />)}
+                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
               </section>
             ) : null}
             {groups.needsReview.length > 0 ? (
               <section className="prs-group" aria-label="Pull requests awaiting your review">
                 <header><strong>Needs your review</strong><small>{groups.needsReview.length}</small></header>
-                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} key={pr.number} />)}
+                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
               </section>
             ) : null}
             {showEveryone && groups.everyone.length > 0 ? (
               <section className="prs-group" aria-label="Everyone's pull requests">
                 <header><strong>Everyone&rsquo;s</strong><small>{groups.everyone.length}</small></header>
-                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} key={pr.number} />)}
+                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
               </section>
             ) : null}
             {list.mineTruncated ? (
