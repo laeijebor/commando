@@ -97,10 +97,11 @@ panes. The API also accepts owner auth: `GET /api/web-panes`,
 `POST /api/web-panes {url, anchor, placement?}`,
 `POST /api/web-panes/:id/confirm {allowOrigin?}`, `DELETE /api/web-panes/:id`.
 
-For an agent-facing snippet, add to the project's agent instructions: "After
-publishing anything reviewable on localhost (a served HTML page, a dev
-server), run `scripts/commando-open <url>` from your pane so the human sees it
-next to your terminal."
+For agents, install the `show-in-commando` skill into the Claude Code and
+OpenCode skill directories with `scripts/install-show-in-commando-skill`
+(canonical copy: `skills/show-in-commando/SKILL.md`, safe to rerun after
+edits). It teaches agents in any project to open served pages beside their
+own pane and to fall back to sharing the URL when Commando is absent.
 
 ## Commando Island
 
