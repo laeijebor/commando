@@ -601,10 +601,18 @@ final class TerminalPaneHostTests: XCTestCase {
         surface.destroy()
     }
 
-    func testTerminalInterceptsOnlyProductCommandShortcuts() throws {
+    func testTerminalInterceptsOnlyProductCommandShortcutsWhileFocused() throws {
         var shortcuts: [String] = []
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         view.shortcutWasPressed = { shortcuts.append($0) }
+        let window = NSWindow(
+            contentRect: view.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
 
         let commandK = try XCTUnwrap(keyEvent(key: "k", modifiers: .command, keyCode: 40))
         let command4 = try XCTUnwrap(keyEvent(key: "4", modifiers: .command, keyCode: 21))
@@ -617,6 +625,12 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(view.performKeyEquivalent(with: command4))
         _ = view.performKeyEquivalent(with: shiftedCommandK)
         XCTAssertEqual(shortcuts, ["k", "4"])
+
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertFalse(view.performKeyEquivalent(with: commandK))
+        XCTAssertEqual(shortcuts, ["k", "4"])
+        window.contentView = nil
+        window.orderOut(nil)
     }
 
     func testTerminalSendsXtermOptionArrowSequences() throws {
@@ -804,6 +818,14 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(copiedCount, 3)
         XCTAssertFalse(pasteboard.string(forType: .string)?.isEmpty ?? true)
 
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
         let commandC = try XCTUnwrap(keyEvent(key: "c", modifiers: .command, keyCode: 8))
         XCTAssertTrue(surface.view.performKeyEquivalent(with: commandC))
         XCTAssertEqual(copiedCount, 4)
@@ -831,6 +853,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertFalse(surface.view.selectionActive)
         XCTAssertEqual(copiedCount, 4)
         surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
     }
 
     func testOnlyOptionRightClickRequestsNormalizedContextMenu() throws {

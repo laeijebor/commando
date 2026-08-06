@@ -328,6 +328,11 @@ final class HostedTerminalView: TerminalView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit offers key equivalents to every view in hierarchy order, not just
+        // the first responder, so an unfocused pane must let the event pass.
+        guard window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
         let shortcutModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased() {

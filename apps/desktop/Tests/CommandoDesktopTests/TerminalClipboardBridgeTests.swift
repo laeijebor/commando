@@ -125,6 +125,14 @@ final class TerminalClipboardBridgeTests: XCTestCase {
             if case let .paste(text) = event { pasted.append(text) }
             if case let .input(data) = event { inputs.append(data) }
         }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
         let commandV = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
@@ -142,6 +150,8 @@ final class TerminalClipboardBridgeTests: XCTestCase {
         XCTAssertEqual(pasted, ["line one\nline two"])
         XCTAssertTrue(inputs.isEmpty)
         surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
     }
 
     private func makePasteboard() -> NSPasteboard {
