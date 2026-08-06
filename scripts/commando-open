@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# commando-open — open a URL as a web tile beside this tmux pane in Commando.
+#
+#   commando-open <url> [right|below|auto]
+#
+# Meant for agents (and humans) running inside a tmux pane that Commando
+# mirrors: the tile appears next to this pane in every connected client.
+# Authorizes with the agent hook token (~/.commando/agent-hook-token), the
+# same secret the agent status hooks already use. localhost URLs open
+# immediately; other origins wait for the owner to confirm in the UI.
+set -euo pipefail
+
+url="${1:-}"
+placement="${2:-auto}"
+port="${COMMANDO_PORT:-4310}"
+token_file="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
+pane="${TMUX_PANE:-}"
+
+if [ -z "$url" ]; then
+  echo "usage: commando-open <url> [right|below|auto]" >&2
+  exit 2
+fi
+if [ -z "$pane" ]; then
+  echo "commando-open: not inside a tmux pane (TMUX_PANE is unset)" >&2
+  exit 1
+fi
+if [ ! -r "$token_file" ]; then
+  echo "commando-open: agent hook token not readable at $token_file" >&2
+  echo "commando-open: run 'npm run hooks:install' in the commando repo first" >&2
+  exit 1
+fi
+case "$placement" in
+  right|below|auto) ;;
+  *)
+    echo "commando-open: placement must be right, below, or auto" >&2
+    exit 2
+    ;;
+esac
+
+body=$(node -e 'console.log(JSON.stringify({ url: process.argv[1], anchor: process.argv[2], placement: process.argv[3] }))' "$url" "$pane" "$placement")
+
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:${port}/api/web-panes" \
+  -H "Authorization: Bearer $(cat "$token_file")" \
+  -H 'Content-Type: application/json' \
+  --data "$body"
+echo

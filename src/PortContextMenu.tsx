@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react'
+import { PanelRight, Trash2 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { OpenPort } from '../shared/protocol'
@@ -10,9 +10,10 @@ type Props = {
   busy: boolean
   onClose: () => void
   onKill: () => void
+  onOpenAsTile?: () => void
 }
 
-export function PortContextMenu({ port, x, y, busy, onClose, onKill }: Props) {
+export function PortContextMenu({ port, x, y, busy, onClose, onKill, onOpenAsTile }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState({ x, y })
 
@@ -52,6 +53,19 @@ export function PortContextMenu({ port, x, y, busy, onClose, onKill }: Props) {
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="port-context-menu__title">{port.processName} :{port.port}</div>
+      {onOpenAsTile ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onClose()
+            onOpenAsTile()
+          }}
+        >
+          <PanelRight aria-hidden="true" />
+          Open as web tile
+        </button>
+      ) : null}
       <button
         type="button"
         className="danger"

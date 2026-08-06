@@ -92,7 +92,7 @@ import { insertWebPaneLeaves } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
-import { PortsSection } from './PortsSection'
+import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { createNotesApi } from './notesApi'
@@ -2081,6 +2081,10 @@ export function App() {
             selectedSessionId={selectedSessionId}
             onSelectSession={selectSession}
             onSelectPane={jumpToPane}
+            onOpenAsTile={(port) => {
+              jumpToPane(port.paneId)
+              void openWebPane(openPortUrl(port.port), port.paneId)
+            }}
           />
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />

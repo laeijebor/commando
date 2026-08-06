@@ -12,6 +12,7 @@ type Props = {
   selectedSessionId: string | null
   onSelectSession: (sessionId: string) => void
   onSelectPane: (paneId: string) => void
+  onOpenAsTile?: (port: OpenPort) => void
 }
 
 export function openPortUrl(port: number): string {
@@ -21,7 +22,7 @@ export function openPortUrl(port: number): string {
   return url.toString()
 }
 
-export function PortsSection({ token, sessions, ports, selectedSessionId, onSelectSession, onSelectPane }: Props) {
+export function PortsSection({ token, sessions, ports, selectedSessionId, onSelectSession, onSelectPane, onOpenAsTile }: Props) {
   const api = useRef(createPortManagementApi(token)).current
   const [collapsed, setCollapsed] = useState(false)
   const [menu, setMenu] = useState<{ port: OpenPort; x: number; y: number } | null>(null)
@@ -153,6 +154,7 @@ export function PortsSection({ token, sessions, ports, selectedSessionId, onSele
           busy={pending}
           onClose={() => setMenu(null)}
           onKill={() => void killPort(menu.port)}
+          onOpenAsTile={onOpenAsTile ? () => onOpenAsTile(menu.port) : undefined}
         />
       ) : null}
     </section>

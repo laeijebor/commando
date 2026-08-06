@@ -70,6 +70,38 @@ The bridges also provide the HUD with bounded task intent, normalized tool activ
 
 Interactive bridges additionally forward bounded permission labels, question text, and answer labels while a request is pending. Values pass through the same credential redaction and size limits as HUD metadata. Claude Code receives answers through its synchronous `PermissionRequest` hook output; OpenCode receives them through its local permission and question SDK methods. If Commando Island is not connected, hooks return immediately and the normal terminal prompt remains in control.
 
+## Web Pane Tiles
+
+Agents (and you) can open a web page as a tile in the pane grid, right beside a
+tmux pane — a Lavish review page, an `npx serve` output, a vite dev server, or
+docs. From inside any mirrored tmux pane:
+
+```bash
+scripts/commando-open http://127.0.0.1:41300/plan          # beside this pane
+scripts/commando-open http://localhost:5173/ below         # placement: right|below|auto
+```
+
+The script posts to `POST /api/web-panes` with the agent hook token and this
+pane's `$TMUX_PANE` as the anchor; the tile appears in every connected client.
+In the UI, type a URL (or `localhost:5173` / `:5173` shorthand) into the ⌘K
+palette to open a tile beside the focused pane, or Option-right-click a
+detected port in the Ports panel and pick "Open as web tile".
+
+Trust model: `localhost`/loopback URLs open immediately; any other origin
+renders as a pending card until the owner clicks Open (optionally "Always
+allow" to remember the origin). Web panes and the origin allowlist persist in
+`~/.commando/web-panes.json`. Tiles exist only in Commando's rendered layout —
+tmux never sees them; the real panes are resized around the tile through the
+usual resize-lease machinery, and raw tmux attachments keep seeing only real
+panes. The API also accepts owner auth: `GET /api/web-panes`,
+`POST /api/web-panes {url, anchor, placement?}`,
+`POST /api/web-panes/:id/confirm {allowOrigin?}`, `DELETE /api/web-panes/:id`.
+
+For an agent-facing snippet, add to the project's agent instructions: "After
+publishing anything reviewable on localhost (a served HTML page, a dev
+server), run `scripts/commando-open <url>` from your pane so the human sees it
+next to your terminal."
+
 ## Commando Island
 
 Commando Island is a dependency-free SwiftUI/AppKit app under `apps/island`. It uses a non-activating top-center panel on every display, including Macs without a notch. The compact bar shows the current status, tmux session name, agent session title or stable agent-session reference, remaining provider usage, and total session count. Hover or click to expand the panel and see every tmux session. Pending permission requests and questions expand it automatically.
