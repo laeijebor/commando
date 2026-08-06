@@ -35,36 +35,42 @@ function webLeaf(
   return { kind: 'pane', paneId: webPane.id, cols, rows, left, top }
 }
 
+/**
+ * The wrapper split's extent must be the SUM of anchor + tile (tmux's own
+ * convention for splits). The subtree's layout weight at its parent comes
+ * from that extent, so counting the tile's share keeps the anchor's ratio to
+ * its siblings a fixed point: the measured-layout path writes the anchor's
+ * halved cells back to tmux, and on the next render the doubled wrapper
+ * weight restores the same proportions. Sizing the tile as a fraction of the
+ * anchor's own extent instead creates a feedback loop that shrinks the
+ * anchor to the minimum pane size.
+ */
 function splitAnchor(anchor: WindowLayoutPane, webPane: WebPane): WindowLayoutNode {
   const placement = resolvePlacement(webPane.placement, anchor)
   if (placement === 'right') {
-    const anchorCols = Math.max(1, Math.ceil(anchor.cols / 2))
-    const webCols = Math.max(1, anchor.cols - anchorCols)
     return {
       kind: 'split',
       direction: 'row',
-      cols: anchor.cols,
+      cols: anchor.cols * 2,
       rows: anchor.rows,
       left: anchor.left,
       top: anchor.top,
       children: [
-        { ...anchor, cols: anchorCols },
-        webLeaf(webPane, webCols, anchor.rows, anchor.left + anchorCols, anchor.top),
+        anchor,
+        webLeaf(webPane, anchor.cols, anchor.rows, anchor.left + anchor.cols, anchor.top),
       ],
     }
   }
-  const anchorRows = Math.max(1, Math.ceil(anchor.rows / 2))
-  const webRows = Math.max(1, anchor.rows - anchorRows)
   return {
     kind: 'split',
     direction: 'column',
     cols: anchor.cols,
-    rows: anchor.rows,
+    rows: anchor.rows * 2,
     left: anchor.left,
     top: anchor.top,
     children: [
-      { ...anchor, rows: anchorRows },
-      webLeaf(webPane, anchor.cols, webRows, anchor.left, anchor.top + anchorRows),
+      anchor,
+      webLeaf(webPane, anchor.cols, anchor.rows, anchor.left, anchor.top + anchor.rows),
     ],
   }
 }
