@@ -300,6 +300,115 @@ describe('HUD tabs', () => {
   })
 })
 
+const openWebPane = {
+  id: 'w-abcd1234',
+  url: 'http://127.0.0.1:41300/plan',
+  sessionId: '$3',
+  windowId: '@2',
+  anchorPaneId: '%12',
+  placement: 'right',
+  openedBy: 'agent',
+  openerLabel: 'claude · gizmo',
+  status: 'open',
+  createdAt: Date.now(),
+} as const
+
+describe('web pane tiles', () => {
+  it('renders a tile from a web_panes broadcast beside the tmux panes', async () => {
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+
+    const frame = await screen.findByTitle('Web pane: 127.0.0.1:41300')
+    expect(frame).toHaveAttribute('src', 'http://127.0.0.1:41300/plan')
+    expect(screen.getByText(/opened by claude · gizmo/)).toBeInTheDocument()
+    // Terminal panes are still there, in the same layout.
+    expect(screen.getByTestId('renderer-%12')).toBeInTheDocument()
+    expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
+  })
+
+  it('does not render tiles that belong to another window', async () => {
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({
+      type: 'web_panes',
+      webPanes: [{ ...openWebPane, windowId: '@9' }],
+    }))
+    expect(screen.queryByTitle('Web pane: 127.0.0.1:41300')).not.toBeInTheDocument()
+  })
+
+  it('closes a tile optimistically and tells the daemon', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/web-panes')) {
+        expect(init?.method).toBe('DELETE')
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+    })
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close web pane' }))
+
+    expect(screen.queryByTitle('Web pane: 127.0.0.1:41300')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/web-panes/w-abcd1234',
+        expect.objectContaining({ method: 'DELETE' }),
+      )
+    })
+  })
+
+  it('shows the pending confirm card and posts the owner decision', async () => {
+    const confirmed = vi.fn()
+    const fetchMock = vi.mocked(globalThis.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/confirm')) {
+        confirmed(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+    })
+    await renderAppWithSnapshot()
+    const pending = {
+      ...openWebPane,
+      url: 'https://reactnative.dev/docs/flatlist',
+      status: 'pending' as const,
+    }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [pending] }))
+
+    expect(await screen.findByText(/wants to open/)).toBeInTheDocument()
+    expect(screen.queryByTitle(/Web pane:/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Always allow/ }))
+    await waitFor(() => expect(confirmed).toHaveBeenCalledWith({ allowOrigin: true }))
+
+    // The daemon broadcasts the confirmed tile; the iframe replaces the card.
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...pending, status: 'open' as const }] }))
+    expect(await screen.findByTitle('Web pane: reactnative.dev')).toBeInTheDocument()
+  })
+})
+
+describe('webPaneUrlFromQuery', () => {
+  it('accepts full urls, localhost shorthands, and port shorthands', async () => {
+    const { webPaneUrlFromQuery } = await import('./App')
+    expect(webPaneUrlFromQuery('https://reactnative.dev/docs')).toBe('https://reactnative.dev/docs')
+    expect(webPaneUrlFromQuery('localhost:5173')).toBe('http://localhost:5173/')
+    expect(webPaneUrlFromQuery(':41300/plan')).toBe('http://localhost:41300/plan')
+    expect(webPaneUrlFromQuery('127.0.0.1:8080/x')).toBe('http://127.0.0.1:8080/x')
+  })
+
+  it('rejects non-url palette queries', async () => {
+    const { webPaneUrlFromQuery } = await import('./App')
+    expect(webPaneUrlFromQuery('open session')).toBeNull()
+    expect(webPaneUrlFromQuery('theme')).toBeNull()
+    expect(webPaneUrlFromQuery('')).toBeNull()
+    expect(webPaneUrlFromQuery('notaurl:5173')).toBeNull()
+  })
+})
+
 describe('desktop resize authority', () => {
   it('keeps focused split weights stable across tmux resize echoes', async () => {
     await renderAppWithSnapshot()

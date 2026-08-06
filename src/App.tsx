@@ -57,6 +57,7 @@ import type {
   ServerMessage,
   SpecialKey,
   TmuxPane,
+  WebPane,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -85,6 +86,9 @@ import { SessionTree } from './SessionTree'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
+import { createWebPanesApi } from './webPanesApi'
+import { WebPaneCard } from './WebPaneCard'
+import { insertWebPaneLeaves } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
@@ -626,6 +630,28 @@ type PaletteCommand = {
   run: () => void
 }
 
+/**
+ * Reads a URL out of the palette query so typing one offers "open as a web
+ * tile". Accepts full http(s) URLs, bare localhost/loopback hosts, and the
+ * `:5173` port shorthand.
+ */
+export function webPaneUrlFromQuery(query: string): string | null {
+  const trimmed = query.trim()
+  if (!trimmed || /\s/.test(trimmed)) return null
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      return new URL(trimmed).toString()
+    } catch {
+      return null
+    }
+  }
+  if (/^:\d+/.test(trimmed)) return webPaneUrlFromQuery(`http://localhost${trimmed}`)
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(trimmed)) {
+    return webPaneUrlFromQuery(`http://${trimmed}`)
+  }
+  return null
+}
+
 type CommandoArea = 'workspace' | 'linear' | 'notes'
 
 function defaultOwnerName(email: string | null): string {
@@ -781,6 +807,7 @@ export function App() {
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
+  const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
@@ -1019,6 +1046,9 @@ export function App() {
             return next
           })
         }
+        break
+      case 'web_panes':
+        setWebPanes(message.webPanes)
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
@@ -1594,6 +1624,36 @@ export function App() {
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
+  const webPanesApi = createWebPanesApi(token)
+
+  const openWebPane = async (url: string, anchorPaneId: string) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.open(url, anchorPaneId)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to open web pane')
+    }
+  }
+
+  const closeWebPane = async (webPaneId: string) => {
+    setPaneActionError('')
+    // Drop the tile locally right away; the daemon broadcast confirms it.
+    setWebPanes((current) => current.filter((webPane) => webPane.id !== webPaneId))
+    try {
+      await webPanesApi.close(webPaneId)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    }
+  }
+
+  const confirmWebPane = async (webPaneId: string, allowOrigin: boolean) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.confirm(webPaneId, allowOrigin)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to open web pane')
+    }
+  }
 
   const openPaneMenu = (paneId: string, x: number, y: number) => {
     setFocusedPaneId(paneId)
@@ -1660,7 +1720,23 @@ export function App() {
     }
   }
 
+  const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
+  const webPaneAnchorId = activeGroup && focusedPaneId && activeGroup.paneIds.includes(focusedPaneId)
+    ? focusedPaneId
+    : activeGroup?.paneIds[0]
   const commands: PaletteCommand[] = [
+    ...(paletteWebPaneUrl ? [{
+      id: 'web-pane:open',
+      label: `Open ${paletteWebPaneUrl} as a web tile`,
+      detail: webPaneAnchorId
+        ? 'Embed the page beside the focused pane'
+        : 'No pane available to anchor the tile',
+      kind: 'action' as const,
+      run: () => {
+        if (webPaneAnchorId) void openWebPane(paletteWebPaneUrl, webPaneAnchorId)
+        setPaletteOpen(false)
+      },
+    }] : []),
     {
       id: 'refresh',
       label: 'Refresh daemon snapshot',
@@ -2109,6 +2185,15 @@ export function App() {
               const visibleTree = windowTree
                 ? filterLayoutTree(windowTree, new Set(visibleGroupPanes.map((pane) => pane.id)))
                 : null
+              // Web pane tiles join the rendered tree only: every tmux write
+              // path re-derives its tree from tmux's layout string, so these
+              // synthetic leaves can never reach a LayoutSpec.
+              const groupWebPanes = maximizedPaneId
+                ? []
+                : webPanes.filter((webPane) => webPane.windowId === group.windowId)
+              const displayTree = visibleTree && groupWebPanes.length > 0
+                ? insertWebPaneLeaves(visibleTree, groupWebPanes)
+                : visibleTree
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -2138,17 +2223,17 @@ export function App() {
                       ))}
                     </div>
                   </header>
-                  {visibleTree && visibleGroupPanes.length ? (
+                  {displayTree && visibleGroupPanes.length ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
                       layoutKey={webLayoutAuthoritative || activeResizePaneId !== null
                         // While the browser owns geometry, only a shape change may
                         // discard local weights; tmux cell rounding must not feed back.
-                        ? `shape:${layoutShapeKey(visibleTree)}`
-                        : window?.layout ?? ''}
-                      tree={visibleTree}
+                        ? `shape:${layoutShapeKey(displayTree)}`
+                        : `${window?.layout ?? ''}|web:${groupWebPanes.map((webPane) => webPane.id).join(',')}`}
+                      tree={displayTree}
                       onCommit={() => commitWindowLayout(group.windowId)}
-                      panes={new Map(visibleGroupPanes.map((pane) => {
+                      panes={new Map<string, ReactNode>(visibleGroupPanes.map((pane) => {
                         const rendererIdentity = paneRendererIdentity(pane)
                         const storedRendererControl = paneRendererControls.get(pane.id)
                         const rendererControl = storedRendererControl?.identity === rendererIdentity
@@ -2228,7 +2313,15 @@ export function App() {
                             registerFocusable={registerFocusable}
                           />,
                           ] as const
-                      }))}
+                      }).concat(groupWebPanes.map((webPane) => [
+                        webPane.id,
+                        <WebPaneCard
+                          key={webPane.id}
+                          webPane={webPane}
+                          onClose={() => void closeWebPane(webPane.id)}
+                          onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
+                        />,
+                      ] as const)))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
