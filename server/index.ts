@@ -32,6 +32,8 @@ import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
 import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
+import { ChromiumEngine } from './chromium-engine.js'
+import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
 import { PrService } from './prs.js'
@@ -424,6 +426,31 @@ async function main(): Promise<void> {
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
   })
+  const chromiumEngine = new ChromiumEngine({
+    classify: (url) => webPanes.classify(url),
+    onExternalNavigation: (webPaneId, navigatedUrl) => {
+      const pane = webPanes.repend(webPaneId, navigatedUrl)
+      if (pane?.status === 'pending') publishWebPanes()
+    },
+    onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+  })
+  const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
+  /**
+   * Single funnel for web-pane changes: closes engine targets and tile
+   * streams that no longer correspond to an open chromium tile, then
+   * broadcasts the new list.
+   */
+  const publishWebPanes = (): void => {
+    const streamable = new Set(
+      webPanes
+        .list()
+        .filter((pane) => pane.engine === 'chromium' && pane.status === 'open')
+        .map((pane) => pane.id),
+    )
+    chromiumEngine.syncTiles(streamable)
+    webTileRelay.dropStale(streamable)
+    broadcast({ type: 'web_panes', webPanes: webPanes.list() })
+  }
   const notes = new NoteVaultManager()
   const linear = new LinearService()
   const prs = new PrService()
@@ -1014,7 +1041,7 @@ async function main(): Promise<void> {
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
         if (webPanesPruned || webPanePlacementsResolved) {
-          broadcast({ type: 'web_panes', webPanes: webPanes.list() })
+          publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
         return snapshot
@@ -1151,7 +1178,22 @@ async function main(): Promise<void> {
         ? `${status.provider} · ${status.agentSessionName}`
         : status.provider
     },
-    onChange: () => broadcast({ type: 'web_panes', webPanes: webPanes.list() }),
+    onChange: () => publishWebPanes(),
+    cdpInfo: (webPaneId) => {
+      const pane = webPanes.get(webPaneId)
+      if (!pane) return Promise.reject(new Error('Web pane does not exist'))
+      return chromiumEngine.cdpInfo(webPaneId, pane.url)
+    },
+    onConfirmed: (pane) => {
+      if (pane.engine !== 'chromium') return
+      void chromiumEngine.navigate(pane.id, pane.url).catch((error: unknown) => {
+        console.error('[commando] chromium tile navigation after confirm failed', error)
+      })
+    },
+    onClosed: (webPaneId) => {
+      chromiumEngine.closeTile(webPaneId)
+      webTileRelay.dropTile(webPaneId)
+    },
   })
 
   const handleClientMessage = (client: ClientState, message: ParsedClientMessage): void => {
@@ -1629,8 +1671,17 @@ async function main(): Promise<void> {
           return
         }
         const url = requestUrl(request)
-        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws')) {
+        const webTileId = url ? webTilePathId(url.pathname) : null
+        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId)) {
           rejectUpgrade(socket, 404, 'Not Found')
+          return
+        }
+        if (webTileId) {
+          if (!(await requestIsAuthorized(request, url))) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
+          webTileRelay.handleUpgrade(request, socket, head, webTileId)
           return
         }
         if (url.pathname === '/companion/ws') {
@@ -1696,6 +1747,8 @@ async function main(): Promise<void> {
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     companion?.close()
+    webTileRelay.close()
+    chromiumEngine.dispose()
     void tmux.releaseAllPaneResizes().finally(() => {
       tmux.close()
       webSocketServer.close()

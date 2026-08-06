@@ -1,0 +1,515 @@
+<title>Commando — HUD tabs + PRs panel plan</title>
+<style>
+  /* ===== Commando design tokens (src/styles.css:1-32) ===== */
+  :root {
+    color-scheme: dark;
+    --surface-deep: #0a0812; --bg: #0c0a14; --surface: #100d1a;
+    --surface-raised: #131020; --surface-soft: #181428; --surface-hover: #1f1a31;
+    --border: #2c2542; --border-mid: #363048; --border-strong: #443a63;
+    --text: #f5f3fa; --text-soft: #c6c0d6; --text-dim: #655f78; --text-faint: #524f67;
+    --muted: #8f87a6; --muted-dim: #7a7590;
+    --green: #85f4b1; --accent: #b9a3ff; --accent-ink: #0e0a1c;
+    --cyan: #73d9e2; --amber: #f3c66b; --red: #ff8d89; --purple: #b9a3ff;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  :where(.pg-grid, .pg-flex) > *, :where([style*="display:grid"], [style*="display:flex"]) > * { min-width: 0; }
+  :where(p, h1, h2, h3, li, td, th, dd) { overflow-wrap: anywhere; }
+  :where(img, svg) { max-width: 100%; height: auto; }
+
+  html { font-size: 16px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-soft);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14.5px; line-height: 1.6;
+  }
+  .pg-wrap { max-width: 1060px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { color: var(--text); font-size: 26px; letter-spacing: -0.01em; margin: 0 0 6px; }
+  h2 { color: var(--text); font-size: 18px; margin: 56px 0 14px; padding-top: 18px; border-top: 1px solid var(--border); }
+  h3 { color: var(--text); font-size: 14.5px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text-soft); }
+  .pg-kicker { color: var(--muted-dim); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pg-lede { color: var(--muted); font-size: 15px; max-width: 72ch; }
+  .pg-note { color: var(--muted); font-size: 13px; }
+  .pg-callout { border: 1px solid var(--border-mid); border-left: 3px solid var(--accent); background: var(--surface-raised); border-radius: 9px; padding: 12px 16px; margin: 16px 0; }
+  .pg-callout.warn { border-left-color: var(--amber); }
+  .pg-callout.good { border-left-color: var(--green); }
+  .pg-callout strong { color: var(--text); }
+
+  table.pg-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 14px 0; }
+  .pg-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; }
+  table.pg-table th { text-align: left; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 9px 12px; border-bottom: 1px solid var(--border-mid); background: var(--surface-raised); white-space: nowrap; }
+  table.pg-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.pg-table tr:last-child td { border-bottom: none; }
+  .pg-ok { color: var(--green); font-weight: 600; }
+  .pg-warn { color: var(--amber); font-weight: 600; }
+
+  /* ===== Panel mockups (commando component styles) ===== */
+  .mock-row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; margin-top: 18px; }
+  .mock-col { flex: 0 1 318px; min-width: 280px; }
+  .mock-caption { color: var(--muted); font-size: 12.5px; margin-top: 10px; line-height: 1.5; }
+  .m-panel {
+    width: 100%; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,0.45);
+    font-size: 10px;
+  }
+  .m-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 8px; }
+  .m-heading { display: flex; align-items: center; gap: 8px; }
+  .m-pulse { width: 7px; height: 7px; border-radius: 999px; background: var(--amber); box-shadow: 0 0 8px rgba(243,198,107,0.7); }
+  .m-heading strong { color: var(--text); font-size: 13px; letter-spacing: 0.02em; display: block; }
+  .m-heading small { color: var(--muted-dim); font-size: 8px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; display: block; margin-top: 1px; }
+  .m-close { color: var(--muted); font-size: 13px; line-height: 1; padding: 4px; }
+  /* new: hud tab strip (styled after .window-strip pills) */
+  .m-pin { margin: 0 12px 9px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--accent) 7%, var(--surface-raised)); padding: 7px 9px; }
+  .m-pin-head { display: flex; justify-content: space-between; color: var(--accent); font-family: var(--mono); font-size: 7.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .m-pin-body { color: var(--text-soft); font-size: 9px; margin-top: 4px; line-height: 1.4; }
+  .m-more { align-self: center; padding: 3px 9px; border: 1px dashed var(--border-mid); border-radius: 999px; color: var(--text-dim); font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .m-tabs { display: flex; gap: 5px; padding: 0 12px 9px; border-bottom: 1px solid var(--border); }
+  .m-tab {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised);
+    color: var(--muted); font-family: var(--mono); font-size: 8.5px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .m-tab.active { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+  .m-tab .m-dot { width: 5px; height: 5px; border-radius: 999px; background: var(--amber); }
+  .m-tab.active .m-dot { background: #7a5714; }
+  /* controls row */
+  .m-controls { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .m-repo-select {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    border: 1px solid var(--border-mid); border-radius: 9px; background: var(--surface-raised);
+    padding: 6px 9px; color: var(--text); font-family: var(--mono); font-size: 9.5px;
+  }
+  .m-repo-select .chev { color: var(--muted-dim); font-size: 8px; }
+  .m-filters { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+  .m-filter {
+    padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--muted); font-family: var(--mono);
+    font-size: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .m-filter.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+  .m-filter .cnt { color: var(--muted-dim); margin-left: 3px; font-weight: 400; }
+  .m-filter.on .cnt { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+  /* stream + groups */
+  .m-stream { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-deep); }
+  .m-group-title { color: var(--muted-dim); font-size: 8px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+  .m-group-title .n { font-family: var(--mono); color: var(--text-dim); }
+  /* PR card, styled after .agent-card */
+  .m-card { padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); display: flex; flex-direction: column; gap: 6px; }
+  .m-card.attn { border-color: rgba(243,198,107,0.38); background: rgba(49,39,20,0.38); }
+  .m-card.fail { border-color: rgba(255,141,137,0.34); }
+  .m-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .m-card-title { color: var(--text); font-size: 11px; font-weight: 600; line-height: 1.35; }
+  .m-card-title .num { color: var(--text-dim); font-family: var(--mono); font-weight: 400; font-size: 9px; margin-right: 4px; }
+  .m-state { flex: none; padding: 2px 7px; border-radius: 999px; font-family: var(--mono); font-size: 7.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .m-state.open { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .m-state.draft { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+  .m-state.merged { color: var(--purple); background: color-mix(in srgb, var(--purple) 10%, transparent); }
+  .m-state.closed { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+  .m-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .m-chip {
+    display: inline-flex; align-items: center; gap: 3px; padding: 2.5px 6px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+    color: var(--muted); font-family: var(--mono); font-size: 8px; line-height: 1.2;
+  }
+  .m-chip .plus { color: var(--green); } .m-chip .minus { color: var(--red); }
+  .m-chip.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, var(--border)); }
+  .m-chip.bad { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--border)); }
+  .m-chip.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }
+  .m-chip.dim { color: var(--text-dim); }
+  .m-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .m-author { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 8.5px; }
+  .m-ava { width: 14px; height: 14px; border-radius: 5px; background: var(--surface-hover); border: 1px solid var(--border-mid); display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-family: var(--mono); font-size: 7px; font-weight: 700; }
+  .m-time { color: var(--text-faint); font-family: var(--mono); font-size: 8px; }
+  .m-branch { color: var(--text-dim); font-family: var(--mono); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+  .m-footer { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-faint); font-family: var(--mono); font-size: 8px; }
+  .m-footer .sync { color: var(--muted-dim); }
+  /* annotation labels */
+  .anno { position: relative; }
+  .anno::after { content: attr(data-label); position: absolute; right: -8px; top: 50%; transform: translate(100%, -50%); color: var(--cyan); font-family: var(--mono); font-size: 9px; white-space: nowrap; }
+
+  /* ===== decision forms ===== */
+  .q-block { border: 1px solid var(--border-mid); border-radius: 12px; background: var(--surface-raised); padding: 16px 18px; margin: 16px 0; }
+  .q-block h3 { margin: 0 0 4px; }
+  .q-block .q-why { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .q-block label { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; margin: 6px 0; background: var(--surface); cursor: pointer; font-size: 13.5px; }
+  .q-block label:hover { border-color: var(--border-strong); background: var(--surface-soft); }
+  .q-block label input { margin-top: 3px; accent-color: var(--accent); }
+  .q-block label b { color: var(--text); font-weight: 600; }
+  .q-block label small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .q-block button[type=submit] {
+    margin-top: 10px; padding: 7px 14px; border: 1px solid var(--accent); border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent);
+    font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer;
+  }
+  .q-block button[type=submit]:hover { background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+  .q-queued { display: none; margin-left: 10px; color: var(--green); font-family: var(--mono); font-size: 11px; }
+  .q-block.is-queued .q-queued { display: inline; }
+
+  .mermaid { display: flex; justify-content: center; margin: 18px 0; }
+  .phase-list { counter-reset: ph; list-style: none; padding: 0; margin: 14px 0; }
+  .phase-list li { position: relative; padding: 10px 14px 10px 44px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); margin: 8px 0; font-size: 13.5px; }
+  .phase-list li::before { counter-increment: ph; content: counter(ph); position: absolute; left: 12px; top: 10px; width: 20px; height: 20px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .phase-list b { color: var(--text); }
+</style>
+
+<div class="pg-wrap">
+  <div class="pg-kicker">Commando · feature plan · 5 Aug 2026</div>
+  <h1>HUD tabs + a PRs panel</h1>
+  <p class="pg-lede">
+    The right-hand panel gets a tab strip: the existing <b>HUD</b> (notes &amp; agents) and a new
+    <b>PRs</b> tab showing pull requests for a selectable repo — status, +/− diffstat, unresolved
+    review comments, and CI status. Everything below is verified against the codebase and against
+    live GitHub queries run with your <code>gh</code> auth (<code>laeijebor</code>, repo scope) —
+    <strong style="color:var(--text)">every requested field is feasible in a single GraphQL call</strong>.
+  </p>
+
+  <h2>The mockups — real data, commando's own design system</h2>
+  <p>Both panels are rendered with the app's actual tokens from <code>src/styles.css</code>
+  (surfaces, <code>--accent #b9a3ff</code>, chip/card/pill styles). The tab strip reuses the
+  <code>.window-strip</code> pill-tab pattern already in the workspace. PR rows are real: fetched
+  live from both repos while preparing this plan.</p>
+
+  <div class="mock-row">
+    <div class="mock-col">
+      <div class="m-panel">
+        <div class="m-header">
+          <div class="m-heading">
+            <span class="m-pulse"></span>
+            <div><strong>HUD</strong><small>Pull requests</small></div>
+          </div>
+          <span class="m-close">✕</span>
+        </div>
+        <div class="m-pin">
+          <div class="m-pin-head"><span>📌 Pinned note</span><span>✎</span></div>
+          <div class="m-pin-body">Gizmo next up — live power ups, live battles, sharing for coins / any sharing…</div>
+        </div>
+        <div class="m-tabs">
+          <span class="m-tab">Notes &amp; Agents<span class="m-dot"></span></span>
+          <span class="m-tab active">PRs</span>
+        </div>
+        <div class="m-controls">
+          <div class="m-repo-select"><span>Save-All/Save-All</span><span class="chev">▾</span></div>
+          <div class="m-filters">
+            <span class="m-filter on">Open</span>
+            <span class="m-filter">Closed</span>
+            <span class="m-filter">All states</span>
+            <span class="m-filter" style="margin-left:auto">Everyone's<span class="cnt">394</span></span>
+          </div>
+        </div>
+        <div class="m-stream">
+          <div class="m-group-title">Yours <span class="n">2</span></div>
+          <div class="m-card">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#19816</span>refactor(navigation): add social to the shared tab route group</div>
+              <span class="m-state open">Open</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+210</span><span class="minus">−48</span></span>
+              <span class="m-chip ok">✓ checks</span>
+              <span class="m-chip dim">0 unresolved</span>
+              <span class="m-chip warn">review required</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-author"><span class="m-ava">LI</span>laeijebor</span>
+              <span class="m-time">2h ago</span>
+            </div>
+          </div>
+          <div class="m-card">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#19815</span>fix(social): feed reaction caching, plus opt-in props for the Social tab</div>
+              <span class="m-state open">Open</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+342</span><span class="minus">−77</span></span>
+              <span class="m-chip bad">✗ 1 failing</span>
+              <span class="m-chip warn">1 unresolved</span>
+              <span class="m-chip ok">approved</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-author"><span class="m-ava">LI</span>laeijebor</span>
+              <span class="m-time">4h ago</span>
+            </div>
+          </div>
+          <div class="m-group-title" style="margin-top:2px">Needs your review <span class="n">1</span></div>
+          <div class="m-card attn">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#19820</span>feat(native): add link/unlink for Better Auth social accounts</div>
+              <span class="m-state open">Open</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+1,494</span><span class="minus">−45</span></span>
+              <span class="m-chip bad">✗ 1 failing</span>
+              <span class="m-chip warn">2 unresolved</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-author"><span class="m-ava" style="color:var(--green)">TG</span>timgent</span>
+              <span class="m-time">1h ago</span>
+            </div>
+          </div>
+          <span class="m-more">Everyone's open PRs · 394 · show</span>
+        </div>
+        <div class="m-footer"><span class="sync">⟳</span> synced 12s ago · gh · laeijebor</div>
+      </div>
+      <p class="mock-caption"><b style="color:var(--text)">Work repo (Save-All/Save-All).</b>
+      Default scope is yours + PRs awaiting your review; the "Everyone's" chip (or the row at the
+      bottom) reveals the full repo list, first 30 by last-updated. Card = title/#, state pill,
+      diffstat, checks rollup, unresolved review threads, review decision, author, age. The pinned
+      note sits above the tab strip, so it stays put when you switch tabs.</p>
+    </div>
+
+    <div class="mock-col">
+      <div class="m-panel">
+        <div class="m-header">
+          <div class="m-heading">
+            <span class="m-pulse" style="background:var(--green);box-shadow:0 0 8px rgba(133,244,177,0.55)"></span>
+            <div><strong>HUD</strong><small>Pull requests</small></div>
+          </div>
+          <span class="m-close">✕</span>
+        </div>
+        <div class="m-tabs">
+          <span class="m-tab">Notes &amp; Agents</span>
+          <span class="m-tab active">PRs</span>
+        </div>
+        <div class="m-controls">
+          <div class="m-repo-select"><span>laeijebor/viviFIT</span><span class="chev">▾</span></div>
+          <div class="m-filters">
+            <span class="m-filter on">Open<span class="cnt">17</span></span>
+            <span class="m-filter">Closed</span>
+            <span class="m-filter">All</span>
+          </div>
+        </div>
+        <div class="m-stream">
+          <div class="m-card">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#135</span>feat(fitdo): streak UI fidelity pass — widget + habit rows match the design mocks</div>
+              <span class="m-state draft">Draft</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+464</span><span class="minus">−168</span></span>
+              <span class="m-chip dim">no checks</span>
+              <span class="m-chip dim">0 unresolved</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-branch">leo/streaks-ui-fidelity-pass</span>
+              <span class="m-time">3h ago</span>
+            </div>
+          </div>
+          <div class="m-card attn">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#131</span>feat(fitdo): P6 — iOS WidgetKit streak widget (VIV-516)</div>
+              <span class="m-state draft">Draft</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+717</span><span class="minus">−4</span></span>
+              <span class="m-chip ok">✓ checks</span>
+              <span class="m-chip bad">⚠ conflicts</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-branch">leo/viv-516-p6-os-home-screen-widget…</span>
+              <span class="m-time">18h ago</span>
+            </div>
+          </div>
+          <div class="m-card">
+            <div class="m-card-top">
+              <div class="m-card-title"><span class="num">#132</span>feat(fitdo,be): P3 — home streak widget + post-log confirmation (VIV-513)</div>
+              <span class="m-state draft">Draft</span>
+            </div>
+            <div class="m-meta">
+              <span class="m-chip"><span class="plus">+1,270</span><span class="minus">−37</span></span>
+              <span class="m-chip ok">✓ checks</span>
+              <span class="m-chip dim">0 unresolved</span>
+            </div>
+            <div class="m-foot">
+              <span class="m-branch">leo/viv-513-p3-home-streak-widget…</span>
+              <span class="m-time">13h ago</span>
+            </div>
+          </div>
+        </div>
+        <div class="m-footer"><span class="sync">⟳</span> synced 8s ago · gh · laeijebor</div>
+      </div>
+      <p class="mock-caption"><b style="color:var(--text)">Solo repo (laeijebor/viviFIT).</b>
+      All 17 open PRs are yours, so the mine-first default already shows everything — author row
+      swaps for the branch name. No pinned note is set here, so the tab strip sits directly under
+      the header.
+      #131 really is <code>CONFLICTING</code> right now; the amber card treatment mirrors the
+      HUD's <code>needs_input</code> style. <code>statusCheckRollup</code> is null on some drafts
+      → "no checks", dimmed.</p>
+    </div>
+  </div>
+
+  <div class="pg-callout">
+    <strong>Tab placement (your note, applied).</strong> The pinned note is shared context, not
+    agent-tab content — so <code>HudPinnedNote</code> moves above the tab strip and stays visible
+    on both tabs; the strip sits below it (directly under the header when nothing is pinned).
+    The agents-only <code>.hud-stats</code> filter row moves below the strip as HUD-tab content.
+    Each tab shows an amber dot for the other's attention state: agents needing you on the HUD tab,
+    your failing checks / new reviews on the PRs tab. Selected tab persists in
+    <code>localStorage</code> (<code>commando.hud.tab</code>), same as the panel-hidden prefs.
+  </div>
+
+  <h2>Feasibility — every requested field, verified live</h2>
+  <p>I ran the exact GraphQL query the daemon would run, via your local <code>gh</code>, against both repos.
+  One request per repo returns everything:</p>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>You asked for</th><th>GraphQL field</th><th>Verified</th></tr>
+    <tr><td>PR list, open / closed / all</td><td><code>pullRequests(states:[…], orderBy: UPDATED_AT)</code></td><td class="pg-ok">✓ works</td></tr>
+    <tr><td>Status (open / draft / merged / closed)</td><td><code>state</code>, <code>isDraft</code></td><td class="pg-ok">✓ works</td></tr>
+    <tr><td>+/− amounts</td><td><code>additions</code>, <code>deletions</code>, <code>changedFiles</code></td><td class="pg-ok">✓ works</td></tr>
+    <tr><td>Unresolved comments</td><td><code>reviewThreads(first:50){ isResolved }</code> — count the false ones</td><td class="pg-ok">✓ works</td></tr>
+    <tr><td>Workflow / CI status</td><td><code>commits(last:1){ statusCheckRollup{ state, contexts } }</code> → per-check names + conclusions</td><td class="pg-ok">✓ works</td></tr>
+    <tr><td>Review status (suggested)</td><td><code>reviewDecision</code> (approved / changes requested / review required)</td><td class="pg-ok">✓ free in same query</td></tr>
+    <tr><td>Merge conflicts (suggested)</td><td><code>mergeable</code> — viviFIT #131 returns <code>CONFLICTING</code> today</td><td class="pg-ok">✓ free in same query</td></tr>
+  </table></div>
+  <p class="pg-note">Notes: <code>statusCheckRollup</code> is <code>null</code> when a PR has no CI → render "no checks".
+  Unresolved counts read the first 50 threads per PR (render "50+" beyond). Rate budget is a non-issue:
+  polling one repo every 30&nbsp;s ≈ 120 GraphQL points/hour of a 5,000/hr allowance.</p>
+
+  <h2>How it works — mirrors the Linear integration</h2>
+  <p>The daemon already shells out to <code>gh</code> (<code>server/git-diff.ts</code> calls
+  <code>gh pr view</code> with timeouts, buffer caps, and a TTL cache), and the Linear panel already
+  models "daemon-proxied third-party feed + 30s client polling" (<code>server/linear.ts</code> /
+  <code>linear-api.ts</code> / <code>src/LinearSection.tsx</code>). The PRs tab copies that shape —
+  no WebSocket protocol changes, no Swift changes (the AppKit app hosts the same web client).</p>
+
+  <pre class="mermaid">flowchart TD
+  A["PrsSection.tsx&lt;br/&gt;new HUD tab — polls 30s + on visibilitychange"] -- "GET /api/prs?repo=owner/name" --> B["server/prs-api.ts&lt;br/&gt;new router, same shape as linear-api.ts"]
+  B --> C["server/prs.ts — PrService&lt;br/&gt;TTL cache ~20s per repo+state, in-flight dedupe"]
+  C -- "execFile: gh api graphql&lt;br/&gt;timeout + buffer caps, GH_PROMPT_DISABLED" --> D["GitHub GraphQL API&lt;br/&gt;auth = your existing gh login"]
+  F[("~/.commando/prs.json&lt;br/&gt;pinned repos, last selection")] <-- "GET/PUT /api/prs/prefs" --> B</pre>
+
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>File</th><th>Change</th></tr>
+    <tr><td><code>server/prs.ts</code> <i style="color:var(--muted-dim)">new</i></td><td><code>PrService</code>: builds the GraphQL query, runs <code>gh api graphql</code> via <code>execFile</code> (reusing git-diff.ts's timeout/buffer conventions), normalizes to a <code>PrSummary[]</code>, caches per repo+state.</td></tr>
+    <tr><td><code>server/prs-api.ts</code> <i style="color:var(--muted-dim)">new</i></td><td><code>handlePrsApi()</code> under <code>/api/prs</code>: list endpoint + repo-list endpoint; registered in <code>server/index.ts</code>'s authorized router next to <code>handleLinearApi</code>.</td></tr>
+    <tr><td><code>src/prsApi.ts</code> <i style="color:var(--muted-dim)">new</i></td><td>Typed client wrapper (same pattern as <code>src/linearApi.ts</code>).</td></tr>
+    <tr><td><code>src/PrsSection.tsx</code> + <code>src/prs-section.css</code> <i style="color:var(--muted-dim)">new</i></td><td>The tab UI above: repo select, state filters, grouped cards, sync footer; 30s poll + refresh on tab-visible, error/stale states.</td></tr>
+    <tr><td><code>src/App.tsx</code> <i style="color:var(--muted-dim)">edit</i></td><td><code>hudTab</code> state + tab strip in the <code>.agent-hud</code> aside (App.tsx:2243). <code>HudPinnedNote</code> moves above the strip (visible on both tabs); <code>.hud-stats</code> + agent stream vs <code>PrsSection</code> swap below it. Attention dots reuse the existing needs-you counts + new PR signals.</td></tr>
+    <tr><td><code>server/prs-api.ts</code> prefs endpoint</td><td><code>GET/PUT /api/prs/prefs</code> backed by <code>~/.commando/prs.json</code> (atomic write-then-rename like <code>session-preferences.ts</code>): pinned repos + last selection shared across all your clients.</td></tr>
+  </table></div>
+
+  <h2>Extras — your picks locked in</h2>
+  <p>You selected the first five for v1; "open branch in a pane" stays deferred as a v2 candidate.</p>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>Idea</th><th>Why it earns a slot</th><th>Cost</th></tr>
+    <tr><td><b style="color:var(--text)">Review decision badge</b></td><td>"changes requested" vs "approved" vs "review required" is usually the thing you actually act on.</td><td class="pg-ok">free</td></tr>
+    <tr><td><b style="color:var(--text)">Merge-conflict flag</b></td><td>Surfaces rebase debt early — your viviFIT #131 is conflicting right now and nothing tells you.</td><td class="pg-ok">free</td></tr>
+    <tr><td><b style="color:var(--text)">"Needs your review" group</b></td><td>In Save-All (394 open PRs) the ones where you're a requested reviewer matter most; groups above the rest.</td><td class="pg-ok">free (reviewRequests)</td></tr>
+    <tr><td><b style="color:var(--text)">Attention dot on the PRs tab</b></td><td>Your PR's checks fail or a review lands → amber dot on the tab, mirroring the HUD pulse. Glanceable without switching tabs.</td><td>small</td></tr>
+    <tr><td><b style="color:var(--text)">Checks breakdown on hover/tap</b></td><td>Expand the "✗ 2 failing" chip into named check runs (the data is already fetched — Validate PR title, JS hygiene, …).</td><td>small</td></tr>
+    <tr><td><b style="color:var(--text)">"Open branch in a pane"</b></td><td>Commando-native: a card action that opens a tmux pane cd'd to a worktree of that branch. Powerful, but touches session management — v2 candidate.</td><td class="pg-warn">medium, v2</td></tr>
+  </table></div>
+
+  <h2>Decisions — locked in</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>Question</th><th>Your call</th><th>How it lands</th></tr>
+    <tr><td>Default scope</td><td><b style="color:var(--text)">Mine only, with an All toggle</b></td><td>Default view = your PRs + the "needs your review" group (you picked that extra — both are "about you"). The "Everyone's" chip reveals the full repo list. Flag it if needs-your-review should hide by default too.</td></tr>
+    <tr><td>Repo list source</td><td><b style="color:var(--text)">Auto + pin</b></td><td>Seeded from <code>gh search prs --author=@me</code> recent activity; any <code>owner/name</code> can be pinned or added manually.</td></tr>
+    <tr><td>Preference persistence</td><td><b style="color:var(--text)">Daemon-side</b></td><td><code>~/.commando/prs.json</code> via <code>/api/prs/prefs</code> — repo list and last selection shared across browser, Safari wrapper, and the AppKit app. Only the active tab stays in per-client <code>localStorage</code>.</td></tr>
+    <tr><td>Extras in v1</td><td><b style="color:var(--text)">All except "open branch in a pane"</b></td><td>Review-decision badge, conflict flag, needs-your-review group, attention dot on the PRs tab, checks breakdown on hover.</td></tr>
+    <tr><td>Layout (your note)</td><td><b style="color:var(--text)">Pinned note above the tabs</b></td><td>Pinned note stays visible regardless of tab; the strip sits below it. Reflected in the mockups above.</td></tr>
+  </table></div>
+
+  <form class="q-block" hidden data-lavish-question="scope" onsubmit="queueAnswer(event, 'scope', 'Default PR scope for a selected repo', v => 'Use scope: ' + v)">
+    <h3>1 · Default scope when a repo is selected</h3>
+    <p class="q-why">You said "open PRs for the current user" but Save-All has 394 open PRs from many authors — how much should show by default?</p>
+    <label><input type="radio" name="scope" value="grouped: Yours + Needs your review first, then all open by updated (recommended)" checked>
+      <span><b>Grouped (recommended)</b><small>"Yours" and "needs your review" pinned on top, everything else below by last-updated. Solo repos collapse to a flat list.</small></span></label>
+    <label><input type="radio" name="scope" value="mine only, with an All toggle">
+      <span><b>Mine only</b><small>Just PRs you authored; an "All" filter chip reveals the rest.</small></span></label>
+    <label><input type="radio" name="scope" value="all open PRs, flat list">
+      <span><b>All open, flat</b><small>Straight repo view, no grouping.</small></span></label>
+    <button type="submit">Queue answer</button><span class="q-queued">queued ✓</span>
+  </form>
+
+  <form class="q-block" hidden data-lavish-question="repos" onsubmit="queueAnswer(event, 'repos', 'Repo selector source', v => 'Repo list source: ' + v)">
+    <h3>2 · Where does the repo dropdown get its list?</h3>
+    <p class="q-why">You named Save-All/Save-All and laeijebor/viviFIT as the main two.</p>
+    <label><input type="radio" name="repos" value="auto-populate from repos with my recent PR activity (gh search), plus the ability to pin/add any owner/name (recommended)" checked>
+      <span><b>Auto + pin (recommended)</b><small>Seed from repos where you have recent PRs (via <code>gh search prs --author=@me</code>), and let you pin/add any <code>owner/name</code>.</small></span></label>
+    <label><input type="radio" name="repos" value="a manually configured list only">
+      <span><b>Manual list only</b><small>You type the repos once; nothing auto-appears.</small></span></label>
+    <button type="submit">Queue answer</button><span class="q-queued">queued ✓</span>
+  </form>
+
+  <form class="q-block" hidden data-lavish-question="persist" onsubmit="queueAnswer(event, 'persist', 'Preference persistence', v => 'Persist PR prefs in: ' + v)">
+    <h3>3 · Where do repo selection + filters persist?</h3>
+    <p class="q-why">You run several clients (browser, Safari web-app wrapper, AppKit) against one daemon.</p>
+    <label><input type="radio" name="persist" value="daemon-side ~/.commando/prs.json so every client shares the same repo list and last selection (recommended)" checked>
+      <span><b>Daemon (recommended)</b><small><code>~/.commando/prs.json</code>, like session-tree prefs — the pinned repo list and last selection follow you across all clients.</small></span></label>
+    <label><input type="radio" name="persist" value="per-client localStorage only">
+      <span><b>Per-client localStorage</b><small>Each client remembers its own repo/filter, like the theme and panel prefs.</small></span></label>
+    <button type="submit">Queue answer</button><span class="q-queued">queued ✓</span>
+  </form>
+
+  <form class="q-block" hidden data-lavish-question="extras" onsubmit="queueExtras(event)">
+    <h3>4 · Which extras make v1?</h3>
+    <p class="q-why">All checked ones ship in the first branch; unchecked ones wait.</p>
+    <label><input type="checkbox" name="extras" value="review decision badge" checked><span><b>Review decision badge</b></span></label>
+    <label><input type="checkbox" name="extras" value="merge-conflict flag" checked><span><b>Merge-conflict flag</b></span></label>
+    <label><input type="checkbox" name="extras" value="needs-your-review group" checked><span><b>"Needs your review" group</b></span></label>
+    <label><input type="checkbox" name="extras" value="attention dot on the PRs tab"><span><b>Attention dot on the PRs tab</b></span></label>
+    <label><input type="checkbox" name="extras" value="checks breakdown on hover"><span><b>Checks breakdown on hover</b></span></label>
+    <label><input type="checkbox" name="extras" value="open branch in a pane (v2-sized)"><span><b>Open branch in a pane</b> <small>medium effort — flagging it pulls it into scope anyway</small></span></label>
+    <button type="submit">Queue answer</button><span class="q-queued">queued ✓</span>
+  </form>
+
+  <h2>Risks &amp; edge cases</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>Risk</th><th>Handling</th></tr>
+    <tr><td><code>gh</code> unauthenticated / missing on the daemon host</td><td>The API returns a typed <code>auth_required</code> error; the tab shows a one-line setup hint ("run <code>gh auth login</code>") instead of an empty list. Same graceful-degrade approach as the Linear panel with no account.</td></tr>
+    <tr><td>GitHub slow or rate-limited</td><td>TTL cache serves the last good payload with a "stale · synced 4m ago" footer; polling backs off on consecutive failures.</td></tr>
+    <tr><td>Huge repos (Save-All: 394 open)</td><td>Fetch first 30 per state by last-updated; footer shows "30 of 394 · open on GitHub". No pagination UI in v1.</td></tr>
+    <tr><td>Closed/all views</td><td>Same query with <code>states:[CLOSED, MERGED]</code> / no filter; fetched on demand, cached separately, never polled in the background.</td></tr>
+    <tr><td>Secrets</td><td>The daemon never stores a token — it always goes through your <code>gh</code> keyring auth. Nothing new lands in <code>~/.commando</code> except repo names.</td></tr>
+  </table></div>
+
+  <h2>Build plan</h2>
+  <ol class="phase-list">
+    <li><b>Worktree + server feed.</b> <code>server/prs.ts</code> + <code>server/prs-api.ts</code> + unit tests (fake <code>gh</code> runner, cache TTL, error mapping). Register in <code>server/index.ts</code>.</li>
+    <li><b>Client tab.</b> <code>hudTab</code> strip in <code>App.tsx</code> below the (relocated) pinned note, <code>PrsSection.tsx</code> + CSS, polling hook, daemon-persisted repo prefs. Tests alongside the existing App tests.</li>
+    <li><b>Extras + polish.</b> Review-decision badge, conflict flag, needs-your-review group, tab attention dots, checks hover breakdown; empty/error/stale states; typecheck + vitest + drive it against the live daemon before merging.</li>
+  </ol>
+  <p class="pg-note">Estimated at roughly a day of agent work end-to-end; ships as one reviewed branch per the repo workflow.</p>
+</div>
+
+<script>
+  function markQueued(form) { form.classList.add('is-queued'); }
+  function queueAnswer(event, name, questionLabel, toPrompt) {
+    event.preventDefault();
+    const value = new FormData(event.currentTarget).get(name);
+    if (!value || !window.lavish) return;
+    window.lavish.queuePrompt(toPrompt(value), {
+      tag: 'choice', text: questionLabel + ': ' + value,
+      element: event.currentTarget, queueKey: name,
+      data: { question: name, answer: value },
+    });
+    markQueued(event.currentTarget);
+  }
+  function queueExtras(event) {
+    event.preventDefault();
+    const picked = new FormData(event.currentTarget).getAll('extras');
+    if (!window.lavish) return;
+    const summary = picked.length ? picked.join('; ') : 'none';
+    window.lavish.queuePrompt('Include these extras in v1 of the PRs tab: ' + summary, {
+      tag: 'choice', text: 'Extras: ' + summary,
+      element: event.currentTarget, queueKey: 'extras',
+      data: { question: 'extras', answer: picked },
+    });
+    markQueued(event.currentTarget);
+  }
+</script>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict",
+    themeVariables: {
+      background: "#0c0a14", primaryColor: "#131020", primaryBorderColor: "#443a63",
+      primaryTextColor: "#c6c0d6", lineColor: "#7a7590", secondaryColor: "#181428",
+      tertiaryColor: "#100d1a", fontFamily: "Inter, sans-serif", fontSize: "13px",
+    }});
+  await mermaid.run({ nodes: [...document.querySelectorAll(".mermaid")] });
+</script>

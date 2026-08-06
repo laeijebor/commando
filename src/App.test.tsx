@@ -308,6 +308,7 @@ const openWebPane = {
   windowId: '@2',
   anchorPaneId: '%12',
   placement: 'right',
+  engine: 'webkit',
   openedBy: 'agent',
   openerLabel: 'claude · gizmo',
   status: 'open',
@@ -325,6 +326,41 @@ describe('web pane tiles', () => {
     // Terminal panes are still there, in the same layout.
     expect(screen.getByTestId('renderer-%12')).toBeInTheDocument()
     expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
+  })
+
+  it('renders a chromium-engine tile as a screencast canvas with its chip', async () => {
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = []
+      readonly url: string
+      readyState = 0
+      constructor(url: string) {
+        this.url = url
+        FakeWebSocket.instances.push(this)
+      }
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+      close() {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    try {
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({
+        type: 'web_panes',
+        webPanes: [{ ...openWebPane, engine: 'chromium' }],
+      }))
+
+      const canvas = await screen.findByLabelText('Chromium tile: http://127.0.0.1:41300/plan')
+      expect(canvas.tagName).toBe('CANVAS')
+      expect(screen.getByText('chromium')).toBeInTheDocument()
+      expect(screen.getByText('Starting chromium stream…')).toBeInTheDocument()
+      expect(screen.getByLabelText('Open DevTools as a tile')).toBeInTheDocument()
+      expect(FakeWebSocket.instances[0]?.url).toContain('/ws/web-tiles/w-abcd1234')
+      // No iframe for chromium tiles — the stream is the body.
+      expect(screen.queryByTitle('Web pane: 127.0.0.1:41300')).not.toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('does not render tiles that belong to another window', async () => {

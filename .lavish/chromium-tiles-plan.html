@@ -1,0 +1,507 @@
+<title>Commando — Chromium engine for web tiles (CDP)</title>
+<style>
+  /* ===== Commando design tokens (src/styles.css) ===== */
+  :root {
+    color-scheme: dark;
+    --surface-deep: #0a0812; --bg: #0c0a14; --surface: #100d1a;
+    --surface-raised: #131020; --surface-soft: #181428; --surface-hover: #1f1a31;
+    --border: #2c2542; --border-mid: #363048; --border-strong: #443a63;
+    --text: #f5f3fa; --text-soft: #c6c0d6; --text-dim: #655f78; --text-faint: #524f67;
+    --muted: #8f87a6; --muted-dim: #7a7590;
+    --green: #85f4b1; --accent: #b9a3ff; --accent-ink: #0e0a1c;
+    --cyan: #73d9e2; --amber: #f3c66b; --red: #ff8d89; --purple: #b9a3ff;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --term-bg: #0a0a0a;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  :where([style*="display:grid"], [style*="display:flex"]) > * { min-width: 0; }
+  :where(p, h1, h2, h3, li, td, th, dd) { overflow-wrap: anywhere; }
+  :where(img, svg) { max-width: 100%; height: auto; }
+
+  html { font-size: 16px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-soft);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14.5px; line-height: 1.6;
+  }
+  .pg-wrap { max-width: 1100px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { color: var(--text); font-size: 26px; letter-spacing: -0.01em; margin: 0 0 6px; }
+  h2 { color: var(--text); font-size: 18px; margin: 56px 0 14px; padding-top: 18px; border-top: 1px solid var(--border); }
+  h3 { color: var(--text); font-size: 14.5px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text-soft); }
+  pre.pg-code { background: var(--surface-deep); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text-soft); }
+  pre.pg-code code { background: none; border: none; padding: 0; }
+  pre.pg-code .c { color: var(--text-dim); } pre.pg-code .g { color: var(--green); } pre.pg-code .a { color: var(--accent); } pre.pg-code .y { color: var(--amber); }
+  .pg-kicker { color: var(--muted-dim); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pg-lede { color: var(--muted); font-size: 15px; max-width: 76ch; }
+  .pg-note { color: var(--muted); font-size: 13px; }
+  .pg-callout { border: 1px solid var(--border-mid); border-left: 3px solid var(--accent); background: var(--surface-raised); border-radius: 9px; padding: 12px 16px; margin: 16px 0; }
+  .pg-callout.warn { border-left-color: var(--amber); }
+  .pg-callout.good { border-left-color: var(--green); }
+  .pg-callout.bad { border-left-color: var(--red); }
+  .pg-callout strong { color: var(--text); }
+
+  table.pg-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 0; }
+  .pg-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; margin: 14px 0; }
+  table.pg-table th { text-align: left; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 9px 12px; border-bottom: 1px solid var(--border-mid); background: var(--surface-raised); white-space: nowrap; }
+  table.pg-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.pg-table tr:last-child td { border-bottom: none; }
+  .pg-ok { color: var(--green); font-weight: 600; }
+  .pg-warn { color: var(--amber); font-weight: 600; }
+  .pg-bad { color: var(--red); font-weight: 600; }
+
+  .mermaid { display: flex; justify-content: center; margin: 18px 0; }
+  .phase-list { counter-reset: ph; list-style: none; padding: 0; margin: 14px 0; }
+  .phase-list li { position: relative; padding: 10px 14px 10px 44px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); margin: 8px 0; font-size: 13.5px; }
+  .phase-list li::before { counter-increment: ph; content: counter(ph); position: absolute; left: 12px; top: 10px; width: 20px; height: 20px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .phase-list b { color: var(--text); }
+
+  /* option cards */
+  .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 14px; margin: 16px 0; }
+  .opt-card { border: 1px solid var(--border-mid); border-radius: 11px; background: var(--surface-raised); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+  .opt-card.is-reco { border-color: color-mix(in srgb, var(--green) 45%, var(--border-mid)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 22%, transparent); }
+  .opt-card.is-dead { opacity: 0.75; }
+  .opt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .opt-head b { color: var(--text); font-size: 14.5px; }
+  .opt-tag { flex: none; padding: 2px 8px; border-radius: 999px; font-family: var(--mono); font-size: 8.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .opt-tag.reco { color: var(--green); background: color-mix(in srgb, var(--green) 13%, transparent); }
+  .opt-tag.v2 { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 13%, transparent); }
+  .opt-tag.no { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .opt-card p { font-size: 13px; margin: 4px 0; }
+  .opt-card ul { margin: 4px 0 2px; padding-left: 18px; font-size: 12.6px; }
+  .opt-card li { margin: 3px 0; }
+  .opt-card .plus { color: var(--green); }
+  .opt-card .minus { color: var(--red); }
+
+  /* ===== Workspace mockup (matches shipped WebPaneCard chrome) ===== */
+  .ws-frame { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,0.45); background: var(--surface-deep); margin: 18px 0 8px; }
+  .ws-canvas {
+    padding: 8px;
+    background: linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px), var(--surface-deep);
+    background-size: 24px 24px;
+  }
+  .ws-grid { display: grid; grid-template-columns: minmax(0, 1fr) 6px minmax(0, 1.1fr) 6px minmax(0, 0.85fr); }
+  .ws-splitter-v { background: transparent; position: relative; }
+  .ws-splitter-v::after { content: ""; position: absolute; inset: 30% 2px; border-radius: 2px; background: var(--border-mid); }
+
+  .mp { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-deep); min-height: 250px; }
+  .mp-head { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 2px 7px; border-bottom: 1px solid var(--surface-hover); background: var(--surface); color: var(--text-soft); font-size: 9px; }
+  .mp.is-focused .mp-head { border-bottom-color: color-mix(in srgb, var(--accent) 55%, transparent); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 5%, transparent)); }
+  .mp-head .ico { font-size: 9px; opacity: 0.85; }
+  .mp-head .ttl { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-chip { flex: none; padding: 1.5px 6px; border-radius: 999px; font-family: var(--mono); font-size: 6.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
+  .mp-chip.run { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+  .mp-chip.web { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 12%, transparent); }
+  .mp-chip.cdp { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); }
+  .mp-head .spacer { margin-left: auto; }
+  .mp-head .btn { color: var(--muted-dim); font-size: 8px; padding: 1px 3px; }
+  .mp-foot { display: flex; align-items: center; gap: 7px; min-height: 18px; padding: 1px 7px; border-top: 1px solid var(--surface-hover); background: var(--surface); color: var(--text-faint); font-family: var(--mono); font-size: 7px; }
+  .mp-foot .grow { margin-left: auto; }
+  .mp-term { background: var(--term-bg); padding: 7px 9px; font-family: var(--mono); font-size: 7.6px; line-height: 1.65; color: #e0def4; white-space: pre-wrap; overflow: hidden; }
+  .mp-term .p { color: #c4a7e7; } .mp-term .g { color: #9ccfd8; } .mp-term .d { color: #6e6a86; }
+  .mp-term .y { color: #f6c177; } .mp-term .gr { color: #95e6b8; }
+  .mp-url { flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0; border: 1px solid var(--border-mid); border-radius: 999px; background: var(--surface-raised); padding: 1.5px 8px; font-family: var(--mono); font-size: 7.5px; color: var(--text-soft); }
+  .mp-url .lock { color: var(--green); font-size: 7px; }
+  .mp-url .path { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-web { background: var(--bg); overflow: hidden; position: relative; padding: 10px 12px; }
+  .mp-web .w-kick { color: var(--muted-dim); font-family: var(--mono); font-size: 6px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; }
+  .mp-web .w-h1 { color: var(--text); font-size: 11px; font-weight: 700; margin: 3px 0 4px; }
+  .mp-web .w-p { color: var(--muted); font-size: 7.5px; line-height: 1.55; }
+  .mp-net { background: var(--term-bg); padding: 6px 8px; font-family: var(--mono); font-size: 6.8px; line-height: 1.75; overflow: hidden; }
+  .mp-net .row { display: flex; gap: 8px; }
+  .mp-net .m { color: #c4a7e7; width: 28px; flex: none; } .mp-net .u { color: #e0def4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-net .s2 { color: #95e6b8; } .mp-net .s4 { color: #eb6f92; } .mp-net .t { color: #6e6a86; }
+
+  /* decision forms */
+  .q-card { border: 1px solid var(--border-mid); border-radius: 11px; background: var(--surface-raised); padding: 16px 18px; margin: 14px 0; }
+  .q-card h3 { margin: 0 0 4px; }
+  .q-card .q-why { color: var(--muted); font-size: 12.6px; margin: 0 0 10px; }
+  .q-card label.q-opt { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; cursor: pointer; background: var(--surface); }
+  .q-card label.q-opt:hover { background: var(--surface-hover); }
+  .q-card label.q-opt input { margin-top: 3px; accent-color: var(--accent); }
+  .q-card label.q-opt b { color: var(--text); font-size: 13px; }
+  .q-card label.q-opt span.d { display: block; color: var(--muted); font-size: 12px; }
+  .q-card textarea { width: 100%; min-height: 40px; background: var(--surface); color: var(--text-soft); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 12.6px; margin-top: 6px; }
+  .q-card button[type="submit"] { margin-top: 10px; background: var(--accent); color: var(--accent-ink); border: none; border-radius: 8px; padding: 7px 14px; font-weight: 700; font-size: 12.5px; cursor: pointer; }
+  .q-card button[type="submit"]:hover { filter: brightness(1.08); }
+  .q-card .queued { display: none; margin-left: 10px; color: var(--green); font-size: 12px; font-weight: 600; }
+  .q-card.was-queued .queued { display: inline; }
+</style>
+
+<div class="pg-wrap">
+  <div class="pg-kicker">Commando · feature plan · 6 Aug 2026</div>
+  <h1>A Chromium engine for web tiles — full CDP beside your panes</h1>
+  <p class="pg-lede">
+    Web-pane tiles shipped with two renderers: a sandboxed iframe everywhere, and a native
+    WKWebView in the desktop app. Neither is debuggable by agents. This plan adds a third,
+    <em>agent-choosable</em> engine: a daemon-managed Chromium whose pages render into the
+    existing tile chrome — so any agent (or you) gets real Chrome DevTools Protocol on the exact
+    page you're both looking at: network inspection, request interception, breakpoints,
+    performance traces.
+  </p>
+
+  <h2 id="current">Where we are, and the gap</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <thead><tr><th>Tier (shipped)</th><th>Where it renders</th><th>Human fidelity</th><th>Agent debuggability</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b style="color:var(--text)">iframe</b> (<code>WebPaneCard.tsx</code>)</td>
+        <td>Every client — browser tabs, desktop app (localhost URLs)</td>
+        <td class="pg-ok">Native</td>
+        <td class="pg-bad">None — the user's browser (Dia, Safari shell) exposes no CDP</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--text)">WKWebView</b> (<code>WebViewTileBridge.swift</code>, <code>commando.native-webview</code>)</td>
+        <td>Desktop app only, external origins</td>
+        <td class="pg-ok">Native</td>
+        <td class="pg-bad">None — WebKit's remote inspector needs private entitlements</td>
+      </tr>
+    </tbody>
+  </table></div>
+  <p>
+    The gap is one capability, in every client: <b style="color:var(--text)">nobody can attach a
+    debugger to the page inside a tile.</b> When my e2e drive "watched the tile", it worked only
+    because I had launched my own Chrome with <code>--remote-debugging-port</code> — your everyday
+    browsers don't expose that, and the desktop app's WKWebView can't.
+  </p>
+  <div class="pg-callout">
+    <strong>Reframing from our chat.</strong> The question started as "Chrome instead of WebKit
+    in the AppKit panes", and my first instinct was docking a real Chrome window into the grid.
+    Working it through changed the shape: the AppKit app is not the only client missing CDP —
+    <em>all</em> of them are. An engine owned by the <em>daemon</em> (not by any one client) fixes
+    the gap everywhere at once, and sidesteps the window-juggling entirely. The docked-window idea
+    survives below as a v2 fidelity upgrade, with its costs stated honestly.
+  </div>
+
+  <h2 id="options">The decision: how does Chromium get into a tile?</h2>
+  <div class="opt-grid">
+    <div class="opt-card is-reco">
+      <div class="opt-head"><b>A · Headless Chromium + screencast tile</b><span class="opt-tag reco">Recommended v1</span></div>
+      <p>The daemon launches one managed Chromium (<code>--headless=new</code>, dedicated profile,
+      loopback-only <code>--remote-debugging-port</code>) and opens one target per
+      <code>engine:"chromium"</code> tile. The tile renders the page via CDP
+      <code>Page.startScreencast</code> frames onto a canvas; clicks, scrolls, and keys relay back
+      through <code>Input.dispatchMouseEvent</code>/<code>dispatchKeyEvent</code>. Agents attach to
+      the same target for network/debugger/tracing.</p>
+      <ul>
+        <li class="plus">Works in <b>every</b> client — desktop app, Dia, any browser, future remote access. One implementation.</li>
+        <li class="plus">Zero window management: frames are just pixels inside the existing tile chrome; masking/occlusion/z-order all keep working as today.</li>
+        <li class="plus">No new permissions; no bundled browser if we use an installed Chrome (Q2 below).</li>
+        <li class="plus">Human gets full DevTools too: the CDP endpoint serves the DevTools frontend — open it as a <em>second tile</em> beside the page.</li>
+        <li class="minus">Rendering is streamed frames: slight input latency, softer text than a native surface, no native text selection or ⌘F. Fine for a debugging surface; the WebKit/iframe tier stays the default for reading.</li>
+        <li class="minus">Continuous screencast costs CPU while the tile is visible (mitigate: pause frames when tile hidden or window blurred).</li>
+      </ul>
+    </div>
+    <div class="opt-card">
+      <div class="opt-head"><b>B · Docked real-Chrome window (AX puppeteering)</b><span class="opt-tag v2">Possible v2</span></div>
+      <p>Launch real Chrome with <code>--app=&lt;url&gt;</code> + debug port; the desktop app moves
+      that window over the tile rect via the macOS Accessibility API, tracking every resize.</p>
+      <ul>
+        <li class="plus">Perfect fidelity: it <em>is</em> Chrome — native scrolling, selection, extensions.</li>
+        <li class="minus">Requires the Accessibility permission for CommandoDesktop.</li>
+        <li class="minus">Cross-app z-order is not controllable via AX — the Chrome window floats; we can only hide it when Commando is occluded/behind. Spaces + fullscreen transitions need per-case handling.</li>
+        <li class="minus">Rect-only occlusion: the HUD drawer over a tile means hiding the whole window, not masking it.</li>
+        <li class="minus">Desktop app only — browser clients still get nothing.</li>
+      </ul>
+    </div>
+    <div class="opt-card">
+      <div class="opt-head"><b>C · Electron tile-host helper</b><span class="opt-tag no">Not proposed</span></div>
+      <p>A small Electron app as companion window host: it connects to the daemon, receives tile
+      rects, and positions <em>its own</em> frameless window (no AX permission needed). CDP via its
+      debug port.</p>
+      <ul>
+        <li class="plus">Self-positioning avoids the Accessibility permission.</li>
+        <li class="minus">Ships a second Chromium (~250&nbsp;MB) + a second app to build, sign, notarize, update.</li>
+        <li class="minus">Inherits all of B's z-order/occlusion/Spaces problems — it's still a foreign window floating over the grid.</li>
+        <li class="minus">Desktop app only, again.</li>
+      </ul>
+    </div>
+    <div class="opt-card is-dead">
+      <div class="opt-head"><b>D · CEF embedded in the AppKit app</b><span class="opt-tag no">Rejected</span></div>
+      <p>Chromium Embedded Framework as a true in-process NSView.</p>
+      <ul>
+        <li class="plus">Real embedded compositing — the only option where Chromium is a first-class view.</li>
+        <li class="minus">~250&nbsp;MB framework, C++ integration surface with poor Swift ergonomics, our own Chromium security-update treadmill, notarization + multi-process packaging complexity. Permanent heavy maintenance for a lightweight local cockpit.</li>
+        <li class="minus">Desktop app only.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="pg-table-scroll"><table class="pg-table">
+    <thead><tr><th>Criterion</th><th>A · Screencast</th><th>B · Docked Chrome</th><th>C · Electron helper</th><th>D · CEF</th></tr></thead>
+    <tbody>
+      <tr><td>Full CDP for agents</td><td class="pg-ok">Yes</td><td class="pg-ok">Yes</td><td class="pg-ok">Yes</td><td class="pg-ok">Yes</td></tr>
+      <tr><td>Works in browser clients too</td><td class="pg-ok">Yes</td><td class="pg-bad">No</td><td class="pg-bad">No</td><td class="pg-bad">No</td></tr>
+      <tr><td>Human viewing fidelity</td><td class="pg-warn">Streamed frames</td><td class="pg-ok">Native</td><td class="pg-ok">Native</td><td class="pg-ok">Native</td></tr>
+      <tr><td>Compositing / occlusion correctness</td><td class="pg-ok">Inherits today's (perfect)</td><td class="pg-bad">Floating window, rect-only</td><td class="pg-bad">Floating window, rect-only</td><td class="pg-ok">Native view</td></tr>
+      <tr><td>New permissions / bundle weight</td><td class="pg-ok">None / none*</td><td class="pg-warn">Accessibility / none</td><td class="pg-bad">None / ~250 MB</td><td class="pg-bad">None / ~250 MB</td></tr>
+      <tr><td>Implementation risk</td><td class="pg-ok">Low — plain TS on both ends</td><td class="pg-warn">Medium — AX + Spaces spikes</td><td class="pg-warn">Medium — new app lifecycle</td><td class="pg-bad">High</td></tr>
+    </tbody>
+  </table></div>
+  <p class="pg-note">* assuming Q2 resolves to "use an installed Chrome"; a pinned Chrome-for-Testing download adds ~170 MB on first use, cached in <code>~/.commando</code>.</p>
+
+  <h2 id="arch">Recommended architecture (option A)</h2>
+  <pre class="mermaid">flowchart TD
+  subgraph daemon["Commando daemon (port 4310)"]
+    API["POST /api/web-panes<br/>{ url, anchor, engine: 'chromium' }"]
+    SVC["ChromiumEngineService<br/>spawn · target-per-tile · health · teardown"]
+    RELAY["WS /ws/web-tiles/:id<br/>screencast frames out · input events in"]
+    CDPAPI["GET /api/web-panes/:id/cdp<br/>(agent token) → ws:// target endpoint"]
+  end
+  CHROME["Managed Chromium<br/>--headless=new · dedicated profile<br/>--remote-debugging-port on 127.0.0.1"]
+  subgraph clients["Every Commando client"]
+    TILE["ChromiumTileCard<br/>canvas + relayed input"]
+  end
+  AGENT["Agent<br/>chrome-devtools MCP / raw CDP"]
+  HUMAN["You"]
+
+  API --> SVC
+  SVC -- "launch + CDP" --> CHROME
+  CHROME -- "Page.startScreencast" --> RELAY
+  RELAY -- "frames" --> TILE
+  TILE -- "click / scroll / keys" --> RELAY
+  RELAY -- "Input.dispatch*" --> CHROME
+  AGENT --> CDPAPI
+  CDPAPI -- "attach to same target" --> CHROME
+  HUMAN --- TILE</pre>
+  <p>
+    The load-bearing property: <b style="color:var(--text)">agent and human share one page.</b>
+    The agent's <code>Network.enable</code>, breakpoints, and <code>Page.navigate</code> act on the
+    same target whose pixels you're watching in the tile — true co-browsing, with the daemon as the
+    single owner of the browser process.
+  </p>
+  <div class="pg-callout warn">
+    <strong>Security model.</strong> A CDP endpoint is total control of the browser it belongs to,
+    so: the debug port binds to loopback only; the profile is a throwaway under
+    <code>~/.commando/chromium-profile/</code> (never your personal browser profile — no cookies or
+    sessions to steal); discovering the endpoint requires the existing agent hook token
+    (<code>timingSafeEqual</code>, same as tile opens); and the trust policy is unchanged — an
+    external origin still pends until you confirm, <em>before</em> the Chromium target ever
+    navigates to it. Note Chrome ≥136 itself refuses <code>--remote-debugging-port</code> on a
+    default profile, so the dedicated <code>--user-data-dir</code> is mandatory anyway.
+  </div>
+
+  <h3>What it looks like</h3>
+  <div class="ws-frame"><div class="ws-canvas">
+    <div class="ws-grid">
+      <div class="mp is-focused">
+        <div class="mp-head"><span class="ico">❯</span><span class="ttl">claude · gizmo</span><span class="mp-chip run">agent</span><span class="spacer"></span><span class="btn">⤢</span></div>
+        <div class="mp-term"><span class="p">❯</span> commando open http://localhost:8081 \
+    --engine chromium
+<span class="d">→ tile w-4be1c2 beside %22 · engine chromium</span>
+<span class="p">❯</span> <span class="g">agent:</span> attached CDP, watching network…
+<span class="y">⚠ /api/profile → 401 on every reload</span>
+<span class="d">  Authorization header is missing — the
+  token refresh races the first fetch.</span>
+<span class="gr">✓ repro'd with a breakpoint on fetch()</span></div>
+        <div class="mp-foot"><span>%22</span><span class="grow"></span><span>zsh</span></div>
+      </div>
+      <div class="ws-splitter-v"></div>
+      <div class="mp">
+        <div class="mp-head"><span class="ico">◫</span>
+          <span class="mp-url"><span class="lock">⬤</span>localhost:8081<span class="path">/</span></span>
+          <span class="mp-chip web">web · agent</span><span class="mp-chip cdp">chromium</span>
+          <span class="spacer"></span><span class="btn">⟳</span><span class="btn">🛠</span><span class="btn">✕</span></div>
+        <div class="mp-web">
+          <div class="w-kick">your app, rendered by the daemon's chromium</div>
+          <div class="w-h1">Dev server — profile page</div>
+          <div class="w-p">You click around normally; input relays through CDP. The agent sees
+          every request this page makes, sets breakpoints in its JS, and can navigate it —
+          the same target, live.</div>
+        </div>
+        <div class="mp-foot"><span>w-4be1c2</span><span class="grow"></span><span>cdp attached · 1 agent</span></div>
+      </div>
+      <div class="ws-splitter-v"></div>
+      <div class="mp">
+        <div class="mp-head"><span class="ico">🛠</span>
+          <span class="mp-url"><span class="lock">⬤</span>devtools<span class="path">/network</span></span>
+          <span class="mp-chip cdp">devtools</span>
+          <span class="spacer"></span><span class="btn">✕</span></div>
+        <div class="mp-net">
+          <div class="row"><span class="m">GET</span><span class="u">/api/session</span><span class="s2">200</span><span class="t">12ms</span></div>
+          <div class="row"><span class="m">GET</span><span class="u">/api/profile</span><span class="s4">401</span><span class="t">8ms</span></div>
+          <div class="row"><span class="m">POST</span><span class="u">/api/token/refresh</span><span class="s2">200</span><span class="t">31ms</span></div>
+          <div class="row"><span class="m">GET</span><span class="u">/api/profile</span><span class="s2">200</span><span class="t">14ms</span></div>
+          <div class="row"><span class="t">— full DevTools frontend, served by the</span></div>
+          <div class="row"><span class="t">  CDP endpoint, opened as a normal tile —</span></div>
+        </div>
+        <div class="mp-foot"><span>w-9d31aa</span><span class="grow"></span><span>inspecting w-4be1c2</span></div>
+      </div>
+    </div>
+  </div></div>
+  <p class="pg-note">The 🛠 button on a chromium tile opens the DevTools frontend as a sibling tile —
+  the human's debugging surface, no agent required.</p>
+
+  <h2 id="protocol">Protocol &amp; API changes</h2>
+  <p>Additive throughout; every existing tile keeps working with <code>engine</code> defaulting to
+  <code>'webkit'</code> (today's iframe/WKWebView pair).</p>
+  <pre class="pg-code"><code><span class="c">// shared/protocol.ts — WebPane gains one field</span>
+<span class="a">export type</span> WebPaneEngine = <span class="g">'webkit'</span> | <span class="g">'chromium'</span>
+<span class="a">export type</span> WebPane = {
+  <span class="c">/* …existing fields unchanged… */</span>
+  engine: WebPaneEngine          <span class="c">// default 'webkit'</span>
+  cdp?: { attached: number }     <span class="c">// broadcast so tiles can show "1 agent watching"</span>
+}</code></pre>
+  <pre class="pg-code"><code><span class="c"># Agent surface — open a debuggable tile, then discover its CDP endpoint</span>
+curl -X POST :4310/api/web-panes \
+  -H <span class="g">"Authorization: Bearer $(cat ~/.commando/agent-hook-token)"</span> \
+  -d <span class="g">'{"url":"http://localhost:8081","anchor":"%22","engine":"chromium"}'</span>
+<span class="c"># → { ok, webPaneId: "w-4be1c2", status: "open", engine: "chromium" }</span>
+
+curl :4310/api/web-panes/w-4be1c2/cdp -H <span class="g">"Authorization: Bearer …"</span>
+<span class="c"># → { browser: "ws://127.0.0.1:9223/devtools/browser/…",</span>
+<span class="c">#     target:  "ws://127.0.0.1:9223/devtools/page/ABC123",</span>
+<span class="c">#     devtoolsFrontendUrl: "http://127.0.0.1:9223/devtools/inspector.html?ws=…" }</span>
+
+<span class="c"># chrome-devtools MCP attaches straight to it:</span>
+<span class="c">#   chrome-devtools-mcp --browser-url http://127.0.0.1:9223</span></code></pre>
+  <ul>
+    <li><code>scripts/commando-open</code> grows <code>--engine chromium</code>; the ⌘K palette command and the Ports panel get an "open debuggable" variant.</li>
+    <li><code>show-in-commando</code> skill: new section — default to <code>webkit</code> for showing things; choose <code>chromium</code> when you intend to debug (network, breakpoints, tracing); fetch <code>/cdp</code> and attach.</li>
+    <li>Tile chrome: engine chip (<span class="pg-warn">chromium</span>), "n agents attached" in the footer, 🛠 DevTools action.</li>
+  </ul>
+
+  <h2 id="build">Build plan</h2>
+  <ol class="phase-list">
+    <li><b>Engine core (daemon).</b> <code>server/chromium-engine.ts</code>: locate/launch the
+      managed Chromium, per-tile target lifecycle, crash + restart handling, teardown of orphaned
+      targets in <code>prune()</code>. <code>engine</code> field through
+      <code>shared/protocol.ts</code>, <code>web-panes.ts</code>, API validation, persistence
+      (a restored chromium tile relaunches its target lazily). Unit tests with a stubbed CDP.</li>
+    <li><b>Screencast tile (all clients).</b> Daemon WS relay
+      (<code>/ws/web-tiles/:id</code>, owner-cookie auth) bridging screencast frames out and input
+      in. <code>ChromiumTileCard</code> in the web client: canvas rendering, coordinate mapping,
+      wheel/keys, pause-when-hidden. This is the phase with the feel-risk — gate on a fidelity
+      check: type into a form, scroll docs, drag-select; decide frame quality/fps knobs here.</li>
+    <li><b>Agent surface.</b> <code>/cdp</code> discovery endpoint (agent token),
+      <code>cdp.attached</code> broadcast, <code>commando open --engine</code>, skill update in all
+      three installs, DevTools-frontend tile action. E2e on the isolated stack: agent opens a
+      chromium tile, attaches via chrome-devtools MCP, watches a request the human's click
+      triggers.</li>
+    <li><b>Merge gate.</b> <code>npm run typecheck</code> + vitest + Swift tests (untouched paths
+      still green) + the e2e drive above + dogfood on the live stack (a real debugging session on a
+      real dev server).</li>
+  </ol>
+  <p class="pg-note">Worktree <code>../commando-chromium-tiles</code>, branch
+  <code>chromium-tiles</code>, vault note updated as phases land — same workflow as the web-panes
+  build.</p>
+
+  <h2 id="risks">Risks &amp; open questions</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <thead><tr><th>Risk</th><th>Severity</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr><td>Screencast feel disappoints for interactive use (latency, soft text, no native selection)</td>
+        <td class="pg-warn">Medium</td>
+        <td>Phase-2 fidelity gate before building further; PNG frames + devicePixelRatio-aware sizing; if it fails, option B (docked Chrome) is the fallback and this plan's daemon/CDP layers are still the substrate it needs.</td></tr>
+      <tr><td>Chromium discovery: user has no Chrome installed, or an incompatible one</td>
+        <td class="pg-warn">Medium</td>
+        <td>Q2 below — probe Chrome/Chromium/Edge/Brave paths, else offer a pinned Chrome-for-Testing download on first chromium tile.</td></tr>
+      <tr><td>CPU cost of continuous screencast on a laptop</td>
+        <td class="pg-ok">Low</td>
+        <td>Stream only while the tile is on-screen and the client focused; drop to on-demand stills otherwise. Headless Chrome idles cheaply.</td></tr>
+      <tr><td>Agent misuse of CDP power (navigate the tile somewhere external un-confirmed)</td>
+        <td class="pg-warn">Medium</td>
+        <td>Daemon watches <code>Page.frameNavigated</code> on tile targets: a main-frame navigation to a non-allowlisted external origin blanks the screencast and flips the tile to the existing pending-confirm card. Q3 decides how raw the agent's pipe is.</td></tr>
+      <tr><td>Managed Chromium lifecycle leaks (orphan processes after daemon crash)</td>
+        <td class="pg-ok">Low</td>
+        <td>Process-group kill on exit; PID file + startup sweep; targets are cheap to recreate from persisted tile state.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="decide">Decisions — locked in</h2>
+  <div class="pg-callout good">
+    <strong>All four decisions confirmed (6 Aug 2026).</strong> Build underway on branch
+    <code>chromium-tiles</code> (worktree <code>../commando-chromium-tiles</code>).
+  </div>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <thead><tr><th>Decision</th><th>Choice</th></tr></thead>
+    <tbody>
+      <tr><td>1 · Engine strategy</td><td><b style="color:var(--text)">A — screencast tier now</b>; revisit docked Chrome as v2 only if fidelity disappoints.</td></tr>
+      <tr><td>2 · Chromium binary</td><td><b style="color:var(--text)">Installed first</b> (probe Chrome/Chromium/Edge/Brave), fall back to offering a pinned Chrome-for-Testing download.</td></tr>
+      <tr><td>3 · CDP exposure</td><td><b style="color:var(--text)">Raw per-tile target endpoint + navigation watchdog</b> that re-pends un-allowlisted external navigations.</td></tr>
+      <tr><td>4 · v1 scope</td><td><b style="color:var(--text)">DevTools-frontend companion tile included</b> in v1.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div hidden>
+  <form class="q-card" data-lavish-question="engine-strategy" onsubmit="queueAnswer(event, 'engine-strategy')">
+    <h3>1 · Engine strategy</h3>
+    <p class="q-why">Sets the whole architecture. The scorecard above is the evidence.</p>
+    <label class="q-opt"><input type="radio" name="answer" value="A: screencast tier now; revisit docked Chrome as v2 only if fidelity disappoints" checked>
+      <span><b>A — Screencast tier (recommended)</b><span class="d">CDP everywhere, no window juggling; accept streamed-frame fidelity for the debug engine.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="B: build the docked real-Chrome window for the AppKit app instead">
+      <span><b>B — Docked real Chrome</b><span class="d">Native fidelity in the desktop app; Accessibility permission, floating-window caveats, browser clients excluded.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="A then B: screencast v1, and plan the docked window as a committed v2 regardless">
+      <span><b>A then B, committed</b><span class="d">Ship screencast now and treat the docked window as a planned follow-up, not a contingency.</span></span></label>
+    <button type="submit">Queue answer</button><span class="queued">✓ queued</span>
+  </form>
+
+  <form class="q-card" data-lavish-question="chromium-source" onsubmit="queueAnswer(event, 'chromium-source')">
+    <h3>2 · Which Chromium binary?</h3>
+    <p class="q-why">The daemon needs a browser to launch. It never touches the binary's default profile either way.</p>
+    <label class="q-opt"><input type="radio" name="answer" value="probe installed Chromium-family browsers first, fall back to offering a pinned Chrome-for-Testing download" checked>
+      <span><b>Installed first, download as fallback (recommended)</b><span class="d">Zero weight for most people; deterministic pinned build (~170 MB, cached in ~/.commando) when nothing suitable exists.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="always download a pinned Chrome-for-Testing build">
+      <span><b>Always pinned download</b><span class="d">One known-good version to test against; costs every machine the download.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="installed browsers only; chromium tiles error clearly when none is found">
+      <span><b>Installed only</b><span class="d">No downloads ever; the feature is simply unavailable without a local Chromium.</span></span></label>
+    <button type="submit">Queue answer</button><span class="queued">✓ queued</span>
+  </form>
+
+  <form class="q-card" data-lavish-question="cdp-exposure" onsubmit="queueAnswer(event, 'cdp-exposure')">
+    <h3>3 · How raw is the agent's CDP access?</h3>
+    <p class="q-why">Raw CDP is maximum power (the point of this feature) but the daemon can't reason about what an agent does with it beyond the navigation watchdog.</p>
+    <label class="q-opt"><input type="radio" name="answer" value="raw CDP websocket per tile target, plus the navigation watchdog that re-pends un-allowlisted external navigations" checked>
+      <span><b>Raw target endpoint + watchdog (recommended)</b><span class="d">Full DevTools power, loopback + token gated; external navigations still hit the confirm flow.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="daemon-mediated curated API only (network log, eval, screenshot, navigate) — no raw CDP">
+      <span><b>Curated daemon API only</b><span class="d">Auditable and least-privilege, but loses breakpoints, tracing, interception — most of the reason to want Chromium.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="raw browser-level CDP endpoint (all targets), maximum simplicity">
+      <span><b>Raw browser endpoint</b><span class="d">Simplest; any agent with the token can reach every tile's target, not just its own.</span></span></label>
+    <button type="submit">Queue answer</button><span class="queued">✓ queued</span>
+  </form>
+
+  <form class="q-card" data-lavish-question="v1-scope" onsubmit="queueAnswer(event, 'v1-scope')">
+    <h3>4 · v1 scope trimmings</h3>
+    <p class="q-why">Both are additive later; including them makes v1 more complete but longer.</p>
+    <label class="q-opt"><input type="radio" name="answer" value="include the DevTools-frontend companion tile in v1" checked>
+      <span><b>DevTools tile in v1 (recommended)</b><span class="d">The human's half of co-debugging; cheap — it's just a URL tile pointed at the CDP endpoint's frontend.</span></span></label>
+    <label class="q-opt"><input type="radio" name="answer" value="v1 is agent-CDP only; add the human DevTools tile later">
+      <span><b>Agent-only v1</b><span class="d">Smallest useful slice; you'd use the agent as your network console until v1.1.</span></span></label>
+    <textarea name="notes" placeholder="Anything else to include or cut from v1…"></textarea>
+    <button type="submit">Queue answer</button><span class="queued">✓ queued</span>
+  </form>
+
+  </div>
+  <p class="pg-note">Answered via the decision forms (now collapsed). Annotate anything else
+  inline while the build runs — feedback still reaches me.</p>
+</div>
+
+<script>
+  function queueAnswer(event, question) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const answer = data.get('answer');
+    if (!answer) return;
+    const notes = (data.get('notes') || '').toString().trim();
+    const text = 'Decision "' + question + '": ' + answer + (notes ? ' — notes: ' + notes : '');
+    window.lavish.queuePrompt(text, {
+      tag: 'decision', text: question + ': ' + answer, element: form,
+      queueKey: question, data: { question, answer, notes },
+    });
+    form.classList.add('was-queued');
+  }
+</script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict",
+    themeVariables: {
+      background: "#0c0a14", primaryColor: "#131020", primaryTextColor: "#f5f3fa",
+      primaryBorderColor: "#443a63", lineColor: "#7a7590", secondaryColor: "#181428",
+      tertiaryColor: "#100d1a", fontFamily: "Inter, ui-sans-serif, sans-serif", fontSize: "13px",
+    }});
+  await mermaid.run({ nodes: [...document.querySelectorAll(".mermaid")] });
+</script>

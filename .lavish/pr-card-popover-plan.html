@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PRs tab — clearer PR numbers &amp; hover popover</title>
+<style>
+  :root {
+    --surface-deep: #0a0812;
+    --bg: #0c0a14;
+    --surface: #100d1a;
+    --surface-raised: #131020;
+    --surface-soft: #181428;
+    --surface-hover: #1f1a31;
+    --border: #2c2542;
+    --border-mid: #363048;
+    --border-strong: #443a63;
+    --text: #f5f3fa;
+    --text-soft: #c6c0d6;
+    --text-dim: #655f78;
+    --text-faint: #524f67;
+    --muted: #8f87a6;
+    --muted-dim: #7a7590;
+    --green: #85f4b1;
+    --accent: #b9a3ff;
+    --cyan: #73d9e2;
+    --amber: #f3c66b;
+    --red: #ff8d89;
+    --purple: #b9a3ff;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 28px 20px 80px;
+    background: var(--bg);
+    color: var(--text-soft);
+    font-family: var(--sans);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  .page { max-width: 900px; margin: 0 auto; min-width: 0; }
+  h1 { color: var(--text); font-size: 21px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { color: var(--text); font-size: 15px; margin: 38px 0 10px; padding-top: 18px; border-top: 1px solid var(--border); }
+  h2 .step { color: var(--accent); font-family: var(--mono); font-size: 11px; margin-right: 8px; }
+  h3 { color: var(--text-soft); font-size: 13px; margin: 18px 0 8px; }
+  p { margin: 8px 0; }
+  .lede { color: var(--muted); font-size: 13px; max-width: 72ch; }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--cyan); background: var(--surface-raised); padding: 1px 5px; border-radius: 5px; }
+  .pill { display: inline-block; padding: 2px 9px; border: 1px solid var(--border-mid); border-radius: 999px; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-right: 6px; }
+  .pill.rec { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+  .pill.cost { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, var(--border)); }
+  .pill.out { color: var(--red); border-color: color-mix(in srgb, var(--red) 35%, var(--border)); }
+
+  .note { border-left: 3px solid var(--accent); background: var(--surface-raised); padding: 8px 12px; border-radius: 0 8px 8px 0; font-size: 12.5px; color: var(--muted); margin: 12px 0; }
+
+  /* ── demo stage: faithful HUD panel replica, zoomed for legibility ── */
+  .stage {
+    display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start;
+    padding: 20px; margin: 12px 0;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface-deep);
+    overflow-x: auto;
+  }
+  .stage-col { min-width: 0; }
+  .stage-label { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin: 0 0 8px; }
+  .hud { width: 272px; zoom: 1.55; }
+  .zoomnote { font-family: var(--mono); font-size: 9px; color: var(--text-faint); margin-top: 10px; }
+
+  /* faithful copies of prs-section.css bits */
+  .pr-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); position: relative; }
+  .pr-card + .pr-card { margin-top: 5px; }
+  .pr-card:hover { border-color: var(--border-strong); background: var(--surface-soft); }
+  .pr-card-top { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+  .pr-card-title { min-width: 0; color: var(--text); font-size: 10px; font-weight: 600; line-height: 1.35; text-decoration: none; overflow-wrap: anywhere; }
+  .pr-state { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; font-family: var(--mono); font-size: 7px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .pr-state.open { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .pr-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .pr-chip { display: inline-flex; gap: 3px; align-items: center; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: var(--surface); font-family: var(--mono); font-size: 7px; line-height: 1.3; }
+  .pr-chip .plus { color: var(--green); } .pr-chip .minus { color: var(--red); }
+  .pr-chip.bad { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--border)); }
+  .pr-chip.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }
+  .pr-foot { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+  .pr-branch { min-width: 0; overflow: hidden; color: var(--text-dim); font-family: var(--mono); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-time { flex: 0 0 auto; color: var(--text-faint); font-family: var(--mono); font-size: 7px; }
+
+  /* today's number */
+  .pr-number-today { margin-right: 4px; color: var(--text-dim); font-family: var(--mono); font-size: 8px; font-weight: 400; }
+  /* V1 accent inline */
+  .pr-number-v1 { margin-right: 5px; color: var(--accent); font-family: var(--mono); font-size: 9.5px; font-weight: 700; }
+  /* V2 number chip row */
+  .pr-idrow { display: flex; align-items: center; gap: 6px; }
+  .pr-number-v2 { color: var(--accent); font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.02em; }
+  .pr-idrow .rule { flex: 1; border-top: 1px dashed var(--border-mid); }
+
+  mark.flaw { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); padding: 0 3px; border-radius: 3px; font-size: 12px; }
+
+  /* ── popover mockup ── */
+  .pop-anchor { position: relative; }
+  .pr-pop {
+    position: absolute; z-index: 40; top: -8px; right: calc(100% + 10px);
+    width: 250px; padding: 10px 11px;
+    display: none; flex-direction: column; gap: 8px;
+    border: 1px solid var(--border-strong); border-radius: 10px;
+    background: var(--surface-raised);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  }
+  .pop-anchor:hover .pr-pop, .pop-anchor:focus-within .pr-pop { display: flex; }
+  .stage.popdemo { overflow: visible; padding-left: 300px; }
+  @media (max-width: 860px) {
+    .stage.popdemo { padding-left: 20px; padding-bottom: 30px; }
+    .pr-pop { top: calc(100% + 8px); right: auto; left: 0; }
+  }
+  .pop-head { display: flex; gap: 6px; align-items: baseline; }
+  .pop-num { color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; }
+  .pop-title { color: var(--text); font-size: 9px; font-weight: 600; line-height: 1.35; }
+  .pop-body { color: var(--muted); font-size: 8px; line-height: 1.5; border-left: 2px solid var(--border-mid); padding-left: 7px; }
+  .pop-row { display: flex; gap: 5px; align-items: center; font-family: var(--mono); font-size: 7.5px; color: var(--text-dim); flex-wrap: wrap; min-width: 0; }
+  .pop-row .b { color: var(--text-soft); }
+  .pop-row .arrow { color: var(--text-faint); }
+  .pop-sec { display: flex; flex-direction: column; gap: 3px; }
+  .pop-sec-label { font-family: var(--mono); font-size: 6.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-faint); }
+  .pop-check { display: flex; gap: 5px; font-family: var(--mono); font-size: 7.5px; }
+  .pop-check.pass { color: var(--green); } .pop-check.fail { color: var(--red); } .pop-check.pending { color: var(--amber); }
+  .pop-reviewer { display: flex; gap: 5px; align-items: center; font-size: 8px; color: var(--muted); }
+  .pop-reviewer .ava { width: 12px; height: 12px; border-radius: 4px; border: 1px solid var(--border-mid); background: var(--surface-hover); color: var(--accent); font-family: var(--mono); font-size: 5.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .pop-reviewer .st.ok { color: var(--green); } .pop-reviewer .st.pend { color: var(--amber); }
+  .pop-actions { display: flex; flex-wrap: wrap; gap: 4px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .pop-btn { padding: 3px 7px; border: 1px solid var(--border-mid); border-radius: 999px; background: var(--surface); color: var(--text-soft); font-family: var(--mono); font-size: 6.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+  .pop-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .pop-btn.primary { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+
+  /* ── option cards / tables ── */
+  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 12px 0; }
+  .opt { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .opt.rec { border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+  .opt h4 { margin: 0 0 4px; color: var(--text); font-size: 13px; }
+  .opt .why { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .opt .demo { margin: 10px 0 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 10px 0; }
+  th { text-align: left; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--border-strong); }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text-soft); }
+  td.dim { color: var(--muted); font-size: 12px; }
+  .tbl-wrap { overflow-x: auto; }
+
+  /* ── input controls ── */
+  form.q { border: 1px solid var(--border-mid); border-radius: 10px; background: var(--surface-raised); padding: 14px 16px; margin: 14px 0; }
+  form.q legend, form.q .qtitle { color: var(--text); font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  form.q label.row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 4px; border-radius: 7px; cursor: pointer; }
+  form.q label.row:hover { background: var(--surface-soft); }
+  form.q label.row input { margin-top: 3px; accent-color: var(--accent); }
+  form.q .desc { color: var(--muted); font-size: 12px; }
+  form.q button[type="submit"] { margin-top: 10px; padding: 6px 14px; border: 1px solid var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; cursor: pointer; }
+  form.q button[type="submit"]:hover { background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+  .queued-flag { display: none; margin-left: 10px; color: var(--green); font-family: var(--mono); font-size: 10px; }
+  form.q.queued .queued-flag { display: inline; }
+  textarea { width: 100%; min-height: 64px; background: var(--surface); border: 1px solid var(--border-mid); border-radius: 8px; color: var(--text); font-family: var(--sans); font-size: 12.5px; padding: 8px 10px; resize: vertical; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>PRs tab — clearer PR numbers &amp; a hover popover</h1>
+  <p class="lede">Two changes to the PR cards in the HUD's PRs tab: make the PR number instantly scannable, and add a rich hover card with more detail and quick actions. Mockups below are live — <strong>hover the middle card in the popover demo</strong>. Pick options at the bottom of each section; everything queues into one reply.</p>
+
+  <h2><span class="step">01</span>Current state</h2>
+  <p>Today the number renders as <code>.pr-number</code> — 8px mono in <code>--text-dim</code> (a barely-visible grey) prefixed to the title. <mark class="flaw">It disappears next to the 10px bold title</mark>, yet it's the primary handle you use to talk about a PR (<code>gh pr checkout 19815</code>, review comments, standups).</p>
+
+  <div class="stage">
+    <div class="stage-col">
+      <p class="stage-label">Today (272px HUD panel)</p>
+      <div class="hud">
+        <article class="pr-card">
+          <div class="pr-card-top">
+            <a class="pr-card-title" href="#" onclick="return false"><span class="pr-number-today">#19815</span>fix(social): feed reaction caching, plus opt-in props for the Social tab</a>
+            <span class="pr-state open">Open</span>
+          </div>
+          <div class="pr-meta">
+            <span class="pr-chip"><span class="plus">+1,591</span><span class="minus">−365</span></span>
+            <span class="pr-chip bad">✗ 4 failing</span>
+            <span class="pr-chip warn">2 unresolved</span>
+          </div>
+          <div class="pr-foot">
+            <span class="pr-branch">fix/social-data-quick-wins</span>
+            <span class="pr-time">3h ago</span>
+          </div>
+        </article>
+      </div>
+      <p class="zoomnote">rendered with the real prs-section.css, shown at 155%</p>
+    </div>
+  </div>
+
+  <h2><span class="step">02</span>Making the number clearer</h2>
+  <p>Three treatments, all live below in the real card at panel width. My recommendation is <strong>V1</strong> — one CSS tweak, no layout change, and the number reads first without stealing the title's weight.</p>
+
+  <div class="options">
+    <div class="opt">
+      <h4>V1 — Accent inline</h4>
+      <div class="demo hud">
+        <article class="pr-card">
+          <div class="pr-card-top">
+            <a class="pr-card-title" href="#" onclick="return false"><span class="pr-number-v1">#19815</span>fix(social): feed reaction caching, plus opt-in props for the Social tab</a>
+            <span class="pr-state open">Open</span>
+          </div>
+          <div class="pr-meta">
+            <span class="pr-chip"><span class="plus">+1,591</span><span class="minus">−365</span></span>
+            <span class="pr-chip bad">✗ 4 failing</span>
+          </div>
+          <div class="pr-foot"><span class="pr-branch">fix/social-data-quick-wins</span><span class="pr-time">3h ago</span></div>
+        </article>
+      </div>
+      <p class="why">Number goes accent purple, 9.5px bold mono. Stays where your eye already looks. CSS-only.</p>
+    </div>
+    <div class="opt rec">
+      <h4>V2 — ID row above title <span class="pill rec">✓ chosen</span></h4>
+      <div class="demo hud">
+        <article class="pr-card">
+          <div class="pr-idrow"><span class="pr-number-v2">#19815</span><span class="rule"></span><span class="pr-state open">Open</span></div>
+          <a class="pr-card-title" href="#" onclick="return false">fix(social): feed reaction caching, plus opt-in props for the Social tab</a>
+          <div class="pr-meta">
+            <span class="pr-chip"><span class="plus">+1,591</span><span class="minus">−365</span></span>
+            <span class="pr-chip bad">✗ 4 failing</span>
+          </div>
+          <div class="pr-foot"><span class="pr-branch">fix/social-data-quick-wins</span><span class="pr-time">3h ago</span></div>
+        </article>
+      </div>
+      <p class="why">Number and state pill get their own scan line; title stands alone. Costs ~10px of card height.</p>
+    </div>
+  </div>
+
+  <div class="note"><strong style="color: var(--green)">Decided:</strong> V2 — the number and state pill get their own row above the title. Being implemented now.</div>
+
+  <h2><span class="step">03</span>Hover popover — live mockup</h2>
+  <p><strong>Hover (or focus) the card below.</strong> The popover opens to the <em>left</em>, since the HUD hugs Commando's right edge — it overlays the pane grid where there's room. This mockup shows the full recommended v1 content; trim it with the checklists in section 04.</p>
+
+  <div class="stage popdemo">
+    <div class="stage-col">
+      <p class="stage-label">Hover me</p>
+      <div class="hud">
+        <div class="pop-anchor" tabindex="0">
+          <article class="pr-card">
+            <div class="pr-idrow"><span class="pr-number-v2">#19815</span><span class="rule"></span><span class="pr-state open">Open</span></div>
+            <a class="pr-card-title" href="#" onclick="return false">fix(social): feed reaction caching, plus opt-in props for the Social tab</a>
+            <div class="pr-meta">
+              <span class="pr-chip"><span class="plus">+1,591</span><span class="minus">−365</span></span>
+              <span class="pr-chip bad">✗ 4 failing</span>
+              <span class="pr-chip warn">2 unresolved</span>
+            </div>
+            <div class="pr-foot"><span class="pr-branch">fix/social-data-quick-wins</span><span class="pr-time">3h ago</span></div>
+          </article>
+
+          <div class="pr-pop" role="tooltip">
+            <div class="pop-head"><span class="pop-num">#19815</span><span class="pop-title">fix(social): feed reaction caching, plus opt-in props for the Social tab</span></div>
+            <div class="pop-body">Caches feed reactions per session and threads the opt-in props through to the Social tab feed. Fixes the double-fetch on tab focus…</div>
+            <div class="pop-row"><span class="b">fix/social-data-quick-wins</span><span class="arrow">→</span><span>main</span></div>
+            <div class="pop-row">opened 2d ago by <span class="b">laeijebor</span> · 4 commits · 12 files</div>
+            <div class="pop-sec">
+              <span class="pop-sec-label">Reviews</span>
+              <div class="pop-reviewer"><span class="ava">TG</span>timgent <span class="st ok">✓ approved</span></div>
+              <div class="pop-reviewer"><span class="ava">AN</span>andrii <span class="st pend">● requested</span></div>
+            </div>
+            <div class="pop-sec">
+              <span class="pop-sec-label">Checks · 4 of 21 failing</span>
+              <div class="pop-check fail">✗ ios-e2e (social-tab)</div>
+              <div class="pop-check fail">✗ android-e2e (social-tab)</div>
+              <div class="pop-check fail">✗ lint</div>
+              <div class="pop-check fail">✗ typecheck</div>
+              <div class="pop-check pending">● bundle-size</div>
+            </div>
+            <div class="pop-sec">
+              <span class="pop-sec-label">Unresolved · 2 — loads separately</span>
+              <div class="pop-body">timgent on <span style="color: var(--cyan)">SocialFeed.tsx</span>: "should this cache key include the session…"</div>
+              <div class="pop-body">andrii on <span style="color: var(--cyan)">useReactions.ts</span>: "what happens on logout here?"</div>
+            </div>
+            <div class="pop-actions">
+              <button class="pop-btn primary" type="button">Open on GitHub</button>
+              <button class="pop-btn" type="button">Copy #</button>
+              <button class="pop-btn" type="button">Copy branch</button>
+              <button class="pop-btn" type="button">Checkout in pane</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="zoomnote">live css-only mockup at 155% — real one would portal + flip near screen edges</p>
+    </div>
+  </div>
+
+  <h2><span class="step">04</span>What goes in it?</h2>
+  <p>Grouped by what it costs. "Free" fields extend the existing single GraphQL fragment — no extra request. Actions marked <span class="pill cost">daemon</span> need a new daemon endpoint.</p>
+
+  <h3>Info</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Field</th><th>Cost</th><th>Why</th></tr>
+    <tr><td>Description excerpt (first ~200 chars)</td><td class="dim">free — add <code>body</code></td><td class="dim">Titles rarely say what a PR actually does</td></tr>
+    <tr><td>Branch → base</td><td class="dim">free — add <code>baseRefName</code></td><td class="dim">Spot stacked PRs / wrong-base mistakes instantly</td></tr>
+    <tr><td>Opened + created age, commit &amp; file counts</td><td class="dim">free — <code>createdAt</code>, <code>commits.totalCount</code></td><td class="dim">Staleness at a glance</td></tr>
+    <tr><td>Per-reviewer status (who approved / blocked)</td><td class="dim">free — <code>latestReviews</code></td><td class="dim">"Approved by whom?" without opening GitHub</td></tr>
+    <tr><td>Full checks list (incl. passing)</td><td class="dim">already fetched</td><td class="dim">Card chip only shows failures today</td></tr>
+    <tr><td>Labels</td><td class="dim">free — add <code>labels</code></td><td class="dim">Cheap context, colour-coded</td></tr>
+    <tr><td>Unresolved thread excerpts</td><td class="dim">heavier — comment bodies</td><td class="dim">Nice, but bulks the query; suggest later</td></tr>
+  </table></div>
+
+  <h3>Actions</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>Action</th><th>Cost</th><th>Notes</th></tr>
+    <tr><td>Open on GitHub</td><td class="dim">client</td><td class="dim">Same link as title, but always visible</td></tr>
+    <tr><td>Copy number / branch / URL</td><td class="dim">client</td><td class="dim">Clipboard; number formatted for <code>gh pr checkout</code></td></tr>
+    <tr><td>Checkout in a new tmux pane <span class="pill cost">daemon</span></td><td class="dim">daemon endpoint</td><td class="dim">Commando-native superpower: split a pane, run <code>gh pr checkout NNN</code> in the repo. Needs a repo-path mapping.</td></tr>
+    <tr><td>View diff in Commando <span class="pill cost">daemon</span></td><td class="dim">reuse GitDiffModal</td><td class="dim">Only when the repo is checked out locally</td></tr>
+    <tr><td>Merge / approve / re-run checks <span class="pill out">out</span></td><td class="dim">—</td><td class="dim">Write actions with blast radius — GitHub is one click away</td></tr>
+  </table></div>
+
+  <div class="note"><strong style="color: var(--green)">Decided:</strong> description excerpt, branch → base, ages + commit/file counts, per-reviewer status, full checks list, and unresolved thread excerpts. Labels are out. Thread comments load via a <strong>separate lazy request</strong> when the popover opens — the main list query stays fast and the two fail independently.</div>
+
+  <div class="note"><strong style="color: var(--green)">Decided &amp; shipped:</strong> Open on GitHub + Copy number / branch / URL — matches what already landed, no change needed. Checkout-in-pane and view-diff remain available as daemon-backed fast-follows.</div>
+
+  <h2><span class="step">05</span>Behaviour &amp; risks</h2>
+  <ul style="color: var(--text-soft); margin: 8px 0; padding-left: 20px;">
+    <li><strong>Trigger:</strong> hover with ~350ms delay (no flicker while scanning), plus keyboard focus. The card link itself still opens GitHub on click.</li>
+    <li><strong>Positioning:</strong> must portal to <code>document.body</code> with <code>position: fixed</code> — the stream is <code>overflow-y: auto</code>, so an absolutely-positioned popover would be clipped. Opens leftward, flips when near edges.</li>
+    <li><strong>Coexistence:</strong> the existing checks-chip tooltip becomes redundant if the popover carries the full checks list — I'd remove it to avoid nested popovers.</li>
+    <li><strong>Data:</strong> all "free" fields ride the existing single <code>gh</code> call by extending the shared fragment; adding <code>body</code> + <code>latestReviews</code> + <code>labels</code> grows the response for 90 nodes — worth a quick payload sanity check.</li>
+    <li><strong>Risk:</strong> hover-only UIs are invisible on touch; the HUD is desktop-first so acceptable, but focus support keeps it keyboard-reachable.</li>
+    <li><strong>Comments query:</strong> per review feedback, unresolved thread excerpts come from a dedicated <code>/api/prs/threads</code> endpoint fetched when the popover opens — never blocks or breaks the list.</li>
+  </ul>
+
+  <form class="q" data-lavish-question="freeform" onsubmit="event.preventDefault(); const t = this.querySelector('textarea').value.trim(); if (!t) return; window.lavish.queuePrompt('Popover plan feedback: ' + t, { tag: 'note', text: t, element: this, queueKey: 'freeform' }); this.classList.add('queued');">
+    <div class="qtitle">Anything else? (missing info, different trigger, scope changes)</div>
+    <textarea placeholder="e.g. also show milestone; make the whole popover click-pinned; skip reviewer list…"></textarea>
+    <button type="submit">Queue note</button><span class="queued-flag">✓ queued</span>
+  </form>
+</div>
+</body>
+</html>

@@ -6,6 +6,7 @@ import {
   MAX_WEB_PANES,
   MAX_WEB_PANE_URL_LENGTH,
   type WebPane,
+  type WebPaneEngine,
   type WebPanePlacement,
 } from '../shared/protocol.js'
 import { resolveAutoPlacement } from '../shared/web-pane-placement.js'
@@ -16,6 +17,7 @@ const PANE_ID = /^%\d+$/
 const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const MAX_ALLOWED_ORIGINS = 64
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
+const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 
 type StateFile = {
   version: 1
@@ -85,7 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): WebPane | null {
   if (!isRecord(value)) return null
   const {
-    id, url, sessionId, windowId, anchorPaneId, placement, openedBy, openerLabel,
+    id, url, sessionId, windowId, anchorPaneId, placement, engine, openedBy, openerLabel,
     status, createdAt,
   } = value
   if (
@@ -95,6 +97,8 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): WebP
     typeof windowId !== 'string' || !WINDOW_ID.test(windowId) ||
     typeof anchorPaneId !== 'string' || !PANE_ID.test(anchorPaneId) ||
     typeof placement !== 'string' || !PLACEMENTS.includes(placement as WebPanePlacement) ||
+    // Records persisted before the engine field existed default to webkit.
+    (engine !== undefined && !ENGINES.includes(engine as WebPaneEngine)) ||
     (openedBy !== 'agent' && openedBy !== 'user') ||
     (openerLabel !== undefined && (typeof openerLabel !== 'string' || openerLabel.length > 128)) ||
     (status !== 'open' && status !== 'pending') ||
@@ -111,6 +115,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): WebP
     windowId,
     anchorPaneId,
     placement: placement as WebPanePlacement,
+    engine: (engine as WebPaneEngine | undefined) ?? 'webkit',
     openedBy,
     ...(openerLabel !== undefined ? { openerLabel } : {}),
     status,
@@ -158,6 +163,7 @@ export type OpenWebPaneInput = {
   placement?: WebPanePlacement
   /** The anchor pane's current cell size, used to resolve 'auto' placement. */
   anchorSize?: { cols: number; rows: number }
+  engine?: WebPaneEngine
   openedBy: 'agent' | 'user'
   openerLabel?: string
 }
@@ -220,6 +226,8 @@ export class WebPaneService {
       : input.anchorSize
         ? resolveAutoPlacement(input.anchorSize)
         : 'right'
+    const engine = input.engine ?? 'webkit'
+    if (!ENGINES.includes(engine)) throw new WebPaneError(400, 'Invalid engine')
 
     const pane: WebPane = {
       id: `w-${randomUUID().replaceAll('-', '').slice(0, 8)}`,
@@ -228,6 +236,7 @@ export class WebPaneService {
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
       placement,
+      engine,
       openedBy: input.openedBy,
       ...(input.openerLabel !== undefined ? { openerLabel: input.openerLabel } : {}),
       status: decision.kind === 'open' ? 'open' : 'pending',
@@ -236,6 +245,28 @@ export class WebPaneService {
     this.panes.set(pane.id, pane)
     this.persist()
     return pane
+  }
+
+  /** Classifies a URL against the current allowlist (for the chromium watchdog). */
+  classify(url: string): WebPaneUrlDecision {
+    return classifyWebPaneUrl(url, this.allowedOrigins)
+  }
+
+  /**
+   * Flips an open pane back to pending after its chromium target navigated to
+   * an un-allowlisted external URL. The tile shows the confirm card for the
+   * navigated-to URL; confirming resumes there. No-op unless the navigation
+   * actually needs confirmation (the origin may have been allowed meanwhile).
+   */
+  repend(id: string, url: string): WebPane | undefined {
+    const pane = this.panes.get(id)
+    if (!pane) return undefined
+    const decision = classifyWebPaneUrl(url, this.allowedOrigins)
+    if (decision.kind !== 'confirm') return pane
+    const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
+    this.panes.set(id, pended)
+    this.persist()
+    return pended
   }
 
   confirm(id: string, allowOrigin: boolean): WebPane {

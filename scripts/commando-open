@@ -1,23 +1,55 @@
 #!/usr/bin/env bash
 # commando-open — open a URL as a web tile beside this tmux pane in Commando.
 #
-#   commando-open <url> [right|below|auto]
+#   commando-open <url> [right|below|auto] [--engine webkit|chromium]
 #
 # Meant for agents (and humans) running inside a tmux pane that Commando
 # mirrors: the tile appears next to this pane in every connected client.
 # Authorizes with the agent hook token (~/.commando/agent-hook-token), the
 # same secret the agent status hooks already use. localhost URLs open
 # immediately; other origins wait for the owner to confirm in the UI.
+#
+# --engine chromium renders the tile through the daemon-managed headless
+# Chromium: the page becomes debuggable over CDP — fetch the endpoint with
+#   curl -H "Authorization: Bearer $(cat ~/.commando/agent-hook-token)" \
+#     "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 set -euo pipefail
 
-url="${1:-}"
-placement="${2:-auto}"
+url=""
+placement="auto"
+engine=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --engine)
+      engine="${2:-}"
+      shift 2 || { echo "commando-open: --engine needs a value" >&2; exit 2; }
+      ;;
+    --engine=*)
+      engine="${1#--engine=}"
+      shift
+      ;;
+    right|below|auto)
+      placement="$1"
+      shift
+      ;;
+    *)
+      if [ -z "$url" ]; then
+        url="$1"
+        shift
+      else
+        echo "commando-open: unexpected argument: $1" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
 port="${COMMANDO_PORT:-4310}"
 token_file="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
 pane="${TMUX_PANE:-}"
 
 if [ -z "$url" ]; then
-  echo "usage: commando-open <url> [right|below|auto]" >&2
+  echo "usage: commando-open <url> [right|below|auto] [--engine webkit|chromium]" >&2
   exit 2
 fi
 if [ -z "$pane" ]; then
@@ -29,15 +61,15 @@ if [ ! -r "$token_file" ]; then
   echo "commando-open: run 'npm run hooks:install' in the commando repo first" >&2
   exit 1
 fi
-case "$placement" in
-  right|below|auto) ;;
+case "$engine" in
+  ""|webkit|chromium) ;;
   *)
-    echo "commando-open: placement must be right, below, or auto" >&2
+    echo "commando-open: engine must be webkit or chromium" >&2
     exit 2
     ;;
 esac
 
-body=$(node -e 'console.log(JSON.stringify({ url: process.argv[1], anchor: process.argv[2], placement: process.argv[3] }))' "$url" "$pane" "$placement")
+body=$(node -e 'console.log(JSON.stringify({ url: process.argv[1], anchor: process.argv[2], placement: process.argv[3], ...(process.argv[4] ? { engine: process.argv[4] } : {}) }))' "$url" "$pane" "$placement" "$engine")
 
 curl -sS --fail-with-body \
   -X POST "http://127.0.0.1:${port}/api/web-panes" \

@@ -1,0 +1,497 @@
+<title>Commando — browser tiles among tmux panes</title>
+<style>
+  /* ===== Commando design tokens (src/styles.css:1-32) ===== */
+  :root {
+    color-scheme: dark;
+    --surface-deep: #0a0812; --bg: #0c0a14; --surface: #100d1a;
+    --surface-raised: #131020; --surface-soft: #181428; --surface-hover: #1f1a31;
+    --border: #2c2542; --border-mid: #363048; --border-strong: #443a63;
+    --text: #f5f3fa; --text-soft: #c6c0d6; --text-dim: #655f78; --text-faint: #524f67;
+    --muted: #8f87a6; --muted-dim: #7a7590;
+    --green: #85f4b1; --accent: #b9a3ff; --accent-ink: #0e0a1c;
+    --cyan: #73d9e2; --amber: #f3c66b; --red: #ff8d89; --purple: #b9a3ff;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --term-bg: #0a0a0a;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  :where([style*="display:grid"], [style*="display:flex"]) > * { min-width: 0; }
+  :where(p, h1, h2, h3, li, td, th, dd) { overflow-wrap: anywhere; }
+  :where(img, svg) { max-width: 100%; height: auto; }
+
+  html { font-size: 16px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-soft);
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14.5px; line-height: 1.6;
+  }
+  .pg-wrap { max-width: 1100px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { color: var(--text); font-size: 26px; letter-spacing: -0.01em; margin: 0 0 6px; }
+  h2 { color: var(--text); font-size: 18px; margin: 56px 0 14px; padding-top: 18px; border-top: 1px solid var(--border); }
+  h3 { color: var(--text); font-size: 14.5px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text-soft); }
+  pre.pg-code { background: var(--surface-deep); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text-soft); }
+  pre.pg-code code { background: none; border: none; padding: 0; }
+  pre.pg-code .c { color: var(--text-dim); } pre.pg-code .g { color: var(--green); } pre.pg-code .a { color: var(--accent); } pre.pg-code .y { color: var(--amber); }
+  .pg-kicker { color: var(--muted-dim); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+  .pg-lede { color: var(--muted); font-size: 15px; max-width: 76ch; }
+  .pg-note { color: var(--muted); font-size: 13px; }
+  .pg-callout { border: 1px solid var(--border-mid); border-left: 3px solid var(--accent); background: var(--surface-raised); border-radius: 9px; padding: 12px 16px; margin: 16px 0; }
+  .pg-callout.warn { border-left-color: var(--amber); }
+  .pg-callout.good { border-left-color: var(--green); }
+  .pg-callout strong { color: var(--text); }
+
+  table.pg-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 14px 0; }
+  .pg-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; }
+  table.pg-table th { text-align: left; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 9px 12px; border-bottom: 1px solid var(--border-mid); background: var(--surface-raised); white-space: nowrap; }
+  table.pg-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.pg-table tr:last-child td { border-bottom: none; }
+  .pg-ok { color: var(--green); font-weight: 600; }
+  .pg-warn { color: var(--amber); font-weight: 600; }
+  .pg-bad { color: var(--red); font-weight: 600; }
+
+  /* ===== Workspace mockup ===== */
+  .ws-frame { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,0.45); background: var(--surface-deep); margin: 18px 0 8px; }
+  .ws-toolbar { display: flex; align-items: center; gap: 6px; min-height: 26px; padding: 3px 8px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 92%, transparent); }
+  .ws-pill { padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--muted); font-family: var(--mono); font-size: 7.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .ws-pill.on { border-color: var(--accent); color: var(--accent-ink); background: var(--accent); }
+  .ws-canvas {
+    padding: 8px;
+    background: linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px), var(--surface-deep);
+    background-size: 24px 24px;
+  }
+  .ws-group-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 6px; }
+  .ws-group-head strong { color: var(--text); font-size: 10.5px; }
+  .ws-group-head .presets { margin-left: auto; display: flex; gap: 4px; }
+  .ws-preset { width: 18px; height: 13px; border: 1px solid var(--border-mid); border-radius: 3px; background: var(--surface-raised); }
+  .ws-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) 6px minmax(0, 1fr); }
+  .ws-col-r { display: grid; grid-template-rows: minmax(0, 1.35fr) 6px minmax(0, 1fr); }
+  .ws-splitter-v { background: transparent; position: relative; }
+  .ws-splitter-v::after { content: ""; position: absolute; inset: 30% 2px; border-radius: 2px; background: var(--border-mid); }
+  .ws-splitter-h { background: transparent; position: relative; }
+  .ws-splitter-h::after { content: ""; position: absolute; inset: 2px 30%; border-radius: 2px; background: var(--border-mid); }
+
+  .mp { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-deep); min-height: 240px; }
+  .mp-head { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 2px 7px; border-bottom: 1px solid var(--surface-hover); background: var(--surface); color: var(--text-soft); font-size: 9px; }
+  .mp.is-focused .mp-head { border-bottom-color: color-mix(in srgb, var(--accent) 55%, transparent); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 5%, transparent)); }
+  .mp-head .ico { font-size: 9px; opacity: 0.85; }
+  .mp-head .ttl { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-chip { flex: none; padding: 1.5px 6px; border-radius: 999px; font-family: var(--mono); font-size: 6.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
+  .mp-chip.run { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+  .mp-chip.web { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 12%, transparent); }
+  .mp-chip.idle { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+  .mp-head .spacer { margin-left: auto; }
+  .mp-head .btn { color: var(--muted-dim); font-size: 8px; padding: 1px 3px; }
+  .mp-foot { display: flex; align-items: center; gap: 7px; min-height: 18px; padding: 1px 7px; border-top: 1px solid var(--surface-hover); background: var(--surface); color: var(--text-faint); font-family: var(--mono); font-size: 7px; }
+  .mp-foot .grow { margin-left: auto; }
+  .mp-term { background: var(--term-bg); padding: 7px 9px; font-family: var(--mono); font-size: 7.6px; line-height: 1.65; color: #e0def4; white-space: pre-wrap; overflow: hidden; }
+  .mp-term .p { color: #c4a7e7; } .mp-term .g { color: #9ccfd8; } .mp-term .d { color: #6e6a86; }
+  .mp-term .y { color: #f6c177; } .mp-term .gr { color: #95e6b8; }
+
+  /* browser tile */
+  .mp-url { flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0; border: 1px solid var(--border-mid); border-radius: 999px; background: var(--surface-raised); padding: 1.5px 8px; font-family: var(--mono); font-size: 7.5px; color: var(--text-soft); }
+  .mp-url .lock { color: var(--green); font-size: 7px; }
+  .mp-url .path { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-web { background: var(--bg); overflow: hidden; position: relative; padding: 10px 12px; }
+  .mp-web .w-kick { color: var(--muted-dim); font-family: var(--mono); font-size: 6px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; }
+  .mp-web .w-h1 { color: var(--text); font-size: 11px; font-weight: 700; margin: 3px 0 4px; }
+  .mp-web .w-p { color: var(--muted); font-size: 7.5px; line-height: 1.55; }
+  .mp-web .w-cards { display: flex; gap: 6px; margin-top: 8px; }
+  .mp-web .w-card { flex: 1; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); padding: 6px 7px; }
+  .mp-web .w-card b { display: block; color: var(--text); font-size: 7.5px; }
+  .mp-web .w-card span { color: var(--muted); font-size: 6.8px; line-height: 1.45; display: block; margin-top: 2px; }
+  .mp-web .w-bar { height: 4px; border-radius: 2px; background: var(--surface-hover); margin-top: 6px; }
+  .mp-web .w-bar.b1 { width: 82%; } .mp-web .w-bar.b2 { width: 64%; } .mp-web .w-bar.b3 { width: 74%; }
+
+  .mock-caption { color: var(--muted); font-size: 12.5px; margin-top: 10px; line-height: 1.5; max-width: 86ch; }
+  .mock-caption b { color: var(--text); }
+
+  /* small state cards row */
+  .state-row { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 16px; align-items: flex-start; }
+  .state-col { flex: 1 1 250px; min-width: 230px; max-width: 330px; }
+  .state-col .mp { min-height: 150px; }
+  .mp-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: var(--bg); padding: 12px; text-align: center; }
+  .mp-fallback .big { font-size: 15px; }
+  .mp-fallback .msg { color: var(--text-soft); font-size: 8.5px; font-weight: 600; }
+  .mp-fallback .sub { color: var(--muted); font-size: 7.5px; line-height: 1.5; }
+  .mp-btn { padding: 3px 9px; border: 1px solid var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 7px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+  .mp-btn.ghost { border-color: var(--border-mid); color: var(--muted); background: var(--surface-raised); }
+  .mp-toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised)); border-radius: 999px; padding: 3px 10px; color: var(--text-soft); font-size: 7.5px; white-space: nowrap; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .mp-toast b { color: var(--accent); }
+
+  .anno { position: relative; }
+  .anno::after { content: attr(data-label); position: absolute; right: 10px; top: -7px; color: var(--cyan); font-family: var(--mono); font-size: 8.5px; white-space: nowrap; background: var(--surface-deep); padding: 0 5px; border: 1px solid color-mix(in srgb, var(--cyan) 30%, var(--border)); border-radius: 999px; z-index: 2; }
+
+  /* option cards */
+  .opt-row { display: flex; flex-wrap: wrap; gap: 14px; margin: 16px 0; }
+  .opt { flex: 1 1 280px; min-width: 260px; border: 1px solid var(--border-mid); border-radius: 12px; background: var(--surface-raised); padding: 14px 16px; }
+  .opt.rec { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised)); }
+  .opt .tag { display: inline-block; font-family: var(--mono); font-size: 8.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; margin-bottom: 8px; }
+  .opt.rec .tag { color: var(--accent-ink); background: var(--accent); }
+  .opt .tag.later { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 12%, transparent); }
+  .opt .tag.skip { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+  .opt h3 { margin: 0 0 6px; }
+  .opt p { font-size: 13px; color: var(--muted); margin: 6px 0; }
+  .opt ul { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+  .opt li { margin: 3px 0; }
+  .opt li b { color: var(--text-soft); }
+  .opt .cost { margin-top: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+
+  /* decision forms */
+  .q-block { border: 1px solid var(--border-mid); border-radius: 12px; background: var(--surface-raised); padding: 16px 18px; margin: 16px 0; }
+  .q-block h3 { margin: 0 0 4px; }
+  .q-block .q-why { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .q-block label { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; margin: 6px 0; background: var(--surface); cursor: pointer; font-size: 13.5px; }
+  .q-block label:hover { border-color: var(--border-strong); background: var(--surface-soft); }
+  .q-block label input { margin-top: 3px; accent-color: var(--accent); }
+  .q-block label b { color: var(--text); font-weight: 600; }
+  .q-block label small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .q-block button[type=submit] { margin-top: 10px; padding: 7px 14px; border: 1px solid var(--accent); border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; }
+  .q-block button[type=submit]:hover { background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+  .q-queued { display: none; margin-left: 10px; color: var(--green); font-family: var(--mono); font-size: 11px; }
+  .q-block.is-queued .q-queued { display: inline; }
+
+  .mermaid { display: flex; justify-content: center; margin: 18px 0; }
+  .phase-list { counter-reset: ph; list-style: none; padding: 0; margin: 14px 0; }
+  .phase-list li { position: relative; padding: 10px 14px 10px 44px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); margin: 8px 0; font-size: 13.5px; }
+  .phase-list li::before { counter-increment: ph; content: counter(ph); position: absolute; left: 12px; top: 10px; width: 20px; height: 20px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-family: var(--mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .phase-list b { color: var(--text); }
+</style>
+
+<div class="pg-wrap">
+  <div class="pg-kicker">Commando · feature plan · 6 Aug 2026</div>
+  <h1>Browser tiles among tmux panes</h1>
+  <p class="pg-lede">
+    Let agents (and you) open a web page as a first-class tile inside the pane grid — a Lavish
+    review page, a dev server, docs — sitting right next to the tmux pane where the agent is
+    working. The agent publishes something, calls one endpoint, and the page appears beside its
+    pane in every connected Commando client. Everything below is verified against the codebase;
+    the two hard constraints (CSP, tmux layout validation) are called out where they bite.
+  </p>
+
+  <h2>What it looks like</h2>
+  <p>Commando's real tokens and pane chrome (<code>.terminal-pane</code> / <code>.pane-head</code> /
+  <code>.pane-footer</code>, <code>src/styles.css:1195-1230</code>). A browser tile is the same card
+  shell as a terminal pane — same header, same splitters, same focus ring — with a URL pill where
+  the title sits and a page instead of a terminal.</p>
+
+  <div class="ws-frame">
+    <div class="ws-toolbar">
+      <span class="ws-pill on">1 · gizmo</span>
+      <span class="ws-pill">2 · daemon</span>
+      <span class="ws-pill">3 · scratch</span>
+    </div>
+    <div class="ws-canvas">
+      <div class="ws-group-head">
+        <strong>gizmo — streaks work</strong>
+        <div class="presets"><span class="ws-preset"></span><span class="ws-preset"></span><span class="ws-preset"></span></div>
+      </div>
+      <div class="ws-grid">
+        <article class="mp is-focused">
+          <div class="mp-head">
+            <span class="ico">✦</span><span class="ttl">claude · gizmo</span>
+            <span class="mp-chip run">Working</span>
+            <span class="spacer"></span><span class="btn">⤢</span><span class="btn">✕</span>
+          </div>
+          <div class="mp-term"><span class="p">●</span> I've drafted the streaks plan. Publishing it for
+review and opening it beside this pane.
+
+  <span class="g">⏺</span> Bash(npx -y lavish-axi .lavish/streaks-plan.html)
+    <span class="d">⎿  Serving · http://127.0.0.1:41300/streaks-plan</span>
+  <span class="g">⏺</span> Bash(commando open http://127.0.0.1:41300/streaks-plan)
+    <span class="d">⎿  { ok: true, webPaneId: "w1", beside: "%12" }</span>
+
+<span class="p">●</span> The plan is open on your right — annotate anything
+  you'd change and I'll pick it up from the poll.
+
+<span class="y">›</span> <span class="d">█</span></div>
+          <div class="mp-foot"><span style="color:var(--accent)">● focused</span><span>212×48</span><span class="grow"></span><span>~/dev/gizmo</span></div>
+        </article>
+        <div class="ws-splitter-v"></div>
+        <div class="ws-col-r">
+          <article class="mp anno" data-label="new · browser tile">
+            <div class="mp-head">
+              <span class="ico">◍</span>
+              <span class="mp-url"><span class="lock">⏻</span>127.0.0.1:41300<span class="path">/streaks-plan</span></span>
+              <span class="mp-chip web">Web · agent</span>
+              <span class="btn">↻</span><span class="btn">⤴</span><span class="btn">✕</span>
+            </div>
+            <div class="mp-web">
+              <div class="w-kick">viviFIT · feature plan</div>
+              <div class="w-h1">Streak widget — fidelity pass</div>
+              <div class="w-p">Widget + habit rows match the design mocks; three decisions queued below the mockups.</div>
+              <div class="w-cards">
+                <div class="w-card"><b>Ring vs bar</b><span>WidgetKit ring matches iOS; bar matches app.</span><div class="w-bar b1"></div></div>
+                <div class="w-card"><b>Grace day</b><span>Streak survives one missed day per week.</span><div class="w-bar b2"></div><div class="w-bar b3"></div></div>
+              </div>
+              <div class="mp-toast"><b>claude · gizmo</b> opened this beside its pane · 12s</div>
+            </div>
+            <div class="mp-foot"><span>opened by agent · %12</span><span class="grow"></span><span>⌘-click focuses page</span></div>
+          </article>
+          <div class="ws-splitter-h"></div>
+          <article class="mp">
+            <div class="mp-head">
+              <span class="ico">$</span><span class="ttl">zsh</span>
+              <span class="mp-chip idle">Idle</span>
+              <span class="spacer"></span><span class="btn">⤢</span><span class="btn">✕</span>
+            </div>
+            <div class="mp-term"><span class="gr">➜</span>  <span class="g">gizmo</span> <span class="p">git:(</span>leo/streaks<span class="p">)</span> npm test
+<span class="d">  vitest · 142 passed · 3.1s</span>
+<span class="gr">➜</span>  <span class="g">gizmo</span> <span class="p">git:(</span>leo/streaks<span class="p">)</span> <span class="d">█</span></div>
+            <div class="mp-foot"><span>96×22</span><span class="grow"></span><span>~/dev/gizmo</span></div>
+          </article>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="mock-caption"><b>The core loop this enables.</b> The agent serves a page (Lavish, npx
+  serve, a vite dev server…), runs <code>commando open &lt;url&gt;</code> from its own tmux pane, and the
+  tile appears beside that pane — the daemon knows which pane the agent lives in from
+  <code>$TMUX_PANE</code>. The two tmux panes are still real tmux panes; the tile takes its share of
+  screen space and Commando's existing measured-layout path resizes the real panes around it. The
+  toast attributes who opened it; ✕ closes, ⤴ opens in the OS browser, ↻ reloads.</p>
+
+  <h3>Secondary states</h3>
+  <div class="state-row">
+    <div class="state-col">
+      <article class="mp">
+        <div class="mp-head">
+          <span class="ico">◍</span>
+          <span class="mp-url">github.com<span class="path">/facebook/react-native</span></span>
+          <span class="mp-chip web">Web</span><span class="btn">✕</span>
+        </div>
+        <div class="mp-fallback">
+          <span class="big">🛡</span>
+          <span class="msg">github.com refuses to be embedded</span>
+          <span class="sub">This site sends X-Frame-Options / frame-ancestors and can't render inside Commando's browser client.</span>
+          <span class="mp-btn">Open in browser ⤴</span>
+        </div>
+        <div class="mp-foot"><span>blocked by site policy</span></div>
+      </article>
+      <p class="mock-caption">Sites that forbid framing get an honest fallback card, not a blank
+      rectangle. Browser clients only — in the desktop app the native tier renders these sites
+      fine from day one.</p>
+    </div>
+    <div class="state-col">
+      <article class="mp">
+        <div class="mp-head">
+          <span class="ico">◍</span><span class="ttl">Agent wants to open a page</span>
+          <span class="mp-chip idle">Pending</span>
+        </div>
+        <div class="mp-fallback">
+          <span class="sub" style="font-size:8px">claude · gizmo (%12) wants to open</span>
+          <span class="msg" style="font-family:var(--mono)">https://reactnative.dev/docs/flatlist</span>
+          <div style="display:flex;gap:6px;margin-top:2px">
+            <span class="mp-btn">Open</span>
+            <span class="mp-btn ghost">Always for this origin</span>
+            <span class="mp-btn ghost">Dismiss</span>
+          </div>
+        </div>
+        <div class="mp-foot"><span>non-localhost URLs ask first</span></div>
+      </article>
+      <p class="mock-caption">Trust model: <b>localhost opens instantly</b> (that's the main use
+      case and it's your own machine); external origins ask once, with a per-origin allow. Decision
+      4 below picks the policy.</p>
+    </div>
+    <div class="state-col">
+      <article class="mp">
+        <div class="mp-head">
+          <span class="ico">◍</span>
+          <span class="mp-url"><span class="lock">⏻</span>localhost:5173<span class="path">/</span></span>
+          <span class="mp-chip web">Web</span><span class="btn">✕</span>
+        </div>
+        <div class="mp-fallback">
+          <span class="big" style="opacity:.6">⚡</span>
+          <span class="msg">vite · gizmo dev server</span>
+          <span class="sub">Opened from the Ports panel — a detected port becomes a tile with one click.</span>
+        </div>
+        <div class="mp-foot"><span>port 5173 · pane %8</span></div>
+      </article>
+      <p class="mock-caption">The Ports panel (<code>src/PortsSection.tsx:120</code>) already detects
+      listening ports per pane and links out to the OS browser — "open as tile" is the natural
+      upgrade and the cheapest human entry point.</p>
+    </div>
+  </div>
+
+  <h2>The crux: where a browser tile lives in the layout</h2>
+  <p>Everything on the canvas today mirrors tmux: the daemon polls <code>window_layout</code>, the
+  client parses it into a tree (<code>shared/window-layout.ts:31</code>), and
+  <code>ResizablePaneLayout</code> renders one React node per leaf
+  (<code>src/ResizablePaneLayout.tsx:197</code> — it's just <code>panes.get(node.paneId)</code>, so
+  <strong style="color:var(--text)">any React node can already be slotted for a leaf</strong>).
+  But a browser tile is not a tmux pane, and the daemon <em>rejects</em> layout writes whose pane
+  set differs from the window's real panes (<code>server/index.ts:1275-1290</code>). Two ways out:</p>
+
+  <div class="opt-row">
+    <div class="opt rec">
+      <span class="tag">Recommended</span>
+      <h3>App-layer leaf</h3>
+      <p>The tile exists only in Commando's rendered tree: a new <code>web</code> leaf kind in
+      <code>WindowLayoutNode</code>, inserted beside its anchor pane, and <b>stripped before any
+      tmux write</b> (<code>layoutSpecFromTree</code>, <code>applyMeasuredWindowLayout</code>,
+      <code>commitWindowLayout</code>).</p>
+      <ul>
+        <li><b>tmux stays clean</b> — attach from a raw terminal and you see only real panes.</li>
+        <li>Resize already works: when this client holds the resize lease, the measured-layout path
+        shrinks the real panes to the space the tile leaves them, exactly like the HUD does today.</li>
+        <li>Persists in <code>SavedGroup</code> (<code>shared/protocol.ts:233</code>) → survives reload, follows the group.</li>
+      </ul>
+      <p class="cost pg-ok">cost: client tree surgery + strip-before-write discipline</p>
+    </div>
+    <div class="opt">
+      <span class="tag skip">Not recommended</span>
+      <h3>Placeholder tmux pane</h3>
+      <p>Create a real tmux pane running a stub process to reserve geometry, and render the web
+      view over its slot.</p>
+      <ul>
+        <li><b>Pollutes tmux</b> — every attached terminal sees a junk blank pane; killing it from
+        raw tmux desyncs the tile.</li>
+        <li>Costs a pane slot against <code>MAX_LAYOUT_SPEC_PANES</code> and confuses the resize-lease
+        baseline capture/restore.</li>
+        <li>Only upside: geometry is authoritative in tmux even when no Commando client holds the lease.</li>
+      </ul>
+      <p class="cost pg-warn">cost: daemon pane lifecycle + tmux noise forever</p>
+    </div>
+  </div>
+
+  <div class="pg-callout warn">
+    <strong>Known interaction with the resize lease.</strong> When <em>no</em> client holds the
+    window's resize lease (e.g. you're viewing from a second browser), tmux keeps its own layout and
+    Commando letterboxes panes — same behaviour as today. A web tile in that state simply renders in
+    the app-layer tree while terminals letterbox; nothing new breaks, but the tile's neighbours won't
+    reflow tmux until a lease holder shows up. This is the same trade the HUD/tabs already make.
+  </div>
+
+  <h2>How it flows end to end</h2>
+  <pre class="mermaid">flowchart TD
+  A1["Agent in its tmux pane<br/>commando open (curl + hook token, TMUX_PANE)"] --> B
+  A2["Cmd-K palette · 'Open URL as tile'"] --> B
+  A3["Ports panel · click a detected port"] --> B
+  B["POST /api/web-panes<br/>new router, pattern of pane-management-api.ts"] --> C{"URL policy<br/>localhost opens · external confirms"}
+  C --> D["WebPaneRegistry (daemon)<br/>id, url, anchor paneId, placement, openedBy<br/>persisted into SavedWorkspace"]
+  D -->|"broadcast web_pane ServerMessage"| E["Every connected client<br/>App.tsx inserts a web leaf beside the anchor pane"]
+  E --> F["ResizablePaneLayout slots WebPaneCard<br/>browser: sandboxed iframe · desktop: native WKWebView"]
+  E -.->|"strip web leaves, then set_window_layout"| G["tmux — real panes only<br/>guard at server/index.ts:1275"]</pre>
+
+  <h2>Rendering tiers — both ship in v1 <span style="font-weight:400;color:var(--muted);font-size:13px">(your call: one effort, not two branches)</span></h2>
+  <div class="opt-row">
+    <div class="opt rec">
+      <span class="tag">v1 · web clients</span>
+      <h3>Sandboxed iframe</h3>
+      <p>An <code>&lt;iframe sandbox&gt;</code> inside <code>WebPaneCard</code>. Requires one CSP change:
+      the daemon sends no <code>frame-src</code> today, so <code>default-src 'self'</code> blocks all
+      embeds (<code>server/index.ts:75-86</code>). Add <code>frame-src http://localhost:* http://127.0.0.1:* https:</code>.</p>
+      <ul>
+        <li><b>Covers the core loop</b>: Lavish pages, npx-serve, vite/storybook dev servers — local
+        express servers don't send X-Frame-Options.</li>
+        <li>Works in every client (browser, Safari wrapper) with zero native work.</li>
+        <li>Sites that forbid framing get the honest fallback card + "open in browser".</li>
+      </ul>
+      <p class="cost pg-ok">cost: small — one CSP line + one component</p>
+    </div>
+    <div class="opt rec">
+      <span class="tag">v1 · desktop app</span>
+      <h3>Native WKWebView sibling</h3>
+      <p>The desktop shell already composites native terminal views above its WKWebView, driven by a
+      rect/occlusion protocol (<code>src/nativeTerminalBridge.ts:36-54</code>,
+      <code>NativeTerminalPane</code>). A second native view kind — <code>commando.native-webview</code> —
+      reuses that exact plumbing to host a real browser view in the tile's rect.</p>
+      <ul>
+        <li><b>No framing limits</b> — GitHub, docs sites, anything renders in the desktop app.</li>
+        <li>Real cookies/devtools-grade fidelity; OS-level page isolation.</li>
+        <li>Desktop-only; browser clients fall back to the iframe tier.</li>
+      </ul>
+      <p class="cost pg-warn">cost: medium — Swift + bridge protocol rev</p>
+    </div>
+    <div class="opt">
+      <span class="tag skip">Skip</span>
+      <h3>Daemon reverse proxy</h3>
+      <p>Proxy external sites through the daemon, stripping X-Frame-Options so they frame anyway.</p>
+      <ul>
+        <li>Fragile (asset paths, auth, redirects), a same-origin security headache, and
+        deliberately defeats sites' embedding policy.</li>
+        <li>The native tier solves the same problem properly.</li>
+      </ul>
+      <p class="cost pg-bad">cost: high, permanent maintenance</p>
+    </div>
+  </div>
+
+  <h2>The agent surface — first agent→UI command</h2>
+  <p>There is no agent-facing control API today; agents only <em>report</em> status via hook
+  endpoints (<code>POST /api/agent-status/hooks/*</code>) authorized by
+  <code>~/.commando/agent-hook-token</code>. This feature adds the first agent→UI command, reusing
+  that exact auth shape — plus a tiny CLI shim so agents (and your muscle memory) don't need curl:</p>
+
+  <pre class="pg-code"><code><span class="c"># what `commando open` does under the hood — callable from any agent's Bash</span>
+curl -s -X POST http://127.0.0.1:4310/api/web-panes \
+  -H <span class="y">"Authorization: Bearer $(cat ~/.commando/agent-hook-token)"</span> \
+  -d <span class="g">'{ "url": "http://127.0.0.1:41300/streaks-plan",
+       "anchor": "'"$TMUX_PANE"'", "placement": "right" }'</span>
+
+<span class="c"># → { "ok": true, "webPaneId": "w1", "beside": "%12" }</span>
+<span class="c"># close it again: DELETE /api/web-panes/w1</span></code></pre>
+
+  <p class="pg-note">The daemon resolves <code>$TMUX_PANE</code> to the window/group and places the
+  tile beside it (<code>placement: right | below | auto</code>). A pane id the daemon doesn't know →
+  404, mirroring <code>pane-management-api</code> conventions. A one-page skill/CLAUDE.md snippet
+  teaches agents when to use it ("after publishing anything reviewable on localhost, open it beside
+  your pane").</p>
+
+  <h2>File changes</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>File</th><th>Change</th></tr>
+    <tr><td><code>shared/protocol.ts</code> <i style="color:var(--muted-dim)">edit</i></td><td><code>WebPane</code> type (id, url, anchor paneId, placement, openedBy, createdAt); <code>web_pane</code>/<code>web_pane_closed</code> ServerMessages; <code>SavedGroup.webPanes</code>.</td></tr>
+    <tr><td><code>shared/window-layout.ts</code> <i style="color:var(--muted-dim)">edit</i></td><td><code>web</code> leaf kind in <code>WindowLayoutNode</code>; <code>layoutSpecFromTree</code> strips it; tree helpers learn to insert/remove a web leaf beside an anchor.</td></tr>
+    <tr><td><code>server/web-panes.ts</code> + <code>server/web-panes-api.ts</code> <i style="color:var(--muted-dim)">new</i></td><td>Registry + URL policy (localhost auto, per-origin allowlist in <code>~/.commando/web-panes.json</code>); POST/DELETE routes (owner cookie <em>or</em> hook token); broadcast on change; persistence via <code>server/workspaces.ts</code>.</td></tr>
+    <tr><td><code>server/index.ts</code> <i style="color:var(--muted-dim)">edit</i></td><td>Register router; add <code>frame-src</code> to the CSP (<code>:75-86</code>).</td></tr>
+    <tr><td><code>src/WebPaneCard.tsx</code> + <code>web-pane.css</code> <i style="color:var(--muted-dim)">new</i></td><td>Card chrome cloning <code>TerminalPaneCard</code>: URL pill, reload / open-external / close, sandboxed iframe, loading + refused-to-embed + pending-confirm states, attribution toast, <code>data-native-terminal-occluder</code> on overlays.</td></tr>
+    <tr><td><code>src/App.tsx</code> + <code>src/layout.ts</code> <i style="color:var(--muted-dim)">edit</i></td><td>Insert web leaves into <code>visibleTree</code> beside anchors; keep them through <code>reconcileGroupsForSession</code>; skip them in <code>applyMeasuredWindowLayout</code>/<code>commitWindowLayout</code> cell math; ⌘K palette command.</td></tr>
+    <tr><td><code>src/PortsSection.tsx</code> <i style="color:var(--muted-dim)">edit</i></td><td>"Open as tile" action on detected ports (plain click keeps focusing the pane).</td></tr>
+    <tr><td><code>scripts/</code> or <code>bin/</code> <i style="color:var(--muted-dim)">new</i></td><td><code>commando open &lt;url&gt;</code> shim wrapping the curl call; docs snippet for agent CLAUDE.md files.</td></tr>
+    <tr><td><code>src/nativeTerminalBridge.ts</code> + <code>apps/desktop/Sources/…</code> <i style="color:var(--muted-dim)">edit/new</i></td><td>Bridge protocol rev: generalize the frame payload to a <code>commando.native-webview</code> view kind; Swift <code>NativeWebViewHost</code> hosting a WKWebView per tile rect, wired through the existing occluder masking; <code>ExternalURLPolicy</code> learns tile navigations.</td></tr>
+  </table></div>
+
+  <h2>Risks &amp; edge cases</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>Risk</th><th>Handling</th></tr>
+    <tr><td>Iframe swallows keyboard — ⌘K and pane shortcuts die while the page has focus</td><td>Same problem terminals already solve: the tile takes focus only on explicit click; a focused tile shows the accent ring; <kbd>Esc</kbd> (captured on the card, not the page) returns focus to the workspace. Keep a thin always-Commando border so there's always a click target.</td></tr>
+    <tr><td>Agent opens something unwanted / spammy</td><td>URL policy (decision 4): localhost instant, external origins confirm-once; attribution toast + footer always names the opener; rate-limit the endpoint like other client messages.</td></tr>
+    <tr><td>Second client / no resize lease</td><td>Tile renders app-side regardless; tmux reflow waits for a lease holder — identical to today's letterbox behaviour, documented in the lease callout above.</td></tr>
+    <tr><td>Desktop shell compositing</td><td>v1 iframe is DOM inside the WKWebView, so it never fights native terminal views (tiles don't overlap). Tile context menus/toasts get <code>data-native-terminal-occluder</code> like every other overlay.</td></tr>
+    <tr><td>Dead pages (server stopped)</td><td>iframe error → fallback card with reload + close; a closed Lavish session just 404s visibly instead of wedging the tile.</td></tr>
+    <tr><td>Persistence drift (anchor pane dies)</td><td>Reconciler re-anchors the tile to the group; if the group empties, the tile closes with a toast — never an orphan leaf that blocks layout writes.</td></tr>
+  </table></div>
+
+  <h2>Decisions — locked in</h2>
+  <div class="pg-table-scroll"><table class="pg-table">
+    <tr><th>Question</th><th>Your call</th><th>How it lands</th></tr>
+    <tr><td>Where the tile lives</td><td><b style="color:var(--text)">App-layer leaf</b></td><td>Web leaf exists only in Commando's rendered tree, stripped before every tmux write; tmux stays clean and measured-layout resizes the real panes around it.</td></tr>
+    <tr><td>Rendering scope</td><td><b style="color:var(--text)">Both tiers together</b></td><td>One effort ships the sandboxed iframe (all web clients) <em>and</em> the native WKWebView tier (desktop app) — external sites like GitHub render properly in the desktop app from day one. Reflected in the tiers section and build plan.</td></tr>
+    <tr><td>Entry points in v1</td><td><b style="color:var(--text)">Agent API + ⌘K + Ports panel</b></td><td><code>commando open</code> shim over <code>/api/web-panes</code>, a palette command, and "open as tile" on detected ports. The pane context-menu entry is deferred.</td></tr>
+    <tr><td>Trust policy</td><td><b style="color:var(--text)">Localhost auto, external asks once</b></td><td>localhost/127.0.0.1 opens instantly; other origins show the pending-confirm card with a per-origin "always allow" persisted in <code>~/.commando/web-panes.json</code>.</td></tr>
+  </table></div>
+
+  <h2>Build plan</h2>
+  <ol class="phase-list">
+    <li><b>Protocol + daemon.</b> <code>WebPane</code> types, registry, URL policy (localhost auto / per-origin allowlist), <code>/api/web-panes</code> (cookie + hook-token auth), broadcast messages, <code>SavedWorkspace</code> persistence, CSP <code>frame-src</code>. Unit tests for policy, auth, persistence round-trip.</li>
+    <li><b>Client tile (iframe tier).</b> <code>web</code> leaf in the layout tree + strip-before-write in all three tmux write paths, <code>WebPaneCard</code> with all states, focus/keyboard handling, reconciler survival, ⌘K command. Tests beside the existing App/layout tests.</li>
+    <li><b>Agent surface.</b> <code>commando open</code> shim + agent docs snippet, Ports-panel action, attribution toast, rate limiting.</li>
+    <li><b>Native tier (desktop app).</b> Bridge protocol rev to a <code>commando.native-webview</code> view kind; Swift <code>NativeWebViewHost</code> (WKWebView per tile rect, occluder masking reused from native terminals); <code>ExternalURLPolicy</code> update; desktop shell falls back to iframe when the capability is absent.</li>
+    <li><b>Merge gate.</b> typecheck + vitest, then drive the real loop end-to-end in both clients — an agent in a pane publishes a Lavish page and opens it beside itself in the browser, and GitHub renders in a desktop-app tile.</li>
+  </ol>
+  <p class="pg-note">Later candidates, out of scope: pane context-menu entry, tile history/back-forward,
+  multiple tabs per tile, screenshots of tiles for agents to read back.</p>
+</div>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict",
+    themeVariables: {
+      background: "#0c0a14", primaryColor: "#131020", primaryBorderColor: "#443a63",
+      primaryTextColor: "#c6c0d6", lineColor: "#7a7590", secondaryColor: "#181428",
+      tertiaryColor: "#100d1a", fontFamily: "Inter, sans-serif", fontSize: "13px",
+    }});
+  await mermaid.run({ nodes: [...document.querySelectorAll(".mermaid")] });
+</script>
