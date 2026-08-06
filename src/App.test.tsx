@@ -128,7 +128,7 @@ beforeEach(() => {
     }
     if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
     if (url.includes('/api/prs')) {
-      return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, fetchedAt: 0 } })
+      return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, mineTruncated: false, fetchedAt: 0 } })
     }
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
   }))

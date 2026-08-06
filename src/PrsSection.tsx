@@ -352,6 +352,9 @@ export function PrsSection({
                 {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} key={pr.number} />)}
               </section>
             ) : null}
+            {list.mineTruncated ? (
+              <p className="prs-truncated">Some of your PRs and review requests are not shown — the rest are on GitHub.</p>
+            ) : null}
             {!showEveryone && hiddenCount > 0 ? (
               <button type="button" className="prs-reveal" onClick={() => changeScope('everyone')}>
                 Everyone&rsquo;s {filter === 'all' ? '' : `${filter} `}PRs · {formatCount(hiddenCount)} · show

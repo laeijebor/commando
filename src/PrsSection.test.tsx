@@ -30,8 +30,8 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
   }
 }
 
-function listWith(pullRequests: PrSummary[], totalCount = pullRequests.length): PrList {
-  return { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount, pullRequests, truncated: totalCount > pullRequests.length, fetchedAt: Date.now() }
+function listWith(pullRequests: PrSummary[], totalCount = pullRequests.length, overrides: Partial<PrList> = {}): PrList {
+  return { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount, pullRequests, truncated: totalCount > pullRequests.length, mineTruncated: false, fetchedAt: Date.now(), ...overrides }
 }
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -98,6 +98,14 @@ describe('PrsSection', () => {
     await waitFor(() => {
       expect(requests.some((request) => request.method === 'PUT' && (request.body as { lastScope?: string })?.lastScope === 'everyone')).toBe(true)
     })
+  })
+
+  it('notes when the viewer-scoped searches overflow a page', async () => {
+    stubFetch({
+      list: () => jsonResponse({ list: listWith([pr()], 1, { mineTruncated: true }) }),
+    })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByText(/Some of your PRs and review requests/)).toBeInTheDocument()
   })
 
   it('renders diffstat, unresolved, review decision, conflict, and checks chips', async () => {
