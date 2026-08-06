@@ -63,6 +63,18 @@ export async function handlePrsApi(
       return true
     }
 
+    if (path.length === 1 && path[0] === 'threads') {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      json(response, 200, {
+        threads: await service.listUnresolvedThreads(url.searchParams.get('repo'), url.searchParams.get('number')),
+      })
+      return true
+    }
+
     if (path.length === 1 && path[0] === 'repos') {
       if (request.method !== 'GET') {
         response.setHeader('Allow', 'GET')

@@ -8,6 +8,21 @@ const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
 const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
 const PULL_REQUEST_PAGE_SIZE = 30
+const BODY_EXCERPT_CHARS = 280
+const THREAD_PAGE_SIZE = 50
+const THREAD_EXCERPT_CHARS = 140
+
+const THREADS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: ${THREAD_PAGE_SIZE}) {
+        totalCount
+        nodes { isResolved path comments(first: 1) { nodes { author { login } body } } }
+      }
+    }
+  }
+}`.trim()
 const MAX_PINNED_REPOS = 30
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
@@ -28,6 +43,8 @@ export type PrChecks = {
   truncated: boolean
 } | null
 
+export type PrReview = { login: string; state: 'approved' | 'changes_requested' }
+
 export type PrSummary = {
   number: number
   title: string
@@ -35,16 +52,22 @@ export type PrSummary = {
   state: 'open' | 'merged' | 'closed'
   isDraft: boolean
   author: string | null
+  bodyExcerpt: string
   additions: number
   deletions: number
   changedFiles: number
+  commitCount: number
   unresolvedThreads: number
   threadsTruncated: boolean
   reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
+  reviews: PrReview[]
+  requestedReviewers: string[]
   conflicting: boolean
   checks: PrChecks
+  createdAt: string
   updatedAt: string
   headRefName: string
+  baseRefName: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
 }
@@ -61,6 +84,16 @@ export type PrList = {
 }
 
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
+
+export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
+
+export type PrThreads = {
+  repo: string
+  number: number
+  threads: PrThreadExcerpt[]
+  truncated: boolean
+  fetchedAt: number
+}
 
 export type PrPreferences = {
   version: 1
@@ -183,6 +216,14 @@ export function validateRepo(value: unknown): string {
   return value
 }
 
+export function validatePrNumber(value: unknown): number {
+  const number = typeof value === 'string' && value !== '' ? Number(value) : value
+  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+    throw new PrServiceError(400, 'invalid_request', 'number must be a positive integer')
+  }
+  return number
+}
+
 export function validateStateFilter(value: unknown): PrStateFilter {
   if (value === undefined || value === null || value === '') return 'open'
   if (value === 'open' || value === 'closed' || value === 'all') return value
@@ -218,13 +259,14 @@ query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequested
   }
 }
 fragment PrFields on PullRequest {
-  number title url state isDraft
+  number title url state isDraft body
   author { login }
   additions deletions changedFiles
-  reviewDecision mergeable updatedAt headRefName
+  reviewDecision mergeable createdAt updatedAt headRefName baseRefName
   reviewThreads(first: 50) { totalCount nodes { isResolved } }
   reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-  commits(last: 1) { nodes { commit { statusCheckRollup {
+  latestReviews(first: 10) { nodes { author { login } state } }
+  commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
     state
     contexts(first: 50) {
       totalCount
@@ -317,6 +359,20 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     return reviewer?.__typename === 'User' && reviewer.login === viewer
   })
 
+  const reviews: PrReview[] = []
+  for (const review of nodes(node, 'latestReviews')) {
+    const reviewAuthor = optionalObject(review, 'author')
+    const login = reviewAuthor && typeof reviewAuthor.login === 'string' ? reviewAuthor.login : null
+    if (!login) continue
+    if (review.state === 'APPROVED') reviews.push({ login, state: 'approved' })
+    else if (review.state === 'CHANGES_REQUESTED') reviews.push({ login, state: 'changes_requested' })
+  }
+  const requestedReviewers = reviewRequestNodes.flatMap((request) => {
+    const reviewer = optionalObject(request, 'requestedReviewer')
+    return reviewer?.__typename === 'User' && typeof reviewer.login === 'string' ? [reviewer.login] : []
+  })
+
+  const commitsConnection = objectField(node, 'commits')
   const commitNodes = nodes(node, 'commits')
   const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
 
@@ -327,16 +383,22 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     state,
     isDraft: requiredBoolean(node, 'isDraft'),
     author: authorLogin,
+    bodyExcerpt: typeof node.body === 'string' ? node.body.slice(0, BODY_EXCERPT_CHARS) : '',
     additions: requiredNumber(node, 'additions'),
     deletions: requiredNumber(node, 'deletions'),
     changedFiles: requiredNumber(node, 'changedFiles'),
+    commitCount: typeof commitsConnection.totalCount === 'number' ? commitsConnection.totalCount : 0,
     unresolvedThreads,
     threadsTruncated: threadTotal > threadNodes.length,
     reviewDecision: parseReviewDecision(node.reviewDecision),
+    reviews,
+    requestedReviewers,
     conflicting: node.mergeable === 'CONFLICTING',
     checks: parseChecks(commit),
+    createdAt: typeof node.createdAt === 'string' ? node.createdAt : '',
     updatedAt: requiredString(node, 'updatedAt'),
     headRefName: requiredString(node, 'headRefName'),
+    baseRefName: typeof node.baseRefName === 'string' ? node.baseRefName : '',
     viewerIsAuthor: authorLogin !== null && authorLogin === viewer,
     viewerReviewRequested,
   }
@@ -449,6 +511,7 @@ export class PrService {
   private readonly reposTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, CacheEntry<PrList>>()
+  private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
 
   constructor(options?: {
@@ -524,6 +587,65 @@ export class PrService {
       pullRequests,
       truncated: totalCount > pullRequests.length,
       mineTruncated: authored.truncated || reviewRequested.truncated,
+      fetchedAt: this.now(),
+    }
+  }
+
+  async listUnresolvedThreads(repoInput: unknown, numberInput: unknown): Promise<PrThreads> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const key = `${repo}#${number}`
+    const cached = this.threadsCache.get(key)
+    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    const promise = this.fetchUnresolvedThreads(repo, number)
+    const entry = { at: this.now(), promise }
+    this.threadsCache.set(key, entry)
+    promise.catch(() => {
+      if (this.threadsCache.get(key) === entry) this.threadsCache.delete(key)
+    })
+    return promise
+  }
+
+  private async fetchUnresolvedThreads(repo: string, number: number): Promise<PrThreads> {
+    const [owner, name] = repo.split('/', 2) as [string, string]
+    const output = await this.runner([
+      'api', 'graphql',
+      '-f', `query=${THREADS_QUERY}`,
+      '-f', `owner=${owner}`,
+      '-f', `name=${name}`,
+      '-F', `number=${number}`,
+    ])
+    let payload: unknown
+    try {
+      payload = JSON.parse(output)
+    } catch {
+      throw invalidUpstream()
+    }
+    if (!isRecord(payload)) throw invalidUpstream()
+    const data = objectField(payload, 'data')
+    const repository = optionalObject(data, 'repository')
+    const pullRequest = repository ? optionalObject(repository, 'pullRequest') : null
+    if (!pullRequest) throw new PrServiceError(404, 'pr_not_found', `Pull request ${repo}#${number} was not found`)
+    const connection = objectField(pullRequest, 'reviewThreads')
+    const threadNodes = nodes(pullRequest, 'reviewThreads')
+    const totalCount = typeof connection.totalCount === 'number' ? connection.totalCount : threadNodes.length
+    const threads: PrThreadExcerpt[] = []
+    for (const thread of threadNodes) {
+      if (thread.isResolved !== false) continue
+      const comment = nodes(thread, 'comments')[0] ?? null
+      const commentAuthor = comment ? optionalObject(comment, 'author') : null
+      const body = comment && typeof comment.body === 'string' ? comment.body : ''
+      threads.push({
+        path: typeof thread.path === 'string' ? thread.path : null,
+        author: commentAuthor && typeof commentAuthor.login === 'string' ? commentAuthor.login : null,
+        excerpt: body.replace(/\s+/g, ' ').trim().slice(0, THREAD_EXCERPT_CHARS),
+      })
+    }
+    return {
+      repo,
+      number,
+      threads,
+      truncated: totalCount > threadNodes.length,
       fetchedAt: this.now(),
     }
   }

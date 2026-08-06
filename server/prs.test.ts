@@ -24,16 +24,20 @@ function pullRequestNode(overrides: Record<string, unknown> = {}): Record<string
     state: 'OPEN',
     isDraft: false,
     author: { login: 'leo' },
+    body: 'Adds the thing behind a flag.',
     additions: 100,
     deletions: 25,
     changedFiles: 4,
     reviewDecision: null,
     mergeable: 'MERGEABLE',
+    createdAt: '2026-08-01T09:00:00Z',
     updatedAt: '2026-08-05T12:00:00Z',
     headRefName: 'leo/thing',
+    baseRefName: 'main',
     reviewThreads: { totalCount: 0, nodes: [] },
     reviewRequests: { nodes: [] },
-    commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    latestReviews: { nodes: [] },
+    commits: { totalCount: 3, nodes: [{ commit: { statusCheckRollup: null } }] },
     ...overrides,
   }
 }
@@ -213,6 +217,38 @@ describe('pull request listing', () => {
     expect(list.mineTruncated).toBe(false)
   })
 
+  it('parses the popover detail fields: body excerpt, refs, ages, counts, reviews', async () => {
+    const { service, runner } = serviceWith(graphqlPayload([
+      pullRequestNode({
+        body: `x${'y'.repeat(500)}`,
+        baseRefName: 'release/2.0',
+        createdAt: '2026-07-30T10:00:00Z',
+        commits: { totalCount: 7, nodes: [{ commit: { statusCheckRollup: null } }] },
+        latestReviews: { nodes: [
+          { author: { login: 'timgent' }, state: 'APPROVED' },
+          { author: { login: 'andrii' }, state: 'CHANGES_REQUESTED' },
+          { author: { login: 'lurker' }, state: 'COMMENTED' },
+        ] },
+        reviewRequests: { nodes: [
+          { requestedReviewer: { __typename: 'User', login: 'dana' } },
+          { requestedReviewer: { __typename: 'Team', name: 'core' } },
+        ] },
+      }),
+    ]))
+    const pr = (await service.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    expect(runner.mock.calls[0][0].join(' ')).toContain('latestReviews')
+    expect(pr.bodyExcerpt.length).toBe(280)
+    expect(pr.bodyExcerpt.startsWith('xy')).toBe(true)
+    expect(pr.baseRefName).toBe('release/2.0')
+    expect(pr.createdAt).toBe('2026-07-30T10:00:00Z')
+    expect(pr.commitCount).toBe(7)
+    expect(pr.reviews).toEqual([
+      { login: 'timgent', state: 'approved' },
+      { login: 'andrii', state: 'changes_requested' },
+    ])
+    expect(pr.requestedReviewers).toEqual(['dana'])
+  })
+
   it('maps the state filter onto the search queries', async () => {
     const open = serviceWith(graphqlPayload([]))
     await open.service.listPullRequests('acme/widgets', 'open')
@@ -277,6 +313,55 @@ describe('pull request listing', () => {
       status: 502,
       code: 'github_invalid_response',
     })
+  })
+})
+
+describe('unresolved thread excerpts', () => {
+  function threadsPayload(threadNodes: Array<Record<string, unknown>>, totalCount = threadNodes.length): string {
+    return JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { totalCount, nodes: threadNodes } } } },
+    })
+  }
+
+  it('returns unresolved threads with author, path, and a capped excerpt', async () => {
+    const { service, runner } = serviceWith(threadsPayload([
+      { isResolved: false, path: 'src/SocialFeed.tsx', comments: { nodes: [{ author: { login: 'timgent' }, body: `should   this\ncache ${'x'.repeat(200)}` }] } },
+      { isResolved: true, path: 'src/Other.tsx', comments: { nodes: [{ author: { login: 'andrii' }, body: 'resolved talk' }] } },
+      { isResolved: false, path: null, comments: { nodes: [] } },
+    ], 60))
+    const result = await service.listUnresolvedThreads('acme/widgets', 12)
+    const args = runner.mock.calls[0][0]
+    expect(args.join(' ')).toContain('reviewThreads')
+    expect(args).toContain('number=12')
+    expect(result.threads).toHaveLength(2)
+    expect(result.threads[0].author).toBe('timgent')
+    expect(result.threads[0].path).toBe('src/SocialFeed.tsx')
+    expect(result.threads[0].excerpt.startsWith('should this cache')).toBe(true)
+    expect(result.threads[0].excerpt.length).toBeLessThanOrEqual(140)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('serves repeated thread lookups from cache inside the TTL', async () => {
+    const runner = vi.fn(async () => JSON.stringify({
+      data: { repository: { pullRequest: { reviewThreads: { totalCount: 0, nodes: [] } } } },
+    }))
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json' })
+    await service.listUnresolvedThreads('acme/widgets', 12)
+    await service.listUnresolvedThreads('acme/widgets', 12)
+    expect(runner).toHaveBeenCalledTimes(1)
+    await service.listUnresolvedThreads('acme/widgets', 13)
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps a missing PR to pr_not_found and rejects bad numbers', async () => {
+    const missing = serviceWith(JSON.stringify({ data: { repository: { pullRequest: null } } }))
+    await expect(missing.service.listUnresolvedThreads('acme/widgets', 999)).rejects.toMatchObject({
+      status: 404,
+      code: 'pr_not_found',
+    })
+    const { service } = serviceWith('{}')
+    await expect(service.listUnresolvedThreads('acme/widgets', 'nope')).rejects.toMatchObject({ code: 'invalid_request' })
+    await expect(service.listUnresolvedThreads('acme/widgets', -1)).rejects.toMatchObject({ code: 'invalid_request' })
   })
 })
 
