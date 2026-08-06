@@ -179,6 +179,81 @@ describe('web panes API', () => {
     expect(again.status).toBe(404)
   })
 
+  it('accepts an engine on open and validates it', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = await post(
+      baseUrl,
+      '/api/web-panes',
+      { url: 'http://localhost:5173/', anchor: '%12', engine: 'chromium' },
+      agentAuth,
+    )
+    expect(opened.status).toBe(201)
+    const body = await opened.json() as { webPaneId: string; engine: string }
+    expect(body.engine).toBe('chromium')
+    expect(service.get(body.webPaneId)?.engine).toBe('chromium')
+
+    const bad = await post(
+      baseUrl,
+      '/api/web-panes',
+      { url: 'http://localhost:5173/', anchor: '%12', engine: 'gecko' },
+      agentAuth,
+    )
+    expect(bad.status).toBe(400)
+  })
+
+  it('serves cdp coordinates for open chromium tiles only', async () => {
+    const service = await createService()
+    const cdpInfo = vi.fn().mockResolvedValue({
+      target: 'ws://127.0.0.1:9223/devtools/page/ABC',
+      devtoolsFrontendUrl: 'http://127.0.0.1:9223/devtools/inspector.html?ws=…',
+    })
+    const { baseUrl } = await startApi(service, { cdpInfo })
+
+    const missing = await fetch(`${baseUrl}/api/web-panes/w-00000000/cdp`, { headers: agentAuth })
+    expect(missing.status).toBe(404)
+
+    const webkitPane = service.open({
+      url: 'http://localhost:5173/', anchorPaneId: '%12', sessionId: '$1', windowId: '@3',
+      openedBy: 'agent',
+    })
+    const wrongEngine = await fetch(`${baseUrl}/api/web-panes/${webkitPane.id}/cdp`, { headers: agentAuth })
+    expect(wrongEngine.status).toBe(409)
+
+    const pendingPane = service.open({
+      url: 'https://reactnative.dev/docs', anchorPaneId: '%12', sessionId: '$1', windowId: '@3',
+      engine: 'chromium', openedBy: 'agent',
+    })
+    const pendingResponse = await fetch(`${baseUrl}/api/web-panes/${pendingPane.id}/cdp`, { headers: agentAuth })
+    expect(pendingResponse.status).toBe(409)
+
+    const chromiumPane = service.open({
+      url: 'http://localhost:5173/', anchorPaneId: '%12', sessionId: '$1', windowId: '@3',
+      engine: 'chromium', openedBy: 'agent',
+    })
+    const unauthenticated = await fetch(`${baseUrl}/api/web-panes/${chromiumPane.id}/cdp`)
+    expect(unauthenticated.status).toBe(401)
+
+    const ok = await fetch(`${baseUrl}/api/web-panes/${chromiumPane.id}/cdp`, { headers: agentAuth })
+    expect(ok.status).toBe(200)
+    await expect(ok.json()).resolves.toMatchObject({
+      webPaneId: chromiumPane.id,
+      target: 'ws://127.0.0.1:9223/devtools/page/ABC',
+    })
+    expect(cdpInfo).toHaveBeenCalledWith(chromiumPane.id)
+  })
+
+  it('503s cdp lookups when no chromium engine is configured', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const pane = service.open({
+      url: 'http://localhost:5173/', anchorPaneId: '%12', sessionId: '$1', windowId: '@3',
+      engine: 'chromium', openedBy: 'agent',
+    })
+    const response = await fetch(`${baseUrl}/api/web-panes/${pane.id}/cdp`, { headers: agentAuth })
+    expect(response.status).toBe(503)
+  })
+
   it('rate limits rapid open requests', async () => {
     const { TokenBucketRateLimiter } = await import('./client-messages.js')
     const { baseUrl } = await startApi(await createService(), {

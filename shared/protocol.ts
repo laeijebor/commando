@@ -247,6 +247,14 @@ export type SavedWorkspace = {
 export type WebPanePlacement = 'right' | 'below' | 'auto'
 
 /**
+ * Rendering engine for a web pane. 'webkit' is the shipped pair (sandboxed
+ * iframe everywhere, native WKWebView for external origins in the desktop
+ * app). 'chromium' renders through the daemon-managed headless Chromium via
+ * CDP screencast, giving agents (and the DevTools tile) full CDP on the page.
+ */
+export type WebPaneEngine = 'webkit' | 'chromium'
+
+/**
  * A browser tile rendered among the tmux panes of a window. Web panes exist
  * only in the app-side layout tree — tmux never sees them, and they must be
  * stripped from any LayoutSpec before it is sent to the daemon.
@@ -258,6 +266,7 @@ export type WebPane = {
   windowId: string
   anchorPaneId: string
   placement: WebPanePlacement
+  engine: WebPaneEngine
   openedBy: 'agent' | 'user'
   openerLabel?: string
   /** 'pending' = external origin awaiting the owner's confirmation. */

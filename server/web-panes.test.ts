@@ -123,6 +123,53 @@ describe('WebPaneService', () => {
     expect(() => service.open({ ...anchor, url: 'http://localhost:9999/' })).toThrow(/At most/)
   })
 
+  it('defaults to the webkit engine and validates explicit engines', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    expect(service.open({ ...anchor, url: 'http://localhost:5173/' }).engine).toBe('webkit')
+    expect(
+      service.open({ ...anchor, url: 'http://localhost:5174/', engine: 'chromium' }).engine,
+    ).toBe('chromium')
+    expect(() =>
+      service.open({ ...anchor, url: 'http://localhost:5175/', engine: 'gecko' as never }),
+    ).toThrow(WebPaneError)
+  })
+
+  it('persists the engine and defaults legacy records to webkit', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    await service.flush()
+
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as { panes: Record<string, unknown>[] }
+    expect(stored.panes[0].engine).toBe('chromium')
+    delete stored.panes[0].engine
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(statePath, JSON.stringify(stored), 'utf8')
+
+    const restored = track(new WebPaneService(statePath))
+    await restored.load()
+    expect(restored.get(pane.id)?.engine).toBe('webkit')
+  })
+
+  it('repend flips an open tile back to pending for un-allowlisted urls only', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+
+    const pended = service.repend(pane.id, 'https://tracking.example/away')
+    expect(pended).toMatchObject({ status: 'pending', url: 'https://tracking.example/away' })
+
+    // Local and allowlisted destinations never re-pend.
+    expect(service.confirm(pane.id, true).status).toBe('open')
+    expect(service.repend(pane.id, 'http://localhost:9999/fine')).toMatchObject({
+      status: 'open',
+      url: 'https://tracking.example/away',
+    })
+    expect(service.repend(pane.id, 'https://tracking.example/deeper')?.status).toBe('open')
+    expect(service.repend(pane.id, 'https://other.example/page')?.status).toBe('pending')
+
+    expect(service.repend('w-00000000', 'https://elsewhere.example/')).toBeUndefined()
+  })
+
   it('close removes a tile and unknown ids are reported', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
     const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })

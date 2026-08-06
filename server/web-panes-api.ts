@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { WebPane, WebPanePlacement } from '../shared/protocol.js'
+import type { WebPane, WebPaneEngine, WebPanePlacement } from '../shared/protocol.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { WebPaneError, type WebPaneService } from './web-panes.js'
 
@@ -9,6 +9,15 @@ const MAX_REQUEST_BYTES = 16 * 1024
 const PANE_ID = /^%\d+$/
 const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
+const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
+
+/** Runtime CDP coordinates for a chromium tile's target. */
+export type WebPaneCdpInfo = {
+  /** ws:// endpoint of the tile's own page target. */
+  target: string
+  /** Full DevTools frontend URL for the target (open it as a sibling tile). */
+  devtoolsFrontendUrl: string
+}
 
 type AnchorPane = {
   id: string
@@ -27,6 +36,11 @@ type WebPanesApiDependencies = {
   agentLabel?: (paneId: string) => string | undefined
   onChange: () => void
   openLimiter?: TokenBucketRateLimiter
+  /**
+   * Resolves the live CDP coordinates for a chromium tile (starting its
+   * target if needed). Absent when no chromium engine is configured.
+   */
+  cdpInfo?: (webPaneId: string) => Promise<WebPaneCdpInfo>
 }
 
 class HttpError extends Error {
@@ -127,7 +141,26 @@ export class WebPanesApi {
           webPaneId: pane.id,
           beside: pane.anchorPaneId,
           status: pane.status,
+          engine: pane.engine,
         })
+        return true
+      }
+
+      if (route.action === 'cdp') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        const pane = this.dependencies.service.get(route.id)
+        if (!pane) throw new HttpError(404, 'Web pane does not exist')
+        if (pane.engine !== 'chromium') {
+          throw new HttpError(409, 'Web pane does not use the chromium engine')
+        }
+        if (pane.status !== 'open') {
+          throw new HttpError(409, 'Web pane is awaiting the owner\'s confirmation')
+        }
+        if (!this.dependencies.cdpInfo) {
+          throw new HttpError(503, 'Chromium engine is not available')
+        }
+        const info = await this.dependencies.cdpInfo(route.id)
+        writeJson(response, 200, { ok: true, webPaneId: route.id, ...info })
         return true
       }
 
@@ -157,7 +190,12 @@ export class WebPanesApi {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         }
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname === API_ROOT ? 'GET, POST' : 'POST, DELETE')
+          response.setHeader(
+            'Allow',
+            url.pathname === API_ROOT
+              ? 'GET, POST'
+              : url.pathname.endsWith('/cdp') ? 'GET' : 'POST, DELETE',
+          )
         }
         writeJson(response, error.status, { error: error.message })
         return true
@@ -180,15 +218,16 @@ export class WebPanesApi {
     throw new HttpError(401, 'Unauthorized')
   }
 
-  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'delete' } {
+  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'delete' } {
     if (pathname === API_ROOT) return { kind: 'collection' }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm))?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp))?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
-    return { kind: 'pane', id: match[1], action: match[2] === 'confirm' ? 'confirm' : 'delete' }
+    const action = match[2] === 'confirm' ? 'confirm' : match[2] === 'cdp' ? 'cdp' : 'delete'
+    return { kind: 'pane', id: match[1], action }
   }
 
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
-    const { url, anchor, placement } = body
+    const { url, anchor, placement, engine } = body
     if (typeof url !== 'string') throw new HttpError(400, 'url must be a string')
     if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {
       throw new HttpError(400, 'anchor must be a tmux pane id (use $TMUX_PANE)')
@@ -199,6 +238,12 @@ export class WebPanesApi {
     ) {
       throw new HttpError(400, 'placement must be right, below, or auto')
     }
+    if (
+      engine !== undefined &&
+      (typeof engine !== 'string' || !ENGINES.includes(engine as WebPaneEngine))
+    ) {
+      throw new HttpError(400, 'engine must be webkit or chromium')
+    }
     const anchorPane = this.dependencies.paneForId(anchor)
     if (!anchorPane) throw new HttpError(404, 'Anchor tmux pane does not exist')
 
@@ -208,6 +253,7 @@ export class WebPanesApi {
       sessionId: anchorPane.sessionId,
       windowId: anchorPane.windowId,
       placement: placement as WebPanePlacement | undefined,
+      engine: engine as WebPaneEngine | undefined,
       openedBy: caller === 'owner' ? 'user' : 'agent',
       openerLabel: caller === 'agent'
         ? this.dependencies.agentLabel?.(anchorPane.id)

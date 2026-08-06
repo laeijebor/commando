@@ -308,6 +308,7 @@ const openWebPane = {
   windowId: '@2',
   anchorPaneId: '%12',
   placement: 'right',
+  engine: 'webkit',
   openedBy: 'agent',
   openerLabel: 'claude · gizmo',
   status: 'open',
