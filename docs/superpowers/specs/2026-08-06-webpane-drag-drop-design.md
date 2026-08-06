@@ -99,7 +99,9 @@ semantics for terminal panes, tiles as drop targets.
 ## Addendum: change a tile's URL
 
 - Clicking the URL text in the tile header opens an inline input (Enter
-  commits, Escape cancels, blur commits), mirroring the pane-rename UX.
+  commits, Escape cancels, blur cancels). Blur deliberately cancels rather
+  than committing (diverging from the pane-rename UX): an accidental click
+  elsewhere must not navigate the tile.
 - Daemon: `WebPaneService.navigate(id, url)` runs the same trust policy as
   open: invalid URL → 400; localhost/allowlisted origins swap the URL and
   keep the tile `open`; an unconfirmed external origin swaps the URL and
