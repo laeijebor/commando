@@ -386,4 +386,71 @@ describe('web panes API', () => {
     )
     expect(unauthenticated.status).toBe(401)
   })
+
+  it('navigates a tile to a new url and syncs the engine when it stays open', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl, onChange } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'http://127.0.0.1:4310/report' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      webPaneId: opened.id,
+      status: 'open',
+      url: 'http://127.0.0.1:4310/report',
+    })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onConfirmed).toHaveBeenCalledTimes(1)
+  })
+
+  it('navigating to an unconfirmed external origin pends without engine sync', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending' })
+    expect(onConfirmed).not.toHaveBeenCalled()
+  })
+
+  it('navigate requires auth and a string url', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:1/' })).status).toBe(401)
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 42 }, ownerAuth)).status).toBe(400)
+  })
 })
