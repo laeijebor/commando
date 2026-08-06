@@ -93,6 +93,7 @@ vi.mock('./ResizablePaneLayout', () => ({
     <div data-testid="pane-layout" data-layout-key={layoutKey}>{[...panes.values()]}</div>
   ),
 }))
+vi.mock('./NativeWebViewTile', () => ({ NativeWebViewTile: () => null }))
 vi.mock('./PaneGitStats', () => ({ PaneGitStats: () => null }))
 vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
 vi.mock('./PortsSection', () => ({ PortsSection: () => null }))

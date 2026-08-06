@@ -112,6 +112,12 @@
   background: #fff;
 }
 
+/* Rect reserved for the desktop shell's native WKWebView tile. */
+.web-pane-native-slot {
+  width: 100%;
+  height: 100%;
+}
+
 .web-pane-overlay {
   position: absolute;
   inset: 0;

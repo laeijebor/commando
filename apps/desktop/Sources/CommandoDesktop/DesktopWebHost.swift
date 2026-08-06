@@ -47,9 +47,11 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let configuration: DesktopConfiguration
     private let admission: WebContentAdmission
     private let bridge: NativeTerminalBridge
+    private let webViewTiles: WebViewTileBridge
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
     private let externalURLHandler: any ExternalURLHandling
     private var scriptMessageHandler: WeakScriptMessageHandler?
+    private var webViewTileMessageHandler: WebViewTileScriptMessageHandler?
     private var trustedLinkMessageHandler: TrustedLinkScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
@@ -79,6 +81,11 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             prefersMetal: configuration.prefersMetal,
             externalURLHandler: externalURLHandler
         )
+        webViewTiles = WebViewTileBridge(
+            webView: webView,
+            overlay: overlay,
+            externalURLHandler: externalURLHandler
+        )
         super.init()
 
         let handler = WeakScriptMessageHandler(receiver: bridge, admission: admission)
@@ -86,6 +93,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         webConfiguration.userContentController.add(
             handler,
             name: NativeTerminalProtocol.handlerName
+        )
+        let tileHandler = WebViewTileScriptMessageHandler(bridge: webViewTiles, admission: admission)
+        webViewTileMessageHandler = tileHandler
+        webConfiguration.userContentController.add(
+            tileHandler,
+            name: WebViewTileProtocol.handlerName
         )
         let trustedLinkHandler = TrustedLinkScriptMessageHandler(
             admission: admission,
@@ -116,6 +129,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func reapplyTerminalFrames() {
         bridge.reapplyFrames()
+        webViewTiles.reapplyFrames()
     }
 
     func setWindowActive(_ active: Bool) {
@@ -148,6 +162,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         navigationRetryTimer?.invalidate()
         navigationRetryTimer = nil
         bridge.cleanUp()
+        webViewTiles.cleanUp()
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -155,11 +170,15 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             forName: NativeTerminalProtocol.handlerName
         )
         webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: WebViewTileProtocol.handlerName
+        )
+        webView.configuration.userContentController.removeScriptMessageHandler(
             forName: TrustedLinkBridge.handlerName,
             contentWorld: TrustedLinkBridge.contentWorld
         )
         webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil
+        webViewTileMessageHandler = nil
         trustedLinkMessageHandler = nil
     }
 
@@ -190,6 +209,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         bridge.pageWasReplaced()
+        webViewTiles.pageWasReplaced()
         connectionStatusView.show(isRetrying ? .retrying : .connecting, origin: configuration.webOrigin)
     }
 
@@ -223,6 +243,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         bridge.pageWasReplaced()
+        webViewTiles.pageWasReplaced()
         scheduleNavigationRetry()
     }
 
@@ -243,6 +264,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         zoomPercent = percent
         webView.pageZoom = zoomScale
         bridge.setZoomScale(zoomScale)
+        webViewTiles.setZoomScale(zoomScale)
         webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))")
     }
 

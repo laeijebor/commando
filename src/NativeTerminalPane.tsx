@@ -39,7 +39,7 @@ function nextAttachmentId(pageId: string): string {
   return `${pageId}:${attachmentSequence}`
 }
 
-function isVisibleElement(element: Element): boolean {
+export function isVisibleElement(element: Element): boolean {
   if (!(element instanceof HTMLElement) || element.hidden || !element.isConnected) return false
   const style = window.getComputedStyle(element)
   if (style.display === 'none' || style.visibility === 'hidden') return false
@@ -119,7 +119,7 @@ function clipsAxis(value: string): boolean {
   return value === 'auto' || value === 'clip' || value === 'hidden' || value === 'scroll' || value === 'overlay'
 }
 
-function clippingRect(element: HTMLElement): RectEdges {
+export function clippingRect(element: HTMLElement): RectEdges {
   let clip: RectEdges = {
     left: 0,
     top: 0,
