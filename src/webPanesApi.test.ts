@@ -16,7 +16,7 @@ describe('webPanesApi.move', () => {
     await api.move('w-0badcafe', '%40', 'below')
 
     expect(fetcher).toHaveBeenCalledTimes(1)
-    const [path, init] = fetcher.mock.calls[0] as [string, RequestInit]
+    const [path, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
     expect(path).toBe('/api/web-panes/w-0badcafe/move')
     expect(init.method).toBe('POST')
     expect(init.body).toBe(JSON.stringify({ anchor: '%40', placement: 'below' }))
