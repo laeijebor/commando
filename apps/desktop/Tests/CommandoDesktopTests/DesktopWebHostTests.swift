@@ -213,6 +213,41 @@ final class DesktopWebHostTests: XCTestCase {
         host.cleanUp()
     }
 
+    func testWindowPromptInPageContentReceivesThePresentedText() async throws {
+        let url = URL(string: "http://127.0.0.1:5173")!
+        let presenter = TextInputPresenterSpy()
+        presenter.result = "renamed-session"
+        let host = DesktopWebHost(
+            configuration: .init(webURL: url, prefersMetal: false),
+            textInputPresenter: presenter
+        )
+        defer { host.cleanUp() }
+        host.webView.stopLoading()
+        host.webView.loadHTMLString(
+            """
+            <script>
+              window.promptResult = window.prompt('Rename tmux session', 'commando');
+              window.promptDone = true;
+            </script>
+            """,
+            baseURL: url
+        )
+
+        var result: String?
+        for _ in 0..<200 {
+            if let done = try? await host.webView.evaluateJavaScript("window.promptDone === true"),
+               (done as? NSNumber)?.boolValue == true {
+                result = try await host.webView.evaluateJavaScript("window.promptResult") as? String
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(result, "renamed-session")
+        XCTAssertEqual(presenter.prompts.first?.message, "Rename tmux session")
+        XCTAssertEqual(presenter.prompts.first?.defaultText, "commando")
+    }
+
     func testTextInputWithoutAWindowCancelsSafely() async {
         let presenter = AppKitJavaScriptTextInputPresenter()
 
