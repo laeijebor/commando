@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
-import { parseTileInputEvent, type ChromiumEngine } from './chromium-engine.js'
+import { parseTileInputEvent, parseTileInspectRequest, type ChromiumEngine } from './chromium-engine.js'
 import type { WebPaneService } from './web-panes.js'
 
 const WEB_TILE_PATH = /^\/ws\/web-tiles\/(w-[0-9a-f]{8})$/
@@ -118,12 +118,12 @@ export class WebTileRelay {
         socket.close(4503, 'Chromium engine unavailable')
       })
 
-    socket.on('message', (data: RawData) => this.receive(webPaneId, data))
+    socket.on('message', (data: RawData) => this.receive(socket, webPaneId, data))
     socket.on('close', cleanup)
     socket.on('error', cleanup)
   }
 
-  private receive(webPaneId: string, data: RawData): void {
+  private receive(socket: WebSocket, webPaneId: string, data: RawData): void {
     let message: Record<string, unknown>
     try {
       message = JSON.parse(data.toString()) as Record<string, unknown>
@@ -154,6 +154,21 @@ export class WebTileRelay {
     }
     if (message.type === 'reload') {
       void this.dependencies.engine.reload(webPaneId, pane.url).catch(() => undefined)
+      return
+    }
+    if (message.type === 'inspect') {
+      const request = parseTileInspectRequest(message)
+      if (!request) return
+      void this.dependencies.engine
+        .inspectAt(webPaneId, request.x, request.y, request.grade)
+        .catch((error: unknown) => ({
+          ok: false as const,
+          error: error instanceof Error ? error.message : 'Inspect failed',
+        }))
+        .then((result) => {
+          if (socket.readyState !== WebSocket.OPEN) return
+          socket.send(JSON.stringify({ type: 'inspect_result', id: request.id, ...result }))
+        })
     }
   }
 }
