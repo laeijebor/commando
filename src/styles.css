@@ -3286,3 +3286,20 @@ body.is-resizing-hud-pinned-note {
     transition-duration: 0.001ms !important;
   }
 }
+
+.pane-drop-preview {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--surface-hover) 65%, transparent);
+  border: 1px solid var(--border);
+  z-index: 4;
+}
+
+.pane-drop-preview.is-right {
+  left: 50%;
+}
+
+.pane-drop-preview.is-below {
+  top: 50%;
+}
