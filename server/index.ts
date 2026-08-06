@@ -1006,7 +1006,14 @@ async function main(): Promise<void> {
           broadcast({ type: 'snapshot', snapshot })
           companion?.publish()
         }
-        if (webPanes.prune(snapshot.windows)) {
+        const webPanesPruned = webPanes.prune(snapshot.windows)
+        // Placements persisted as 'auto' by older daemons resolve to a
+        // concrete direction on the first snapshot that shows their anchor.
+        const webPanePlacementsResolved = webPanes.resolveAutoPlacements((paneId) => {
+          const pane = paneForId(paneId)
+          return pane ? { cols: pane.width, rows: pane.height } : undefined
+        })
+        if (webPanesPruned || webPanePlacementsResolved) {
           broadcast({ type: 'web_panes', webPanes: webPanes.list() })
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
@@ -1128,7 +1135,13 @@ async function main(): Promise<void> {
     paneForId: (paneId) => {
       const pane = paneForId(paneId)
       return pane
-        ? { id: pane.id, sessionId: pane.sessionId, windowId: pane.windowId }
+        ? {
+            id: pane.id,
+            sessionId: pane.sessionId,
+            windowId: pane.windowId,
+            width: pane.width,
+            height: pane.height,
+          }
         : undefined
     },
     agentLabel: (paneId) => {

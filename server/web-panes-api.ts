@@ -14,6 +14,9 @@ type AnchorPane = {
   id: string
   sessionId: string
   windowId: string
+  /** Cell size, used to resolve 'auto' placement at open. */
+  width: number
+  height: number
 }
 
 type WebPanesApiDependencies = {
@@ -208,6 +211,7 @@ export class WebPanesApi {
       sessionId: anchorPane.sessionId,
       windowId: anchorPane.windowId,
       placement: placement as WebPanePlacement | undefined,
+      anchorSize: { cols: anchorPane.width, rows: anchorPane.height },
       openedBy: caller === 'owner' ? 'user' : 'agent',
       openerLabel: caller === 'agent'
         ? this.dependencies.agentLabel?.(anchorPane.id)

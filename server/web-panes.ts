@@ -8,6 +8,7 @@ import {
   type WebPane,
   type WebPanePlacement,
 } from '../shared/protocol.js'
+import { resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -155,6 +156,8 @@ export type OpenWebPaneInput = {
   sessionId: string
   windowId: string
   placement?: WebPanePlacement
+  /** The anchor pane's current cell size, used to resolve 'auto' placement. */
+  anchorSize?: { cols: number; rows: number }
   openedBy: 'agent' | 'user'
   openerLabel?: string
 }
@@ -207,8 +210,16 @@ export class WebPaneService {
     if (this.panes.size >= MAX_WEB_PANES) {
       throw new WebPaneError(409, `At most ${MAX_WEB_PANES} web panes can be open`)
     }
-    const placement = input.placement ?? 'auto'
-    if (!PLACEMENTS.includes(placement)) throw new WebPaneError(400, 'Invalid placement')
+    const requested = input.placement ?? 'auto'
+    if (!PLACEMENTS.includes(requested)) throw new WebPaneError(400, 'Invalid placement')
+    // Resolve 'auto' once, from the anchor's unsplit geometry. A stored
+    // 'auto' re-derived from live geometry oscillates: the applied layout
+    // halves the anchor along the chosen axis, flipping the next decision.
+    const placement = requested !== 'auto'
+      ? requested
+      : input.anchorSize
+        ? resolveAutoPlacement(input.anchorSize)
+        : 'right'
 
     const pane: WebPane = {
       id: `w-${randomUUID().replaceAll('-', '').slice(0, 8)}`,
@@ -247,6 +258,26 @@ export class WebPaneService {
     if (!this.panes.delete(id)) return false
     this.persist()
     return true
+  }
+
+  /**
+   * Rewrites any persisted 'auto' placement (from before placements were
+   * resolved at open) to a concrete direction once the anchor pane's
+   * geometry is available. Returns true when anything changed.
+   */
+  resolveAutoPlacements(
+    paneSizeFor: (paneId: string) => { cols: number; rows: number } | undefined,
+  ): boolean {
+    let changed = false
+    for (const [id, pane] of this.panes) {
+      if (pane.placement !== 'auto') continue
+      const size = paneSizeFor(pane.anchorPaneId)
+      if (!size) continue
+      this.panes.set(id, { ...pane, placement: resolveAutoPlacement(size) })
+      changed = true
+    }
+    if (changed) this.persist()
+    return changed
   }
 
   /**

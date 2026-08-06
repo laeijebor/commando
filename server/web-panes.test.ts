@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -76,7 +76,7 @@ describe('WebPaneService', () => {
   it('opens localhost tiles immediately and external tiles as pending', async () => {
     const service = track(new WebPaneService(await temporaryStatePath(), () => 1_000))
     const local = service.open({ ...anchor, url: 'http://127.0.0.1:41300/plan' })
-    expect(local).toMatchObject({ status: 'open', anchorPaneId: '%12', placement: 'auto' })
+    expect(local).toMatchObject({ status: 'open', anchorPaneId: '%12', placement: 'right' })
 
     const external = service.open({ ...anchor, url: 'https://reactnative.dev/docs', placement: 'right' })
     expect(external).toMatchObject({ status: 'pending', placement: 'right' })
@@ -144,6 +144,97 @@ describe('WebPaneService', () => {
     expect(remaining).toHaveLength(1)
     expect(remaining[0]).toMatchObject({ id: kept.id, anchorPaneId: '%40' })
     expect(service.get(dead.id)).toBeUndefined()
+  })
+
+  it('resolves auto placement from the anchor size at open', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const wide = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      anchorSize: { cols: 200, rows: 50 },
+    })
+    expect(wide.placement).toBe('right')
+
+    const tall = service.open({
+      ...anchor,
+      url: 'http://localhost:5174/',
+      anchorSize: { cols: 100, rows: 60 },
+    })
+    expect(tall.placement).toBe('below')
+  })
+
+  it('defaults auto placement to right when the anchor size is unknown', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', placement: 'auto' })
+    expect(pane.placement).toBe('right')
+  })
+
+  it('keeps an explicit placement even when the anchor size disagrees', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      placement: 'below',
+      anchorSize: { cols: 200, rows: 50 },
+    })
+    expect(pane.placement).toBe('below')
+  })
+
+  it('resolves persisted auto placements once pane geometry is known', async () => {
+    const statePath = await temporaryStatePath()
+    await writeFile(statePath, `${JSON.stringify({
+      version: 1,
+      allowedOrigins: [],
+      panes: [{
+        id: 'w-0badcafe',
+        url: 'http://localhost:5173/',
+        sessionId: '$1',
+        windowId: '@3',
+        anchorPaneId: '%12',
+        placement: 'auto',
+        openedBy: 'agent',
+        status: 'open',
+        createdAt: 42,
+      }],
+    })}\n`)
+    const service = track(new WebPaneService(statePath))
+    await service.load()
+
+    const changed = service.resolveAutoPlacements(
+      (paneId) => (paneId === '%12' ? { cols: 80, rows: 60 } : undefined),
+    )
+    expect(changed).toBe(true)
+    expect(service.get('w-0badcafe')?.placement).toBe('below')
+
+    await service.flush()
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as { panes: Array<{ placement: string }> }
+    expect(stored.panes[0].placement).toBe('below')
+
+    expect(service.resolveAutoPlacements(() => ({ cols: 80, rows: 60 }))).toBe(false)
+  })
+
+  it('leaves an auto placement pending until its anchor geometry appears', async () => {
+    const statePath = await temporaryStatePath()
+    await writeFile(statePath, `${JSON.stringify({
+      version: 1,
+      allowedOrigins: [],
+      panes: [{
+        id: 'w-0badcafe',
+        url: 'http://localhost:5173/',
+        sessionId: '$1',
+        windowId: '@3',
+        anchorPaneId: '%12',
+        placement: 'auto',
+        openedBy: 'agent',
+        status: 'open',
+        createdAt: 42,
+      }],
+    })}\n`)
+    const service = track(new WebPaneService(statePath))
+    await service.load()
+
+    expect(service.resolveAutoPlacements(() => undefined)).toBe(false)
+    expect(service.get('w-0badcafe')?.placement).toBe('auto')
   })
 
   it('does not prune anything from an empty snapshot', async () => {

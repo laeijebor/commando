@@ -1,4 +1,5 @@
 import type { WebPane, WebPanePlacement } from '../shared/protocol'
+import { resolveAutoPlacement } from '../shared/web-pane-placement'
 import type {
   WindowLayoutNode,
   WindowLayoutPane,
@@ -15,14 +16,19 @@ export function isWebPaneLeafId(id: string): boolean {
   return id.startsWith('w-')
 }
 
+/**
+ * The daemon resolves 'auto' to a concrete direction when a pane opens, so
+ * this fallback only fires for records from an older daemon. Deriving the
+ * direction from the anchor's live geometry is what caused layout thrash:
+ * the applied layout halves the anchor along the chosen axis, which can
+ * flip the next derivation forever.
+ */
 function resolvePlacement(
   placement: WebPanePlacement,
   anchor: { cols: number; rows: number },
 ): 'right' | 'below' {
   if (placement !== 'auto') return placement
-  // Terminal cells are ~2x taller than wide; split along the anchor's longer
-  // pixel edge so neither half becomes a sliver.
-  return anchor.cols >= anchor.rows * 2 ? 'right' : 'below'
+  return resolveAutoPlacement(anchor)
 }
 
 function webLeaf(

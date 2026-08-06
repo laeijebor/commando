@@ -42,7 +42,9 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     agentToken: AGENT_TOKEN,
     ownerAuthorized: async (request) => request.headers['x-test-owner'] === 'yes',
     paneForId: (paneId) =>
-      paneId === '%12' ? { id: '%12', sessionId: '$1', windowId: '@3' } : undefined,
+      paneId === '%12'
+        ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 }
+        : undefined,
     agentLabel: (paneId) => (paneId === '%12' ? 'claude · gizmo' : undefined),
     onChange,
     ...overrides,
@@ -106,6 +108,28 @@ describe('web panes API', () => {
       openerLabel: 'claude · gizmo',
       placement: 'right',
     })
+  })
+
+  it('resolves an omitted placement from the anchor pane geometry', async () => {
+    const service = await createService()
+    // Tall anchor (95 < 2×55): auto must resolve to a below split — and to a
+    // concrete value, so clients never re-derive it from live geometry.
+    const { baseUrl } = await startApi(service, {
+      paneForId: (paneId) =>
+        paneId === '%12'
+          ? { id: '%12', sessionId: '$1', windowId: '@3', width: 95, height: 55 }
+          : undefined,
+    })
+    const response = await post(
+      baseUrl,
+      '/api/web-panes',
+      { url: 'http://127.0.0.1:41300/plan', anchor: '%12' },
+      agentAuth,
+    )
+
+    expect(response.status).toBe(201)
+    const body = await response.json() as { webPaneId: string }
+    expect(service.get(body.webPaneId)?.placement).toBe('below')
   })
 
   it('marks agent-opened external urls pending and lets only the owner confirm', async () => {
