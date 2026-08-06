@@ -187,6 +187,16 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
+        // Subframes (web pane tile iframes) may load http(s) content from any
+        // origin: only the app's own markup creates iframes, and the daemon's
+        // CSP frame-src constrains them in production. The main-frame policy
+        // below would otherwise cancel every off-origin tile.
+        if let targetFrame = navigationAction.targetFrame, !targetFrame.isMainFrame {
+            decisionHandler(
+                SubframeNavigationPolicy.allows(navigationAction.request.url) ? .allow : .cancel
+            )
+            return
+        }
         let disposition = externalURLHandler.handle(
             navigationAction.request.url,
             source: .webNavigation(

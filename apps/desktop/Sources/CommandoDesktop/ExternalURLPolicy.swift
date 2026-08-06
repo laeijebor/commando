@@ -47,6 +47,22 @@ struct SecureExternalURLPolicy: Equatable, Sendable {
     }
 }
 
+/// Policy for navigations inside subframes of the app's web view — i.e. web
+/// pane tile iframes. Tiles may browse any http(s) origin; everything else
+/// (custom schemes, credentialed URLs) is cancelled.
+enum SubframeNavigationPolicy {
+    static func allows(_ url: URL?) -> Bool {
+        guard let url,
+              url.user == nil,
+              url.password == nil,
+              let scheme = url.scheme?.lowercased()
+        else {
+            return false
+        }
+        return scheme == "http" || scheme == "https"
+    }
+}
+
 @MainActor
 protocol SystemURLOpening {
     @discardableResult
