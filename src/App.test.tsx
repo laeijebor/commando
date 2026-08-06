@@ -426,6 +426,31 @@ describe('web pane tiles', () => {
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...pending, status: 'open' as const }] }))
     expect(await screen.findByTitle('Web pane: reactnative.dev')).toBeInTheDocument()
   })
+
+  it('maximizes a web tile to fill the canvas and restores the grid', async () => {
+    // Arrange: workspace with terminal panes %1, %2 and one web tile.
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    // Act: click the tile's 'Maximize web pane' button.
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+
+    // Assert: the canvas element has the 'maximized' class, the tile card
+    // is rendered, and no terminal pane card is rendered.
+    expect(document.querySelector('.workspace-canvas')).toHaveClass('maximized')
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBeInTheDocument()
+    expect(screen.queryByTestId('renderer-%12')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('renderer-%13')).not.toBeInTheDocument()
+
+    // Act: click 'Restore web pane'.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+
+    // Assert: the 'maximized' class is gone and both terminal panes render.
+    expect(document.querySelector('.workspace-canvas')).not.toHaveClass('maximized')
+    expect(screen.getByTestId('renderer-%12')).toBeInTheDocument()
+    expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
+  })
 })
 
 function stubClientRect(element: HTMLElement, rect: { left: number; top: number; width: number; height: number }) {

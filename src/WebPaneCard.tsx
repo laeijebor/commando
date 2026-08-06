@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { ExternalLink, Globe, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
+import { ExternalLink, Globe, Maximize2, Minimize2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
 import type { WebPane } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
@@ -57,6 +57,8 @@ export function WebPaneCard({
   onDragStart,
   onDragEnd,
   onNavigate,
+  maximized,
+  onMaximize,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -68,6 +70,8 @@ export function WebPaneCard({
   onDragStart?: (event: DragEvent<HTMLElement>) => void
   onDragEnd?: () => void
   onNavigate?: (url: string) => void
+  maximized?: boolean
+  onMaximize?: () => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
@@ -189,6 +193,17 @@ export function WebPaneCard({
             aria-label="Open DevTools as a tile"
           >
             <Wrench aria-hidden="true" />
+          </button>
+        )}
+        {onMaximize && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={onMaximize}
+            title={maximized ? 'Restore web pane' : 'Maximize web pane'}
+            aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}
+          >
+            {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
           </button>
         )}
         {!pending && (

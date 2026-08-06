@@ -90,7 +90,7 @@ import { createPaneManagementApi } from './paneManagementApi'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
-import { insertWebPaneLeaves } from './webPaneLayout'
+import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
@@ -1264,7 +1264,11 @@ export function App() {
   }, [selectedSessionId])
 
   useEffect(() => {
-    if (maximizedPaneId && !snapshot?.panes.some((pane) => pane.id === maximizedPaneId)) {
+    if (
+      maximizedPaneId &&
+      !snapshot?.panes.some((pane) => pane.id === maximizedPaneId) &&
+      !webPanes.some((webPane) => webPane.id === maximizedPaneId)
+    ) {
       setMaximizedPaneId(null)
     }
     if (focusedPaneId && !snapshot?.panes.some((pane) => pane.id === focusedPaneId)) {
@@ -1286,7 +1290,7 @@ export function App() {
       )
       return next.size === current.size ? current : next
     })
-  }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot])
+  }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot, webPanes])
 
   const updatePaneRendererControl = (
     paneId: string,
@@ -2258,7 +2262,9 @@ export function App() {
               const visibleGroupPanes = maximizedPaneId
                 ? groupPanes.filter((pane) => pane.id === maximizedPaneId)
                 : groupPanes
-              if (maximizedPaneId && visibleGroupPanes.length === 0) return null
+              const maximizedWebPaneId =
+                maximizedPaneId && isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
+              if (maximizedPaneId && !maximizedWebPaneId && visibleGroupPanes.length === 0) return null
 
               const window = windowMap.get(group.windowId)
               const windowTree = window ? parseWindowLayout(window.layout) : null
@@ -2269,11 +2275,16 @@ export function App() {
               // path re-derives its tree from tmux's layout string, so these
               // synthetic leaves can never reach a LayoutSpec.
               const groupWebPanes = maximizedPaneId
-                ? []
+                ? webPanes.filter((webPane) =>
+                    webPane.id === maximizedWebPaneId && webPane.windowId === group.windowId)
                 : webPanes.filter((webPane) => webPane.windowId === group.windowId)
-              const displayTree = visibleTree && groupWebPanes.length > 0
-                ? insertWebPaneLeaves(visibleTree, groupWebPanes)
-                : visibleTree
+              const maximizedWebPane = groupWebPanes.find((webPane) => webPane.id === maximizedWebPaneId) ?? null
+              if (maximizedWebPaneId && !maximizedWebPane) return null
+              const displayTree: WindowLayoutNode | null = maximizedWebPane
+                ? { kind: 'pane', paneId: maximizedWebPane.id, cols: 80, rows: 24, left: 0, top: 0 }
+                : visibleTree && groupWebPanes.length > 0
+                  ? insertWebPaneLeaves(visibleTree, groupWebPanes)
+                  : visibleTree
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -2303,7 +2314,7 @@ export function App() {
                       ))}
                     </div>
                   </header>
-                  {displayTree && visibleGroupPanes.length ? (
+                  {displayTree && (visibleGroupPanes.length || maximizedWebPane) ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
                       layoutKey={webLayoutAuthoritative || activeResizePaneId !== null
@@ -2432,6 +2443,11 @@ export function App() {
                             setDropPreview(null)
                           }}
                           onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+                          maximized={maximizedPaneId === webPane.id}
+                          onMaximize={() => {
+                            clearLayoutTimers()
+                            setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+                          }}
                         />,
                       ] as const)))}
                     />

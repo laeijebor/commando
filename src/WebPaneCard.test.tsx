@@ -97,3 +97,34 @@ describe('WebPaneCard url editing', () => {
     expect(screen.queryByRole('textbox', { name: 'Web pane URL' })).toBeNull()
   })
 })
+
+describe('WebPaneCard maximize', () => {
+  it('renders a maximize toggle that reflects and flips the state', () => {
+    const onMaximize = vi.fn()
+    const { rerender } = render(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        wsToken=""
+        maximized={false}
+        onMaximize={onMaximize}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    expect(onMaximize).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        wsToken=""
+        maximized
+        onMaximize={onMaximize}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Restore web pane' })).toBeInTheDocument()
+  })
+})
