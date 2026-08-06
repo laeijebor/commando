@@ -1109,8 +1109,10 @@ export function App() {
       broker.forgetToken()
     }
   }, [connection.phase, token])
+  const maximizedTmuxPaneId =
+    maximizedPaneId && !isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
   const activeResizePaneId = resizeAuthorityActive
-    ? maximizedPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
+    ? maximizedTmuxPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
     : null
 
   useEffect(() => {
@@ -1223,7 +1225,9 @@ export function App() {
     ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
     : []
   const subscribedPaneIds = area === 'workspace'
-    ? maximizedPaneId ? [maximizedPaneId] : allVisiblePaneIds
+    ? maximizedPaneId
+      ? isWebPaneLeafId(maximizedPaneId) ? allVisiblePaneIds : [maximizedPaneId]
+      : allVisiblePaneIds
     : []
   const statusOnlyPaneIds = area === 'workspace' && selectedSessionId
     ? (snapshot?.panes ?? [])

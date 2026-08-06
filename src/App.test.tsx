@@ -451,6 +451,34 @@ describe('web pane tiles', () => {
     expect(screen.getByTestId('renderer-%12')).toBeInTheDocument()
     expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
   })
+
+  it('never leaks the web tile id into daemon protocol messages while maximized', async () => {
+    // Arrange: workspace with terminal panes %12, %13 and one web tile.
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+    appMocks.send.mockClear()
+
+    const assertNoWebIdLeaked = () => {
+      for (const call of appMocks.send.mock.calls) {
+        const message = call[0] as { type?: string; paneIds?: string[]; paneId?: string }
+        if (message.type === 'subscribe') {
+          expect(message.paneIds?.some((id) => id.startsWith('w-'))).toBe(false)
+        }
+        if (message.type === 'release_resize' || message.type === 'resize_pane') {
+          expect(message.paneId?.startsWith('w-')).toBe(false)
+        }
+      }
+    }
+
+    // Act: maximize the web tile.
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    assertNoWebIdLeaked()
+
+    // Act: restore the grid.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    assertNoWebIdLeaked()
+  })
 })
 
 function stubClientRect(element: HTMLElement, rect: { left: number; top: number; width: number; height: number }) {
