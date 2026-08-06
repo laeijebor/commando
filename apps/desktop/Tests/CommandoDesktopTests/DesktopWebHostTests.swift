@@ -18,6 +18,21 @@ private final class ConfirmationPresenterSpy: JavaScriptConfirmationPresenting {
 }
 
 @MainActor
+private final class TextInputPresenterSpy: JavaScriptTextInputPresenting {
+    private(set) var prompts: [(message: String, defaultText: String?)] = []
+    var result: String?
+
+    func present(
+        message: String,
+        defaultText: String?,
+        in window: NSWindow?
+    ) async -> String? {
+        prompts.append((message, defaultText))
+        return result
+    }
+}
+
+@MainActor
 private final class WebHostURLOpenerSpy: SystemURLOpening {
     private(set) var openedURLs: [URL] = []
 
@@ -173,6 +188,41 @@ final class DesktopWebHostTests: XCTestCase {
 
         host.cleanUp()
         XCTAssertNil(host.webView.uiDelegate)
+    }
+
+    func testInstallsUIDelegateAndRoutesJavaScriptTextInput() async {
+        let presenter = TextInputPresenterSpy()
+        presenter.result = "renamed-session"
+        let host = DesktopWebHost(textInputPresenter: presenter)
+
+        XCTAssertTrue(host.responds(to: #selector(
+            WKUIDelegate.webView(
+                _:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:
+            )
+        )))
+
+        let result = await host.presentJavaScriptTextInput(
+            "Rename tmux session",
+            defaultText: "commando"
+        )
+        XCTAssertEqual(presenter.prompts.count, 1)
+        XCTAssertEqual(presenter.prompts.first?.message, "Rename tmux session")
+        XCTAssertEqual(presenter.prompts.first?.defaultText, "commando")
+        XCTAssertEqual(result, "renamed-session")
+
+        host.cleanUp()
+    }
+
+    func testTextInputWithoutAWindowCancelsSafely() async {
+        let presenter = AppKitJavaScriptTextInputPresenter()
+
+        let result = await presenter.present(
+            message: "Rename tmux session",
+            defaultText: "commando",
+            in: nil
+        )
+
+        XCTAssertNil(result)
     }
 
     func testConfirmationWithoutAWindowCancelsSafely() async {

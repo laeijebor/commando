@@ -31,6 +31,43 @@ struct AppKitJavaScriptConfirmationPresenter: JavaScriptConfirmationPresenting {
 }
 
 @MainActor
+protocol JavaScriptTextInputPresenting {
+    func present(
+        message: String,
+        defaultText: String?,
+        in window: NSWindow?
+    ) async -> String?
+}
+
+@MainActor
+struct AppKitJavaScriptTextInputPresenter: JavaScriptTextInputPresenting {
+    func present(
+        message: String,
+        defaultText: String?,
+        in window: NSWindow?
+    ) async -> String? {
+        guard let window else { return nil }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: defaultText ?? "")
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { response in
+                continuation.resume(
+                    returning: response == .alertFirstButtonReturn ? field.stringValue : nil
+                )
+            }
+        }
+    }
+}
+
+@MainActor
 final class DesktopWebHost: NSObject, WKNavigationDelegate {
     static let minimumZoomPercent = 50
     static let maximumZoomPercent = 200
@@ -49,6 +86,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private let bridge: NativeTerminalBridge
     private let webViewTiles: WebViewTileBridge
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
+    private let textInputPresenter: any JavaScriptTextInputPresenting
     private let externalURLHandler: any ExternalURLHandling
     private var scriptMessageHandler: WeakScriptMessageHandler?
     private var webViewTileMessageHandler: WebViewTileScriptMessageHandler?
@@ -61,10 +99,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     init(
         configuration: DesktopConfiguration = .current(),
         confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter(),
+        textInputPresenter: any JavaScriptTextInputPresenting = AppKitJavaScriptTextInputPresenter(),
         externalURLHandler: (any ExternalURLHandling)? = nil
     ) {
         self.configuration = configuration
         self.confirmationPresenter = confirmationPresenter
+        self.textInputPresenter = textInputPresenter
         admission = WebContentAdmission(origin: configuration.webOrigin)
         let externalURLHandler = externalURLHandler ?? SafeExternalURLHandler(
             privilegedOrigin: configuration.webOrigin
@@ -217,6 +257,14 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         )
     }
 
+    func presentJavaScriptTextInput(_ message: String, defaultText: String?) async -> String? {
+        await textInputPresenter.present(
+            message: message,
+            defaultText: defaultText,
+            in: webView.window
+        )
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         bridge.pageWasReplaced()
         webViewTiles.pageWasReplaced()
@@ -335,5 +383,14 @@ extension DesktopWebHost: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo
     ) async -> Bool {
         await presentJavaScriptConfirmation(message)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo
+    ) async -> String? {
+        await presentJavaScriptTextInput(prompt, defaultText: defaultText)
     }
 }
