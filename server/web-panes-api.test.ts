@@ -9,10 +9,14 @@ import { WebPaneService } from './web-panes.js'
 
 const AGENT_TOKEN = 'agent-hook-token-with-at-least-32-characters'
 const servers: Server[] = []
+const services: WebPaneService[] = []
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+  // Persistence is queued asynchronously; settle it before deleting the
+  // directories or an in-flight temp file races the rm.
+  await Promise.all(services.splice(0).map((service) => service.flush()))
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   )
@@ -21,7 +25,9 @@ afterEach(async () => {
 async function createService(): Promise<WebPaneService> {
   const directory = await mkdtemp(join(tmpdir(), 'commando-web-panes-api-'))
   temporaryDirectories.push(directory)
-  return new WebPaneService(join(directory, 'web-panes.json'))
+  const service = new WebPaneService(join(directory, 'web-panes.json'))
+  services.push(service)
+  return service
 }
 
 type Overrides = Partial<ConstructorParameters<typeof WebPanesApi>[0]>
