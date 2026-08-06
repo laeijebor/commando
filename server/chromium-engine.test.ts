@@ -177,6 +177,7 @@ describe('ChromiumEngine', () => {
     const { stub, engine } = await createHarness()
     const info = await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
     expect(info.target).toBe(`ws://127.0.0.1:${stub.port}/devtools/page/T1`)
+    // Always the browser's locally-served frontend, never Chrome's appspot URL.
     expect(info.devtoolsFrontendUrl).toBe(
       `http://127.0.0.1:${stub.port}/devtools/inspector.html?ws=127.0.0.1:${stub.port}/devtools/page/T1`,
     )
@@ -233,6 +234,8 @@ describe('ChromiumEngine', () => {
 
     // Allowed localhost navigation: no callback.
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/deep' } })
+    // Same-origin as the current (confirmed) URL: no callback either.
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/other?page=2' } })
     // Subframe navigation anywhere: no callback.
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F2', parentId: 'F1', url: 'https://ads.example/embed' } })
     // Main frame external navigation: watchdog fires and blanks the page.

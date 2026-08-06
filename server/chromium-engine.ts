@@ -328,6 +328,14 @@ export function parseTileInputEvent(value: unknown): TileInputEvent | null {
   return null
 }
 
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return false
+  }
+}
+
 type TileTarget = {
   webPaneId: string
   targetId: string
@@ -556,9 +564,11 @@ export class ChromiumEngine {
       throw new WebPaneError(502, 'Chromium did not return a debuggable target')
     }
     const cdp = await CdpConnection.open(created.webSocketDebuggerUrl)
-    const devtoolsFrontendUrl = created.devtoolsFrontendUrl?.startsWith('/')
-      ? `http://127.0.0.1:${browser.port}${created.devtoolsFrontendUrl}`
-      : created.devtoolsFrontendUrl ?? `http://127.0.0.1:${browser.port}/`
+    // Chrome reports an appspot-hosted frontend URL; use the browser's own
+    // locally-served copy instead so the DevTools tile stays a localhost page.
+    const devtoolsFrontendUrl =
+      `http://127.0.0.1:${browser.port}/devtools/inspector.html` +
+      `?ws=${created.webSocketDebuggerUrl.replace(/^ws:\/\//, '')}`
     const tile: TileTarget = {
       webPaneId,
       targetId: created.id,
@@ -607,7 +617,9 @@ export class ChromiumEngine {
     if (url === 'about:blank' || url === tile.currentUrl) return
     if (url.startsWith('chrome-error://') || url.startsWith('devtools://')) return
     const decision = this.options.classify(url)
-    if (decision.kind === 'open') {
+    // Staying on the origin the owner already confirmed for this tile is
+    // fine even when the origin was not "always"-allowlisted.
+    if (decision.kind === 'open' || sameOrigin(url, tile.currentUrl)) {
       tile.currentUrl = url
       return
     }
