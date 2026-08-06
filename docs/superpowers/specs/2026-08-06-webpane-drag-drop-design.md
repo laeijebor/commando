@@ -1,7 +1,7 @@
-# Web tile drag-and-drop — design
+# Web tile drag-and-drop, maximize, and URL editing — design
 
 **Date:** 2026-08-06
-**Status:** approved
+**Status:** approved (drag-and-drop; maximize + URL editing addendum approved same day)
 
 ## Problem
 
@@ -84,9 +84,42 @@ semantics for terminal panes, tiles as drop targets.
 - The tile header drag handlers live in the shared tile card chrome so all
   engines get them.
 
+## Addendum: maximize a web tile
+
+- The tile header gains a maximize/restore button with the same icons and
+  toggle behavior as terminal panes (`Maximize2`/`Minimize2`).
+- Reuses the single `maximizedPaneId` state — web ids (`w-…`) cannot
+  collide with tmux ids (`%N`), so one thing is maximized at a time,
+  terminal pane or tile. The workspace canvas shows just that tile
+  (rendered as a single-leaf display tree); toggling restores the grid.
+- tmux is untouched (tiles are not tmux panes; no zoom is involved) and no
+  layout writes happen while anything is maximized (existing gate on
+  `maximizedPaneId`).
+
+## Addendum: change a tile's URL
+
+- Clicking the URL text in the tile header opens an inline input (Enter
+  commits, Escape cancels, blur commits), mirroring the pane-rename UX.
+- Daemon: `WebPaneService.navigate(id, url)` runs the same trust policy as
+  open: invalid URL → 400; localhost/allowlisted origins swap the URL and
+  keep the tile `open`; an unconfirmed external origin swaps the URL and
+  flips the tile to `pending` (the existing confirm card), so URL editing
+  cannot bypass the origin gate. Unknown id → 404. Persisted.
+- API: `POST /api/web-panes/:id/navigate`, body `{ url }`, same auth and
+  rate limit as open. When the result is `open`, the existing
+  `onConfirmed` hook fires so a chromium-engine tile's managed target
+  navigates; webkit tiles simply re-render at the new URL.
+
 ## Testing
 
 - Service unit tests: move updates + persists; 404 unknown id; 400 'auto'.
+- Navigate service tests: localhost swap stays open; unconfirmed external
+  flips to pending; allowlisted external stays open; invalid 400; unknown
+  404. Navigate API tests: happy path fires `onChange` + `onConfirmed`;
+  pending result does not fire `onConfirmed`; 401 unauthenticated.
+- Maximize tests: tile maximize button toggles the canvas maximized state
+  and renders only that tile; restore brings the grid back; terminal-pane
+  maximize unchanged.
 - API tests: happy path (anchor/placement updated, broadcast fired),
   cross-window 400, unknown anchor 404, auth 401.
 - Client unit tests: `dropPlacementFor` halves and corner tie-break; drop
