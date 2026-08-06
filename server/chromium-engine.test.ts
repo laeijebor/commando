@@ -6,6 +6,7 @@ import {
   ChromiumEngine,
   findChromiumBinary,
   parseTileInputEvent,
+  parseTileInspectRequest,
   type ChromiumLaunch,
   type ScreencastFrame,
 } from './chromium-engine.js'
@@ -24,6 +25,8 @@ class StubChromium {
   readonly calls: CdpCall[] = []
   readonly closedTargets: string[] = []
   readonly sockets = new Map<string, WebSocket>()
+  /** Canned Runtime.evaluate result value, set by tests before triggering the call. */
+  evaluateValue: unknown = null
 
   async start(): Promise<void> {
     this.server = createServer((request, response) => {
@@ -59,6 +62,10 @@ class StubChromium {
       socket.on('message', (data) => {
         const message = JSON.parse(String(data)) as { id: number; method: string; params?: Record<string, unknown> }
         this.calls.push({ targetId, method: message.method, params: message.params })
+        if (message.method === 'Runtime.evaluate') {
+          socket.send(JSON.stringify({ id: message.id, result: { result: { type: 'object', value: this.evaluateValue } } }))
+          return
+        }
         socket.send(JSON.stringify({ id: message.id, result: {} }))
       })
     })
@@ -275,5 +282,52 @@ describe('ChromiumEngine', () => {
     const info = await harness.engine.cdpInfo('w-11111111', 'http://localhost:5173/')
     expect(harness.launches).toBe(2)
     expect(info.target).toContain('/devtools/page/')
+  })
+
+  describe('inspectAt', () => {
+    it('evaluates the probe and returns the validated result', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = {
+        ok: true,
+        selector: '#root > button',
+        tag: 'button',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+      }
+      const result = await engine.inspectAt('w-11111111', 10, 20, 'hover')
+      expect(result).toEqual(stub.evaluateValue)
+      const call = stub.calls.find((entry) => entry.method === 'Runtime.evaluate')
+      expect(call?.params?.returnByValue).toBe(true)
+      expect(String(call?.params?.expression)).toContain('(document, 10, 20, "hover")')
+    })
+
+    it('reports a friendly failure for a tile with no live target', async () => {
+      const { engine } = await createHarness()
+      const result = await engine.inspectAt('w-99999999', 1, 1, 'hover')
+      expect(result).toEqual({ ok: false, error: 'Tile has no live chromium target' })
+    })
+
+    it('reports a failure when the page returns garbage', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = { ok: true, selector: 42 }
+      const result = await engine.inspectAt('w-11111111', 1, 1, 'hover')
+      expect(result.ok).toBe(false)
+    })
+  })
+})
+
+describe('parseTileInspectRequest', () => {
+  it('accepts a valid inspect request', () => {
+    expect(
+      parseTileInspectRequest({ type: 'inspect', id: 'i-1', x: 10.5, y: 20, grade: 'hover' }),
+    ).toEqual({ id: 'i-1', x: 10.5, y: 20, grade: 'hover' })
+  })
+
+  it('rejects bad grades, coordinates, and ids', () => {
+    expect(parseTileInspectRequest({ type: 'inspect', id: 'i', x: 1, y: 1, grade: 'poke' })).toBeNull()
+    expect(parseTileInspectRequest({ type: 'inspect', id: 'i', x: -1, y: 1, grade: 'hover' })).toBeNull()
+    expect(parseTileInspectRequest({ type: 'inspect', id: 'x'.repeat(65), x: 1, y: 1, grade: 'hover' })).toBeNull()
+    expect(parseTileInspectRequest({ type: 'inspect', x: 1, y: 1, grade: 'hover' })).toBeNull()
   })
 })

@@ -3,6 +3,12 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, type RawData } from 'ws'
+import {
+  inspectExpression,
+  parseTileInspectResult,
+  type TileInspectGrade,
+  type TileInspectResult,
+} from '../shared/tile-inspect.js'
 import { WebPaneError } from './web-panes.js'
 
 const LAUNCH_TIMEOUT_MS = 20_000
@@ -328,6 +334,23 @@ export function parseTileInputEvent(value: unknown): TileInputEvent | null {
   return null
 }
 
+export type TileInspectRequest = { id: string; x: number; y: number; grade: TileInspectGrade }
+
+/** Validates a client-supplied inspect request down to the exact forwarded shape. */
+export function parseTileInspectRequest(value: unknown): TileInspectRequest | null {
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.id !== 'string' || record.id.length === 0 || record.id.length > 64 ||
+    !finiteInRange(record.x, 0, MAX_VIEWPORT_DIMENSION) ||
+    !finiteInRange(record.y, 0, MAX_VIEWPORT_DIMENSION) ||
+    (record.grade !== 'hover' && record.grade !== 'click')
+  ) {
+    return null
+  }
+  return { id: record.id, x: record.x, y: record.y, grade: record.grade }
+}
+
 function sameOrigin(a: string, b: string): boolean {
   try {
     return new URL(a).origin === new URL(b).origin
@@ -493,6 +516,35 @@ export class ChromiumEngine {
         : {}),
       modifiers: event.modifiers ?? 0,
     })
+  }
+
+  /**
+   * Resolves the element under a viewport point with one transient
+   * Runtime.evaluate — nothing is installed in the page. Page-level failures
+   * come back as { ok: false } so the relay can answer the client either way.
+   */
+  async inspectAt(
+    webPaneId: string,
+    x: number,
+    y: number,
+    grade: TileInspectGrade,
+  ): Promise<TileInspectResult> {
+    const tile = this.tiles.get(webPaneId)
+    if (!tile) return { ok: false, error: 'Tile has no live chromium target' }
+    let evaluated: { result?: { value?: unknown }; exceptionDetails?: unknown }
+    try {
+      evaluated = (await tile.cdp.send('Runtime.evaluate', {
+        expression: inspectExpression(x, y, grade),
+        returnByValue: true,
+      })) as typeof evaluated
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'Inspect failed' }
+    }
+    if (evaluated.exceptionDetails) return { ok: false, error: 'Page threw while inspecting' }
+    return (
+      parseTileInspectResult(evaluated.result?.value) ??
+      { ok: false, error: 'Page returned an invalid inspect result' }
+    )
   }
 
   /** Closes the target of a removed tile; safe to call for unknown ids. */
