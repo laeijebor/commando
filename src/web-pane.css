@@ -1,6 +1,10 @@
 .web-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  /* The layout slot (.pane-split-child) is a flex row; without an explicit
+     flex the card sizes to the iframe's intrinsic ~300px width. */
+  flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 140px;
   height: 100%;
