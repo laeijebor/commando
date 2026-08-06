@@ -94,8 +94,25 @@ allow" to remember the origin). Web panes and the origin allowlist persist in
 tmux never sees them; the real panes are resized around the tile through the
 usual resize-lease machinery, and raw tmux attachments keep seeing only real
 panes. The API also accepts owner auth: `GET /api/web-panes`,
-`POST /api/web-panes {url, anchor, placement?}`,
-`POST /api/web-panes/:id/confirm {allowOrigin?}`, `DELETE /api/web-panes/:id`.
+`POST /api/web-panes {url, anchor, placement?, engine?}`,
+`POST /api/web-panes/:id/confirm {allowOrigin?}`, `DELETE /api/web-panes/:id`,
+`GET /api/web-panes/:id/cdp`.
+
+### Chromium engine (CDP)
+
+Pass `--engine chromium` (API: `"engine":"chromium"`) to render the tile
+through a daemon-managed headless Chromium instead of an iframe/WKWebView.
+The page streams into the tile via CDP screencast (input relays back), and
+`GET /api/web-panes/:id/cdp` returns the page's raw CDP websocket plus a full
+DevTools frontend URL — so an agent can watch network traffic, set
+breakpoints, or trace the exact page you are looking at, and the tile's 🛠
+button opens DevTools as a sibling tile. The browser runs with a throwaway
+profile under `~/.commando/chromium-profile` and a loopback-only DevTools
+port; the daemon discovers an installed Chromium-family browser
+(Chrome/Canary/Chromium/Edge/Brave, override with `COMMANDO_CHROMIUM_PATH`,
+or drop a Chrome-for-Testing build at `~/.commando/chrome-for-testing/chrome`).
+The trust policy still applies: navigating a chromium tile to an unconfirmed
+external origin blanks the page and re-shows the confirm card.
 
 For agents, install the `show-in-commando` skill into the Claude Code and
 OpenCode skill directories with `scripts/install-show-in-commando-skill`

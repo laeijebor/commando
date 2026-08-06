@@ -58,6 +58,7 @@ import type {
   SpecialKey,
   TmuxPane,
   WebPane,
+  WebPaneEngine,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -1626,10 +1627,10 @@ export function App() {
   const gitDiffApi = createGitDiffApi(token)
   const webPanesApi = createWebPanesApi(token)
 
-  const openWebPane = async (url: string, anchorPaneId: string) => {
+  const openWebPane = async (url: string, anchorPaneId: string, engine?: WebPaneEngine) => {
     setPaneActionError('')
     try {
-      await webPanesApi.open(url, anchorPaneId)
+      await webPanesApi.open(url, anchorPaneId, undefined, engine)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to open web pane')
     }
@@ -1745,6 +1746,17 @@ export function App() {
       kind: 'action' as const,
       run: () => {
         if (webPaneAnchorId) void openWebPane(paletteWebPaneUrl, webPaneAnchorId)
+        setPaletteOpen(false)
+      },
+    }, {
+      id: 'web-pane:open-chromium',
+      label: `Open ${paletteWebPaneUrl} as a Chromium (CDP) tile`,
+      detail: webPaneAnchorId
+        ? 'Debuggable stream — agents can attach DevTools to this page'
+        : 'No pane available to anchor the tile',
+      kind: 'action' as const,
+      run: () => {
+        if (webPaneAnchorId) void openWebPane(paletteWebPaneUrl, webPaneAnchorId, 'chromium')
         setPaletteOpen(false)
       },
     }] : []),

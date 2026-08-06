@@ -31,9 +31,9 @@ curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes" \
 ```
 
 (If a checkout of the commando repo is handy, `scripts/commando-open <url>
-[placement]` does exactly this.)
+[placement] [--engine chromium]` does exactly this.)
 
-Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open"}`.
+Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine":"webkit"}`.
 
 - `status: "open"` — the tile is already visible in every connected
   Commando client. Tell the user you opened it beside your pane.
@@ -41,6 +41,35 @@ Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open"}`.
   approval; the tile shows a confirm card. Tell the user it is waiting for
   their confirmation. Never try to confirm it yourself — confirmation is
   owner-only by design.
+
+## Choosing an engine — debugging a page WITH the user
+
+Default (`webkit`, omit the field) is right for *showing* things: it is the
+lightest renderer. Add `"engine":"chromium"` to the open body when you
+intend to *debug* the page together — watch its network requests, set
+breakpoints, take performance traces. The tile then renders through the
+daemon's managed headless Chromium, and you can attach real CDP to the very
+page the user is looking at:
+
+```bash
+curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp" \
+  -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")"
+# → { "target": "ws://127.0.0.1:<port>/devtools/page/<id>",
+#     "devtoolsFrontendUrl": "http://127.0.0.1:<port>/devtools/inspector.html?ws=…" }
+```
+
+- `target` is a raw CDP websocket for that one page — connect chrome-devtools
+  MCP (`--browser-url http://127.0.0.1:<port>`) or any CDP client to it.
+  Everything you do (navigate, evaluate, Network.enable) happens on the page
+  the user is watching. Localhost pages only unless the owner has confirmed
+  the origin; navigating the page to an unconfirmed external origin blanks
+  it and asks the owner — do not fight this, ask the user instead.
+- `devtoolsFrontendUrl` is a full DevTools UI for the same page — the user
+  can open it themselves with the tile's 🛠 button, or you can open it as a
+  second tile beside the page when the user asks to see the network tab.
+- 503 from `/cdp`: no Chromium-family browser is installed for the engine —
+  tell the user (installing Google Chrome, or setting COMMANDO_CHROMIUM_PATH,
+  fixes it) and fall back to a webkit tile.
 
 ## Close a tile
 
