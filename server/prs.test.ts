@@ -38,11 +38,24 @@ function pullRequestNode(overrides: Record<string, unknown> = {}): Record<string
   }
 }
 
-function graphqlPayload(nodes: Array<Record<string, unknown>>, totalCount = nodes.length, viewer = 'leo'): string {
+type SearchPayload = { nodes?: Array<Record<string, unknown>>; issueCount?: number }
+
+function graphqlPayload(
+  nodes: Array<Record<string, unknown>>,
+  totalCount = nodes.length,
+  viewer = 'leo',
+  searches: { authored?: SearchPayload; reviewRequested?: SearchPayload } = {},
+): string {
+  const connection = (search: SearchPayload = {}) => ({
+    issueCount: search.issueCount ?? search.nodes?.length ?? 0,
+    nodes: search.nodes ?? [],
+  })
   return JSON.stringify({
     data: {
       viewer: { login: viewer },
       repository: { pullRequests: { totalCount, nodes } },
+      authored: connection(searches.authored),
+      reviewRequested: connection(searches.reviewRequested),
     },
   })
 }
@@ -166,6 +179,60 @@ describe('pull request listing', () => {
       viewerIsAuthor: false,
       viewerReviewRequested: true,
     })
+  })
+
+  it('merges authored and review-requested search results the repo page missed, deduped and sorted by update time', async () => {
+    const { service, runner } = serviceWith(graphqlPayload(
+      [pullRequestNode({ number: 12, author: { login: 'someone-else' }, updatedAt: '2026-08-06T09:00:00Z' })],
+      394,
+      'leo',
+      {
+        authored: { nodes: [
+          pullRequestNode({ number: 77, updatedAt: '2026-08-01T08:00:00Z' }),
+          pullRequestNode({ number: 12, author: { login: 'someone-else' }, updatedAt: '2026-08-06T09:00:00Z' }),
+        ] },
+        reviewRequested: { nodes: [
+          pullRequestNode({
+            number: 41,
+            author: { login: 'someone-else' },
+            updatedAt: '2026-08-03T08:00:00Z',
+            reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'leo' } }] },
+          }),
+        ] },
+      },
+    ))
+    const list = await service.listPullRequests('acme/widgets', 'open')
+    expect(runner).toHaveBeenCalledTimes(1)
+    const args = runner.mock.calls[0][0].join(' ')
+    expect(args).toContain('author:@me')
+    expect(args).toContain('review-requested:@me')
+    expect(args).toContain('repo:acme/widgets')
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([12, 41, 77])
+    expect(list.pullRequests[2].viewerIsAuthor).toBe(true)
+    expect(list.pullRequests[1].viewerReviewRequested).toBe(true)
+    expect(list.mineTruncated).toBe(false)
+  })
+
+  it('maps the state filter onto the search queries', async () => {
+    const open = serviceWith(graphqlPayload([]))
+    await open.service.listPullRequests('acme/widgets', 'open')
+    expect(open.runner.mock.calls[0][0].join(' ')).toContain('author:@me is:open')
+    const closed = serviceWith(graphqlPayload([]))
+    await closed.service.listPullRequests('acme/widgets', 'closed')
+    expect(closed.runner.mock.calls[0][0].join(' ')).toContain('review-requested:@me is:closed')
+    const all = serviceWith(graphqlPayload([]))
+    await all.service.listPullRequests('acme/widgets', 'all')
+    const authoredArg = all.runner.mock.calls[0][0].find((arg) => arg.startsWith('authoredQuery='))
+    expect(authoredArg).toBe('authoredQuery=repo:acme/widgets is:pr author:@me')
+  })
+
+  it('flags mineTruncated when a scoped search has more results than one page', async () => {
+    const { service } = serviceWith(graphqlPayload([], 0, 'leo', {
+      authored: { nodes: [pullRequestNode({ number: 77 })], issueCount: 45 },
+    }))
+    const list = await service.listPullRequests('acme/widgets', 'open')
+    expect(list.mineTruncated).toBe(true)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([77])
   })
 
   it('reports truncation against the repo totalCount', async () => {
