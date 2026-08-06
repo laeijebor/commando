@@ -277,6 +277,23 @@ export type WebPane = {
 export const MAX_WEB_PANES = 16
 export const MAX_WEB_PANE_URL_LENGTH = 2_048
 
+export type WebPaneFeedbackNote = {
+  selector: string
+  tag: string
+  text?: string
+  rect: { x: number; y: number; width: number; height: number }
+  comment: string
+  pageUrl: string
+  capturedAt: number
+}
+
+/** Ephemeral review-feedback state for a tile — broadcast, never persisted. */
+export type WebPaneFeedbackInfo = {
+  queued: number
+  lastDrainCount?: number
+  lastDrainAt?: number
+}
+
 export type PaneLayoutCapacity = {
   paneId: string
   cols: number
@@ -321,7 +338,7 @@ export type ServerMessage =
       requestId: string
       reason: 'load' | 'save'
     }
-  | { type: 'web_panes'; webPanes: WebPane[] }
+  | { type: 'web_panes'; webPanes: WebPane[]; feedback?: Record<string, WebPaneFeedbackInfo> }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
