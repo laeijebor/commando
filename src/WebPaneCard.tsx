@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { ExternalLink, Globe, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
 import type { WebPane } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
@@ -54,6 +54,8 @@ export function WebPaneCard({
   onConfirm,
   wsToken = '',
   onOpenDevtools,
+  onDragStart,
+  onDragEnd,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -62,6 +64,8 @@ export function WebPaneCard({
   wsToken?: string
   /** Opens the tile's DevTools frontend as a sibling tile (chromium only). */
   onOpenDevtools?: () => void
+  onDragStart?: (event: DragEvent<HTMLElement>) => void
+  onDragEnd?: () => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
@@ -114,7 +118,13 @@ export function WebPaneCard({
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <header className="web-pane-head">
+      <header
+        className="web-pane-head"
+        draggable={onDragStart ? 'true' : 'false'}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        title={onDragStart ? 'Drag onto a terminal pane to move this tile' : undefined}
+      >
         <Globe className="web-pane-glyph" aria-hidden="true" />
         <span className="web-pane-url" title={webPane.url}>
           <span className="web-pane-host">{host}</span>
