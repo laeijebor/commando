@@ -1,6 +1,6 @@
 ---
 name: show-in-commando
-description: Show the user a web page beside your terminal pane in Commando. Use whenever you serve or publish anything reviewable on localhost — a Lavish/HTML artifact, npx serve output, a vite/storybook/dev server, coverage or build reports, docs — or the user says "show me", "open it next to", or "in commando". Opens the URL as a tile in the Commando pane grid, anchored to the tmux pane you are running in.
+description: Show the user a web page beside your terminal pane in Commando, or debug one together over CDP. Use whenever you serve or publish anything reviewable on localhost — a Lavish/HTML artifact, npx serve output, a vite/storybook/dev server, coverage or build reports, docs — or the user says "show me", "open it next to", or "in commando"; also when you want to debug a web page WITH the user (watch network requests, breakpoints, traces) — open it as a chromium-engine tile and attach Chrome DevTools Protocol to the page they are looking at. Opens the URL as a tile in the Commando pane grid, anchored to the tmux pane you are running in.
 ---
 
 # Show a page in Commando
@@ -24,10 +24,11 @@ All three must hold (otherwise just share the URL in your reply):
 ```bash
 url="http://127.0.0.1:41300/my-page"   # must not contain double quotes
 placement="auto"                        # right | below | auto
+engine="webkit"                         # webkit (show) | chromium (debug over CDP)
 curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes" \
   -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")" \
   -H 'Content-Type: application/json' \
-  --data "{\"url\":\"${url}\",\"anchor\":\"${TMUX_PANE}\",\"placement\":\"${placement}\"}"
+  --data "{\"url\":\"${url}\",\"anchor\":\"${TMUX_PANE}\",\"placement\":\"${placement}\",\"engine\":\"${engine}\"}"
 ```
 
 (If a checkout of the commando repo is handy, `scripts/commando-open <url>
@@ -70,6 +71,9 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 - 503 from `/cdp`: no Chromium-family browser is installed for the engine —
   tell the user (installing Google Chrome, or setting COMMANDO_CHROMIUM_PATH,
   fixes it) and fall back to a webkit tile.
+- A tile's engine is fixed at open. To switch, DELETE the tile and reopen
+  the same URL with the other engine (this is cheap — do it when a showing
+  session turns into a debugging session).
 
 ## Close a tile
 
