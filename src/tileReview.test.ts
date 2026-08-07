@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MAX_FEEDBACK_NOTES_PER_POST } from '../shared/protocol'
 import {
+  chunkNotes,
   createInspectThrottle,
   MAX_QUEUED_PILLS,
   queueNote,
@@ -54,6 +56,42 @@ describe('review note queue', () => {
     let list = queueNote([], inspect, 'a', 1)
     list = queueNote(list, inspect, 'b', 2)
     expect(removeSentNotes(list, list)).toEqual([])
+  })
+})
+
+describe('chunkNotes', () => {
+  it('returns an empty array for an empty queue', () => {
+    expect(chunkNotes([])).toEqual([])
+  })
+
+  it('keeps a queue at or under the chunk size in a single chunk', () => {
+    let list = queueNote([], inspect, 'a', 1)
+    list = queueNote(list, inspect, 'b', 2)
+    expect(chunkNotes(list)).toEqual([list])
+  })
+
+  it('splits into groups no larger than MAX_FEEDBACK_NOTES_PER_POST by default', () => {
+    let list: ReturnType<typeof queueNote> = []
+    for (let index = 0; index < MAX_FEEDBACK_NOTES_PER_POST * 2 + 3; index += 1) {
+      list = queueNote(list, inspect, `note ${index}`, index)
+    }
+    const chunks = chunkNotes(list)
+    expect(chunks).toHaveLength(3)
+    expect(chunks[0]).toHaveLength(MAX_FEEDBACK_NOTES_PER_POST)
+    expect(chunks[1]).toHaveLength(MAX_FEEDBACK_NOTES_PER_POST)
+    expect(chunks[2]).toHaveLength(3)
+    // Order is preserved across chunk boundaries.
+    expect(chunks.flat()).toEqual(list)
+  })
+
+  it('honors a custom chunk size', () => {
+    let list = queueNote([], inspect, 'a', 1)
+    list = queueNote(list, inspect, 'b', 2)
+    list = queueNote(list, inspect, 'c', 3)
+    expect(chunkNotes(list, 2)).toEqual([
+      [list[0], list[1]],
+      [list[2]],
+    ])
   })
 })
 

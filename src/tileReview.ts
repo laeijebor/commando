@@ -1,4 +1,4 @@
-import type { WebPaneFeedbackNote } from '../shared/protocol'
+import { MAX_FEEDBACK_NOTES_PER_POST, type WebPaneFeedbackNote } from '../shared/protocol'
 import type { RedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectSuccess } from '../shared/tile-inspect'
 
@@ -81,6 +81,23 @@ export function removeSentNotes(
 ): QueuedReviewNote[] {
   const sentIds = new Set(sent.map((note) => note.id))
   return list.filter((note) => !sentIds.has(note.id))
+}
+
+/**
+ * Splits a queue into POST-sized chunks so a send never exceeds the server's
+ * MAX_FEEDBACK_NOTES_PER_POST. Chunk order is preserved so a caller sending
+ * them in sequence and removing each chunk on success leaves only the
+ * genuinely unsent notes queued after a failure partway through.
+ */
+export function chunkNotes(
+  list: QueuedReviewNote[],
+  size: number = MAX_FEEDBACK_NOTES_PER_POST,
+): QueuedReviewNote[][] {
+  const chunks: QueuedReviewNote[][] = []
+  for (let index = 0; index < list.length; index += size) {
+    chunks.push(list.slice(index, index + size))
+  }
+  return chunks
 }
 
 export function toFeedbackNotes(

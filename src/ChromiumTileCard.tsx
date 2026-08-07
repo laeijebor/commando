@@ -9,6 +9,7 @@ import {
   tileWheelMessage,
 } from './chromiumTileInput'
 import {
+  chunkNotes,
   createInspectThrottle,
   queueNote,
   queuePageResponse,
@@ -323,12 +324,17 @@ export function ChromiumTileCard({
   const clearSendError = () =>
     setSendState((current) => (typeof current === 'object' ? 'idle' : current))
 
+  // Sends in POST-sized chunks so a queue past the server's per-request cap
+  // doesn't fail outright. Each chunk is removed from the queue only once its
+  // own send succeeds, so a failure partway through leaves exactly the
+  // unsent notes behind — no duplicates on retry, no silently lost notes.
   const submitQueued = async () => {
-    const batch = queued
     setSendState('sending')
     try {
-      await onSubmitFeedback(toFeedbackNotes(batch, webPane.url, Date.now()))
-      setQueued((current) => removeSentNotes(current, batch))
+      for (const chunk of chunkNotes(queued)) {
+        await onSubmitFeedback(toFeedbackNotes(chunk, webPane.url, Date.now()))
+        setQueued((current) => removeSentNotes(current, chunk))
+      }
       setSendState('idle')
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })
