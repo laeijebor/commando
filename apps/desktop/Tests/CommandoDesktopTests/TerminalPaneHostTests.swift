@@ -687,6 +687,43 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testTerminalSendsOptionBackspaceAsWordDelete() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "option-backspace"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        let optionBackspace = try XCTUnwrap(keyEvent(
+            key: "\u{7f}",
+            modifiers: .option,
+            keyCode: 51
+        ))
+
+        window.sendEvent(optionBackspace)
+
+        XCTAssertEqual(inputs, [Data([0x1b]), Data([0x7f])])
+        inputs.removeAll()
+        let kittyMode = Array("\u{1b}[>31u".utf8)
+        surface.view.feed(byteArray: kittyMode[...])
+        window.sendEvent(optionBackspace)
+        XCTAssertEqual(inputs, [Data("\u{1b}[127;3u".utf8)])
+        _ = window.makeFirstResponder(nil)
+        surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testTerminalSendsRawControlVToThePaneInKittyKeyboardMode() throws {
         var inputs: [Data] = []
         let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))

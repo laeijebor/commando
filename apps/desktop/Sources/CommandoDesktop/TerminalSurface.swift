@@ -380,6 +380,17 @@ final class HostedTerminalView: TerminalView {
         return true
     }
 
+    func handleOptionBackspace(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers == .option, event.keyCode == 51 else { return false }
+
+        let previousOptionAsMetaKey = optionAsMetaKey
+        optionAsMetaKey = true
+        defer { optionAsMetaKey = previousOptionAsMetaKey }
+        keyDown(with: event)
+        return true
+    }
+
     static func optionArrowSequence(for event: NSEvent) -> Data? {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         guard modifiers == .option else { return nil }

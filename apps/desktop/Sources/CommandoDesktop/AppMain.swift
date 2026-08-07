@@ -29,7 +29,9 @@ final class DesktopWindow: NSWindow {
                 return
             }
             if let terminalView = firstResponder as? HostedTerminalView,
-               terminalView.handleOptionArrow(event) || terminalView.handleControlV(event) {
+               terminalView.handleOptionBackspace(event) ||
+               terminalView.handleOptionArrow(event) ||
+               terminalView.handleControlV(event) {
                 return
             }
         }
