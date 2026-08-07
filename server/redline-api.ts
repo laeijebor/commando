@@ -141,7 +141,12 @@ export class RedlineApi {
     throw new HttpError(404, 'Not found')
   }
 
-  /** Serves a file strictly under a root directory (for mermaid's chunk tree). */
+  /**
+   * Serves a file strictly under a root directory (for mermaid's chunk tree).
+   * Unlike redline-artifacts.ts, this does not realpath-check for symlink
+   * escapes: the tree is npm-managed package content, not user-supplied, so
+   * there's nothing here an attacker could plant a symlink into.
+   */
   private serveTreeFile(response: ServerResponse, root: string, requestPath: string): void {
     let decoded: string
     try {
@@ -153,7 +158,10 @@ export class RedlineApi {
     if (normalized.includes('\0') || normalized === '..' || normalized.startsWith(`..${sep}`) || normalized.startsWith(sep)) {
       throw new HttpError(404, 'Not found')
     }
-    this.serveFile(response, join(root, normalized))
+    // The mermaid dist tree is 1000+ files across chunk imports — skip the
+    // daemon-side memory cache (browser caching via Cache-Control still
+    // applies) so it can't grow unbounded or accumulate case-variant dupes.
+    this.serveFile(response, join(root, normalized), { cached: false })
   }
 
   private serveFile(
