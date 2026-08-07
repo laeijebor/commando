@@ -21,6 +21,7 @@ import {
 
 const VIEWPORT_THROTTLE_MS = 200
 const MOUSEMOVE_THROTTLE_MS = 16
+const FIRST_FRAME_TIMEOUT_MS = 12_000
 const INSPECT_HINT_MS = 2_000
 const REVIEW_CARD_WIDTH = 240
 const REVIEW_CARD_HEIGHT = 132
@@ -137,6 +138,15 @@ export function ChromiumTileCard({
     let socket: WebSocket | null = null
     let viewportTimer: number | undefined
     let observer: ResizeObserver | undefined
+    let stallTimer: number | undefined
+    let stalled = false
+
+    const disarmStallWatchdog = () => {
+      if (stallTimer !== undefined) {
+        window.clearTimeout(stallTimer)
+        stallTimer = undefined
+      }
+    }
 
     const sendViewport = () => {
       const container = containerRef.current
@@ -154,12 +164,24 @@ export function ChromiumTileCard({
     const connect = () => {
       if (disposed || document.hidden) return
       setState('connecting')
+      stalled = false
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const tokenQuery = wsToken ? `?token=${encodeURIComponent(wsToken)}` : ''
       socket = new WebSocket(
         `${wsProtocol}//${window.location.host}/ws/web-tiles/${webPane.id}${tokenQuery}`,
       )
       socketRef.current = socket
+      // A stream that never yields a first frame must become a retryable
+      // error, not an eternal "Starting…" spinner.
+      disarmStallWatchdog()
+      stallTimer = window.setTimeout(() => {
+        stallTimer = undefined
+        if (disposed) return
+        stalled = true
+        setState('error')
+        setDetail('No frames from the chromium stream. Retry to reconnect.')
+        socket?.close()
+      }, FIRST_FRAME_TIMEOUT_MS)
       socket.addEventListener('open', () => {
         sendViewport()
       })
@@ -172,6 +194,7 @@ export function ChromiumTileCard({
           return
         }
         if (message.type === 'frame' && typeof message.data === 'string') {
+          disarmStallWatchdog()
           drawFrame(message.data)
           return
         }
@@ -192,13 +215,16 @@ export function ChromiumTileCard({
           return
         }
         if (message.type === 'engine_error') {
+          disarmStallWatchdog()
           setState('error')
           setDetail(message.message ?? 'Chromium engine failed')
         }
       })
       socket.addEventListener('close', (event) => {
         if (socketRef.current === socket) socketRef.current = null
+        disarmStallWatchdog()
         if (disposed || document.hidden) return
+        if (stalled) return // the watchdog already set the error state
         if (event.code === 4503) return // engine_error already set the state
         setState('closed')
       })
@@ -244,6 +270,7 @@ export function ChromiumTileCard({
 
     const onVisibility = () => {
       if (document.hidden) {
+        disarmStallWatchdog()
         socket?.close()
         socket = null
       } else if (!socketRef.current) {
@@ -269,6 +296,7 @@ export function ChromiumTileCard({
       document.removeEventListener('visibilitychange', onVisibility)
       observer?.disconnect()
       if (viewportTimer) window.clearTimeout(viewportTimer)
+      disarmStallWatchdog()
       socket?.close()
       if (socketRef.current === socket) socketRef.current = null
     }
