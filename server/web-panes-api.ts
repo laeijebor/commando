@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_QUESTION } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
@@ -123,6 +124,32 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
     ) {
       throw new HttpError(400, 'Note is malformed')
     }
+    let response: WebPaneFeedbackNote['response']
+    if (note.response !== undefined) {
+      const raw = note.response as Record<string, unknown> | null
+      if (typeof raw !== 'object' || raw === null) throw new HttpError(400, 'Note response is malformed')
+      const question = raw.question
+      const answer = raw.answer
+      if (
+        typeof question !== 'string' || question.length === 0 || question.length > MAX_RESPONSE_QUESTION ||
+        typeof answer !== 'string' || answer.length === 0 || answer.length > MAX_RESPONSE_ANSWER
+      ) {
+        throw new HttpError(400, 'Note response is malformed')
+      }
+      response = { question, answer }
+      if (raw.data !== undefined) {
+        let json: string | undefined
+        try {
+          json = JSON.stringify(raw.data)
+        } catch {
+          throw new HttpError(400, 'Note response is malformed')
+        }
+        if (json === undefined || json.length > MAX_RESPONSE_DATA_JSON) {
+          throw new HttpError(400, 'Note response is malformed')
+        }
+        response.data = JSON.parse(json) as unknown
+      }
+    }
     return {
       selector: note.selector,
       tag: note.tag,
@@ -131,6 +158,7 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
       comment: note.comment,
       pageUrl: note.pageUrl,
       capturedAt: note.capturedAt,
+      ...(response !== undefined ? { response } : {}),
     }
   })
 }

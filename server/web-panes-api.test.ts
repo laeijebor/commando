@@ -375,4 +375,36 @@ describe('feedback routes', () => {
     }
     expect((await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote()] }, ownerAuth)).status).toBe(429)
   })
+
+  it('accepts a note carrying a structured response', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const response = { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } }
+    const posted = await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [{ ...feedbackNote(), response }] }, ownerAuth)
+    expect(posted.status).toBe(200)
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    expect(drained.status).toBe(200)
+    const body = await drained.json() as { notes: Array<{ response?: unknown }> }
+    expect(body.notes).toHaveLength(1)
+    expect(body.notes[0]?.response).toEqual(response)
+  })
+
+  it('rejects a note whose response is malformed', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    expect((await post(
+      baseUrl, `/api/web-panes/${id}/feedback`,
+      { notes: [{ ...feedbackNote(), response: { question: '', answer: 'Pro' } }] }, ownerAuth,
+    )).status).toBe(400)
+    expect((await post(
+      baseUrl, `/api/web-panes/${id}/feedback`,
+      { notes: [{ ...feedbackNote(), response: { question: 'q', answer: 'a', data: 'x'.repeat(5000) } }] }, ownerAuth,
+    )).status).toBe(400)
+    expect((await post(
+      baseUrl, `/api/web-panes/${id}/feedback`,
+      { notes: [{ ...feedbackNote(), response: 'not an object' }] }, ownerAuth,
+    )).status).toBe(400)
+  })
 })

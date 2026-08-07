@@ -277,6 +277,13 @@ export type WebPane = {
 export const MAX_WEB_PANES = 16
 export const MAX_WEB_PANE_URL_LENGTH = 2_048
 
+/** Structured answer a redline component queued from inside the page. */
+export type WebPaneFeedbackResponse = {
+  question: string
+  answer: string
+  data?: unknown
+}
+
 export type WebPaneFeedbackNote = {
   selector: string
   tag: string
@@ -285,6 +292,8 @@ export type WebPaneFeedbackNote = {
   comment: string
   pageUrl: string
   capturedAt: number
+  /** Present when the note came from an in-page component, not an annotation. */
+  response?: WebPaneFeedbackResponse
 }
 
 /** Ephemeral review-feedback state for a tile — broadcast, never persisted. */
