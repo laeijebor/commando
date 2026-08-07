@@ -235,6 +235,24 @@ describe('redline-question', () => {
     expect(calls[0].answer).toContain('tls: yes')
     expect(calls[0].data).toMatchObject({ port: '4310', tls: true })
   })
+
+  it('renders in document order: prompt first, author children in the middle, button last', () => {
+    // Pins the contract that connectedCallback's DOMContentLoaded deferral
+    // (for the <head>-script case where children parse after the opening
+    // tag) is meant to produce. The innerHTML path here has the full subtree
+    // already parsed before connectedCallback runs, so this passes today —
+    // it documents the ordering the deferral preserves for the streaming case.
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-question key="opts" prompt="Configure it">
+        <label>Port <input name="port" value="4310"></label>
+      </redline-question>`
+    const host = document.querySelector('redline-question') as HTMLElement
+    const children = [...host.children]
+    expect(children[0].className).toBe('redline-prompt')
+    expect(children[children.length - 1].tagName).toBe('BUTTON')
+    expect(children.slice(1, -1).some((el) => el.tagName === 'LABEL')).toBe(true)
+  })
 })
 
 describe('binding-absent fallback', () => {

@@ -156,7 +156,7 @@
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) {
   --_ac: var(--redline-accent, #7c6cf6);
   --_ac2: var(--redline-accent2, #5aa9f7);
-  display: block; position: relative; isolation: isolate;
+  display: block; position: relative; isolation: isolate; overflow: hidden;
   margin: 1.25rem 0; padding: 1.15rem 1.25rem 1.25rem;
   border-radius: 16px;
   background: color-mix(in oklab, currentColor 5%, transparent);
@@ -215,6 +215,24 @@
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment::placeholder) {
   color: color-mix(in oklab, currentColor 45%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input:not([type="checkbox"]):not([type="radio"]), select) {
+  display: inline-block; box-sizing: border-box;
+  padding: .35rem .6rem; border-radius: 8px;
+  font: inherit; color: inherit; outline: none;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input:not([type="checkbox"]):not([type="radio"]):focus, select:focus) {
+  border-color: var(--_ac);
+  box-shadow: 0 0 18px color-mix(in oklab, var(--_ac) 30%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input[type="checkbox"]:not(.redline-options *), input[type="radio"]:not(.redline-options *)) {
+  accent-color: var(--_ac);
+}
+:where(redline-question) :where(label) {
+  display: inline-flex; align-items: center; gap: .4rem; margin: 0 .9rem .5rem 0;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue) {
   margin-top: .85rem; padding: .5rem 1.15rem; cursor: pointer;
@@ -296,7 +314,20 @@
     connectedCallback() {
       if (this.dataset.redlineReady) return
       this.dataset.redlineReady = '1'
-      this.render()
+      // Custom-element upgrade fires connectedCallback at the OPENING tag when
+      // the SDK loads synchronously (e.g. from <head>) — the parser hasn't
+      // reached this element's children yet. Rendering now would build our
+      // markup before the author's content exists (RedlineQuestion prepends
+      // the heading and appends the button around content that isn't there
+      // yet). Defer to DOMContentLoaded so children are parsed first; once
+      // the document is no longer 'loading' (or in tests, where innerHTML
+      // parses the whole subtree upfront) children are already present and
+      // render() runs immediately as before.
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+      } else {
+        this.render()
+      }
     }
     key() {
       return this.getAttribute('key') || undefined
