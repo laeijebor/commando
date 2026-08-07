@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CommandoSnapshot, ServerMessage, TmuxPane } from '../shared/protocol'
+import type { CommandoSnapshot, LayoutSpec, ServerMessage, TmuxPane } from '../shared/protocol'
 import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
@@ -426,6 +426,143 @@ describe('web pane tiles', () => {
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...pending, status: 'open' as const }] }))
     expect(await screen.findByTitle('Web pane: reactnative.dev')).toBeInTheDocument()
   })
+
+  it('maximizes a web tile to fill the canvas and restores the grid', async () => {
+    // Arrange: workspace with terminal panes %1, %2 and one web tile.
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    // Act: click the tile's 'Maximize web pane' button.
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+
+    // Assert: the canvas element has the 'maximized' class, the tile card
+    // is rendered, and no terminal pane card is rendered.
+    expect(document.querySelector('.workspace-canvas')).toHaveClass('maximized')
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBeInTheDocument()
+    expect(screen.queryByTestId('renderer-%12')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('renderer-%13')).not.toBeInTheDocument()
+
+    // Act: click 'Restore web pane'.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+
+    // Assert: the 'maximized' class is gone and both terminal panes render.
+    expect(document.querySelector('.workspace-canvas')).not.toHaveClass('maximized')
+    expect(screen.getByTestId('renderer-%12')).toBeInTheDocument()
+    expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
+  })
+
+  it('never leaks the web tile id into daemon protocol messages while maximized', async () => {
+    // Arrange: workspace with terminal panes %12, %13 and one web tile.
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+    appMocks.send.mockClear()
+
+    const assertNoWebIdLeaked = () => {
+      for (const call of appMocks.send.mock.calls) {
+        const message = call[0] as { type?: string; paneIds?: string[]; paneId?: string }
+        if (message.type === 'subscribe') {
+          expect(message.paneIds?.some((id) => id.startsWith('w-'))).toBe(false)
+        }
+        if (message.type === 'release_resize' || message.type === 'resize_pane') {
+          expect(message.paneId?.startsWith('w-')).toBe(false)
+        }
+      }
+    }
+
+    // Act: maximize the web tile.
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    assertNoWebIdLeaked()
+
+    // Act: restore the grid.
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    assertNoWebIdLeaked()
+  })
+})
+
+function stubClientRect(element: HTMLElement, rect: { left: number; top: number; width: number; height: number }) {
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+    ...rect,
+    right: rect.left + rect.width,
+    bottom: rect.top + rect.height,
+    x: rect.left,
+    y: rect.top,
+    toJSON: () => rect,
+  } as DOMRect)
+}
+
+function stubDataTransfer() {
+  return { effectAllowed: '', dropEffect: '', setData: () => {} }
+}
+
+function leafPaneOrder(spec: LayoutSpec): string[] {
+  return spec.kind === 'pane' ? [spec.paneId] : spec.children.flatMap(leafPaneOrder)
+}
+
+describe('pane grid drag and drop', () => {
+  it('re-anchors a web tile dropped on the bottom half of a terminal pane', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/web-panes') && url.includes('/move')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+    })
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    const tileHeader = screen.getByTitle('Drag onto a terminal pane to move this tile')
+    fireEvent.dragStart(tileHeader, { dataTransfer: stubDataTransfer() })
+
+    const targetCard = document.querySelector('[data-pane-id="%13"]') as HTMLElement
+    stubClientRect(targetCard, { left: 0, top: 0, width: 400, height: 300 })
+
+    fireEvent.dragOver(targetCard, { clientX: 100, clientY: 280, dataTransfer: stubDataTransfer() })
+
+    const preview = targetCard.querySelector('.pane-drop-preview.is-below')
+    expect(preview).not.toBeNull()
+    expect(preview).toHaveAttribute('data-native-terminal-occluder', '')
+
+    fireEvent.drop(targetCard, { clientX: 100, clientY: 280, dataTransfer: stubDataTransfer() })
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/web-panes/w-abcd1234/move',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ anchor: '%13', placement: 'below' }),
+        }),
+      )
+    })
+    expect(targetCard.querySelector('.pane-drop-preview')).toBeNull()
+  })
+
+  it('keeps terminal-pane drops on the swap path', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    await renderAppWithSnapshot()
+
+    const sourceHeader = document.querySelector('[data-pane-id="%12"] .pane-head') as HTMLElement
+    fireEvent.dragStart(sourceHeader, { dataTransfer: stubDataTransfer() })
+
+    const targetCard = document.querySelector('[data-pane-id="%13"]') as HTMLElement
+    fireEvent.dragOver(targetCard, { dataTransfer: stubDataTransfer() })
+    fireEvent.drop(targetCard, { dataTransfer: stubDataTransfer() })
+
+    await waitFor(() => {
+      expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'set_window_layout',
+        windowId: '@2',
+      }))
+    })
+    const layoutCall = appMocks.send.mock.calls.find((call) => (call[0] as { type?: string })?.type === 'set_window_layout')
+    const spec = (layoutCall?.[0] as { spec: LayoutSpec }).spec
+    expect(leafPaneOrder(spec)).toEqual(['%13', '%12'])
+
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/web-panes'))).toBe(false)
+  })
 })
 
 describe('webPaneUrlFromQuery', () => {
@@ -669,7 +806,9 @@ const paneProps = {
   onDragStart: vi.fn(),
   onDragEnd: vi.fn(),
   onDragOver: vi.fn(),
+  onDragLeave: vi.fn(),
   onDrop: vi.fn(),
+  dropPreview: null,
   onInput: vi.fn(),
   onInputBytes: vi.fn(),
   onKey: vi.fn(),

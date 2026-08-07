@@ -411,10 +411,14 @@ curl :4310/api/web-panes/w-4be1c2/cdp -H <span class="g">"Authorization: Bearer 
     </tbody>
   </table></div>
 
-  <h2 id="decide">Decisions — locked in</h2>
+  <h2 id="decide">Decisions — locked in · SHIPPED</h2>
   <div class="pg-callout good">
-    <strong>All four decisions confirmed (6 Aug 2026).</strong> Build underway on branch
-    <code>chromium-tiles</code> (worktree <code>../commando-chromium-tiles</code>).
+    <strong>Built, verified, and merged to main (6 Aug 2026, merge <code>3677990</code>).</strong>
+    Gates: typecheck · 654 vitest · 118 Swift · isolated-stack e2e drive (12/12 checks: CDP
+    discovery, agent eval + Network events, screencast frames, relay typing read back over agent
+    CDP, watchdog re-pend, owner-only confirm, same-origin pass) · visual fidelity check in a real
+    Chrome client. Your live daemon hot-reloaded it — <code>commando open &lt;url&gt; --engine
+    chromium</code> works now, and the ⌘K palette has "Open as Chromium (CDP) tile".
   </div>
   <div class="pg-table-scroll"><table class="pg-table">
     <thead><tr><th>Decision</th><th>Choice</th></tr></thead>

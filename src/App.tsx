@@ -90,7 +90,8 @@ import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
-import { insertWebPaneLeaves } from './webPaneLayout'
+import { dropPlacementFor, type DraggedItem } from './paneDrag'
+import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
@@ -288,7 +289,9 @@ type TerminalPaneProps = {
   onDragStart: (event: DragEvent<HTMLElement>) => void
   onDragEnd: () => void
   onDragOver: (event: DragEvent<HTMLElement>) => void
+  onDragLeave: () => void
   onDrop: (event: DragEvent<HTMLElement>) => void
+  dropPreview: 'right' | 'below' | null
   onInput: (data: string) => void
   onInputBytes: (data: string) => void
   onKey: (key: SpecialKey) => void
@@ -324,7 +327,9 @@ export function TerminalPaneCard({
   onDragStart,
   onDragEnd,
   onDragOver,
+  onDragLeave,
   onDrop,
+  dropPreview,
   onInput,
   onInputBytes,
   onKey,
@@ -421,6 +426,7 @@ export function TerminalPaneCard({
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}`}
       onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
       onDrop={onDrop}
       onContextMenu={(event) => {
         if (!event.altKey) return
@@ -514,6 +520,13 @@ export function TerminalPaneCard({
           </button>
         </span>
       </header>
+      {dropPreview && (
+        <div
+          className={`pane-drop-preview is-${dropPreview}`}
+          data-native-terminal-occluder=""
+          aria-hidden="true"
+        />
+      )}
       <TerminalPaneRenderer
         paneId={pane.id}
         cols={pane.width}
@@ -817,7 +830,8 @@ export function App() {
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(true)
   const [webLayoutError, setWebLayoutError] = useState('')
-  const [draggedPane, setDraggedPane] = useState<{ groupId: string; paneId: string } | null>(null)
+  const [draggedPane, setDraggedPane] = useState<DraggedItem | null>(null)
+  const [dropPreview, setDropPreview] = useState<{ paneId: string; placement: 'right' | 'below' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
@@ -1098,8 +1112,10 @@ export function App() {
       broker.forgetToken()
     }
   }, [connection.phase, token])
+  const maximizedTmuxPaneId =
+    maximizedPaneId && !isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
   const activeResizePaneId = resizeAuthorityActive
-    ? maximizedPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
+    ? maximizedTmuxPaneId ?? (webLayoutAuthoritative ? null : focusedPaneId)
     : null
 
   useEffect(() => {
@@ -1212,7 +1228,9 @@ export function App() {
     ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
     : []
   const subscribedPaneIds = area === 'workspace'
-    ? maximizedPaneId ? [maximizedPaneId] : allVisiblePaneIds
+    ? maximizedPaneId
+      ? isWebPaneLeafId(maximizedPaneId) ? allVisiblePaneIds : [maximizedPaneId]
+      : allVisiblePaneIds
     : []
   const statusOnlyPaneIds = area === 'workspace' && selectedSessionId
     ? (snapshot?.panes ?? [])
@@ -1253,7 +1271,11 @@ export function App() {
   }, [selectedSessionId])
 
   useEffect(() => {
-    if (maximizedPaneId && !snapshot?.panes.some((pane) => pane.id === maximizedPaneId)) {
+    if (
+      maximizedPaneId &&
+      !snapshot?.panes.some((pane) => pane.id === maximizedPaneId) &&
+      !webPanes.some((webPane) => webPane.id === maximizedPaneId)
+    ) {
       setMaximizedPaneId(null)
     }
     if (focusedPaneId && !snapshot?.panes.some((pane) => pane.id === focusedPaneId)) {
@@ -1275,7 +1297,7 @@ export function App() {
       )
       return next.size === current.size ? current : next
     })
-  }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot])
+  }, [focusedPaneId, maximizedPaneId, paneMenu, renamingPaneId, snapshot, webPanes])
 
   const updatePaneRendererControl = (
     paneId: string,
@@ -1417,10 +1439,27 @@ export function App() {
     if (neighbor) swapWindowPanes(windowId, paneId, neighbor)
   }
 
-  const dropPane = (windowId: string, groupId: string, targetPaneId: string) => {
-    if (!draggedPane || draggedPane.groupId !== groupId || draggedPane.paneId === targetPaneId) return
-    swapWindowPanes(windowId, draggedPane.paneId, targetPaneId)
+  const dropPane = (
+    windowId: string,
+    groupId: string,
+    targetPaneId: string,
+    event: DragEvent<HTMLElement>,
+  ) => {
+    const dragged = draggedPane
     setDraggedPane(null)
+    setDropPreview(null)
+    if (!dragged || dragged.groupId !== groupId) return
+    if (dragged.kind === 'terminal') {
+      if (dragged.paneId === targetPaneId) return
+      swapWindowPanes(windowId, dragged.paneId, targetPaneId)
+      return
+    }
+    const placement = dropPlacementFor(
+      event.currentTarget.getBoundingClientRect(),
+      event.clientX,
+      event.clientY,
+    )
+    void moveWebPane(dragged.webPaneId, targetPaneId, placement)
   }
 
   const sendPaneInput = (paneId: string, data: string) => {
@@ -1647,6 +1686,28 @@ export function App() {
       await webPanesApi.close(webPaneId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    }
+  }
+
+  const moveWebPane = async (
+    webPaneId: string,
+    anchor: string,
+    placement: 'right' | 'below',
+  ) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.move(webPaneId, anchor, placement)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to move web pane')
+    }
+  }
+
+  const navigateWebPane = async (webPaneId: string, url: string) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.navigate(webPaneId, url)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to change web pane URL')
     }
   }
 
@@ -2208,7 +2269,9 @@ export function App() {
               const visibleGroupPanes = maximizedPaneId
                 ? groupPanes.filter((pane) => pane.id === maximizedPaneId)
                 : groupPanes
-              if (maximizedPaneId && visibleGroupPanes.length === 0) return null
+              const maximizedWebPaneId =
+                maximizedPaneId && isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
+              if (maximizedPaneId && !maximizedWebPaneId && visibleGroupPanes.length === 0) return null
 
               const window = windowMap.get(group.windowId)
               const windowTree = window ? parseWindowLayout(window.layout) : null
@@ -2219,11 +2282,16 @@ export function App() {
               // path re-derives its tree from tmux's layout string, so these
               // synthetic leaves can never reach a LayoutSpec.
               const groupWebPanes = maximizedPaneId
-                ? []
+                ? webPanes.filter((webPane) =>
+                    webPane.id === maximizedWebPaneId && webPane.windowId === group.windowId)
                 : webPanes.filter((webPane) => webPane.windowId === group.windowId)
-              const displayTree = visibleTree && groupWebPanes.length > 0
-                ? insertWebPaneLeaves(visibleTree, groupWebPanes)
-                : visibleTree
+              const maximizedWebPane = groupWebPanes.find((webPane) => webPane.id === maximizedWebPaneId) ?? null
+              if (maximizedWebPaneId && !maximizedWebPane) return null
+              const displayTree: WindowLayoutNode | null = maximizedWebPane
+                ? { kind: 'pane', paneId: maximizedWebPane.id, cols: 80, rows: 24, left: 0, top: 0 }
+                : visibleTree && groupWebPanes.length > 0
+                  ? insertWebPaneLeaves(visibleTree, groupWebPanes)
+                  : visibleTree
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -2253,7 +2321,7 @@ export function App() {
                       ))}
                     </div>
                   </header>
-                  {displayTree && visibleGroupPanes.length ? (
+                  {displayTree && (visibleGroupPanes.length || maximizedWebPane) ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
                       layoutKey={webLayoutAuthoritative || activeResizePaneId !== null
@@ -2306,22 +2374,38 @@ export function App() {
                               setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
                             }}
                             onDragStart={(event) => {
-                              setDraggedPane({ groupId: group.id, paneId: pane.id })
+                              setDraggedPane({ kind: 'terminal', groupId: group.id, paneId: pane.id })
                               event.dataTransfer.effectAllowed = 'move'
                               event.dataTransfer.setData('text/plain', pane.id)
                             }}
-                            onDragEnd={() => setDraggedPane(null)}
+                            onDragEnd={() => {
+                              setDraggedPane(null)
+                              setDropPreview(null)
+                            }}
                             onDragOver={(event) => {
-                              if (draggedPane?.groupId === group.id) {
-                                event.preventDefault()
-                                event.dataTransfer.dropEffect = 'move'
-                              }
+                              if (draggedPane?.groupId !== group.id) return
+                              event.preventDefault()
+                              event.dataTransfer.dropEffect = 'move'
+                              if (draggedPane.kind !== 'web') return
+                              const placement = dropPlacementFor(
+                                event.currentTarget.getBoundingClientRect(),
+                                event.clientX,
+                                event.clientY,
+                              )
+                              setDropPreview((current) =>
+                                current?.paneId === pane.id && current.placement === placement
+                                  ? current
+                                  : { paneId: pane.id, placement })
+                            }}
+                            onDragLeave={() => {
+                              setDropPreview((current) => (current?.paneId === pane.id ? null : current))
                             }}
                             onDrop={(event) => {
                               event.preventDefault()
                               clearLayoutTimers()
-                              dropPane(group.windowId, group.id, pane.id)
+                              dropPane(group.windowId, group.id, pane.id, event)
                             }}
+                            dropPreview={dropPreview?.paneId === pane.id ? dropPreview.placement : null}
                             onInput={(data) => sendPaneInput(pane.id, data)}
                             onInputBytes={(data) => sendPaneInputBytes(pane.id, data)}
                             onKey={(key) => sendPaneKey(pane.id, key)}
@@ -2358,6 +2442,21 @@ export function App() {
                           }
                           feedback={webPaneFeedback[webPane.id]}
                           onSubmitFeedback={(notes) => webPanesApi.submitFeedback(webPane.id, notes)}
+                          onDragStart={(event) => {
+                            setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
+                            event.dataTransfer.effectAllowed = 'move'
+                            event.dataTransfer.setData('text/plain', webPane.id)
+                          }}
+                          onDragEnd={() => {
+                            setDraggedPane(null)
+                            setDropPreview(null)
+                          }}
+                          onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+                          maximized={maximizedPaneId === webPane.id}
+                          onMaximize={() => {
+                            clearLayoutTimers()
+                            setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+                          }}
                         />,
                       ] as const)))}
                     />

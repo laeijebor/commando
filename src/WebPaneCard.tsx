@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, Globe, MessageSquarePlus, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
+import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneFeedbackInfo, WebPaneFeedbackNote } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
@@ -56,6 +56,11 @@ export function WebPaneCard({
   onOpenDevtools,
   feedback,
   onSubmitFeedback,
+  onDragStart,
+  onDragEnd,
+  onNavigate,
+  maximized,
+  onMaximize,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -67,9 +72,15 @@ export function WebPaneCard({
   /** Review-queue state broadcast by the daemon (chromium only). */
   feedback?: WebPaneFeedbackInfo
   onSubmitFeedback?: (notes: WebPaneFeedbackNote[]) => Promise<void>
+  onDragStart?: (event: DragEvent<HTMLElement>) => void
+  onDragEnd?: () => void
+  onNavigate?: (url: string) => void
+  maximized?: boolean
+  onMaximize?: () => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [review, setReview] = useState(false)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
   const [attributionVisible, setAttributionVisible] = useState(
     () => webPane.openedBy === 'agent' && Date.now() - webPane.createdAt < ATTRIBUTION_VISIBLE_MS,
@@ -120,12 +131,61 @@ export function WebPaneCard({
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <header className="web-pane-head">
+      <header
+        className="web-pane-head"
+        draggable={onDragStart ? 'true' : 'false'}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        title={onDragStart ? 'Drag onto a terminal pane to move this tile' : undefined}
+      >
         <Globe className="web-pane-glyph" aria-hidden="true" />
-        <span className="web-pane-url" title={webPane.url}>
-          <span className="web-pane-host">{host}</span>
-          {path ? <span className="web-pane-path">{path}</span> : null}
-        </span>
+        {urlDraft !== null && onNavigate ? (
+          <form
+            className="web-pane-url-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const next = urlDraft.trim()
+              if (next && next !== webPane.url) onNavigate(next)
+              setUrlDraft(null)
+            }}
+          >
+            <input
+              value={urlDraft}
+              aria-label="Web pane URL"
+              autoFocus
+              onChange={(event) => setUrlDraft(event.target.value)}
+              onBlur={() => setUrlDraft(null)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setUrlDraft(null)
+                }
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  const next = urlDraft.trim()
+                  if (next && next !== webPane.url) onNavigate(next)
+                  setUrlDraft(null)
+                }
+              }}
+            />
+          </form>
+        ) : onNavigate ? (
+          <button
+            type="button"
+            className="web-pane-url is-editable"
+            title="Change URL"
+            aria-label="Change URL"
+            onClick={() => setUrlDraft(webPane.url)}
+          >
+            <span className="web-pane-host">{host}</span>
+            {path ? <span className="web-pane-path">{path}</span> : null}
+          </button>
+        ) : (
+          <span className="web-pane-url" title={webPane.url}>
+            <span className="web-pane-host">{host}</span>
+            {path ? <span className="web-pane-path">{path}</span> : null}
+          </span>
+        )}
         <span className={`web-pane-chip${webPane.openedBy === 'agent' ? ' is-agent' : ''}`}>
           {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
         </span>
@@ -151,6 +211,17 @@ export function WebPaneCard({
             aria-label="Open DevTools as a tile"
           >
             <Wrench aria-hidden="true" />
+          </button>
+        )}
+        {onMaximize && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={onMaximize}
+            title={maximized ? 'Restore web pane' : 'Maximize web pane'}
+            aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}
+          >
+            {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
           </button>
         )}
         {!pending && (

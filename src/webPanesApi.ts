@@ -11,6 +11,8 @@ export interface WebPanesApiClient {
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
+  move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
+  navigate(webPaneId: string, url: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -75,6 +77,18 @@ export function createWebPanesApi(
       await request(`/${encodeURIComponent(webPaneId)}/feedback`, {
         method: 'POST',
         body: JSON.stringify({ notes }),
+      })
+    },
+    move: async (webPaneId, anchor, placement) => {
+      await request(`/${encodeURIComponent(webPaneId)}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ anchor, placement }),
+      })
+    },
+    navigate: async (webPaneId, url) => {
+      await request(`/${encodeURIComponent(webPaneId)}/navigate`, {
+        method: 'POST',
+        body: JSON.stringify({ url }),
       })
     },
   }

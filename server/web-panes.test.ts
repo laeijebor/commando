@@ -307,4 +307,134 @@ describe('WebPaneService', () => {
     expect(restored.list()).toHaveLength(1)
     expect(restored.open({ ...anchor, url: 'https://ok.example/page' }).status).toBe('open')
   })
+
+  it('move re-anchors a tile with a new concrete placement and persists it', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    const moved = service.move(pane.id, {
+      anchorPaneId: '%40',
+      placement: 'below',
+      sessionId: '$1',
+      windowId: '@3',
+    })
+    expect(moved).toMatchObject({ id: pane.id, anchorPaneId: '%40', placement: 'below' })
+    expect(service.get(pane.id)).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+
+    await service.flush()
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as {
+      panes: Array<{ anchorPaneId: string; placement: string }>
+    }
+    expect(stored.panes[0]).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+  })
+
+  it('move rejects unknown tiles, bad anchor ids, and non-concrete placements', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const target = {
+      anchorPaneId: '%40',
+      placement: 'below' as const,
+      sessionId: '$1',
+      windowId: '@3',
+    }
+    expect(() => service.move('w-00000000', target)).toThrow(WebPaneError)
+    expect(() => service.move(pane.id, { ...target, anchorPaneId: 'nope' })).toThrow(/anchor/i)
+    expect(() => service.move(pane.id, { ...target, placement: 'auto' as never })).toThrow(/placement/i)
+  })
+
+  it('move rejects a target anchor in a different window', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    expect(() =>
+      service.move(pane.id, {
+        anchorPaneId: '%40',
+        placement: 'right',
+        sessionId: '$1',
+        windowId: '@9',
+      }),
+    ).toThrow(/window/i)
+  })
+
+  it('navigate swaps the url and keeps localhost tiles open', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other')
+    expect(navigated).toMatchObject({ url: 'http://127.0.0.1:4310/other', status: 'open' })
+
+    await service.flush()
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as { panes: Array<{ url: string }> }
+    expect(stored.panes[0].url).toBe('http://127.0.0.1:4310/other')
+  })
+
+  it('navigate to an unconfirmed external origin flips the tile to pending', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    expect(service.navigate(pane.id, 'https://reactnative.dev/docs')).toMatchObject({
+      url: 'https://reactnative.dev/docs',
+      status: 'pending',
+    })
+  })
+
+  it('navigate to an allowlisted external origin stays open', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pending = service.open({ ...anchor, url: 'https://reactnative.dev/docs' })
+    service.confirm(pending.id, true)
+    expect(service.navigate(pending.id, 'https://reactnative.dev/blog')).toMatchObject({
+      status: 'open',
+    })
+  })
+
+  it('navigate rejects invalid urls and unknown tiles', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    expect(() => service.navigate(pane.id, 'ftp://example.com/')).toThrow(WebPaneError)
+    expect(() => service.navigate('w-00000000', 'http://localhost:5173/')).toThrow(WebPaneError)
+  })
+
+  it('navigate with attribution updates openedBy and openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other', {
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+    expect(navigated).toMatchObject({ openedBy: 'agent', openerLabel: 'claude · gizmo' })
+  })
+
+  it('navigate without attribution preserves the existing openedBy and openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other')
+    expect(navigated).toMatchObject({ openedBy: 'user' })
+    expect(navigated.openerLabel).toBeUndefined()
+  })
+
+  it('navigate with an agent attribution lacking a label drops openerLabel', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      openedBy: 'user',
+      openerLabel: 'stale-label',
+    })
+
+    const navigated = service.navigate(pane.id, 'http://127.0.0.1:4310/other', {
+      openedBy: 'agent',
+    })
+    expect(navigated.openedBy).toBe('agent')
+    expect(navigated.openerLabel).toBeUndefined()
+  })
 })

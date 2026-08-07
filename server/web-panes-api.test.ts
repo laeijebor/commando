@@ -292,6 +292,220 @@ describe('web panes API', () => {
     expect((await open()).status).toBe(201)
     expect((await open()).status).toBe(429)
   })
+
+  it('moves a tile to a new anchor with the previewed placement', async () => {
+    const service = await createService()
+    const { baseUrl, onChange } = await startApi(service, {
+      paneForId: (paneId) =>
+        paneId === '%12'
+          ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 }
+          : paneId === '%40'
+            ? { id: '%40', sessionId: '$1', windowId: '@3', width: 95, height: 55 }
+            : undefined,
+    })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%40', placement: 'below' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      webPaneId: opened.id,
+      beside: '%40',
+      placement: 'below',
+    })
+    expect(service.get(opened.id)).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a move whose target anchor lives in another window', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service, {
+      paneForId: (paneId) =>
+        paneId === '%12'
+          ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 }
+          : paneId === '%50'
+            ? { id: '%50', sessionId: '$1', windowId: '@9', width: 190, height: 55 }
+            : undefined,
+    })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%50', placement: 'right' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(400)
+    expect(service.get(opened.id)?.anchorPaneId).toBe('%12')
+  })
+
+  it('rejects a move to an unknown anchor pane or with a bad placement', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const unknownAnchor = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%99', placement: 'right' },
+      ownerAuth,
+    )
+    expect(unknownAnchor.status).toBe(404)
+
+    const autoPlacement = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%12', placement: 'auto' },
+      ownerAuth,
+    )
+    expect(autoPlacement.status).toBe(400)
+
+    const unauthenticated = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/move`,
+      { anchor: '%12', placement: 'right' },
+    )
+    expect(unauthenticated.status).toBe(401)
+  })
+
+  it('navigates a tile to a new url and syncs the engine when it stays open', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl, onChange } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'http://127.0.0.1:4310/report' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      webPaneId: opened.id,
+      status: 'open',
+      url: 'http://127.0.0.1:4310/report',
+    })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onConfirmed).toHaveBeenCalledTimes(1)
+  })
+
+  it('navigating to an unconfirmed external origin pends without engine sync', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending' })
+    expect(onConfirmed).not.toHaveBeenCalled()
+  })
+
+  it('navigate requires auth and a string url', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:1/' })).status).toBe(401)
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 42 }, ownerAuth)).status).toBe(400)
+  })
+
+  it('attributes an agent-driven navigate to the agent, not the tile owner', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      agentAuth,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'pending' })
+    expect(service.get(opened.id)).toMatchObject({
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+  })
+
+  it('attributes an owner-driven navigate to the user', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+
+    const response = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'https://reactnative.dev/docs' },
+      ownerAuth,
+    )
+    expect(response.status).toBe(200)
+    const stored = service.get(opened.id)
+    expect(stored?.openedBy).toBe('user')
+    expect(stored?.openerLabel).toBeUndefined()
+  })
 })
 
 async function openChromiumPane(service: WebPaneService): Promise<string> {
