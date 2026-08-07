@@ -32,6 +32,7 @@ import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
 import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
+import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { ChromiumEngine } from './chromium-engine.js'
 import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
@@ -435,6 +436,8 @@ async function main(): Promise<void> {
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
   })
   const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
+  // onDrain fires only at request time, safely after publishWebPanes exists.
+  const webPaneFeedback = new WebPaneFeedbackStore(() => publishWebPanes())
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -449,7 +452,8 @@ async function main(): Promise<void> {
     )
     chromiumEngine.syncTiles(streamable)
     webTileRelay.dropStale(streamable)
-    broadcast({ type: 'web_panes', webPanes: webPanes.list() })
+    webPaneFeedback.retain(new Set(webPanes.list().map((pane) => pane.id)))
+    broadcast({ type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
   }
   const notes = new NoteVaultManager()
   const linear = new LinearService()
@@ -1157,6 +1161,7 @@ async function main(): Promise<void> {
   })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
+    feedback: webPaneFeedback,
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     paneForId: (paneId) => {
@@ -1506,7 +1511,7 @@ async function main(): Promise<void> {
     }
     clients.add(client)
     send(client, { type: 'snapshot', snapshot })
-    send(client, { type: 'web_panes', webPanes: webPanes.list() })
+    send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
