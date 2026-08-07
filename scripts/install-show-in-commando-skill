@@ -18,7 +18,7 @@ for skill_dir in "$skills_root"/*/; do
   [ -f "$skill_dir/SKILL.md" ] || continue
   for root in "${destination_roots[@]}"; do
     mkdir -p "$root/$name"
-    cp "$skill_dir/SKILL.md" "$root/$name/SKILL.md"
-    echo "installed $root/$name/SKILL.md"
+    cp -R "$skill_dir"/. "$root/$name/"
+    echo "installed $root/$name"
   done
 done

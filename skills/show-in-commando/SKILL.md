@@ -80,8 +80,11 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 
 Chromium tiles have a review mode: the user toggles it in the tile header,
 clicks elements on your page, and queues comments. Each note reaches you
-selector-anchored — `{selector, tag, text, rect, comment, pageUrl, capturedAt}`
-— so you can go straight from note to edit.
+selector-anchored — `{selector, tag, text, rect, comment, pageUrl, capturedAt,
+response?}` — so you can go straight from note to edit. `response?:
+{question, answer, data?}` is present when the note came from an in-page
+redline component (see the redline skill) rather than an element annotation
+— prefer it over parsing `comment` when it's there.
 
 After opening a chromium tile for something you want reviewed, poll for
 feedback in a background task and keep working:
