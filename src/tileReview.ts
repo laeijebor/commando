@@ -1,4 +1,5 @@
 import type { WebPaneFeedbackNote } from '../shared/protocol'
+import type { RedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectSuccess } from '../shared/tile-inspect'
 
 export type QueuedReviewNote = {
@@ -8,6 +9,43 @@ export type QueuedReviewNote = {
   text?: string
   rect: { x: number; y: number; width: number; height: number }
   comment: string
+  /** Replace-key for unsent re-answers from the same in-page question. */
+  queueKey?: string
+  /** Structured answer when the note came from an in-page component. */
+  response?: { question: string; answer: string; data?: unknown }
+}
+
+export const MAX_QUEUED_PILLS = 50
+
+/**
+ * Queues an in-page component answer as a pill note. A queueKey match
+ * replaces the unsent previous answer (lavish's replace-not-stack rule);
+ * the cap drops the oldest so a misbehaving page cannot grow the queue
+ * without bound.
+ */
+export function queuePageResponse(
+  list: QueuedReviewNote[],
+  response: RedlinePageResponse,
+  id: number,
+): QueuedReviewNote[] {
+  const kept = response.queueKey === undefined
+    ? list
+    : list.filter((note) => note.queueKey !== response.queueKey)
+  const note: QueuedReviewNote = {
+    id,
+    selector: response.selector ?? `redline:${response.queueKey ?? response.question.slice(0, 64)}`,
+    tag: response.tag ?? 'redline',
+    ...(response.text !== undefined ? { text: response.text } : {}),
+    rect: response.rect ?? { x: 0, y: 0, width: 0, height: 0 },
+    comment: `${response.question}: ${response.answer}`,
+    ...(response.queueKey !== undefined ? { queueKey: response.queueKey } : {}),
+    response: {
+      question: response.question,
+      answer: response.answer,
+      ...(response.data !== undefined ? { data: response.data } : {}),
+    },
+  }
+  return [...kept, note].slice(-MAX_QUEUED_PILLS)
 }
 
 export function queueNote(
@@ -50,7 +88,7 @@ export function toFeedbackNotes(
   pageUrl: string,
   now: number,
 ): WebPaneFeedbackNote[] {
-  return list.map(({ id: _id, ...note }) => ({ ...note, pageUrl, capturedAt: now }))
+  return list.map(({ id: _id, queueKey: _queueKey, ...note }) => ({ ...note, pageUrl, capturedAt: now }))
 }
 
 /**

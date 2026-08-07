@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol'
+import { parseRedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
   shouldCaptureKey,
@@ -10,6 +11,7 @@ import {
 import {
   createInspectThrottle,
   queueNote,
+  queuePageResponse,
   removeNote,
   removeSentNotes,
   toFeedbackNotes,
@@ -37,6 +39,7 @@ type TileSocketMessage = {
   rect?: TileInspectRect
   text?: string
   snippet?: string
+  response?: unknown
 }
 
 /** Narrows a socket frame already known to be an `inspect_result`. */
@@ -173,6 +176,13 @@ export function ChromiumTileCard({
         }
         if (message.type === 'inspect_result' && typeof message.id === 'string') {
           routeInspectResult(message.id, toInspectResult(message))
+          return
+        }
+        if (message.type === 'page_response') {
+          const response = parseRedlinePageResponse(message.response)
+          if (response) {
+            setQueued((current) => queuePageResponse(current, response, nextNoteId.current++))
+          }
           return
         }
         if (message.type === 'ready') {
