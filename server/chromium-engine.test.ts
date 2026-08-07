@@ -349,6 +349,23 @@ describe('ChromiumEngine', () => {
     expect(wheel?.params).toMatchObject({ deltaY: -120 })
   })
 
+  it('forwards windowsVirtualKeyCode without inventing a native keycode', async () => {
+    const { stub, engine } = await createHarness()
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    engine.dispatchInput('w-11111111', {
+      kind: 'key', type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
+    })
+    await until(
+      () => stub.calls.some((call) => call.method === 'Input.dispatchKeyEvent'),
+      'key forwarding',
+    )
+    const key = stub.calls.find((call) => call.method === 'Input.dispatchKeyEvent')
+    expect(key?.params).toMatchObject({ type: 'keyDown', key: 'Backspace', windowsVirtualKeyCode: 8 })
+    // A Windows code is not a platform keycode: mirroring it into
+    // nativeVirtualKeyCode hangs the macOS headless renderer mid-sequence.
+    expect(key?.params).not.toHaveProperty('nativeVirtualKeyCode')
+  })
+
   it('re-pends tiles when the main frame navigates somewhere un-allowlisted', async () => {
     const { stub, engine, onExternalNavigation } = await createHarness()
     await engine.cdpInfo('w-11111111', 'http://localhost:5173/')

@@ -545,11 +545,12 @@ export class ChromiumEngine {
       ...(event.key !== undefined ? { key: event.key } : {}),
       ...(event.code !== undefined ? { code: event.code } : {}),
       ...(event.text !== undefined ? { text: event.text } : {}),
+      // windowsVirtualKeyCode drives the renderer's editing behavior. Never
+      // mirror it into nativeVirtualKeyCode: that field is a PLATFORM keycode
+      // (on macOS a Mac keycode, where e.g. 65 is keypad-'.'), and feeding it
+      // Windows codes reproducibly hangs the headless renderer mid-sequence.
       ...(event.windowsVirtualKeyCode !== undefined
-        ? {
-            windowsVirtualKeyCode: event.windowsVirtualKeyCode,
-            nativeVirtualKeyCode: event.windowsVirtualKeyCode,
-          }
+        ? { windowsVirtualKeyCode: event.windowsVirtualKeyCode }
         : {}),
       modifiers: event.modifiers ?? 0,
     })
