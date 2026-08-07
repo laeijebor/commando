@@ -1,4 +1,4 @@
-import type { WebPaneEngine, WebPanePlacement } from '../shared/protocol'
+import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePlacement } from '../shared/protocol'
 
 export interface WebPanesApiClient {
   open(
@@ -10,6 +10,7 @@ export interface WebPanesApiClient {
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
+  submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -69,6 +70,12 @@ export function createWebPanesApi(
         target: string
         devtoolsFrontendUrl: string
       }
+    },
+    submitFeedback: async (webPaneId, notes) => {
+      await request(`/${encodeURIComponent(webPaneId)}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ notes }),
+      })
     },
   }
 }
