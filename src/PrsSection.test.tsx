@@ -147,7 +147,8 @@ describe('PrsSection', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(400) })
     vi.useRealTimers()
 
-    expect(await screen.findByText('Adds the thing behind a flag.')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog', { name: 'Details for #12' })).toHaveAttribute('data-native-terminal-occluder', '')
+    expect(screen.getByText('Adds the thing behind a flag.')).toBeInTheDocument()
     expect(screen.getByText('release/2.0')).toBeInTheDocument()
     expect(screen.getByText('timgent')).toBeInTheDocument()
     expect(screen.getByText(/dana/)).toBeInTheDocument()

@@ -72,6 +72,7 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave }: {
   return createPortal(
     <div
       className="pr-pop"
+      data-native-terminal-occluder=""
       style={{ top: position.top, left: position.left, width: PR_POP_WIDTH }}
       role="dialog"
       aria-label={`Details for #${pr.number}`}
