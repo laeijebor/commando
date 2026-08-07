@@ -434,6 +434,7 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageResponse: (webPaneId, response) => webTileRelay.broadcastPageResponse(webPaneId, response),
   })
   const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
   // onDrain fires only at request time, safely after publishWebPanes exists.
