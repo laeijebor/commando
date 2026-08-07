@@ -28,6 +28,7 @@ export type TileKeyMessage = {
   key?: string
   code?: string
   text?: string
+  windowsVirtualKeyCode?: number
   modifiers: number
 }
 
@@ -116,6 +117,60 @@ type TileKeyboardEvent = ModifierState & {
   code: string
 }
 
+const NAMED_KEY_VK: Record<string, number> = {
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  Shift: 16,
+  Control: 17,
+  Alt: 18,
+  CapsLock: 20,
+  Escape: 27,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46,
+  Meta: 91,
+  ContextMenu: 93,
+}
+
+const PUNCTUATION_CODE_VK: Record<string, number> = {
+  Space: 32,
+  Semicolon: 186,
+  Equal: 187,
+  Comma: 188,
+  Minus: 189,
+  Period: 190,
+  Slash: 191,
+  Backquote: 192,
+  BracketLeft: 219,
+  Backslash: 220,
+  BracketRight: 221,
+  Quote: 222,
+  IntlBackslash: 226,
+}
+
+/**
+ * Windows virtual key code for a DOM keyboard event. The renderer only runs
+ * editing behavior (backspace deletion, caret movement, selection) for key
+ * events that carry one — without it, non-printable keys are inert.
+ */
+export function windowsVirtualKeyCode(key: string, code: string): number | undefined {
+  const named = NAMED_KEY_VK[key]
+  if (named !== undefined) return named
+  if (/^F([1-9]|1[0-2])$/.test(key)) return 111 + Number(key.slice(1))
+  if (/^Key[A-Z]$/.test(code)) return code.charCodeAt(3)
+  if (/^Digit[0-9]$/.test(code)) return 48 + Number(code[5])
+  if (/^Numpad[0-9]$/.test(code)) return 96 + Number(code[6])
+  return PUNCTUATION_CODE_VK[code]
+}
+
 /**
  * Maps one DOM keyboard event to the CDP key messages to send. A printable
  * key press needs a keyDown followed by a char event carrying the text, or
@@ -123,12 +178,29 @@ type TileKeyboardEvent = ModifierState & {
  */
 export function tileKeyMessages(event: TileKeyboardEvent): TileKeyMessage[] {
   const modifiers = cdpModifiers(event)
+  const vk = windowsVirtualKeyCode(event.key, event.code)
   if (event.type === 'keyup') {
-    return [{ kind: 'key', type: 'keyUp', key: event.key, code: event.code, modifiers }]
+    return [
+      {
+        kind: 'key',
+        type: 'keyUp',
+        key: event.key,
+        code: event.code,
+        windowsVirtualKeyCode: vk,
+        modifiers,
+      },
+    ]
   }
   if (event.type !== 'keydown') return []
   const messages: TileKeyMessage[] = [
-    { kind: 'key', type: 'keyDown', key: event.key, code: event.code, modifiers },
+    {
+      kind: 'key',
+      type: 'keyDown',
+      key: event.key,
+      code: event.code,
+      windowsVirtualKeyCode: vk,
+      modifiers,
+    },
   ]
   const printable = event.key.length === 1 && !event.ctrlKey && !event.metaKey
   if (printable) {
