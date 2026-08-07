@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { realpathSync, statSync } from 'node:fs'
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
+import { isAbsolute, normalize, resolve, sep } from 'node:path'
 
 const MAX_ARTIFACT_DIRS = 16
 
@@ -72,6 +72,6 @@ export class RedlineArtifactRegistry {
     } catch {
       return null
     }
-    return join(root, normalized)
+    return real
   }
 }
