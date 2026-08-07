@@ -46,6 +46,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 type Routes = {
   list?: (url: string) => Response | Promise<Response>
+  paneRepo?: (url: string) => Response | Promise<Response>
   threads?: (url: string) => Response
   prefsPut?: (body: unknown) => Response
 }
@@ -67,6 +68,9 @@ function stubFetch(routes: Routes = {}): void {
     }
     if (url.includes('/api/prs/repos')) {
       return jsonResponse({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }, { nameWithOwner: 'acme/gadgets', pinned: false }] })
+    }
+    if (url.includes('/api/prs/repo')) {
+      return routes.paneRepo?.(url) ?? jsonResponse({ repo: null })
     }
     if (url.includes('/api/prs')) {
       return routes.list?.(url) ?? jsonResponse({ list: listWith([]) })
@@ -268,6 +272,37 @@ describe('PrsSection', () => {
     expect(screen.queryByText('gadgets title')).not.toBeInTheDocument()
     finishRefresh?.(jsonResponse({ list: listWith([pr({ title: 'refreshed widgets title' })]) }))
     expect(await screen.findByText('refreshed widgets title')).toBeInTheDocument()
+  })
+
+  it('selects and remembers the current pane tracking repository', async () => {
+    stubFetch({
+      paneRepo: () => jsonResponse({ repo: 'acme/gadgets' }),
+      list: (url) => jsonResponse({
+        list: listWith([], 0, { repo: url.includes('repo=acme%2Fgadgets') ? 'acme/gadgets' : 'acme/widgets' }),
+      }),
+    })
+    render(<PrsSection token="t" currentPaneId="%7" currentPanePath="/workspace/gadgets" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Repository')).toHaveValue('acme/gadgets'))
+    expect(requests.some((request) => request.url.includes('/api/prs/repo?paneId=%257'))).toBe(true)
+    expect(requests.some((request) => (
+      request.method === 'PUT' && (request.body as { lastRepo?: string })?.lastRepo === 'acme/gadgets'
+    ))).toBe(true)
+  })
+
+  it('does not let a late pane lookup override a manual repository choice', async () => {
+    let finishLookup: ((response: Response) => void) | undefined
+    stubFetch({
+      paneRepo: () => new Promise<Response>((resolve) => { finishLookup = resolve }),
+    })
+    render(<PrsSection token="t" currentPaneId="%7" currentPanePath="/workspace/widgets" />)
+    const selector = await screen.findByLabelText('Repository')
+    await waitFor(() => expect(finishLookup).toBeDefined())
+
+    fireEvent.change(selector, { target: { value: 'acme/gadgets' } })
+    finishLookup?.(jsonResponse({ repo: 'acme/widgets' }))
+    await act(async () => { await Promise.resolve() })
+    expect(selector).toHaveValue('acme/gadgets')
   })
 
   it('shows the gh sign-in hint when the daemon reports auth_required', async () => {

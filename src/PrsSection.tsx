@@ -265,13 +265,20 @@ function PrCard({ pr, viewer, repo, api }: {
 
 export function PrsSection({
   token,
+  currentPaneId,
+  currentPanePath,
   onAttentionChange,
 }: {
   token: string
+  currentPaneId?: string | null
+  currentPanePath?: string | null
   onAttentionChange?: (attention: boolean) => void
 }) {
   const api = useMemo(() => createPrsApi(token), [token])
   const listCache = useRef(new Map<string, PrList>())
+  const repoRef = useRef('')
+  const filterRef = useRef<PrStateFilter>('open')
+  const manualPaneContext = useRef<string | null>(null)
   const [repos, setRepos] = useState<string[]>([])
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([])
   const [repo, setRepo] = useState('')
@@ -285,6 +292,9 @@ export function PrsSection({
   const [errorCode, setErrorCode] = useState('')
   const [addingRepo, setAddingRepo] = useState(false)
   const [repoDraft, setRepoDraft] = useState('')
+  repoRef.current = repo
+  filterRef.current = filter
+  const paneContext = currentPaneId && currentPanePath ? `${currentPaneId}\u0000${currentPanePath}` : ''
 
   useEffect(() => {
     let active = true
@@ -308,6 +318,43 @@ export function PrsSection({
     })()
     return () => { active = false }
   }, [api])
+
+  useEffect(() => {
+    manualPaneContext.current = null
+    if (!ready || !currentPaneId || !paneContext) return
+    let active = true
+    let inFlight = false
+
+    const resolvePaneRepo = async () => {
+      if (inFlight || manualPaneContext.current === paneContext) return
+      inFlight = true
+      try {
+        const next = await api.repoForPane(currentPaneId)
+        if (!active || !next || manualPaneContext.current === paneContext) return
+        setRepos((current) => current.some((candidate) => candidate.toLowerCase() === next.toLowerCase())
+          ? current
+          : [next, ...current])
+        if (repoRef.current.toLowerCase() === next.toLowerCase()) return
+        const cached = listCache.current.get(`${next}::${filterRef.current}`) ?? null
+        repoRef.current = next
+        setList(cached)
+        setLoading(cached === null)
+        setRepo(next)
+        void api.updatePrefs({ lastRepo: next }).catch(() => undefined)
+      } catch {
+        // Pane repository discovery is best-effort; the manual picker stays usable.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void resolvePaneRepo()
+    const timer = window.setInterval(() => { void resolvePaneRepo() }, PRS_POLL_INTERVAL_MS)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [api, currentPaneId, paneContext, ready])
 
   useEffect(() => {
     if (!ready || !repo) {
@@ -373,7 +420,9 @@ export function PrsSection({
   }, [list])
 
   const changeRepo = (next: string) => {
+    if (paneContext) manualPaneContext.current = paneContext
     const cached = listCache.current.get(`${next}::${filter}`) ?? null
+    repoRef.current = next
     setList(cached)
     setLoading(cached === null)
     setRepo(next)
@@ -383,6 +432,7 @@ export function PrsSection({
     const cached = listCache.current.get(`${repo}::${next}`) ?? null
     setList(cached)
     setLoading(cached === null)
+    filterRef.current = next
     setFilter(next)
     void api.updatePrefs({ lastFilter: next }).catch(() => undefined)
   }

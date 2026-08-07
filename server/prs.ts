@@ -5,8 +5,11 @@ import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 
 const COMMAND_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
+const GIT_COMMAND_TIMEOUT_MS = 5_000
+const GIT_COMMAND_BUFFER_BYTES = 64 * 1024
 const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
+const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
@@ -107,6 +110,7 @@ export type PrPreferences = {
 }
 
 export type GhRunner = (args: string[]) => Promise<string>
+export type GitRunner = (args: string[], cwd: string) => Promise<string>
 
 export class PrServiceError extends Error {
   constructor(
@@ -132,6 +136,27 @@ const defaultRunner: GhRunner = (args) =>
       (error, stdout, stderr) => {
         if (error) {
           reject(classifyGhFailure(error, stderr ?? ''))
+          return
+        }
+        resolve(stdout)
+      },
+    )
+  })
+
+const defaultGitRunner: GitRunner = (args, cwd) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      args,
+      {
+        cwd,
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+        maxBuffer: GIT_COMMAND_BUFFER_BYTES,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error)
           return
         }
         resolve(stdout)
@@ -217,6 +242,25 @@ export function validateRepo(value: unknown): string {
     throw new PrServiceError(400, 'invalid_request', 'repo must look like owner/name')
   }
   return value
+}
+
+function repoFromGithubPath(path: string): string | null {
+  const repo = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
+  return REPO_PATTERN.test(repo) ? repo : null
+}
+
+export function repoFromGithubRemote(remoteInput: string): string | null {
+  const remote = remoteInput.trim()
+  const scp = remote.match(/^(?:[^@/\s]+@)?github\.com:(.+)$/i)
+  if (scp) return repoFromGithubPath(scp[1])
+  try {
+    const url = new URL(remote)
+    if (!['http:', 'https:', 'ssh:', 'git:'].includes(url.protocol)) return null
+    if (url.hostname.toLowerCase() !== 'github.com') return null
+    return repoFromGithubPath(url.pathname)
+  } catch {
+    return null
+  }
 }
 
 export function validatePrNumber(value: unknown): number {
@@ -528,25 +572,32 @@ type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | nul
 
 export class PrService {
   private readonly runner: GhRunner
+  private readonly gitRunner: GitRunner
   private readonly preferences: PrPreferencesStore
   private readonly listTtlMs: number
   private readonly reposTtlMs: number
+  private readonly repoContextTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
+  private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
 
   constructor(options?: {
     runner?: GhRunner
+    gitRunner?: GitRunner
     preferencesPath?: string
     listTtlMs?: number
     reposTtlMs?: number
+    repoContextTtlMs?: number
     now?: () => number
   }) {
     this.runner = options?.runner ?? defaultRunner
+    this.gitRunner = options?.gitRunner ?? defaultGitRunner
     this.preferences = new PrPreferencesStore(options?.preferencesPath)
     this.listTtlMs = options?.listTtlMs ?? LIST_CACHE_TTL_MS
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
+    this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
   }
 
@@ -733,6 +784,38 @@ export class PrService {
       options.push({ nameWithOwner, pinned: false })
     }
     return options
+  }
+
+  repoForPath(pathInput: unknown): Promise<string | null> {
+    if (typeof pathInput !== 'string' || !pathInput.startsWith('/')) return Promise.resolve(null)
+    const cached = this.repoContextCache.get(pathInput)
+    if (cached && this.now() - cached.at < this.repoContextTtlMs) return cached.promise
+    const promise = this.resolveRepoForPath(pathInput)
+    const entry = { at: this.now(), promise }
+    this.repoContextCache.set(pathInput, entry)
+    promise.catch(() => {
+      if (this.repoContextCache.get(pathInput) === entry) this.repoContextCache.delete(pathInput)
+    })
+    return promise
+  }
+
+  private async resolveRepoForPath(path: string): Promise<string | null> {
+    try {
+      const root = (await this.gitRunner(['rev-parse', '--show-toplevel'], path)).trim()
+      if (!root.startsWith('/')) return null
+      const branch = (await this.gitRunner(['rev-parse', '--abbrev-ref', 'HEAD'], root)).trim()
+      if (!branch || branch === 'HEAD') return null
+      const remote = (await this.gitRunner([
+        'for-each-ref',
+        '--format=%(upstream:remotename)',
+        `refs/heads/${branch}`,
+      ], root)).trim()
+      if (!remote || remote === '.') return null
+      const remoteUrl = await this.gitRunner(['remote', 'get-url', remote], root)
+      return repoFromGithubRemote(remoteUrl)
+    } catch {
+      return null
+    }
   }
 
   private suggestedRepos(): Promise<string[]> {

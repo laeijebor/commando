@@ -2,7 +2,14 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PrService, PrServiceError, PrPreferencesStore, validateRepo, validateStateFilter } from './prs.js'
+import {
+  PrService,
+  PrServiceError,
+  PrPreferencesStore,
+  repoFromGithubRemote,
+  validateRepo,
+  validateStateFilter,
+} from './prs.js'
 
 const directories: string[] = []
 
@@ -88,6 +95,66 @@ describe('input validation', () => {
     expect(validateStateFilter('closed')).toBe('closed')
     expect(validateStateFilter('all')).toBe('all')
     expect(() => validateStateFilter('merged')).toThrow(PrServiceError)
+  })
+})
+
+describe('pane repository resolution', () => {
+  it('parses common GitHub remote URL formats', () => {
+    expect(repoFromGithubRemote('https://github.com/acme/widgets.git')).toBe('acme/widgets')
+    expect(repoFromGithubRemote('git@github.com:acme/widgets.git')).toBe('acme/widgets')
+    expect(repoFromGithubRemote('ssh://git@github.com/acme/widgets.git')).toBe('acme/widgets')
+    expect(repoFromGithubRemote('git://github.com/acme/widgets')).toBe('acme/widgets')
+    expect(repoFromGithubRemote('https://gitlab.com/acme/widgets.git')).toBeNull()
+    expect(repoFromGithubRemote('/local/acme/widgets')).toBeNull()
+  })
+
+  it('resolves the current branch tracking remote and caches it briefly', async () => {
+    const gitRunner = vi.fn(async (args: string[], cwd: string) => {
+      if (args.join(' ') === 'rev-parse --show-toplevel') {
+        expect(cwd).toBe('/workspace/packages/app')
+        return '/workspace\n'
+      }
+      if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') {
+        expect(cwd).toBe('/workspace')
+        return 'feature/pane-aware\n'
+      }
+      if (args[0] === 'for-each-ref') {
+        expect(args[2]).toBe('refs/heads/feature/pane-aware')
+        return 'upstream\n'
+      }
+      if (args.join(' ') === 'remote get-url upstream') return 'git@github.com:acme/widgets.git\n'
+      throw new Error(`Unexpected git command: ${args.join(' ')}`)
+    })
+    const service = new PrService({
+      runner: vi.fn(),
+      gitRunner,
+      preferencesPath: '/nonexistent/prs.json',
+      repoContextTtlMs: 1_000,
+      now: () => 0,
+    })
+    await expect(service.repoForPath('/workspace/packages/app')).resolves.toBe('acme/widgets')
+    await expect(service.repoForPath('/workspace/packages/app')).resolves.toBe('acme/widgets')
+    expect(gitRunner).toHaveBeenCalledTimes(4)
+  })
+
+  it('returns no repo for detached, untracked, and non-GitHub branches', async () => {
+    const outputs = new Map<string, string>([
+      ['rev-parse --show-toplevel', '/workspace\n'],
+      ['rev-parse --abbrev-ref HEAD', 'feature\n'],
+      ['for-each-ref --format=%(upstream:remotename) refs/heads/feature', 'origin\n'],
+      ['remote get-url origin', 'git@gitlab.com:acme/widgets.git\n'],
+    ])
+    const gitRunner = vi.fn(async (args: string[]) => outputs.get(args.join(' ')) ?? '')
+    const service = new PrService({ runner: vi.fn(), gitRunner, preferencesPath: '/nonexistent/prs.json' })
+    await expect(service.repoForPath('/workspace')).resolves.toBeNull()
+
+    outputs.set('for-each-ref --format=%(upstream:remotename) refs/heads/feature', '')
+    const untracked = new PrService({ runner: vi.fn(), gitRunner, preferencesPath: '/nonexistent/prs.json' })
+    await expect(untracked.repoForPath('/workspace')).resolves.toBeNull()
+
+    outputs.set('rev-parse --abbrev-ref HEAD', 'HEAD\n')
+    const detached = new PrService({ runner: vi.fn(), gitRunner, preferencesPath: '/nonexistent/prs.json' })
+    await expect(detached.repoForPath('/workspace')).resolves.toBeNull()
   })
 })
 
