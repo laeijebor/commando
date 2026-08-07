@@ -457,7 +457,7 @@ export function ChromiumTileCard({
           {queued.map((note) => (
             <span key={note.id} className="tile-review-pill" title={`${note.selector} — ${note.comment}`}>
               <strong>{note.tag}</strong>
-              {note.comment}
+              <span className="tile-review-pill-comment">{note.comment}</span>
               <button
                 type="button"
                 className="tile-review-pill-remove"
