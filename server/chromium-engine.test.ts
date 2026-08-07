@@ -289,7 +289,7 @@ describe('ChromiumEngine', () => {
       mute.close(() => resolve())
     }))
     const mutePort = (mute.address() as AddressInfo).port
-    const version = createServer((request, response) => {
+    const version = createServer((_request, response) => {
       response.setHeader('Content-Type', 'application/json')
       response.end(JSON.stringify({
         webSocketDebuggerUrl: `ws://127.0.0.1:${mutePort}/devtools/browser/mute`,
