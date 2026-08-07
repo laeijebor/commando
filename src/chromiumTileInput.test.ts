@@ -31,10 +31,10 @@ describe('chromium tile input mapping', () => {
     ).toBeNull()
   })
 
-  it('negates DOM wheel deltas for CDP', () => {
+  it('passes DOM wheel deltas through unchanged (CDP shares the DOM sign convention)', () => {
     expect(
-      tileWheelMessage({ ...noModifiers, offsetX: 3, offsetY: 4, deltaX: 0, deltaY: 120 }),
-    ).toMatchObject({ deltaX: -0, deltaY: -120 })
+      tileWheelMessage({ ...noModifiers, offsetX: 3, offsetY: 4, deltaX: 5, deltaY: 120 }),
+    ).toMatchObject({ deltaX: 5, deltaY: 120 })
   })
 
   it('emits keyDown + char for printable keys and Enter', () => {

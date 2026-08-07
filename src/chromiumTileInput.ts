@@ -85,10 +85,10 @@ export function tileWheelMessage(event: TileWheelEvent): TileWheelMessage {
     kind: 'wheel',
     x: Math.max(0, Math.round(event.offsetX)),
     y: Math.max(0, Math.round(event.offsetY)),
-    // CDP wheel deltas are "content moves opposite" like DOM, but Chrome
-    // expects positive-up: negate the DOM convention.
-    deltaX: -event.deltaX,
-    deltaY: -event.deltaY,
+    // CDP Input.dispatchMouseEvent shares the DOM sign convention
+    // (positive deltaY scrolls down), so deltas pass through unchanged.
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
     modifiers: cdpModifiers(event),
   }
 }
