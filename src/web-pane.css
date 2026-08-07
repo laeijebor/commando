@@ -97,6 +97,11 @@
   background: var(--surface-hover);
 }
 
+.web-pane-button[aria-pressed='true'] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
 .web-pane-button svg {
   width: 12px;
   height: 12px;
@@ -293,4 +298,129 @@
 
 .chromium-tile[data-stream-state='connecting'] {
   background: var(--surface-deep, #0a0812);
+}
+
+/* ===== Review mode on a chromium tile ===== */
+
+.chromium-tile.is-reviewing .chromium-tile-canvas {
+  cursor: crosshair;
+}
+
+.tile-review-highlight {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--accent, #7c5cff);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
+}
+
+.tile-review-hint {
+  position: absolute;
+  z-index: 3;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-raised, #1c1826);
+  color: var(--muted, #9b93ad);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.tile-review-card {
+  position: absolute;
+  z-index: 3;
+  width: 240px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--surface-raised, #1c1826);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tile-review-card textarea {
+  resize: vertical;
+  min-height: 56px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-mid, #2c2740);
+  border-radius: 4px;
+  background: var(--surface, #141020);
+  color: var(--text-soft, #d8d2e6);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.tile-review-card-target {
+  color: var(--accent, #7c5cff);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tile-review-pills {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  /* The strip spans the tile: only the chips themselves take clicks, so the
+     page underneath stays usable outside review mode. */
+  pointer-events: none;
+}
+
+.tile-review-pills > * {
+  pointer-events: auto;
+}
+
+.tile-review-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--surface-raised, #1c1826);
+  color: var(--text-soft, #d8d2e6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.tile-review-pill strong {
+  color: var(--accent, #7c5cff);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.tile-review-pill-remove {
+  border: 0;
+  padding: 0 2px;
+  background: none;
+  color: var(--muted, #9b93ad);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tile-review-pill-remove:hover {
+  color: var(--text-soft, #d8d2e6);
+}
+
+.tile-review-error {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-raised, #1c1826);
+  color: var(--red, #ff8d89);
+  font-size: 11px;
 }

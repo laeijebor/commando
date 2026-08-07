@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, Globe, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
-import type { WebPane } from '../shared/protocol'
+import { ExternalLink, Globe, MessageSquarePlus, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
+import type { WebPane, WebPaneFeedbackInfo, WebPaneFeedbackNote } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
@@ -54,6 +54,8 @@ export function WebPaneCard({
   onConfirm,
   wsToken = '',
   onOpenDevtools,
+  feedback,
+  onSubmitFeedback,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -62,8 +64,12 @@ export function WebPaneCard({
   wsToken?: string
   /** Opens the tile's DevTools frontend as a sibling tile (chromium only). */
   onOpenDevtools?: () => void
+  /** Review-queue state broadcast by the daemon (chromium only). */
+  feedback?: WebPaneFeedbackInfo
+  onSubmitFeedback?: (notes: WebPaneFeedbackNote[]) => Promise<void>
 }) {
   const [reloadKey, setReloadKey] = useState(0)
+  const [review, setReview] = useState(false)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
   const [attributionVisible, setAttributionVisible] = useState(
     () => webPane.openedBy === 'agent' && Date.now() - webPane.createdAt < ATTRIBUTION_VISIBLE_MS,
@@ -124,6 +130,18 @@ export function WebPaneCard({
           {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
         </span>
         {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
+        {chromium && !pending && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={() => setReview((current) => !current)}
+            aria-pressed={review}
+            title="Review this page"
+            aria-label="Review this page"
+          >
+            <MessageSquarePlus aria-hidden="true" />
+          </button>
+        )}
         {chromium && !pending && onOpenDevtools && (
           <button
             type="button"
@@ -192,7 +210,13 @@ export function WebPaneCard({
       ) : (
         <div className="web-pane-body">
           {chromium ? (
-            <ChromiumTileCard webPane={webPane} wsToken={wsToken} reloadKey={reloadKey} />
+            <ChromiumTileCard
+              webPane={webPane}
+              wsToken={wsToken}
+              reloadKey={reloadKey}
+              reviewMode={review}
+              onSubmitFeedback={onSubmitFeedback ?? (async () => undefined)}
+            />
           ) : tier === 'native' && nativeBridge ? (
             <NativeWebViewTile
               bridge={nativeBridge}
@@ -254,6 +278,10 @@ export function WebPaneCard({
       <footer className="web-pane-foot">
         <span>
           opened by {opener} · beside {webPane.anchorPaneId}
+          {feedback?.lastDrainCount !== undefined && feedback.lastDrainAt !== undefined
+            ? ` · agent received ${feedback.lastDrainCount} note${feedback.lastDrainCount === 1 ? '' : 's'}`
+              + ` at ${new Date(feedback.lastDrainAt).toLocaleTimeString()}`
+            : null}
         </span>
       </footer>
     </article>

@@ -59,6 +59,7 @@ import type {
   TmuxPane,
   WebPane,
   WebPaneEngine,
+  WebPaneFeedbackInfo,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -809,6 +810,7 @@ export function App() {
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
+  const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
@@ -1050,6 +1052,7 @@ export function App() {
         break
       case 'web_panes':
         setWebPanes(message.webPanes)
+        setWebPaneFeedback(message.feedback ?? {})
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
@@ -2353,6 +2356,8 @@ export function App() {
                               ? () => void openWebPaneDevtools(webPane)
                               : undefined
                           }
+                          feedback={webPaneFeedback[webPane.id]}
+                          onSubmitFeedback={(notes) => webPanesApi.submitFeedback(webPane.id, notes)}
                         />,
                       ] as const)))}
                     />
