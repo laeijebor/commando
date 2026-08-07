@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Installs (or updates) the show-in-commando agent skill into every harness
-# skill directory that should have it. Safe to rerun after editing the
-# canonical copy at skills/show-in-commando/SKILL.md.
+# Installs (or updates) every agent skill in skills/ into the harness skill
+# directories that should have them. Safe to rerun after editing a canonical
+# copy at skills/<name>/SKILL.md.
 set -euo pipefail
 
-source_dir="$(cd "$(dirname "$0")/../skills/show-in-commando" && pwd)"
+skills_root="$(cd "$(dirname "$0")/../skills" && pwd)"
 
-destinations=(
-  "$HOME/.claudep/skills/show-in-commando"
-  "$HOME/.claudey/skills/show-in-commando"
-  "$HOME/.config/opencode/skills/show-in-commando"
+destination_roots=(
+  "$HOME/.claude/skills"
+  "$HOME/.claudep/skills"
+  "$HOME/.claudey/skills"
+  "$HOME/.config/opencode/skills"
 )
 
-for destination in "${destinations[@]}"; do
-  mkdir -p "$destination"
-  cp "$source_dir/SKILL.md" "$destination/SKILL.md"
-  echo "installed $destination/SKILL.md"
+for skill_dir in "$skills_root"/*/; do
+  name="$(basename "$skill_dir")"
+  [ -f "$skill_dir/SKILL.md" ] || continue
+  for root in "${destination_roots[@]}"; do
+    mkdir -p "$root/$name"
+    cp "$skill_dir/SKILL.md" "$root/$name/SKILL.md"
+    echo "installed $root/$name/SKILL.md"
+  done
 done
