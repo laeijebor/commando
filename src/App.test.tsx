@@ -124,9 +124,10 @@ beforeEach(() => {
     const url = String(input)
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url.includes('/api/prs/prefs')) {
-      return json({ prefs: { version: 1, pinnedRepos: [], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+      return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
     }
     if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
+    if (url.includes('/api/prs/repo')) return json({ repo: null })
     if (url.includes('/api/prs')) {
       return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, mineTruncated: false, fetchedAt: 0 } })
     }
@@ -298,6 +299,20 @@ describe('HUD tabs', () => {
     await renderAppWithSnapshot()
     expect(screen.getByRole('tab', { name: 'PRs' })).toHaveAttribute('aria-selected', 'true')
     expect(await screen.findByLabelText('Pull request filters')).toBeVisible()
+  })
+
+  it('tracks the active and then focused pane for PR repository discovery', async () => {
+    await renderAppWithSnapshot()
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/prs/repo?paneId=%2512',
+      expect.any(Object),
+    ))
+
+    fireEvent.focus(screen.getByTestId('renderer-%13'))
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/prs/repo?paneId=%2513',
+      expect.any(Object),
+    ))
   })
 })
 

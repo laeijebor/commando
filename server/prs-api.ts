@@ -1,8 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PrService, PrServiceError } from './prs.js'
+import { validateTmuxPaneId } from './tmux-pane-actions.js'
 
 const ROOT = '/api/prs'
 const MAX_BODY_BYTES = 64 * 1024
+
+type PrsApiDependencies = {
+  panePath: (paneId: string) => string | undefined
+}
 
 function json(response: ServerResponse, status: number, value: unknown): void {
   const body = `${JSON.stringify(value)}\n`
@@ -46,6 +51,7 @@ export async function handlePrsApi(
   response: ServerResponse,
   url: URL,
   service: PrService,
+  dependencies: PrsApiDependencies,
 ): Promise<boolean> {
   if (url.pathname !== ROOT && !url.pathname.startsWith(`${ROOT}/`)) return false
   const path = url.pathname.slice(ROOT.length).split('/').filter(Boolean).map(decodeURIComponent)
@@ -82,6 +88,24 @@ export async function handlePrsApi(
         return true
       }
       json(response, 200, { repos: await service.listRepos() })
+      return true
+    }
+
+    if (path.length === 1 && path[0] === 'repo') {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      let paneId: string
+      try {
+        paneId = validateTmuxPaneId(url.searchParams.get('paneId'))
+      } catch {
+        throw new PrServiceError(400, 'invalid_request', 'Invalid tmux pane id')
+      }
+      const panePath = dependencies.panePath(paneId)
+      if (!panePath) throw new PrServiceError(404, 'pane_not_found', 'Tmux pane does not exist')
+      json(response, 200, { repo: await service.repoForPath(panePath) })
       return true
     }
 

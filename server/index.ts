@@ -1657,7 +1657,9 @@ async function main(): Promise<void> {
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
-        if (await handlePrsApi(request, response, url, prs)) return
+        if (await handlePrsApi(request, response, url, prs, {
+          panePath: (paneId) => paneForId(paneId)?.path,
+        })) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return

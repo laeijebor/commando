@@ -1227,6 +1227,12 @@ export function App() {
   const allVisiblePaneIds = activeGroup
     ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
     : []
+  const currentPrPane = (
+    (maximizedTmuxPaneId ? paneMap.get(maximizedTmuxPaneId) : undefined) ??
+    (focusedPaneId && allVisiblePaneIds.includes(focusedPaneId) ? paneMap.get(focusedPaneId) : undefined) ??
+    allVisiblePaneIds.map((paneId) => paneMap.get(paneId)).find((pane) => pane?.active) ??
+    (allVisiblePaneIds[0] ? paneMap.get(allVisiblePaneIds[0]) : undefined)
+  )
   const subscribedPaneIds = area === 'workspace'
     ? maximizedPaneId
       ? isWebPaneLeafId(maximizedPaneId) ? allVisiblePaneIds : [maximizedPaneId]
@@ -2626,7 +2632,12 @@ export function App() {
           </div>
           </div>
           <div className="hud-tab-content" hidden={hudTab !== 'prs'}>
-            <PrsSection token={token} onAttentionChange={setPrsAttention} />
+            <PrsSection
+              token={token}
+              currentPaneId={currentPrPane?.id}
+              currentPanePath={currentPrPane?.path}
+              onAttentionChange={setPrsAttention}
+            />
           </div>
           <button type="button" className="quick-jump" onClick={() => setPaletteOpen(true)}>
             <Search aria-hidden="true" />

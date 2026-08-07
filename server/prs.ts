@@ -5,8 +5,11 @@ import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 
 const COMMAND_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
+const GIT_COMMAND_TIMEOUT_MS = 5_000
+const GIT_COMMAND_BUFFER_BYTES = 64 * 1024
 const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
+const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
@@ -24,6 +27,8 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`.trim()
 const MAX_PINNED_REPOS = 30
+const MAX_RECENT_REPOS = 20
+const MAX_LIST_CACHE_ENTRIES = 100
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
 type JsonRecord = Record<string, unknown>
@@ -98,12 +103,14 @@ export type PrThreads = {
 export type PrPreferences = {
   version: 1
   pinnedRepos: string[]
+  recentRepos: string[]
   lastRepo: string | null
   lastFilter: PrStateFilter
   lastScope: PrScope
 }
 
 export type GhRunner = (args: string[]) => Promise<string>
+export type GitRunner = (args: string[], cwd: string) => Promise<string>
 
 export class PrServiceError extends Error {
   constructor(
@@ -129,6 +136,27 @@ const defaultRunner: GhRunner = (args) =>
       (error, stdout, stderr) => {
         if (error) {
           reject(classifyGhFailure(error, stderr ?? ''))
+          return
+        }
+        resolve(stdout)
+      },
+    )
+  })
+
+const defaultGitRunner: GitRunner = (args, cwd) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      args,
+      {
+        cwd,
+        timeout: GIT_COMMAND_TIMEOUT_MS,
+        maxBuffer: GIT_COMMAND_BUFFER_BYTES,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error)
           return
         }
         resolve(stdout)
@@ -214,6 +242,25 @@ export function validateRepo(value: unknown): string {
     throw new PrServiceError(400, 'invalid_request', 'repo must look like owner/name')
   }
   return value
+}
+
+function repoFromGithubPath(path: string): string | null {
+  const repo = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
+  return REPO_PATTERN.test(repo) ? repo : null
+}
+
+export function repoFromGithubRemote(remoteInput: string): string | null {
+  const remote = remoteInput.trim()
+  const scp = remote.match(/^(?:[^@/\s]+@)?github\.com:(.+)$/i)
+  if (scp) return repoFromGithubPath(scp[1])
+  try {
+    const url = new URL(remote)
+    if (!['http:', 'https:', 'ssh:', 'git:'].includes(url.protocol)) return null
+    if (url.hostname.toLowerCase() !== 'github.com') return null
+    return repoFromGithubPath(url.pathname)
+  } catch {
+    return null
+  }
 }
 
 export function validatePrNumber(value: unknown): number {
@@ -414,6 +461,10 @@ function parsePreferences(value: unknown): PrPreferences {
   if (lastRepo !== null && (typeof lastRepo !== 'string' || !REPO_PATTERN.test(lastRepo))) {
     throw new Error('PR preferences file has an invalid last repo')
   }
+  const recent = value.recentRepos ?? []
+  if (!Array.isArray(recent) || recent.length > MAX_RECENT_REPOS || !recent.every((repo) => typeof repo === 'string' && REPO_PATTERN.test(repo))) {
+    throw new Error('PR preferences file has an invalid recent repo list')
+  }
   const lastFilter = value.lastFilter
   if (lastFilter !== 'open' && lastFilter !== 'closed' && lastFilter !== 'all') {
     throw new Error('PR preferences file has an invalid last filter')
@@ -422,11 +473,18 @@ function parsePreferences(value: unknown): PrPreferences {
   if (lastScope !== 'mine' && lastScope !== 'everyone') {
     throw new Error('PR preferences file has an invalid last scope')
   }
-  return { version: 1, pinnedRepos: [...pinned] as string[], lastRepo, lastFilter, lastScope }
+  return {
+    version: 1,
+    pinnedRepos: [...pinned] as string[],
+    recentRepos: [...recent] as string[],
+    lastRepo,
+    lastFilter,
+    lastScope,
+  }
 }
 
 function defaultPreferences(): PrPreferences {
-  return { version: 1, pinnedRepos: [], lastRepo: null, lastFilter: 'open', lastScope: 'mine' }
+  return { version: 1, pinnedRepos: [], recentRepos: [], lastRepo: null, lastFilter: 'open', lastScope: 'mine' }
 }
 
 export function defaultPrPreferencesPath(): string {
@@ -452,6 +510,13 @@ export class PrPreferencesStore {
       const patch = this.validatePatch(input)
       const current = await this.load()
       result = { ...current, ...patch }
+      if (patch.lastRepo) {
+        const selectedKey = patch.lastRepo.toLowerCase()
+        result.recentRepos = [
+          patch.lastRepo,
+          ...current.recentRepos.filter((repo) => repo.toLowerCase() !== selectedKey),
+        ].slice(0, MAX_RECENT_REPOS)
+      }
       await this.write(result)
     })
     this.writes = operation.then(() => undefined, () => undefined)
@@ -503,28 +568,36 @@ export class PrPreferencesStore {
 }
 
 type CacheEntry<T> = { at: number; promise: Promise<T> }
+type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
   private readonly runner: GhRunner
+  private readonly gitRunner: GitRunner
   private readonly preferences: PrPreferencesStore
   private readonly listTtlMs: number
   private readonly reposTtlMs: number
+  private readonly repoContextTtlMs: number
   private readonly now: () => number
-  private readonly listCache = new Map<string, CacheEntry<PrList>>()
+  private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
+  private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
 
   constructor(options?: {
     runner?: GhRunner
+    gitRunner?: GitRunner
     preferencesPath?: string
     listTtlMs?: number
     reposTtlMs?: number
+    repoContextTtlMs?: number
     now?: () => number
   }) {
     this.runner = options?.runner ?? defaultRunner
+    this.gitRunner = options?.gitRunner ?? defaultGitRunner
     this.preferences = new PrPreferencesStore(options?.preferencesPath)
     this.listTtlMs = options?.listTtlMs ?? LIST_CACHE_TTL_MS
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
+    this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
   }
 
@@ -533,14 +606,52 @@ export class PrService {
     const filter = validateStateFilter(filterInput)
     const key = `${repo}::${filter}`
     const cached = this.listCache.get(key)
-    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
-    const promise = this.fetchPullRequests(repo, filter)
-    const entry = { at: this.now(), promise }
+    if (cached?.value) {
+      if (this.now() - cached.at >= this.listTtlMs && !cached.refresh) {
+        void this.refreshPullRequests(key, repo, filter, cached).catch(() => undefined)
+      }
+      return cached.value
+    }
+    if (cached?.refresh) return cached.refresh
+    const entry: SwrCacheEntry<PrList> = { at: 0, value: null, refresh: null }
     this.listCache.set(key, entry)
-    promise.catch(() => {
-      if (this.listCache.get(key) === entry) this.listCache.delete(key)
-    })
-    return promise
+    return this.refreshPullRequests(key, repo, filter, entry)
+  }
+
+  private refreshPullRequests(
+    key: string,
+    repo: string,
+    filter: PrStateFilter,
+    entry: SwrCacheEntry<PrList>,
+  ): Promise<PrList> {
+    const refresh = this.fetchPullRequests(repo, filter)
+    entry.refresh = refresh
+    void refresh.then(
+      (value) => {
+        if (this.listCache.get(key) !== entry) return
+        entry.value = value
+        entry.at = this.now()
+        entry.refresh = null
+        this.trimListCache()
+      },
+      () => {
+        if (this.listCache.get(key) !== entry) return
+        entry.refresh = null
+        if (!entry.value) this.listCache.delete(key)
+      },
+    )
+    return refresh
+  }
+
+  private trimListCache(): void {
+    if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) return
+    const oldest = [...this.listCache.entries()]
+      .filter(([, entry]) => !entry.refresh)
+      .sort((left, right) => left[1].at - right[1].at)
+    for (const [key] of oldest) {
+      if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) break
+      this.listCache.delete(key)
+    }
   }
 
   private async fetchPullRequests(repo: string, filter: PrStateFilter): Promise<PrList> {
@@ -653,6 +764,9 @@ export class PrService {
   async listRepos(): Promise<PrRepoOption[]> {
     const preferences = await this.preferences.read()
     const pinned = preferences.pinnedRepos
+    const recent = preferences.lastRepo
+      ? [preferences.lastRepo, ...preferences.recentRepos]
+      : preferences.recentRepos
     let suggested: string[] = []
     try {
       suggested = await this.suggestedRepos()
@@ -663,13 +777,45 @@ export class PrService {
     // pins keep whatever the user typed, so dedupe on the lowercased name.
     const seen = new Set(pinned.map((nameWithOwner) => nameWithOwner.toLowerCase()))
     const options: PrRepoOption[] = pinned.map((nameWithOwner) => ({ nameWithOwner, pinned: true }))
-    for (const nameWithOwner of suggested) {
+    for (const nameWithOwner of [...recent, ...suggested]) {
       const key = nameWithOwner.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
       options.push({ nameWithOwner, pinned: false })
     }
     return options
+  }
+
+  repoForPath(pathInput: unknown): Promise<string | null> {
+    if (typeof pathInput !== 'string' || !pathInput.startsWith('/')) return Promise.resolve(null)
+    const cached = this.repoContextCache.get(pathInput)
+    if (cached && this.now() - cached.at < this.repoContextTtlMs) return cached.promise
+    const promise = this.resolveRepoForPath(pathInput)
+    const entry = { at: this.now(), promise }
+    this.repoContextCache.set(pathInput, entry)
+    promise.catch(() => {
+      if (this.repoContextCache.get(pathInput) === entry) this.repoContextCache.delete(pathInput)
+    })
+    return promise
+  }
+
+  private async resolveRepoForPath(path: string): Promise<string | null> {
+    try {
+      const root = (await this.gitRunner(['rev-parse', '--show-toplevel'], path)).trim()
+      if (!root.startsWith('/')) return null
+      const branch = (await this.gitRunner(['rev-parse', '--abbrev-ref', 'HEAD'], root)).trim()
+      if (!branch || branch === 'HEAD') return null
+      const remote = (await this.gitRunner([
+        'for-each-ref',
+        '--format=%(upstream:remotename)',
+        `refs/heads/${branch}`,
+      ], root)).trim()
+      if (!remote || remote === '.') return null
+      const remoteUrl = await this.gitRunner(['remote', 'get-url', remote], root)
+      return repoFromGithubRemote(remoteUrl)
+    } catch {
+      return null
+    }
   }
 
   private suggestedRepos(): Promise<string[]> {
