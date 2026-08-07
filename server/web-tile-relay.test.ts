@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WebPane } from '../shared/protocol.js'
+import type { WebPane, WebPanePendingNote } from '../shared/protocol.js'
 import type { ChromiumEngine } from './chromium-engine.js'
 import type { WebPaneService } from './web-panes.js'
 import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
@@ -32,7 +32,20 @@ function pane(): WebPane {
   }
 }
 
-async function startRelay(engineOverrides: Partial<ChromiumEngine> = {}) {
+function pendingNote(comment: string, id: number): WebPanePendingNote {
+  return {
+    id,
+    selector: 'redline:q1',
+    tag: 'redline',
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    comment,
+  }
+}
+
+async function startRelay(
+  engineOverrides: Partial<ChromiumEngine> = {},
+  pendingNotes: (webPaneId: string) => WebPanePendingNote[] = () => [],
+) {
   const engine = {
     subscribeScreencast: vi.fn(async () => () => undefined),
     dispatchInput: vi.fn(),
@@ -42,7 +55,7 @@ async function startRelay(engineOverrides: Partial<ChromiumEngine> = {}) {
     ...engineOverrides,
   } as unknown as ChromiumEngine
   const service = { get: (id: string) => (id === 'w-11111111' ? pane() : undefined) } as unknown as WebPaneService
-  const relay = new WebTileRelay({ engine, service })
+  const relay = new WebTileRelay({ engine, service, pendingNotes })
   relays.push(relay)
   const server = createServer()
   server.on('upgrade', (request, socket, head) => {
@@ -54,8 +67,14 @@ async function startRelay(engineOverrides: Partial<ChromiumEngine> = {}) {
   const port = (server.address() as AddressInfo).port
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/web-tiles/w-11111111`)
   sockets.push(socket)
+  // Collect from the first tick — connect-time messages (pending hydration)
+  // can arrive in the same I/O batch as the open event.
+  const messages: Record<string, unknown>[] = []
+  socket.on('message', (data) => {
+    messages.push(JSON.parse(String(data)) as Record<string, unknown>)
+  })
   await new Promise<void>((resolve) => socket.once('open', () => resolve()))
-  return { socket, engine, relay }
+  return { socket, engine, relay, messages }
 }
 
 function nextMessage(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
@@ -68,6 +87,15 @@ function nextMessage(socket: WebSocket, type: string): Promise<Record<string, un
     }
     socket.on('message', onMessage)
   })
+}
+
+async function messageOfType(
+  socket: WebSocket,
+  messages: Record<string, unknown>[],
+  type: string,
+): Promise<Record<string, unknown>> {
+  const seen = messages.find((message) => message.type === type)
+  return seen ?? await nextMessage(socket, type)
 }
 
 describe('web tile relay inspect routing', () => {
@@ -98,16 +126,28 @@ describe('web tile relay inspect routing', () => {
   })
 })
 
-describe('web tile relay page response broadcast', () => {
-  it('broadcasts page responses to subscribed tile sockets', async () => {
+describe('web tile relay pending broadcast', () => {
+  it('broadcasts the pending queue to subscribed tile sockets', async () => {
     const { socket, relay } = await startRelay()
-    const reply = nextMessage(socket, 'page_response')
-    relay.broadcastPageResponse('w-11111111', { question: 'Which plan?', answer: 'Pro' })
-    expect(await reply).toMatchObject({ response: { question: 'Which plan?', answer: 'Pro' } })
+    const reply = nextMessage(socket, 'pending')
+    relay.broadcastPending('w-11111111', [pendingNote('Which plan?: Pro', 1)])
+    expect(await reply).toMatchObject({ notes: [{ id: 1, comment: 'Which plan?: Pro' }] })
   })
 
-  it('broadcastPageResponse is a no-op for unknown panes', async () => {
+  it('broadcastPending is a no-op for unknown panes', async () => {
     const { relay } = await startRelay()
-    expect(() => relay.broadcastPageResponse('w-deadbeef', { question: 'q', answer: 'a' })).not.toThrow()
+    expect(() => relay.broadcastPending('w-deadbeef', [])).not.toThrow()
+  })
+
+  it('hydrates a connecting socket with the current pending queue', async () => {
+    const { socket, messages } = await startRelay({}, () => [pendingNote('queued earlier', 3)])
+    const message = await messageOfType(socket, messages, 'pending')
+    expect(message).toMatchObject({ notes: [{ id: 3, comment: 'queued earlier' }] })
+  })
+
+  it('does not send an empty pending message on connect', async () => {
+    const { messages } = await startRelay()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(messages.map((message) => message.type)).not.toContain('pending')
   })
 })
