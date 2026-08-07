@@ -270,7 +270,8 @@ export function PrsSection({
   token: string
   onAttentionChange?: (attention: boolean) => void
 }) {
-  const api = useRef(createPrsApi(token)).current
+  const api = useMemo(() => createPrsApi(token), [token])
+  const listCache = useRef(new Map<string, PrList>())
   const [repos, setRepos] = useState<string[]>([])
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([])
   const [repo, setRepo] = useState('')
@@ -280,7 +281,6 @@ export function PrsSection({
   const [list, setList] = useState<PrList | null>(null)
   const [loading, setLoading] = useState(true)
   const [polling, setPolling] = useState(false)
-  const [lastSyncedAt, setLastSyncedAt] = useState(0)
   const [error, setError] = useState('')
   const [errorCode, setErrorCode] = useState('')
   const [addingRepo, setAddingRepo] = useState(false)
@@ -316,6 +316,8 @@ export function PrsSection({
     }
     let active = true
     let inFlight = false
+    const key = `${repo}::${filter}`
+    const cached = listCache.current.get(key) ?? null
 
     const load = async (background: boolean) => {
       if (inFlight || (background && document.visibilityState !== 'visible')) return
@@ -325,8 +327,8 @@ export function PrsSection({
       try {
         const next = await api.list(repo, filter)
         if (!active) return
+        listCache.current.set(key, next)
         setList(next)
-        setLastSyncedAt(Date.now())
         setError('')
         setErrorCode('')
       } catch (cause) {
@@ -342,8 +344,10 @@ export function PrsSection({
       }
     }
 
-    setList(null)
-    void load(false)
+    setList(cached)
+    setError('')
+    setErrorCode('')
+    void load(cached !== null)
     const timer = window.setInterval(() => { void load(true) }, PRS_POLL_INTERVAL_MS)
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') void load(true)
@@ -369,10 +373,16 @@ export function PrsSection({
   }, [list])
 
   const changeRepo = (next: string) => {
+    const cached = listCache.current.get(`${next}::${filter}`) ?? null
+    setList(cached)
+    setLoading(cached === null)
     setRepo(next)
     void api.updatePrefs({ lastRepo: next }).catch(() => undefined)
   }
   const changeFilter = (next: PrStateFilter) => {
+    const cached = listCache.current.get(`${repo}::${next}`) ?? null
+    setList(cached)
+    setLoading(cached === null)
     setFilter(next)
     void api.updatePrefs({ lastFilter: next }).catch(() => undefined)
   }
@@ -538,7 +548,7 @@ export function PrsSection({
       <footer className="prs-sync">
         <RefreshCw aria-hidden="true" className={polling ? 'spinning' : ''} />
         <span>
-          {list ? `synced ${lastSyncedAt ? relativeTime(new Date(lastSyncedAt).toISOString()) : ''}` : 'not synced yet'}
+          {list ? `synced ${relativeTime(new Date(list.fetchedAt).toISOString())}` : 'not synced yet'}
           {list ? ` · gh · ${list.viewer}` : ''}
           {error && list ? ' · stale' : ''}
         </span>

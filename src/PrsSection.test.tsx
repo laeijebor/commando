@@ -45,7 +45,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 type Routes = {
-  list?: (url: string) => Response
+  list?: (url: string) => Response | Promise<Response>
   threads?: (url: string) => Response
   prefsPut?: (body: unknown) => Response
 }
@@ -60,7 +60,7 @@ function stubFetch(routes: Routes = {}): void {
     requests.push({ url, method, body })
     if (url.includes('/api/prs/prefs')) {
       if (method === 'PUT' && routes.prefsPut) return routes.prefsPut(body)
-      return jsonResponse({ prefs: { version: 1, pinnedRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+      return jsonResponse({ prefs: { version: 1, pinnedRepos: ['acme/widgets'], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
     }
     if (url.includes('/api/prs/threads')) {
       return routes.threads?.(url) ?? jsonResponse({ threads: { repo: 'acme/widgets', number: 12, threads: [], truncated: false, fetchedAt: 0 } })
@@ -240,6 +240,34 @@ describe('PrsSection', () => {
       expect(requests.some((request) => request.url.includes('state=closed'))).toBe(true)
       expect(requests.some((request) => request.method === 'PUT' && (request.body as { lastFilter?: string })?.lastFilter === 'closed')).toBe(true)
     })
+  })
+
+  it('keeps cached repo data visible while switching back and revalidating', async () => {
+    let widgetsCalls = 0
+    let finishRefresh: ((response: Response) => void) | undefined
+    stubFetch({
+      list: (url) => {
+        if (url.includes('repo=acme%2Fgadgets')) {
+          return jsonResponse({ list: listWith([pr({ title: 'gadgets title' })], 1, { repo: 'acme/gadgets' }) })
+        }
+        widgetsCalls += 1
+        if (widgetsCalls === 1) {
+          return jsonResponse({ list: listWith([pr({ title: 'cached widgets title' })]) })
+        }
+        return new Promise<Response>((resolve) => { finishRefresh = resolve })
+      },
+    })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByText('cached widgets title')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'acme/gadgets' } })
+    expect(await screen.findByText('gadgets title')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'acme/widgets' } })
+
+    expect(screen.getByText('cached widgets title')).toBeInTheDocument()
+    expect(screen.queryByText('gadgets title')).not.toBeInTheDocument()
+    finishRefresh?.(jsonResponse({ list: listWith([pr({ title: 'refreshed widgets title' })]) }))
+    expect(await screen.findByText('refreshed widgets title')).toBeInTheDocument()
   })
 
   it('shows the gh sign-in hint when the daemon reports auth_required', async () => {

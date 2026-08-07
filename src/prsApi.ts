@@ -46,6 +46,7 @@ export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
 export type PrPreferences = {
   version: 1
   pinnedRepos: string[]
+  recentRepos: string[]
   lastRepo: string | null
   lastFilter: PrStateFilter
   lastScope: PrScope
@@ -78,7 +79,7 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,
     repos: async () => (await request<{ repos: PrRepoOption[] }>('/repos')).repos,
     prefs: async () => (await request<{ prefs: PrPreferences }>('/prefs')).prefs,
-    updatePrefs: async (patch: Partial<Omit<PrPreferences, 'version'>>) =>
+    updatePrefs: async (patch: Partial<Omit<PrPreferences, 'version' | 'recentRepos'>>) =>
       (await request<{ prefs: PrPreferences }>('/prefs', { method: 'PUT', body: JSON.stringify(patch) })).prefs,
   }
 }
