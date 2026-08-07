@@ -1,71 +1,95 @@
 import type { WebPaneFeedbackInfo, WebPaneFeedbackNote } from '../shared/protocol.js'
+import { FeedbackJournal, type JournaledNote } from './web-pane-feedback-journal.js'
 import { WebPaneError } from './web-panes.js'
 
 export const MAX_QUEUED_FEEDBACK_NOTES = 50
 export const MAX_FEEDBACK_WAIT_MS = 60_000
 
+export type FeedbackDrainResult = {
+  notes: WebPaneFeedbackNote[]
+  /** Pass back on the next drain to acknowledge everything delivered here. */
+  cursor: number
+}
+
 type Waiter = {
-  settle: (notes: WebPaneFeedbackNote[]) => void
+  settle: (result: FeedbackDrainResult) => void
   fail: (error: WebPaneError) => void
 }
 
+type PaneState = {
+  /** Unacked notes in id order — the redeliverable backlog. */
+  notes: JournaledNote[]
+  ackedUpTo: number
+  /** Highest id ever handed to a drain response; acks are clamped to it. */
+  deliveredUpTo: number
+  nextId: number
+}
+
 /**
- * In-memory per-tile review feedback: the tile UI enqueues notes, the agent
- * drains them over a long-poll. Draining is the ack — onDrain lets the daemon
- * broadcast the new state. Nothing here is persisted; feedback dies with the
- * tile (or the daemon), by design.
+ * Per-tile review feedback with at-least-once delivery: the tile UI enqueues
+ * notes, the agent drains them over a long-poll. Draining does NOT delete —
+ * notes stay in the journal-backed backlog until the agent passes the drain
+ * response's cursor back on a later poll. A lost poll response is therefore
+ * recoverable: the retry (carrying the old cursor, or none) gets the same
+ * notes again. The journal persists the backlog across daemon restarts and
+ * closed tiles.
  */
 export class WebPaneFeedbackStore {
-  private readonly queues = new Map<string, WebPaneFeedbackNote[]>()
+  private readonly panes = new Map<string, PaneState>()
   private readonly waiters = new Map<string, Waiter[]>()
   private readonly drains = new Map<string, { count: number; at: number }>()
 
   constructor(
+    private readonly journal: FeedbackJournal = new FeedbackJournal(),
     private readonly onDrain: (webPaneId: string) => void = () => undefined,
     private readonly now: () => number = Date.now,
   ) {}
 
   enqueue(webPaneId: string, notes: WebPaneFeedbackNote[]): void {
     if (notes.length === 0) return
-    const waiting = this.waiters.get(webPaneId)
-    if (waiting && waiting.length > 0) {
-      const queued = this.queues.get(webPaneId) ?? []
-      this.queues.delete(webPaneId)
-      const batch = [...queued, ...notes]
-      waiting.shift()?.settle(this.recordDrain(webPaneId, batch))
-      return
-    }
-    const queue = this.queues.get(webPaneId) ?? []
-    if (queue.length + notes.length > MAX_QUEUED_FEEDBACK_NOTES) {
+    const state = this.state(webPaneId)
+    const undelivered = state.notes.filter((entry) => entry.id > state.deliveredUpTo).length
+    if (undelivered + notes.length > MAX_QUEUED_FEEDBACK_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_QUEUED_FEEDBACK_NOTES} notes can be queued per tile`)
     }
-    this.queues.set(webPaneId, [...queue, ...notes])
+    const entries: JournaledNote[] = notes.map((note) => ({ id: state.nextId++, note }))
+    this.journal.appendNotes(webPaneId, entries)
+    state.notes.push(...entries)
+    const waiting = this.waiters.get(webPaneId)
+    if (waiting && waiting.length > 0) {
+      waiting.shift()?.settle(this.deliver(webPaneId, state))
+    }
   }
 
-  drain(webPaneId: string, waitMs: number, signal?: AbortSignal): Promise<WebPaneFeedbackNote[]> {
-    const queued = this.queues.get(webPaneId)
-    if (queued && queued.length > 0) {
-      this.queues.delete(webPaneId)
-      return Promise.resolve(this.recordDrain(webPaneId, queued))
+  drain(
+    webPaneId: string,
+    waitMs: number,
+    options: { cursor?: number; signal?: AbortSignal } = {},
+  ): Promise<FeedbackDrainResult> {
+    const state = this.state(webPaneId)
+    if (options.cursor !== undefined) this.ack(webPaneId, state, options.cursor)
+    if (state.notes.length > 0) {
+      return Promise.resolve(this.deliver(webPaneId, state))
     }
     const wait = Math.max(0, Math.min(waitMs, MAX_FEEDBACK_WAIT_MS))
-    if (wait === 0 || signal?.aborted) return Promise.resolve([])
-    return new Promise<WebPaneFeedbackNote[]>((resolve, reject) => {
+    const empty = (): FeedbackDrainResult => ({ notes: [], cursor: state.deliveredUpTo })
+    if (wait === 0 || options.signal?.aborted) return Promise.resolve(empty())
+    return new Promise<FeedbackDrainResult>((resolve, reject) => {
       const waiter: Waiter = {
-        settle: (notes) => {
+        settle: (result) => {
           cleanup()
-          resolve(notes)
+          resolve(result)
         },
         fail: (error) => {
           cleanup()
           reject(error)
         },
       }
-      const timer = setTimeout(() => waiter.settle([]), wait)
-      const onAbort = (): void => waiter.settle([])
+      const timer = setTimeout(() => waiter.settle(empty()), wait)
+      const onAbort = (): void => waiter.settle(empty())
       const cleanup = (): void => {
         clearTimeout(timer)
-        signal?.removeEventListener('abort', onAbort)
+        options.signal?.removeEventListener('abort', onAbort)
         const list = this.waiters.get(webPaneId)
         if (list) {
           const index = list.indexOf(waiter)
@@ -73,16 +97,24 @@ export class WebPaneFeedbackStore {
           if (list.length === 0) this.waiters.delete(webPaneId)
         }
       }
-      signal?.addEventListener('abort', onAbort)
+      options.signal?.addEventListener('abort', onAbort)
       const list = this.waiters.get(webPaneId) ?? []
       list.push(waiter)
       this.waiters.set(webPaneId, list)
     })
   }
 
-  /** Discards feedback state for panes that no longer exist. */
+  /** Whether a pane (live or closed) still has answers nobody acknowledged. */
+  hasUnacked(webPaneId: string): boolean {
+    return this.state(webPaneId).notes.length > 0
+  }
+
+  /**
+   * Drops in-memory state and waiters for dead panes. Journals stay on disk —
+   * a closed tile's answers remain fetchable until acked or expired.
+   */
   retain(liveIds: ReadonlySet<string>): void {
-    for (const map of [this.queues, this.drains] as const) {
+    for (const map of [this.panes, this.drains] as const) {
       for (const id of [...map.keys()]) {
         if (!liveIds.has(id)) map.delete(id)
       }
@@ -96,8 +128,9 @@ export class WebPaneFeedbackStore {
 
   info(): Record<string, WebPaneFeedbackInfo> {
     const result: Record<string, WebPaneFeedbackInfo> = {}
-    for (const [id, queue] of this.queues) {
-      if (queue.length > 0) result[id] = { queued: queue.length }
+    for (const [id, state] of this.panes) {
+      const queued = state.notes.filter((entry) => entry.id > state.deliveredUpTo).length
+      if (queued > 0) result[id] = { queued }
     }
     for (const [id, drain] of this.drains) {
       result[id] = {
@@ -109,9 +142,41 @@ export class WebPaneFeedbackStore {
     return result
   }
 
-  private recordDrain(webPaneId: string, notes: WebPaneFeedbackNote[]): WebPaneFeedbackNote[] {
+  private state(webPaneId: string): PaneState {
+    let state = this.panes.get(webPaneId)
+    if (!state) {
+      const loaded = this.journal.load(webPaneId)
+      state = {
+        notes: loaded.notes,
+        ackedUpTo: loaded.ackedUpTo,
+        // A fresh process has no record of past deliveries; treating the
+        // whole backlog as undelivered only re-offers it, which is the point.
+        deliveredUpTo: loaded.ackedUpTo,
+        nextId: loaded.nextId,
+      }
+      this.panes.set(webPaneId, state)
+    }
+    return state
+  }
+
+  private ack(webPaneId: string, state: PaneState, cursor: number): void {
+    if (!Number.isFinite(cursor)) return
+    // Never ack past what was actually delivered: a garbage cursor must not
+    // silently discard answers nobody has seen.
+    const effective = Math.min(Math.floor(cursor), state.deliveredUpTo)
+    if (effective <= state.ackedUpTo) return
+    state.ackedUpTo = effective
+    state.notes = state.notes.filter((entry) => entry.id > effective)
+    this.journal.appendAck(webPaneId, effective)
+    this.journal.compact(webPaneId)
+  }
+
+  private deliver(webPaneId: string, state: PaneState): FeedbackDrainResult {
+    const notes = state.notes.map((entry) => ({ ...entry.note, id: entry.id }))
+    const last = state.notes[state.notes.length - 1]
+    if (last && last.id > state.deliveredUpTo) state.deliveredUpTo = last.id
     this.drains.set(webPaneId, { count: notes.length, at: this.now() })
     this.onDrain(webPaneId)
-    return notes
+    return { notes, cursor: state.deliveredUpTo }
   }
 }

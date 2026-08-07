@@ -287,6 +287,8 @@ export type WebPaneFeedbackResponse = {
 }
 
 export type WebPaneFeedbackNote = {
+  /** Server-assigned delivery id; present on drained notes, used for dedupe. */
+  id?: number
   selector: string
   tag: string
   text?: string
