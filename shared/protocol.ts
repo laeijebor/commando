@@ -300,6 +300,28 @@ export type WebPaneFeedbackNote = {
   response?: WebPaneFeedbackResponse
 }
 
+/** Cap on queued-but-unsent pending notes per tile. */
+export const MAX_PENDING_NOTES = 50
+
+/**
+ * A queued-but-unsent review note, held by the daemon until the owner sends
+ * it into the feedback queue (or removes it). Persisted so pills survive
+ * session switches, page reloads, and daemon restarts.
+ */
+export type WebPanePendingNote = {
+  /** Server-assigned id, unique per pane. */
+  id: number
+  selector: string
+  tag: string
+  text?: string
+  rect: { x: number; y: number; width: number; height: number }
+  comment: string
+  /** Replace-key for unsent re-answers from the same in-page question. */
+  queueKey?: string
+  /** Present when the note came from an in-page component, not an annotation. */
+  response?: WebPaneFeedbackResponse
+}
+
 /** Ephemeral review-feedback state for a tile — broadcast, never persisted. */
 export type WebPaneFeedbackInfo = {
   queued: number
