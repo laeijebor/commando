@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createInspectThrottle, queueNote, removeNote, toFeedbackNotes } from './tileReview'
+import {
+  createInspectThrottle,
+  queueNote,
+  removeNote,
+  removeSentNotes,
+  toFeedbackNotes,
+} from './tileReview'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -31,6 +37,21 @@ describe('review note queue', () => {
         capturedAt: 999,
       },
     ])
+  })
+
+  it('keeps notes queued during an in-flight send', () => {
+    const batch = queueNote([], inspect, 'too small', 1)
+    // The user queues another note while the send is still in flight.
+    const afterSend = queueNote(batch, { ...inspect, selector: '#late' }, 'added later', 2)
+    expect(removeSentNotes(afterSend, batch)).toEqual([
+      expect.objectContaining({ id: 2, selector: '#late' }),
+    ])
+  })
+
+  it('removes every sent note when nothing was queued meanwhile', () => {
+    let list = queueNote([], inspect, 'a', 1)
+    list = queueNote(list, inspect, 'b', 2)
+    expect(removeSentNotes(list, list)).toEqual([])
   })
 })
 

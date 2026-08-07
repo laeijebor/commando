@@ -11,6 +11,7 @@ import {
   createInspectThrottle,
   queueNote,
   removeNote,
+  removeSentNotes,
   toFeedbackNotes,
   type QueuedReviewNote,
 } from './tileReview'
@@ -307,11 +308,17 @@ export function ChromiumTileCard({
 
   const reviewActive = reviewMode && state === 'streaming'
 
+  // A failed send leaves its message on screen until the next send; drop it as
+  // soon as the queue changes so it cannot resurface against unrelated notes.
+  const clearSendError = () =>
+    setSendState((current) => (typeof current === 'object' ? 'idle' : current))
+
   const submitQueued = async () => {
+    const batch = queued
     setSendState('sending')
     try {
-      await onSubmitFeedback(toFeedbackNotes(queued, webPane.url, Date.now()))
-      setQueued([])
+      await onSubmitFeedback(toFeedbackNotes(batch, webPane.url, Date.now()))
+      setQueued((current) => removeSentNotes(current, batch))
       setSendState('idle')
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })
@@ -425,6 +432,7 @@ export function ChromiumTileCard({
                 setQueued((current) =>
                   queueNote(current, card.inspect, comment.trim(), nextNoteId.current++),
                 )
+                clearSendError()
                 setCard(null)
                 setComment('')
               }}
@@ -454,7 +462,10 @@ export function ChromiumTileCard({
                 type="button"
                 className="tile-review-pill-remove"
                 aria-label={`Remove note about ${note.selector}`}
-                onClick={() => setQueued((current) => removeNote(current, note.id))}
+                onClick={() => {
+                  setQueued((current) => removeNote(current, note.id))
+                  clearSendError()
+                }}
               >
                 ×
               </button>

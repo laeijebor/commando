@@ -33,6 +33,18 @@ export function removeNote(list: QueuedReviewNote[], id: number): QueuedReviewNo
   return list.filter((note) => note.id !== id)
 }
 
+/**
+ * Drops exactly the notes a send carried. Clearing the whole queue instead
+ * would silently swallow anything queued while the request was in flight.
+ */
+export function removeSentNotes(
+  list: QueuedReviewNote[],
+  sent: QueuedReviewNote[],
+): QueuedReviewNote[] {
+  const sentIds = new Set(sent.map((note) => note.id))
+  return list.filter((note) => !sentIds.has(note.id))
+}
+
 export function toFeedbackNotes(
   list: QueuedReviewNote[],
   pageUrl: string,
