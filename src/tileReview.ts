@@ -45,7 +45,11 @@ export function queuePageResponse(
       ...(response.data !== undefined ? { data: response.data } : {}),
     },
   }
-  return [...kept, note].slice(-MAX_QUEUED_PILLS)
+  const combined = [...kept, note]
+  if (combined.length > MAX_QUEUED_PILLS) {
+    console.warn(`redline: queued pill cap (${MAX_QUEUED_PILLS}) reached — dropping the oldest note`)
+  }
+  return combined.slice(-MAX_QUEUED_PILLS)
 }
 
 export function queueNote(

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const source = readFileSync(join(__dirname, 'redline-sdk.js'), 'utf8')
 
@@ -98,6 +98,40 @@ describe('window.redline.queueResponse', () => {
   it('returns false without the binding', () => {
     window.eval(source)
     expect((window as any).redline.queueResponse({ question: 'q', answer: 'a' })).toBe(false)
+  })
+
+  it('drops oversized data but still queues the answer, badge shown honestly', () => {
+    const calls = loadSdk()
+    const target = document.createElement('div')
+    target.id = 'target'
+    document.body.append(target)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ok = (window as any).redline.queueResponse({
+      question: 'Which plan?',
+      answer: 'Pro',
+      data: { blob: 'x'.repeat(5000) },
+      element: target,
+    })
+    expect(ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].question).toBe('Which plan?')
+    expect(calls[0].answer).toBe('Pro')
+    expect(calls[0].data).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('drops unserializable data but still queues the answer', () => {
+    const calls = loadSdk()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    const ok = (window as any).redline.queueResponse({ question: 'q', answer: 'a', data: circular })
+    expect(ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].data).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 })
 

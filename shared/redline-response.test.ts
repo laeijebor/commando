@@ -40,15 +40,14 @@ describe('parseRedlinePageResponse', () => {
     expect(parseRedlinePageResponse({ question: 'q'.repeat(MAX_RESPONSE_QUESTION + 1), answer: 'a' })).toBeNull()
     expect(parseRedlinePageResponse({ question: 'q', answer: 'a'.repeat(MAX_RESPONSE_ANSWER + 1) })).toBeNull()
     expect(parseRedlinePageResponse({ ...valid, queueKey: 'k'.repeat(MAX_RESPONSE_QUEUE_KEY + 1) })).toBeNull()
-    expect(
-      parseRedlinePageResponse({ ...valid, data: 'd'.repeat(MAX_RESPONSE_DATA_JSON) }),
-    ).toBeNull()
   })
 
-  it('rejects unserializable and oversized data', () => {
+  it('drops data, keeps answer', () => {
+    // data is best-effort: unserializable or oversized data must not lose the answer.
     const circular: Record<string, unknown> = {}
     circular.self = circular
-    expect(parseRedlinePageResponse({ ...valid, data: circular })).toBeNull()
+    expect(parseRedlinePageResponse({ ...valid, data: circular })).toEqual(valid)
+    expect(parseRedlinePageResponse({ ...valid, data: 'd'.repeat(MAX_RESPONSE_DATA_JSON) })).toEqual(valid)
   })
 
   it('drops malformed optional fields rather than the whole response', () => {

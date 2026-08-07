@@ -682,15 +682,23 @@ export class ChromiumEngine {
     cdp.on('Runtime.bindingCalled', (params) => {
       if (params.name !== REDLINE_BINDING_NAME) return
       const payload = params.payload
-      if (typeof payload !== 'string' || payload.length > MAX_RESPONSE_PAYLOAD_BYTES) return
+      if (typeof payload !== 'string' || payload.length > MAX_RESPONSE_PAYLOAD_BYTES) {
+        console.warn(`redline: dropped oversized page-response envelope for ${webPaneId}`)
+        return
+      }
       let value: unknown
       try {
         value = JSON.parse(payload)
       } catch {
+        console.warn(`redline: dropped page-response payload with malformed JSON for ${webPaneId}`)
         return
       }
       const response = parseRedlinePageResponse(value)
-      if (response) this.options.onPageResponse?.(webPaneId, response)
+      if (!response) {
+        console.warn(`redline: dropped page-response payload that failed validation for ${webPaneId}`)
+        return
+      }
+      this.options.onPageResponse?.(webPaneId, response)
     })
     const bufferedViewport = this.viewports.get(webPaneId)
     if (bufferedViewport) {

@@ -51,15 +51,18 @@ export function parseRedlinePageResponse(value: unknown): RedlinePageResponse | 
   const response: RedlinePageResponse = { question: record.question, answer: record.answer }
   if (record.queueKey !== undefined) response.queueKey = record.queueKey as string
   if (record.data !== undefined) {
-    let json: string
+    let json: string | undefined
     try {
       json = JSON.stringify(record.data)
     } catch {
-      return null
+      json = undefined
     }
-    if (json === undefined || json.length > MAX_RESPONSE_DATA_JSON) return null
-    // Round-trip so the retained value is plain JSON data, not live page objects.
-    response.data = JSON.parse(json) as unknown
+    // data is best-effort: unserializable or oversized data is dropped, not
+    // a reason to reject the whole (otherwise valid) answer.
+    if (json !== undefined && json.length <= MAX_RESPONSE_DATA_JSON) {
+      // Round-trip so the retained value is plain JSON data, not live page objects.
+      response.data = JSON.parse(json) as unknown
+    }
   }
   if (boundedString(record.selector, MAX_INSPECT_SELECTOR)) response.selector = record.selector
   if (boundedString(record.tag, MAX_INSPECT_TAG)) response.tag = record.tag

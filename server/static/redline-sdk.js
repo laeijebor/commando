@@ -13,6 +13,14 @@
   'use strict'
   const BINDING = '__commandoRedlineQueue'
 
+  // Mirrors shared/redline-response.ts MAX_RESPONSE_DATA_JSON — keep in sync.
+  const MAX_RESPONSE_DATA_JSON = 4096
+  // Mirrors shared/redline-response.ts MAX_RESPONSE_PAYLOAD_BYTES — keep in sync.
+  const MAX_RESPONSE_PAYLOAD_BYTES = 16384
+  // Dropped in this order, least important to the answer first, until the
+  // payload fits under MAX_RESPONSE_PAYLOAD_BYTES.
+  const OPTIONAL_FIELD_DROP_ORDER = ['data', 'text', 'selector', 'rect']
+
   const bindingAvailable = () => typeof window[BINDING] === 'function'
 
   /** id → data-testid → nth-of-type path, mirroring the tile inspector. */
@@ -46,7 +54,22 @@
       question: input.question.slice(0, 256),
       answer: input.answer.slice(0, 1024),
     }
-    if (input.data !== undefined) payload.data = input.data
+    if (input.data !== undefined) {
+      let json
+      try {
+        json = JSON.stringify(input.data)
+      } catch (error) {
+        json = undefined
+      }
+      if (json !== undefined && json.length <= MAX_RESPONSE_DATA_JSON) {
+        payload.data = input.data
+      } else {
+        // data is best-effort: drop it locally rather than fail the whole answer —
+        // the daemon would drop it anyway, but this saves the round trip and
+        // tells the page author immediately.
+        console.warn('redline: answer data dropped (unserializable or over the size cap)', input.data)
+      }
+    }
     if (typeof input.queueKey === 'string' && input.queueKey.length > 0) {
       payload.queueKey = input.queueKey.slice(0, 128)
     }
@@ -64,8 +87,19 @@
       console.warn('redline: not inside a commando tile — answer not queued', payload)
       return false
     }
+    // Belt-and-suspenders: field caps above already keep a normal payload
+    // well under the server limit, but if something still pushes it over,
+    // drop optional fields rather than lose the queued answer.
+    let serialized = JSON.stringify(payload)
+    for (const field of OPTIONAL_FIELD_DROP_ORDER) {
+      if (serialized.length <= MAX_RESPONSE_PAYLOAD_BYTES) break
+      if (payload[field] === undefined) continue
+      delete payload[field]
+      console.warn(`redline: dropped "${field}" to fit the answer under the payload size cap`)
+      serialized = JSON.stringify(payload)
+    }
     try {
-      window[BINDING](JSON.stringify(payload))
+      window[BINDING](serialized)
     } catch (error) {
       console.warn('redline: failed to queue answer', error)
       return false
