@@ -37,7 +37,8 @@ agent acknowledges them.
 - **Consumers without cursors** (raw curl, old scripts) never ack: they
   safely re-receive the backlog each poll and dedupe by note `id`.
 - **Unchanged**: the client Send path, pill queue, redline components, and
-  the `page_response` relay.
+  the `page_response` relay. (Superseded for the pre-Send pill queue by
+  `2026-08-07-pending-notes-design.md` — pills are now daemon state too.)
 
 ## Failure-mode coverage
 
