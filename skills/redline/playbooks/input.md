@@ -33,9 +33,11 @@ for.
 ## Keys
 
 Give every question a unique `key` — it's how a re-answer replaces the
-previous unsent one instead of piling up duplicates, and it's what lands in
-the drained note's `response.data`/`queueKey` so you can match the answer
-back to the question programmatically.
+previous unsent one instead of piling up duplicates. The `key` itself never
+reaches the drained note (it's stripped before the tile sends). To match an
+answer back to its question programmatically, use `response.question` — the
+`prompt` text, or the `key` itself when no `prompt` attribute was given,
+since the SDK falls back to `key` as the question.
 
 ## Make queued state visible
 
