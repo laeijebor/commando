@@ -48,9 +48,10 @@ Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine
 Default (`webkit`, omit the field) is right for *showing* things: it is the
 lightest renderer. Add `"engine":"chromium"` to the open body when you
 intend to *debug* the page together — watch its network requests, set
-breakpoints, take performance traces. The tile then renders through the
-daemon's managed headless Chromium, and you can attach real CDP to the very
-page the user is looking at:
+breakpoints, take performance traces — or when you want the user to
+annotate what you show them via review mode (below). The tile then renders
+through the daemon's managed headless Chromium, and you can attach real CDP
+to the very page the user is looking at:
 
 ```bash
 curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp" \
@@ -74,6 +75,31 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 - A tile's engine is fixed at open. To switch, DELETE the tile and reopen
   the same URL with the other engine (this is cheap — do it when a showing
   session turns into a debugging session).
+
+## Collecting review feedback on a chromium tile
+
+Chromium tiles have a review mode: the user toggles it in the tile header,
+clicks elements on your page, and queues comments. Each note reaches you
+selector-anchored — `{selector, tag, text, rect, comment, pageUrl}` — so you
+can go straight from note to edit.
+
+After opening a chromium tile for something you want reviewed, poll for
+feedback in a background task and keep working:
+
+```bash
+curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/feedback?wait=30" \
+  -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")"
+# → {"ok":true,"webPaneId":"w-…","notes":[{"selector":"#root > button", "comment":"…", …}]}
+```
+
+(With a commando checkout handy, `scripts/commando-feedback <webPaneId>` wraps
+this; exit 4 means the tile is gone.)
+
+- Empty `notes` after ~30s is normal — re-poll. Draining is the ack: the tile
+  shows the user "agent received N notes".
+- Apply the feedback, verify over the tile's `/cdp` endpoint if useful, and
+  reply in your own terminal — there is no chat panel in the tile.
+- Stop polling on 404 (tile closed) and never retry a 401 in a loop.
 
 ## Close a tile
 

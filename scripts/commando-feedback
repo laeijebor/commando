@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# commando-feedback — drain one batch of review feedback from a chromium tile.
+#
+#   commando-feedback <webPaneId> [--wait <seconds>]
+#
+# Long-polls GET /api/web-panes/<id>/feedback for up to --wait seconds
+# (default 30, max 60) and prints the JSON body: {"ok":true,"notes":[...]}.
+# Each note carries selector, tag, text, rect, comment, pageUrl, capturedAt —
+# apply the feedback, then run this again. Exit codes: 0 success (notes may
+# be empty — just re-run), 4 tile gone (stop polling), 1 other errors.
+set -euo pipefail
+
+pane_id=""
+wait_seconds=30
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait)
+      wait_seconds="${2:-}"
+      shift 2 || { echo "commando-feedback: --wait needs a value" >&2; exit 2; }
+      ;;
+    --wait=*)
+      wait_seconds="${1#--wait=}"
+      shift
+      ;;
+    -*)
+      echo "commando-feedback: unknown flag $1" >&2
+      exit 2
+      ;;
+    *)
+      pane_id="$1"
+      shift
+      ;;
+  esac
+done
+if [ -z "$pane_id" ]; then
+  echo "usage: commando-feedback <webPaneId> [--wait <seconds>]" >&2
+  exit 2
+fi
+
+token_path="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
+if [ ! -f "$token_path" ]; then
+  echo "commando-feedback: agent hook token not found at $token_path" >&2
+  exit 1
+fi
+
+port="${COMMANDO_PORT:-4310}"
+url="http://127.0.0.1:${port}/api/web-panes/${pane_id}/feedback?wait=${wait_seconds}"
+
+body_file=$(mktemp "${TMPDIR:-/tmp}/commando-feedback-body.XXXXXX")
+trap 'rm -f "$body_file"' EXIT
+
+status=$(curl -sS -o "$body_file" -w '%{http_code}' \
+  --max-time "$((wait_seconds + 15))" \
+  -H "Authorization: Bearer $(cat "$token_path")" \
+  "$url") || { echo "commando-feedback: daemon unreachable" >&2; exit 1; }
+body=$(cat "$body_file")
+echo "$body"
+case "$status" in
+  200) exit 0 ;;
+  404) exit 4 ;;
+  *) echo "commando-feedback: HTTP $status" >&2; exit 1 ;;
+esac
