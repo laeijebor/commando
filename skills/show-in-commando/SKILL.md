@@ -92,17 +92,23 @@ feedback in a background task and keep working:
 ```bash
 curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/feedback?wait=30" \
   -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")"
-# → {"ok":true,"webPaneId":"w-…","notes":[{"selector":"#root > button", "comment":"…", …}]}
+# → {"ok":true,"webPaneId":"w-…","cursor":3,"notes":[{"id":3,"selector":"#root > button","comment":"…", …}]}
 ```
 
 (With a commando checkout handy, `scripts/commando-feedback <webPaneId>` wraps
-this; exit 4 means the tile is gone.)
+this — including the cursor bookkeeping below; exit 4 means the review ended.)
 
-- Empty `notes` after ~30s is normal — re-poll. Draining is the ack: the tile
-  shows the user "agent received N notes".
+- Empty `notes` after ~30s is normal — re-poll.
+- Delivery is at-least-once: notes stay journaled on the daemon until acked,
+  so a lost poll (killed task, timeout, even a daemon restart) loses nothing —
+  the next poll redelivers them. Acknowledge by passing the previous
+  response's `cursor` back (`…&cursor=3`). Polling without a cursor never
+  acks; you just see the same notes again — dedupe by note `id`.
 - Apply the feedback, verify over the tile's `/cdp` endpoint if useful, and
   reply in your own terminal — there is no chat panel in the tile.
-- Stop polling on 404 (tile closed) and never retry a 401 in a loop.
+- A closed tile keeps serving its unacked notes; 404 means the review is over
+  AND nothing is left unread. Stop polling on 404 and never retry a 401 in a
+  loop.
 
 ## Close a tile
 

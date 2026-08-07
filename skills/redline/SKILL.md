@@ -116,6 +116,10 @@ one short message: what you built, what to look at first, and that the
 1. Long-poll for notes in a background task (`scripts/commando-feedback
    <webPaneId>` in the commando repo, else the skill's curl). Empty notes
    after ~30s is normal — re-poll. Keep doing other queued work meanwhile.
+   Delivery is at-least-once: notes are journaled daemon-side until acked
+   (the script handles acking via the response `cursor`), so a killed or
+   timed-out poll loses nothing — re-polling recovers the same notes; dedupe
+   by note `id` if you see repeats.
 2. For each note `{selector, tag, text, rect, comment, pageUrl}`: edit the
    artifact section (or the real source behind the running page) that the
    selector points at.
@@ -132,8 +136,9 @@ one short message: what you built, what to look at first, and that the
 
 ## 4. Stop
 
-- 404 from the feedback poll = tile closed by the user: stop polling, treat
-  the review as ended.
+- 404 from the feedback poll = the review ended AND nothing is left unread
+  (a closed tile keeps serving unacked notes until you've fetched them):
+  stop polling.
 - When the user says it's done: close the tile you opened, unregister the
   artifact dir (`scripts/commando-serve --stop <id>`), and give the absolute
   path of the final artifact — the tile and registration are session

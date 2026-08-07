@@ -4,10 +4,18 @@
 #   commando-feedback <webPaneId> [--wait <seconds>]
 #
 # Long-polls GET /api/web-panes/<id>/feedback for up to --wait seconds
-# (default 30, max 60) and prints the JSON body: {"ok":true,"notes":[...]}.
-# Each note carries selector, tag, text, rect, comment, pageUrl, capturedAt —
-# apply the feedback, then run this again. Exit codes: 0 success (notes may
-# be empty — just re-run), 4 tile gone (stop polling), 1 other errors.
+# (default 30, max 60) and prints the JSON body:
+# {"ok":true,"cursor":N,"notes":[...]}.
+# Each note carries id, selector, tag, text, rect, comment, pageUrl,
+# capturedAt — apply the feedback, then run this again. Exit codes: 0 success
+# (notes may be empty — just re-run), 4 tile gone (stop polling), 1 other
+# errors.
+#
+# Delivery is at-least-once: the daemon keeps notes until they are
+# acknowledged by passing the previous response's cursor back, which this
+# script does automatically via a state file. If a poll response is lost
+# (killed task, timeout), just run the script again — the same notes are
+# redelivered; dedupe by note id.
 set -euo pipefail
 
 pane_id=""
@@ -46,6 +54,18 @@ fi
 port="${COMMANDO_PORT:-4310}"
 url="http://127.0.0.1:${port}/api/web-panes/${pane_id}/feedback?wait=${wait_seconds}"
 
+# Passing the previous response's cursor back acknowledges those notes; the
+# daemon redelivers anything unacked, so a lost response is recoverable.
+cursor_dir="${COMMANDO_FEEDBACK_CURSOR_DIR:-$HOME/.commando/feedback-cursors}"
+cursor_file="${cursor_dir}/${pane_id}"
+if [ -f "$cursor_file" ]; then
+  prev_cursor=$(cat "$cursor_file" 2>/dev/null || true)
+  case "$prev_cursor" in
+    ''|*[!0-9]*) ;;
+    *) url="${url}&cursor=${prev_cursor}" ;;
+  esac
+fi
+
 body_file=$(mktemp "${TMPDIR:-/tmp}/commando-feedback-body.XXXXXX")
 trap 'rm -f "$body_file"' EXIT
 
@@ -56,7 +76,19 @@ status=$(curl -sS -o "$body_file" -w '%{http_code}' \
 body=$(cat "$body_file")
 echo "$body"
 case "$status" in
-  200) exit 0 ;;
-  404) exit 4 ;;
+  200)
+    # The daemon serializes cursor before notes, so the first match is ours,
+    # not user text from a comment.
+    next_cursor=$(printf '%s' "$body" | grep -o '"cursor":[0-9]*' | head -n1 | cut -d: -f2 || true)
+    if [ -n "$next_cursor" ]; then
+      mkdir -p -m 700 "$cursor_dir"
+      printf '%s' "$next_cursor" > "$cursor_file"
+    fi
+    exit 0
+    ;;
+  404)
+    rm -f "$cursor_file"
+    exit 4
+    ;;
   *) echo "commando-feedback: HTTP $status" >&2; exit 1 ;;
 esac
