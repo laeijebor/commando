@@ -6,7 +6,7 @@ import {
   MAX_RESPONSE_QUEUE_KEY,
   REDLINE_BINDING_NAME,
   parseRedlinePageResponse,
-} from './redline-response'
+} from './redline-response.js'
 
 describe('parseRedlinePageResponse', () => {
   const valid = { question: 'Which plan?', answer: 'Pro' }
