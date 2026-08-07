@@ -44,6 +44,9 @@ since the SDK falls back to `key` as the question.
 The SDK already renders a "Queued ✓" state and a "queued — see tile footer"
 badge after a successful queue — don't suppress or restyle that away; it's
 the user's confirmation the answer registered before they hit Send.
+Components arrive self-styled (glass "Aura" look, dark/light-aware) —
+override accents via `--redline-accent`/`--redline-accent2`; the injected
+rules are zero-specificity, so artifact CSS can still restyle them if needed.
 
 ## Prompt quality
 
