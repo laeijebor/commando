@@ -636,6 +636,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         view.isHidden = true
         view.clipsToBounds = true
         view.terminalDelegate = self
+        view.optionAsMetaKey = false
         TerminalProfile.apply(to: view)
         view.caretViewTracksFocus = true
         view.scrollerStyle = .overlay

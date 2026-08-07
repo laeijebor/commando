@@ -651,6 +651,42 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertFalse(view.handleOptionArrow(plainUp))
     }
 
+    func testTerminalSendsLayoutProducedOptionCharactersAsText() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "option-text"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        let optionHash = try XCTUnwrap(keyEvent(
+            key: "#",
+            charactersIgnoringModifiers: "3",
+            modifiers: .option,
+            keyCode: 20
+        ))
+
+        surface.view.keyDown(with: optionHash)
+        let kittyMode = Array("\u{1b}[>31u".utf8)
+        surface.view.feed(byteArray: kittyMode[...])
+        surface.view.keyDown(with: optionHash)
+
+        XCTAssertEqual(inputs, [Data("#".utf8), Data("#".utf8)])
+        _ = window.makeFirstResponder(nil)
+        surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testTerminalSendsRawControlVToThePaneInKittyKeyboardMode() throws {
         var inputs: [Data] = []
         let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
@@ -1093,6 +1129,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
     private func keyEvent(
         key: String,
+        charactersIgnoringModifiers: String? = nil,
         modifiers: NSEvent.ModifierFlags,
         keyCode: UInt16
     ) -> NSEvent? {
@@ -1104,7 +1141,7 @@ final class TerminalPaneHostTests: XCTestCase {
             windowNumber: 0,
             context: nil,
             characters: key,
-            charactersIgnoringModifiers: key.lowercased(),
+            charactersIgnoringModifiers: charactersIgnoringModifiers ?? key.lowercased(),
             isARepeat: false,
             keyCode: keyCode
         )
