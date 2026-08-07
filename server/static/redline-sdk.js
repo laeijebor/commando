@@ -150,13 +150,137 @@
 
   window.redline = Object.assign(window.redline || {}, { queueResponse })
 
+  // Aura visual treatment — self-styled, no host-page CSS kit dependency.
+  // Scoped via :where() so it never out-specifies author styles.
+  const AURA_CSS = `
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) {
+  --_ac: var(--redline-accent, #7c6cf6);
+  --_ac2: var(--redline-accent2, #5aa9f7);
+  display: block; position: relative; isolation: isolate; overflow: hidden;
+  margin: 1.25rem 0; padding: 1.15rem 1.25rem 1.25rem;
+  border-radius: 16px;
+  background: color-mix(in oklab, currentColor 5%, transparent);
+  backdrop-filter: blur(14px);
+  font-size: .95rem; line-height: 1.5;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)::before {
+  content: ""; position: absolute; inset: 0; border-radius: 16px; z-index: -1;
+  padding: 1px; pointer-events: none;
+  background: linear-gradient(135deg, color-mix(in oklab, var(--_ac) 55%, transparent),
+              transparent 40%, color-mix(in oklab, var(--_ac2) 45%, transparent));
+  -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)::after {
+  content: ""; position: absolute; z-index: -2; inset: 30% -10% -40% 40%;
+  border-radius: 50%; pointer-events: none;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--_ac) 16%, transparent), transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-prompt) {
+  margin: 0 0 .85rem; font-weight: 650; letter-spacing: -.01em;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options) {
+  display: inline-flex; flex-wrap: wrap; margin: 0 0 .85rem; border-radius: 10px; overflow: hidden;
+  border: 1px solid color-mix(in oklab, currentColor 18%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options label) {
+  padding: .45rem 1rem; cursor: pointer; user-select: none; transition: background .14s ease, color .14s ease;
+  border-right: 1px solid color-mix(in oklab, currentColor 12%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options label:last-child) {
+  border-right: 0;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options label:hover) {
+  background: color-mix(in oklab, currentColor 7%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options label:has(:checked)) {
+  background: linear-gradient(135deg, var(--_ac), var(--_ac2));
+  color: #fff; font-weight: 650; text-shadow: 0 1px 4px rgb(0 0 0 / .25);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options input) {
+  position: absolute; opacity: 0; pointer-events: none;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment) {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 2.6rem;
+  margin: 0 0 .2rem; padding: .55rem .75rem; border-radius: 10px;
+  font: inherit; font-size: .9rem; color: inherit; outline: none;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment:focus) {
+  border-color: var(--_ac);
+  box-shadow: 0 0 18px color-mix(in oklab, var(--_ac) 30%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment::placeholder) {
+  color: color-mix(in oklab, currentColor 45%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input:not([type="checkbox"]):not([type="radio"]), select) {
+  display: inline-block; box-sizing: border-box;
+  padding: .35rem .6rem; border-radius: 8px;
+  font: inherit; color: inherit; outline: none;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input:not([type="checkbox"]):not([type="radio"]):focus, select:focus) {
+  border-color: var(--_ac);
+  box-shadow: 0 0 18px color-mix(in oklab, var(--_ac) 30%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input[type="checkbox"]:not(.redline-options *), input[type="radio"]:not(.redline-options *)) {
+  accent-color: var(--_ac);
+}
+:where(redline-question) :where(label) {
+  display: inline-flex; align-items: center; gap: .4rem; margin: 0 .9rem .5rem 0;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue) {
+  margin-top: .85rem; padding: .5rem 1.15rem; cursor: pointer;
+  border: 0; border-radius: 10px; font: inherit; font-size: .9rem; font-weight: 650; color: #fff;
+  background: linear-gradient(135deg, var(--_ac), var(--_ac2));
+  box-shadow: 0 0 20px color-mix(in oklab, var(--_ac) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / .25);
+  transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue:hover:not(:disabled)) {
+  transform: translateY(-1px);
+  box-shadow: 0 0 28px color-mix(in oklab, var(--_ac) 55%, transparent), inset 0 1px 0 rgb(255 255 255 / .3);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue:disabled) {
+  cursor: not-allowed; filter: grayscale(.7) opacity(.55); box-shadow: none;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue[data-queued]) {
+  background: linear-gradient(135deg, #2fbf71, #24a05c);
+  box-shadow: 0 0 16px rgb(47 191 113 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge) {
+  display: inline-block; margin-left: .6rem; padding: .22rem .6rem; border-radius: 999px;
+  font-size: .75rem; font-weight: 600; color: #2fbf71;
+  background: color-mix(in oklab, #2fbf71 14%, transparent);
+  border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
+  animation: redline-badge-in .25s ease;
+}
+@keyframes redline-badge-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+`
+
+  const injectStyles = () => {
+    if (document.head.querySelector('style[data-redline-styles]')) return
+    const style = document.createElement('style')
+    style.setAttribute('data-redline-styles', '')
+    style.textContent = AURA_CSS
+    document.head.append(style)
+  }
+  injectStyles()
+
   let uid = 0
   const nextName = () => `redline-${(uid += 1)}`
 
   const queueButton = (label) => {
     const button = document.createElement('button')
     button.type = 'button'
-    button.className = 'redline-queue btn btn-primary btn-sm'
+    button.className = 'redline-queue'
     button.textContent = label || 'Queue answer'
     if (!bindingAvailable()) {
       button.disabled = true
@@ -168,10 +292,11 @@
 
   const markQueued = (host, button) => {
     button.textContent = 'Queued ✓'
+    button.dataset.queued = '1'
     let badge = host.querySelector('.redline-queued-badge')
     if (!badge) {
       badge = document.createElement('span')
-      badge.className = 'redline-queued-badge badge badge-success badge-sm'
+      badge.className = 'redline-queued-badge'
       badge.textContent = 'queued — see tile footer'
       button.after(badge)
     }
@@ -189,7 +314,20 @@
     connectedCallback() {
       if (this.dataset.redlineReady) return
       this.dataset.redlineReady = '1'
-      this.render()
+      // Custom-element upgrade fires connectedCallback at the OPENING tag when
+      // the SDK loads synchronously (e.g. from <head>) — the parser hasn't
+      // reached this element's children yet. Rendering now would build our
+      // markup before the author's content exists (RedlineQuestion prepends
+      // the heading and appends the button around content that isn't there
+      // yet). Defer to DOMContentLoaded so children are parsed first; once
+      // the document is no longer 'loading' (or in tests, where innerHTML
+      // parses the whole subtree upfront) children are already present and
+      // render() runs immediately as before.
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+      } else {
+        this.render()
+      }
     }
     key() {
       return this.getAttribute('key') || undefined
@@ -228,7 +366,6 @@
         input.type = multiple ? 'checkbox' : 'radio'
         input.name = name
         input.value = option
-        input.className = multiple ? 'checkbox checkbox-sm' : 'radio radio-sm'
         label.append(input, document.createTextNode(` ${option}`))
         list.append(label)
       }
@@ -254,12 +391,11 @@
         input.type = 'radio'
         input.name = name
         input.value = verdict
-        input.className = 'radio radio-sm'
         label.append(input, document.createTextNode(` ${verdict}`))
         list.append(label)
       }
       const comment = document.createElement('textarea')
-      comment.className = 'redline-comment textarea textarea-sm'
+      comment.className = 'redline-comment'
       comment.placeholder = 'Optional comment'
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
@@ -281,15 +417,18 @@
       const max = Math.min(Math.max(Number(this.getAttribute('max')) || 5, 2), 10)
       this.append(promptHeading(this))
       const list = document.createElement('div')
-      list.className = 'redline-options rating'
+      list.className = 'redline-options'
       for (let value = 1; value <= max; value += 1) {
+        const label = document.createElement('label')
         const input = document.createElement('input')
         input.type = 'radio'
         input.name = name
         input.value = String(value)
-        input.className = 'mask mask-star-2'
         input.setAttribute('aria-label', `${value} of ${max}`)
-        list.append(input)
+        const span = document.createElement('span')
+        span.textContent = String(value)
+        label.append(input, span)
+        list.append(label)
       }
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
@@ -305,7 +444,7 @@
     render() {
       this.append(promptHeading(this))
       const input = document.createElement('textarea')
-      input.className = 'redline-comment textarea textarea-sm'
+      input.className = 'redline-comment'
       input.placeholder = this.getAttribute('placeholder') || 'Your answer'
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {

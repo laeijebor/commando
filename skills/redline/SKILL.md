@@ -55,7 +55,11 @@ availability checks, say so and deliver the content in chat instead.
 ## Ready-made review controls (response queuing)
 
 Load the SDK once: `<script src="http://127.0.0.1:4310/redline/sdk.js"></script>`
-(substitute `$COMMANDO_PORT` if set). Five custom elements, one line each:
+(substitute `$COMMANDO_PORT` if set). Components inject their own glass-panel
+"Aura" styling and adapt to dark/light artifacts automatically — no design
+kit needed for their appearance; override the accent by setting
+`--redline-accent` / `--redline-accent2` on `:root`. Five custom elements,
+one line each:
 
 ```html
 <redline-choice key="plan" prompt="Which plan should we build?" options="Starter,Pro,Enterprise"></redline-choice>
