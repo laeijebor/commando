@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -292,6 +292,45 @@ describe('pull request listing', () => {
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
+  it('returns stale data while one background refresh updates the cache', async () => {
+    let clock = 0
+    let finishRefresh: ((value: string) => void) | undefined
+    const runner = vi.fn(async () => {
+      if (runner.mock.calls.length === 1) {
+        return graphqlPayload([pullRequestNode({ title: 'cached title' })])
+      }
+      return new Promise<string>((resolve) => { finishRefresh = resolve })
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', listTtlMs: 1_000, now: () => clock })
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].title).toBe('cached title')
+
+    clock = 1_500
+    const stale = await service.listPullRequests('acme/widgets', 'open')
+    const staleAgain = await service.listPullRequests('acme/widgets', 'open')
+    expect(stale.pullRequests[0].title).toBe('cached title')
+    expect(staleAgain.pullRequests[0].title).toBe('cached title')
+    expect(runner).toHaveBeenCalledTimes(2)
+
+    finishRefresh?.(graphqlPayload([pullRequestNode({ title: 'refreshed title' })]))
+    await vi.waitFor(async () => {
+      expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].title).toBe('refreshed title')
+    })
+  })
+
+  it('retains stale data when a background refresh fails', async () => {
+    let clock = 0
+    const runner = vi.fn(async () => {
+      if (runner.mock.calls.length === 1) return graphqlPayload([pullRequestNode({ title: 'cached title' })])
+      throw new PrServiceError(502, 'github_failed', 'boom')
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', listTtlMs: 1_000, now: () => clock })
+    await service.listPullRequests('acme/widgets', 'open')
+    clock = 1_500
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].title).toBe('cached title')
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2))
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].title).toBe('cached title')
+  })
+
   it('does not cache failures', async () => {
     const runner = vi.fn(async () => {
       throw new PrServiceError(502, 'github_failed', 'boom')
@@ -393,6 +432,25 @@ describe('repo options', () => {
     expect(await service.listRepos()).toEqual([{ nameWithOwner: 'laeijebor/viviFIT', pinned: true }])
   })
 
+  it('places recent repos after pins and before GitHub suggestions', async () => {
+    const path = await temporaryPrefsPath()
+    const store = new PrPreferencesStore(path)
+    await store.update({ pinnedRepos: ['acme/pinned'] })
+    await store.update({ lastRepo: 'acme/older' })
+    await store.update({ lastRepo: 'acme/recent' })
+    const runner = vi.fn(async () => JSON.stringify([
+      { repository: { nameWithOwner: 'acme/suggested' } },
+      { repository: { nameWithOwner: 'ACME/OLDER' } },
+    ]))
+    const service = new PrService({ runner, preferencesPath: path })
+    expect(await service.listRepos()).toEqual([
+      { nameWithOwner: 'acme/pinned', pinned: true },
+      { nameWithOwner: 'acme/recent', pinned: false },
+      { nameWithOwner: 'acme/older', pinned: false },
+      { nameWithOwner: 'acme/suggested', pinned: false },
+    ])
+  })
+
   it('falls back to pinned repos alone when suggestions fail', async () => {
     const path = await temporaryPrefsPath()
     await new PrPreferencesStore(path).update({ pinnedRepos: ['laeijebor/viviFIT'] })
@@ -411,6 +469,7 @@ describe('preferences store', () => {
     expect(await store.read()).toEqual({
       version: 1,
       pinnedRepos: [],
+      recentRepos: [],
       lastRepo: null,
       lastFilter: 'open',
       lastScope: 'mine',
@@ -420,12 +479,41 @@ describe('preferences store', () => {
     expect(updated).toEqual({
       version: 1,
       pinnedRepos: ['laeijebor/viviFIT'],
+      recentRepos: ['Save-All/Save-All'],
       lastRepo: 'Save-All/Save-All',
       lastFilter: 'open',
       lastScope: 'everyone',
     })
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(updated)
     expect(await new PrPreferencesStore(path).read()).toEqual(updated)
+  })
+
+  it('reads existing version 1 files without recentRepos', async () => {
+    const path = await temporaryPrefsPath()
+    const store = new PrPreferencesStore(path)
+    await store.update({ lastRepo: 'acme/widgets' })
+    const legacy = {
+      version: 1,
+      pinnedRepos: [],
+      lastRepo: 'acme/widgets',
+      lastFilter: 'open',
+      lastScope: 'mine',
+    }
+    await writeFile(path, `${JSON.stringify(legacy)}\n`)
+    expect(await new PrPreferencesStore(path).read()).toEqual({ ...legacy, recentRepos: [] })
+  })
+
+  it('maintains a case-insensitive bounded recent-repo list', async () => {
+    const store = new PrPreferencesStore(await temporaryPrefsPath())
+    for (let index = 0; index < 21; index += 1) {
+      await store.update({ lastRepo: `acme/repo-${index}` })
+    }
+    await store.update({ lastRepo: 'ACME/REPO-10' })
+    const preferences = await store.read()
+    expect(preferences.recentRepos).toHaveLength(20)
+    expect(preferences.recentRepos[0]).toBe('ACME/REPO-10')
+    expect(preferences.recentRepos.filter((repo) => repo.toLowerCase() === 'acme/repo-10')).toHaveLength(1)
+    expect(preferences.recentRepos).not.toContain('acme/repo-0')
   })
 
   it('rejects invalid preference patches', async () => {

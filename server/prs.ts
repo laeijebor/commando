@@ -24,6 +24,8 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }`.trim()
 const MAX_PINNED_REPOS = 30
+const MAX_RECENT_REPOS = 20
+const MAX_LIST_CACHE_ENTRIES = 100
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
 type JsonRecord = Record<string, unknown>
@@ -98,6 +100,7 @@ export type PrThreads = {
 export type PrPreferences = {
   version: 1
   pinnedRepos: string[]
+  recentRepos: string[]
   lastRepo: string | null
   lastFilter: PrStateFilter
   lastScope: PrScope
@@ -414,6 +417,10 @@ function parsePreferences(value: unknown): PrPreferences {
   if (lastRepo !== null && (typeof lastRepo !== 'string' || !REPO_PATTERN.test(lastRepo))) {
     throw new Error('PR preferences file has an invalid last repo')
   }
+  const recent = value.recentRepos ?? []
+  if (!Array.isArray(recent) || recent.length > MAX_RECENT_REPOS || !recent.every((repo) => typeof repo === 'string' && REPO_PATTERN.test(repo))) {
+    throw new Error('PR preferences file has an invalid recent repo list')
+  }
   const lastFilter = value.lastFilter
   if (lastFilter !== 'open' && lastFilter !== 'closed' && lastFilter !== 'all') {
     throw new Error('PR preferences file has an invalid last filter')
@@ -422,11 +429,18 @@ function parsePreferences(value: unknown): PrPreferences {
   if (lastScope !== 'mine' && lastScope !== 'everyone') {
     throw new Error('PR preferences file has an invalid last scope')
   }
-  return { version: 1, pinnedRepos: [...pinned] as string[], lastRepo, lastFilter, lastScope }
+  return {
+    version: 1,
+    pinnedRepos: [...pinned] as string[],
+    recentRepos: [...recent] as string[],
+    lastRepo,
+    lastFilter,
+    lastScope,
+  }
 }
 
 function defaultPreferences(): PrPreferences {
-  return { version: 1, pinnedRepos: [], lastRepo: null, lastFilter: 'open', lastScope: 'mine' }
+  return { version: 1, pinnedRepos: [], recentRepos: [], lastRepo: null, lastFilter: 'open', lastScope: 'mine' }
 }
 
 export function defaultPrPreferencesPath(): string {
@@ -452,6 +466,13 @@ export class PrPreferencesStore {
       const patch = this.validatePatch(input)
       const current = await this.load()
       result = { ...current, ...patch }
+      if (patch.lastRepo) {
+        const selectedKey = patch.lastRepo.toLowerCase()
+        result.recentRepos = [
+          patch.lastRepo,
+          ...current.recentRepos.filter((repo) => repo.toLowerCase() !== selectedKey),
+        ].slice(0, MAX_RECENT_REPOS)
+      }
       await this.write(result)
     })
     this.writes = operation.then(() => undefined, () => undefined)
@@ -503,6 +524,7 @@ export class PrPreferencesStore {
 }
 
 type CacheEntry<T> = { at: number; promise: Promise<T> }
+type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
   private readonly runner: GhRunner
@@ -510,7 +532,7 @@ export class PrService {
   private readonly listTtlMs: number
   private readonly reposTtlMs: number
   private readonly now: () => number
-  private readonly listCache = new Map<string, CacheEntry<PrList>>()
+  private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
 
@@ -533,14 +555,52 @@ export class PrService {
     const filter = validateStateFilter(filterInput)
     const key = `${repo}::${filter}`
     const cached = this.listCache.get(key)
-    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
-    const promise = this.fetchPullRequests(repo, filter)
-    const entry = { at: this.now(), promise }
+    if (cached?.value) {
+      if (this.now() - cached.at >= this.listTtlMs && !cached.refresh) {
+        void this.refreshPullRequests(key, repo, filter, cached).catch(() => undefined)
+      }
+      return cached.value
+    }
+    if (cached?.refresh) return cached.refresh
+    const entry: SwrCacheEntry<PrList> = { at: 0, value: null, refresh: null }
     this.listCache.set(key, entry)
-    promise.catch(() => {
-      if (this.listCache.get(key) === entry) this.listCache.delete(key)
-    })
-    return promise
+    return this.refreshPullRequests(key, repo, filter, entry)
+  }
+
+  private refreshPullRequests(
+    key: string,
+    repo: string,
+    filter: PrStateFilter,
+    entry: SwrCacheEntry<PrList>,
+  ): Promise<PrList> {
+    const refresh = this.fetchPullRequests(repo, filter)
+    entry.refresh = refresh
+    void refresh.then(
+      (value) => {
+        if (this.listCache.get(key) !== entry) return
+        entry.value = value
+        entry.at = this.now()
+        entry.refresh = null
+        this.trimListCache()
+      },
+      () => {
+        if (this.listCache.get(key) !== entry) return
+        entry.refresh = null
+        if (!entry.value) this.listCache.delete(key)
+      },
+    )
+    return refresh
+  }
+
+  private trimListCache(): void {
+    if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) return
+    const oldest = [...this.listCache.entries()]
+      .filter(([, entry]) => !entry.refresh)
+      .sort((left, right) => left[1].at - right[1].at)
+    for (const [key] of oldest) {
+      if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) break
+      this.listCache.delete(key)
+    }
   }
 
   private async fetchPullRequests(repo: string, filter: PrStateFilter): Promise<PrList> {
@@ -653,6 +713,9 @@ export class PrService {
   async listRepos(): Promise<PrRepoOption[]> {
     const preferences = await this.preferences.read()
     const pinned = preferences.pinnedRepos
+    const recent = preferences.lastRepo
+      ? [preferences.lastRepo, ...preferences.recentRepos]
+      : preferences.recentRepos
     let suggested: string[] = []
     try {
       suggested = await this.suggestedRepos()
@@ -663,7 +726,7 @@ export class PrService {
     // pins keep whatever the user typed, so dedupe on the lowercased name.
     const seen = new Set(pinned.map((nameWithOwner) => nameWithOwner.toLowerCase()))
     const options: PrRepoOption[] = pinned.map((nameWithOwner) => ({ nameWithOwner, pinned: true }))
-    for (const nameWithOwner of suggested) {
+    for (const nameWithOwner of [...recent, ...suggested]) {
       const key = nameWithOwner.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
