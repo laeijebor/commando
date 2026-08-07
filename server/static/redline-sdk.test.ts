@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const source = readFileSync(join(__dirname, 'redline-sdk.js'), 'utf8')
 
@@ -70,6 +70,10 @@ beforeEach(() => {
   document.body.innerHTML = ''
   delete (window as unknown as Record<string, unknown>).__commandoRedlineQueue
   delete (window as unknown as Record<string, unknown>).redline
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('window.redline.queueResponse', () => {
@@ -233,11 +237,48 @@ describe('redline-question', () => {
 })
 
 describe('binding-absent fallback', () => {
-  it('disables queue buttons with a hint', () => {
+  it('disables queue buttons with a hint, and the poll gives up if the binding never appears', () => {
+    vi.useFakeTimers()
     window.eval(source) // no binding installed
     document.body.innerHTML = '<redline-choice key="k" prompt="p" options="A,B"></redline-choice>'
     const button = document.querySelector('redline-choice button') as HTMLButtonElement
     expect(button.disabled).toBe(true)
     expect(button.title.toLowerCase()).toContain('commando')
+
+    // Fast-forward well past the poll's give-up horizon — a plain-browser
+    // page (no binding ever) must not leave a forever-running interval, and
+    // the button must stay disabled with its hint.
+    vi.advanceTimersByTime(20_000)
+    expect(button.disabled).toBe(true)
+    expect(button.title.toLowerCase()).toContain('commando')
+  })
+})
+
+describe('binding arrives after first paint', () => {
+  it('re-arms a disabled queue button once the CDP binding shows up', () => {
+    vi.useFakeTimers()
+    window.eval(source) // binding absent at first paint, like a fresh tile target
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title.toLowerCase()).toContain('commando')
+
+    // Moments later, Runtime.addBinding finishes and the binding appears.
+    const calls: QueueCall[] = []
+    ;(window as unknown as Record<string, unknown>).__commandoRedlineQueue = (payload: string) => {
+      calls.push(JSON.parse(payload) as QueueCall)
+    }
+    vi.advanceTimersByTime(250)
+
+    expect(button.disabled).toBe(false)
+    expect(button.title).toBe('')
+
+    const radios = host.querySelectorAll('input[type="radio"]')
+    ;(radios[1] as HTMLInputElement).click()
+    button.click()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
   })
 })

@@ -23,6 +23,47 @@
 
   const bindingAvailable = () => typeof window[BINDING] === 'function'
 
+  // The engine starts the page navigating the moment it creates the target,
+  // before it finishes wiring Runtime.addBinding — so a component can render
+  // (and snapshot bindingAvailable() as false) moments before the binding
+  // actually shows up. One shared poller re-arms every disabled button
+  // instead of leaving that snapshot permanent; it gives up after ~15s so a
+  // genuinely plain-browser page doesn't poll forever.
+  const BINDING_POLL_INTERVAL_MS = 250
+  const BINDING_POLL_TIMEOUT_MS = 15_000
+  let bindingPollTimer = null
+  let bindingPollElapsedMs = 0
+  const pendingButtons = new Set()
+
+  const stopBindingPoll = () => {
+    if (bindingPollTimer) clearInterval(bindingPollTimer)
+    bindingPollTimer = null
+    bindingPollElapsedMs = 0
+  }
+
+  const armButtonForBinding = (button) => {
+    pendingButtons.add(button)
+    if (bindingPollTimer) return
+    bindingPollTimer = setInterval(() => {
+      if (bindingAvailable()) {
+        for (const pending of pendingButtons) {
+          pending.disabled = false
+          pending.title = ''
+        }
+        pendingButtons.clear()
+        stopBindingPoll()
+        return
+      }
+      bindingPollElapsedMs += BINDING_POLL_INTERVAL_MS
+      if (bindingPollElapsedMs >= BINDING_POLL_TIMEOUT_MS) {
+        // Gave up — buttons stay disabled with their hint, same as a page
+        // that was never opened in a commando tile at all.
+        pendingButtons.clear()
+        stopBindingPoll()
+      }
+    }, BINDING_POLL_INTERVAL_MS)
+  }
+
   /** id → data-testid → nth-of-type path, mirroring the tile inspector. */
   const cssPath = (element) => {
     if (element.id) return `#${CSS.escape(element.id)}`
@@ -120,6 +161,7 @@
     if (!bindingAvailable()) {
       button.disabled = true
       button.title = 'Open this page in a commando tile to queue answers'
+      armButtonForBinding(button)
     }
     return button
   }
