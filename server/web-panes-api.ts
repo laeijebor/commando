@@ -1,10 +1,11 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePlacement } from '../shared/protocol.js'
-import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_QUESTION } from '../shared/redline-response.js'
+import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingNote, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_QUESTION, MAX_RESPONSE_QUEUE_KEY } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
+import type { PendingNoteInput, WebPanePendingStore } from './web-pane-pending.js'
 import { WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
@@ -43,6 +44,10 @@ type WebPanesApiDependencies = {
   onChange: () => void
   /** Owner-submit / agent-drain review feedback queue. */
   feedback: WebPaneFeedbackStore
+  /** Queued-but-unsent review notes, owned by the daemon. */
+  pending: WebPanePendingStore
+  /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
+  onPendingChanged?: (webPaneId: string, notes: WebPanePendingNote[]) => void
   openLimiter?: TokenBucketRateLimiter
   /**
    * Resolves the live CDP coordinates for a chromium tile (starting its
@@ -123,32 +128,7 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
     ) {
       throw new HttpError(400, 'Note is malformed')
     }
-    let response: WebPaneFeedbackNote['response']
-    if (note.response !== undefined) {
-      const raw = note.response as Record<string, unknown> | null
-      if (typeof raw !== 'object' || raw === null) throw new HttpError(400, 'Note response is malformed')
-      const question = raw.question
-      const answer = raw.answer
-      if (
-        typeof question !== 'string' || question.length === 0 || question.length > MAX_RESPONSE_QUESTION ||
-        typeof answer !== 'string' || answer.length === 0 || answer.length > MAX_RESPONSE_ANSWER
-      ) {
-        throw new HttpError(400, 'Note response is malformed')
-      }
-      response = { question, answer }
-      if (raw.data !== undefined) {
-        let json: string | undefined
-        try {
-          json = JSON.stringify(raw.data)
-        } catch {
-          throw new HttpError(400, 'Note response is malformed')
-        }
-        if (json === undefined || json.length > MAX_RESPONSE_DATA_JSON) {
-          throw new HttpError(400, 'Note response is malformed')
-        }
-        response.data = JSON.parse(json) as unknown
-      }
-    }
+    const response = parseNoteResponse(note.response)
     return {
       selector: note.selector,
       tag: note.tag,
@@ -160,6 +140,68 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
       ...(response !== undefined ? { response } : {}),
     }
   })
+}
+
+function parseNoteResponse(value: unknown): WebPaneFeedbackNote['response'] {
+  if (value === undefined) return undefined
+  const raw = value as Record<string, unknown> | null
+  if (typeof raw !== 'object' || raw === null) throw new HttpError(400, 'Note response is malformed')
+  const question = raw.question
+  const answer = raw.answer
+  if (
+    typeof question !== 'string' || question.length === 0 || question.length > MAX_RESPONSE_QUESTION ||
+    typeof answer !== 'string' || answer.length === 0 || answer.length > MAX_RESPONSE_ANSWER
+  ) {
+    throw new HttpError(400, 'Note response is malformed')
+  }
+  const response: NonNullable<WebPaneFeedbackNote['response']> = { question, answer }
+  if (raw.data !== undefined) {
+    let json: string | undefined
+    try {
+      json = JSON.stringify(raw.data)
+    } catch {
+      throw new HttpError(400, 'Note response is malformed')
+    }
+    if (json === undefined || json.length > MAX_RESPONSE_DATA_JSON) {
+      throw new HttpError(400, 'Note response is malformed')
+    }
+    response.data = JSON.parse(json) as unknown
+  }
+  return response
+}
+
+/**
+ * Validates a queued-note body ({note: {...}}) — a feedback note before it
+ * has a pageUrl/capturedAt, plus the optional replace-key. Also accepts the
+ * client's localStorage restore of a previously queued note.
+ */
+function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput {
+  const raw = body.note
+  if (typeof raw !== 'object' || raw === null) throw new HttpError(400, 'note must be an object')
+  const note = raw as Record<string, unknown>
+  const rect = note.rect as Record<string, unknown> | undefined
+  const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+  if (
+    typeof note.selector !== 'string' || note.selector.length === 0 || note.selector.length > MAX_INSPECT_SELECTOR ||
+    typeof note.tag !== 'string' || note.tag.length === 0 || note.tag.length > MAX_INSPECT_TAG ||
+    (note.text !== undefined && (typeof note.text !== 'string' || note.text.length > MAX_INSPECT_TEXT)) ||
+    typeof note.comment !== 'string' || note.comment.length === 0 || note.comment.length > MAX_FEEDBACK_COMMENT ||
+    (note.queueKey !== undefined && (typeof note.queueKey !== 'string' || note.queueKey.length === 0 || note.queueKey.length > MAX_RESPONSE_QUEUE_KEY)) ||
+    typeof rect !== 'object' || rect === null ||
+    !finite(rect.x) || !finite(rect.y) || !finite(rect.width) || !finite(rect.height)
+  ) {
+    throw new HttpError(400, 'Note is malformed')
+  }
+  const response = parseNoteResponse(note.response)
+  return {
+    selector: note.selector,
+    tag: note.tag,
+    ...(note.text !== undefined ? { text: note.text } : {}),
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    comment: note.comment,
+    ...(note.queueKey !== undefined ? { queueKey: note.queueKey } : {}),
+    ...(response !== undefined ? { response } : {}),
+  }
 }
 
 function digest(value: string): Buffer {
@@ -294,6 +336,61 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'pending') {
+        // Pending notes are the owner's unsent pills — agents have no
+        // business reading them before the owner's explicit send.
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner manages pending notes')
+        const pane = this.dependencies.service.get(route.id)
+        if (!pane) throw new HttpError(404, 'Web pane does not exist')
+        const pending = this.dependencies.pending
+
+        if (route.send === true) {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = await readJson(request)
+          let ids: number[] | undefined
+          if (body.ids !== undefined) {
+            if (
+              !Array.isArray(body.ids) ||
+              body.ids.some((id) => typeof id !== 'number' || !Number.isInteger(id) || id <= 0)
+            ) {
+              throw new HttpError(400, 'ids must be an array of note ids')
+            }
+            ids = body.ids as number[]
+          }
+          const notes = pending.send(
+            route.id,
+            pane.url,
+            Date.now(),
+            (feedbackNotes) => this.dependencies.feedback.enqueue(route.id, feedbackNotes),
+            ids,
+          )
+          this.dependencies.onChange()
+          this.dependencies.onPendingChanged?.(route.id, notes)
+          const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
+          writeJson(response, 200, { ok: true, webPaneId: route.id, queued, notes })
+          return true
+        }
+
+        if (route.noteId !== undefined) {
+          if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
+          const notes = pending.remove(route.id, route.noteId)
+          this.dependencies.onPendingChanged?.(route.id, notes)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+          return true
+        }
+
+        if (request.method === 'GET') {
+          writeJson(response, 200, { ok: true, webPaneId: route.id, notes: pending.list(route.id) })
+          return true
+        }
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const note = parsePendingNoteInput(await readJson(request))
+        const notes = pending.addNote(route.id, note)
+        this.dependencies.onPendingChanged?.(route.id, notes)
+        writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+        return true
+      }
+
       if (route.action === 'confirm') {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (caller !== 'owner') {
@@ -381,6 +478,9 @@ export class WebPanesApi {
               ? 'GET, POST'
               : url.pathname.endsWith('/cdp') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
+              : url.pathname.endsWith('/pending') ? 'GET, POST'
+              : url.pathname.endsWith('/pending/send') ? 'POST'
+              : /\/pending\/\d+$/.test(url.pathname) ? 'DELETE'
               : 'POST, DELETE',
           )
         }
@@ -405,10 +505,19 @@ export class WebPanesApi {
     throw new HttpError(401, 'Unauthorized')
   }
 
-  private route(pathname: string): { kind: 'collection' } | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' } {
+  private route(pathname: string):
+    | { kind: 'collection' }
+    | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; send?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate))?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
+    if (match[2] === 'pending') {
+      if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
+      if (match[3] !== undefined) return { kind: 'pane', id: match[1], action: 'pending', noteId: Number(match[3]) }
+      return { kind: 'pane', id: match[1], action: 'pending' }
+    }
+    if (match[3] !== undefined) throw new HttpError(404, 'Not found')
     const action = match[2] === 'confirm'
       ? 'confirm'
       : match[2] === 'cdp'

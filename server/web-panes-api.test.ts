@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { WebPanesApi } from './web-panes-api.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
+import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
 import { WebPaneService } from './web-panes.js'
 
 const AGENT_TOKEN = 'agent-hook-token-with-at-least-32-characters'
@@ -38,13 +39,17 @@ type Overrides = Partial<ConstructorParameters<typeof WebPanesApi>[0]>
 async function startApi(service: WebPaneService, overrides: Overrides = {}): Promise<{
   baseUrl: string
   onChange: ReturnType<typeof vi.fn>
+  onPendingChanged: ReturnType<typeof vi.fn>
   feedback: WebPaneFeedbackStore
+  pending: WebPanePendingStore
 }> {
   const onChange = vi.fn()
+  const onPendingChanged = vi.fn()
   const journalDir = mkdtempSync(join(tmpdir(), 'commando-feedback-api-journal-'))
   temporaryDirectories.push(journalDir)
   const feedback =
     overrides.feedback ?? new WebPaneFeedbackStore(new FeedbackJournal({ dir: journalDir }), () => onChange())
+  const pending = overrides.pending ?? new WebPanePendingStore(new PendingNotesJournal({ dir: journalDir }))
   const api = new WebPanesApi({
     service,
     agentToken: AGENT_TOKEN,
@@ -55,8 +60,10 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
         : undefined,
     agentLabel: (paneId) => (paneId === '%12' ? 'claude · gizmo' : undefined),
     onChange,
+    onPendingChanged,
     ...overrides,
     feedback,
+    pending,
   })
   const server = createServer((request, response) => {
     void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
@@ -66,7 +73,13 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     server.once('error', reject)
     server.listen(0, '127.0.0.1', resolve)
   })
-  return { baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, onChange, feedback }
+  return {
+    baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    onChange,
+    onPendingChanged,
+    feedback,
+    pending,
+  }
 }
 
 function post(baseUrl: string, path: string, body: unknown, headers: Record<string, string> = {}) {
@@ -652,5 +665,120 @@ describe('feedback routes', () => {
       baseUrl, `/api/web-panes/${id}/feedback`,
       { notes: [{ ...feedbackNote(), response: 'not an object' }] }, ownerAuth,
     )).status).toBe(400)
+  })
+})
+
+function pendingNoteBody(comment = 'align this') {
+  return {
+    note: {
+      selector: '#root > button',
+      tag: 'button',
+      rect: { x: 1, y: 2, width: 30, height: 10 },
+      comment,
+    },
+  }
+}
+
+describe('pending note routes', () => {
+  it('owner queues, lists, and removes pending notes; broadcasts fire', async () => {
+    const service = await createService()
+    const { baseUrl, onPendingChanged } = await startApi(service)
+    const id = await openChromiumPane(service)
+
+    const added = await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    expect(added.status).toBe(200)
+    const addedBody = await added.json() as { notes: Array<{ id: number; comment: string }> }
+    expect(addedBody.notes).toMatchObject([{ id: 1, comment: 'align this' }])
+    expect(onPendingChanged).toHaveBeenCalledWith(id, addedBody.notes)
+
+    const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
+    expect(listed.status).toBe(200)
+    expect(((await listed.json()) as { notes: unknown[] }).notes).toHaveLength(1)
+
+    const removed = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'DELETE',
+      headers: ownerAuth,
+    })
+    expect(removed.status).toBe(200)
+    expect(((await removed.json()) as { notes: unknown[] }).notes).toHaveLength(0)
+  })
+
+  it('accepts a queued note carrying a response and queueKey (restore path)', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const body = pendingNoteBody()
+    const note = {
+      ...body.note,
+      queueKey: 'q1',
+      response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } },
+    }
+    const added = await post(baseUrl, `/api/web-panes/${id}/pending`, { note }, ownerAuth)
+    expect(added.status).toBe(200)
+    const addedBody = await added.json() as { notes: Array<{ queueKey?: string; response?: unknown }> }
+    expect(addedBody.notes[0]?.queueKey).toBe('q1')
+    expect(addedBody.notes[0]?.response).toEqual({ question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } })
+  })
+
+  it('send moves pending notes into the feedback queue with the pane url stamped', async () => {
+    const service = await createService()
+    const { baseUrl, onChange, onPendingChanged } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('first'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('second'), ownerAuth)
+    onChange.mockClear()
+    onPendingChanged.mockClear()
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)
+    expect(sent.status).toBe(200)
+    const sentBody = await sent.json() as { queued: number; notes: unknown[] }
+    expect(sentBody.notes).toHaveLength(0)
+    expect(sentBody.queued).toBe(2)
+    expect(onChange).toHaveBeenCalled()
+    expect(onPendingChanged).toHaveBeenCalledWith(id, [])
+
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    const drainedBody = await drained.json() as { notes: Array<{ comment: string; pageUrl: string; capturedAt: number }> }
+    expect(drainedBody.notes.map((note) => note.comment)).toEqual(['first', 'second'])
+    expect(drainedBody.notes[0]?.pageUrl).toBe('http://127.0.0.1:5173/')
+    expect(drainedBody.notes[0]?.capturedAt).toBeGreaterThan(0)
+  })
+
+  it('send with ids moves only those notes', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('keep'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('go'), ownerAuth)
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [2] }, ownerAuth)
+    const sentBody = await sent.json() as { notes: Array<{ comment: string }> }
+    expect(sentBody.notes.map((note) => note.comment)).toEqual(['keep'])
+  })
+
+  it('a full feedback queue leaves pending untouched', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    for (let index = 0; index < 5; index += 1) {
+      const batch = Array.from({ length: 10 }, () => feedbackNote())
+      await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: batch }, ownerAuth)
+    }
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('stays'), ownerAuth)
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)
+    expect(sent.status).toBe(429)
+    const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
+    expect(((await listed.json()) as { notes: Array<{ comment: string }> }).notes.map((note) => note.comment)).toEqual(['stays'])
+  })
+
+  it('rejects agents, unknown panes, malformed notes, and bad ids', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), agentAuth)).status).toBe(403)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: agentAuth })).status).toBe(403)
+    expect((await post(baseUrl, '/api/web-panes/w-00000000/pending', pendingNoteBody(), ownerAuth)).status).toBe(404)
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending`, { note: { comment: 'no selector' } }, ownerAuth)).status).toBe(400)
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: ['x'] }, ownerAuth)).status).toBe(400)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/nope`, { method: 'DELETE', headers: ownerAuth })).status).toBe(404)
   })
 })

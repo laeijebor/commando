@@ -73,7 +73,12 @@ function renderTile() {
       wsToken="t"
       reloadKey={0}
       reviewMode={false}
-      onSubmitFeedback={async () => undefined}
+      pendingQueue={{
+        list: async () => [],
+        add: async () => [],
+        remove: async () => [],
+        send: async () => [],
+      }}
     />,
   )
 }
