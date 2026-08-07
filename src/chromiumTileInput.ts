@@ -93,6 +93,23 @@ export function tileWheelMessage(event: TileWheelEvent): TileWheelMessage {
   }
 }
 
+/**
+ * React registers its root wheel listeners as passive, so preventDefault from
+ * a synthetic onWheel cannot stop the cockpit page scrolling under the tile.
+ * The capture must be a native non-passive listener on the tile element.
+ */
+export function attachTileWheelCapture(
+  target: HTMLElement,
+  send: (message: TileWheelMessage) => void,
+): () => void {
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault()
+    send(tileWheelMessage(event))
+  }
+  target.addEventListener('wheel', onWheel, { passive: false })
+  return () => target.removeEventListener('wheel', onWheel)
+}
+
 type TileKeyboardEvent = ModifierState & {
   type: string
   key: string

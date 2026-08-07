@@ -3,10 +3,10 @@ import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol'
 import { parseRedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
+  attachTileWheelCapture,
   shouldCaptureKey,
   tileKeyMessages,
   tileMouseMessage,
-  tileWheelMessage,
 } from './chromiumTileInput'
 import {
   chunkNotes,
@@ -343,6 +343,14 @@ export function ChromiumTileCard({
 
   const lastMove = useRef(0)
 
+  // Wheel goes through a native non-passive listener (not React's onWheel) so
+  // preventDefault actually stops the cockpit page scrolling behind the tile.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    return attachTileWheelCapture(canvas, send)
+  }, [])
+
   return (
     <div
       ref={containerRef}
@@ -388,9 +396,6 @@ export function ChromiumTileCard({
           lastMove.current = now
           const message = tileMouseMessage(event.nativeEvent)
           if (message) send(message)
-        }}
-        onWheel={(event) => {
-          send(tileWheelMessage(event.nativeEvent))
         }}
         onKeyDown={(event) => {
           if (reviewMode) return
