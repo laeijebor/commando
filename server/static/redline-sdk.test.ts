@@ -68,6 +68,7 @@ function loadSdk(): QueueCall[] {
 
 beforeEach(() => {
   document.body.innerHTML = ''
+  document.head.querySelectorAll('style[data-redline-styles]').forEach((s) => s.remove())
   delete (window as unknown as Record<string, unknown>).__commandoRedlineQueue
   delete (window as unknown as Record<string, unknown>).redline
 })
@@ -251,6 +252,30 @@ describe('binding-absent fallback', () => {
     vi.advanceTimersByTime(20_000)
     expect(button.disabled).toBe(true)
     expect(button.title.toLowerCase()).toContain('commando')
+  })
+})
+
+describe('injected styles', () => {
+  it('injects the aura stylesheet exactly once across double evaluation', () => {
+    loadSdk()
+    window.eval(source) // second evaluation, defineOnce path
+    const styles = document.head.querySelectorAll('style[data-redline-styles]')
+    expect(styles).toHaveLength(1)
+    expect(styles[0].textContent).toContain(':where(redline-choice')
+    expect(styles[0].textContent).toContain('--redline-accent')
+  })
+
+  it('ships no daisyui utility classes in rendered markup', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-choice key="k" prompt="p" options="A,B"></redline-choice>
+      <redline-approve key="a" prompt="p"></redline-approve>
+      <redline-rating key="r" prompt="p" max="3"></redline-rating>
+      <redline-ask key="q" prompt="p"></redline-ask>`
+    const html = document.body.innerHTML
+    for (const cls of ['btn', 'radio', 'checkbox', 'textarea textarea-sm', 'badge', 'mask-star-2', 'rating']) {
+      expect(html).not.toMatch(new RegExp(`class="[^"]*\\b${cls}\\b`))
+    }
   })
 })
 
