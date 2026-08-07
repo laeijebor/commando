@@ -1,4 +1,7 @@
-import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePlacement } from '../shared/protocol'
+import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePlacement } from '../shared/protocol'
+
+/** A pending note as the client submits it — the daemon assigns the id. */
+export type PendingNoteDraft = Omit<WebPanePendingNote, 'id'>
 
 export interface WebPanesApiClient {
   open(
@@ -11,6 +14,10 @@ export interface WebPanesApiClient {
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
+  pendingNotes(webPaneId: string): Promise<WebPanePendingNote[]>
+  addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingNote[]>
+  removePendingNote(webPaneId: string, noteId: number): Promise<WebPanePendingNote[]>
+  sendPendingNotes(webPaneId: string): Promise<WebPanePendingNote[]>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
   navigate(webPaneId: string, url: string): Promise<void>
 }
@@ -78,6 +85,32 @@ export function createWebPanesApi(
         method: 'POST',
         body: JSON.stringify({ notes }),
       })
+    },
+    pendingNotes: async (webPaneId) => {
+      const body = await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }) as {
+        notes: WebPanePendingNote[]
+      }
+      return body.notes
+    },
+    addPendingNote: async (webPaneId, note) => {
+      const body = await request(`/${encodeURIComponent(webPaneId)}/pending`, {
+        method: 'POST',
+        body: JSON.stringify({ note }),
+      }) as { notes: WebPanePendingNote[] }
+      return body.notes
+    },
+    removePendingNote: async (webPaneId, noteId) => {
+      const body = await request(`/${encodeURIComponent(webPaneId)}/pending/${noteId}`, {
+        method: 'DELETE',
+      }) as { notes: WebPanePendingNote[] }
+      return body.notes
+    },
+    sendPendingNotes: async (webPaneId) => {
+      const body = await request(`/${encodeURIComponent(webPaneId)}/pending/send`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }) as { notes: WebPanePendingNote[] }
+      return body.notes
     },
     move: async (webPaneId, anchor, placement) => {
       await request(`/${encodeURIComponent(webPaneId)}/move`, {

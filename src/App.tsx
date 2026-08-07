@@ -2441,7 +2441,12 @@ export function App() {
                               : undefined
                           }
                           feedback={webPaneFeedback[webPane.id]}
-                          onSubmitFeedback={(notes) => webPanesApi.submitFeedback(webPane.id, notes)}
+                          pendingQueue={{
+                            list: () => webPanesApi.pendingNotes(webPane.id),
+                            add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+                            remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
+                            send: () => webPanesApi.sendPendingNotes(webPane.id),
+                          }}
                           onDragStart={(event) => {
                             setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
                             event.dataTransfer.effectAllowed = 'move'

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol'
-import { parseRedlinePageResponse } from '../shared/redline-response'
+import type { WebPane, WebPanePendingNote } from '../shared/protocol'
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
   attachTileWheelCapture,
@@ -8,16 +7,9 @@ import {
   tileKeyMessages,
   tileMouseMessage,
 } from './chromiumTileInput'
-import {
-  chunkNotes,
-  createInspectThrottle,
-  queueNote,
-  queuePageResponse,
-  removeNote,
-  removeSentNotes,
-  toFeedbackNotes,
-  type QueuedReviewNote,
-} from './tileReview'
+import { loadPendingMirror, savePendingMirror } from './pendingMirror'
+import { createInspectThrottle } from './tileReview'
+import type { PendingNoteDraft } from './webPanesApi'
 
 const VIEWPORT_THROTTLE_MS = 200
 const MOUSEMOVE_THROTTLE_MS = 16
@@ -41,7 +33,18 @@ type TileSocketMessage = {
   rect?: TileInspectRect
   text?: string
   snippet?: string
-  response?: unknown
+  notes?: unknown
+}
+
+/**
+ * The daemon-side pending queue for one tile. Every mutation returns the new
+ * authoritative queue, which the tile renders as pills.
+ */
+export type PendingQueueApi = {
+  list: () => Promise<WebPanePendingNote[]>
+  add: (note: PendingNoteDraft) => Promise<WebPanePendingNote[]>
+  remove: (noteId: number) => Promise<WebPanePendingNote[]>
+  send: () => Promise<WebPanePendingNote[]>
 }
 
 /** Narrows a socket frame already known to be an `inspect_result`. */
@@ -89,14 +92,14 @@ export function ChromiumTileCard({
   wsToken,
   reloadKey,
   reviewMode,
-  onSubmitFeedback,
+  pendingQueue,
 }: {
   webPane: WebPane
   wsToken: string
   reloadKey: number
   /** Review mode swaps input relay for element inspect + note queueing. */
   reviewMode: boolean
-  onSubmitFeedback: (notes: WebPaneFeedbackNote[]) => Promise<void>
+  pendingQueue: PendingQueueApi
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -109,16 +112,54 @@ export function ChromiumTileCard({
   const [highlight, setHighlight] = useState<TileInspectRect | null>(null)
   const [card, setCard] = useState<{ inspect: TileInspectSuccess; x: number; y: number } | null>(null)
   const [comment, setComment] = useState('')
-  const [queued, setQueued] = useState<QueuedReviewNote[]>([])
+  const [queued, setQueued] = useState<WebPanePendingNote[]>([])
+  const [hydrated, setHydrated] = useState(false)
   const [sendState, setSendState] = useState<'idle' | 'sending' | { error: string }>('idle')
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
   const nextInspectId = useRef(0)
-  const nextNoteId = useRef(0)
   const lastHoverId = useRef('')
   const lastClickId = useRef('')
   const lastClickPoint = useRef({ x: 0, y: 0 })
   const reviewModeRef = useRef(reviewMode)
   reviewModeRef.current = reviewMode
+  const pendingQueueRef = useRef(pendingQueue)
+  pendingQueueRef.current = pendingQueue
+
+  // Pills are daemon state: hydrate on mount so notes queued while this tile
+  // was unmounted (another session focused, page reloaded) come back. The
+  // localStorage mirror is belt and braces — restored only when the daemon
+  // definitively reports an empty queue.
+  useEffect(() => {
+    let cancelled = false
+    const hydrate = async () => {
+      let notes: WebPanePendingNote[]
+      try {
+        notes = await pendingQueueRef.current.list()
+        if (notes.length === 0) {
+          const mirrored = loadPendingMirror(webPane.id)
+          for (const note of mirrored) {
+            const { id: _id, ...draft } = note
+            notes = await pendingQueueRef.current.add(draft)
+          }
+        }
+      } catch {
+        // The daemon will still push `pending` over the tile socket.
+        notes = []
+      }
+      if (cancelled) return
+      setQueued((current) => (current.length > 0 ? current : notes))
+      setHydrated(true)
+    }
+    void hydrate()
+    return () => {
+      cancelled = true
+    }
+  }, [webPane.id])
+
+  useEffect(() => {
+    if (!hydrated) return
+    savePendingMirror(webPane.id, queued)
+  }, [hydrated, queued, webPane.id])
 
   // Reload button: reload the page inside the live stream, or reconnect a
   // dead one.
@@ -202,10 +243,11 @@ export function ChromiumTileCard({
           routeInspectResult(message.id, toInspectResult(message))
           return
         }
-        if (message.type === 'page_response') {
-          const response = parseRedlinePageResponse(message.response)
-          if (response) {
-            setQueued((current) => queuePageResponse(current, response, nextNoteId.current++))
+        if (message.type === 'pending') {
+          // The daemon's pending queue is authoritative — replace, never merge.
+          if (Array.isArray(message.notes)) {
+            setQueued(message.notes as WebPanePendingNote[])
+            setHydrated(true)
           }
           return
         }
@@ -352,17 +394,23 @@ export function ChromiumTileCard({
   const clearSendError = () =>
     setSendState((current) => (typeof current === 'object' ? 'idle' : current))
 
-  // Sends in POST-sized chunks so a queue past the server's per-request cap
-  // doesn't fail outright. Each chunk is removed from the queue only once its
-  // own send succeeds, so a failure partway through leaves exactly the
-  // unsent notes behind — no duplicates on retry, no silently lost notes.
+  // Every mutation returns the daemon's new authoritative queue; rendering
+  // that (rather than patching local state) keeps all viewers consistent.
+  const mutateQueue = async (mutate: () => Promise<WebPanePendingNote[]>, failure: string) => {
+    try {
+      setQueued(await mutate())
+      clearSendError()
+    } catch (error) {
+      setSendState({ error: error instanceof Error ? error.message : failure })
+    }
+  }
+
+  // The daemon moves the whole pending queue into the feedback store in one
+  // step; a failure (e.g. the agent's queue is full) leaves it pending.
   const submitQueued = async () => {
     setSendState('sending')
     try {
-      for (const chunk of chunkNotes(queued)) {
-        await onSubmitFeedback(toFeedbackNotes(chunk, webPane.url, Date.now()))
-        setQueued((current) => removeSentNotes(current, chunk))
-      }
+      setQueued(await pendingQueueRef.current.send())
       setSendState('idle')
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })
@@ -478,10 +526,17 @@ export function ChromiumTileCard({
               className="web-pane-action"
               disabled={comment.trim().length === 0}
               onClick={() => {
-                setQueued((current) =>
-                  queueNote(current, card.inspect, comment.trim(), nextNoteId.current++),
+                const { selector, tag, text, rect } = card.inspect
+                void mutateQueue(
+                  () => pendingQueueRef.current.add({
+                    selector,
+                    tag,
+                    ...(text !== undefined ? { text } : {}),
+                    rect,
+                    comment: comment.trim(),
+                  }),
+                  'Could not queue the note',
                 )
-                clearSendError()
                 setCard(null)
                 setComment('')
               }}
@@ -512,8 +567,10 @@ export function ChromiumTileCard({
                 className="tile-review-pill-remove"
                 aria-label={`Remove note about ${note.selector}`}
                 onClick={() => {
-                  setQueued((current) => removeNote(current, note.id))
-                  clearSendError()
+                  void mutateQueue(
+                    () => pendingQueueRef.current.remove(note.id),
+                    'Could not remove the note',
+                  )
                 }}
               >
                 ×

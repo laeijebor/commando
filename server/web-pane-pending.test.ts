@@ -115,6 +115,31 @@ describe('WebPanePendingStore', () => {
     expect(notes.map((note) => note.comment)).toEqual(['keep me', 'Ship it?: no'])
   })
 
+  it('keeps distinct queueKeys and keyless answers separate', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', response('a', 'q1'))
+    store.addResponse('w-11111111', response('b', 'q2'))
+    const notes = store.addResponse('w-11111111', response('c'))
+    expect(notes).toHaveLength(3)
+  })
+
+  it('uses page-provided selector/tag/rect, falling back to a redline synthetic', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', {
+      ...response('a', 'q1'),
+      selector: '#picker',
+      tag: 'redline-choice',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+    })
+    const notes = store.addResponse('w-11111111', response('b', 'q2'))
+    expect(notes[0]).toMatchObject({
+      selector: '#picker',
+      tag: 'redline-choice',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+    })
+    expect(notes[1]).toMatchObject({ selector: 'redline:q2', tag: 'redline' })
+  })
+
   it('drops the oldest response past the cap', () => {
     const store = makeStore()
     for (let index = 0; index < MAX_PENDING_NOTES + 1; index += 1) {

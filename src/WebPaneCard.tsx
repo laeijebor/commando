@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
-import type { WebPane, WebPaneFeedbackInfo, WebPaneFeedbackNote } from '../shared/protocol'
+import type { WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
-import { ChromiumTileCard } from './ChromiumTileCard'
+import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
 import './web-pane.css'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000
+
+/** Inert fallback for callers that never wire a pending queue (tests). */
+const EMPTY_PENDING_QUEUE: PendingQueueApi = {
+  list: async () => [],
+  add: async () => [],
+  remove: async () => [],
+  send: async () => [],
+}
 
 /** Localhost pages embed fine as iframes in every client, including the desktop shell. */
 export function isLocalWebPaneUrl(url: string): boolean {
@@ -55,7 +63,7 @@ export function WebPaneCard({
   wsToken = '',
   onOpenDevtools,
   feedback,
-  onSubmitFeedback,
+  pendingQueue,
   onDragStart,
   onDragEnd,
   onNavigate,
@@ -71,7 +79,8 @@ export function WebPaneCard({
   onOpenDevtools?: () => void
   /** Review-queue state broadcast by the daemon (chromium only). */
   feedback?: WebPaneFeedbackInfo
-  onSubmitFeedback?: (notes: WebPaneFeedbackNote[]) => Promise<void>
+  /** Daemon-side queue of unsent review pills (chromium only). */
+  pendingQueue?: PendingQueueApi
   onDragStart?: (event: DragEvent<HTMLElement>) => void
   onDragEnd?: () => void
   onNavigate?: (url: string) => void
@@ -286,7 +295,7 @@ export function WebPaneCard({
               wsToken={wsToken}
               reloadKey={reloadKey}
               reviewMode={review}
-              onSubmitFeedback={onSubmitFeedback ?? (async () => undefined)}
+              pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
             />
           ) : tier === 'native' && nativeBridge ? (
             <NativeWebViewTile
