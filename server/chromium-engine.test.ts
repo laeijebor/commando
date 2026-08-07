@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer as createNetServer, type AddressInfo } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -14,8 +14,10 @@ import {
 type CdpCall = { targetId: string; method: string; params?: Record<string, unknown> }
 
 /**
- * A miniature Chrome DevTools endpoint: /json/new (PUT), /json/close, and a
- * per-target websocket that acks every CDP call and lets tests emit events.
+ * A miniature Chrome DevTools endpoint: /json/version plus a browser-level
+ * websocket (Target.createTarget / Target.closeTarget) and a per-target
+ * websocket that acks every CDP call and lets tests emit events. Calls on the
+ * browser socket are recorded with targetId 'browser'.
  */
 class StubChromium {
   private server!: Server
@@ -27,24 +29,21 @@ class StubChromium {
   readonly sockets = new Map<string, WebSocket>()
   /** Canned Runtime.evaluate result value, set by tests before triggering the call. */
   evaluateValue: unknown = null
+  /** Methods that should fail with a CDP error on their next call. */
+  private readonly failingMethods = new Set<string>()
+
+  failNext(method: string): void {
+    this.failingMethods.add(method)
+  }
 
   async start(): Promise<void> {
     this.server = createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-      if (url.pathname === '/json/new' && request.method === 'PUT') {
-        const targetId = `T${this.nextTarget++}`
+      if (url.pathname === '/json/version') {
         response.setHeader('Content-Type', 'application/json')
         response.end(JSON.stringify({
-          id: targetId,
-          webSocketDebuggerUrl: `ws://127.0.0.1:${this.port}/devtools/page/${targetId}`,
-          devtoolsFrontendUrl: `/devtools/inspector.html?ws=127.0.0.1:${this.port}/devtools/page/${targetId}`,
+          webSocketDebuggerUrl: `ws://127.0.0.1:${this.port}/devtools/browser/stub-browser`,
         }))
-        return
-      }
-      const close = /^\/json\/close\/(.+)$/.exec(url.pathname)
-      if (close) {
-        this.closedTargets.push(close[1])
-        response.end('Target is closing')
         return
       }
       response.statusCode = 404
@@ -52,6 +51,27 @@ class StubChromium {
     })
     this.wsServer = new WebSocketServer({ server: this.server })
     this.wsServer.on('connection', (socket, request) => {
+      if (/^\/devtools\/browser\//.test(request.url ?? '')) {
+        this.sockets.set('browser', socket)
+        socket.on('message', (data) => {
+          const message = JSON.parse(String(data)) as { id: number; method: string; params?: Record<string, unknown> }
+          this.calls.push({ targetId: 'browser', method: message.method, params: message.params })
+          if (message.method === 'Target.createTarget') {
+            const targetId = `T${this.nextTarget++}`
+            socket.send(JSON.stringify({ id: message.id, result: { targetId } }))
+            return
+          }
+          if (message.method === 'Target.closeTarget') {
+            const targetId = String(message.params?.targetId)
+            this.closedTargets.push(targetId)
+            this.sockets.get(targetId)?.close()
+            socket.send(JSON.stringify({ id: message.id, result: { success: true } }))
+            return
+          }
+          socket.send(JSON.stringify({ id: message.id, result: {} }))
+        })
+        return
+      }
       const match = /^\/devtools\/page\/(.+)$/.exec(request.url ?? '')
       if (!match) {
         socket.close()
@@ -62,6 +82,10 @@ class StubChromium {
       socket.on('message', (data) => {
         const message = JSON.parse(String(data)) as { id: number; method: string; params?: Record<string, unknown> }
         this.calls.push({ targetId, method: message.method, params: message.params })
+        if (this.failingMethods.delete(message.method)) {
+          socket.send(JSON.stringify({ id: message.id, error: { message: `${message.method} failed (stub)` } }))
+          return
+        }
         if (message.method === 'Runtime.evaluate') {
           socket.send(JSON.stringify({ id: message.id, result: { result: { type: 'object', value: this.evaluateValue } } }))
           return
@@ -195,6 +219,96 @@ describe('ChromiumEngine', () => {
     const second = await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
     expect(second.target).toContain('/T2')
     expect(stub.nextTarget).toBe(3)
+  })
+
+  it('creates each tile target in its own browser window so background tiles keep painting', async () => {
+    const { stub, engine } = await createHarness()
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    // A tab created with /json/new steals the active slot and stops every
+    // other tile's compositor (hidden tabs emit no screencast frames);
+    // newWindow keeps each tile painting independently.
+    expect(stub.calls).toContainEqual({
+      targetId: 'browser',
+      method: 'Target.createTarget',
+      params: { url: 'http://localhost:5173/', newWindow: true },
+    })
+  })
+
+  it('recovers from a failed screencast start instead of wedging the tile', async () => {
+    const { stub, engine } = await createHarness()
+    stub.failNext('Page.startScreencast')
+    const stale = vi.fn()
+    await expect(
+      engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', stale),
+    ).rejects.toThrow(/startScreencast/)
+
+    // A later subscriber must retry the start and receive frames; the failed
+    // subscriber's sink must not linger.
+    const frames: ScreencastFrame[] = []
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    await until(
+      () => stub.calls.filter((call) => call.method === 'Page.startScreencast').length === 2,
+      'screencast retry',
+    )
+    stub.emit('T1', 'Page.screencastFrame', { data: 'AFTER', sessionId: 3, metadata: {} })
+    await until(() => frames.length === 1, 'frame after retry')
+    expect(stale).not.toHaveBeenCalled()
+  })
+
+  it('fails fast when the browser devtools http endpoint hangs', async () => {
+    const silent = createServer(() => {
+      // Never respond: a wedged browser must not hang the relay forever.
+    })
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()))
+    cleanups.push(() => new Promise<void>((resolve) => silent.close(() => resolve())))
+    const engine = new ChromiumEngine({
+      launcher: () => Promise.resolve({
+        port: (silent.address() as AddressInfo).port,
+        kill: () => undefined,
+        exited: new Promise<void>(() => undefined),
+      }),
+      classify: () => ({ kind: 'open' }),
+      onExternalNavigation: () => undefined,
+      httpTimeoutMs: 50,
+    })
+    cleanups.push(() => engine.dispose())
+    await expect(engine.cdpInfo('w-11111111', 'http://localhost:5173/')).rejects.toThrow(/timed out/)
+  })
+
+  it('fails fast when the CDP websocket never completes its handshake', async () => {
+    // Accepts TCP connections but never answers the websocket upgrade.
+    const muteSockets: Array<{ destroy: () => void }> = []
+    const mute = createNetServer((socket) => {
+      muteSockets.push(socket)
+    })
+    await new Promise<void>((resolve) => mute.listen(0, '127.0.0.1', () => resolve()))
+    cleanups.push(() => new Promise<void>((resolve) => {
+      for (const socket of muteSockets) socket.destroy()
+      mute.close(() => resolve())
+    }))
+    const mutePort = (mute.address() as AddressInfo).port
+    const version = createServer((request, response) => {
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({
+        webSocketDebuggerUrl: `ws://127.0.0.1:${mutePort}/devtools/browser/mute`,
+      }))
+    })
+    await new Promise<void>((resolve) => version.listen(0, '127.0.0.1', () => resolve()))
+    cleanups.push(() => new Promise<void>((resolve) => version.close(() => resolve())))
+    const engine = new ChromiumEngine({
+      launcher: () => Promise.resolve({
+        port: (version.address() as AddressInfo).port,
+        kill: () => undefined,
+        exited: new Promise<void>(() => undefined),
+      }),
+      classify: () => ({ kind: 'open' }),
+      onExternalNavigation: () => undefined,
+      connectTimeoutMs: 50,
+    })
+    cleanups.push(() => engine.dispose())
+    await expect(engine.cdpInfo('w-11111111', 'http://localhost:5173/')).rejects.toThrow(/timed out/)
   })
 
   it('fans screencast frames out to subscribers and acks them', async () => {

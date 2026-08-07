@@ -161,11 +161,21 @@ class CdpConnection {
     socket.on('error', () => this.handleClose())
   }
 
-  static open(url: string): Promise<CdpConnection> {
+  static open(url: string, timeoutMs = CDP_CALL_TIMEOUT_MS): Promise<CdpConnection> {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url, { maxPayload: 64 * 1024 * 1024 })
-      socket.once('open', () => resolve(new CdpConnection(socket)))
-      socket.once('error', (error) => reject(new WebPaneError(503, `CDP connection failed: ${error.message}`)))
+      const timeout = setTimeout(() => {
+        socket.terminate()
+        reject(new WebPaneError(504, `CDP connection to ${url} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      socket.once('open', () => {
+        clearTimeout(timeout)
+        resolve(new CdpConnection(socket))
+      })
+      socket.once('error', (error) => {
+        clearTimeout(timeout)
+        reject(new WebPaneError(503, `CDP connection failed: ${error.message}`))
+      })
     })
   }
 
@@ -388,7 +398,14 @@ export type ChromiumEngineOptions = {
   onTargetDown?: (webPaneId: string) => void
   /** Called when a tile page queues a component answer via the redline binding. */
   onPageResponse?: (webPaneId: string, response: RedlinePageResponse) => void
+  /** Budget for browser devtools HTTP calls; a wedged browser must fail, not hang. */
+  httpTimeoutMs?: number
+  /** Budget for CDP websocket handshakes; same rationale. */
+  connectTimeoutMs?: number
 }
+
+/** The engine's live browser: the process handle plus its browser-level CDP socket. */
+type BrowserSession = { launch: ChromiumLaunch; cdp: CdpConnection }
 
 /**
  * Owns the daemon-managed headless Chromium: one browser process, one page
@@ -398,8 +415,10 @@ export type ChromiumEngineOptions = {
 export class ChromiumEngine {
   private readonly profileDir: string
   private readonly launcher: ChromiumLauncher
-  private browser: ChromiumLaunch | null = null
-  private browserStarting: Promise<ChromiumLaunch> | null = null
+  private readonly httpTimeoutMs: number
+  private readonly connectTimeoutMs: number
+  private browser: BrowserSession | null = null
+  private browserStarting: Promise<BrowserSession> | null = null
   private readonly tiles = new Map<string, TileTarget>()
   private readonly targetStarting = new Map<string, Promise<TileTarget>>()
   /** Last viewport per tile — buffered so a viewport sent before the target exists still applies. */
@@ -409,6 +428,8 @@ export class ChromiumEngine {
   constructor(private readonly options: ChromiumEngineOptions) {
     this.profileDir = options.profileDir ?? defaultChromiumProfileDir()
     this.launcher = options.launcher ?? spawnChromiumLauncher
+    this.httpTimeoutMs = options.httpTimeoutMs ?? CDP_CALL_TIMEOUT_MS
+    this.connectTimeoutMs = options.connectTimeoutMs ?? CDP_CALL_TIMEOUT_MS
   }
 
   hasTile(webPaneId: string): boolean {
@@ -441,12 +462,20 @@ export class ChromiumEngine {
     tile.sinks.add(sink)
     if (!tile.screencasting) {
       tile.screencasting = true
-      await tile.cdp.send('Page.startScreencast', {
-        format: 'png',
-        maxWidth: SCREENCAST_MAX_DIMENSION,
-        maxHeight: SCREENCAST_MAX_DIMENSION,
-        everyNthFrame: 1,
-      })
+      try {
+        await tile.cdp.send('Page.startScreencast', {
+          format: 'png',
+          maxWidth: SCREENCAST_MAX_DIMENSION,
+          maxHeight: SCREENCAST_MAX_DIMENSION,
+          everyNthFrame: 1,
+        })
+      } catch (error) {
+        // A failed start must not wedge the tile: leaving the flag set would
+        // make every later subscriber skip the start and hang frameless.
+        tile.screencasting = false
+        tile.sinks.delete(sink)
+        throw error
+      }
     }
     return () => {
       tile.sinks.delete(sink)
@@ -562,10 +591,7 @@ export class ChromiumEngine {
     if (!tile) return
     this.tiles.delete(webPaneId)
     tile.cdp.close()
-    const browser = this.browser
-    if (browser) {
-      void this.browserHttp(browser.port, `/json/close/${tile.targetId}`).catch(() => undefined)
-    }
+    this.browser?.cdp.sendAndForget('Target.closeTarget', { targetId: tile.targetId })
   }
 
   /** Drops targets whose tiles no longer exist or switched engines. */
@@ -578,18 +604,19 @@ export class ChromiumEngine {
   dispose(): void {
     this.disposed = true
     for (const webPaneId of [...this.tiles.keys()]) this.closeTile(webPaneId)
-    this.browser?.kill()
+    this.browser?.cdp.close()
+    this.browser?.launch.kill()
     this.browser = null
   }
 
-  private async ensureBrowser(): Promise<ChromiumLaunch> {
+  private async ensureBrowser(): Promise<BrowserSession> {
     if (this.disposed) throw new WebPaneError(503, 'Chromium engine is shut down')
     if (this.browser) return this.browser
     if (!this.browserStarting) {
-      this.browserStarting = Promise.resolve(this.launcher(this.profileDir)).then((launch) => {
-        this.browser = launch
-        void launch.exited.then(() => this.handleBrowserExit(launch))
-        return launch
+      this.browserStarting = this.startBrowser().then((session) => {
+        this.browser = session
+        void session.launch.exited.then(() => this.handleBrowserExit(session))
+        return session
       })
       this.browserStarting.catch(() => undefined).finally(() => {
         this.browserStarting = null
@@ -598,9 +625,33 @@ export class ChromiumEngine {
     return this.browserStarting
   }
 
-  private handleBrowserExit(launch: ChromiumLaunch): void {
-    if (this.browser !== launch) return
+  private async startBrowser(): Promise<BrowserSession> {
+    const launch = await this.launcher(this.profileDir)
+    try {
+      const version = (await this.browserHttp(launch.port, '/json/version')) as {
+        webSocketDebuggerUrl?: string
+      }
+      if (!version.webSocketDebuggerUrl) {
+        throw new WebPaneError(502, 'Chromium did not report a browser DevTools endpoint')
+      }
+      const cdp = await CdpConnection.open(version.webSocketDebuggerUrl, this.connectTimeoutMs)
+      const session: BrowserSession = { launch, cdp }
+      // A dead browser socket means no more target management: kill the
+      // process so the exit path runs and the next tile relaunches cleanly.
+      cdp.onClose(() => {
+        if (this.browser === session) launch.kill()
+      })
+      return session
+    } catch (error) {
+      launch.kill()
+      throw error
+    }
+  }
+
+  private handleBrowserExit(session: BrowserSession): void {
+    if (this.browser !== session) return
     this.browser = null
+    session.cdp.close()
     for (const [webPaneId, tile] of [...this.tiles]) {
       this.tiles.delete(webPaneId)
       tile.cdp.close()
@@ -624,24 +675,25 @@ export class ChromiumEngine {
 
   private async createTarget(webPaneId: string, url: string): Promise<TileTarget> {
     const browser = await this.ensureBrowser()
-    const created = (await this.browserHttp(
-      browser.port,
-      `/json/new?${encodeURIComponent(url)}`,
-      'PUT',
-    )) as { id?: string; webSocketDebuggerUrl?: string; devtoolsFrontendUrl?: string }
-    if (!created.id || !created.webSocketDebuggerUrl) {
+    // One window per tile, never a tab: in a shared window only the active
+    // tab's compositor runs, so every backgrounded tile's screencast would
+    // freeze silently (visibilityState "hidden", zero frames).
+    const created = await browser.cdp.send('Target.createTarget', { url, newWindow: true })
+    const targetId = typeof created.targetId === 'string' ? created.targetId : null
+    if (!targetId) {
       throw new WebPaneError(502, 'Chromium did not return a debuggable target')
     }
-    const cdp = await CdpConnection.open(created.webSocketDebuggerUrl)
+    const wsUrl = `ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`
+    const cdp = await CdpConnection.open(wsUrl, this.connectTimeoutMs)
     // Chrome reports an appspot-hosted frontend URL; use the browser's own
     // locally-served copy instead so the DevTools tile stays a localhost page.
     const devtoolsFrontendUrl =
-      `http://127.0.0.1:${browser.port}/devtools/inspector.html` +
-      `?ws=${created.webSocketDebuggerUrl.replace(/^ws:\/\//, '')}`
+      `http://127.0.0.1:${browser.launch.port}/devtools/inspector.html` +
+      `?ws=${wsUrl.replace(/^ws:\/\//, '')}`
     const tile: TileTarget = {
       webPaneId,
-      targetId: created.id,
-      wsUrl: created.webSocketDebuggerUrl,
+      targetId,
+      wsUrl,
       devtoolsFrontendUrl,
       cdp,
       sinks: new Set(),
@@ -728,8 +780,23 @@ export class ChromiumEngine {
     this.options.onExternalNavigation(tile.webPaneId, url)
   }
 
-  private async browserHttp(port: number, path: string, method: 'GET' | 'PUT' = 'GET'): Promise<unknown> {
-    const response = await fetch(`http://127.0.0.1:${port}${path}`, { method })
+  private async browserHttp(port: number, path: string): Promise<unknown> {
+    let response: Response
+    try {
+      response = await fetch(`http://127.0.0.1:${port}${path}`, {
+        signal: AbortSignal.timeout(this.httpTimeoutMs),
+      })
+    } catch (error) {
+      const name = error instanceof Error ? error.name : ''
+      const causeName = (error as { cause?: { name?: string } }).cause?.name ?? ''
+      if (name === 'TimeoutError' || name === 'AbortError' || causeName === 'TimeoutError') {
+        throw new WebPaneError(504, `Chromium devtools endpoint ${path} timed out after ${this.httpTimeoutMs}ms`)
+      }
+      throw new WebPaneError(
+        502,
+        `Chromium devtools endpoint ${path} failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     if (!response.ok) {
       throw new WebPaneError(502, `Chromium devtools endpoint ${path} responded ${response.status}`)
     }
