@@ -87,6 +87,11 @@ describe('inspectExpression', () => {
     if (result.ok) expect(result.selector).toBe('#root > button')
     // And the expression embeds the arguments.
     expect(inspectExpression(3, 4, 'click')).toContain('(document, 3, 4, "click")')
+    // Pin the __name shim itself: tsx's esbuild keepNames injects __name(...)
+    // calls into the stringified probe, but vitest runs with keepNames off,
+    // so nothing here would fail if the shim were deleted — without this
+    // assertion the suite would stay green while the daemon breaks live.
+    expect(inspectExpression(1, 1, 'hover')).toContain('var __name')
   })
 
   it('shims __name so the expression still evaluates when esbuild keepNames renames helpers', () => {
