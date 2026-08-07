@@ -290,6 +290,16 @@ describe('PrsSection', () => {
     ))).toBe(true)
   })
 
+  it('remembers an auto-detected repo that was already selected from suggestions', async () => {
+    stubFetch({ paneRepo: () => jsonResponse({ repo: 'ACME/WIDGETS' }) })
+    render(<PrsSection token="t" currentPaneId="%7" currentPanePath="/workspace/widgets" />)
+
+    await waitFor(() => expect(requests.some((request) => (
+      request.method === 'PUT' && (request.body as { lastRepo?: string })?.lastRepo === 'ACME/WIDGETS'
+    ))).toBe(true))
+    expect(screen.getByLabelText('Repository')).toHaveValue('acme/widgets')
+  })
+
   it('does not let a late pane lookup override a manual repository choice', async () => {
     let finishLookup: ((response: Response) => void) | undefined
     stubFetch({

@@ -324,6 +324,7 @@ export function PrsSection({
     if (!ready || !currentPaneId || !paneContext) return
     let active = true
     let inFlight = false
+    let persistedRepo = ''
 
     const resolvePaneRepo = async () => {
       if (inFlight || manualPaneContext.current === paneContext) return
@@ -334,13 +335,19 @@ export function PrsSection({
         setRepos((current) => current.some((candidate) => candidate.toLowerCase() === next.toLowerCase())
           ? current
           : [next, ...current])
-        if (repoRef.current.toLowerCase() === next.toLowerCase()) return
+        const nextKey = next.toLowerCase()
+        if (persistedRepo !== nextKey) {
+          persistedRepo = nextKey
+          void api.updatePrefs({ lastRepo: next }).catch(() => {
+            if (active && persistedRepo === nextKey) persistedRepo = ''
+          })
+        }
+        if (repoRef.current.toLowerCase() === nextKey) return
         const cached = listCache.current.get(`${next}::${filterRef.current}`) ?? null
         repoRef.current = next
         setList(cached)
         setLoading(cached === null)
         setRepo(next)
-        void api.updatePrefs({ lastRepo: next }).catch(() => undefined)
       } catch {
         // Pane repository discovery is best-effort; the manual picker stays usable.
       } finally {
