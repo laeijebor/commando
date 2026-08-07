@@ -9,6 +9,12 @@ import {
   type TileInspectGrade,
   type TileInspectResult,
 } from '../shared/tile-inspect.js'
+import {
+  MAX_RESPONSE_PAYLOAD_BYTES,
+  REDLINE_BINDING_NAME,
+  parseRedlinePageResponse,
+  type RedlinePageResponse,
+} from '../shared/redline-response.js'
 import { WebPaneError } from './web-panes.js'
 
 const LAUNCH_TIMEOUT_MS = 20_000
@@ -380,6 +386,8 @@ export type ChromiumEngineOptions = {
   onExternalNavigation: (webPaneId: string, url: string) => void
   /** Called when a tile's CDP connection (or the whole browser) went away. */
   onTargetDown?: (webPaneId: string) => void
+  /** Called when a tile page queues a component answer via the redline binding. */
+  onPageResponse?: (webPaneId: string, response: RedlinePageResponse) => void
 }
 
 /**
@@ -665,6 +673,33 @@ export class ChromiumEngine {
       this.options.onTargetDown?.(webPaneId)
     })
     await cdp.send('Page.enable')
+    // The redline queue binding: page components call
+    // window.__commandoRedlineQueue(json) and the payload surfaces here as
+    // Runtime.bindingCalled. Installed unconditionally — inert unless a page
+    // uses it — and validated as untrusted input before leaving the engine.
+    await cdp.send('Runtime.enable')
+    await cdp.send('Runtime.addBinding', { name: REDLINE_BINDING_NAME })
+    cdp.on('Runtime.bindingCalled', (params) => {
+      if (params.name !== REDLINE_BINDING_NAME) return
+      const payload = params.payload
+      if (typeof payload !== 'string' || payload.length > MAX_RESPONSE_PAYLOAD_BYTES) {
+        console.warn(`redline: dropped oversized page-response envelope for ${webPaneId}`)
+        return
+      }
+      let value: unknown
+      try {
+        value = JSON.parse(payload)
+      } catch {
+        console.warn(`redline: dropped page-response payload with malformed JSON for ${webPaneId}`)
+        return
+      }
+      const response = parseRedlinePageResponse(value)
+      if (!response) {
+        console.warn(`redline: dropped page-response payload that failed validation for ${webPaneId}`)
+        return
+      }
+      this.options.onPageResponse?.(webPaneId, response)
+    })
     const bufferedViewport = this.viewports.get(webPaneId)
     if (bufferedViewport) {
       await this.applyViewport(tile, bufferedViewport).catch(() => undefined)

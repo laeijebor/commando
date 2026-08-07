@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { parseTileInputEvent, parseTileInspectRequest, type ChromiumEngine } from './chromium-engine.js'
 import type { WebPaneService } from './web-panes.js'
+import type { RedlinePageResponse } from '../shared/redline-response.js'
 
 const WEB_TILE_PATH = /^\/ws\/web-tiles\/(w-[0-9a-f]{8})$/
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024
@@ -51,6 +52,16 @@ export class WebTileRelay {
     if (!sockets) return
     this.subscribers.delete(webPaneId)
     for (const socket of sockets) socket.close(4410, 'Web tile is no longer streamable')
+  }
+
+  /** Fans a page-originated component answer out to the tile's viewers. */
+  broadcastPageResponse(webPaneId: string, response: RedlinePageResponse): void {
+    const sockets = this.subscribers.get(webPaneId)
+    if (!sockets) return
+    const message = JSON.stringify({ type: 'page_response', response })
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(message)
+    }
   }
 
   close(): void {

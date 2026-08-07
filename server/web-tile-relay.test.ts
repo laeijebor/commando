@@ -55,7 +55,7 @@ async function startRelay(engineOverrides: Partial<ChromiumEngine> = {}) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/web-tiles/w-11111111`)
   sockets.push(socket)
   await new Promise<void>((resolve) => socket.once('open', () => resolve()))
-  return { socket, engine }
+  return { socket, engine, relay }
 }
 
 function nextMessage(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
@@ -95,5 +95,19 @@ describe('web tile relay inspect routing', () => {
     const reply = nextMessage(socket, 'inspect_result')
     socket.send(JSON.stringify({ type: 'inspect', id: 'i-8', x: 1, y: 1, grade: 'click' }))
     expect(await reply).toMatchObject({ id: 'i-8', ok: false })
+  })
+})
+
+describe('web tile relay page response broadcast', () => {
+  it('broadcasts page responses to subscribed tile sockets', async () => {
+    const { socket, relay } = await startRelay()
+    const reply = nextMessage(socket, 'page_response')
+    relay.broadcastPageResponse('w-11111111', { question: 'Which plan?', answer: 'Pro' })
+    expect(await reply).toMatchObject({ response: { question: 'Which plan?', answer: 'Pro' } })
+  })
+
+  it('broadcastPageResponse is a no-op for unknown panes', async () => {
+    const { relay } = await startRelay()
+    expect(() => relay.broadcastPageResponse('w-deadbeef', { question: 'q', answer: 'a' })).not.toThrow()
   })
 })

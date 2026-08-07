@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol'
+import { parseRedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
   shouldCaptureKey,
@@ -8,8 +9,10 @@ import {
   tileWheelMessage,
 } from './chromiumTileInput'
 import {
+  chunkNotes,
   createInspectThrottle,
   queueNote,
+  queuePageResponse,
   removeNote,
   removeSentNotes,
   toFeedbackNotes,
@@ -37,6 +40,7 @@ type TileSocketMessage = {
   rect?: TileInspectRect
   text?: string
   snippet?: string
+  response?: unknown
 }
 
 /** Narrows a socket frame already known to be an `inspect_result`. */
@@ -173,6 +177,13 @@ export function ChromiumTileCard({
         }
         if (message.type === 'inspect_result' && typeof message.id === 'string') {
           routeInspectResult(message.id, toInspectResult(message))
+          return
+        }
+        if (message.type === 'page_response') {
+          const response = parseRedlinePageResponse(message.response)
+          if (response) {
+            setQueued((current) => queuePageResponse(current, response, nextNoteId.current++))
+          }
           return
         }
         if (message.type === 'ready') {
@@ -313,12 +324,17 @@ export function ChromiumTileCard({
   const clearSendError = () =>
     setSendState((current) => (typeof current === 'object' ? 'idle' : current))
 
+  // Sends in POST-sized chunks so a queue past the server's per-request cap
+  // doesn't fail outright. Each chunk is removed from the queue only once its
+  // own send succeeds, so a failure partway through leaves exactly the
+  // unsent notes behind — no duplicates on retry, no silently lost notes.
   const submitQueued = async () => {
-    const batch = queued
     setSendState('sending')
     try {
-      await onSubmitFeedback(toFeedbackNotes(batch, webPane.url, Date.now()))
-      setQueued((current) => removeSentNotes(current, batch))
+      for (const chunk of chunkNotes(queued)) {
+        await onSubmitFeedback(toFeedbackNotes(chunk, webPane.url, Date.now()))
+        setQueued((current) => removeSentNotes(current, chunk))
+      }
       setSendState('idle')
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })

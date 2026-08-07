@@ -33,6 +33,8 @@ import { WorkspaceStore } from './workspaces.js'
 import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
+import { RedlineApi } from './redline-api.js'
+import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
 import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
@@ -434,6 +436,7 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageResponse: (webPaneId, response) => webTileRelay.broadcastPageResponse(webPaneId, response),
   })
   const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
   // onDrain fires only at request time, safely after publishWebPanes exists.
@@ -1200,6 +1203,13 @@ async function main(): Promise<void> {
       webTileRelay.dropTile(webPaneId)
     },
   })
+  const redlineArtifacts = new RedlineArtifactRegistry()
+  const redlineApi = new RedlineApi({
+    agentToken: agentHookToken,
+    ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
+    artifacts: redlineArtifacts,
+    baseUrl: `http://127.0.0.1:${port}`,
+  })
 
   const handleClientMessage = (client: ClientState, message: ParsedClientMessage): void => {
     switch (message.type) {
@@ -1591,6 +1601,7 @@ async function main(): Promise<void> {
 
       if (await agentStatusHooks.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
+      if (await redlineApi.handle(request, response, url)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {

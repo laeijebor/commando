@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MAX_FEEDBACK_NOTES_PER_POST } from '../shared/protocol'
 import {
+  chunkNotes,
   createInspectThrottle,
+  MAX_QUEUED_PILLS,
   queueNote,
+  queuePageResponse,
   removeNote,
   removeSentNotes,
   toFeedbackNotes,
@@ -55,6 +59,42 @@ describe('review note queue', () => {
   })
 })
 
+describe('chunkNotes', () => {
+  it('returns an empty array for an empty queue', () => {
+    expect(chunkNotes([])).toEqual([])
+  })
+
+  it('keeps a queue at or under the chunk size in a single chunk', () => {
+    let list = queueNote([], inspect, 'a', 1)
+    list = queueNote(list, inspect, 'b', 2)
+    expect(chunkNotes(list)).toEqual([list])
+  })
+
+  it('splits into groups no larger than MAX_FEEDBACK_NOTES_PER_POST by default', () => {
+    let list: ReturnType<typeof queueNote> = []
+    for (let index = 0; index < MAX_FEEDBACK_NOTES_PER_POST * 2 + 3; index += 1) {
+      list = queueNote(list, inspect, `note ${index}`, index)
+    }
+    const chunks = chunkNotes(list)
+    expect(chunks).toHaveLength(3)
+    expect(chunks[0]).toHaveLength(MAX_FEEDBACK_NOTES_PER_POST)
+    expect(chunks[1]).toHaveLength(MAX_FEEDBACK_NOTES_PER_POST)
+    expect(chunks[2]).toHaveLength(3)
+    // Order is preserved across chunk boundaries.
+    expect(chunks.flat()).toEqual(list)
+  })
+
+  it('honors a custom chunk size', () => {
+    let list = queueNote([], inspect, 'a', 1)
+    list = queueNote(list, inspect, 'b', 2)
+    list = queueNote(list, inspect, 'c', 3)
+    expect(chunkNotes(list, 2)).toEqual([
+      [list[0], list[1]],
+      [list[2]],
+    ])
+  })
+})
+
 describe('createInspectThrottle', () => {
   it('fires immediately, then collapses to a trailing latest-wins call', () => {
     vi.useFakeTimers()
@@ -79,5 +119,62 @@ describe('createInspectThrottle', () => {
     throttle.dispose()
     vi.advanceTimersByTime(100)
     expect(send).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('queuePageResponse', () => {
+  const response = { question: 'Which plan?', answer: 'Pro', queueKey: 'plan' }
+
+  it('appends a pill note with a readable comment', () => {
+    const list = queuePageResponse([], response, 1)
+    expect(list).toHaveLength(1)
+    expect(list[0].comment).toBe('Which plan?: Pro')
+    expect(list[0].response).toEqual({ question: 'Which plan?', answer: 'Pro' })
+    expect(list[0].queueKey).toBe('plan')
+    expect(list[0].selector).toBe('redline:plan')
+    expect(list[0].tag).toBe('redline')
+  })
+
+  it('uses page-provided selector/tag/rect when present', () => {
+    const list = queuePageResponse(
+      [],
+      { ...response, selector: '#picker', tag: 'redline-choice', rect: { x: 1, y: 2, width: 3, height: 4 } },
+      1,
+    )
+    expect(list[0].selector).toBe('#picker')
+    expect(list[0].tag).toBe('redline-choice')
+    expect(list[0].rect).toEqual({ x: 1, y: 2, width: 3, height: 4 })
+  })
+
+  it('replaces an unsent answer with the same queueKey', () => {
+    const first = queuePageResponse([], response, 1)
+    const second = queuePageResponse(first, { ...response, answer: 'Starter' }, 2)
+    expect(second).toHaveLength(1)
+    expect(second[0].id).toBe(2)
+    expect(second[0].comment).toBe('Which plan?: Starter')
+  })
+
+  it('keeps distinct queueKeys and keyless answers separate', () => {
+    const first = queuePageResponse([], response, 1)
+    const second = queuePageResponse(first, { question: 'q2', answer: 'a2' }, 2)
+    const third = queuePageResponse(second, { question: 'q3', answer: 'a3' }, 3)
+    expect(third).toHaveLength(3)
+  })
+
+  it('carries data through to feedback notes', () => {
+    const list = queuePageResponse([], { ...response, data: { choice: 'Pro' } }, 1)
+    const notes = toFeedbackNotes(list, 'http://x/', 42)
+    expect(notes[0].response).toEqual({ question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } })
+    expect(notes[0]).not.toHaveProperty('queueKey')
+    expect(notes[0]).not.toHaveProperty('id')
+  })
+
+  it('caps the queue at MAX_QUEUED_PILLS dropping the oldest', () => {
+    let list: ReturnType<typeof queuePageResponse> = []
+    for (let index = 0; index < MAX_QUEUED_PILLS + 5; index += 1) {
+      list = queuePageResponse(list, { question: `q${index}`, answer: 'a' }, index)
+    }
+    expect(list).toHaveLength(MAX_QUEUED_PILLS)
+    expect(list[0].comment).toBe('q5: a')
   })
 })
