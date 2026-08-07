@@ -240,10 +240,9 @@ export class WebPanesApi {
       }
 
       if (route.action === 'feedback') {
-        if (!this.dependencies.service.get(route.id)) {
-          throw new HttpError(404, 'Web pane does not exist')
-        }
+        const paneExists = Boolean(this.dependencies.service.get(route.id))
         if (request.method === 'POST') {
+          if (!paneExists) throw new HttpError(404, 'Web pane does not exist')
           if (caller !== 'owner') {
             throw new HttpError(403, 'Only the owner can submit feedback')
           }
@@ -261,12 +260,34 @@ export class WebPanesApi {
         if (!Number.isFinite(wait) || wait < 0 || wait > MAX_FEEDBACK_WAIT_MS / 1_000) {
           throw new HttpError(400, 'wait must be between 0 and 60 seconds')
         }
+        const cursorRaw = url.searchParams.get('cursor')
+        let cursor: number | undefined
+        if (cursorRaw !== null) {
+          cursor = Number(cursorRaw)
+          if (!Number.isFinite(cursor) || cursor < 0) {
+            throw new HttpError(400, 'cursor must be a non-negative number')
+          }
+        }
+        if (!paneExists) {
+          // A closed tile's unacked answers stay fetchable. The drain applies
+          // the cursor first, so a poll that acks the last answers gets the
+          // review-over 404 immediately instead of one empty round later.
+          const result = await this.dependencies.feedback.drain(route.id, 0, { cursor })
+          if (result.notes.length === 0) {
+            throw new HttpError(404, 'Web pane does not exist')
+          }
+          writeJson(response, 200, { ok: true, webPaneId: route.id, cursor: result.cursor, notes: result.notes })
+          return true
+        }
         const controller = new AbortController()
         const onClose = (): void => controller.abort()
         request.on('close', onClose)
         try {
-          const notes = await this.dependencies.feedback.drain(route.id, wait * 1_000, controller.signal)
-          writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+          const result = await this.dependencies.feedback.drain(route.id, wait * 1_000, {
+            cursor,
+            signal: controller.signal,
+          })
+          writeJson(response, 200, { ok: true, webPaneId: route.id, cursor: result.cursor, notes: result.notes })
         } finally {
           request.off('close', onClose)
         }

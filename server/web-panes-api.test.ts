@@ -4,7 +4,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync } from 'node:fs'
 import { WebPanesApi } from './web-panes-api.js'
+import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { WebPaneService } from './web-panes.js'
 
@@ -39,7 +41,10 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
   feedback: WebPaneFeedbackStore
 }> {
   const onChange = vi.fn()
-  const feedback = overrides.feedback ?? new WebPaneFeedbackStore(() => onChange())
+  const journalDir = mkdtempSync(join(tmpdir(), 'commando-feedback-api-journal-'))
+  temporaryDirectories.push(journalDir)
+  const feedback =
+    overrides.feedback ?? new WebPaneFeedbackStore(new FeedbackJournal({ dir: journalDir }), () => onChange())
   const api = new WebPanesApi({
     service,
     agentToken: AGENT_TOKEN,
@@ -540,11 +545,38 @@ describe('feedback routes', () => {
     onChange.mockClear()
     const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
     expect(drained.status).toBe(200)
-    const body = await drained.json() as { notes: unknown[] }
+    const body = await drained.json() as { cursor: number; notes: { id?: number }[] }
     expect(body.notes).toHaveLength(1)
+    expect(body.notes[0]?.id).toBe(1)
     expect(onChange).toHaveBeenCalled()
-    const again = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
-    expect(((await again.json()) as { notes: unknown[] }).notes).toHaveLength(0)
+    // Without the cursor the same notes come back (lost-response recovery)...
+    const retry = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    expect(((await retry.json()) as { notes: unknown[] }).notes).toHaveLength(1)
+    // ...and passing it back acknowledges them.
+    const acked = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0&cursor=${body.cursor}`, { headers: agentAuth })
+    expect(((await acked.json()) as { notes: unknown[] }).notes).toHaveLength(0)
+  })
+
+  it('serves a closed tile\'s unacked answers, then 404s once they are acked', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [feedbackNote('survives close')] }, ownerAuth)
+    service.close(id)
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    expect(drained.status).toBe(200)
+    const body = await drained.json() as { cursor: number; notes: { comment: string }[] }
+    expect(body.notes.map((note) => note.comment)).toEqual(['survives close'])
+    const after = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0&cursor=${body.cursor}`, { headers: agentAuth })
+    expect(after.status).toBe(404)
+  })
+
+  it('rejects a malformed cursor', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0&cursor=-1`, { headers: agentAuth })).status).toBe(400)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0&cursor=abc`, { headers: agentAuth })).status).toBe(400)
   })
 
   it('long-poll wakes when the owner submits mid-wait', async () => {

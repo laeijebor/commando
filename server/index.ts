@@ -33,6 +33,7 @@ import { WorkspaceStore } from './workspaces.js'
 import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
+import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { RedlineApi } from './redline-api.js'
 import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
@@ -440,7 +441,9 @@ async function main(): Promise<void> {
   })
   const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
   // onDrain fires only at request time, safely after publishWebPanes exists.
-  const webPaneFeedback = new WebPaneFeedbackStore(() => publishWebPanes())
+  const feedbackJournal = new FeedbackJournal()
+  feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
+  const webPaneFeedback = new WebPaneFeedbackStore(feedbackJournal, () => publishWebPanes())
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
