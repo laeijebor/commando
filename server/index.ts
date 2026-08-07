@@ -34,6 +34,7 @@ import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
+import { WebPanePendingStore } from './web-pane-pending.js'
 import { RedlineApi } from './redline-api.js'
 import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
@@ -437,13 +438,22 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
-    onPageResponse: (webPaneId, response) => webTileRelay.broadcastPageResponse(webPaneId, response),
+    // Page answers land in the daemon's pending store first — a tile with no
+    // connected viewer (hidden tab, other session focused) must not drop them.
+    onPageResponse: (webPaneId, response) => {
+      webTileRelay.broadcastPending(webPaneId, webPanePending.addResponse(webPaneId, response))
+    },
   })
-  const webTileRelay = new WebTileRelay({ engine: chromiumEngine, service: webPanes })
+  const webTileRelay = new WebTileRelay({
+    engine: chromiumEngine,
+    service: webPanes,
+    pendingNotes: (webPaneId) => webPanePending.list(webPaneId),
+  })
   // onDrain fires only at request time, safely after publishWebPanes exists.
   const feedbackJournal = new FeedbackJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
   const webPaneFeedback = new WebPaneFeedbackStore(feedbackJournal, () => publishWebPanes())
+  const webPanePending = new WebPanePendingStore()
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -458,7 +468,9 @@ async function main(): Promise<void> {
     )
     chromiumEngine.syncTiles(streamable)
     webTileRelay.dropStale(streamable)
-    webPaneFeedback.retain(new Set(webPanes.list().map((pane) => pane.id)))
+    const liveIds = new Set(webPanes.list().map((pane) => pane.id))
+    webPaneFeedback.retain(liveIds)
+    webPanePending.retain(liveIds)
     broadcast({ type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
   }
   const notes = new NoteVaultManager()
@@ -1168,6 +1180,8 @@ async function main(): Promise<void> {
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
+    pending: webPanePending,
+    onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     paneForId: (paneId) => {
@@ -1204,6 +1218,7 @@ async function main(): Promise<void> {
     onClosed: (webPaneId) => {
       chromiumEngine.closeTile(webPaneId)
       webTileRelay.dropTile(webPaneId)
+      webPanePending.drop(webPaneId)
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry()
