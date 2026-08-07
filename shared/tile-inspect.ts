@@ -82,7 +82,13 @@ export function inspectPageAt(
 
 /** Serializes the probe into a one-shot Runtime.evaluate expression. */
 export function inspectExpression(x: number, y: number, grade: TileInspectGrade): string {
-  return `(${inspectPageAt.toString()})(document, ${x}, ${y}, ${JSON.stringify(grade)})`
+  // esbuild-based runtimes (tsx, which runs the daemon) rewrite the
+  // transpiled function body to wrap inner named functions in
+  // `__name(fn, "name")` calls (its `keepNames` transform). `__name` is
+  // undefined when this string is evaluated standalone in the page, so the
+  // emitted expression shims it — a no-op wrapper — to stay self-contained
+  // no matter which runtime produced the stringification.
+  return `(() => { var __name = (fn) => fn; return (${inspectPageAt.toString()})(document, ${x}, ${y}, ${JSON.stringify(grade)}); })()`
 }
 
 function finiteNumber(value: unknown): value is number {

@@ -78,15 +78,44 @@ describe('inspectPageAt', () => {
 describe('inspectExpression', () => {
   it('stringifies to a self-contained expression that still works', () => {
     mount('<div id="root"><button>Go</button></div>')
-    const target = document.querySelector('button')
-    const doc = { elementFromPoint: () => target } as unknown as Document
-    // Re-hydrate the stringified probe exactly as the page would evaluate it.
-    const fn = (0, eval)(`(${inspectPageAt.toString()})`) as typeof inspectPageAt
-    const result = fn(doc, 3, 4, 'hover')
+    atPoint(document.querySelector('button'))
+    // Eval the FULL emitted expression exactly as the page would, not just
+    // the bare function — this also exercises the __name shim wrapper.
+    // eslint-disable-next-line no-eval
+    const result = (0, eval)(inspectExpression(3, 4, 'hover')) as ReturnType<typeof inspectPageAt>
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.selector).toBe('#root > button')
     // And the expression embeds the arguments.
     expect(inspectExpression(3, 4, 'click')).toContain('(document, 3, 4, "click")')
+  })
+
+  it('shims __name so the expression still evaluates when esbuild keepNames renames helpers', () => {
+    // tsx (which runs the daemon) transpiles inspectPageAt with esbuild's
+    // `keepNames` on, wrapping inner named functions like
+    // `const escapeCss = (v) => ...` in `__name(fn, "escapeCss")` calls.
+    // `__name` doesn't exist when the resulting string is evaluated
+    // standalone in the page. Simulate that transformed shape directly
+    // (independent of inspectPageAt's own source) to prove the shim
+    // protects against it regardless of which runtime produced the string.
+    mount('<div id="root"><button>Go</button></div>')
+    atPoint(document.querySelector('button'))
+    const transformedProbeBody = [
+      'function fakeProbe(doc, x, y, grade) {',
+      '  var target = doc.elementFromPoint(x, y);',
+      '  var identity = __name(function (v) { return v; }, "identity");',
+      '  if (!target) return { ok: false, error: "No element at this point" };',
+      '  return { ok: true, selector: identity("#root > button"), tag: "button", rect: { x: 0, y: 0, width: 0, height: 0 } };',
+      '}',
+    ].join('\n')
+    const expression = `(() => { var __name = (fn) => fn; return (${transformedProbeBody})(document, 3, 4, "hover"); })()`
+    // eslint-disable-next-line no-eval
+    const result = (0, eval)(expression)
+    expect(result).toEqual({
+      ok: true,
+      selector: '#root > button',
+      tag: 'button',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+    })
   })
 })
 
