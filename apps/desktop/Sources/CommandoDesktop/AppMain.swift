@@ -149,6 +149,8 @@ protocol DesktopWebHosting: AnyObject {
     func zoomIn(_ sender: Any?)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
+    func setDetachedWebPaneIds(_ webPaneIds: [String])
     func cleanUp()
 }
 
@@ -157,34 +159,47 @@ extension DesktopWebHost: DesktopWebHosting {}
 @MainActor
 protocol DesktopWindowControlling: AnyObject {
     var window: NSWindow { get }
+    var role: DesktopWindowRole { get }
     func show()
+    func close()
     func reload()
     func zoomOut()
     func zoomIn()
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
+    func setDetachedWebPaneIds(_ webPaneIds: [String])
     func cleanUp()
 }
 
 @MainActor
 final class DesktopWindowSession: DesktopWindowControlling {
     let window: NSWindow
+    let role: DesktopWindowRole
     private let webHost: any DesktopWebHosting
     private var cleanedUp = false
 
     init(
         restoredFrame: NSRect? = nil,
-        webHost: any DesktopWebHosting = DesktopWebHost()
+        role: DesktopWindowRole = .workspace,
+        webHost: (any DesktopWebHosting)? = nil
     ) {
+        self.role = role
+        let webHost = webHost ?? DesktopWebHost(role: role)
         self.webHost = webHost
+        let defaultSize = role.webPaneId == nil
+            ? NSSize(width: 1_180, height: 760)
+            : NSSize(width: 960, height: 680)
         let window = DesktopWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
+            contentRect: NSRect(origin: .zero, size: defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Commando"
-        window.minSize = WindowRestorationCodec.minimumWindowSize
+        window.title = role.webPaneId == nil ? "Commando" : "Commando Web Pane"
+        window.minSize = role.webPaneId == nil
+            ? WindowRestorationCodec.minimumWindowSize
+            : NSSize(width: 480, height: 320)
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         window.contentView = webHost.rootView
@@ -210,6 +225,10 @@ final class DesktopWindowSession: DesktopWindowControlling {
         window.makeKeyAndOrderFront(nil)
     }
 
+    func close() {
+        window.performClose(nil)
+    }
+
     func reload() {
         webHost.reload(nil)
     }
@@ -228,6 +247,14 @@ final class DesktopWindowSession: DesktopWindowControlling {
 
     func setWindowActive(_ active: Bool) {
         webHost.setWindowActive(active)
+    }
+
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
+        webHost.setWindowCommandHandler(handler)
+    }
+
+    func setDetachedWebPaneIds(_ webPaneIds: [String]) {
+        webHost.setDetachedWebPaneIds(webPaneIds)
     }
 
     func cleanUp() {
@@ -255,6 +282,14 @@ final class DesktopWindowRegistry {
         order.last.flatMap { controllers[$0] }
     }
 
+    var lastWorkspace: (any DesktopWindowControlling)? {
+        all.last { $0.role == .workspace }
+    }
+
+    var detachedWebPaneIds: [String] {
+        all.compactMap(\.role.webPaneId).sorted()
+    }
+
     func register(_ controller: any DesktopWindowControlling) {
         let identifier = ObjectIdentifier(controller.window)
         if controllers[identifier] == nil {
@@ -266,6 +301,10 @@ final class DesktopWindowRegistry {
     func controller(for window: NSWindow?) -> (any DesktopWindowControlling)? {
         guard let window else { return nil }
         return controllers[ObjectIdentifier(window)]
+    }
+
+    func controller(forWebPaneId webPaneId: String) -> (any DesktopWindowControlling)? {
+        all.first { $0.role.webPaneId == webPaneId }
     }
 
     @discardableResult
@@ -284,17 +323,23 @@ final class DesktopWindowRegistry {
 }
 
 @MainActor
-final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
+    DesktopWindowCommandHandling {
     typealias SessionFactory = @MainActor (NSRect?) -> any DesktopWindowControlling
+    typealias DetachedSessionFactory = @MainActor (String) -> any DesktopWindowControlling
 
     let registry = DesktopWindowRegistry()
     private let sessionFactory: SessionFactory
+    private let detachedSessionFactory: DetachedSessionFactory
     private let restorationStore: any WindowRestorationStoring
     private let keyWindowProvider: @MainActor () -> NSWindow?
     private let visibleFramesProvider: @MainActor () -> [NSRect]
 
     init(
         sessionFactory: @escaping SessionFactory = { DesktopWindowSession(restoredFrame: $0) },
+        detachedSessionFactory: @escaping DetachedSessionFactory = {
+            DesktopWindowSession(role: .webPane(id: $0))
+        },
         restorationStore: any WindowRestorationStoring = UserDefaultsWindowRestorationStore(),
         keyWindowProvider: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
         visibleFramesProvider: @escaping @MainActor () -> [NSRect] = {
@@ -302,6 +347,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         }
     ) {
         self.sessionFactory = sessionFactory
+        self.detachedSessionFactory = detachedSessionFactory
         self.restorationStore = restorationStore
         self.keyWindowProvider = keyWindowProvider
         self.visibleFramesProvider = visibleFramesProvider
@@ -359,10 +405,38 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     @discardableResult
     func openWindow(restoredFrame: NSRect? = nil) -> any DesktopWindowControlling {
         let controller = sessionFactory(restoredFrame)
+        prepare(controller)
+        return controller
+    }
+
+    func openWebPaneWindow(webPaneId: String) {
+        guard NativeWindowProtocol.isWebPaneId(webPaneId) else { return }
+        if let existing = registry.controller(forWebPaneId: webPaneId) {
+            existing.show()
+            return
+        }
+        let controller = detachedSessionFactory(webPaneId)
+        prepare(controller)
+    }
+
+    func focusWebPaneWindow(webPaneId: String) {
+        if let existing = registry.controller(forWebPaneId: webPaneId) {
+            existing.show()
+        } else {
+            openWebPaneWindow(webPaneId: webPaneId)
+        }
+    }
+
+    func reattachWebPaneWindow(webPaneId: String) {
+        registry.controller(forWebPaneId: webPaneId)?.close()
+    }
+
+    private func prepare(_ controller: any DesktopWindowControlling) {
+        controller.setWindowCommandHandler(self)
         controller.window.delegate = self
         registry.register(controller)
+        publishDetachedWebPaneIds()
         controller.show()
-        return controller
     }
 
     func restoreWindows() {
@@ -378,7 +452,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     func handleReopen(hasVisibleWindows: Bool) {
         guard !hasVisibleWindows else { return }
-        if let controller = activeController ?? registry.last {
+        if let controller = activeController ?? registry.lastWorkspace {
             controller.show()
         } else {
             _ = openWindow()
@@ -394,6 +468,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         window.delegate = nil
         controller.setWindowActive(false)
         controller.cleanUp()
+        publishDetachedWebPaneIds()
         persistWindowState()
     }
 
@@ -430,7 +505,16 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     private func persistWindowState() {
-        restorationStore.saveFrames(registry.all.map { $0.window.frame })
+        restorationStore.saveFrames(
+            registry.all.filter { $0.role == .workspace }.map { $0.window.frame }
+        )
+    }
+
+    private func publishDetachedWebPaneIds() {
+        let ids = registry.detachedWebPaneIds
+        for controller in registry.all {
+            controller.setDetachedWebPaneIds(ids)
+        }
     }
 }
 

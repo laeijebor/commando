@@ -82,27 +82,34 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
 
     private let configuration: DesktopConfiguration
+    private let role: DesktopWindowRole
     private let admission: WebContentAdmission
     private let bridge: NativeTerminalBridge
     private let webViewTiles: WebViewTileBridge
     private let confirmationPresenter: any JavaScriptConfirmationPresenting
     private let textInputPresenter: any JavaScriptTextInputPresenting
     private let externalURLHandler: any ExternalURLHandling
+    private let windowBridge: NativeWindowBridge
     private var scriptMessageHandler: WeakScriptMessageHandler?
     private var webViewTileMessageHandler: WebViewTileScriptMessageHandler?
     private var trustedLinkMessageHandler: TrustedLinkScriptMessageHandler?
+    private var windowMessageHandler: NativeWindowScriptMessageHandler?
     private var navigationRetryTimer: Timer?
     private var cleanedUp = false
     private var isRetrying = false
     private(set) var windowActive = false
+    private var detachedWebPaneIds: [String] = []
 
     init(
         configuration: DesktopConfiguration = .current(),
+        role: DesktopWindowRole = .workspace,
+        windowCommandHandler: (any DesktopWindowCommandHandling)? = nil,
         confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter(),
         textInputPresenter: any JavaScriptTextInputPresenting = AppKitJavaScriptTextInputPresenter(),
         externalURLHandler: (any ExternalURLHandling)? = nil
     ) {
         self.configuration = configuration
+        self.role = role
         self.confirmationPresenter = confirmationPresenter
         self.textInputPresenter = textInputPresenter
         admission = WebContentAdmission(origin: configuration.webOrigin)
@@ -110,6 +117,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             privilegedOrigin: configuration.webOrigin
         )
         self.externalURLHandler = externalURLHandler
+        windowBridge = NativeWindowBridge(commandHandler: windowCommandHandler)
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1_180, height: 760))
         let webConfiguration = WKWebViewConfiguration()
         webView = WKWebView(frame: rootView.bounds, configuration: webConfiguration)
@@ -151,6 +159,15 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             name: TrustedLinkBridge.handlerName
         )
         webConfiguration.userContentController.addUserScript(TrustedLinkBridge.userScript)
+        let windowHandler = NativeWindowScriptMessageHandler(
+            bridge: windowBridge,
+            admission: admission
+        )
+        windowMessageHandler = windowHandler
+        webConfiguration.userContentController.add(
+            windowHandler,
+            name: NativeWindowProtocol.handlerName
+        )
 
         webView.autoresizingMask = [.width, .height]
         overlay.autoresizingMask = [.width, .height]
@@ -176,6 +193,15 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         guard !cleanedUp, active != windowActive else { return }
         windowActive = active
         publishWindowActivity()
+    }
+
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
+        windowBridge.commandHandler = handler
+    }
+
+    func setDetachedWebPaneIds(_ webPaneIds: [String]) {
+        detachedWebPaneIds = webPaneIds.sorted()
+        publishDetachedWebPaneIds()
     }
 
     @objc func zoomOut(_ sender: Any?) {
@@ -216,10 +242,15 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             forName: TrustedLinkBridge.handlerName,
             contentWorld: TrustedLinkBridge.contentWorld
         )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: NativeWindowProtocol.handlerName
+        )
         webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil
         webViewTileMessageHandler = nil
         trustedLinkMessageHandler = nil
+        windowMessageHandler = nil
+        windowBridge.commandHandler = nil
     }
 
     func webView(
@@ -277,6 +308,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         isRetrying = false
         connectionStatusView.hide()
         publishWindowActivity()
+        publishDetachedWebPaneIds()
     }
 
     func webView(
@@ -311,7 +343,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         navigationRetryTimer = nil
         connectionStatusView.show(isRetrying ? .retrying : .connecting, origin: configuration.webOrigin)
         webView.load(URLRequest(
-            url: configuration.webURL,
+            url: role.applicationURL(baseURL: configuration.webURL),
             cachePolicy: .reloadIgnoringLocalCacheData,
             timeoutInterval: 10
         ))
@@ -333,6 +365,32 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             window.dispatchEvent(new CustomEvent("commando:desktop-window-active", { detail: active }));
             """,
             arguments: ["active": windowActive],
+            in: nil,
+            in: .page
+        ) { _ in }
+    }
+
+    private func publishDetachedWebPaneIds() {
+        let windowRole: [String: Any]
+        switch role {
+        case .workspace:
+            windowRole = ["kind": "workspace"]
+        case let .webPane(id):
+            windowRole = ["kind": "web-pane", "webPaneId": id]
+        }
+        webView.callAsyncJavaScript(
+            """
+            window.__commandoDesktopWindowRole = role;
+            window.__commandoDetachedWebPaneIds = webPaneIds;
+            window.dispatchEvent(new CustomEvent(
+              "commando:desktop-detached-web-panes",
+              { detail: webPaneIds }
+            ));
+            """,
+            arguments: [
+                "role": windowRole,
+                "webPaneIds": detachedWebPaneIds,
+            ],
             in: nil,
             in: .page
         ) { _ in }

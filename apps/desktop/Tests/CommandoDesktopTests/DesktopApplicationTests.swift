@@ -11,29 +11,37 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
+    private(set) var detachedWebPaneIds: [[String]] = []
 
     func reload(_ sender: Any?) { reloadCount += 1 }
     func zoomOut(_ sender: Any?) { zoomOutCount += 1 }
     func zoomIn(_ sender: Any?) { zoomInCount += 1 }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {}
+    func setDetachedWebPaneIds(_ webPaneIds: [String]) { detachedWebPaneIds.append(webPaneIds) }
     func cleanUp() { cleanUpCount += 1 }
 }
 
 @MainActor
 private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     let window: NSWindow
+    let role: DesktopWindowRole
     let restoredFrame: NSRect?
     private(set) var showCount = 0
+    private(set) var closeCount = 0
     private(set) var reloadCount = 0
     private(set) var zoomOutCount = 0
     private(set) var zoomInCount = 0
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
+    private(set) var detachedWebPaneIds: [[String]] = []
+    private(set) weak var windowCommandHandler: (any DesktopWindowCommandHandling)?
 
-    init(restoredFrame: NSRect? = nil) {
+    init(restoredFrame: NSRect? = nil, role: DesktopWindowRole = .workspace) {
         self.restoredFrame = restoredFrame
+        self.role = role
         window = NSWindow(
             contentRect: restoredFrame ?? NSRect(x: 10, y: 20, width: 800, height: 600),
             styleMask: [.titled],
@@ -43,11 +51,16 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     }
 
     func show() { showCount += 1 }
+    func close() { closeCount += 1 }
     func reload() { reloadCount += 1 }
     func zoomOut() { zoomOutCount += 1 }
     func zoomIn() { zoomInCount += 1 }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
+    func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
+        windowCommandHandler = handler
+    }
+    func setDetachedWebPaneIds(_ webPaneIds: [String]) { detachedWebPaneIds.append(webPaneIds) }
 
     func cleanUp() {
         cleanUpCount += 1
@@ -123,7 +136,7 @@ final class DesktopApplicationTests: XCTestCase {
     func testWindowRegistryTracksControllersByWindowAndPreservesOrder() {
         let registry = DesktopWindowRegistry()
         let first = DesktopWindowControllerSpy()
-        let second = DesktopWindowControllerSpy()
+        let second = DesktopWindowControllerSpy(role: .webPane(id: "w-abcd1234"))
 
         registry.register(first)
         registry.register(second)
@@ -133,6 +146,9 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertTrue(registry.controller(for: first.window) === first)
         XCTAssertTrue(registry.controller(for: second.window) === second)
         XCTAssertTrue(registry.last === second)
+        XCTAssertTrue(registry.lastWorkspace === first)
+        XCTAssertEqual(registry.detachedWebPaneIds, ["w-abcd1234"])
+        XCTAssertTrue(registry.controller(forWebPaneId: "w-abcd1234") === second)
         XCTAssertTrue(registry.all[0] === first)
         XCTAssertTrue(registry.remove(window: first.window) === first)
         XCTAssertNil(registry.controller(for: first.window))
@@ -141,6 +157,61 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(registry.count, 0)
         first.cleanUp()
         second.cleanUp()
+    }
+
+    func testDetachedWebPaneWindowsAreUniqueFocusableAndReattachWithoutDeletingPane() {
+        var detached: [DesktopWindowControllerSpy] = []
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { DesktopWindowControllerSpy(restoredFrame: $0) },
+            detachedSessionFactory: { webPaneId in
+                let controller = DesktopWindowControllerSpy(role: .webPane(id: webPaneId))
+                detached.append(controller)
+                return controller
+            },
+            restorationStore: WindowRestorationStoreSpy(),
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        let workspace = delegate.openWindow() as! DesktopWindowControllerSpy
+
+        delegate.openWebPaneWindow(webPaneId: "w-abcd1234")
+        delegate.openWebPaneWindow(webPaneId: "w-abcd1234")
+        delegate.focusWebPaneWindow(webPaneId: "w-abcd1234")
+
+        XCTAssertEqual(detached.count, 1)
+        XCTAssertEqual(detached[0].showCount, 3)
+        XCTAssertEqual(workspace.detachedWebPaneIds.last, ["w-abcd1234"])
+        XCTAssertEqual(detached[0].detachedWebPaneIds.last, ["w-abcd1234"])
+        XCTAssertTrue(workspace.windowCommandHandler === delegate)
+        XCTAssertTrue(detached[0].windowCommandHandler === delegate)
+
+        delegate.reattachWebPaneWindow(webPaneId: "w-abcd1234")
+        XCTAssertEqual(detached[0].closeCount, 1)
+
+        delegate.windowWillClose(Notification(
+            name: NSWindow.willCloseNotification,
+            object: detached[0].window
+        ))
+        XCTAssertEqual(workspace.detachedWebPaneIds.last, [])
+        XCTAssertEqual(delegate.registry.count, 1)
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+    }
+
+    func testRejectsMalformedDetachedWebPaneIds() {
+        var detachedCount = 0
+        let delegate = DesktopAppDelegate(
+            detachedSessionFactory: { _ in
+                detachedCount += 1
+                return DesktopWindowControllerSpy()
+            },
+            restorationStore: WindowRestorationStoreSpy(),
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+
+        delegate.openWebPaneWindow(webPaneId: "not-a-pane")
+
+        XCTAssertEqual(detachedCount, 0)
     }
 
     func testMenuActionsRouteToTheKeyWindowAndNewWindowCreatesAnIndependentSession() {
@@ -212,6 +283,29 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(first.cleanUpCount, 1)
         XCTAssertEqual(second.cleanUpCount, 1)
         XCTAssertTrue(created.allSatisfy { $0.cleanUpCount == 1 })
+    }
+
+    func testDetachedWindowsAreExcludedFromWorkspaceRestoration() {
+        let store = WindowRestorationStoreSpy()
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { DesktopWindowControllerSpy(restoredFrame: $0) },
+            detachedSessionFactory: {
+                DesktopWindowControllerSpy(role: .webPane(id: $0))
+            },
+            restorationStore: store,
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        let workspace = delegate.openWindow() as! DesktopWindowControllerSpy
+        delegate.openWebPaneWindow(webPaneId: "w-abcd1234")
+
+        delegate.windowDidMove(Notification(
+            name: NSWindow.didMoveNotification,
+            object: workspace.window
+        ))
+
+        XCTAssertEqual(store.savedFrames.last, [workspace.window.frame])
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
     }
 
     func testKeyWindowNotificationsPublishActivityOnlyToTheirSession() {

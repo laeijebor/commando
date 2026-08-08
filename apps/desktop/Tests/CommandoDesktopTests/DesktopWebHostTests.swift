@@ -48,7 +48,55 @@ private struct WebHostURLFailureReporterStub: ExternalURLOpenFailureReporting {
 }
 
 @MainActor
+private final class DesktopWindowCommandHandlerSpy: DesktopWindowCommandHandling {
+    private(set) var opened: [String] = []
+    private(set) var focused: [String] = []
+    private(set) var reattached: [String] = []
+
+    func openWebPaneWindow(webPaneId: String) { opened.append(webPaneId) }
+    func focusWebPaneWindow(webPaneId: String) { focused.append(webPaneId) }
+    func reattachWebPaneWindow(webPaneId: String) { reattached.append(webPaneId) }
+}
+
+@MainActor
 final class DesktopWebHostTests: XCTestCase {
+    func testWebPaneRoleAddsOnlyTheFocusedRouteQuery() throws {
+        let baseURL = try XCTUnwrap(URL(string: "http://127.0.0.1:5173/?existing=1"))
+
+        let url = DesktopWindowRole.webPane(id: "w-abcd1234").applicationURL(baseURL: baseURL)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        XCTAssertEqual(components.path, "/")
+        XCTAssertEqual(components.queryItems, [
+            URLQueryItem(name: "existing", value: "1"),
+            URLQueryItem(name: "commandoWindow", value: "web-pane"),
+            URLQueryItem(name: "webPaneId", value: "w-abcd1234"),
+        ])
+        XCTAssertEqual(DesktopWindowRole.workspace.applicationURL(baseURL: baseURL), baseURL)
+    }
+
+    func testNativeWindowBridgeRoutesOnlyVersionedValidPaneCommands() {
+        let handler = DesktopWindowCommandHandlerSpy()
+        let bridge = NativeWindowBridge(commandHandler: handler)
+
+        func receive(_ type: String, id: String, version: Int = 1) {
+            bridge.receive(body: [
+                "protocol": NativeWindowProtocol.protocolName,
+                "version": version,
+                "type": type,
+                "payload": ["webPaneId": id],
+            ])
+        }
+        receive("web-pane.open", id: "w-abcd1234")
+        receive("web-pane.focus", id: "w-abcd1234")
+        receive("web-pane.reattach", id: "w-abcd1234")
+        receive("web-pane.open", id: "../../bad")
+        receive("web-pane.open", id: "w-deadbeef", version: 2)
+
+        XCTAssertEqual(handler.opened, ["w-abcd1234"])
+        XCTAssertEqual(handler.focused, ["w-abcd1234"])
+        XCTAssertEqual(handler.reattached, ["w-abcd1234"])
+    }
     func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
         let url = URL(string: "http://127.0.0.1:5173")!
         let host = DesktopWebHost(configuration: .init(webURL: url, prefersMetal: false))
@@ -439,5 +487,40 @@ final class DesktopWebHostTests: XCTestCase {
         }
         XCTAssertTrue(active)
         XCTAssertTrue(host.windowActive)
+    }
+
+    func testPublishesWindowRoleAndDetachedPaneIdsIntoThePage() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let host = DesktopWebHost(
+            configuration: .init(webURL: origin, prefersMetal: false),
+            role: .webPane(id: "w-abcd1234")
+        )
+        host.webView.stopLoading()
+        host.webView.loadHTMLString("<main>Ready</main>", baseURL: origin)
+        defer { host.cleanUp() }
+
+        for _ in 0..<100 {
+            if (try? await host.webView.evaluateJavaScript("document.readyState")) as? String == "complete" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        host.setDetachedWebPaneIds(["w-deadbeef", "w-abcd1234"])
+
+        var published = false
+        for _ in 0..<100 {
+            if let value = try? await host.webView.evaluateJavaScript(
+                """
+                window.__commandoDesktopWindowRole?.webPaneId === 'w-abcd1234' &&
+                window.__commandoDetachedWebPaneIds?.join(',') === 'w-abcd1234,w-deadbeef'
+                """
+            ),
+               (value as? NSNumber)?.boolValue == true {
+                published = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(published)
     }
 }
