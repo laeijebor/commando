@@ -34,11 +34,35 @@ that nothing reaches the agent without the owner's explicit Send.
   remaining queue and the feedback `queued` count).
 - **Client** (`src/ChromiumTileCard.tsx`): pills render daemon state —
   hydrated by GET on mount, refreshed by `pending` pushes; every mutation
-  renders the returned queue. `src/pendingMirror.ts` keeps a localStorage
-  mirror per pane as belt and braces: it is restored (re-POSTed) only when
-  the daemon definitively reports an empty queue, and cleared whenever the
-  queue empties legitimately (send, removals), so sent notes cannot
-  resurrect.
+  renders the returned queue. A push always wins over an in-flight hydrate
+  response, which is strictly staler.
+
+## Review revisions (2026-08-08)
+
+Three changes from the redline review of this spec:
+
+- **Mirror restore is watermark-guarded, not empty-queue-guarded.** The
+  original rule (restore only when the daemon reports an empty queue) both
+  under-restored and still allowed a stale second client to resurrect sent
+  notes. Snapshots now carry `knownUpTo` — the highest id the pane has ever
+  issued, which never decreases as notes are sent or removed. A mirrored
+  note at or below it has been accounted for; only ids *above* it are
+  genuinely unknown to the daemon, which happens exactly when the journal
+  was lost. That is a server-side fact, so it holds across clients where a
+  client-local tombstone would not.
+- **Closing a tile no longer discards unsent pills.** Journals record their
+  page URL (`{k:'u',url,at}`) and survive the close; opening a chromium tile
+  adopts the leftovers of closed panes on the same URL, re-issuing ids in the
+  new pane's sequence and deleting the absorbed journals so nothing is
+  adopted twice. A pane still open on that URL is never robbed. Journals
+  whose notes were all sent are empty and get swept rather than adopted, so
+  sent notes still cannot come back. The 7-day TTL applies as before.
+- **Capped page answers are dropped loudly.** Both cap paths are now equally
+  visible: manual notes still fail with a 429, and page answers still
+  drop-oldest (a runaway page must not be able to wedge the queue by
+  refusing new answers) but the count rides along in the snapshot as
+  `dropped`, rendering a warning in the tile's pill strip that the owner
+  dismisses via `POST …/pending/dropped`. Sending clears it.
 
 ## Failure-mode coverage
 
@@ -48,5 +72,8 @@ that nothing reaches the agent without the owner's explicit Send.
 | Page reload | Same — GET + `pending` push rehydrate |
 | Answer queued with no viewer connected | Binding writes to the store; no viewer needed |
 | Daemon restart | Pending journal replayed (panes persist restarts) |
-| Daemon journal lost | localStorage mirror re-queues on next mount |
+| Daemon journal lost | localStorage mirror re-queues ids above the watermark |
 | Feedback queue full at Send | 429; notes stay pending for a retry |
+| Tile closed mid-review | Journal survives; reopening the same URL adopts it |
+| Stale second client with a sent-notes mirror | Watermark marks them accounted for; no resurrection |
+| Runaway page floods the queue | Oldest dropped, but counted and shown in the tile |
