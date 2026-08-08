@@ -7,6 +7,7 @@ import {
   findChromiumBinary,
   parseTileInputEvent,
   parseTileInspectRequest,
+  type ChromiumEngineOptions,
   type ChromiumLaunch,
   type ScreencastFrame,
 } from './chromium-engine.js'
@@ -29,6 +30,8 @@ class StubChromium {
   readonly sockets = new Map<string, WebSocket>()
   /** Canned Runtime.evaluate result value, set by tests before triggering the call. */
   evaluateValue: unknown = null
+  /** Canned Page.captureScreenshot payload. */
+  screenshotData = 'SHOT'
   /** Methods that should fail with a CDP error on their next call. */
   private readonly failingMethods = new Set<string>()
 
@@ -90,6 +93,10 @@ class StubChromium {
           socket.send(JSON.stringify({ id: message.id, result: { result: { type: 'object', value: this.evaluateValue } } }))
           return
         }
+        if (message.method === 'Page.captureScreenshot') {
+          socket.send(JSON.stringify({ id: message.id, result: { data: this.screenshotData } }))
+          return
+        }
         socket.send(JSON.stringify({ id: message.id, result: {} }))
       })
     })
@@ -135,7 +142,7 @@ type Harness = {
   exitBrowser: () => void
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(engineOptions: Partial<ChromiumEngineOptions> = {}): Promise<Harness> {
   const stub = new StubChromium()
   await stub.start()
   const onExternalNavigation = vi.fn()
@@ -171,6 +178,7 @@ async function createHarness(): Promise<Harness> {
     },
     onExternalNavigation,
     onTargetDown,
+    ...engineOptions,
   })
   harness.engine = engine
   cleanups.push(() => {
@@ -329,6 +337,49 @@ describe('ChromiumEngine', () => {
 
     unsubscribe()
     await until(() => stub.calls.some((call) => call.method === 'Page.stopScreencast'), 'stopScreencast')
+  })
+
+  it('falls back to screenshot polling when the screencast never produces a frame', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    const frames: ScreencastFrame[] = []
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    // No screencastFrame is ever emitted (the "hidden window" starvation).
+    await until(() => frames.length === 1, 'fallback frame')
+    expect(frames[0]).toMatchObject({ data: 'SHOT', format: 'png' })
+    // Identical screenshots are not re-sent…
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(frames).toHaveLength(1)
+    // …but changed content flows.
+    stub.screenshotData = 'SHOT2'
+    await until(() => frames.length === 2, 'changed fallback frame')
+    expect(frames[1]).toMatchObject({ data: 'SHOT2' })
+  })
+
+  it('stops the fallback poller as soon as a real screencast frame arrives', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    const frames: ScreencastFrame[] = []
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    await until(() => frames.some((frame) => frame.data === 'SHOT'), 'fallback engaged')
+    stub.emit('T1', 'Page.screencastFrame', { data: 'REAL', sessionId: 1, metadata: {} })
+    await until(() => frames.some((frame) => frame.data === 'REAL'), 'real frame')
+    const shots = stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length).toBe(shots)
+  })
+
+  it('stops the fallback poller when the last subscriber leaves', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    const unsubscribe = await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    await until(() => stub.calls.some((call) => call.method === 'Page.captureScreenshot'), 'fallback engaged')
+    unsubscribe()
+    await until(() => stub.calls.some((call) => call.method === 'Page.stopScreencast'), 'stopScreencast')
+    const shots = stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length).toBe(shots)
   })
 
   it('forwards validated input events', async () => {

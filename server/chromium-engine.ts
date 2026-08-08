@@ -20,6 +20,10 @@ import { WebPaneError } from './web-panes.js'
 const LAUNCH_TIMEOUT_MS = 20_000
 const CDP_CALL_TIMEOUT_MS = 15_000
 const SCREENCAST_MAX_DIMENSION = 2_560
+/** A fresh screencast still frameless after this long is treated as starved. */
+export const SCREENCAST_FALLBACK_AFTER_MS = 2_000
+/** captureScreenshot cadence while the fallback poller substitutes for the screencast. */
+export const SCREENCAST_POLL_INTERVAL_MS = 700
 const MAX_VIEWPORT_DIMENSION = 8_192
 
 /**
@@ -88,6 +92,13 @@ export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
         '--disable-sync',
         '--mute-audio',
         '--hide-scrollbars',
+        // macOS backgrounding/occlusion can mark every headless window
+        // "hidden" (observed after display lock/sleep), which stops the
+        // compositor and starves Page.screencastFrame forever. These are the
+        // same flags Puppeteer/Playwright pass to forbid that state.
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
         'about:blank',
       ],
       { stdio: ['ignore', 'ignore', 'pipe'], detached: true },
@@ -385,6 +396,15 @@ type TileTarget = {
   screencasting: boolean
   /** URL applied by the last explicit open/navigate, used to detect watchdog loops. */
   currentUrl: string
+  /** True once the current screencast delivered at least one real frame. */
+  gotRealFrame: boolean
+  /** Armed after startScreencast; fires the captureScreenshot fallback. */
+  fallbackTimer: ReturnType<typeof setTimeout> | null
+  /** Active captureScreenshot polling loop (fallback mode). */
+  pollTimer: ReturnType<typeof setInterval> | null
+  pollBusy: boolean
+  /** Last polled screenshot payload — identical shots are not re-sent. */
+  lastPolledData: string | null
 }
 
 export type ChromiumEngineOptions = {
@@ -402,6 +422,10 @@ export type ChromiumEngineOptions = {
   httpTimeoutMs?: number
   /** Budget for CDP websocket handshakes; same rationale. */
   connectTimeoutMs?: number
+  /** How long a fresh screencast may stay frameless before the fallback kicks in. */
+  screencastFallbackAfterMs?: number
+  /** captureScreenshot cadence while in fallback mode. */
+  screencastPollIntervalMs?: number
 }
 
 /** The engine's live browser: the process handle plus its browser-level CDP socket. */
@@ -417,6 +441,8 @@ export class ChromiumEngine {
   private readonly launcher: ChromiumLauncher
   private readonly httpTimeoutMs: number
   private readonly connectTimeoutMs: number
+  private readonly screencastFallbackAfterMs: number
+  private readonly screencastPollIntervalMs: number
   private browser: BrowserSession | null = null
   private browserStarting: Promise<BrowserSession> | null = null
   private readonly tiles = new Map<string, TileTarget>()
@@ -430,6 +456,8 @@ export class ChromiumEngine {
     this.launcher = options.launcher ?? spawnChromiumLauncher
     this.httpTimeoutMs = options.httpTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.connectTimeoutMs = options.connectTimeoutMs ?? CDP_CALL_TIMEOUT_MS
+    this.screencastFallbackAfterMs = options.screencastFallbackAfterMs ?? SCREENCAST_FALLBACK_AFTER_MS
+    this.screencastPollIntervalMs = options.screencastPollIntervalMs ?? SCREENCAST_POLL_INTERVAL_MS
   }
 
   hasTile(webPaneId: string): boolean {
@@ -476,14 +504,66 @@ export class ChromiumEngine {
         tile.sinks.delete(sink)
         throw error
       }
+      this.armScreencastFallback(tile)
     }
     return () => {
       tile.sinks.delete(sink)
       if (tile.sinks.size === 0 && tile.screencasting) {
         tile.screencasting = false
         tile.cdp.sendAndForget('Page.stopScreencast')
+        this.stopScreencastFallback(tile)
       }
     }
+  }
+
+  /**
+   * Chrome only screencasts pages it considers visible. macOS can background
+   * the whole headless browser (display lock/sleep), leaving every window
+   * "hidden" and the screencast frameless with no error — while
+   * Page.captureScreenshot still composites on demand. So: if a fresh
+   * screencast delivers nothing within the deadline, poll screenshots into
+   * the sinks until real frames show up.
+   */
+  private armScreencastFallback(tile: TileTarget): void {
+    tile.gotRealFrame = false
+    if (tile.fallbackTimer) clearTimeout(tile.fallbackTimer)
+    tile.fallbackTimer = setTimeout(() => {
+      tile.fallbackTimer = null
+      if (!tile.screencasting || tile.sinks.size === 0 || tile.gotRealFrame || tile.pollTimer) return
+      console.warn(`chromium tile ${tile.webPaneId}: screencast frameless, falling back to screenshot polling`)
+      tile.pollTimer = setInterval(() => {
+        if (tile.pollBusy) return
+        tile.pollBusy = true
+        tile.cdp
+          .send('Page.captureScreenshot', { format: 'png' })
+          .then((result) => {
+            const data = (result as { data?: unknown }).data
+            if (typeof data !== 'string' || data === tile.lastPolledData) return
+            // A real frame may have raced in while the screenshot was taken;
+            // it wins, and the poller is already stopped.
+            if (tile.gotRealFrame) return
+            tile.lastPolledData = data
+            const frame: ScreencastFrame = { data, format: 'png', metadata: {} }
+            for (const sink of tile.sinks) sink(frame)
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            tile.pollBusy = false
+          })
+      }, this.screencastPollIntervalMs)
+    }, this.screencastFallbackAfterMs)
+  }
+
+  private stopScreencastFallback(tile: TileTarget): void {
+    if (tile.fallbackTimer) {
+      clearTimeout(tile.fallbackTimer)
+      tile.fallbackTimer = null
+    }
+    if (tile.pollTimer) {
+      clearInterval(tile.pollTimer)
+      tile.pollTimer = null
+    }
+    tile.lastPolledData = null
   }
 
   async setViewport(webPaneId: string, viewport: TileViewport): Promise<void> {
@@ -591,6 +671,7 @@ export class ChromiumEngine {
     const tile = this.tiles.get(webPaneId)
     if (!tile) return
     this.tiles.delete(webPaneId)
+    this.stopScreencastFallback(tile)
     tile.cdp.close()
     this.browser?.cdp.sendAndForget('Target.closeTarget', { targetId: tile.targetId })
   }
@@ -700,12 +781,19 @@ export class ChromiumEngine {
       sinks: new Set(),
       screencasting: false,
       currentUrl: url,
+      gotRealFrame: false,
+      fallbackTimer: null,
+      pollTimer: null,
+      pollBusy: false,
+      lastPolledData: null,
     }
     cdp.on('Page.screencastFrame', (params) => {
       const sessionId = params.sessionId
       if (typeof sessionId === 'number') {
         cdp.sendAndForget('Page.screencastFrameAck', { sessionId })
       }
+      tile.gotRealFrame = true
+      this.stopScreencastFallback(tile)
       const data = params.data
       if (typeof data !== 'string') return
       const frame: ScreencastFrame = {
@@ -721,6 +809,7 @@ export class ChromiumEngine {
       this.handleMainFrameNavigation(tile, frame.url)
     })
     cdp.onClose(() => {
+      this.stopScreencastFallback(tile)
       if (this.tiles.get(webPaneId) !== tile) return
       this.tiles.delete(webPaneId)
       this.options.onTargetDown?.(webPaneId)
