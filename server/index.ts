@@ -36,7 +36,7 @@ import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPanePendingStore } from './web-pane-pending.js'
 import { RedlineApi } from './redline-api.js'
-import { RedlineArtifactRegistry } from './redline-artifacts.js'
+import { defaultRedlineArtifactStatePath, RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
 import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
@@ -1221,7 +1221,7 @@ async function main(): Promise<void> {
       webPanePending.drop(webPaneId)
     },
   })
-  const redlineArtifacts = new RedlineArtifactRegistry()
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath() })
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

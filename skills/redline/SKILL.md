@@ -37,8 +37,10 @@ availability checks, say so and deliver the content in chat instead.
   ```
 
   The response's `url` (with the artifact filename appended) is the tile URL.
-  Registrations are in-memory — if the daemon restarts mid-review, re-register
-  and reopen the tile.
+  Registrations persist across daemon restarts (same directory keeps the same
+  id and URLs, expiring after 7 days). If an artifact URL 404s anyway (dir
+  moved or expired), just re-register — the same directory gets its old id
+  back while the registration is alive.
 - **Design, in priority order:**
   1. The user named a look — use it.
   2. Otherwise, inspect the subject project and match its design system.

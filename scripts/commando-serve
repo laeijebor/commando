@@ -5,7 +5,8 @@
 #   commando-serve --stop <id>  unregister
 #
 # The daemon serves the directory read-only at the printed url (index.html at
-# the root). Registrations are in-memory: after a daemon restart, re-register.
+# the root). Registrations persist across daemon restarts; re-registering the
+# same directory returns the existing id.
 # Exit codes: 0 success, 2 usage, 1 other errors.
 set -euo pipefail
 
