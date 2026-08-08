@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { App } from './App'
+import { DetachedWebPaneApp } from './DetachedWebPaneApp'
+import { detachedWebPaneIdFromLocation } from './nativeWindowBridge'
 import { applyTheme, storedTheme } from './theme'
 import '@fontsource/jetbrains-mono/latin-400.css'
 import '@fontsource/jetbrains-mono/latin-700.css'
@@ -10,10 +12,13 @@ import './styles.css'
 applyTheme(storedTheme())
 
 const root = createRoot(document.getElementById('root')!)
+const detachedWebPaneId = detachedWebPaneIdFromLocation()
 const render = () => {
   root.render(
     <StrictMode>
-      <App />
+      {detachedWebPaneId
+        ? <DetachedWebPaneApp webPaneId={detachedWebPaneId} />
+        : <App />}
     </StrictMode>,
   )
 }

@@ -93,8 +93,8 @@ function cardPosition(rect: TileInspectRect, container: DOMRect | null): { x: nu
 
 /**
  * The chromium-engine tile body: renders the daemon's CDP screencast onto a
- * canvas and relays input back over `/ws/web-tiles/:id`. Pauses (closes the
- * stream) while the document is hidden so a background cockpit costs nothing.
+ * canvas and relays input back over `/ws/web-tiles/:id`. Ordinary cockpit
+ * tiles pause while hidden; detached AppKit windows opt into a persistent stream.
  */
 export function ChromiumTileCard({
   webPane,
@@ -102,6 +102,7 @@ export function ChromiumTileCard({
   reloadKey,
   reviewMode,
   pendingQueue,
+  keepStreamingWhenHidden = false,
 }: {
   webPane: WebPane
   wsToken: string
@@ -109,6 +110,8 @@ export function ChromiumTileCard({
   /** Review mode swaps input relay for element inspect + note queueing. */
   reviewMode: boolean
   pendingQueue: PendingQueueApi
+  /** Detached AppKit windows remain visible while another application is active. */
+  keepStreamingWhenHidden?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -227,7 +230,7 @@ export function ChromiumTileCard({
     }
 
     const connect = () => {
-      if (disposed || document.hidden) return
+      if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
       setState('connecting')
       stalled = false
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -294,7 +297,7 @@ export function ChromiumTileCard({
       socket.addEventListener('close', (event) => {
         if (socketRef.current === socket) socketRef.current = null
         disarmStallWatchdog()
-        if (disposed || document.hidden) return
+        if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
         if (stalled) return // the watchdog already set the error state
         if (event.code === 4503) return // engine_error already set the state
         setState('closed')
@@ -340,6 +343,7 @@ export function ChromiumTileCard({
     }
 
     const onVisibility = () => {
+      if (keepStreamingWhenHidden) return
       if (document.hidden) {
         disarmStallWatchdog()
         socket?.close()
@@ -350,7 +354,7 @@ export function ChromiumTileCard({
     }
 
     connect()
-    document.addEventListener('visibilitychange', onVisibility)
+    if (!keepStreamingWhenHidden) document.addEventListener('visibilitychange', onVisibility)
     if (containerRef.current && typeof ResizeObserver !== 'undefined') {
       observer = new ResizeObserver(() => {
         if (viewportTimer) return
@@ -364,14 +368,14 @@ export function ChromiumTileCard({
 
     return () => {
       disposed = true
-      document.removeEventListener('visibilitychange', onVisibility)
+      if (!keepStreamingWhenHidden) document.removeEventListener('visibilitychange', onVisibility)
       observer?.disconnect()
       if (viewportTimer) window.clearTimeout(viewportTimer)
       disarmStallWatchdog()
       socket?.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [webPane.id, webPane.url, wsToken, connectEpoch])
+  }, [webPane.id, webPane.url, wsToken, connectEpoch, keepStreamingWhenHidden])
 
   const send = (payload: unknown) => {
     const socket = socketRef.current

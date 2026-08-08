@@ -114,6 +114,8 @@ import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { useDesktopWindowActivity } from './desktopWindowActivity'
 import { SessionTokenBroker } from './sessionTokenBroker'
+import { clearToken, getInitialToken, storeToken } from './sessionTokenStorage'
+import { getNativeWindowBridge, useDetachedWebPaneIds } from './nativeWindowBridge'
 import {
   createOwner,
   getAuthBootstrap,
@@ -126,7 +128,6 @@ import {
 
 const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 
-const TOKEN_STORAGE_KEY = 'commando.session-token'
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 
 const PRESETS: Array<{
@@ -196,47 +197,6 @@ let requestSequence = 0
 function requestId(prefix: string) {
   requestSequence += 1
   return `${prefix}-${Date.now()}-${requestSequence}`
-}
-
-function getInitialToken() {
-  const hash = window.location.hash.slice(1)
-  const hashParams = new URLSearchParams(hash)
-  let token = hashParams.get('token') ?? ''
-
-  if (!token && hash && !hash.includes('=')) {
-    try {
-      token = decodeURIComponent(hash)
-    } catch {
-      token = hash
-    }
-  }
-
-  try {
-    if (token) {
-      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token)
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
-      return token
-    }
-    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? ''
-  } catch {
-    return token
-  }
-}
-
-function storeToken(token: string) {
-  try {
-    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token)
-  } catch {
-    // A private browser session may block storage; the in-memory token still works.
-  }
-}
-
-function clearToken() {
-  try {
-    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)
-  } catch {
-    // The in-memory credential can still be cleared when storage is unavailable.
-  }
 }
 
 function connectionLabel(phase: ConnectionPhase) {
@@ -811,6 +771,8 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 
 export function App() {
   const desktopWindowActive = useDesktopWindowActivity()
+  const nativeWindowBridge = getNativeWindowBridge()
+  const detachedWebPaneIds = useDetachedWebPaneIds()
   const [token, setToken] = useState(getInitialToken)
   const [authBootstrap, setAuthBootstrap] = useState<AuthBootstrap | null>(null)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
@@ -2445,6 +2407,18 @@ export function App() {
                             webPane.engine === 'chromium'
                               ? () => void openWebPaneDevtools(webPane)
                               : undefined
+                          }
+                          detached={detachedWebPaneIds.has(webPane.id)}
+                          onPopOut={
+                            nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
+                              ? () => nativeWindowBridge.open(webPane.id)
+                              : undefined
+                          }
+                          onFocusDetached={
+                            nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
+                          }
+                          onReattach={
+                            nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
                           }
                           feedback={webPaneFeedback[webPane.id]}
                           pendingQueue={{

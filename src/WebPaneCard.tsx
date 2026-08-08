@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
+import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureInPicture2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
@@ -71,6 +71,12 @@ export function WebPaneCard({
   onNavigate,
   maximized,
   onMaximize,
+  detached = false,
+  detachedWindow = false,
+  onPopOut,
+  onFocusDetached,
+  onReattach,
+  keepStreamingWhenHidden = false,
 }: {
   webPane: WebPane
   onClose: () => void
@@ -88,6 +94,14 @@ export function WebPaneCard({
   onNavigate?: (url: string) => void
   maximized?: boolean
   onMaximize?: () => void
+  /** The pane is rendered exclusively in another AppKit window. */
+  detached?: boolean
+  /** This card is the content of the focused AppKit pane window. */
+  detachedWindow?: boolean
+  onPopOut?: () => void
+  onFocusDetached?: () => void
+  onReattach?: () => void
+  keepStreamingWhenHidden?: boolean
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [review, setReview] = useState(false)
@@ -144,10 +158,10 @@ export function WebPaneCard({
     <article className="web-pane" data-web-pane-id={webPane.id}>
       <header
         className="web-pane-head"
-        draggable={onDragStart ? 'true' : 'false'}
-        onDragStart={onDragStart}
+        draggable={onDragStart && !detached ? 'true' : 'false'}
+        onDragStart={detached ? undefined : onDragStart}
         onDragEnd={onDragEnd}
-        title={onDragStart ? 'Drag onto a terminal pane to move this tile' : undefined}
+        title={onDragStart && !detached ? 'Drag onto a terminal pane to move this tile' : undefined}
       >
         <Globe className="web-pane-glyph" aria-hidden="true" />
         {urlDraft !== null && onNavigate ? (
@@ -201,7 +215,7 @@ export function WebPaneCard({
           {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
         </span>
         {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
-        {chromium && !pending && (
+        {chromium && !pending && !detached && (
           <button
             type="button"
             className="web-pane-button"
@@ -213,7 +227,7 @@ export function WebPaneCard({
             <MessageSquarePlus aria-hidden="true" />
           </button>
         )}
-        {chromium && !pending && onOpenDevtools && (
+        {chromium && !pending && !detached && onOpenDevtools && (
           <button
             type="button"
             className="web-pane-button"
@@ -224,7 +238,29 @@ export function WebPaneCard({
             <Wrench aria-hidden="true" />
           </button>
         )}
-        {onMaximize && (
+        {chromium && !pending && !detached && !detachedWindow && onPopOut && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={onPopOut}
+            title="Pop out web pane"
+            aria-label="Pop out web pane"
+          >
+            <PictureInPicture2 aria-hidden="true" />
+          </button>
+        )}
+        {detachedWindow && onReattach && (
+          <button
+            type="button"
+            className="web-pane-button"
+            onClick={onReattach}
+            title="Return web pane to workspace"
+            aria-label="Return web pane to workspace"
+          >
+            <PictureInPicture2 aria-hidden="true" />
+          </button>
+        )}
+        {onMaximize && !detached && (
           <button
             type="button"
             className="web-pane-button"
@@ -235,7 +271,7 @@ export function WebPaneCard({
             {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
           </button>
         )}
-        {!pending && (
+        {!pending && !detached && (
           <button
             type="button"
             className="web-pane-button"
@@ -269,7 +305,24 @@ export function WebPaneCard({
         </button>
       </header>
 
-      {pending ? (
+      {detached ? (
+        <div className="web-pane-body web-pane-detached" role="status">
+          <PictureInPicture2 aria-hidden="true" />
+          <p>This pane is open in a separate Commando window.</p>
+          <div className="web-pane-confirm-actions">
+            {onFocusDetached && (
+              <button type="button" className="web-pane-action" onClick={onFocusDetached}>
+                Show window
+              </button>
+            )}
+            {onReattach && (
+              <button type="button" className="web-pane-action is-ghost" onClick={onReattach}>
+                Bring back
+              </button>
+            )}
+          </div>
+        </div>
+      ) : pending ? (
         <div className="web-pane-body web-pane-confirm" role="alertdialog" aria-label="Confirm external page">
           <ShieldAlert className="web-pane-shield" aria-hidden="true" />
           <p className="web-pane-confirm-lede">
@@ -298,6 +351,7 @@ export function WebPaneCard({
               reloadKey={reloadKey}
               reviewMode={review}
               pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
+              keepStreamingWhenHidden={keepStreamingWhenHidden}
             />
           ) : tier === 'native' && nativeBridge ? (
             <NativeWebViewTile

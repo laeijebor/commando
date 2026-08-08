@@ -10,6 +10,7 @@ class FakeWebSocket {
   static OPEN = 1
   readonly url: string
   readyState = 0
+  closeCount = 0
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
 
   constructor(url: string) {
@@ -33,6 +34,7 @@ class FakeWebSocket {
   send(): void {}
 
   close(): void {
+    this.closeCount += 1
     if (this.readyState === 3) return
     this.readyState = 3
     this.dispatch('close', { code: 1005 })
@@ -68,7 +70,10 @@ const webPane: WebPane = {
 
 const EMPTY_SNAPSHOT: WebPanePendingSnapshot = { notes: [], knownUpTo: 0, dropped: 0 }
 
-function renderTile(pendingQueue: Partial<PendingQueueApi> = {}) {
+function renderTile(
+  pendingQueue: Partial<PendingQueueApi> = {},
+  keepStreamingWhenHidden = false,
+) {
   return render(
     <ChromiumTileCard
       webPane={webPane}
@@ -83,6 +88,7 @@ function renderTile(pendingQueue: Partial<PendingQueueApi> = {}) {
         dismissDropped: async () => EMPTY_SNAPSHOT,
         ...pendingQueue,
       }}
+      keepStreamingWhenHidden={keepStreamingWhenHidden}
     />,
   )
 }
@@ -182,5 +188,41 @@ describe('ChromiumTileCard first-frame watchdog', () => {
       vi.advanceTimersByTime(30_000)
     })
     expect(screen.queryByText(/no frames/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('ChromiumTileCard detached visibility', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+  })
+
+  it('keeps a detached AppKit stream open when its document becomes hidden', () => {
+    renderTile({}, true)
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    expect(socket.closeCount).toBe(0)
+  })
+
+  it('still closes an ordinary workspace stream when hidden', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+
+    expect(socket.closeCount).toBe(1)
   })
 })

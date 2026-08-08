@@ -7,6 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane } from '../shared/protocol'
 import { WebPaneCard } from './WebPaneCard'
 
+vi.mock('./ChromiumTileCard', () => ({
+  ChromiumTileCard: () => <div data-testid="chromium-tile" />,
+}))
+
 afterEach(() => cleanup())
 
 const webPane: WebPane = {
@@ -126,5 +130,63 @@ describe('WebPaneCard maximize', () => {
       />,
     )
     expect(screen.getByRole('button', { name: 'Restore web pane' })).toBeInTheDocument()
+  })
+})
+
+describe('WebPaneCard AppKit popout', () => {
+  const chromiumPane: WebPane = { ...webPane, engine: 'chromium' }
+
+  it('offers popout for an attached chromium pane', () => {
+    const onPopOut = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        onPopOut={onPopOut}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pop out web pane' }))
+    expect(onPopOut).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
+  })
+
+  it('unmounts the stream and offers focus or reattach while detached', () => {
+    const onFocusDetached = vi.fn()
+    const onReattach = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        detached
+        onFocusDetached={onFocusDetached}
+        onReattach={onReattach}
+      />,
+    )
+
+    expect(screen.queryByTestId('chromium-tile')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pop out web pane' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show window' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bring back' }))
+    expect(onFocusDetached).toHaveBeenCalledTimes(1)
+    expect(onReattach).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers a return control inside the detached window', () => {
+    const onReattach = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        detachedWindow
+        onReattach={onReattach}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Return web pane to workspace' }))
+    expect(onReattach).toHaveBeenCalledTimes(1)
   })
 })
