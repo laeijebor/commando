@@ -1221,7 +1221,7 @@ async function main(): Promise<void> {
       webPanePending.drop(webPaneId)
     },
   })
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath() })
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

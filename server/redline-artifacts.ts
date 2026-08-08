@@ -8,8 +8,8 @@ const MAX_ARTIFACT_DIRS = 16
 /** Persisted registrations expire after a week — a review never runs that long. */
 export const REDLINE_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1_000
 
-export function defaultRedlineArtifactStatePath(): string {
-  return join(homedir(), '.commando', 'redline-artifacts.json')
+export function defaultRedlineArtifactStatePath(port: number): string {
+  return join(homedir(), '.commando', `redline-artifacts-${port}.json`)
 }
 
 export class RedlineArtifactError extends Error {
@@ -59,33 +59,42 @@ export class RedlineArtifactRegistry {
     if (!statSync(real).isDirectory()) {
       throw new RedlineArtifactError(400, 'dir must be a directory')
     }
-    for (const [id, entry] of this.entries) {
+    const registeredAt = this.now()
+    const cutoff = registeredAt - REDLINE_ARTIFACT_TTL_MS
+    const nextEntries = new Map([...this.entries].filter(([, entry]) => entry.registeredAt >= cutoff))
+    for (const [id, entry] of nextEntries) {
       if (entry.dir === real) {
         // Same directory keeps its id (and its URLs) across re-registrations.
-        entry.registeredAt = this.now()
-        this.persist()
+        nextEntries.set(id, { ...entry, registeredAt })
+        this.commit(nextEntries)
         return { id }
       }
     }
-    if (this.entries.size >= MAX_ARTIFACT_DIRS) {
+    if (nextEntries.size >= MAX_ARTIFACT_DIRS) {
       throw new RedlineArtifactError(429, `At most ${MAX_ARTIFACT_DIRS} artifact directories can be registered`)
     }
-    const id = randomBytes(8).toString('hex')
-    this.entries.set(id, { dir: real, registeredAt: this.now() })
-    this.persist()
+    let id: string
+    do {
+      id = randomBytes(8).toString('hex')
+    } while (this.entries.has(id))
+    nextEntries.set(id, { dir: real, registeredAt })
+    this.commit(nextEntries)
     return { id }
   }
 
   unregister(id: string): boolean {
-    const removed = this.entries.delete(id)
-    if (removed) this.persist()
-    return removed
+    if (!this.entries.has(id)) return false
+    const nextEntries = new Map(this.entries)
+    nextEntries.delete(id)
+    this.commit(nextEntries)
+    return true
   }
 
   /** Maps an artifact request path to an absolute file path, or null. */
   resolve(id: string, requestPath: string): string | null {
-    const root = this.entries.get(id)?.dir
-    if (!root) return null
+    const entry = this.entries.get(id)
+    if (!entry || entry.registeredAt < this.now() - REDLINE_ARTIFACT_TTL_MS) return null
+    const root = entry.dir
     let decoded: string
     try {
       decoded = decodeURIComponent(requestPath)
@@ -127,39 +136,73 @@ export class RedlineArtifactRegistry {
     } catch {
       return
     }
+    if (typeof parsed !== 'object' || parsed === null) return
     const artifacts = (parsed as { artifacts?: unknown }).artifacts
     if (!Array.isArray(artifacts)) return
-    const cutoff = this.now() - REDLINE_ARTIFACT_TTL_MS
+    const now = this.now()
+    const cutoff = now - REDLINE_ARTIFACT_TTL_MS
+    const candidates: Array<[string, Entry]> = []
+    let dirty = false
     for (const item of artifacts) {
-      if (this.entries.size >= MAX_ARTIFACT_DIRS) break
       const { id, dir, registeredAt } = (item ?? {}) as Record<string, unknown>
-      if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) continue
-      if (typeof dir !== 'string' || !isAbsolute(dir)) continue
-      if (typeof registeredAt !== 'number' || registeredAt < cutoff) continue
-      // The directory must still pass the fresh-registration checks — a
-      // moved or deleted artifact dir is dropped, never served blind.
+      if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) {
+        dirty = true
+        continue
+      }
+      if (typeof dir !== 'string' || !isAbsolute(dir)) {
+        dirty = true
+        continue
+      }
+      if (typeof registeredAt !== 'number' || !Number.isFinite(registeredAt) || registeredAt < cutoff) {
+        dirty = true
+        continue
+      }
+      const clampedRegisteredAt = Math.min(registeredAt, now)
+      if (clampedRegisteredAt !== registeredAt) dirty = true
+      // Persisted paths are canonical; a changed realpath means the directory
+      // was rebound and the old capability must not follow it.
       let real: string
       try {
         real = realpathSync(dir)
-        if (!statSync(real).isDirectory()) continue
+        if (real !== dir || !statSync(real).isDirectory()) {
+          dirty = true
+          continue
+        }
       } catch {
+        dirty = true
         continue
       }
-      this.entries.set(id, { dir: real, registeredAt })
+      candidates.push([id, { dir: real, registeredAt: clampedRegisteredAt }])
     }
-    if (this.entries.size !== artifacts.length) this.persist()
+    candidates.sort(([, a], [, b]) => b.registeredAt - a.registeredAt)
+    const dirs = new Set<string>()
+    for (const [id, entry] of candidates) {
+      if (this.entries.has(id) || dirs.has(entry.dir) || this.entries.size >= MAX_ARTIFACT_DIRS) {
+        dirty = true
+        continue
+      }
+      this.entries.set(id, entry)
+      dirs.add(entry.dir)
+    }
+    if (dirty) this.persist(this.entries)
   }
 
-  private persist(): void {
+  private commit(entries: ReadonlyMap<string, Entry>): void {
+    this.persist(entries)
+    this.entries.clear()
+    for (const [id, entry] of entries) this.entries.set(id, entry)
+  }
+
+  private persist(entries: Iterable<[string, Entry]>): void {
     if (!this.statePath) return
-    const artifacts = [...this.entries].map(([id, entry]) => ({
+    const artifacts = [...entries].map(([id, entry]) => ({
       id,
       dir: entry.dir,
       registeredAt: entry.registeredAt,
     }))
     mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
-    const tmp = `${this.statePath}.tmp`
-    writeFileSync(tmp, JSON.stringify({ artifacts }, null, 2))
+    const tmp = `${this.statePath}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify({ artifacts }, null, 2), { mode: 0o600 })
     renameSync(tmp, this.statePath)
   }
 }
