@@ -2,8 +2,8 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { WebPane } from '../shared/protocol'
-import { ChromiumTileCard } from './ChromiumTileCard'
+import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
+import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -66,7 +66,9 @@ const webPane: WebPane = {
   createdAt: Date.now(),
 }
 
-function renderTile() {
+const EMPTY_SNAPSHOT: WebPanePendingSnapshot = { notes: [], knownUpTo: 0, dropped: 0 }
+
+function renderTile(pendingQueue: Partial<PendingQueueApi> = {}) {
   return render(
     <ChromiumTileCard
       webPane={webPane}
@@ -74,14 +76,68 @@ function renderTile() {
       reloadKey={0}
       reviewMode={false}
       pendingQueue={{
-        list: async () => [],
-        add: async () => [],
-        remove: async () => [],
-        send: async () => [],
+        list: async () => EMPTY_SNAPSHOT,
+        add: async () => EMPTY_SNAPSHOT,
+        remove: async () => EMPTY_SNAPSHOT,
+        send: async () => EMPTY_SNAPSHOT,
+        dismissDropped: async () => EMPTY_SNAPSHOT,
+        ...pendingQueue,
       }}
     />,
   )
 }
+
+describe('ChromiumTileCard pending hydration', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    window.localStorage.clear()
+  })
+
+  const mirrored = [{
+    id: 7,
+    selector: '#root > button',
+    tag: 'button',
+    rect: { x: 0, y: 0, width: 1, height: 1 },
+    comment: 'from the mirror',
+  }]
+
+  it('does not restore mirrored notes the daemon has already accounted for', async () => {
+    window.localStorage.setItem(`commando.redline.pending.${webPane.id}`, JSON.stringify(mirrored))
+    const add = vi.fn(async () => EMPTY_SNAPSHOT)
+    // knownUpTo 7 means id 7 was issued and has since been sent or removed.
+    renderTile({ list: async () => ({ notes: [], knownUpTo: 7, dropped: 0 }), add })
+    await act(async () => { await Promise.resolve() })
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('restores mirrored notes the daemon has no record of ever issuing', async () => {
+    window.localStorage.setItem(`commando.redline.pending.${webPane.id}`, JSON.stringify(mirrored))
+    const add: PendingQueueApi['add'] = vi.fn(async () => ({ notes: mirrored, knownUpTo: 1, dropped: 0 }))
+    // A watermark below the mirrored id means the journal was lost.
+    renderTile({ list: async () => ({ notes: [], knownUpTo: 0, dropped: 0 }), add })
+    await act(async () => { await Promise.resolve() })
+    expect(add).toHaveBeenCalledTimes(1)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ comment: 'from the mirror' }))
+    expect(await screen.findByText('from the mirror')).toBeInTheDocument()
+  })
+
+  it('shows a capped-answer warning pushed by the daemon', async () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    await act(async () => {
+      socket.open()
+      socket.message({ type: 'pending', notes: [], knownUpTo: 51, dropped: 2 })
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent(/2 older answers dropped/i)
+  })
+})
 
 describe('ChromiumTileCard first-frame watchdog', () => {
   beforeEach(() => {

@@ -2452,6 +2452,7 @@ export function App() {
                             add: (note) => webPanesApi.addPendingNote(webPane.id, note),
                             remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
                             send: () => webPanesApi.sendPendingNotes(webPane.id),
+                            dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
                           }}
                           onDragStart={(event) => {
                             setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })

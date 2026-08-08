@@ -441,13 +441,18 @@ async function main(): Promise<void> {
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
     onPageResponse: (webPaneId, response) => {
-      webTileRelay.broadcastPending(webPaneId, webPanePending.addResponse(webPaneId, response))
+      const pane = webPanes.get(webPaneId)
+      if (!pane) return
+      webTileRelay.broadcastPending(
+        webPaneId,
+        webPanePending.addResponse(webPaneId, pane.url, response),
+      )
     },
   })
   const webTileRelay = new WebTileRelay({
     engine: chromiumEngine,
     service: webPanes,
-    pendingNotes: (webPaneId) => webPanePending.list(webPaneId),
+    pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
   // onDrain fires only at request time, safely after publishWebPanes exists.
   const feedbackJournal = new FeedbackJournal()
@@ -1218,7 +1223,8 @@ async function main(): Promise<void> {
     onClosed: (webPaneId) => {
       chromiumEngine.closeTile(webPaneId)
       webTileRelay.dropTile(webPaneId)
-      webPanePending.drop(webPaneId)
+      // The pending journal deliberately survives: reopening the same URL
+      // adopts the unsent pills back (they expire with the TTL sweep).
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })

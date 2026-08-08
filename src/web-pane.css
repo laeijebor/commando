@@ -456,3 +456,20 @@
   color: var(--red, #ff8d89);
   font-size: 11px;
 }
+
+/*
+ * A capped page answer is discarded loudly, not silently: the same visibility
+ * a manual note gets from its 429, without letting a runaway page wedge the
+ * queue by refusing new answers.
+ */
+.tile-review-dropped {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-raised, #1c1826);
+  border: 1px solid var(--amber, #e0a458);
+  color: var(--amber, #e0a458);
+  font-size: 11px;
+}

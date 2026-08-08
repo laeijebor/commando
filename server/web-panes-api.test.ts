@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
+import { MAX_PENDING_NOTES } from '../shared/protocol.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
@@ -687,9 +688,10 @@ describe('pending note routes', () => {
 
     const added = await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
     expect(added.status).toBe(200)
-    const addedBody = await added.json() as { notes: Array<{ id: number; comment: string }> }
+    const addedBody = await added.json() as { notes: Array<{ id: number; comment: string }>; knownUpTo: number }
     expect(addedBody.notes).toMatchObject([{ id: 1, comment: 'align this' }])
-    expect(onPendingChanged).toHaveBeenCalledWith(id, addedBody.notes)
+    expect(addedBody.knownUpTo).toBe(1)
+    expect(onPendingChanged).toHaveBeenCalledWith(id, expect.objectContaining({ notes: addedBody.notes }))
 
     const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
     expect(listed.status).toBe(200)
@@ -735,7 +737,7 @@ describe('pending note routes', () => {
     expect(sentBody.notes).toHaveLength(0)
     expect(sentBody.queued).toBe(2)
     expect(onChange).toHaveBeenCalled()
-    expect(onPendingChanged).toHaveBeenCalledWith(id, [])
+    expect(onPendingChanged).toHaveBeenCalledWith(id, expect.objectContaining({ notes: [] }))
 
     const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
     const drainedBody = await drained.json() as { notes: Array<{ comment: string; pageUrl: string; capturedAt: number }> }
@@ -768,6 +770,47 @@ describe('pending note routes', () => {
     expect(sent.status).toBe(429)
     const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
     expect(((await listed.json()) as { notes: Array<{ comment: string }> }).notes.map((note) => note.comment)).toEqual(['stays'])
+  })
+
+  it('reopening the same URL inherits the closed tile\'s unsent pills', async () => {
+    const service = await createService()
+    const { baseUrl, pending } = await startApi(service)
+    const first = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${first}/pending`, pendingNoteBody('survives the close'), ownerAuth)
+    service.close(first)
+    pending.retain(new Set(service.list().map((pane) => pane.id)))
+
+    const reopened = await post(
+      baseUrl,
+      '/api/web-panes',
+      { url: 'http://127.0.0.1:5173/', anchor: '%12', engine: 'chromium' },
+      ownerAuth,
+    )
+    const { webPaneId } = await reopened.json() as { webPaneId: string }
+    const listed = await fetch(`${baseUrl}/api/web-panes/${webPaneId}/pending`, { headers: ownerAuth })
+    const body = await listed.json() as { notes: Array<{ comment: string }> }
+    expect(body.notes.map((note) => note.comment)).toEqual(['survives the close'])
+  })
+
+  it('surfaces capped page answers, then clears the notice on dismiss', async () => {
+    const service = await createService()
+    const { baseUrl, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    // Cap drops only happen on the binding path, which writes to the store
+    // directly rather than through HTTP.
+    for (let index = 0; index < MAX_PENDING_NOTES + 2; index += 1) {
+      pending.addResponse(id, 'http://127.0.0.1:5173/', { question: 'q', answer: `a${index}` })
+    }
+    const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
+    const body = await listed.json() as { notes: unknown[]; dropped: number }
+    expect(body.notes).toHaveLength(MAX_PENDING_NOTES)
+    expect(body.dropped).toBe(2)
+
+    const dismissed = await post(baseUrl, `/api/web-panes/${id}/pending/dropped`, {}, ownerAuth)
+    expect(dismissed.status).toBe(200)
+    const after = await dismissed.json() as { notes: unknown[]; dropped: number }
+    expect(after.dropped).toBe(0)
+    expect(after.notes).toHaveLength(MAX_PENDING_NOTES)
   })
 
   it('rejects agents, unknown panes, malformed notes, and bad ids', async () => {

@@ -10,11 +10,13 @@ const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000
 
 /** Inert fallback for callers that never wire a pending queue (tests). */
+const EMPTY_PENDING_SNAPSHOT = { notes: [], knownUpTo: Number.POSITIVE_INFINITY, dropped: 0 }
 const EMPTY_PENDING_QUEUE: PendingQueueApi = {
-  list: async () => [],
-  add: async () => [],
-  remove: async () => [],
-  send: async () => [],
+  list: async () => EMPTY_PENDING_SNAPSHOT,
+  add: async () => EMPTY_PENDING_SNAPSHOT,
+  remove: async () => EMPTY_PENDING_SNAPSHOT,
+  send: async () => EMPTY_PENDING_SNAPSHOT,
+  dismissDropped: async () => EMPTY_PENDING_SNAPSHOT,
 }
 
 /** Localhost pages embed fine as iframes in every client, including the desktop shell. */

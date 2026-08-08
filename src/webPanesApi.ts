@@ -1,4 +1,4 @@
-import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePlacement } from '../shared/protocol'
+import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id'>
@@ -14,15 +14,26 @@ export interface WebPanesApiClient {
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
-  pendingNotes(webPaneId: string): Promise<WebPanePendingNote[]>
-  addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingNote[]>
-  removePendingNote(webPaneId: string, noteId: number): Promise<WebPanePendingNote[]>
-  sendPendingNotes(webPaneId: string): Promise<WebPanePendingNote[]>
+  pendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
+  addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingSnapshot>
+  removePendingNote(webPaneId: string, noteId: number): Promise<WebPanePendingSnapshot>
+  sendPendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
+  dismissPendingDropped(webPaneId: string): Promise<WebPanePendingSnapshot>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
   navigate(webPaneId: string, url: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
+
+/** Normalizes a pending response body, tolerating an older daemon's shape. */
+function toSnapshot(body: unknown): WebPanePendingSnapshot {
+  const raw = body as Partial<WebPanePendingSnapshot> | null
+  return {
+    notes: Array.isArray(raw?.notes) ? (raw.notes as WebPanePendingNote[]) : [],
+    knownUpTo: typeof raw?.knownUpTo === 'number' ? raw.knownUpTo : Number.POSITIVE_INFINITY,
+    dropped: typeof raw?.dropped === 'number' ? raw.dropped : 0,
+  }
+}
 
 function apiError(status: number, body: unknown): Error {
   const message =
@@ -87,30 +98,30 @@ export function createWebPanesApi(
       })
     },
     pendingNotes: async (webPaneId) => {
-      const body = await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }) as {
-        notes: WebPanePendingNote[]
-      }
-      return body.notes
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }))
     },
     addPendingNote: async (webPaneId, note) => {
-      const body = await request(`/${encodeURIComponent(webPaneId)}/pending`, {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, {
         method: 'POST',
         body: JSON.stringify({ note }),
-      }) as { notes: WebPanePendingNote[] }
-      return body.notes
+      }))
     },
     removePendingNote: async (webPaneId, noteId) => {
-      const body = await request(`/${encodeURIComponent(webPaneId)}/pending/${noteId}`, {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/${noteId}`, {
         method: 'DELETE',
-      }) as { notes: WebPanePendingNote[] }
-      return body.notes
+      }))
     },
     sendPendingNotes: async (webPaneId) => {
-      const body = await request(`/${encodeURIComponent(webPaneId)}/pending/send`, {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/send`, {
         method: 'POST',
         body: JSON.stringify({}),
-      }) as { notes: WebPanePendingNote[] }
-      return body.notes
+      }))
+    },
+    dismissPendingDropped: async (webPaneId) => {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/dropped`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
     },
     move: async (webPaneId, anchor, placement) => {
       await request(`/${encodeURIComponent(webPaneId)}/move`, {

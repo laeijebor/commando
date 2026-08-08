@@ -3,7 +3,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import { parseTileInputEvent, parseTileInspectRequest, type ChromiumEngine } from './chromium-engine.js'
 import type { WebPaneService } from './web-panes.js'
-import type { WebPanePendingNote } from '../shared/protocol.js'
+import type { WebPanePendingSnapshot } from '../shared/protocol.js'
 
 const WEB_TILE_PATH = /^\/ws\/web-tiles\/(w-[0-9a-f]{8})$/
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024
@@ -17,7 +17,7 @@ type RelayDependencies = {
   engine: ChromiumEngine
   service: WebPaneService
   /** Current queued-but-unsent review notes for a tile, for connect-time hydration. */
-  pendingNotes: (webPaneId: string) => WebPanePendingNote[]
+  pendingNotes: (webPaneId: string) => WebPanePendingSnapshot
 }
 
 /**
@@ -61,10 +61,10 @@ export class WebTileRelay {
    * pending store is the source of truth — viewers replace, never merge, so
    * a missed push heals on the next one (or on reconnect).
    */
-  broadcastPending(webPaneId: string, notes: WebPanePendingNote[]): void {
+  broadcastPending(webPaneId: string, snapshot: WebPanePendingSnapshot): void {
     const sockets = this.subscribers.get(webPaneId)
     if (!sockets) return
-    const message = JSON.stringify({ type: 'pending', notes })
+    const message = JSON.stringify({ type: 'pending', ...snapshot })
     for (const socket of sockets) {
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
@@ -95,8 +95,8 @@ export class WebTileRelay {
     // viewer was connected (or while another session was focused) must
     // reappear without waiting for the stream to come up.
     const pending = this.dependencies.pendingNotes(webPaneId)
-    if (pending.length > 0 && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'pending', notes: pending }))
+    if ((pending.notes.length > 0 || pending.dropped > 0) && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'pending', ...pending }))
     }
 
     let unsubscribe: (() => void) | null = null

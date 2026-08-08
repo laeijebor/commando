@@ -33,13 +33,14 @@ describe('submitFeedback', () => {
 describe('pending note routes', () => {
   it('drives GET/POST/DELETE/send against the pending endpoints and returns the queue', async () => {
     const notes = [{ id: 1, selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' }]
-    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true, notes }))
+    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true, notes, knownUpTo: 1, dropped: 0 }))
     const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
 
-    expect(await api.pendingNotes('w-11111111')).toEqual(notes)
-    expect(await api.addPendingNote('w-11111111', { selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' })).toEqual(notes)
-    expect(await api.removePendingNote('w-11111111', 1)).toEqual(notes)
-    expect(await api.sendPendingNotes('w-11111111')).toEqual(notes)
+    const snapshot = { notes, knownUpTo: 1, dropped: 0 }
+    expect(await api.pendingNotes('w-11111111')).toEqual(snapshot)
+    expect(await api.addPendingNote('w-11111111', { selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' })).toEqual(snapshot)
+    expect(await api.removePendingNote('w-11111111', 1)).toEqual(snapshot)
+    expect(await api.sendPendingNotes('w-11111111')).toEqual(snapshot)
 
     const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
     expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([

@@ -322,6 +322,20 @@ export type WebPanePendingNote = {
   response?: WebPaneFeedbackResponse
 }
 
+/** A tile's pending queue plus the metadata a viewer needs to reason about it. */
+export type WebPanePendingSnapshot = {
+  notes: WebPanePendingNote[]
+  /**
+   * Highest note id this pane has ever issued, live or since removed. A
+   * client's mirrored note at or below this watermark is one the daemon has
+   * already accounted for (sent, removed, or capped) — only ids above it are
+   * genuinely unknown and safe to restore.
+   */
+  knownUpTo: number
+  /** Page answers the cap discarded since the last send, surfaced in the tile. */
+  dropped: number
+}
+
 /** Ephemeral review-feedback state for a tile — broadcast, never persisted. */
 export type WebPaneFeedbackInfo = {
   queued: number

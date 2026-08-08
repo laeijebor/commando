@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { WebPane, WebPanePendingNote } from '../shared/protocol'
+import { MAX_PENDING_NOTES, type WebPane, type WebPanePendingNote, type WebPanePendingSnapshot } from '../shared/protocol'
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
   attachTileWheelCapture,
@@ -34,6 +34,8 @@ type TileSocketMessage = {
   text?: string
   snippet?: string
   notes?: unknown
+  dropped?: number
+  knownUpTo?: number
 }
 
 /**
@@ -41,10 +43,17 @@ type TileSocketMessage = {
  * authoritative queue, which the tile renders as pills.
  */
 export type PendingQueueApi = {
-  list: () => Promise<WebPanePendingNote[]>
-  add: (note: PendingNoteDraft) => Promise<WebPanePendingNote[]>
-  remove: (noteId: number) => Promise<WebPanePendingNote[]>
-  send: () => Promise<WebPanePendingNote[]>
+  list: () => Promise<WebPanePendingSnapshot>
+  add: (note: PendingNoteDraft) => Promise<WebPanePendingSnapshot>
+  remove: (noteId: number) => Promise<WebPanePendingSnapshot>
+  send: () => Promise<WebPanePendingSnapshot>
+  dismissDropped: () => Promise<WebPanePendingSnapshot>
+}
+
+const EMPTY_SNAPSHOT: WebPanePendingSnapshot = {
+  notes: [],
+  knownUpTo: Number.POSITIVE_INFINITY,
+  dropped: 0,
 }
 
 /** Narrows a socket frame already known to be an `inspect_result`. */
@@ -113,6 +122,7 @@ export function ChromiumTileCard({
   const [card, setCard] = useState<{ inspect: TileInspectSuccess; x: number; y: number } | null>(null)
   const [comment, setComment] = useState('')
   const [queued, setQueued] = useState<WebPanePendingNote[]>([])
+  const [dropped, setDropped] = useState(0)
   const [hydrated, setHydrated] = useState(false)
   const [sendState, setSendState] = useState<'idle' | 'sending' | { error: string }>('idle')
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
@@ -124,30 +134,44 @@ export function ChromiumTileCard({
   reviewModeRef.current = reviewMode
   const pendingQueueRef = useRef(pendingQueue)
   pendingQueueRef.current = pendingQueue
+  /** Set once the daemon has pushed a queue over the socket for this tile. */
+  const pushedRef = useRef(false)
+
+  const applySnapshot = (snapshot: WebPanePendingSnapshot): void => {
+    setQueued(snapshot.notes)
+    setDropped(snapshot.dropped)
+  }
+  // The socket handler is built once per connection but must always call the
+  // current setters, so it goes through a ref.
+  const applySnapshotRef = useRef(applySnapshot)
+  applySnapshotRef.current = applySnapshot
 
   // Pills are daemon state: hydrate on mount so notes queued while this tile
-  // was unmounted (another session focused, page reloaded) come back. The
-  // localStorage mirror is belt and braces — restored only when the daemon
-  // definitively reports an empty queue.
+  // was unmounted (another session focused, page reloaded) come back.
   useEffect(() => {
     let cancelled = false
     const hydrate = async () => {
-      let notes: WebPanePendingNote[]
+      let snapshot: WebPanePendingSnapshot
       try {
-        notes = await pendingQueueRef.current.list()
-        if (notes.length === 0) {
-          const mirrored = loadPendingMirror(webPane.id)
-          for (const note of mirrored) {
-            const { id: _id, ...draft } = note
-            notes = await pendingQueueRef.current.add(draft)
-          }
+        snapshot = await pendingQueueRef.current.list()
+        // Belt and braces: restore only notes the daemon has no record of
+        // ever issuing. Anything it sent, dropped, or removed stays at or
+        // below the watermark forever, so sent notes cannot resurrect —
+        // an id above it means the journal itself was lost.
+        const unknown = loadPendingMirror(webPane.id)
+          .filter((note) => note.id > snapshot.knownUpTo)
+        for (const note of unknown) {
+          const { id: _id, ...draft } = note
+          snapshot = await pendingQueueRef.current.add(draft)
         }
       } catch {
         // The daemon will still push `pending` over the tile socket.
-        notes = []
+        snapshot = EMPTY_SNAPSHOT
       }
-      if (cancelled) return
-      setQueued((current) => (current.length > 0 ? current : notes))
+      // A `pending` push that landed while this request was in flight is
+      // strictly fresher than its result — never clobber it.
+      if (cancelled || pushedRef.current) return
+      applySnapshotRef.current(snapshot)
       setHydrated(true)
     }
     void hydrate()
@@ -246,7 +270,12 @@ export function ChromiumTileCard({
         if (message.type === 'pending') {
           // The daemon's pending queue is authoritative — replace, never merge.
           if (Array.isArray(message.notes)) {
-            setQueued(message.notes as WebPanePendingNote[])
+            pushedRef.current = true
+            applySnapshotRef.current({
+              notes: message.notes as WebPanePendingNote[],
+              knownUpTo: typeof message.knownUpTo === 'number' ? message.knownUpTo : 0,
+              dropped: typeof message.dropped === 'number' ? message.dropped : 0,
+            })
             setHydrated(true)
           }
           return
@@ -396,9 +425,9 @@ export function ChromiumTileCard({
 
   // Every mutation returns the daemon's new authoritative queue; rendering
   // that (rather than patching local state) keeps all viewers consistent.
-  const mutateQueue = async (mutate: () => Promise<WebPanePendingNote[]>, failure: string) => {
+  const mutateQueue = async (mutate: () => Promise<WebPanePendingSnapshot>, failure: string) => {
     try {
-      setQueued(await mutate())
+      applySnapshot(await mutate())
       clearSendError()
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : failure })
@@ -410,7 +439,7 @@ export function ChromiumTileCard({
   const submitQueued = async () => {
     setSendState('sending')
     try {
-      setQueued(await pendingQueueRef.current.send())
+      applySnapshot(await pendingQueueRef.current.send())
       setSendState('idle')
     } catch (error) {
       setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })
@@ -556,8 +585,26 @@ export function ChromiumTileCard({
           </div>
         </div>
       )}
-      {queued.length > 0 && (
+      {(queued.length > 0 || dropped > 0) && (
         <div className="tile-review-pills">
+          {dropped > 0 && (
+            <span className="tile-review-dropped" role="alert">
+              {`${dropped} older answer${dropped === 1 ? '' : 's'} dropped — the queue is full at ${MAX_PENDING_NOTES}. Send to make room.`}
+              <button
+                type="button"
+                className="tile-review-pill-remove"
+                aria-label="Dismiss the dropped-answer warning"
+                onClick={() => {
+                  void mutateQueue(
+                    () => pendingQueueRef.current.dismissDropped(),
+                    'Could not dismiss the warning',
+                  )
+                }}
+              >
+                ×
+              </button>
+            </span>
+          )}
           {queued.map((note) => (
             <span key={note.id} className="tile-review-pill" title={`${note.selector} — ${note.comment}`}>
               <strong>{note.tag}</strong>
@@ -577,16 +624,18 @@ export function ChromiumTileCard({
               </button>
             </span>
           ))}
-          <button
-            type="button"
-            className="web-pane-action"
-            disabled={sendState === 'sending'}
-            onClick={() => void submitQueued()}
-          >
-            {sendState === 'sending'
-              ? 'Sending…'
-              : `Send ${queued.length} note${queued.length === 1 ? '' : 's'}`}
-          </button>
+          {queued.length > 0 && (
+            <button
+              type="button"
+              className="web-pane-action"
+              disabled={sendState === 'sending'}
+              onClick={() => void submitQueued()}
+            >
+              {sendState === 'sending'
+                ? 'Sending…'
+                : `Send ${queued.length} note${queued.length === 1 ? '' : 's'}`}
+            </button>
+          )}
           {typeof sendState === 'object' && (
             <span className="tile-review-error" role="alert">{sendState.error}</span>
           )}

@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingNote, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
 import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_QUESTION, MAX_RESPONSE_QUEUE_KEY } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
@@ -47,7 +47,7 @@ type WebPanesApiDependencies = {
   /** Queued-but-unsent review notes, owned by the daemon. */
   pending: WebPanePendingStore
   /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
-  onPendingChanged?: (webPaneId: string, notes: WebPanePendingNote[]) => void
+  onPendingChanged?: (webPaneId: string, snapshot: WebPanePendingSnapshot) => void
   openLimiter?: TokenBucketRateLimiter
   /**
    * Resolves the live CDP coordinates for a chromium tile (starting its
@@ -252,6 +252,7 @@ export class WebPanesApi {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
         const pane = this.openPane(await readJson(request), caller)
+        this.adoptPending(pane)
         this.dependencies.onChange()
         writeJson(response, 201, {
           ok: true,
@@ -357,7 +358,7 @@ export class WebPanesApi {
             }
             ids = body.ids as number[]
           }
-          const notes = pending.send(
+          const snapshot = pending.send(
             route.id,
             pane.url,
             Date.now(),
@@ -365,29 +366,37 @@ export class WebPanesApi {
             ids,
           )
           this.dependencies.onChange()
-          this.dependencies.onPendingChanged?.(route.id, notes)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
           const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
-          writeJson(response, 200, { ok: true, webPaneId: route.id, queued, notes })
+          writeJson(response, 200, { ok: true, webPaneId: route.id, queued, ...snapshot })
+          return true
+        }
+
+        if (route.dismissDropped === true) {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const snapshot = pending.acknowledgeDropped(route.id)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
           return true
         }
 
         if (route.noteId !== undefined) {
           if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
-          const notes = pending.remove(route.id, route.noteId)
-          this.dependencies.onPendingChanged?.(route.id, notes)
-          writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+          const snapshot = pending.remove(route.id, route.noteId)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
           return true
         }
 
         if (request.method === 'GET') {
-          writeJson(response, 200, { ok: true, webPaneId: route.id, notes: pending.list(route.id) })
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...pending.snapshot(route.id) })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         const note = parsePendingNoteInput(await readJson(request))
-        const notes = pending.addNote(route.id, note)
-        this.dependencies.onPendingChanged?.(route.id, notes)
-        writeJson(response, 200, { ok: true, webPaneId: route.id, notes })
+        const snapshot = pending.addNote(route.id, pane.url, note)
+        this.dependencies.onPendingChanged?.(route.id, snapshot)
+        writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
         return true
       }
 
@@ -399,7 +408,10 @@ export class WebPanesApi {
         const body = await readJson(request)
         const allowOrigin = body.allowOrigin === true
         const pane = this.dependencies.service.confirm(route.id, allowOrigin)
-        if (pane.status === 'open') this.dependencies.onConfirmed?.(pane)
+        if (pane.status === 'open') {
+          this.dependencies.onConfirmed?.(pane)
+          this.adoptPending(pane)
+        }
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true, webPaneId: pane.id, status: pane.status })
         return true
@@ -479,7 +491,7 @@ export class WebPanesApi {
               : url.pathname.endsWith('/cdp') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
-              : url.pathname.endsWith('/pending/send') ? 'POST'
+              : url.pathname.endsWith('/pending/send') || url.pathname.endsWith('/pending/dropped') ? 'POST'
               : /\/pending\/\d+$/.test(url.pathname) ? 'DELETE'
               : 'POST, DELETE',
           )
@@ -490,6 +502,17 @@ export class WebPanesApi {
       writeJson(response, 500, { error: 'Web pane action failed' })
       return true
     }
+  }
+
+  /**
+   * Reclaims unsent pills left by a closed tile that was reviewing the same
+   * URL. Only chromium tiles have a review mode, so only they can inherit.
+   */
+  private adoptPending(pane: WebPane): void {
+    if (pane.engine !== 'chromium' || pane.status !== 'open') return
+    const liveIds = new Set(this.dependencies.service.list().map((entry) => entry.id))
+    const snapshot = this.dependencies.pending.adopt(pane.id, pane.url, liveIds)
+    if (snapshot.notes.length > 0) this.dependencies.onPendingChanged?.(pane.id, snapshot)
   }
 
   private async authenticate(request: IncomingMessage, url: URL): Promise<'owner' | 'agent'> {
@@ -508,12 +531,13 @@ export class WebPanesApi {
   private route(pathname: string):
     | { kind: 'collection' }
     | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
-    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; send?: boolean } {
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; send?: boolean; dismissDropped?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|dropped|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
+      if (match[3] === 'dropped') return { kind: 'pane', id: match[1], action: 'pending', dismissDropped: true }
       if (match[3] !== undefined) return { kind: 'pane', id: match[1], action: 'pending', noteId: Number(match[3]) }
       return { kind: 'pane', id: match[1], action: 'pending' }
     }
