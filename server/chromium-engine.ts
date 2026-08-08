@@ -402,9 +402,10 @@ type TileTarget = {
   fallbackTimer: ReturnType<typeof setTimeout> | null
   /** Active captureScreenshot polling loop (fallback mode). */
   pollTimer: ReturnType<typeof setInterval> | null
-  pollBusy: boolean
-  /** Last polled screenshot payload — identical shots are not re-sent. */
-  lastPolledData: string | null
+  /** Invalidates armed timers and in-flight fallback captures from older generations. */
+  fallbackEpoch: number
+  /** Last frame delivered to subscribers, available for replay and fallback deduplication. */
+  lastFrame: ScreencastFrame | null
 }
 
 export type ChromiumEngineOptions = {
@@ -488,6 +489,7 @@ export class ChromiumEngine {
   async subscribeScreencast(webPaneId: string, url: string, sink: ScreencastSink): Promise<() => void> {
     const tile = await this.ensureTarget(webPaneId, url)
     tile.sinks.add(sink)
+    if (tile.lastFrame) sink(tile.lastFrame)
     if (!tile.screencasting) {
       tile.screencasting = true
       try {
@@ -525,36 +527,73 @@ export class ChromiumEngine {
    * the sinks until real frames show up.
    */
   private armScreencastFallback(tile: TileTarget): void {
+    const epoch = ++tile.fallbackEpoch
     tile.gotRealFrame = false
     if (tile.fallbackTimer) clearTimeout(tile.fallbackTimer)
-    tile.fallbackTimer = setTimeout(() => {
+    if (tile.pollTimer) {
+      clearInterval(tile.pollTimer)
+      tile.pollTimer = null
+    }
+    const fallbackTimer = setTimeout(() => {
+      if (tile.fallbackEpoch !== epoch) return
       tile.fallbackTimer = null
       if (!tile.screencasting || tile.sinks.size === 0 || tile.gotRealFrame || tile.pollTimer) return
       console.warn(`chromium tile ${tile.webPaneId}: screencast frameless, falling back to screenshot polling`)
-      tile.pollTimer = setInterval(() => {
-        if (tile.pollBusy) return
-        tile.pollBusy = true
+      let pollBusy = false
+      let consecutiveFailures = 0
+      let pollTimer: ReturnType<typeof setInterval> | null = null
+      const tick = (): void => {
+        if (tile.fallbackEpoch !== epoch || pollBusy) return
+        pollBusy = true
+        const viewport = this.viewports.get(tile.webPaneId)
+        const params = viewport
+          ? {
+              format: 'png',
+              clip: {
+                x: 0,
+                y: 0,
+                width: viewport.width,
+                height: viewport.height,
+                scale: Math.min(1, SCREENCAST_MAX_DIMENSION / Math.max(viewport.width, viewport.height)),
+              },
+            }
+          : { format: 'png' }
         tile.cdp
-          .send('Page.captureScreenshot', { format: 'png' })
+          .send('Page.captureScreenshot', params)
           .then((result) => {
+            if (tile.fallbackEpoch !== epoch) return
+            consecutiveFailures = 0
             const data = (result as { data?: unknown }).data
-            if (typeof data !== 'string' || data === tile.lastPolledData) return
+            if (typeof data !== 'string' || data === tile.lastFrame?.data) return
             // A real frame may have raced in while the screenshot was taken;
             // it wins, and the poller is already stopped.
             if (tile.gotRealFrame) return
-            tile.lastPolledData = data
             const frame: ScreencastFrame = { data, format: 'png', metadata: {} }
+            tile.lastFrame = frame
             for (const sink of tile.sinks) sink(frame)
           })
-          .catch(() => undefined)
-          .finally(() => {
-            tile.pollBusy = false
+          .catch(() => {
+            if (tile.fallbackEpoch !== epoch) return
+            consecutiveFailures += 1
+            if (consecutiveFailures < 5) return
+            if (pollTimer) clearInterval(pollTimer)
+            if (tile.pollTimer === pollTimer) tile.pollTimer = null
+            console.warn(`giving up on screenshot fallback for ${tile.webPaneId}`)
           })
-      }, this.screencastPollIntervalMs)
+          .finally(() => {
+            if (tile.fallbackEpoch !== epoch) return
+            pollBusy = false
+          })
+      }
+      tick()
+      pollTimer = setInterval(tick, this.screencastPollIntervalMs)
+      tile.pollTimer = pollTimer
     }, this.screencastFallbackAfterMs)
+    tile.fallbackTimer = fallbackTimer
   }
 
   private stopScreencastFallback(tile: TileTarget): void {
+    tile.fallbackEpoch += 1
     if (tile.fallbackTimer) {
       clearTimeout(tile.fallbackTimer)
       tile.fallbackTimer = null
@@ -563,7 +602,6 @@ export class ChromiumEngine {
       clearInterval(tile.pollTimer)
       tile.pollTimer = null
     }
-    tile.lastPolledData = null
   }
 
   async setViewport(webPaneId: string, viewport: TileViewport): Promise<void> {
@@ -784,24 +822,30 @@ export class ChromiumEngine {
       gotRealFrame: false,
       fallbackTimer: null,
       pollTimer: null,
-      pollBusy: false,
-      lastPolledData: null,
+      fallbackEpoch: 0,
+      lastFrame: null,
     }
     cdp.on('Page.screencastFrame', (params) => {
       const sessionId = params.sessionId
       if (typeof sessionId === 'number') {
         cdp.sendAndForget('Page.screencastFrameAck', { sessionId })
       }
-      tile.gotRealFrame = true
-      this.stopScreencastFallback(tile)
       const data = params.data
       if (typeof data !== 'string') return
+      tile.gotRealFrame = true
+      this.stopScreencastFallback(tile)
       const frame: ScreencastFrame = {
         data,
         format: 'png',
         metadata: (params.metadata ?? {}) as Record<string, unknown>,
       }
+      tile.lastFrame = frame
       for (const sink of tile.sinks) sink(frame)
+    })
+    cdp.on('Page.screencastVisibilityChanged', (params) => {
+      if (params.visible === false && tile.screencasting && tile.sinks.size > 0) {
+        this.armScreencastFallback(tile)
+      }
     })
     cdp.on('Page.frameNavigated', (params) => {
       const frame = params.frame as { parentId?: string; url?: string } | undefined
@@ -856,6 +900,7 @@ export class ChromiumEngine {
    * trust policy intact even when an attached agent drives the page.
    */
   private handleMainFrameNavigation(tile: TileTarget, url: string): void {
+    if (tile.screencasting && tile.sinks.size > 0) this.armScreencastFallback(tile)
     if (url === 'about:blank' || url === tile.currentUrl) return
     if (url.startsWith('chrome-error://') || url.startsWith('devtools://')) return
     const decision = this.options.classify(url)

@@ -32,11 +32,11 @@ class StubChromium {
   evaluateValue: unknown = null
   /** Canned Page.captureScreenshot payload. */
   screenshotData = 'SHOT'
-  /** Methods that should fail with a CDP error on their next call. */
-  private readonly failingMethods = new Set<string>()
+  /** Remaining CDP errors to return per method. */
+  private readonly failingMethods = new Map<string, number>()
 
-  failNext(method: string): void {
-    this.failingMethods.add(method)
+  failNext(method: string, times = 1): void {
+    this.failingMethods.set(method, (this.failingMethods.get(method) ?? 0) + times)
   }
 
   async start(): Promise<void> {
@@ -85,7 +85,10 @@ class StubChromium {
       socket.on('message', (data) => {
         const message = JSON.parse(String(data)) as { id: number; method: string; params?: Record<string, unknown> }
         this.calls.push({ targetId, method: message.method, params: message.params })
-        if (this.failingMethods.delete(message.method)) {
+        const failuresRemaining = this.failingMethods.get(message.method) ?? 0
+        if (failuresRemaining > 0) {
+          if (failuresRemaining === 1) this.failingMethods.delete(message.method)
+          else this.failingMethods.set(message.method, failuresRemaining - 1)
           socket.send(JSON.stringify({ id: message.id, error: { message: `${message.method} failed (stub)` } }))
           return
         }
@@ -369,6 +372,77 @@ describe('ChromiumEngine', () => {
     const shots = stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length
     await new Promise((resolve) => setTimeout(resolve, 80))
     expect(stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length).toBe(shots)
+  })
+
+  it('rearms screenshot polling when a live screencast becomes invisible', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    const frames: ScreencastFrame[] = []
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    stub.emit('T1', 'Page.screencastFrame', { data: 'REAL', sessionId: 1, metadata: {} })
+    await until(() => frames.some((frame) => frame.data === 'REAL'), 'real frame')
+
+    stub.emit('T1', 'Page.screencastVisibilityChanged', { visible: false })
+    await until(() => frames.some((frame) => frame.data === 'SHOT'), 'rearmed fallback frame')
+    expect(stub.calls.some((call) => call.method === 'Page.captureScreenshot')).toBe(true)
+  })
+
+  it('immediately replays the cached last frame to a joining sink', async () => {
+    const { stub, engine } = await createHarness()
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    stub.emit('T1', 'Page.screencastFrame', {
+      data: 'CACHED', sessionId: 1, metadata: { deviceWidth: 800 },
+    })
+    await until(
+      () => stub.calls.some((call) => call.method === 'Page.screencastFrameAck'),
+      'cached frame acknowledgement',
+    )
+
+    const joiningSink = vi.fn()
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', joiningSink)
+    expect(joiningSink).toHaveBeenCalledOnce()
+    expect(joiningSink).toHaveBeenCalledWith({
+      data: 'CACHED', format: 'png', metadata: { deviceWidth: 800 },
+    })
+  })
+
+  it('caps fallback screenshots to the screencast maximum dimension', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    await engine.setViewport('w-11111111', { width: 4_000, height: 2_000, deviceScaleFactor: 1 })
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    await until(
+      () => stub.calls.some((call) => call.method === 'Page.captureScreenshot'),
+      'clipped fallback capture',
+    )
+
+    const capture = stub.calls.find((call) => call.method === 'Page.captureScreenshot')
+    expect(capture?.params).toEqual({
+      format: 'png',
+      clip: { x: 0, y: 0, width: 4_000, height: 2_000, scale: 2_560 / 4_000 },
+    })
+  })
+
+  it('stops screenshot polling after five consecutive capture failures', async () => {
+    const { stub, engine } = await createHarness({ screencastFallbackAfterMs: 30, screencastPollIntervalMs: 20 })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    cleanups.push(() => warn.mockRestore())
+    stub.failNext('Page.captureScreenshot', 5)
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    await until(
+      () => stub.calls.filter((call) => call.method === 'Page.captureScreenshot').length === 5,
+      'five failed fallback captures',
+    )
+    await until(
+      () => warn.mock.calls.some(([message]) => message === 'giving up on screenshot fallback for w-11111111'),
+      'fallback failure warning',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(stub.calls.filter((call) => call.method === 'Page.captureScreenshot')).toHaveLength(5)
+    expect(warn.mock.calls.filter(
+      ([message]) => message === 'giving up on screenshot fallback for w-11111111',
+    )).toHaveLength(1)
   })
 
   it('stops the fallback poller when the last subscriber leaves', async () => {
