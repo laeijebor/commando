@@ -409,6 +409,10 @@ describe('ChromiumEngine', () => {
     // No screencastFrame is ever emitted (the "hidden window" starvation).
     await until(() => frames.length === 1, 'fallback frame')
     expect(frames[0]).toMatchObject({ data: 'SHOT', format: 'png' })
+    const stopIndex = stub.calls.findIndex((call) => call.method === 'Page.stopScreencast')
+    const captureIndex = stub.calls.findIndex((call) => call.method === 'Page.captureScreenshot')
+    expect(stopIndex).toBeGreaterThan(-1)
+    expect(captureIndex).toBeGreaterThan(stopIndex)
     // Identical screenshots are not re-sent…
     await new Promise((resolve) => setTimeout(resolve, 80))
     expect(frames).toHaveLength(1)

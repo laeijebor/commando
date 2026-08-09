@@ -736,9 +736,23 @@ export class ChromiumEngine {
             pollBusy = false
           })
       }
-      tick()
-      pollTimer = setInterval(tick, this.screencastPollIntervalMs)
-      tile.pollTimer = pollTimer
+      // Chrome 151 can deadlock captureScreenshot behind a starved active
+      // screencast. Stop it first, then use on-demand captures on this target.
+      void tile.cdp.send('Page.stopScreencast').then(() => {
+        if (
+          tile.fallbackEpoch !== epoch ||
+          !tile.screencasting ||
+          tile.sinks.size === 0 ||
+          tile.gotRealFrame
+        ) return
+        tick()
+        pollTimer = setInterval(tick, this.screencastPollIntervalMs)
+        tile.pollTimer = pollTimer
+      }).catch(() => {
+        if (tile.fallbackEpoch === epoch) {
+          console.warn(`could not stop starved screencast for ${tile.webPaneId}`)
+        }
+      })
     }, this.screencastFallbackAfterMs)
     tile.fallbackTimer = fallbackTimer
   }
