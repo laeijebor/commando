@@ -1,0 +1,424 @@
+@layer redline-default {
+  :where(html[data-redline-theme="commando"]) {
+    color-scheme: dark;
+    font-synthesis: none;
+    --redline-page-bg: #0c0a14;
+    --redline-page-deep: #080610;
+    --redline-page-surface: #100d1a;
+    --redline-page-raised: #171225;
+    --redline-page-input: #090711;
+    --redline-page-border: #362d50;
+    --redline-page-border-strong: #564778;
+    --redline-page-text: #f5f3fa;
+    --redline-page-text-soft: #c6c0d6;
+    --redline-page-muted: #978eae;
+    --redline-page-green: #85f4b1;
+    --redline-page-amber: #f3c66b;
+    --redline-page-red: #ff8d89;
+    --redline-page-violet: #b9a3ff;
+    --redline-page-cyan: #73d9e2;
+    --redline-page-shadow: 0 28px 90px rgb(0 0 0 / 0.48);
+    --redline-page-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --redline-page-mono: "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --redline-accent: var(--redline-page-violet);
+    --redline-accent2: var(--redline-page-cyan);
+    min-width: 0;
+    min-height: 100%;
+    background: var(--redline-page-bg);
+  }
+
+  :where(html[data-redline-theme="commando"]) *,
+  :where(html[data-redline-theme="commando"]) *::before,
+  :where(html[data-redline-theme="commando"]) *::after {
+    box-sizing: border-box;
+  }
+
+  :where(html[data-redline-theme="commando"]) body {
+    min-width: 0;
+    min-height: 100dvh;
+    margin: 0;
+    overflow-x: hidden;
+    color: var(--redline-page-text-soft);
+    background:
+      radial-gradient(circle at 12% 8%, rgb(185 163 255 / 0.18), transparent 34rem),
+      radial-gradient(circle at 88% 88%, rgb(133 244 177 / 0.1), transparent 30rem),
+      linear-gradient(145deg, var(--redline-page-bg), var(--redline-page-deep));
+    font-family: var(--redline-page-mono);
+    font-size: 16px;
+    line-height: 1.65;
+    text-rendering: optimizeLegibility;
+  }
+
+  :where(html[data-redline-theme="commando"]) ::selection {
+    color: var(--redline-page-deep);
+    background: var(--redline-page-violet);
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(h1, h2, h3, h4) {
+    max-width: 18ch;
+    margin: 0;
+    color: var(--redline-page-text);
+    font-family: var(--redline-page-sans);
+    font-weight: 750;
+    letter-spacing: -0.045em;
+    text-wrap: balance;
+  }
+
+  :where(html[data-redline-theme="commando"]) h1 {
+    font-size: clamp(2.65rem, 8vw, 5.5rem);
+    line-height: 0.96;
+  }
+
+  :where(html[data-redline-theme="commando"]) h2 {
+    font-size: clamp(1.65rem, 4vw, 2.65rem);
+    line-height: 1.08;
+  }
+
+  :where(html[data-redline-theme="commando"]) h3 {
+    font-size: clamp(1.15rem, 2.5vw, 1.5rem);
+    line-height: 1.2;
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(p, ul, ol, blockquote) {
+    max-width: 72ch;
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(a, button, input, select, textarea) {
+    font: inherit;
+  }
+
+  :where(html[data-redline-theme="commando"]) a {
+    color: var(--redline-page-cyan);
+    text-decoration-color: rgb(115 217 226 / 0.45);
+    text-underline-offset: 0.18em;
+  }
+
+  :where(html[data-redline-theme="commando"]) a:hover {
+    color: var(--redline-page-text);
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(a, button, input, select, textarea):focus-visible {
+    outline: 2px solid var(--redline-page-violet);
+    outline-offset: 3px;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-shell {
+    width: min(1120px, calc(100% - 32px));
+    min-width: 0;
+    margin-inline: auto;
+    padding-block: clamp(36px, 7vw, 88px);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-stack {
+    display: grid;
+    min-width: 0;
+    gap: clamp(18px, 3vw, 32px);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-hero {
+    display: grid;
+    gap: 20px;
+    padding-block: clamp(20px, 4vw, 48px);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-kicker,
+  :where(html[data-redline-theme="commando"]) .redline-status {
+    display: inline-flex;
+    width: fit-content;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    color: var(--redline-page-green);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    line-height: 1.25;
+    text-transform: uppercase;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-status::before {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: currentColor;
+    box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 18%, transparent);
+    content: "";
+    flex: 0 0 auto;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-status[data-tone="warn"] {
+    color: var(--redline-page-amber);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-status[data-tone="danger"] {
+    color: var(--redline-page-red);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-lede {
+    margin: 0;
+    color: var(--redline-page-muted);
+    font-size: clamp(1rem, 2vw, 1.16rem);
+    line-height: 1.65;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-panel {
+    min-width: 0;
+    padding: clamp(22px, 4vw, 38px);
+    overflow: hidden;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 20px;
+    background: rgb(16 13 26 / 0.88);
+    box-shadow: var(--redline-page-shadow);
+    backdrop-filter: blur(16px);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-panel[data-tone="accent"] {
+    border-color: color-mix(in srgb, var(--redline-page-violet) 50%, var(--redline-page-border));
+    background:
+      linear-gradient(145deg, rgb(185 163 255 / 0.09), transparent 45%),
+      rgb(16 13 26 / 0.9);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-grid {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    gap: 16px;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-card {
+    min-width: 0;
+    padding: 20px;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 14px;
+    background: rgb(23 18 37 / 0.78);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-card[data-recommended="true"] {
+    border-color: var(--redline-page-violet);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 0 30px rgb(185 163 255 / 0.1);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-card > :first-child,
+  :where(html[data-redline-theme="commando"]) .redline-panel > :first-child {
+    margin-top: 0;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-card > :last-child,
+  :where(html[data-redline-theme="commando"]) .redline-panel > :last-child {
+    margin-bottom: 0;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-metric {
+    display: block;
+    min-width: 0;
+    padding: 18px 20px;
+    border: 1px solid rgb(185 163 255 / 0.1);
+    border-radius: 12px;
+    color: var(--redline-page-violet);
+    background: var(--redline-page-input);
+    font-size: clamp(1.35rem, 4vw, 2.4rem);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid rgb(185 163 255 / 0.35);
+    border-radius: 999px;
+    color: var(--redline-page-violet);
+    background: rgb(185 163 255 / 0.1);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-badge[data-tone="success"] {
+    border-color: rgb(133 244 177 / 0.35);
+    color: var(--redline-page-green);
+    background: rgb(133 244 177 / 0.09);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-badge[data-tone="warn"] {
+    border-color: rgb(243 198 107 / 0.35);
+    color: var(--redline-page-amber);
+    background: rgb(243 198 107 / 0.09);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-badge[data-tone="danger"] {
+    border-color: rgb(255 141 137 / 0.35);
+    color: var(--redline-page-red);
+    background: rgb(255 141 137 / 0.09);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-callout {
+    padding: 16px 18px;
+    border-left: 3px solid var(--redline-page-violet);
+    border-radius: 0 12px 12px 0;
+    color: var(--redline-page-text-soft);
+    background: rgb(185 163 255 / 0.08);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-callout[data-tone="success"] {
+    border-left-color: var(--redline-page-green);
+    background: rgb(133 244 177 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-callout[data-tone="warn"] {
+    border-left-color: var(--redline-page-amber);
+    background: rgb(243 198 107 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 14px;
+  }
+
+  :where(html[data-redline-theme="commando"]) table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--redline-page-text-soft);
+    font-size: 0.88rem;
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(th, td) {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--redline-page-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  :where(html[data-redline-theme="commando"]) th {
+    color: var(--redline-page-text);
+    background: var(--redline-page-raised);
+    font-family: var(--redline-page-sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  :where(html[data-redline-theme="commando"]) tr:last-child td {
+    border-bottom: 0;
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(pre, .redline-code) {
+    max-width: 100%;
+    margin: 0;
+    padding: 18px 20px;
+    overflow: auto;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 12px;
+    color: #ded8ef;
+    background: var(--redline-page-input);
+    font-family: var(--redline-page-mono);
+    font-size: 0.86rem;
+    line-height: 1.65;
+    tab-size: 2;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  :where(html[data-redline-theme="commando"]) :not(pre) > code {
+    padding: 0.12em 0.38em;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 5px;
+    color: var(--redline-page-violet);
+    background: var(--redline-page-input);
+    font-family: var(--redline-page-mono);
+    font-size: 0.9em;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-diff-add,
+  :where(html[data-redline-theme="commando"]) .redline-diff-del {
+    display: block;
+    margin-inline: -20px;
+    padding-inline: 17px 20px;
+    border-left: 3px solid;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-diff-add {
+    border-left-color: var(--redline-page-green);
+    background: rgb(133 244 177 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-diff-del {
+    border-left-color: var(--redline-page-red);
+    background: rgb(255 141 137 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) :is(input, select, textarea) {
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 10px;
+    outline: none;
+    color: var(--redline-page-text);
+    background: var(--redline-page-input);
+  }
+
+  :where(html[data-redline-theme="commando"]) textarea {
+    min-height: 110px;
+    resize: vertical;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-button {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 16px;
+    border: 1px solid var(--redline-page-violet);
+    border-radius: 10px;
+    color: var(--redline-page-deep);
+    background: var(--redline-page-violet);
+    font-family: var(--redline-page-sans);
+    font-weight: 750;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-button:hover {
+    border-color: var(--redline-page-text);
+    color: var(--redline-page-deep);
+    background: var(--redline-page-text);
+  }
+
+  :where(html[data-redline-theme="commando"]) hr {
+    height: 1px;
+    margin-block: 28px;
+    border: 0;
+    background: var(--redline-page-border);
+  }
+
+  @media (max-width: 640px) {
+    :where(html[data-redline-theme="commando"]) .redline-shell {
+      width: min(100% - 20px, 1120px);
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-panel {
+      border-radius: 16px;
+    }
+
+    :where(html[data-redline-theme="commando"]) :is(th, td) {
+      padding: 10px 12px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :where(html[data-redline-theme="commando"]) *,
+    :where(html[data-redline-theme="commando"]) *::before,
+    :where(html[data-redline-theme="commando"]) *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

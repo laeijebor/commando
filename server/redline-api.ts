@@ -37,8 +37,9 @@ function packageRoot(name: string): string {
   return dirname(require_.resolve(`${name}/package.json`))
 }
 
-/** Static design-kit files served from node_modules — resolved lazily and cached. */
+/** Static design-kit files served locally — resolved lazily and cached. */
 const designFiles: Record<string, () => string> = {
+  'default.css': () => join(staticDir, 'redline-default.css'),
   'tailwind.js': () => join(packageRoot('@tailwindcss/browser'), 'dist', 'index.global.js'),
   'daisyui.css': () => join(packageRoot('daisyui'), 'daisyui.css'),
   'daisyui-themes.css': () => join(packageRoot('daisyui'), 'themes.css'),

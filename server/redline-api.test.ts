@@ -77,6 +77,19 @@ describe('isRedlinePath', () => {
 })
 
 describe('RedlineApi static routes', () => {
+  it('serves the scoped default artifact theme', async () => {
+    const { baseUrl } = await startApi()
+    const response = await fetch(`${baseUrl}/redline/design/default.css`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toMatch(/^text\/css/)
+    expect(response.headers.get('access-control-allow-origin')).toBe('*')
+    const body = await response.text()
+    expect(body).toContain('@layer redline-default')
+    expect(body).toContain('html[data-redline-theme="commando"]')
+    expect(body).toContain('.redline-panel')
+    expect(body).toContain('@media (prefers-reduced-motion: reduce)')
+  })
+
   it('serves daisyui.css', async () => {
     const { baseUrl } = await startApi()
     const response = await fetch(`${baseUrl}/redline/design/daisyui.css`)
