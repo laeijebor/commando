@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, type RawData } from 'ws'
@@ -25,6 +25,13 @@ export const SCREENCAST_FALLBACK_AFTER_MS = 2_000
 /** captureScreenshot cadence while the fallback poller substitutes for the screencast. */
 export const SCREENCAST_POLL_INTERVAL_MS = 700
 const MAX_VIEWPORT_DIMENSION = 8_192
+const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
+const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
+
+type ChromiumProfileOwner = {
+  ownerPid: number
+  browserPid: number
+}
 
 /**
  * Chromium-family binaries the daemon can drive, in preference order. The
@@ -61,7 +68,114 @@ export type ChromiumLaunch = {
   exited: Promise<void>
 }
 
-export type ChromiumLauncher = (profileDir: string) => Promise<ChromiumLaunch>
+export type ChromiumLauncher = (profileDir: string, signal?: AbortSignal) => Promise<ChromiumLaunch>
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readProfileOwner(profileDir: string): ChromiumProfileOwner | null {
+  try {
+    const value = JSON.parse(readFileSync(join(profileDir, PROFILE_OWNER_FILE), 'utf8')) as Partial<ChromiumProfileOwner>
+    if (
+      typeof value.ownerPid !== 'number' ||
+      !Number.isSafeInteger(value.ownerPid) ||
+      value.ownerPid < 1 ||
+      typeof value.browserPid !== 'number' ||
+      !Number.isSafeInteger(value.browserPid) ||
+      value.browserPid < 1
+    ) return null
+    return { ownerPid: value.ownerPid, browserPid: value.browserPid }
+  } catch {
+    return null
+  }
+}
+
+function clearProfileOwner(profileDir: string, browserPid?: number): void {
+  if (browserPid !== undefined && readProfileOwner(profileDir)?.browserPid !== browserPid) return
+  rmSync(join(profileDir, PROFILE_OWNER_FILE), { force: true })
+}
+
+function legacyProfileBrowserPid(profileDir: string): number | null {
+  try {
+    const match = /-(\d+)$/.exec(readlinkSync(join(profileDir, 'SingletonLock')))
+    if (!match) return null
+    const pid = Number(match[1])
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+function isBrowserForProfile(pid: number, profileDir: string): boolean {
+  try {
+    const command = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 1_000,
+    })
+    return command.includes('--headless') && command.includes(`--user-data-dir=${profileDir}`)
+  } catch {
+    return false
+  }
+}
+
+function killBrowserProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      // The process exited between inspection and cleanup.
+    }
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + STALE_BROWSER_EXIT_TIMEOUT_MS
+  while (processIsAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  if (processIsAlive(pid)) {
+    throw new WebPaneError(503, `Stale Commando Chromium process ${pid} did not exit`)
+  }
+}
+
+/** Reclaims a browser left holding Commando's dedicated profile after its daemon died. */
+export async function reclaimStaleChromiumProfile(profileDir: string): Promise<void> {
+  const owner = readProfileOwner(profileDir)
+  if (owner) {
+    if (
+      owner.ownerPid !== process.pid &&
+      processIsAlive(owner.ownerPid) &&
+      processIsAlive(owner.browserPid)
+    ) {
+      throw new WebPaneError(503, `Chromium profile is owned by Commando daemon ${owner.ownerPid}`)
+    }
+    if (processIsAlive(owner.browserPid)) {
+      if (!isBrowserForProfile(owner.browserPid, profileDir)) {
+        throw new WebPaneError(503, `Refusing to stop unverified process ${owner.browserPid} from Chromium profile`)
+      }
+      killBrowserProcessGroup(owner.browserPid)
+      await waitForProcessExit(owner.browserPid)
+    }
+    clearProfileOwner(profileDir, owner.browserPid)
+    return
+  }
+
+  // Profiles from before ownership tracking still expose the browser PID in
+  // Chrome's lock symlink. Verify its exact command before touching it so a
+  // stale or reused PID can never terminate an unrelated process.
+  const legacyPid = legacyProfileBrowserPid(profileDir)
+  if (!legacyPid || !processIsAlive(legacyPid) || !isBrowserForProfile(legacyPid, profileDir)) return
+  killBrowserProcessGroup(legacyPid)
+  await waitForProcessExit(legacyPid)
+}
 
 /**
  * Launches the discovered Chromium headless with a dedicated profile and a
@@ -69,7 +183,7 @@ export type ChromiumLauncher = (profileDir: string) => Promise<ChromiumLaunch>
  * default profile, so the dedicated --user-data-dir is mandatory, not just
  * hygiene. The chosen port is parsed from the "DevTools listening on" line.
  */
-export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
+export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal) => {
   const binary = findChromiumBinary()
   if (!binary) {
     throw new WebPaneError(
@@ -79,6 +193,9 @@ export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
         'or set COMMANDO_CHROMIUM_PATH.',
     )
   }
+  await reclaimStaleChromiumProfile(profileDir)
+  if (signal?.aborted) throw new WebPaneError(503, 'Chromium launch was cancelled')
+  mkdirSync(profileDir, { recursive: true })
   return new Promise<ChromiumLaunch>((resolve, reject) => {
     const child = spawn(
       binary,
@@ -105,8 +222,27 @@ export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
     )
     let settled = false
     let stderrTail = ''
+    const browserPid = child.pid
+    if (browserPid !== undefined) {
+      try {
+        writeFileSync(
+          join(profileDir, PROFILE_OWNER_FILE),
+          JSON.stringify({ ownerPid: process.pid, browserPid } satisfies ChromiumProfileOwner),
+        )
+      } catch (error) {
+        killBrowserProcessGroup(browserPid)
+        reject(new WebPaneError(
+          503,
+          `Could not claim Chromium profile: ${error instanceof Error ? error.message : String(error)}`,
+        ))
+        return
+      }
+    }
     const exited = new Promise<void>((resolveExit) => {
-      child.once('exit', () => resolveExit())
+      child.once('exit', () => {
+        if (browserPid !== undefined) clearProfileOwner(profileDir, browserPid)
+        resolveExit()
+      })
     })
     const kill = (): void => {
       if (child.pid === undefined) return
@@ -120,19 +256,33 @@ export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
     const timeout = setTimeout(() => {
       if (settled) return
       settled = true
+      stopWaiting()
       kill()
       reject(new WebPaneError(503, `Chromium did not report a DevTools port within ${LAUNCH_TIMEOUT_MS}ms`))
     }, LAUNCH_TIMEOUT_MS)
+    const stopWaiting = (): void => {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const onAbort = (): void => {
+      if (settled) return
+      settled = true
+      stopWaiting()
+      kill()
+      reject(new WebPaneError(503, 'Chromium launch was cancelled'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
     child.once('error', (error) => {
       if (settled) return
       settled = true
-      clearTimeout(timeout)
+      stopWaiting()
       reject(new WebPaneError(503, `Failed to launch Chromium: ${error.message}`))
     })
     child.once('exit', (code) => {
       if (settled) return
       settled = true
-      clearTimeout(timeout)
+      stopWaiting()
       reject(
         new WebPaneError(
           503,
@@ -146,7 +296,7 @@ export const spawnChromiumLauncher: ChromiumLauncher = (profileDir) => {
       const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderrTail)
       if (!match) return
       settled = true
-      clearTimeout(timeout)
+      stopWaiting()
       resolve({ port: Number(match[1]), kill, exited })
     })
   })
@@ -446,6 +596,7 @@ export class ChromiumEngine {
   private readonly screencastPollIntervalMs: number
   private browser: BrowserSession | null = null
   private browserStarting: Promise<BrowserSession> | null = null
+  private browserStartingAbort: AbortController | null = null
   private readonly tiles = new Map<string, TileTarget>()
   private readonly targetStarting = new Map<string, Promise<TileTarget>>()
   /** Last viewport per tile — buffered so a viewport sent before the target exists still applies. */
@@ -723,6 +874,8 @@ export class ChromiumEngine {
 
   dispose(): void {
     this.disposed = true
+    this.browserStartingAbort?.abort()
+    this.browserStartingAbort = null
     for (const webPaneId of [...this.tiles.keys()]) this.closeTile(webPaneId)
     this.browser?.cdp.close()
     this.browser?.launch.kill()
@@ -733,20 +886,31 @@ export class ChromiumEngine {
     if (this.disposed) throw new WebPaneError(503, 'Chromium engine is shut down')
     if (this.browser) return this.browser
     if (!this.browserStarting) {
-      this.browserStarting = this.startBrowser().then((session) => {
+      const abortController = new AbortController()
+      this.browserStartingAbort = abortController
+      const starting = this.startBrowser(abortController.signal).then((session) => {
+        if (this.disposed || abortController.signal.aborted) {
+          session.cdp.close()
+          session.launch.kill()
+          throw new WebPaneError(503, 'Chromium engine is shut down')
+        }
         this.browser = session
         void session.launch.exited.then(() => this.handleBrowserExit(session))
         return session
       })
-      this.browserStarting.catch(() => undefined).finally(() => {
-        this.browserStarting = null
+      this.browserStarting = starting
+      starting.catch(() => undefined).finally(() => {
+        if (this.browserStarting === starting) this.browserStarting = null
+        if (this.browserStartingAbort === abortController) this.browserStartingAbort = null
       })
     }
     return this.browserStarting
   }
 
-  private async startBrowser(): Promise<BrowserSession> {
-    const launch = await this.launcher(this.profileDir)
+  private async startBrowser(signal: AbortSignal): Promise<BrowserSession> {
+    const launch = await this.launcher(this.profileDir, signal)
+    const abortLaunch = (): void => launch.kill()
+    signal.addEventListener('abort', abortLaunch, { once: true })
     try {
       const version = (await this.browserHttp(launch.port, '/json/version')) as {
         webSocketDebuggerUrl?: string
@@ -756,6 +920,7 @@ export class ChromiumEngine {
       }
       const cdp = await CdpConnection.open(version.webSocketDebuggerUrl, this.connectTimeoutMs)
       const session: BrowserSession = { launch, cdp }
+      if (signal.aborted) throw new WebPaneError(503, 'Chromium launch was cancelled')
       // A dead browser socket means no more target management: kill the
       // process so the exit path runs and the next tile relaunches cleanly.
       cdp.onClose(() => {
@@ -765,6 +930,8 @@ export class ChromiumEngine {
     } catch (error) {
       launch.kill()
       throw error
+    } finally {
+      signal.removeEventListener('abort', abortLaunch)
     }
   }
 

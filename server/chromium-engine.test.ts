@@ -1,5 +1,9 @@
+import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createNetServer, type AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -7,6 +11,7 @@ import {
   findChromiumBinary,
   parseTileInputEvent,
   parseTileInspectRequest,
+  reclaimStaleChromiumProfile,
   type ChromiumEngineOptions,
   type ChromiumLaunch,
   type ScreencastFrame,
@@ -195,6 +200,59 @@ describe('findChromiumBinary', () => {
   it('honours COMMANDO_CHROMIUM_PATH strictly', () => {
     expect(findChromiumBinary({ COMMANDO_CHROMIUM_PATH: '/bin/sh' })).toBe('/bin/sh')
     expect(findChromiumBinary({ COMMANDO_CHROMIUM_PATH: '/does/not/exist' })).toBeNull()
+  })
+})
+
+describe('chromium process ownership', () => {
+  it('reclaims a verified browser orphan holding the dedicated profile', async () => {
+    const profileDir = mkdtempSync(join(tmpdir(), 'commando-chromium-profile-'))
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        'setInterval(() => undefined, 1_000)',
+        '--',
+        '--headless=new',
+        `--user-data-dir=${profileDir}`,
+      ],
+      { detached: true, stdio: 'ignore' },
+    )
+    const childPid = child.pid
+    if (childPid === undefined) throw new Error('Test browser process did not start')
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    symlinkSync(`test-host-${childPid}`, join(profileDir, 'SingletonLock'))
+    cleanups.push(() => {
+      try {
+        process.kill(-childPid, 'SIGKILL')
+      } catch {
+        // Already reclaimed.
+      }
+      rmSync(profileDir, { recursive: true, force: true })
+    })
+
+    await reclaimStaleChromiumProfile(profileDir)
+    await exited
+    expect(() => process.kill(childPid, 0)).toThrow()
+  })
+
+  it('aborts an in-flight launch when the engine is disposed', async () => {
+    let launchSignal: AbortSignal | undefined
+    const engine = new ChromiumEngine({
+      launcher: (_profileDir, signal) => {
+        launchSignal = signal
+        return new Promise<ChromiumLaunch>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('launch aborted')), { once: true })
+        })
+      },
+      classify: () => ({ kind: 'open' }),
+      onExternalNavigation: () => undefined,
+    })
+
+    const launch = engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    engine.dispose()
+
+    await expect(launch).rejects.toThrow('launch aborted')
+    expect(launchSignal?.aborted).toBe(true)
   })
 })
 
