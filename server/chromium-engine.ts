@@ -979,7 +979,10 @@ export class ChromiumEngine {
     // One window per tile, never a tab: in a shared window only the active
     // tab's compositor runs, so every backgrounded tile's screencast would
     // freeze silently (visibilityState "hidden", zero frames).
-    const created = await browser.cdp.send('Target.createTarget', { url, newWindow: true })
+    // Chrome 151 can ignore the requested URL when newWindow is true and
+    // leave the target at about:blank. Attach first, then navigate explicitly
+    // so the initial paint and navigation watchdog are never missed.
+    const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true })
     const targetId = typeof created.targetId === 'string' ? created.targetId : null
     if (!targetId) {
       throw new WebPaneError(502, 'Chromium did not return a debuggable target')
@@ -1072,6 +1075,7 @@ export class ChromiumEngine {
       await this.applyViewport(tile, bufferedViewport).catch(() => undefined)
     }
     this.tiles.set(webPaneId, tile)
+    await cdp.send('Page.navigate', { url })
     return tile
   }
 

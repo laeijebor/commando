@@ -282,6 +282,11 @@ describe('ChromiumEngine', () => {
       `http://127.0.0.1:${stub.port}/devtools/inspector.html?ws=127.0.0.1:${stub.port}/devtools/page/T1`,
     )
     expect(stub.calls).toContainEqual({ targetId: 'T1', method: 'Page.enable', params: undefined })
+    expect(stub.calls).toContainEqual({
+      targetId: 'T1',
+      method: 'Page.navigate',
+      params: { url: 'http://localhost:5173/' },
+    })
 
     // Same tile reuses the target; a second tile gets its own.
     await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
@@ -299,7 +304,7 @@ describe('ChromiumEngine', () => {
     expect(stub.calls).toContainEqual({
       targetId: 'browser',
       method: 'Target.createTarget',
-      params: { url: 'http://localhost:5173/', newWindow: true },
+      params: { url: 'about:blank', newWindow: true },
     })
   })
 
