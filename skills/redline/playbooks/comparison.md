@@ -9,7 +9,8 @@ Two layouts, pick whichever reads better for the content:
 
 - **Side-by-side cards** — one card per option, each with the same internal
   sections (summary, pros, cons, cost/effort) so eyes can scan row-by-row
-  across cards.
+  across cards. With the default theme, wrap them in `redline-grid`, use
+  `redline-card` per option, and set `data-recommended="true"` on the winner.
 - **Criteria × options table** — rows are decision-relevant criteria, columns
   are options. Only include criteria that actually move the decision; a row
   that scores identically across every option is noise, cut it.
@@ -23,7 +24,8 @@ raw comparison.
 Visually mark the recommended option (border, badge, background tint —
 whatever the design kit's accent color is) and state the reason in one line
 directly under/beside it: "Recommended — least migration risk," not a
-paragraph.
+paragraph. The default theme's `redline-badge` plus
+`redline-card[data-recommended="true"]` provides this treatment.
 
 ## Let the user decide in place
 

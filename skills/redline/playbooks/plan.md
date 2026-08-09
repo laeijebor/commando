@@ -7,6 +7,8 @@ Use for a product or technical plan going up for review before work starts.
 1. **Decision summary box** at the top — what's being proposed, and what
    approving it commits the user to. One or two sentences, visually set off
    (bordered box, tinted background) so it reads before anything else does.
+   With the default theme, use
+   `<section class="redline-callout" id="decision-summary">...</section>`.
 2. **Scope** — what's in.
 3. **Approach** — how, at the level a reviewer needs to sanity-check it, not
    full implementation detail.

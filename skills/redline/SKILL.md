@@ -44,7 +44,55 @@ availability checks, say so and deliver the content in chat instead.
 - **Design, in priority order:**
   1. The user named a look — use it.
   2. Otherwise, inspect the subject project and match its design system.
-  3. Otherwise, use the daemon-served kit — local, no CDN, works offline:
+  3. Otherwise, use Commando's default artifact theme — local, no CDN,
+     responsive, and deliberately easy for later author CSS to override:
+
+     ```html
+     <html lang="en" data-redline-theme="commando">
+     <head>
+       <meta name="viewport" content="width=device-width, initial-scale=1">
+       <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
+       <!-- Put artifact-specific CSS after this link. -->
+     </head>
+     <body>
+       <div class="redline-layout">
+         <redline-nav
+           eyebrow="Project or ticket"
+           heading="Artifact title"
+           summary="One sentence explaining the decision."
+           status="Ready for review"
+         ></redline-nav>
+         <main class="redline-shell redline-stack">
+           <section id="summary" data-redline-section data-redline-label="Summary" class="redline-panel">
+             <h2>Summary</h2>
+             <p>...</p>
+           </section>
+           <section id="details" data-redline-section data-redline-label="Details" class="redline-panel">...</section>
+         </main>
+       </div>
+       <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+     </body>
+     ```
+
+     (substitute `$COMMANDO_PORT` if set). Useful classes include
+     `redline-panel`, `redline-grid`, `redline-card`, `redline-callout`,
+     `redline-badge`, `redline-metric`, `redline-table-wrap`, `redline-code`,
+     `redline-diff-add`, `redline-diff-del`, and `redline-button`. The theme is
+     scoped behind `data-redline-theme="commando"` and lives in a low-priority
+     CSS layer; normal artifact styles loaded after it win. Do not load it on
+     an existing running/project-styled page.
+
+     Every authored fallback artifact must use the `redline-layout` +
+     `<redline-nav>` shell, even when it has only a few sections. Give each
+     logical section a stable `id`, `data-redline-section`, and a short
+     `data-redline-label`; the component builds the left-hand structural links
+     and highlights the current section. On narrow tiles it becomes a compact
+     horizontal top navigator. Omit the component only when matching an
+     existing project's own navigation/design system.
+
+     Tailwind and DaisyUI remain available for an authored fallback artifact
+     that genuinely needs their utilities/components, but do not load them by
+     default because their global resets add noise and can obscure the subject:
 
      ```html
      <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/daisyui.css">
@@ -52,7 +100,15 @@ availability checks, say so and deliver the content in chat instead.
      <script src="http://127.0.0.1:4310/redline/design/tailwind.js"></script>
      ```
 
-     (substitute `$COMMANDO_PORT` if set).
+## Structural navigation
+
+`<redline-nav>` is provided by `/redline/sdk.js`. Its `eyebrow`, `heading`,
+`summary`, `status`, optional `status-tone="warn|danger"`, and optional
+`label` attributes define the navigation header. It discovers
+`[data-redline-section][id]` elements after the document is ready; link text
+comes from `data-redline-label`, then the section heading, then its id. Keep
+labels short and ordered exactly like the document. The first/current visible
+section receives `aria-current="location"` automatically.
 
 ## Ready-made review controls (response queuing)
 
@@ -60,7 +116,7 @@ Load the SDK once: `<script src="http://127.0.0.1:4310/redline/sdk.js"></script>
 (substitute `$COMMANDO_PORT` if set). Components inject their own glass-panel
 "Aura" styling and adapt to dark/light artifacts automatically — no design
 kit needed for their appearance; override the accent by setting
-`--redline-accent` / `--redline-accent2` on `:root`. Five custom elements,
+`--redline-accent` / `--redline-accent2` on `:root`. Five response controls,
 one line each:
 
 ```html

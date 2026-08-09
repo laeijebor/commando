@@ -109,6 +109,131 @@
     padding-block: clamp(36px, 7vw, 88px);
   }
 
+  :where(html[data-redline-theme="commando"]) .redline-layout {
+    display: grid;
+    min-width: 0;
+    min-height: 100dvh;
+    grid-template-columns: minmax(228px, 280px) minmax(0, 1fr);
+  }
+
+  :where(html[data-redline-theme="commando"]) redline-nav {
+    position: sticky;
+    top: 0;
+    display: grid;
+    height: 100dvh;
+    min-width: 0;
+    align-self: start;
+    align-content: start;
+    gap: 22px;
+    padding: clamp(24px, 4vw, 36px) clamp(18px, 3vw, 28px);
+    overflow-y: auto;
+    border-right: 1px solid var(--redline-page-border);
+    background: rgb(8 6 16 / 0.72);
+    backdrop-filter: blur(18px);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-brand {
+    display: grid;
+    gap: 12px;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-eyebrow {
+    margin: 0;
+    color: var(--redline-page-amber);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-heading {
+    font-size: clamp(1.75rem, 3vw, 2.45rem);
+    line-height: 1;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-summary {
+    margin: 0;
+    color: var(--redline-page-muted);
+    font-size: 0.9rem;
+    line-height: 1.55;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-status {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+    gap: 10px;
+    margin: 2px 0 0;
+    padding: 10px 12px;
+    border: 1px solid rgb(133 244 177 / 0.28);
+    border-radius: 11px;
+    color: var(--redline-page-green);
+    background: rgb(133 244 177 / 0.07);
+    font-family: var(--redline-page-sans);
+    font-size: 0.84rem;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-status::before {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: currentColor;
+    content: "";
+    flex: 0 0 auto;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-status[data-tone="warn"] {
+    border-color: rgb(243 198 107 / 0.28);
+    color: var(--redline-page-amber);
+    background: rgb(243 198 107 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-status[data-tone="danger"] {
+    border-color: rgb(255 141 137 / 0.28);
+    color: var(--redline-page-red);
+    background: rgb(255 141 137 / 0.07);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-links {
+    display: grid;
+    gap: 7px;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-links a {
+    display: block;
+    min-width: 0;
+    padding: 9px 11px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    color: var(--redline-page-muted);
+    font-family: var(--redline-page-sans);
+    font-size: 0.84rem;
+    font-weight: 600;
+    line-height: 1.35;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-links a:hover {
+    color: var(--redline-page-text-soft);
+    background: var(--redline-page-raised);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-nav-links a[aria-current="location"] {
+    border-color: rgb(185 163 255 / 0.18);
+    color: var(--redline-page-text);
+    background: rgb(185 163 255 / 0.1);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-section] {
+    scroll-margin-top: 24px;
+  }
+
   :where(html[data-redline-theme="commando"]) .redline-stack {
     display: grid;
     min-width: 0;
@@ -395,6 +520,50 @@
     margin-block: 28px;
     border: 0;
     background: var(--redline-page-border);
+  }
+
+  @media (max-width: 800px) {
+    :where(html[data-redline-theme="commando"]) .redline-layout {
+      display: block;
+    }
+
+    :where(html[data-redline-theme="commando"]) redline-nav {
+      position: relative;
+      z-index: 1;
+      height: auto;
+      gap: 14px;
+      padding: 20px max(16px, env(safe-area-inset-left));
+      overflow: visible;
+      border-right: 0;
+      border-bottom: 1px solid var(--redline-page-border);
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-nav-summary {
+      max-width: 60ch;
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-nav-status {
+      width: fit-content;
+      min-height: 40px;
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-nav-links {
+      display: flex;
+      gap: 8px;
+      padding-bottom: 4px;
+      overflow-x: auto;
+      overscroll-behavior-inline: contain;
+      scrollbar-width: thin;
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-nav-links a {
+      flex: 0 0 auto;
+      max-width: 220px;
+    }
+
+    :where(html[data-redline-theme="commando"]) [data-redline-section] {
+      scroll-margin-top: 16px;
+    }
   }
 
   @media (max-width: 640px) {

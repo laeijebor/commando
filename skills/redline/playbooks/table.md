@@ -17,7 +17,7 @@ config lists, anything row-oriented.
   scroll horizontally:
 
   ```html
-  <div style="overflow-x:auto">
+  <div class="redline-table-wrap">
     <table>...</table>
   </div>
   ```

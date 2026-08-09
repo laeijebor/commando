@@ -87,6 +87,7 @@ describe('RedlineApi static routes', () => {
     expect(body).toContain('@layer redline-default')
     expect(body).toContain('html[data-redline-theme="commando"]')
     expect(body).toContain('.redline-panel')
+    expect(body).toContain('redline-nav')
     expect(body).toContain('@media (prefers-reduced-motion: reduce)')
   })
 

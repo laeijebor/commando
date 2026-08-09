@@ -9,7 +9,7 @@ always drifts out of alignment. Use Mermaid.
 ```html
 <script type="module">
   import mermaid from "http://127.0.0.1:4310/redline/design/mermaid/mermaid.esm.min.mjs"
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' })
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' })
   mermaid.run({ querySelector: '.mermaid' })
 </script>
 ```
@@ -40,9 +40,10 @@ outer element.
 
 ## Theming
 
-Match the page: if the artifact uses a dark theme, initialize Mermaid with
-`theme: 'dark'` (or `'base'` + matching `themeVariables`) so the diagram
-doesn't render as a light box on a dark page.
+Match the page: the Commando default artifact theme is dark, so initialize
+Mermaid with `theme: 'dark'` as above (or `'base'` + matching
+`themeVariables`). Project-styled artifacts should match their own theme so
+the diagram never renders as a contrasting box.
 
 ## Labels
 

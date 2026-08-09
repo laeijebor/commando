@@ -4,7 +4,7 @@ Use for source excerpts, patches, diffs, or before/after comparisons.
 
 ## Markup
 
-Plain `<pre><code>` with minimal inline highlighting — wrap keywords/strings
+Plain `<pre class="redline-code"><code>` with minimal inline highlighting — wrap keywords/strings
 in `<span>`s with hand-picked colors if it genuinely helps, but do not pull
 in highlight.js or any other CDN dependency. Artifacts stay dependency-free
 beyond the daemon's own design kit.
@@ -16,16 +16,14 @@ Prefix added/removed lines with `+`/`-` and give each a colored left border
 relying on the prefix character alone:
 
 ```html
-<pre><code
-><span class="diff-add">+ const url = artifact.url</span>
-<span class="diff-del">- const url = artifact.path</span>
+<pre class="redline-code"><code
+><span class="redline-diff-add">+ const url = artifact.url</span>
+<span class="redline-diff-del">- const url = artifact.path</span>
 </code></pre>
 ```
 
-```css
-.diff-add { border-left: 3px solid #2da44e; background: rgba(45,164,78,.08); }
-.diff-del { border-left: 3px solid #cf222e; background: rgba(207,34,46,.08); }
-```
+Those classes are included in the default theme. When matching a project
+design system instead, provide equivalent non-color cues and treatment there.
 
 ## Heading every snippet
 

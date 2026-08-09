@@ -486,6 +486,99 @@
     }
   }
 
+  /** Structural navigation for authored artifacts using stable section ids. */
+  class RedlineNav extends HTMLElement {
+    connectedCallback() {
+      if (this.dataset.redlineReady) return
+      this.dataset.redlineReady = '1'
+      const render = () => queueMicrotask(() => this.render())
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', render, { once: true })
+      } else {
+        render()
+      }
+    }
+
+    disconnectedCallback() {
+      this._observer?.disconnect()
+      this._observer = null
+    }
+
+    render() {
+      const sections = [...document.querySelectorAll('[data-redline-section][id]')]
+      const brand = document.createElement('div')
+      brand.className = 'redline-nav-brand'
+
+      const eyebrow = this.getAttribute('eyebrow')
+      if (eyebrow) {
+        const element = document.createElement('p')
+        element.className = 'redline-nav-eyebrow'
+        element.textContent = eyebrow
+        brand.append(element)
+      }
+
+      const heading = this.getAttribute('heading')
+      if (heading) {
+        const element = document.createElement('h2')
+        element.className = 'redline-nav-heading'
+        element.textContent = heading
+        brand.append(element)
+      }
+
+      const summary = this.getAttribute('summary')
+      if (summary) {
+        const element = document.createElement('p')
+        element.className = 'redline-nav-summary'
+        element.textContent = summary
+        brand.append(element)
+      }
+
+      const statusText = this.getAttribute('status')
+      if (statusText) {
+        const status = document.createElement('p')
+        status.className = 'redline-nav-status'
+        status.dataset.tone = this.getAttribute('status-tone') || 'success'
+        status.textContent = statusText
+        brand.append(status)
+      }
+
+      const navigation = document.createElement('nav')
+      navigation.className = 'redline-nav-links'
+      navigation.setAttribute('aria-label', this.getAttribute('label') || 'Artifact sections')
+      const links = sections.map((section) => {
+        const link = document.createElement('a')
+        link.href = `#${encodeURIComponent(section.id)}`
+        link.textContent =
+          section.getAttribute('data-redline-label') ||
+          section.querySelector('h2, h3, h4')?.textContent?.trim() ||
+          section.id.replace(/[-_]+/g, ' ')
+        navigation.append(link)
+        return link
+      })
+
+      this.replaceChildren(brand, navigation)
+      if (links.length === 0) return
+      const activate = (id) => {
+        for (const link of links) {
+          if (decodeURIComponent(link.hash.slice(1)) === id) link.setAttribute('aria-current', 'location')
+          else link.removeAttribute('aria-current')
+        }
+      }
+      activate(sections[0].id)
+
+      if (typeof IntersectionObserver !== 'function') return
+      const visible = new Map()
+      this._observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) visible.set(entry.target.id, entry)
+        const current = [...visible.values()]
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => Math.abs(left.boundingClientRect.top) - Math.abs(right.boundingClientRect.top))[0]
+        if (current) activate(current.target.id)
+      }, { rootMargin: '-10% 0px -70% 0px', threshold: [0, 0.1, 0.5] })
+      for (const section of sections) this._observer.observe(section)
+    }
+  }
+
   // Guard against redefinition: the registry throws if this script ends up on
   // a page twice (or is re-evaluated, as tests do), and the tag names are the
   // only externally-visible contract — same name, same behavior, no reason to fail.
@@ -497,4 +590,5 @@
   defineOnce('redline-rating', RedlineRating)
   defineOnce('redline-ask', RedlineAsk)
   defineOnce('redline-question', RedlineQuestion)
+  defineOnce('redline-nav', RedlineNav)
 })()

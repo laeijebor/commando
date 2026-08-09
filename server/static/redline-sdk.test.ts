@@ -273,6 +273,39 @@ describe('binding-absent fallback', () => {
   })
 })
 
+describe('redline-nav', () => {
+  it('builds structural links from labeled sections', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav
+          eyebrow="VIV-550"
+          heading="Chat actor evidence"
+          summary="Local proof across each surface."
+          status="Verified locally"
+        ></redline-nav>
+        <main>
+          <section id="browser" data-redline-section data-redline-label="Browser exchange"><h2>Browser</h2></section>
+          <section id="fitdo" data-redline-section><h2>Fitdo exchange</h2></section>
+        </main>
+      </div>`
+    await Promise.resolve()
+
+    const nav = document.querySelector('redline-nav') as HTMLElement
+    expect(nav.querySelector('.redline-nav-eyebrow')?.textContent).toBe('VIV-550')
+    expect(nav.querySelector('.redline-nav-heading')?.textContent).toBe('Chat actor evidence')
+    expect(nav.querySelector('.redline-nav-summary')?.textContent).toBe('Local proof across each surface.')
+    expect(nav.querySelector('.redline-nav-status')?.textContent).toBe('Verified locally')
+    expect(nav.querySelector('nav')?.getAttribute('aria-label')).toBe('Artifact sections')
+    const links = [...nav.querySelectorAll('a')]
+    expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Browser exchange', '#browser'],
+      ['Fitdo exchange', '#fitdo'],
+    ])
+    expect(links[0]?.getAttribute('aria-current')).toBe('location')
+  })
+})
+
 describe('injected styles', () => {
   it('injects the aura stylesheet exactly once across double evaluation', () => {
     loadSdk()

@@ -47,6 +47,8 @@ the user's confirmation the answer registered before they hit Send.
 Components arrive self-styled (glass "Aura" look, dark/light-aware) —
 override accents via `--redline-accent`/`--redline-accent2`; the injected
 rules are zero-specificity, so artifact CSS can still restyle them if needed.
+The Commando default artifact theme supplies matching violet/cyan accent
+variables automatically.
 
 ## Prompt quality
 
