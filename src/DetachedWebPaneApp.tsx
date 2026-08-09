@@ -113,6 +113,7 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
       <WebPaneCard
         webPane={webPane}
         wsToken={token}
+        connected={connection.phase === 'live'}
         feedback={feedback}
         detachedWindow
         keepStreamingWhenHidden

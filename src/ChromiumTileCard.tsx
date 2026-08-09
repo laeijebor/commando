@@ -102,6 +102,7 @@ export function ChromiumTileCard({
   reloadKey,
   reviewMode,
   pendingQueue,
+  connected = true,
   keepStreamingWhenHidden = false,
 }: {
   webPane: WebPane
@@ -110,6 +111,8 @@ export function ChromiumTileCard({
   /** Review mode swaps input relay for element inspect + note queueing. */
   reviewMode: boolean
   pendingQueue: PendingQueueApi
+  /** Main daemon connection state; a recovered daemon needs a fresh tile socket. */
+  connected?: boolean
   /** Detached AppKit windows remain visible while another application is active. */
   keepStreamingWhenHidden?: boolean
 }) {
@@ -202,6 +205,11 @@ export function ChromiumTileCard({
   }, [reloadKey])
 
   useEffect(() => {
+    if (!connected) {
+      setState('closed')
+      return
+    }
+
     let disposed = false
     let socket: WebSocket | null = null
     let viewportTimer: number | undefined
@@ -232,6 +240,7 @@ export function ChromiumTileCard({
     const connect = () => {
       if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
       setState('connecting')
+      setDetail('')
       stalled = false
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const tokenQuery = wsToken ? `?token=${encodeURIComponent(wsToken)}` : ''
@@ -262,7 +271,6 @@ export function ChromiumTileCard({
           return
         }
         if (message.type === 'frame' && typeof message.data === 'string') {
-          disarmStallWatchdog()
           drawFrame(message.data)
           return
         }
@@ -330,6 +338,7 @@ export function ChromiumTileCard({
     const drawFrame = (base64: string) => {
       const image = new Image()
       image.onload = () => {
+        if (disposed || stalled) return
         const canvas = canvasRef.current
         if (!canvas) return
         if (canvas.width !== image.width || canvas.height !== image.height) {
@@ -337,7 +346,16 @@ export function ChromiumTileCard({
           canvas.height = image.height
         }
         canvas.getContext('2d')?.drawImage(image, 0, 0)
+        disarmStallWatchdog()
         setState((current) => (current === 'streaming' ? current : 'streaming'))
+      }
+      image.onerror = () => {
+        if (disposed || stalled) return
+        stalled = true
+        disarmStallWatchdog()
+        setState('error')
+        setDetail('Chromium sent an invalid stream frame. Retry to reconnect.')
+        socket?.close()
       }
       image.src = `data:image/png;base64,${base64}`
     }
@@ -375,7 +393,7 @@ export function ChromiumTileCard({
       socket?.close()
       if (socketRef.current === socket) socketRef.current = null
     }
-  }, [webPane.id, webPane.url, wsToken, connectEpoch, keepStreamingWhenHidden])
+  }, [webPane.id, webPane.url, wsToken, connectEpoch, connected, keepStreamingWhenHidden])
 
   const send = (payload: unknown) => {
     const socket = socketRef.current

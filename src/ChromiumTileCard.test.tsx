@@ -54,6 +54,27 @@ class FakeWebSocket {
   }
 }
 
+class FakeImage {
+  static instances: FakeImage[] = []
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  width = 32
+  height = 24
+  src = ''
+
+  constructor() {
+    FakeImage.instances.push(this)
+  }
+
+  load(): void {
+    this.onload?.()
+  }
+
+  fail(): void {
+    this.onerror?.()
+  }
+}
+
 const webPane: WebPane = {
   id: 'w-abcd1234',
   url: 'http://127.0.0.1:41300/plan',
@@ -70,11 +91,12 @@ const webPane: WebPane = {
 
 const EMPTY_SNAPSHOT: WebPanePendingSnapshot = { notes: [], knownUpTo: 0, dropped: 0 }
 
-function renderTile(
+function tileElement(
   pendingQueue: Partial<PendingQueueApi> = {},
   keepStreamingWhenHidden = false,
+  connected = true,
 ) {
-  return render(
+  return (
     <ChromiumTileCard
       webPane={webPane}
       wsToken="t"
@@ -88,9 +110,18 @@ function renderTile(
         dismissDropped: async () => EMPTY_SNAPSHOT,
         ...pendingQueue,
       }}
+      connected={connected}
       keepStreamingWhenHidden={keepStreamingWhenHidden}
-    />,
+    />
   )
+}
+
+function renderTile(
+  pendingQueue: Partial<PendingQueueApi> = {},
+  keepStreamingWhenHidden = false,
+  connected = true,
+) {
+  return render(tileElement(pendingQueue, keepStreamingWhenHidden, connected))
 }
 
 describe('ChromiumTileCard pending hydration', () => {
@@ -148,7 +179,12 @@ describe('ChromiumTileCard pending hydration', () => {
 describe('ChromiumTileCard first-frame watchdog', () => {
   beforeEach(() => {
     FakeWebSocket.instances = []
+    FakeImage.instances = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('Image', FakeImage)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
     vi.useFakeTimers()
   })
 
@@ -174,20 +210,48 @@ describe('ChromiumTileCard first-frame watchdog', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
-  it('does not fire the watchdog once a frame has arrived', () => {
+  it('disarms the watchdog only after a frame decodes and is drawn', () => {
     renderTile()
     const socket = FakeWebSocket.instances[0]
     act(() => {
       socket.open()
       socket.message({ type: 'ready' })
-      // jsdom never fires Image.onload, so the canvas stays pending — but a
-      // received frame must still disarm the watchdog.
       socket.message({ type: 'frame', data: 'QUJD' })
+      FakeImage.instances[0]?.load()
     })
     act(() => {
       vi.advanceTimersByTime(30_000)
     })
     expect(screen.queryByText(/no frames/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Starting chromium stream…')).not.toBeInTheDocument()
+  })
+
+  it('turns an undecodable frame into a retryable error', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => {
+      socket.open()
+      socket.message({ type: 'frame', data: 'not-a-png' })
+      FakeImage.instances[0]?.fail()
+    })
+
+    expect(screen.getByText(/invalid stream frame/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('recreates the tile socket when the daemon reconnects', () => {
+    const view = renderTile({}, false, false)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+
+    view.rerender(tileElement({}, false, true))
+    const firstSocket = FakeWebSocket.instances[0]
+    act(() => firstSocket.open())
+
+    view.rerender(tileElement({}, false, false))
+    expect(firstSocket.closeCount).toBe(1)
+
+    view.rerender(tileElement({}, false, true))
+    expect(FakeWebSocket.instances).toHaveLength(2)
   })
 })
 

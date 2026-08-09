@@ -2403,6 +2403,7 @@ export function App() {
                           onClose={() => void closeWebPane(webPane.id)}
                           onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
                           wsToken={token}
+                          connected={connected}
                           onOpenDevtools={
                             webPane.engine === 'chromium'
                               ? () => void openWebPaneDevtools(webPane)

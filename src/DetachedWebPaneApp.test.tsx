@@ -87,7 +87,7 @@ describe('DetachedWebPaneApp', () => {
 
     expect(await screen.findByTestId('detached-chromium-stream')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Return web pane to workspace' })).toBeInTheDocument()
-    expect(chromiumProps.at(-1)).toMatchObject({ keepStreamingWhenHidden: true })
+    expect(chromiumProps.at(-1)).toMatchObject({ connected: true, keepStreamingWhenHidden: true })
     expect(document.querySelector('.cockpit')).not.toBeInTheDocument()
   })
 

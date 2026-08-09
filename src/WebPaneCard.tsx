@@ -66,6 +66,7 @@ export function WebPaneCard({
   onOpenDevtools,
   feedback,
   pendingQueue,
+  connected = true,
   onDragStart,
   onDragEnd,
   onNavigate,
@@ -89,6 +90,8 @@ export function WebPaneCard({
   feedback?: WebPaneFeedbackInfo
   /** Daemon-side queue of unsent review pills (chromium only). */
   pendingQueue?: PendingQueueApi
+  /** Main daemon connection state, used to restart chromium tile streams. */
+  connected?: boolean
   onDragStart?: (event: DragEvent<HTMLElement>) => void
   onDragEnd?: () => void
   onNavigate?: (url: string) => void
@@ -351,6 +354,7 @@ export function WebPaneCard({
               reloadKey={reloadKey}
               reviewMode={review}
               pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
+              connected={connected}
               keepStreamingWhenHidden={keepStreamingWhenHidden}
             />
           ) : tier === 'native' && nativeBridge ? (
