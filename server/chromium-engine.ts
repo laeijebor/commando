@@ -982,11 +982,17 @@ export class ChromiumEngine {
     // Chrome 151 can ignore the requested URL when newWindow is true and
     // leave the target at about:blank. Attach first, then navigate explicitly
     // so the initial paint and navigation watchdog are never missed.
-    const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true })
+    const created = await browser.cdp.send('Target.createTarget', {
+      url: 'about:blank',
+      newWindow: true,
+      background: false,
+      focus: true,
+    })
     const targetId = typeof created.targetId === 'string' ? created.targetId : null
     if (!targetId) {
       throw new WebPaneError(502, 'Chromium did not return a debuggable target')
     }
+    await browser.cdp.send('Target.activateTarget', { targetId })
     const wsUrl = `ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`
     const cdp = await CdpConnection.open(wsUrl, this.connectTimeoutMs)
     // Chrome reports an appspot-hosted frontend URL; use the browser's own

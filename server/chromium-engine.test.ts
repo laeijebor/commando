@@ -304,7 +304,12 @@ describe('ChromiumEngine', () => {
     expect(stub.calls).toContainEqual({
       targetId: 'browser',
       method: 'Target.createTarget',
-      params: { url: 'about:blank', newWindow: true },
+      params: { url: 'about:blank', newWindow: true, background: false, focus: true },
+    })
+    expect(stub.calls).toContainEqual({
+      targetId: 'browser',
+      method: 'Target.activateTarget',
+      params: { targetId: 'T1' },
     })
   })
 
