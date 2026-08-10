@@ -159,3 +159,30 @@ describe('web tile relay pending broadcast', () => {
     expect(messages.map((message) => message.type)).not.toContain('pending')
   })
 })
+
+describe('web tile relay stream setup', () => {
+  it('retries one failed initial subscription before surfacing an engine error', async () => {
+    const subscribeScreencast = vi.fn()
+      .mockRejectedValueOnce(new Error('Not attached to an active page'))
+      .mockResolvedValueOnce(() => undefined)
+    const { socket, messages } = await startRelay({
+      subscribeScreencast,
+    } as unknown as Partial<ChromiumEngine>)
+
+    await messageOfType(socket, messages, 'ready')
+    expect(subscribeScreencast).toHaveBeenCalledTimes(2)
+    expect(messages.map((message) => message.type)).not.toContain('engine_error')
+  })
+
+  it('does not hide a navigation failure behind a second subscription', async () => {
+    const subscribeScreencast = vi.fn()
+      .mockRejectedValue(new Error('CDP call Page.navigate timed out'))
+    const { socket, messages } = await startRelay({
+      subscribeScreencast,
+    } as unknown as Partial<ChromiumEngine>)
+
+    const error = await messageOfType(socket, messages, 'engine_error')
+    expect(error.message).toBe('CDP call Page.navigate timed out')
+    expect(subscribeScreencast).toHaveBeenCalledTimes(1)
+  })
+})

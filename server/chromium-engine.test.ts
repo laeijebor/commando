@@ -39,9 +39,15 @@ class StubChromium {
   screenshotData = 'SHOT'
   /** Remaining CDP errors to return per method. */
   private readonly failingMethods = new Map<string, number>()
+  /** CDP calls intentionally left unanswered so tests can deliver an event first. */
+  private readonly heldMethods = new Set<string>()
 
   failNext(method: string, times = 1): void {
     this.failingMethods.set(method, (this.failingMethods.get(method) ?? 0) + times)
+  }
+
+  holdNext(method: string): void {
+    this.heldMethods.add(method)
   }
 
   async start(): Promise<void> {
@@ -90,6 +96,7 @@ class StubChromium {
       socket.on('message', (data) => {
         const message = JSON.parse(String(data)) as { id: number; method: string; params?: Record<string, unknown> }
         this.calls.push({ targetId, method: message.method, params: message.params })
+        if (this.heldMethods.delete(message.method)) return
         const failuresRemaining = this.failingMethods.get(message.method) ?? 0
         if (failuresRemaining > 0) {
           if (failuresRemaining === 1) this.failingMethods.delete(message.method)
@@ -313,6 +320,18 @@ describe('ChromiumEngine', () => {
     })
   })
 
+  it('reactivates a navigated target immediately before starting its screencast', async () => {
+    const { stub, engine } = await createHarness()
+
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', vi.fn())
+
+    const navigateIndex = stub.calls.findIndex((call) => call.method === 'Page.navigate')
+    const startIndex = stub.calls.findIndex((call) => call.method === 'Page.startScreencast')
+    const activateIndex = stub.calls.map((call) => call.method).lastIndexOf('Target.activateTarget')
+    expect(activateIndex).toBeGreaterThan(navigateIndex)
+    expect(startIndex).toBeGreaterThan(activateIndex)
+  })
+
   it('recovers from a failed screencast start instead of wedging the tile', async () => {
     const { stub, engine } = await createHarness()
     stub.failNext('Page.startScreencast')
@@ -354,6 +373,24 @@ describe('ChromiumEngine', () => {
     })
     stub.emit('T1', 'Page.screencastFrame', { data: 'AFTER', sessionId: 4, metadata: {} })
     await until(() => frames.length === 1, 'frame after concurrent start retry')
+  })
+
+  it('accepts the first frame when Chrome never acknowledges startScreencast', async () => {
+    const { stub, engine } = await createHarness({ connectTimeoutMs: 50 })
+    stub.holdNext('Page.startScreencast')
+    const frames: ScreencastFrame[] = []
+
+    const subscribing = engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    await until(
+      () => stub.calls.some((call) => call.method === 'Page.startScreencast'),
+      'unacknowledged screencast start',
+    )
+    stub.emit('T1', 'Page.screencastFrame', { data: 'LIVE', sessionId: 5, metadata: {} })
+
+    await expect(subscribing).resolves.toBeTypeOf('function')
+    expect(frames).toHaveLength(1)
   })
 
   it('fails fast when the browser devtools http endpoint hangs', async () => {
