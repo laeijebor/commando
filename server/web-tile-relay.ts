@@ -67,6 +67,7 @@ export class WebTileRelay {
    * a missed push heals on the next one (or on reconnect).
    */
   broadcastPending(webPaneId: string, snapshot: WebPanePendingSnapshot): void {
+    this.dependencies.engine.updatePendingSnapshot(webPaneId, snapshot)
     const sockets = this.subscribers.get(webPaneId)
     if (!sockets) return
     const message = JSON.stringify({ type: 'pending', ...snapshot })
@@ -96,10 +97,14 @@ export class WebTileRelay {
     }
     sockets.add(socket)
 
+    const pending = this.dependencies.pendingNotes(webPaneId)
+    // Seed before target subscription so the initial navigation can hydrate
+    // the page even when the full replacement is empty.
+    this.dependencies.engine.updatePendingSnapshot(webPaneId, pending)
+
     // Hydrate the viewer's pill queue immediately — answers queued while no
     // viewer was connected (or while another session was focused) must
     // reappear without waiting for the stream to come up.
-    const pending = this.dependencies.pendingNotes(webPaneId)
     if ((pending.notes.length > 0 || pending.dropped > 0) && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'pending', ...pending }))
     }

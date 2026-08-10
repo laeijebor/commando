@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol.js'
 import {
   ChromiumEngine,
   findChromiumBinary,
@@ -140,6 +141,61 @@ async function until(predicate: () => boolean, label = 'condition'): Promise<voi
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`)
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
+}
+
+function pendingSnapshot(notes: WebPanePendingNote[]): WebPanePendingSnapshot {
+  return { notes, knownUpTo: notes.length, dropped: 0 }
+}
+
+function responseNote(
+  id: number,
+  answer: string,
+  data?: unknown,
+): WebPanePendingNote {
+  return {
+    id,
+    revision: 3,
+    queueKey: 'plan',
+    selector: '#plan',
+    tag: 'redline-choice',
+    text: 'presentation text',
+    rect: { x: 1, y: 2, width: 3, height: 4 },
+    comment: 'manual presentation comment',
+    response: {
+      question: 'Which plan?',
+      answer,
+      note: 'Keep it focused.',
+      ...(data !== undefined ? { data } : {}),
+    },
+    attachments: [{ id: 'private.png', name: 'private.png', contentType: 'image/png', size: 123 }],
+  }
+}
+
+function manualNote(id: number): WebPanePendingNote {
+  return {
+    id,
+    selector: '#manual',
+    tag: 'button',
+    text: 'Do not expose',
+    rect: { x: 10, y: 20, width: 30, height: 40 },
+    comment: 'manual annotation',
+    attachments: [{ id: 'manual.png', name: 'manual.png', contentType: 'image/png', size: 456 }],
+  }
+}
+
+function pagePendingEvaluations(stub: StubChromium, targetId?: string): CdpCall[] {
+  return stub.calls.filter((call) =>
+    call.method === 'Runtime.evaluate' &&
+    (!targetId || call.targetId === targetId) &&
+    String(call.params?.expression).includes('__commandoRedlinePendingSnapshot'),
+  )
+}
+
+function snapshotFromEvaluation(call: CdpCall): unknown {
+  const expression = String(call.params?.expression)
+  const match = /const snapshot=JSON\.parse\(((?:"(?:\\.|[^"\\])*")|null)\);/.exec(expression)
+  if (!match) throw new Error('Pending snapshot expression did not contain a JSON payload')
+  return JSON.parse(JSON.parse(match[1]) as string) as unknown
 }
 
 const cleanups: Array<() => Promise<void> | void> = []
@@ -318,6 +374,154 @@ describe('ChromiumEngine', () => {
       method: 'Target.activateTarget',
       params: { targetId: 'T1' },
     })
+  })
+
+  it('buffers a no-viewer update and hydrates the initial accepted document', async () => {
+    const { stub, engine } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro')]))
+
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    expect(pagePendingEvaluations(stub)).toHaveLength(0)
+
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'initial pending hydration')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[0])).toEqual({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        selector: '#plan',
+        response: { question: 'Which plan?', answer: 'Pro', note: 'Keep it focused.' },
+      }],
+    })
+
+    stub.emit('T1', 'Page.domContentEventFired', { timestamp: 1 })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'DOMContentLoaded pending hydration')
+  })
+
+  it('sanitizes and JSON-clones the page-facing pending snapshot', async () => {
+    const { stub, engine } = await createHarness()
+    const data = { choice: 'Pro', nested: { enabled: true }, omitted: undefined }
+    const source = pendingSnapshot([manualNote(1), responseNote(2, 'Pro', data)])
+    engine.updatePendingSnapshot('w-11111111', source)
+    data.choice = 'mutated after buffering'
+    data.nested.enabled = false
+
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'sanitized pending hydration')
+
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[0])).toEqual({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        selector: '#plan',
+        response: {
+          question: 'Which plan?',
+          answer: 'Pro',
+          note: 'Keep it focused.',
+          data: { choice: 'Pro', nested: { enabled: true } },
+        },
+      }],
+    })
+    expect(String(pagePendingEvaluations(stub, 'T1')[0].params?.expression))
+      .toContain("new CustomEvent('commando:redline-pending',{detail:snapshot})")
+  })
+
+  it('publishes live full replacements, including an empty snapshot', async () => {
+    const { stub, engine } = await createHarness()
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Starter')]))
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'live pending replacement')
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([]))
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'live empty replacement')
+
+    expect(pagePendingEvaluations(stub, 'T1').map(snapshotFromEvaluation)).toEqual([
+      {
+        version: 1,
+        controls: [{
+          queueKey: 'plan',
+          selector: '#plan',
+          response: { question: 'Which plan?', answer: 'Starter', note: 'Keep it focused.' },
+        }],
+      },
+      { version: 1, controls: [] },
+    ])
+  })
+
+  it('keeps the target alive when hydration races a navigation context failure', async () => {
+    const { stub, engine } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro')]))
+    stub.failNext('Runtime.evaluate')
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'failed hydration attempt')
+    expect(engine.hasTile('w-11111111')).toBe(true)
+
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([]))
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'hydration retry')
+    expect(engine.hasTile('w-11111111')).toBe(true)
+  })
+
+  it('never publishes into rejected or browser-owned documents', async () => {
+    const { stub, engine, onExternalNavigation } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro')]))
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'https://external.example/' } })
+    await until(() => onExternalNavigation.mock.calls.length === 1, 'external navigation rejection')
+    stub.emit('T1', 'Page.domContentEventFired', { timestamp: 1 })
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([]))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(pagePendingEvaluations(stub, 'T1')).toHaveLength(0)
+
+    for (const url of ['about:blank', 'chrome-error://chromewebdata/', 'devtools://devtools/bundled/inspector.html']) {
+      stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url } })
+      stub.emit('T1', 'Page.domContentEventFired', { timestamp: 2 })
+      engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(2, url)]))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(pagePendingEvaluations(stub, 'T1')).toHaveLength(0)
+  })
+
+  it('retains the latest snapshot across target recreation', async () => {
+    const { stub, engine, onTargetDown } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Enterprise')]))
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'first target hydration')
+
+    stub.sockets.get('T1')?.close()
+    await until(() => onTargetDown.mock.calls.length === 1, 'target crash')
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T2', 'Page.frameNavigated', { frame: { id: 'F2', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T2').length === 1, 'recreated target hydration')
+
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T2')[0])).toMatchObject({
+      controls: [{ response: { answer: 'Enterprise' } }],
+    })
+  })
+
+  it('clears a live page without retaining the empty lifecycle reset', async () => {
+    const { stub, engine, onTargetDown } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro')]))
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'pending hydration before clear')
+
+    engine.clearPendingSnapshot('w-11111111')
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'live pending clear')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[1])).toEqual({ version: 1, controls: [] })
+
+    stub.sockets.get('T1')?.close()
+    await until(() => onTargetDown.mock.calls.length === 1, 'target close after clear')
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T2', 'Page.frameNavigated', { frame: { id: 'F2', url: 'http://localhost:5173/' } })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(pagePendingEvaluations(stub, 'T2')).toHaveLength(0)
   })
 
   it('reactivates a navigated target immediately before starting its screencast', async () => {

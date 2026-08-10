@@ -5,16 +5,23 @@ import { join } from 'node:path'
 import { WebSocket, type RawData } from 'ws'
 import {
   inspectExpression,
+  MAX_INSPECT_SELECTOR,
   parseTileInspectResult,
   type TileInspectGrade,
   type TileInspectResult,
 } from '../shared/tile-inspect.js'
 import {
+  MAX_RESPONSE_ANSWER,
+  MAX_RESPONSE_DATA_JSON,
+  MAX_RESPONSE_NOTE,
   MAX_RESPONSE_PAYLOAD_BYTES,
+  MAX_RESPONSE_QUESTION,
+  MAX_RESPONSE_QUEUE_KEY,
   REDLINE_BINDING_NAME,
   parseRedlinePageResponse,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
+import { MAX_PENDING_NOTES, type WebPanePendingSnapshot } from '../shared/protocol.js'
 import { WebPaneError } from './web-panes.js'
 
 const LAUNCH_TIMEOUT_MS = 20_000
@@ -27,6 +34,7 @@ export const SCREENCAST_POLL_INTERVAL_MS = 700
 const MAX_VIEWPORT_DIMENSION = 8_192
 const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
+const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
 
 type ChromiumProfileOwner = {
   ownerPid: number
@@ -536,6 +544,69 @@ function sameOrigin(a: string, b: string): boolean {
   }
 }
 
+type PagePendingSnapshot = {
+  version: 1
+  controls: Array<{
+    queueKey?: string
+    selector?: string
+    response: { question: string; answer: string; note?: string; data?: unknown }
+  }>
+}
+
+const EMPTY_PAGE_PENDING_SNAPSHOT: PagePendingSnapshot = { version: 1, controls: [] }
+
+function boundedString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max
+}
+
+/** Reduces daemon-owned pending notes to the state contract exposed to tile pages. */
+function pagePendingSnapshot(snapshot: WebPanePendingSnapshot): PagePendingSnapshot {
+  const controls: PagePendingSnapshot['controls'] = []
+  for (const note of snapshot.notes) {
+    if (controls.length >= MAX_PENDING_NOTES) break
+    const response = note.response
+    if (
+      !response ||
+      !boundedString(response.question, MAX_RESPONSE_QUESTION) ||
+      !boundedString(response.answer, MAX_RESPONSE_ANSWER)
+    ) {
+      continue
+    }
+    const pageResponse: PagePendingSnapshot['controls'][number]['response'] = {
+      question: response.question,
+      answer: response.answer,
+    }
+    if (boundedString(response.note, MAX_RESPONSE_NOTE)) pageResponse.note = response.note
+    if (response.data !== undefined) {
+      try {
+        const json = JSON.stringify(response.data)
+        if (json !== undefined && json.length <= MAX_RESPONSE_DATA_JSON) {
+          pageResponse.data = JSON.parse(json) as unknown
+        }
+      } catch {
+        // Data is best-effort. Never expose live objects or fail the snapshot for it.
+      }
+    }
+    controls.push({
+      ...(boundedString(note.queueKey, MAX_RESPONSE_QUEUE_KEY) ? { queueKey: note.queueKey } : {}),
+      ...(boundedString(note.selector, MAX_INSPECT_SELECTOR) ? { selector: note.selector } : {}),
+      response: pageResponse,
+    })
+  }
+  return { version: 1, controls }
+}
+
+function pendingSnapshotExpression(snapshot: PagePendingSnapshot): string | null {
+  const payload = JSON.stringify(snapshot)
+  const expression =
+    `(()=>{const snapshot=JSON.parse(${JSON.stringify(payload)});` +
+    `window.__commandoRedlinePendingSnapshot=snapshot;` +
+    `window.dispatchEvent(new CustomEvent('commando:redline-pending',{detail:snapshot}));})()`
+  return Buffer.byteLength(expression, 'utf8') <= MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES ? expression : null
+}
+
+const EMPTY_PENDING_SNAPSHOT_EXPRESSION = pendingSnapshotExpression(EMPTY_PAGE_PENDING_SNAPSHOT) as string
+
 type TileTarget = {
   webPaneId: string
   targetId: string
@@ -551,6 +622,8 @@ type TileTarget = {
   resolveScreencastStart: (() => void) | null
   /** URL applied by the last explicit open/navigate, used to detect watchdog loops. */
   currentUrl: string
+  /** True only while the main-frame document is accepted by the tile URL policy. */
+  pendingSnapshotPageReady: boolean
   /** True once the current screencast delivered at least one real frame. */
   gotRealFrame: boolean
   /** Armed after startScreencast; fires the captureScreenshot fallback. */
@@ -606,6 +679,8 @@ export class ChromiumEngine {
   private readonly targetStarting = new Map<string, Promise<TileTarget>>()
   /** Last viewport per tile — buffered so a viewport sent before the target exists still applies. */
   private readonly viewports = new Map<string, TileViewport>()
+  /** Latest page-safe full replacement, retained independently of targets/viewers. */
+  private readonly pendingSnapshots = new Map<string, string | null>()
   private disposed = false
 
   constructor(private readonly options: ChromiumEngineOptions) {
@@ -629,12 +704,31 @@ export class ChromiumEngine {
   async navigate(webPaneId: string, url: string): Promise<void> {
     const tile = await this.ensureTarget(webPaneId, url)
     tile.currentUrl = url
+    tile.pendingSnapshotPageReady = false
     await tile.cdp.send('Page.navigate', { url })
   }
 
   async reload(webPaneId: string, url: string): Promise<void> {
     const tile = await this.ensureTarget(webPaneId, url)
+    tile.pendingSnapshotPageReady = false
     await tile.cdp.send('Page.reload')
+  }
+
+  /** Buffers and, when safe, publishes the page-facing pending-control snapshot. */
+  updatePendingSnapshot(webPaneId: string, snapshot: WebPanePendingSnapshot): void {
+    const expression = pendingSnapshotExpression(pagePendingSnapshot(snapshot))
+    this.pendingSnapshots.set(webPaneId, expression)
+    const tile = this.tiles.get(webPaneId)
+    if (tile) this.pushPendingSnapshot(tile)
+  }
+
+  /** Removes retained state and clears any currently accepted page document. */
+  clearPendingSnapshot(webPaneId: string): void {
+    this.pendingSnapshots.delete(webPaneId)
+    const tile = this.tiles.get(webPaneId)
+    if (tile?.pendingSnapshotPageReady) {
+      tile.cdp.sendAndForget('Runtime.evaluate', { expression: EMPTY_PENDING_SNAPSHOT_EXPRESSION })
+    }
   }
 
   /**
@@ -922,6 +1016,7 @@ export class ChromiumEngine {
 
   dispose(): void {
     this.disposed = true
+    this.pendingSnapshots.clear()
     this.browserStartingAbort?.abort()
     this.browserStartingAbort = null
     for (const webPaneId of [...this.tiles.keys()]) this.closeTile(webPaneId)
@@ -1046,6 +1141,7 @@ export class ChromiumEngine {
       screencastStarting: null,
       resolveScreencastStart: null,
       currentUrl: url,
+      pendingSnapshotPageReady: false,
       gotRealFrame: false,
       fallbackTimer: null,
       pollTimer: null,
@@ -1079,6 +1175,9 @@ export class ChromiumEngine {
       const frame = params.frame as { parentId?: string; url?: string } | undefined
       if (!frame || frame.parentId || typeof frame.url !== 'string') return
       this.handleMainFrameNavigation(tile, frame.url)
+    })
+    cdp.on('Page.domContentEventFired', () => {
+      this.pushPendingSnapshot(tile)
     })
     cdp.onClose(() => {
       this.stopScreencastFallback(tile)
@@ -1130,18 +1229,34 @@ export class ChromiumEngine {
    */
   private handleMainFrameNavigation(tile: TileTarget, url: string): void {
     if (tile.screencasting && tile.sinks.size > 0) this.armScreencastFallback(tile)
-    if (url === 'about:blank' || url === tile.currentUrl) return
-    if (url.startsWith('chrome-error://') || url.startsWith('devtools://')) return
+    tile.pendingSnapshotPageReady = false
+    if (url === 'about:blank' || url.startsWith('chrome-error://') || url.startsWith('devtools://')) return
+    if (url === tile.currentUrl) {
+      tile.pendingSnapshotPageReady = true
+      this.pushPendingSnapshot(tile)
+      return
+    }
     const decision = this.options.classify(url)
     // Staying on the origin the owner already confirmed for this tile is
     // fine even when the origin was not "always"-allowlisted.
     if (decision.kind === 'open' || sameOrigin(url, tile.currentUrl)) {
       tile.currentUrl = url
+      tile.pendingSnapshotPageReady = true
+      this.pushPendingSnapshot(tile)
       return
     }
     tile.currentUrl = 'about:blank'
     tile.cdp.sendAndForget('Page.navigate', { url: 'about:blank' })
     this.options.onExternalNavigation(tile.webPaneId, url)
+  }
+
+  private pushPendingSnapshot(tile: TileTarget): void {
+    if (!tile.pendingSnapshotPageReady) return
+    const expression = this.pendingSnapshots.get(tile.webPaneId)
+    if (!expression) return
+    // Snapshot publication is auxiliary state hydration. A transient execution
+    // context/navigation failure must never close or invalidate the tile.
+    tile.cdp.sendAndForget('Runtime.evaluate', { expression })
   }
 
   private async browserHttp(port: number, path: string): Promise<unknown> {
