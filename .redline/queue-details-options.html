@@ -1,0 +1,1145 @@
+<!doctype html>
+<html lang="en" data-redline-theme="commando">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Redline queue details and rehydration</title>
+    <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
+    <style>
+      :root {
+        --redline-accent: #9f8cff;
+        --redline-accent2: #63d8e8;
+        --ink: #f5f1ff;
+        --soft: #b6aec8;
+        --faint: #827a96;
+        --line: color-mix(in oklab, currentColor 14%, transparent);
+        --surface: color-mix(in oklab, currentColor 4%, transparent);
+        --raised: color-mix(in oklab, currentColor 7%, transparent);
+        --violet: #9f8cff;
+        --cyan: #63d8e8;
+        --amber: #f0b35b;
+        --green: #61d79c;
+        --red: #ff8d89;
+      }
+
+      * {
+        box-sizing: border-box;
+        min-width: 0;
+      }
+
+      html,
+      body {
+        overflow-x: hidden;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      .lede-grid,
+      .option-grid,
+      .state-grid,
+      .contract-grid,
+      .phase-grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .lede-grid {
+        grid-template-columns: minmax(0, 1.3fr) minmax(15rem, .7fr);
+      }
+
+      .state-grid,
+      .contract-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .option-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .phase-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .eyebrow,
+      .mini-label,
+      .mock-kicker {
+        color: color-mix(in oklab, var(--cyan) 78%, currentColor);
+        font-size: .7rem;
+        font-weight: 760;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+      }
+
+      .muted {
+        color: var(--soft);
+      }
+
+      .tiny {
+        color: var(--faint);
+        font-size: .74rem;
+      }
+
+      .summary-list,
+      .plain-list {
+        margin: .7rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .summary-list li,
+      .plain-list li {
+        position: relative;
+        margin: .45rem 0;
+        padding-left: 1rem;
+      }
+
+      .summary-list li::before,
+      .plain-list li::before {
+        content: "";
+        position: absolute;
+        top: .63em;
+        left: 0;
+        width: .38rem;
+        height: .38rem;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--violet), var(--cyan));
+      }
+
+      .verdict {
+        border-color: color-mix(in oklab, var(--violet) 54%, transparent);
+        background: linear-gradient(145deg, color-mix(in oklab, var(--violet) 13%, transparent), color-mix(in oklab, var(--cyan) 6%, transparent));
+      }
+
+      .option-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: .8rem;
+        min-height: 100%;
+        padding: 1rem;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface);
+        overflow: hidden;
+      }
+
+      .option-card[data-recommended="true"] {
+        border-color: color-mix(in oklab, var(--violet) 62%, transparent);
+        box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--cyan) 18%, transparent), 0 18px 60px rgb(0 0 0 / .16);
+      }
+
+      .option-card h3,
+      .option-card p {
+        margin: 0;
+      }
+
+      .option-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: .8rem;
+      }
+
+      .option-score {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        width: 2.4rem;
+        height: 2.4rem;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        color: var(--cyan);
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: .73rem;
+      }
+
+      .mini-window {
+        position: relative;
+        min-height: 12rem;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #0c0913;
+      }
+
+      .mini-page {
+        height: 100%;
+        padding: .75rem;
+        background:
+          linear-gradient(90deg, transparent 0 24%, rgb(159 140 255 / .05) 24% 25%, transparent 25%),
+          radial-gradient(circle at 70% 20%, rgb(99 216 232 / .08), transparent 42%);
+      }
+
+      .mini-line {
+        width: 72%;
+        height: .34rem;
+        margin: .38rem 0;
+        border-radius: 1rem;
+        background: rgb(255 255 255 / .11);
+      }
+
+      .mini-line.short { width: 43%; }
+
+      .mini-strip,
+      .mini-drawer,
+      .mini-side,
+      .mini-pop {
+        position: absolute;
+        border: 1px solid rgb(159 140 255 / .34);
+        background: rgb(22 17 33 / .97);
+        box-shadow: 0 14px 45px rgb(0 0 0 / .42);
+      }
+
+      .mini-strip {
+        right: .5rem;
+        bottom: .5rem;
+        left: .5rem;
+        display: flex;
+        gap: .35rem;
+        align-items: center;
+        padding: .4rem;
+        border-radius: 999px;
+      }
+
+      .mini-pill {
+        height: .9rem;
+        flex: 1;
+        border-radius: 999px;
+        background: rgb(255 255 255 / .1);
+      }
+
+      .mini-pill.accent { background: linear-gradient(90deg, var(--violet), var(--cyan)); }
+
+      .mini-drawer {
+        right: .5rem;
+        bottom: .5rem;
+        left: .5rem;
+        display: grid;
+        grid-template-columns: 34% 1fr;
+        height: 7rem;
+        border-radius: 10px;
+      }
+
+      .mini-drawer > div,
+      .mini-side > div {
+        padding: .5rem;
+      }
+
+      .mini-drawer > div + div,
+      .mini-side > div + div {
+        border-left: 1px solid var(--line);
+      }
+
+      .mini-item {
+        height: 1.05rem;
+        margin-bottom: .35rem;
+        border-radius: .25rem;
+        background: rgb(255 255 255 / .08);
+      }
+
+      .mini-item.selected { background: rgb(159 140 255 / .25); }
+
+      .mini-pop {
+        right: .7rem;
+        bottom: 2.25rem;
+        width: 62%;
+        height: 6.8rem;
+        padding: .55rem;
+        border-radius: 10px;
+      }
+
+      .mini-side {
+        top: .5rem;
+        right: .5rem;
+        bottom: .5rem;
+        display: grid;
+        grid-template-columns: 42% 1fr;
+        width: 70%;
+        border-radius: 10px;
+      }
+
+      .control-demo,
+      .drawer-demo {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: #0d0915;
+        box-shadow: 0 24px 80px rgb(0 0 0 / .2);
+      }
+
+      .control-demo {
+        padding: 1.1rem;
+      }
+
+      .control-demo h3 {
+        margin: 0 0 .35rem;
+        font-size: 1rem;
+      }
+
+      .control-options {
+        display: flex;
+        flex-wrap: wrap;
+        margin: 1rem 0 .7rem;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      .control-option {
+        position: relative;
+        flex: 1 1 8rem;
+        min-height: 2.8rem;
+        padding: .65rem .8rem .65rem 2.3rem;
+        border: 0;
+        border-right: 1px solid var(--line);
+        background: transparent;
+        color: var(--soft);
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .control-option:last-child { border-right: 0; }
+
+      .control-option::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: .8rem;
+        width: 1rem;
+        height: 1rem;
+        border: 1.5px solid rgb(255 255 255 / .42);
+        border-radius: 50%;
+        transform: translateY(-50%);
+      }
+
+      .control-option.is-current {
+        color: #fff;
+        background: linear-gradient(135deg, rgb(159 140 255 / .82), rgb(99 216 232 / .58));
+      }
+
+      .control-option.is-current::before {
+        border-color: #fff;
+        background: radial-gradient(circle, #fff 0 27%, transparent 31%);
+      }
+
+      .control-option.is-baseline:not(.is-current)::after {
+        content: "queued";
+        position: absolute;
+        top: .25rem;
+        right: .4rem;
+        color: var(--green);
+        font-size: .58rem;
+        font-weight: 760;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+      }
+
+      .answer-note {
+        width: 100%;
+        min-height: 3rem;
+        padding: .65rem .75rem;
+        resize: vertical;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        outline: none;
+        background: rgb(255 255 255 / .055);
+        color: var(--ink);
+      }
+
+      .answer-note:focus {
+        border-color: var(--violet);
+        box-shadow: 0 0 0 3px rgb(159 140 255 / .13);
+      }
+
+      .control-actions,
+      .detail-actions,
+      .drawer-toolbar,
+      .attachment-row,
+      .flow-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .55rem;
+        align-items: center;
+      }
+
+      .control-actions {
+        margin-top: .8rem;
+      }
+
+      .status-chip,
+      .queue-chip,
+      .type-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: .35rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        white-space: nowrap;
+      }
+
+      .status-chip {
+        padding: .34rem .65rem;
+        color: var(--green);
+        font-size: .72rem;
+      }
+
+      .status-chip.is-dirty {
+        border-color: color-mix(in oklab, var(--amber) 52%, transparent);
+        color: var(--amber);
+        background: color-mix(in oklab, var(--amber) 8%, transparent);
+      }
+
+      .action {
+        min-height: 2.25rem;
+        padding: .5rem .85rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgb(255 255 255 / .06);
+        cursor: pointer;
+      }
+
+      .action:hover {
+        border-color: var(--violet);
+        background: rgb(159 140 255 / .12);
+      }
+
+      .action.primary {
+        border: 0;
+        color: #fff;
+        background: linear-gradient(135deg, var(--violet), var(--cyan));
+        font-weight: 690;
+      }
+
+      .action.danger { color: var(--red); }
+
+      .drawer-demo {
+        position: relative;
+        min-height: 38rem;
+      }
+
+      .fake-page {
+        min-height: 38rem;
+        padding: 1.4rem;
+        background:
+          linear-gradient(90deg, #0a0710 0 23%, #191224 23% 23.2%, #0d0915 23.2%),
+          radial-gradient(circle at 78% 18%, rgb(99 216 232 / .08), transparent 30%);
+      }
+
+      .fake-page-copy {
+        width: min(34rem, 67%);
+        margin-left: auto;
+      }
+
+      .fake-page-copy h3 {
+        margin-top: 0;
+        font-size: clamp(1.35rem, 3vw, 2.2rem);
+      }
+
+      .fake-copy-line {
+        height: .55rem;
+        margin: .65rem 0;
+        border-radius: 999px;
+        background: rgb(255 255 255 / .09);
+      }
+
+      .fake-copy-line:nth-child(2n) { width: 78%; }
+      .fake-copy-line:nth-child(3n) { width: 56%; }
+
+      .queue-bar {
+        position: absolute;
+        right: .75rem;
+        bottom: .75rem;
+        left: .75rem;
+        z-index: 2;
+        display: flex;
+        gap: .5rem;
+        align-items: center;
+        padding: .5rem;
+        border: 1px solid rgb(159 140 255 / .33);
+        border-radius: 13px;
+        background: rgb(21 16 31 / .96);
+        box-shadow: 0 16px 45px rgb(0 0 0 / .46);
+      }
+
+      .queue-chips {
+        display: flex;
+        flex: 1;
+        gap: .4rem;
+        overflow: hidden;
+      }
+
+      .queue-chip {
+        max-width: 12rem;
+        padding: .32rem .55rem;
+        color: var(--soft);
+        font-size: .72rem;
+        overflow: hidden;
+      }
+
+      .queue-chip strong {
+        color: var(--violet);
+        font-size: .61rem;
+        text-transform: uppercase;
+      }
+
+      .queue-chip span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .queue-drawer {
+        position: absolute;
+        right: .75rem;
+        bottom: .75rem;
+        left: .75rem;
+        z-index: 3;
+        display: grid;
+        grid-template-columns: minmax(13rem, 34%) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        max-height: calc(100% - 1.5rem);
+        min-height: 29rem;
+        overflow: hidden;
+        border: 1px solid rgb(159 140 255 / .4);
+        border-radius: 14px;
+        background: rgb(18 13 27 / .985);
+        box-shadow: 0 24px 80px rgb(0 0 0 / .58);
+      }
+
+      .queue-drawer[hidden],
+      .queue-bar[hidden] {
+        display: none;
+      }
+
+      .drawer-toolbar {
+        grid-column: 1 / -1;
+        justify-content: space-between;
+        padding: .65rem .75rem;
+        border-bottom: 1px solid var(--line);
+        background: rgb(255 255 255 / .025);
+      }
+
+      .drawer-title {
+        display: flex;
+        gap: .55rem;
+        align-items: baseline;
+      }
+
+      .drawer-list {
+        overflow: auto;
+        border-right: 1px solid var(--line);
+      }
+
+      .drawer-item {
+        display: block;
+        width: 100%;
+        padding: .85rem;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        background: transparent;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .drawer-item:hover { background: rgb(255 255 255 / .035); }
+      .drawer-item.is-selected { background: rgb(159 140 255 / .12); box-shadow: inset 3px 0 var(--violet); }
+      .drawer-item.is-sent { opacity: .46; }
+
+      .drawer-item-top {
+        display: flex;
+        justify-content: space-between;
+        gap: .6rem;
+      }
+
+      .type-chip {
+        padding: .18rem .4rem;
+        color: var(--cyan);
+        font-size: .58rem;
+        font-weight: 760;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+      }
+
+      .drawer-item-question {
+        margin: .5rem 0 .2rem;
+        color: var(--ink);
+        font-size: .79rem;
+        line-height: 1.35;
+      }
+
+      .drawer-item-answer {
+        color: var(--soft);
+        font-size: .72rem;
+      }
+
+      .drawer-detail {
+        overflow: auto;
+        padding: 1rem;
+      }
+
+      .drawer-detail h4 {
+        margin: .25rem 0 1rem;
+        font-size: 1.08rem;
+        line-height: 1.35;
+      }
+
+      .field-label {
+        display: block;
+        margin: .85rem 0 .35rem;
+        color: var(--soft);
+        font-size: .72rem;
+        font-weight: 670;
+      }
+
+      .detail-select {
+        width: 100%;
+        min-height: 2.55rem;
+        padding: .55rem .7rem;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        outline: none;
+        background: rgb(255 255 255 / .055);
+        color: var(--ink);
+      }
+
+      .attachment-row {
+        justify-content: space-between;
+        padding: .6rem .7rem;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: rgb(255 255 255 / .035);
+      }
+
+      .attachment-meta {
+        display: flex;
+        gap: .55rem;
+        align-items: center;
+      }
+
+      .attachment-thumb {
+        display: grid;
+        width: 2.5rem;
+        height: 2.5rem;
+        place-items: center;
+        border-radius: 7px;
+        background: linear-gradient(145deg, rgb(159 140 255 / .34), rgb(99 216 232 / .16));
+        color: var(--cyan);
+        font-size: .7rem;
+      }
+
+      .detail-actions {
+        justify-content: space-between;
+        margin-top: 1rem;
+        padding-top: .85rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .flow-row {
+        flex-wrap: nowrap;
+        align-items: stretch;
+        overflow-x: auto;
+        padding-bottom: .3rem;
+      }
+
+      .flow-node {
+        flex: 1 0 8.5rem;
+        padding: .8rem;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface);
+      }
+
+      .flow-arrow {
+        display: grid;
+        flex: 0 0 1.5rem;
+        place-items: center;
+        color: var(--cyan);
+      }
+
+      .contract-note {
+        padding: .8rem;
+        border-left: 3px solid var(--violet);
+        background: rgb(159 140 255 / .07);
+      }
+
+      .phase {
+        padding: 1rem;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: var(--surface);
+      }
+
+      .phase h3 { margin-top: 0; }
+
+      @media (max-width: 940px) {
+        .option-grid { grid-template-columns: 1fr; }
+        .option-card { min-height: auto; }
+        .mini-window { min-height: 10rem; }
+      }
+
+      @media (max-width: 760px) {
+        .lede-grid,
+        .state-grid,
+        .contract-grid,
+        .phase-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .queue-drawer {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 10.5rem minmax(0, 1fr);
+        }
+
+        .drawer-list {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .queue-chips .queue-chip:nth-child(n + 2) { display: none; }
+        .fake-page-copy { width: 74%; }
+      }
+
+      @media (max-width: 500px) {
+        .control-option { flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--line); }
+        .control-option:last-child { border-bottom: 0; }
+        .drawer-demo,
+        .fake-page { min-height: 43rem; }
+        .queue-drawer { min-height: calc(100% - 1.5rem); }
+        .drawer-toolbar { align-items: flex-start; }
+        .drawer-toolbar .action.primary { width: 100%; }
+        .fake-page-copy { width: 70%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="redline-layout">
+      <redline-nav
+        eyebrow="Commando · Redline"
+        heading="Make the queue a real editing surface"
+        summary="Rehydrate durable answers, show dirty drafts honestly, and let one item be reviewed or sent without disturbing the rest."
+        status="Direction ready for review"
+      ></redline-nav>
+
+      <main class="redline-shell redline-stack">
+        <section id="recommendation" data-redline-section data-redline-label="Recommendation" class="redline-panel verdict">
+          <div class="lede-grid">
+            <div>
+              <span class="eyebrow">Recommended system</span>
+              <h2>Compact strip, adaptive detail drawer</h2>
+              <p>Keep the current low-profile queue affordance, but make it a gateway to a durable editing surface. The drawer owns answer detail, per-answer notes, attachments, removal, <strong>Send this</strong>, and <strong>Send all</strong>.</p>
+              <ul class="summary-list">
+                <li>Keyed controls rehydrate from the daemon snapshot after reload.</li>
+                <li>Local edits compare against the queued baseline and turn amber until re-queued.</li>
+                <li>The same optional note is editable beside the control and inside queue detail.</li>
+                <li>Images are uploaded separately and referenced by durable attachment metadata.</li>
+              </ul>
+            </div>
+            <aside class="redline-callout">
+              <span class="mini-label">Why this direction</span>
+              <p><strong>It scales in both dimensions.</strong> The collapsed strip preserves page context; the drawer supports batch triage without forcing narrow tiles to surrender permanent width.</p>
+              <p class="tiny">Existing server support already sends selected IDs. Most of this is state synchronization and UI, not a queue rewrite.</p>
+            </aside>
+          </div>
+        </section>
+
+        <section id="rehydration" data-redline-section data-redline-label="State behavior" class="redline-panel">
+          <span class="eyebrow">State contract</span>
+          <h2>Queued is a baseline, not a permanent checkmark</h2>
+          <p class="muted">This live mock starts with <strong>Pro</strong> queued. Change the selection or note to see the control become dirty; “Update queued answer” establishes a new baseline. “Simulate reload” restores that queued baseline.</p>
+          <div class="state-grid">
+            <div id="control-demo" class="control-demo" data-current="Pro" data-baseline="Pro" data-note="Prioritize the simulator test." data-baseline-note="Prioritize the simulator test.">
+              <span class="mock-kicker">redline-choice · key="ios-plan"</span>
+              <h3>Which direction should settle the iOS fallback?</h3>
+              <div class="control-options" role="radiogroup" aria-label="Prototype state options">
+                <button class="control-option" type="button" data-value="Starter" role="radio" aria-checked="false">Starter</button>
+                <button class="control-option is-current is-baseline" type="button" data-value="Pro" role="radio" aria-checked="true">Pro</button>
+                <button class="control-option" type="button" data-value="Enterprise" role="radio" aria-checked="false">Enterprise</button>
+              </div>
+              <label class="field-label" for="control-note">Optional note</label>
+              <textarea id="control-note" class="answer-note">Prioritize the simulator test.</textarea>
+              <div class="control-actions">
+                <button id="queue-control" class="action primary" type="button">Queued ✓</button>
+                <span id="control-status" class="status-chip">Matches queued answer</span>
+                <button id="reload-control" class="action" type="button">Simulate reload</button>
+              </div>
+            </div>
+            <div class="redline-card">
+              <span class="mini-label">Rules</span>
+              <ul class="plain-list">
+                <li><strong>No pending item:</strong> blank/local draft, button says “Queue answer.”</li>
+                <li><strong>Matches pending item:</strong> restored values, green “Queued ✓.”</li>
+                <li><strong>Differs from pending item:</strong> current value remains selected, queued value gets a small baseline marker, status says “Changed since queued.”</li>
+                <li><strong>Sent or removed elsewhere:</strong> reverse snapshot clears the queued baseline without erasing the current local draft.</li>
+              </ul>
+              <div class="contract-note">
+                Rehydration should be guaranteed for controls with a unique <code>key</code>. Unkeyed controls remain local-only; selector or prompt heuristics are too fragile to pretend otherwise.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="surface-options" data-redline-section data-redline-label="UI options" class="redline-panel">
+          <span class="eyebrow">Three queue surfaces</span>
+          <h2>What should open from the pill strip?</h2>
+          <div class="option-grid">
+            <article id="option-drawer" class="option-card" data-recommended="true">
+              <div class="option-head">
+                <div>
+                  <span class="redline-badge">Recommended</span>
+                  <h3>Adaptive bottom drawer</h3>
+                </div>
+                <span class="option-score">9/10</span>
+              </div>
+              <div class="mini-window" aria-hidden="true">
+                <div class="mini-page"><div class="mini-line"></div><div class="mini-line short"></div></div>
+                <div class="mini-drawer"><div><div class="mini-item selected"></div><div class="mini-item"></div><div class="mini-item"></div></div><div><div class="mini-line"></div><div class="mini-line short"></div><div class="mini-item"></div></div></div>
+              </div>
+              <p><strong>Best for:</strong> several answers, editing, attachments, and individual send.</p>
+              <p class="muted">Uses the existing bottom anchor, preserves width when collapsed, and becomes full-height on narrow tiles.</p>
+            </article>
+
+            <article id="option-popover" class="option-card">
+              <div class="option-head">
+                <div><span class="redline-badge">Lightweight</span><h3>Per-pill popover</h3></div>
+                <span class="option-score">6/10</span>
+              </div>
+              <div class="mini-window" aria-hidden="true">
+                <div class="mini-page"><div class="mini-line"></div><div class="mini-line short"></div></div>
+                <div class="mini-pop"><div class="mini-item selected"></div><div class="mini-line"></div><div class="mini-line short"></div><div class="mini-item"></div></div>
+                <div class="mini-strip"><div class="mini-pill"></div><div class="mini-pill accent"></div><div class="mini-pill"></div></div>
+              </div>
+              <p><strong>Best for:</strong> inspecting one short answer without opening a larger surface.</p>
+              <p class="muted">Fast for one item, but batch review, image previews, and mobile placement become awkward.</p>
+            </article>
+
+            <article id="option-side" class="option-card">
+              <div class="option-head">
+                <div><span class="redline-badge">Persistent</span><h3>Right-side inspector</h3></div>
+                <span class="option-score">5/10</span>
+              </div>
+              <div class="mini-window" aria-hidden="true">
+                <div class="mini-page"><div class="mini-line"></div><div class="mini-line short"></div></div>
+                <div class="mini-side"><div><div class="mini-item selected"></div><div class="mini-item"></div><div class="mini-item"></div></div><div><div class="mini-line"></div><div class="mini-line short"></div></div></div>
+              </div>
+              <p><strong>Best for:</strong> wide desktop tiles and long-running review sessions.</p>
+              <p class="muted">Excellent information density, but it permanently covers the page and collapses badly in the narrow tile shown in the report.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="drawer-prototype" data-redline-section data-redline-label="Drawer prototype" class="redline-panel">
+          <span class="eyebrow">Interactive recommendation</span>
+          <h2>Review one answer without committing the rest</h2>
+          <p class="muted">Open the queue, switch items, edit the answer or note, attach a simulated image, and try “Send this.” The prototype keeps other answers pending.</p>
+          <div id="drawer-demo" class="drawer-demo">
+            <div class="fake-page" aria-hidden="true">
+              <div class="fake-page-copy">
+                <span class="mock-kicker">Decision memo</span>
+                <h3>Raising the minimum version</h3>
+                <div class="fake-copy-line"></div><div class="fake-copy-line"></div><div class="fake-copy-line"></div><div class="fake-copy-line"></div><div class="fake-copy-line"></div>
+              </div>
+            </div>
+
+            <div id="queue-bar" class="queue-bar">
+              <button id="open-drawer" class="action" type="button"><strong>Review queue · <span id="bar-count">3</span></strong></button>
+              <div id="bar-chips" class="queue-chips" aria-label="Queued answer summary"></div>
+              <button id="bar-send-all" class="action primary" type="button">Send all</button>
+            </div>
+
+            <div id="queue-drawer" class="queue-drawer" hidden>
+              <header class="drawer-toolbar">
+                <div class="drawer-title"><strong>Review queue</strong><span id="drawer-count" class="tiny">3 pending</span></div>
+                <div class="control-actions">
+                  <button id="close-drawer" class="action" type="button">Collapse</button>
+                  <button id="drawer-send-all" class="action primary" type="button">Send all 3</button>
+                </div>
+              </header>
+              <nav id="drawer-list" class="drawer-list" aria-label="Pending answers"></nav>
+              <div id="drawer-detail" class="drawer-detail"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="data-contract" data-redline-section data-redline-label="State contract" class="redline-panel">
+          <span class="eyebrow">Implementation model</span>
+          <h2>One authoritative snapshot, two synchronized views</h2>
+          <div class="flow-row" aria-label="Queue synchronization flow">
+            <div class="flow-node"><span class="mini-label">1 · Daemon</span><strong>Pending snapshot</strong><p class="tiny">IDs, queue keys, response data, note, attachments.</p></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><span class="mini-label">2 · Engine</span><strong>Reverse bridge</strong><p class="tiny">Push after queue, edit, remove, send, reconnect, and reload.</p></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-node"><span class="mini-label">3 · Page SDK</span><strong>Keyed baseline</strong><p class="tiny">Rehydrate values; compare normalized local draft.</p></div>
+            <div class="flow-arrow">↔</div>
+            <div class="flow-node"><span class="mini-label">4 · Tile UI</span><strong>Drawer editor</strong><p class="tiny">Patch one item or send selected IDs.</p></div>
+          </div>
+          <div class="contract-grid" style="margin-top:1rem">
+            <div class="redline-card">
+              <h3>Keep</h3>
+              <ul class="plain-list">
+                <li>Daemon remains authoritative and journaled.</li>
+                <li>Explicit Queue and Send remain separate.</li>
+                <li><code>queueKey</code> replacement remains atomic.</li>
+                <li>Existing <code>send(ids)</code> path powers “Send this.”</li>
+              </ul>
+            </div>
+            <div class="redline-card">
+              <h3>Add</h3>
+              <ul class="plain-list">
+                <li>Pending note timestamp and original page URL.</li>
+                <li>Atomic patch endpoint for answer, note, and attachment refs.</li>
+                <li>Reverse snapshot event into the target page.</li>
+                <li>Attachment store with size/type caps and orphan cleanup.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section id="delivery" data-redline-section data-redline-label="Delivery" class="redline-panel">
+          <span class="eyebrow">Smallest safe slices</span>
+          <h2>Ship the state fix before the binary transport</h2>
+          <div class="phase-grid">
+            <article class="phase">
+              <span class="redline-badge">Phase 1</span>
+              <h3>Answers become trustworthy</h3>
+              <ul class="plain-list">
+                <li>Reverse snapshot and keyed rehydration</li>
+                <li>Dirty-vs-queued control states</li>
+                <li>Adaptive queue drawer and atomic edit</li>
+                <li>Per-answer optional note</li>
+                <li>Send this / Send all</li>
+              </ul>
+            </article>
+            <article class="phase">
+              <span class="redline-badge">Phase 2</span>
+              <h3>Answers carry visual evidence</h3>
+              <ul class="plain-list">
+                <li>PNG/JPEG/WebP upload endpoint</li>
+                <li>Thumbnail, preview, remove, and retry</li>
+                <li>Persisted attachment references in pending journals</li>
+                <li>Sent-feedback retention and orphan cleanup</li>
+                <li>Per-file and per-answer size caps</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="decisions" data-redline-section data-redline-label="Decisions" class="redline-panel">
+          <span class="eyebrow">Choose in place</span>
+          <h2>Decisions to lock before implementation</h2>
+          <redline-choice key="queue-surface" prompt="Which queue detail surface should we build?" options="Adaptive bottom drawer,Per-pill popover,Right-side inspector"></redline-choice>
+          <redline-choice key="rehydration-policy" prompt="How should controls without a stable key behave?" options="Stay local-only,Use selector fallback,Require keys and show an author warning"></redline-choice>
+          <redline-choice key="attachment-delivery" prompt="Should image attachments ship with the state and drawer work?" options="Stage as phase 2,Ship in the same feature"></redline-choice>
+          <redline-ask key="queue-details-notes" prompt="Anything missing from the proposed drawer or state model?" placeholder="Optional design or behavior note"></redline-ask>
+        </section>
+      </main>
+    </div>
+
+    <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+    <script>
+      ;(() => {
+        const control = document.querySelector('#control-demo')
+        const note = document.querySelector('#control-note')
+        const status = document.querySelector('#control-status')
+        const queueButton = document.querySelector('#queue-control')
+        const options = [...document.querySelectorAll('.control-option')]
+
+        const renderControl = () => {
+          const current = control.dataset.current
+          const baseline = control.dataset.baseline
+          const dirty = current !== baseline || note.value !== control.dataset.baselineNote
+          for (const option of options) {
+            const isCurrent = option.dataset.value === current
+            option.classList.toggle('is-current', isCurrent)
+            option.classList.toggle('is-baseline', option.dataset.value === baseline)
+            option.setAttribute('aria-checked', String(isCurrent))
+          }
+          status.classList.toggle('is-dirty', dirty)
+          status.textContent = dirty ? 'Changed since queued' : 'Matches queued answer'
+          queueButton.textContent = dirty ? 'Update queued answer' : 'Queued ✓'
+        }
+
+        for (const option of options) {
+          option.addEventListener('click', () => {
+            control.dataset.current = option.dataset.value
+            renderControl()
+          })
+        }
+        note.addEventListener('input', renderControl)
+        queueButton.addEventListener('click', () => {
+          control.dataset.baseline = control.dataset.current
+          control.dataset.baselineNote = note.value
+          renderControl()
+        })
+        document.querySelector('#reload-control').addEventListener('click', () => {
+          control.dataset.current = control.dataset.baseline
+          note.value = control.dataset.baselineNote
+          renderControl()
+        })
+        renderControl()
+
+        const items = [
+          {
+            id: 1,
+            type: 'choice',
+            question: 'Which direction should settle the iOS fallback?',
+            answer: 'Pro',
+            options: ['Starter', 'Pro', 'Enterprise'],
+            note: 'Prioritize the simulator test.',
+            attachment: null,
+            sent: false,
+          },
+          {
+            id: 2,
+            type: 'approve',
+            question: 'Should the sub-16.4 cohort sunset in Q1?',
+            answer: 'needs-changes',
+            options: ['approve', 'reject', 'needs-changes'],
+            note: 'Use an adoption threshold, not a fixed date.',
+            attachment: { name: 'cohort-decay.png', size: '248 KB' },
+            sent: false,
+          },
+          {
+            id: 3,
+            type: 'annotation',
+            question: '#open-questions · paragraph',
+            answer: 'Clarify whether the web bundle was tested on iOS 15.',
+            options: null,
+            note: '',
+            attachment: null,
+            sent: false,
+          },
+        ]
+        let selectedId = 1
+
+        const pending = () => items.filter((item) => !item.sent)
+        const escape = (value) => String(value)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+
+        const renderQueue = () => {
+          const active = pending()
+          const bar = document.querySelector('#queue-bar')
+          const drawer = document.querySelector('#queue-drawer')
+          const list = document.querySelector('#drawer-list')
+          const detail = document.querySelector('#drawer-detail')
+          document.querySelector('#bar-count').textContent = String(active.length)
+          document.querySelector('#drawer-count').textContent = `${active.length} pending`
+          document.querySelector('#bar-send-all').textContent = active.length ? 'Send all' : 'All sent'
+          document.querySelector('#bar-send-all').disabled = active.length === 0
+          document.querySelector('#drawer-send-all').textContent = `Send all ${active.length}`
+          document.querySelector('#drawer-send-all').disabled = active.length === 0
+          document.querySelector('#bar-chips').innerHTML = active.map((item) => `
+            <span class="queue-chip"><strong>${escape(item.type)}</strong><span>${escape(item.answer)}</span></span>
+          `).join('')
+          list.innerHTML = items.map((item) => `
+            <button type="button" class="drawer-item${item.id === selectedId ? ' is-selected' : ''}${item.sent ? ' is-sent' : ''}" data-id="${item.id}">
+              <span class="drawer-item-top"><span class="type-chip">${escape(item.type)}</span><span class="tiny">${item.sent ? 'sent' : `#${item.id}`}</span></span>
+              <span class="drawer-item-question">${escape(item.question)}</span>
+              <span class="drawer-item-answer">${escape(item.answer)}</span>
+            </button>
+          `).join('')
+          for (const button of list.querySelectorAll('.drawer-item')) {
+            button.addEventListener('click', () => {
+              selectedId = Number(button.dataset.id)
+              renderQueue()
+            })
+          }
+
+          const item = items.find((candidate) => candidate.id === selectedId) || items[0]
+          if (!item) {
+            detail.innerHTML = '<p class="muted">No queue items.</p>'
+            return
+          }
+          const answerField = item.options
+            ? `<select id="detail-answer" class="detail-select">${item.options.map((option) => `<option${option === item.answer ? ' selected' : ''}>${escape(option)}</option>`).join('')}</select>`
+            : `<textarea id="detail-answer" class="answer-note">${escape(item.answer)}</textarea>`
+          const attachment = item.attachment
+            ? `<div class="attachment-row"><span class="attachment-meta"><span class="attachment-thumb">PNG</span><span><strong>${escape(item.attachment.name)}</strong><br><span class="tiny">${escape(item.attachment.size)} · uploaded</span></span></span><button id="remove-attachment" class="action danger" type="button">Remove</button></div>`
+            : '<button id="add-attachment" class="action" type="button">Attach image</button>'
+          detail.innerHTML = `
+            <span class="type-chip">${escape(item.type)}</span>
+            <h4>${escape(item.question)}</h4>
+            <label class="field-label" for="detail-answer">Answer</label>
+            ${answerField}
+            <label class="field-label" for="detail-note">Optional note</label>
+            <textarea id="detail-note" class="answer-note" placeholder="Add context for this answer">${escape(item.note)}</textarea>
+            <span class="field-label">Evidence</span>
+            ${attachment}
+            <div class="detail-actions">
+              <button id="remove-item" class="action danger" type="button">Remove from queue</button>
+              <div class="control-actions">
+                <button id="save-item" class="action" type="button">Save changes</button>
+                <button id="send-item" class="action primary" type="button" ${item.sent ? 'disabled' : ''}>${item.sent ? 'Sent' : 'Send this'}</button>
+              </div>
+            </div>
+          `
+          const persistDetail = () => {
+            item.answer = detail.querySelector('#detail-answer').value
+            item.note = detail.querySelector('#detail-note').value
+          }
+          detail.querySelector('#save-item').addEventListener('click', () => {
+            persistDetail()
+            renderQueue()
+          })
+          detail.querySelector('#send-item').addEventListener('click', () => {
+            persistDetail()
+            item.sent = true
+            const next = pending()[0]
+            if (next) selectedId = next.id
+            renderQueue()
+          })
+          detail.querySelector('#remove-item').addEventListener('click', () => {
+            const index = items.indexOf(item)
+            if (index >= 0) items.splice(index, 1)
+            const next = pending()[0] || items[0]
+            if (next) selectedId = next.id
+            renderQueue()
+          })
+          detail.querySelector('#add-attachment')?.addEventListener('click', () => {
+            item.attachment = { name: 'simulator-result.png', size: '312 KB' }
+            renderQueue()
+          })
+          detail.querySelector('#remove-attachment')?.addEventListener('click', () => {
+            item.attachment = null
+            renderQueue()
+          })
+          if (active.length === 0 && !drawer.hidden) {
+            drawer.querySelector('.drawer-detail').innerHTML = '<p class="muted">Everything in this queue has been sent.</p>'
+          }
+          bar.setAttribute('aria-hidden', String(bar.hidden))
+        }
+
+        const openDrawer = () => {
+          document.querySelector('#queue-bar').hidden = true
+          document.querySelector('#queue-drawer').hidden = false
+          renderQueue()
+        }
+        const closeDrawer = () => {
+          document.querySelector('#queue-drawer').hidden = true
+          document.querySelector('#queue-bar').hidden = false
+          renderQueue()
+        }
+        const sendAll = () => {
+          for (const item of pending()) item.sent = true
+          renderQueue()
+        }
+        document.querySelector('#open-drawer').addEventListener('click', openDrawer)
+        document.querySelector('#close-drawer').addEventListener('click', closeDrawer)
+        document.querySelector('#bar-send-all').addEventListener('click', sendAll)
+        document.querySelector('#drawer-send-all').addEventListener('click', sendAll)
+        renderQueue()
+      })()
+    </script>
+  </body>
+</html>
