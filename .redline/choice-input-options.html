@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en" data-redline-theme="commando">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Redline choice input directions</title>
+    <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
+    <style>
+      :root {
+        --redline-accent: #9f8cff;
+        --redline-accent2: #63d8e8;
+        --choice-surface: color-mix(in oklab, currentColor 5%, transparent);
+        --choice-border: color-mix(in oklab, currentColor 17%, transparent);
+        --choice-muted: color-mix(in oklab, currentColor 62%, transparent);
+      }
+
+      * {
+        box-sizing: border-box;
+        min-width: 0;
+      }
+
+      body {
+        overflow-x: hidden;
+      }
+
+      .intro-grid,
+      .demo-grid,
+      .criteria-grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .intro-grid {
+        grid-template-columns: minmax(0, 1.3fr) minmax(16rem, .7fr);
+        align-items: start;
+      }
+
+      .demo-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .criteria-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 1rem;
+      }
+
+      .kicker,
+      .mode-label,
+      .metric-label {
+        font-size: .72rem;
+        font-weight: 750;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+      }
+
+      .kicker,
+      .mode-label {
+        color: color-mix(in oklab, var(--redline-accent2) 78%, currentColor);
+      }
+
+      .section-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: .5rem 1rem;
+      }
+
+      .section-heading h2 {
+        margin-bottom: .25rem;
+      }
+
+      .option-meta {
+        color: var(--choice-muted);
+        font-size: .84rem;
+      }
+
+      .sample {
+        position: relative;
+        overflow: hidden;
+        padding: 1rem;
+        border: 1px solid var(--choice-border);
+        border-radius: 14px;
+        background: var(--choice-surface);
+      }
+
+      .sample::after {
+        content: "";
+        position: absolute;
+        inset: auto -18% -55% 35%;
+        height: 11rem;
+        pointer-events: none;
+        background: radial-gradient(circle, color-mix(in oklab, var(--redline-accent) 11%, transparent), transparent 68%);
+      }
+
+      .sample-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: .8rem;
+      }
+
+      .sample-title {
+        font-size: .92rem;
+        font-weight: 680;
+      }
+
+      .mode-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: .35rem;
+        padding: .24rem .55rem;
+        border: 1px solid var(--choice-border);
+        border-radius: 999px;
+        color: var(--choice-muted);
+        font-size: .68rem;
+        font-weight: 720;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .mode-pill svg {
+        width: .75rem;
+        height: .75rem;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+      }
+
+      fieldset {
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+
+      legend {
+        width: 100%;
+        margin: 0 0 .75rem;
+        color: inherit;
+        font-weight: 650;
+      }
+
+      input[type="radio"],
+      input[type="checkbox"] {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      label {
+        cursor: pointer;
+        user-select: none;
+      }
+
+      label:focus-within {
+        outline: 2px solid var(--redline-accent2);
+        outline-offset: 3px;
+      }
+
+      .a-options {
+        display: flex;
+        flex-wrap: wrap;
+        overflow: hidden;
+        border: 1px solid var(--choice-border);
+        border-radius: 10px;
+      }
+
+      .a-options label {
+        display: flex;
+        flex: 1 1 9rem;
+        align-items: center;
+        gap: .55rem;
+        min-height: 2.75rem;
+        padding: .55rem .75rem;
+        border-right: 1px solid var(--choice-border);
+        transition: background .16s ease, color .16s ease;
+      }
+
+      .a-options label:last-child {
+        border-right: 0;
+      }
+
+      .glyph {
+        display: inline-grid;
+        flex: 0 0 1.05rem;
+        width: 1.05rem;
+        height: 1.05rem;
+        place-items: center;
+        border: 1.5px solid color-mix(in oklab, currentColor 55%, transparent);
+        transition: border-color .16s ease, background .16s ease;
+      }
+
+      .a-single .glyph {
+        border-radius: 50%;
+      }
+
+      .a-multiple .glyph {
+        border-radius: 4px;
+      }
+
+      .a-options .glyph::after {
+        content: "";
+        width: .46rem;
+        height: .46rem;
+        opacity: 0;
+        background: #fff;
+        transition: opacity .16s ease, transform .16s ease;
+        transform: scale(.65);
+      }
+
+      .a-single .glyph::after {
+        border-radius: 50%;
+      }
+
+      .a-multiple .glyph::after {
+        width: .52rem;
+        height: .28rem;
+        border: solid #fff;
+        border-width: 0 0 2px 2px;
+        background: none;
+        transform: translateY(-.07rem) rotate(-45deg) scale(.7);
+      }
+
+      .a-options label:has(input:checked) {
+        color: #fff;
+        background: linear-gradient(135deg, var(--redline-accent), var(--redline-accent2));
+      }
+
+      .a-options label:has(input:checked) .glyph {
+        border-color: rgb(255 255 255 / .92);
+        background: rgb(255 255 255 / .16);
+      }
+
+      .a-options label:has(input:checked) .glyph::after {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      .a-options.a-multiple label:has(input:checked) .glyph::after {
+        transform: translateY(-.07rem) rotate(-45deg) scale(1);
+      }
+
+      .b-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .55rem;
+      }
+
+      .b-options label {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: .5rem;
+        min-height: 2.75rem;
+        padding: .58rem .8rem;
+        border: 1px solid var(--choice-border);
+        border-radius: 10px;
+        background: color-mix(in oklab, currentColor 3%, transparent);
+        transition: border-color .16s ease, background .16s ease, box-shadow .16s ease;
+      }
+
+      .b-single label::before {
+        content: "";
+        width: .7rem;
+        height: .7rem;
+        border: 1.5px solid color-mix(in oklab, currentColor 52%, transparent);
+        border-radius: 50%;
+        box-shadow: inset 0 0 0 3px transparent;
+      }
+
+      .b-multiple label::before {
+        content: "+";
+        display: grid;
+        width: 1rem;
+        height: 1rem;
+        place-items: center;
+        border: 1.5px solid color-mix(in oklab, currentColor 52%, transparent);
+        border-radius: 4px;
+        color: var(--choice-muted);
+        font-size: .82rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .b-single label:has(input:checked) {
+        border-color: var(--redline-accent);
+        background: color-mix(in oklab, var(--redline-accent) 12%, transparent);
+        box-shadow: inset 0 -2px 0 var(--redline-accent), 0 0 18px color-mix(in oklab, var(--redline-accent) 13%, transparent);
+      }
+
+      .b-single label:has(input:checked)::before {
+        border-color: var(--redline-accent2);
+        background: var(--redline-accent2);
+        box-shadow: inset 0 0 0 3px color-mix(in oklab, var(--redline-accent2) 18%, #10101a);
+      }
+
+      .b-multiple label:has(input:checked) {
+        border-color: color-mix(in oklab, var(--redline-accent2) 68%, transparent);
+        background: color-mix(in oklab, var(--redline-accent2) 13%, transparent);
+      }
+
+      .b-multiple label:has(input:checked)::before {
+        content: "✓";
+        border-color: var(--redline-accent2);
+        color: #fff;
+        background: linear-gradient(135deg, var(--redline-accent), var(--redline-accent2));
+      }
+
+      .c-options {
+        display: grid;
+        gap: .55rem;
+      }
+
+      .c-options label {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: .7rem;
+        min-height: 3.35rem;
+        padding: .65rem .75rem;
+        border: 1px solid var(--choice-border);
+        border-radius: 11px;
+        background: color-mix(in oklab, currentColor 3%, transparent);
+        transition: border-color .16s ease, background .16s ease, transform .16s ease;
+      }
+
+      .c-single label::before {
+        content: "";
+        width: .85rem;
+        height: .85rem;
+        border: 1.5px solid color-mix(in oklab, currentColor 55%, transparent);
+        border-radius: 50%;
+      }
+
+      .c-multiple {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .c-multiple label::before {
+        content: "";
+        display: grid;
+        width: 1.1rem;
+        height: 1.1rem;
+        place-items: center;
+        border: 1.5px solid color-mix(in oklab, currentColor 55%, transparent);
+        border-radius: 5px;
+      }
+
+      .c-options small {
+        color: var(--choice-muted);
+        font-size: .72rem;
+      }
+
+      .c-single label:has(input:checked) {
+        border-color: var(--redline-accent);
+        background: linear-gradient(90deg, color-mix(in oklab, var(--redline-accent) 16%, transparent), transparent 70%);
+        transform: translateX(3px);
+      }
+
+      .c-single label:has(input:checked)::before {
+        border: 4px solid var(--redline-accent2);
+        background: #fff;
+      }
+
+      .c-single label:has(input:checked)::after {
+        content: "Selected";
+        color: color-mix(in oklab, var(--redline-accent2) 76%, currentColor);
+        font-size: .7rem;
+        font-weight: 720;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      .c-multiple label:has(input:checked) {
+        border-color: var(--redline-accent2);
+        background: color-mix(in oklab, var(--redline-accent2) 12%, transparent);
+      }
+
+      .c-multiple label:has(input:checked)::before {
+        content: "✓";
+        border-color: transparent;
+        color: #fff;
+        background: linear-gradient(135deg, var(--redline-accent), var(--redline-accent2));
+      }
+
+      .metric {
+        padding: .8rem;
+        border: 1px solid var(--choice-border);
+        border-radius: 11px;
+        background: color-mix(in oklab, currentColor 3%, transparent);
+      }
+
+      .metric-label {
+        color: var(--choice-muted);
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: .28rem;
+        font-size: .95rem;
+      }
+
+      .verdict {
+        display: flex;
+        align-items: flex-start;
+        gap: .8rem;
+        margin-top: 1rem;
+        padding: .9rem 1rem;
+        border: 1px solid color-mix(in oklab, var(--redline-accent2) 32%, transparent);
+        border-radius: 12px;
+        background: linear-gradient(110deg, color-mix(in oklab, var(--redline-accent) 12%, transparent), color-mix(in oklab, var(--redline-accent2) 7%, transparent));
+      }
+
+      .verdict svg {
+        flex: 0 0 1.15rem;
+        width: 1.15rem;
+        height: 1.15rem;
+        margin-top: .15rem;
+        stroke: var(--redline-accent2);
+        fill: none;
+        stroke-width: 2;
+      }
+
+      .verdict p {
+        margin: 0;
+      }
+
+      @media (max-width: 820px) {
+        .intro-grid,
+        .demo-grid,
+        .criteria-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .c-multiple {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: .01ms !important;
+          animation-duration: .01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="redline-layout">
+      <redline-nav
+        eyebrow="Redline SDK"
+        heading="Make choice modes unmistakable"
+        summary="Three live treatments for separating choose-one from choose-many without losing the Aura look."
+        status="Ready for review"
+      ></redline-nav>
+
+      <main class="redline-shell redline-stack">
+        <section id="problem" data-redline-section data-redline-label="Problem" class="redline-panel">
+          <div class="intro-grid">
+            <div>
+              <p class="kicker">Current issue</p>
+              <h2>Radio and checkbox behavior share one visual grammar</h2>
+              <p>The SDK currently hides both native controls and renders every option as an identical segmented pill. Users only discover whether a question is single-choice or multiple-choice by trying it.</p>
+            </div>
+            <div class="redline-callout" data-tone="warn">
+              <strong>Design target</strong>
+              <p>Communicate selection cardinality before interaction, reinforce it after selection, and keep every target at least 44px high.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="option-a" data-redline-section data-redline-label="A: Shape coded" class="redline-panel">
+          <div class="section-heading">
+            <div>
+              <span class="redline-badge">Option A</span>
+              <h2>Shape-coded segments</h2>
+            </div>
+            <span class="option-meta">Smallest SDK change</span>
+          </div>
+          <p>Keep the existing compact segmented control, but expose the familiar circle versus square silhouette inside every option.</p>
+
+          <div class="demo-grid">
+            <div class="sample" id="option-a-single">
+              <div class="sample-header">
+                <span class="sample-title">Deployment strategy</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"></circle></svg>
+                  Choose one
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which path should we take?</legend>
+                <div class="a-options a-single">
+                  <label><input type="radio" name="a-one" value="Patch"><span class="glyph"></span><span>Patch now</span></label>
+                  <label><input type="radio" name="a-one" value="Canary" checked><span class="glyph"></span><span>Canary first</span></label>
+                  <label><input type="radio" name="a-one" value="Hold"><span class="glyph"></span><span>Hold</span></label>
+                </div>
+              </fieldset>
+            </div>
+
+            <div class="sample" id="option-a-multiple">
+              <div class="sample-header">
+                <span class="sample-title">Verification scope</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="2"></rect><path d="m5.5 8 1.7 1.7 3.5-3.7"></path></svg>
+                  Choose any
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which checks should run?</legend>
+                <div class="a-options a-multiple">
+                  <label><input type="checkbox" checked><span class="glyph"></span><span>Typecheck</span></label>
+                  <label><input type="checkbox" checked><span class="glyph"></span><span>Unit tests</span></label>
+                  <label><input type="checkbox"><span class="glyph"></span><span>E2E</span></label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="criteria-grid">
+            <div class="metric"><span class="metric-label">Distinction</span><strong>Good</strong></div>
+            <div class="metric"><span class="metric-label">Density</span><strong>Best</strong></div>
+            <div class="metric"><span class="metric-label">Implementation</span><strong>CSS + glyph span</strong></div>
+          </div>
+        </section>
+
+        <section id="option-b" data-redline-section data-redline-label="B: Mode coded" class="redline-panel" data-tone="accent">
+          <div class="section-heading">
+            <div>
+              <span class="redline-badge" data-tone="success">Recommended</span>
+              <h2>Mode-coded option chips</h2>
+            </div>
+            <span class="option-meta">Strong signal, modest footprint</span>
+          </div>
+          <p>Use two layers of distinction: explicit "Choose one" or "Choose any" framing, plus different selected-state behavior. Radio chips get a single active rail; check chips stay detached and accumulate checks.</p>
+
+          <div class="demo-grid">
+            <div class="sample" id="option-b-single">
+              <div class="sample-header">
+                <span class="sample-title">Deployment strategy</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"></circle></svg>
+                  Choose one
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which path should we take?</legend>
+                <div class="b-options b-single">
+                  <label><input type="radio" name="b-one" value="Patch"><span>Patch now</span></label>
+                  <label><input type="radio" name="b-one" value="Canary" checked><span>Canary first</span></label>
+                  <label><input type="radio" name="b-one" value="Hold"><span>Hold</span></label>
+                </div>
+              </fieldset>
+            </div>
+
+            <div class="sample" id="option-b-multiple">
+              <div class="sample-header">
+                <span class="sample-title">Verification scope</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="2"></rect><path d="m5.5 8 1.7 1.7 3.5-3.7"></path></svg>
+                  Choose any
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which checks should run?</legend>
+                <div class="b-options b-multiple">
+                  <label><input type="checkbox" checked><span>Typecheck</span></label>
+                  <label><input type="checkbox" checked><span>Unit tests</span></label>
+                  <label><input type="checkbox"><span>E2E</span></label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="criteria-grid">
+            <div class="metric"><span class="metric-label">Distinction</span><strong>Very good</strong></div>
+            <div class="metric"><span class="metric-label">Density</span><strong>Good</strong></div>
+            <div class="metric"><span class="metric-label">Implementation</span><strong>Markup + CSS</strong></div>
+          </div>
+        </section>
+
+        <section id="option-c" data-redline-section data-redline-label="C: Layout coded" class="redline-panel">
+          <div class="section-heading">
+            <div>
+              <span class="redline-badge">Option C</span>
+              <h2>Different control families</h2>
+            </div>
+            <span class="option-meta">Maximum distinction</span>
+          </div>
+          <p>Give each mode its own layout grammar. Single-choice becomes a focused vertical radio list; multiple-choice becomes a compact checklist grid that visibly supports accumulation.</p>
+
+          <div class="demo-grid">
+            <div class="sample" id="option-c-single">
+              <div class="sample-header">
+                <span class="sample-title">Deployment strategy</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5"></circle></svg>
+                  Choose one
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which path should we take?</legend>
+                <div class="c-options c-single">
+                  <label><input type="radio" name="c-one" value="Patch"><span>Patch now<br><small>Fastest path to production</small></span></label>
+                  <label><input type="radio" name="c-one" value="Canary" checked><span>Canary first<br><small>Validate with limited exposure</small></span></label>
+                  <label><input type="radio" name="c-one" value="Hold"><span>Hold<br><small>Wait for the next release train</small></span></label>
+                </div>
+              </fieldset>
+            </div>
+
+            <div class="sample" id="option-c-multiple">
+              <div class="sample-header">
+                <span class="sample-title">Verification scope</span>
+                <span class="mode-pill">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="2"></rect><path d="m5.5 8 1.7 1.7 3.5-3.7"></path></svg>
+                  Choose any
+                </span>
+              </div>
+              <fieldset>
+                <legend>Which checks should run?</legend>
+                <div class="c-options c-multiple">
+                  <label><input type="checkbox" checked><span>Typecheck<br><small>Static contracts</small></span></label>
+                  <label><input type="checkbox" checked><span>Unit tests<br><small>Logic coverage</small></span></label>
+                  <label><input type="checkbox"><span>E2E<br><small>Full user path</small></span></label>
+                  <label><input type="checkbox"><span>Visual diff<br><small>Rendered output</small></span></label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="criteria-grid">
+            <div class="metric"><span class="metric-label">Distinction</span><strong>Best</strong></div>
+            <div class="metric"><span class="metric-label">Density</span><strong>Lowest</strong></div>
+            <div class="metric"><span class="metric-label">Implementation</span><strong>Responsive layout work</strong></div>
+          </div>
+        </section>
+
+        <section id="decision" data-redline-section data-redline-label="Decision" class="redline-panel">
+          <h2>Recommendation</h2>
+          <div class="verdict">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+            <p><strong>Option B</strong> makes mode legible at a glance without turning every short question into a tall form. It also preserves wrapping behavior for long option labels.</p>
+          </div>
+
+          <redline-choice
+            key="choice-input-direction"
+            prompt="Which direction should we implement for Redline choice inputs?"
+            options="A - Shape-coded segments,B - Mode-coded chips,C - Different control families"
+          ></redline-choice>
+          <p class="option-meta">Click a direction, press "Queue answer," then press Send in the tile footer. Use review mode annotations for specific adjustments.</p>
+        </section>
+      </main>
+    </div>
+
+    <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+  </body>
+</html>
