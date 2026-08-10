@@ -450,6 +450,36 @@ final class DesktopApplicationTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testWindowRoutesOptionLeftAndRightAsWordNavigation() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "window-option-arrows"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        let optionLeft = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 123))
+        let optionRight = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 124))
+
+        window.sendEvent(optionLeft)
+        window.sendEvent(optionRight)
+
+        XCTAssertEqual(inputs, [Data([0x1b, 0x62]), Data([0x1b, 0x66])])
+        _ = window.makeFirstResponder(nil)
+        surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testWindowRoutesOnlyUnshiftedCommandZoomShortcuts() throws {
         var shortcuts: [String] = []
         let window = DesktopWindow(

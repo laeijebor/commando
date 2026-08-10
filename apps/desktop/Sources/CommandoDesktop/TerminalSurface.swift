@@ -401,9 +401,9 @@ final class HostedTerminalView: TerminalView {
         case 125:
             return Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42])
         case 124:
-            return Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x43])
+            return Data([0x1b, 0x66])
         case 123:
-            return Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x44])
+            return Data([0x1b, 0x62])
         default:
             return nil
         }

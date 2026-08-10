@@ -633,7 +633,7 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
-    func testTerminalSendsXtermOptionArrowSequences() throws {
+    func testTerminalSendsOptionArrowSequences() throws {
         var inputs: [Data] = []
         let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         view.modifiedArrowWasPressed = { inputs.append($0) }
@@ -651,8 +651,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(inputs, [
             Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x41]),
             Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42]),
-            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x43]),
-            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x44]),
+            Data([0x1b, 0x66]),
+            Data([0x1b, 0x62]),
         ])
         XCTAssertFalse(view.handleOptionArrow(plainUp))
     }
