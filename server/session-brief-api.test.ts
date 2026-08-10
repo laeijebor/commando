@@ -63,7 +63,7 @@ function post(body: unknown, options: { token?: string; paneId?: string } = {}) 
 }
 
 describe('SessionBriefApi', () => {
-  it('records a bounded agent-authored session update for the pane session', async () => {
+  it('records a bounded agent-authored update for the source pane', async () => {
     const response = await post({
       headline: 'Dry run verified',
       recapMarkdown: 'Validated the **footer capsule**.',
@@ -74,6 +74,7 @@ describe('SessionBriefApi', () => {
     expect(response.status).toBe(200)
     const body = await response.json() as { brief: SessionBrief }
     expect(body.brief).toMatchObject({
+      paneId: '%1',
       sessionId: '$1',
       sessionName: 'commando',
       headline: 'Dry run verified',
@@ -83,7 +84,7 @@ describe('SessionBriefApi', () => {
       updatedAt: 123,
     })
     expect(body.brief.updates[0]).toMatchObject({ paneId: '%1', kind: 'check', source: 'agent' })
-    expect(store.get('$1')).toEqual(body.brief)
+    expect(store.get('%1')).toEqual(body.brief)
     expect(changes).toEqual([body.brief])
   })
 

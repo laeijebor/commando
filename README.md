@@ -170,7 +170,7 @@ Remove that override with `defaults delete com.commando.island CommandoPort`.
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |
 | `COMMANDO_AGENT_HOOK_TOKEN_PATH` | Persisted bearer token shared by installed agent hooks and the daemon | `~/.commando/agent-hook-token` |
-| `COMMANDO_SESSION_BRIEFS_PATH` | Persisted whole-session orientation briefs | `~/.commando/session-briefs.json` |
+| `COMMANDO_SESSION_BRIEFS_PATH` | Persisted pane-local orientation briefs | `~/.commando/session-briefs.json` |
 | `BETTER_AUTH_SECRET` | Explicit cookie-signing secret of at least 32 characters | Generated and persisted locally |
 | `BETTER_AUTH_URL` | Canonical auth URL, primarily for an HTTPS proxy | `http://127.0.0.1:<port>` |
 | `COMMANDO_TOKEN` | Fixed bearer token for automation or recovery | Random per daemon start |

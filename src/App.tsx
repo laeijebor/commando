@@ -524,7 +524,9 @@ export function TerminalPaneCard({
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
-        {brief ? <SessionUpdateCapsule brief={brief} onSelectPane={onSelectBriefPane} /> : null}
+        {brief ? (
+          <SessionUpdateCapsule brief={brief} paneLabel={paneLabel} onSelectPane={onSelectBriefPane} />
+        ) : null}
         <span className="pane-footer-dimensions">{pane.width}x{pane.height}</span>
         <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
         <button
@@ -787,7 +789,7 @@ export function App() {
   const [authError, setAuthError] = useState('')
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
-  const [sessionBriefs, setSessionBriefs] = useState<Record<string, SessionBrief>>({})
+  const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -1021,14 +1023,14 @@ export function App() {
         })
         break
       case 'session_brief':
-        setSessionBriefs((current) => ({
+        setPaneBriefs((current) => ({
           ...current,
-          [message.brief.sessionId]: message.brief,
+          [message.brief.paneId]: message.brief,
         }))
         break
       case 'session_brief_snapshot':
-        setSessionBriefs(Object.fromEntries(
-          message.briefs.map((brief) => [brief.sessionId, brief]),
+        setPaneBriefs(Object.fromEntries(
+          message.briefs.map((brief) => [brief.paneId, brief]),
         ))
         break
       case 'workspace':
@@ -2330,7 +2332,7 @@ export function App() {
                             key={rendererIdentity}
                             pane={pane}
                             status={agentStatuses[pane.id]}
-                            brief={sessionBriefs[pane.sessionId]}
+                            brief={paneBriefs[pane.id]}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             maximized={maximizedPaneId === pane.id}

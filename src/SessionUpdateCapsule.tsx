@@ -45,15 +45,17 @@ function relativeAge(timestamp: number): string {
 
 export function SessionUpdateCapsule({
   brief,
+  paneLabel,
   onSelectPane,
 }: {
   brief: SessionBrief
+  paneLabel: string
   onSelectPane: (paneId: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => setExpanded(false), [brief.sessionId])
+  useEffect(() => setExpanded(false), [brief.paneId])
 
   useEffect(() => {
     if (!expanded) return
@@ -78,12 +80,12 @@ export function SessionUpdateCapsule({
         className="session-update-trigger"
         onClick={() => setExpanded((current) => !current)}
         aria-expanded={expanded}
-        aria-controls={`session-brief-${brief.sessionId.slice(1)}`}
-        aria-label={`${expanded ? 'Close' : 'Open'} session updates for ${brief.sessionName}`}
-        title={`${brief.sessionName}: ${brief.headline}`}
+        aria-controls={`pane-brief-${brief.paneId.slice(1)}`}
+        aria-label={`${expanded ? 'Close' : 'Open'} updates for ${paneLabel}`}
+        title={`${paneLabel}: ${brief.headline}`}
       >
         <span className={`session-update-state ${brief.state}`} aria-hidden="true" />
-        <strong>{brief.sessionName}</strong>
+        <strong>{paneLabel}</strong>
         <span className="session-update-headline">{brief.headline}</span>
         <span className="session-update-count">{brief.updates.length}</span>
         <ChevronUp aria-hidden="true" />
@@ -91,17 +93,17 @@ export function SessionUpdateCapsule({
       {expanded ? (
         <section
           className="session-update-sheet"
-          id={`session-brief-${brief.sessionId.slice(1)}`}
-          aria-label={`Session brief for ${brief.sessionName}`}
+          id={`pane-brief-${brief.paneId.slice(1)}`}
+          aria-label={`Updates for ${paneLabel}`}
           data-native-terminal-occluder=""
         >
           <header>
             <div>
-              <span>Session brief</span>
-              <strong>{brief.sessionName}</strong>
+              <span>Pane brief</span>
+              <strong>{paneLabel}</strong>
             </div>
             <span className="session-update-age">{relativeAge(brief.updatedAt)}</span>
-            <button type="button" onClick={() => setExpanded(false)} aria-label="Close session updates">
+            <button type="button" onClick={() => setExpanded(false)} aria-label="Close pane updates">
               <X aria-hidden="true" />
             </button>
           </header>
@@ -117,7 +119,7 @@ export function SessionUpdateCapsule({
             </div>
           ) : null}
           {brief.updates.length ? (
-            <div className="session-update-list" aria-label="Recent session milestones">
+            <div className="session-update-list" aria-label="Recent pane milestones">
               {brief.updates.map((update) => (
                 <button
                   type="button"
