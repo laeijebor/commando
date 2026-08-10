@@ -19,6 +19,8 @@ type Waiter = {
 type PaneState = {
   /** Unacked notes in id order — the redeliverable backlog. */
   notes: JournaledNote[]
+  /** Stable delivery keys accepted during this journal's lifetime. */
+  deliveryKeys: Set<string>
   ackedUpTo: number
   /** Highest id ever handed to a drain response; acks are clamped to it. */
   deliveredUpTo: number
@@ -49,15 +51,13 @@ export class WebPaneFeedbackStore {
   enqueue(webPaneId: string, notes: WebPaneFeedbackNote[]): void {
     if (notes.length === 0) return
     const state = this.state(webPaneId)
-    const deliveryKeys = new Set(
-      state.notes
-        .map((entry) => entry.note.deliveryKey)
-        .filter((key): key is string => typeof key === 'string' && key.length > 0),
-    )
+    const deliveryKeys = new Set(state.deliveryKeys)
+    const freshDeliveryKeys: string[] = []
     const fresh = notes.filter((note) => {
       if (typeof note.deliveryKey !== 'string' || note.deliveryKey.length === 0) return true
       if (deliveryKeys.has(note.deliveryKey)) return false
       deliveryKeys.add(note.deliveryKey)
+      freshDeliveryKeys.push(note.deliveryKey)
       return true
     })
     if (fresh.length === 0) return
@@ -65,9 +65,11 @@ export class WebPaneFeedbackStore {
     if (undelivered + fresh.length > MAX_QUEUED_FEEDBACK_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_QUEUED_FEEDBACK_NOTES} notes can be queued per tile`)
     }
-    const entries: JournaledNote[] = fresh.map((note) => ({ id: state.nextId++, note }))
+    const entries: JournaledNote[] = fresh.map((note, index) => ({ id: state.nextId + index, note }))
     this.journal.appendNotes(webPaneId, entries)
+    state.nextId += entries.length
     state.notes.push(...entries)
+    for (const key of freshDeliveryKeys) state.deliveryKeys.add(key)
     const waiting = this.waiters.get(webPaneId)
     if (waiting && waiting.length > 0) {
       waiting.shift()?.settle(this.deliver(webPaneId, state))
@@ -177,6 +179,7 @@ export class WebPaneFeedbackStore {
       const loaded = this.journal.load(webPaneId)
       state = {
         notes: loaded.notes,
+        deliveryKeys: new Set(loaded.deliveryKeys),
         ackedUpTo: loaded.ackedUpTo,
         // A fresh process has no record of past deliveries; treating the
         // whole backlog as undelivered only re-offers it, which is the point.
