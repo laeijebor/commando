@@ -64,9 +64,18 @@ npm run hooks:install
 
 The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, and installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
 
+For a named Claude profile, set Claude's standard `CLAUDE_CONFIG_DIR` while installing. Repeat the command for each profile that should report to Commando; the bridge, update CLI, hook token, and OpenCode plugin remain shared:
+
+```bash
+CLAUDE_CONFIG_DIR="$HOME/.claudep" npm run hooks:install
+CLAUDE_CONFIG_DIR="$HOME/.claudey" npm run hooks:install
+```
+
 The installer generates a dedicated hook bearer token at `~/.commando/agent-hook-token`. The token is separate from browser and automation authentication, remains on disk with mode `0600`, and is read at hook runtime rather than embedded in generated files. Set `COMMANDO_AGENT_HOOK_TOKEN_PATH` for both installation and daemon startup to use another path. Hooks post to the loopback `COMMANDO_PORT`, defaulting to `4310`, and silently continue when Commando is unavailable.
 
 The bridges also provide the HUD with bounded task intent, normalized tool activity, todo progress, changed-file counts, check outcomes, attention prompts, and final-response metadata. They do not forward raw tool arguments or output, full shell commands, file contents, patches, reasoning, or complete message arrays. Final lines using the `🟢`, `🟡`, or `🔴` quick-recap convention become the completed card headline; otherwise Commando produces a deterministic local recap from the final response and structured progress. The latest completed recap remains visible until that pane starts another agent turn or closes.
+
+The same authenticated lifecycle updates maintain one bounded, persisted session brief for each tmux session. Every pane footer shows its session's condensed headline; opening it reveals pane-tagged milestones, short Markdown recap prose, and one current next action without resizing the terminal. Agents can publish deliberate notes through `~/.commando/hooks/commando-session-update.mjs`. Run `npm run skills:install` to install the `session-updates` skill alongside the other Commando skills so Claude and OpenCode know when and how to write those handoffs.
 
 Interactive bridges additionally forward bounded permission labels, question text, and answer labels while a request is pending. Values pass through the same credential redaction and size limits as HUD metadata. Claude Code receives answers through its synchronous `PermissionRequest` hook output; OpenCode receives them through its local permission and question SDK methods. If Commando Island is not connected, hooks return immediately and the normal terminal prompt remains in control.
 
@@ -161,6 +170,7 @@ Remove that override with `defaults delete com.commando.island CommandoPort`.
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |
 | `COMMANDO_AGENT_HOOK_TOKEN_PATH` | Persisted bearer token shared by installed agent hooks and the daemon | `~/.commando/agent-hook-token` |
+| `COMMANDO_SESSION_BRIEFS_PATH` | Persisted whole-session orientation briefs | `~/.commando/session-briefs.json` |
 | `BETTER_AUTH_SECRET` | Explicit cookie-signing secret of at least 32 characters | Generated and persisted locally |
 | `BETTER_AUTH_URL` | Canonical auth URL, primarily for an HTTPS proxy | `http://127.0.0.1:<port>` |
 | `COMMANDO_TOKEN` | Fixed bearer token for automation or recovery | Random per daemon start |

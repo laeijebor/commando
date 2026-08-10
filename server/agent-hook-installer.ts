@@ -40,6 +40,7 @@ export const OPENCODE_HOOK_EVENTS = [
 const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
 const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
+const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
 
 type JsonObject = Record<string, unknown>
 
@@ -48,6 +49,7 @@ export type AgentHookInstallerOptions = {
   claudeSettingsPath?: string
   home?: string
   openCodePluginPath?: string
+  sessionBriefCliPath?: string
   tokenPath?: string
 }
 
@@ -55,6 +57,7 @@ export type AgentHookInstallResult = {
   claudeBridgePath: string
   claudeSettingsPath: string
   openCodePluginPath: string
+  sessionBriefCliPath: string
   tokenPath: string
 }
 
@@ -421,6 +424,95 @@ async function main() {
 }
 
 await main()
+`
+}
+
+function generatedSessionBriefCli(tokenPath: string): string {
+  return `#!/usr/bin/env node
+import { readFile } from 'node:fs/promises'
+
+const tokenPath = ${JSON.stringify(tokenPath)}
+const args = process.argv.slice(2)
+
+function usage() {
+  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--stdin]')
+}
+
+async function stdinJson() {
+  let content = ''
+  for await (const chunk of process.stdin) {
+    content += chunk
+    if (content.length > 16 * 1024) throw new Error('stdin payload is too large')
+  }
+  const parsed = JSON.parse(content)
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('stdin payload must be a JSON object')
+  }
+  return parsed
+}
+
+function valueAfter(index, flag) {
+  const value = args[index + 1]
+  if (!value || value.startsWith('--')) throw new Error(flag + ' requires a value')
+  return value
+}
+
+async function bodyFromArgs() {
+  if (args.includes('--stdin')) return stdinJson()
+  const body = {}
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index]
+    if (flag === '--headline') body.headline = valueAfter(index++, flag)
+    else if (flag === '--recap-markdown') body.recapMarkdown = valueAfter(index++, flag)
+    else if (flag === '--next') body.next = valueAfter(index++, flag)
+    else if (flag === '--clear-next') body.next = null
+    else if (flag === '--state') body.state = valueAfter(index++, flag)
+    else if (flag === '--update') {
+      const kind = valueAfter(index, flag)
+      const text = args[index + 2]
+      if (!text || text.startsWith('--')) throw new Error('--update requires a kind and text')
+      body.update = { kind, text }
+      index += 2
+    } else if (flag === '--detail') {
+      if (!body.update) throw new Error('--detail requires --update')
+      body.update.detail = valueAfter(index++, flag)
+    } else {
+      throw new Error('Unknown argument: ' + flag)
+    }
+  }
+  return body
+}
+
+try {
+  const paneId = process.env.TMUX_PANE
+  if (!/^%\\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
+  const port = Number.parseInt(process.env.COMMANDO_PORT ?? '4310', 10)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('COMMANDO_PORT is invalid')
+  const body = await bodyFromArgs()
+  if (Object.keys(body).length === 0) {
+    usage()
+    process.exitCode = 2
+  } else {
+    const token = (await readFile(tokenPath, 'utf8')).trim()
+    const response = await fetch('http://127.0.0.1:' + port + '/api/session-brief', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'X-Commando-Pane': paneId,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(3_000),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.error ?? ('Commando returned ' + response.status))
+    console.log(JSON.stringify(result.brief))
+  }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
+  usage()
+  process.exitCode = 1
+}
 `
 }
 
@@ -992,6 +1084,12 @@ export class AgentHookInstaller {
     const home = options.home ?? process.env.HOME
     if (!home) throw new Error('HOME is required to install agent hooks')
     const resolvedHome = resolve(home)
+    const configuredClaudeDirectory = options.home === undefined
+      ? process.env.CLAUDE_CONFIG_DIR
+      : undefined
+    if (configuredClaudeDirectory !== undefined && configuredClaudeDirectory.trim().length === 0) {
+      throw new Error('CLAUDE_CONFIG_DIR must not be empty')
+    }
     const configuredTokenPath = options.tokenPath
       ?? (options.home === undefined ? process.env[AGENT_HOOK_TOKEN_PATH_ENV] : undefined)
     this.paths = {
@@ -1004,11 +1102,18 @@ export class AgentHookInstaller {
           ?? resolve(resolvedHome, '.commando', 'hooks', CLAUDE_BRIDGE_FILENAME),
       ),
       claudeSettingsPath: resolve(
-        options.claudeSettingsPath ?? resolve(resolvedHome, '.claude', 'settings.json'),
+        options.claudeSettingsPath
+          ?? (configuredClaudeDirectory
+            ? resolve(configuredClaudeDirectory, 'settings.json')
+            : resolve(resolvedHome, '.claude', 'settings.json')),
       ),
       openCodePluginPath: resolve(
         options.openCodePluginPath
           ?? resolve(resolvedHome, '.config', 'opencode', 'plugins', OPENCODE_PLUGIN_FILENAME),
+      ),
+      sessionBriefCliPath: resolve(
+        options.sessionBriefCliPath
+          ?? resolve(resolvedHome, '.commando', 'hooks', SESSION_BRIEF_CLI_FILENAME),
       ),
     }
   }
@@ -1026,6 +1131,11 @@ export class AgentHookInstaller {
       this.paths.openCodePluginPath,
       generatedOpenCodePlugin(this.paths.tokenPath),
       0o600,
+    )
+    await writeAtomically(
+      this.paths.sessionBriefCliPath,
+      generatedSessionBriefCli(this.paths.tokenPath),
+      0o700,
     )
 
     const { mode, settings } = await readClaudeSettings(this.paths.claudeSettingsPath)

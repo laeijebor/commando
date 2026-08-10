@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "hooks:install": "tsx scripts/install-agent-hooks.ts",
+    "skills:install": "bash scripts/install-show-in-commando-skill",
     "desktop:dev": "bash scripts/run-desktop-dev.sh",
     "desktop:shell": "bash scripts/run-desktop-dev-app.sh",
     "desktop:test": "swift test --package-path apps/desktop",
