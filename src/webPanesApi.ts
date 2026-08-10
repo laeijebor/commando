@@ -2,6 +2,7 @@ import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePen
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
+export type PendingSendTarget = { id: number; revision: number }
 
 export interface WebPanesApiClient {
   open(
@@ -35,7 +36,10 @@ export interface WebPanesApiClient {
     attachmentId: string,
   ): Promise<WebPanePendingSnapshot>
   removePendingNote(webPaneId: string, noteId: number): Promise<WebPanePendingSnapshot>
-  sendPendingNotes(webPaneId: string, ids?: readonly number[]): Promise<WebPanePendingSnapshot>
+  sendPendingNotes(
+    webPaneId: string,
+    targets?: readonly number[] | readonly PendingSendTarget[],
+  ): Promise<WebPanePendingSnapshot>
   pendingAttachmentUrl(webPaneId: string, attachmentId: string): string
   dismissPendingDropped(webPaneId: string): Promise<WebPanePendingSnapshot>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
@@ -173,10 +177,16 @@ export function createWebPanesApi(
         method: 'DELETE',
       }))
     },
-    sendPendingNotes: async (webPaneId, ids) => {
+    sendPendingNotes: async (webPaneId, targets) => {
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/send`, {
         method: 'POST',
-        body: JSON.stringify(ids === undefined ? {} : { ids }),
+        body: JSON.stringify(
+          targets === undefined
+            ? {}
+            : targets.every((target) => typeof target === 'number')
+              ? { ids: targets }
+              : { items: targets },
+        ),
       }))
     },
     pendingAttachmentUrl: (webPaneId, attachmentId) => {

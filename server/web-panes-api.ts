@@ -6,7 +6,7 @@ import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shar
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
-import type { PendingNoteInput, WebPanePendingStore } from './web-pane-pending.js'
+import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from './web-pane-pending.js'
 import { WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
@@ -129,6 +129,43 @@ function pendingRevision(request: IncomingMessage): number {
   const revision = Number(raw)
   if (!Number.isSafeInteger(revision)) throw new HttpError(400, 'X-Pending-Revision must be a positive integer')
   return revision
+}
+
+function parsePendingSendTargets(
+  body: Record<string, unknown>,
+): readonly number[] | readonly PendingSendTarget[] | undefined {
+  if (body.items !== undefined) {
+    if (body.ids !== undefined) throw new HttpError(400, 'Provide either items or ids, not both')
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      throw new HttpError(400, 'items must be a non-empty array')
+    }
+    const ids = new Set<number>()
+    return body.items.map((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new HttpError(400, 'Each item must contain a note id and revision')
+      }
+      const { id, revision } = value as Record<string, unknown>
+      if (
+        !Number.isSafeInteger(id) || (id as number) <= 0 ||
+        !Number.isSafeInteger(revision) || (revision as number) <= 0
+      ) {
+        throw new HttpError(400, 'Each item id and revision must be a positive safe integer')
+      }
+      if (ids.has(id as number)) throw new HttpError(400, 'items must contain unique note ids')
+      ids.add(id as number)
+      return { id: id as number, revision: revision as number }
+    })
+  }
+  if (body.ids !== undefined) {
+    if (
+      !Array.isArray(body.ids) ||
+      body.ids.some((id) => typeof id !== 'number' || !Number.isInteger(id) || id <= 0)
+    ) {
+      throw new HttpError(400, 'ids must be an array of note ids')
+    }
+    return body.ids as number[]
+  }
+  return undefined
 }
 
 const MAX_FEEDBACK_COMMENT = 4_096
@@ -399,23 +436,13 @@ export class WebPanesApi {
 
         if (route.send === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
-          const body = await readJson(request)
-          let ids: number[] | undefined
-          if (body.ids !== undefined) {
-            if (
-              !Array.isArray(body.ids) ||
-              body.ids.some((id) => typeof id !== 'number' || !Number.isInteger(id) || id <= 0)
-            ) {
-              throw new HttpError(400, 'ids must be an array of note ids')
-            }
-            ids = body.ids as number[]
-          }
+          const targets = parsePendingSendTargets(await readJson(request))
           const snapshot = pending.send(
             route.id,
             pane.url,
             Date.now(),
             (feedbackNotes) => this.dependencies.feedback.enqueue(route.id, feedbackNotes),
-            ids,
+            targets,
           )
           this.dependencies.onChange()
           this.dependencies.onPendingChanged?.(route.id, snapshot)

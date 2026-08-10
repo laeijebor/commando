@@ -419,6 +419,40 @@ describe('WebPanePendingStore', () => {
     expect(remaining.map((note) => note.comment)).toEqual(['b'])
   })
 
+  it('revision-guarded send rejects a stale page re-answer without enqueueing anything', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1'))
+    store.addNote('w-11111111', PAGE_URL, manualNote('keep'))
+    store.addResponse('w-11111111', PAGE_URL, response('no', 'q1'))
+    const enqueue = vi.fn()
+
+    expect(() => store.send(
+      'w-11111111',
+      PAGE_URL,
+      1,
+      enqueue,
+      [{ id: 1, revision: 1 }, { id: 2, revision: 1 }],
+    )).toThrow(WebPaneError)
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(store.list('w-11111111').map((note) => note.id)).toEqual([1, 2])
+  })
+
+  it('revision-guarded send rejects a missing target atomically', () => {
+    const store = makeStore()
+    store.addNote('w-11111111', PAGE_URL, manualNote('keep'))
+    const enqueue = vi.fn()
+
+    expect(() => store.send(
+      'w-11111111',
+      PAGE_URL,
+      1,
+      enqueue,
+      [{ id: 1, revision: 1 }, { id: 999, revision: 1 }],
+    )).toThrow(WebPaneError)
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(store.list('w-11111111').map((note) => note.comment)).toEqual(['keep'])
+  })
+
   it('a throwing enqueue leaves the pending queue untouched', () => {
     const store = makeStore()
     store.addNote('w-11111111', PAGE_URL, manualNote('a'))

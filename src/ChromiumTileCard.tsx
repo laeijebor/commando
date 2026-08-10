@@ -9,7 +9,7 @@ import {
 } from './chromiumTileInput'
 import { loadPendingMirror, savePendingMirror } from './pendingMirror'
 import { createInspectThrottle } from './tileReview'
-import type { PendingNoteDraft } from './webPanesApi'
+import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
 
 const VIEWPORT_THROTTLE_MS = 200
 const MOUSEMOVE_THROTTLE_MS = 16
@@ -59,7 +59,7 @@ export type PendingQueueApi = {
   ) => Promise<WebPanePendingSnapshot>
   attachmentUrl: (attachmentId: string) => string
   remove: (noteId: number) => Promise<WebPanePendingSnapshot>
-  send: (ids?: readonly number[]) => Promise<WebPanePendingSnapshot>
+  send: (targets?: readonly number[] | readonly PendingSendTarget[]) => Promise<WebPanePendingSnapshot>
   dismissDropped: () => Promise<WebPanePendingSnapshot>
 }
 
@@ -228,7 +228,9 @@ export function ChromiumTileCard({
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [drafts, setDrafts] = useState<Record<number, PendingDraft>>({})
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
+  const busyIdsRef = useRef<ReadonlySet<number>>(new Set())
   const [sendingAll, setSendingAll] = useState(false)
+  const sendingAllRef = useRef(false)
   const [queueError, setQueueError] = useState('')
   const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
@@ -659,12 +661,11 @@ export function ChromiumTileCard({
   }
 
   const markBusy = (noteId: number, busy: boolean) => {
-    setBusyIds((current) => {
-      const next = new Set(current)
-      if (busy) next.add(noteId)
-      else next.delete(noteId)
-      return next
-    })
+    const next = new Set(busyIdsRef.current)
+    if (busy) next.add(noteId)
+    else next.delete(noteId)
+    busyIdsRef.current = next
+    setBusyIds(next)
   }
 
   const saveDraft = async (noteId: number): Promise<boolean> => {
@@ -697,6 +698,7 @@ export function ChromiumTileCard({
   }
 
   const saveOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
     markBusy(noteId, true)
     try {
       await saveDraft(noteId)
@@ -706,10 +708,19 @@ export function ChromiumTileCard({
   }
 
   const sendOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
     markBusy(noteId, true)
     try {
       if (!(await saveDraft(noteId))) return
-      applySnapshot(await pendingQueueRef.current.send([noteId]))
+      const latest = queuedRef.current.find((note) => note.id === noteId)
+      if (!latest) {
+        setQueueError('This item changed before it could be sent. Reload the queue and try again.')
+        return
+      }
+      applySnapshot(await pendingQueueRef.current.send([{
+        id: latest.id,
+        revision: latest.revision ?? 1,
+      }]))
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not send this item')
@@ -721,8 +732,12 @@ export function ChromiumTileCard({
   // Capture the visible ids first so an answer queued during the save pass is
   // not accidentally included in this explicit send.
   const sendAll = async () => {
-    const ids = queuedRef.current.map((note) => note.id)
+    if (sendingAllRef.current || busyIdsRef.current.size > 0) return
+    const visible = queuedRef.current.map((note) => ({ id: note.id, revision: note.revision ?? 1 }))
+    const ids = visible.map((note) => note.id)
     if (ids.length === 0) return
+    const expectedRevisions = new Map(visible.map((note) => [note.id, note.revision]))
+    sendingAllRef.current = true
     setSendingAll(true)
     setQueueError('')
     try {
@@ -732,17 +747,41 @@ export function ChromiumTileCard({
           setQueueError('Resolve or reload conflicted drafts before sending the queue.')
           return
         }
-        if (draft?.dirty && !(await saveDraft(noteId))) return
+        if (draft?.dirty) {
+          if (!(await saveDraft(noteId))) return
+          const saved = queuedRef.current.find((note) => note.id === noteId)
+          if (!saved) {
+            setQueueError('The queue changed while saving. Nothing was sent.')
+            return
+          }
+          expectedRevisions.set(noteId, saved.revision ?? 1)
+        }
       }
-      applySnapshot(await pendingQueueRef.current.send(ids))
+      const targets: PendingSendTarget[] = []
+      for (const noteId of ids) {
+        const note = queuedRef.current.find((candidate) => candidate.id === noteId)
+        const draft = draftsRef.current[noteId]
+        if (
+          !note ||
+          draft?.conflict ||
+          (note.revision ?? 1) !== expectedRevisions.get(noteId)
+        ) {
+          setQueueError('The queue changed while saving. Nothing was sent.')
+          return
+        }
+        targets.push({ id: note.id, revision: note.revision ?? 1 })
+      }
+      applySnapshot(await pendingQueueRef.current.send(targets))
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not send the queue')
     } finally {
+      sendingAllRef.current = false
       setSendingAll(false)
     }
   }
 
   const removeOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
     markBusy(noteId, true)
     try {
       applySnapshot(await pendingQueueRef.current.remove(noteId))
@@ -755,6 +794,7 @@ export function ChromiumTileCard({
   }
 
   const uploadAttachment = async (noteId: number, file: File) => {
+    if (sendingAllRef.current) return
     const acceptedTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
     if (!acceptedTypes.has(file.type)) {
       setQueueError('Choose a PNG, JPEG, GIF, or WebP image.')
@@ -783,6 +823,7 @@ export function ChromiumTileCard({
   }
 
   const removeAttachment = async (noteId: number, attachmentId: string) => {
+    if (sendingAllRef.current) return
     const note = queuedRef.current.find((candidate) => candidate.id === noteId)
     if (!note) return
     if (draftsRef.current[noteId]?.conflict) {
@@ -994,7 +1035,7 @@ export function ChromiumTileCard({
                 <button
                   type="button"
                   className="tile-review-send-all"
-                  disabled={sendingAll}
+                  disabled={sendingAll || busyIds.size > 0}
                   onClick={() => void sendAll()}
                 >
                   {sendingAll ? 'Saving…' : 'Send all'}
@@ -1018,7 +1059,7 @@ export function ChromiumTileCard({
                   <button
                     type="button"
                     className="tile-review-send-all"
-                    disabled={sendingAll || queued.length === 0}
+                    disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
                     onClick={() => void sendAll()}
                   >
                     {sendingAll ? 'Saving and sending…' : 'Send all'}

@@ -961,6 +961,77 @@ describe('pending note routes', () => {
     expect(sentBody.notes.map((note) => note.comment)).toEqual(['keep'])
   })
 
+  it('send with revision-guarded items moves only the exact targets', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('keep'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('go'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 2, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(200)
+    const sentBody = await sent.json() as { notes: Array<{ comment: string }> }
+    expect(sentBody.notes.map((note) => note.comment)).toEqual(['keep'])
+  })
+
+  it('returns 409 without enqueueing when an item revision is stale', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('old'), ownerAuth)
+    pending.update(id, 1, 1, { answer: 'changed' })
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 1, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(409)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['changed'])
+  })
+
+  it('returns 409 atomically when any requested item is missing', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('first'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('second'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 1, revision: 1 }, { id: 999, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(409)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['first', 'second'])
+  })
+
+  it('validates revision-guarded item targets while retaining legacy send bodies', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const invalidBodies = [
+      { items: [] },
+      { items: [{ id: 1, revision: 1 }, { id: 1, revision: 2 }] },
+      { items: [{ id: 0, revision: 1 }] },
+      { items: [{ id: 1, revision: 0 }] },
+      { items: [{ id: Number.MAX_SAFE_INTEGER + 1, revision: 1 }] },
+      { items: [{ id: 1, revision: 1.5 }] },
+      { items: [1] },
+      { ids: [1], items: [{ id: 1, revision: 1 }] },
+    ]
+
+    for (const body of invalidBodies) {
+      expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, body, ownerAuth)).status).toBe(400)
+    }
+
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [] }, ownerAuth)).status).toBe(200)
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)).status).toBe(200)
+  })
+
   it('a full feedback queue leaves pending untouched', async () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)

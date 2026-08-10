@@ -298,7 +298,7 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send this' }))
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith([1]))
+    await waitFor(() => expect(send).toHaveBeenCalledWith([{ id: 1, revision: 2 }]))
     expect(update.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
     expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Keep me queued')
   })
@@ -324,9 +324,72 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Updated annotation' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith([1, 2]))
+    await waitFor(() => expect(send).toHaveBeenCalledWith([
+      { id: 1, revision: 2 },
+      { id: 2, revision: 2 },
+    ]))
     expect(update).toHaveBeenCalledTimes(2)
     expect(update.mock.invocationCallOrder[1]).toBeLessThan(send.mock.invocationCallOrder[0])
+  })
+
+  it('sends nothing when another captured item changes during the save-all pass', async () => {
+    const first = responseNote(1)
+    const second = annotationNote(2, 'Original annotation')
+    const update = vi.fn(async () => pendingSnapshot([
+      { ...first, revision: 2, response: { ...first.response!, answer: 'Team' } },
+      { ...second, revision: 2, comment: 'Changed elsewhere' },
+    ], 2))
+    const send = vi.fn(async () => pendingSnapshot([], 3))
+    renderTile({ list: async () => pendingSnapshot([first, second]), update, send })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 2' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/nothing was sent/i))
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('disables drawer and collapsed send-all controls during an unresolved upload', async () => {
+    let resolveUpload: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const upload = vi.fn(() => new Promise<WebPanePendingSnapshot>((resolve) => {
+      resolveUpload = resolve
+    }))
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]), upload })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByLabelText('Add image attachment'), {
+      target: { files: [new File(['png'], 'screen.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(upload).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse review queue' }))
+    expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+
+    await act(async () => resolveUpload?.(pendingSnapshot([responseNote(1)], 2)))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send all' })).toBeEnabled())
+  })
+
+  it('disables send all while a save is unresolved', async () => {
+    let resolveUpdate: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const update = vi.fn(() => new Promise<WebPanePendingSnapshot>((resolve) => {
+      resolveUpdate = resolve
+    }))
+    const initial = responseNote(1)
+    renderTile({ list: async () => pendingSnapshot([initial]), update })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+
+    const saved = { ...initial, revision: 2, response: { ...initial.response!, answer: 'Team' } }
+    await act(async () => resolveUpdate?.(pendingSnapshot([saved], 2)))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send all' })).toBeEnabled())
   })
 
   it('uploads, previews, and removes an attachment using the latest item revision', async () => {

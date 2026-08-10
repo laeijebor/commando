@@ -113,6 +113,21 @@ describe('pending note routes', () => {
     expect(JSON.parse(String(init.body))).toEqual({ ids: [2, 4] })
   })
 
+  it('sends revision-guarded item targets in the new body shape', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 2, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await api.sendPendingNotes('w-11111111', [
+      { id: 2, revision: 3 },
+      { id: 4, revision: 7 },
+    ])
+
+    const [, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({
+      items: [{ id: 2, revision: 3 }, { id: 4, revision: 7 }],
+    })
+  })
+
   it('builds encoded same-origin attachment URLs and omits an empty token', () => {
     expect(createWebPanesApi('token/value').pendingAttachmentUrl('w/id', 'attachment/id.png')).toBe(
       '/api/web-panes/w%2Fid/attachments/attachment%2Fid.png?token=token%2Fvalue',

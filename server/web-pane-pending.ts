@@ -282,6 +282,8 @@ function isImageAttachment(value: unknown): value is WebPaneImageAttachment {
 /** A manual (element-annotation) note as submitted by the tile UI. */
 export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'revision' | 'pageUrl' | 'attachments'>
 
+export type PendingSendTarget = { id: number; revision: number }
+
 type PaneState = {
   notes: WebPanePendingNote[]
   nextId: number
@@ -575,9 +577,14 @@ export class WebPanePendingStore {
     pageUrl: string,
     capturedAt: number,
     enqueue: (notes: WebPaneFeedbackNote[]) => void,
-    ids?: readonly number[],
+    targets?: readonly number[] | readonly PendingSendTarget[],
   ): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
+    const expected = targets?.filter((target): target is PendingSendTarget => typeof target !== 'number')
+    for (const target of expected ?? []) {
+      this.assertRevision(state.notes.find((note) => note.id === target.id), target.revision)
+    }
+    const ids = targets?.map((target) => typeof target === 'number' ? target : target.id)
     const wanted = ids === undefined ? state.notes : state.notes.filter((note) => ids.includes(note.id))
     if (wanted.length > 0) {
       enqueue(wanted.map(({
