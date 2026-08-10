@@ -114,6 +114,7 @@ export type SessionBriefUpdate = {
 }
 
 export type SessionBrief = {
+  paneId: string
   sessionId: string
   sessionName: string
   state: AgentStatusKind

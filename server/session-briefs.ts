@@ -12,9 +12,11 @@ import type {
 } from '../shared/protocol.js'
 
 type StateFile = {
-  version: 1
+  version: 2
   briefs: Record<string, SessionBrief>
 }
+
+type LegacySessionBrief = Omit<SessionBrief, 'paneId'>
 
 export type SessionBriefPatch = {
   headline?: string
@@ -85,7 +87,7 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
   }
 }
 
-export function parseSessionBrief(value: unknown): SessionBrief | null {
+function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (!isRecord(value)) return null
   const sessionName = cleanText(value.sessionName, 128)
   const headline = cleanText(value.headline, MAX_HEADLINE)
@@ -116,36 +118,63 @@ export function parseSessionBrief(value: unknown): SessionBrief | null {
   }
 }
 
+export function parseSessionBrief(value: unknown): SessionBrief | null {
+  if (!isRecord(value) || typeof value.paneId !== 'string' || !PANE_ID.test(value.paneId)) return null
+  const content = parseSessionBriefContent(value)
+  return content ? { paneId: value.paneId, ...content } : null
+}
+
+function migrateLegacyBrief(brief: LegacySessionBrief): SessionBrief[] {
+  const updatesByPane = new Map<string, SessionBriefUpdate[]>()
+  for (const update of brief.updates) {
+    const updates = updatesByPane.get(update.paneId) ?? []
+    updates.push(update)
+    updatesByPane.set(update.paneId, updates)
+  }
+  const leadPaneId = brief.updates[0]?.paneId
+  return [...updatesByPane].map(([paneId, updates]) => ({
+    paneId,
+    sessionId: brief.sessionId,
+    sessionName: brief.sessionName,
+    state: brief.state,
+    headline: updates[0]?.text ?? brief.headline,
+    headlineSource: updates[0]?.source ?? brief.headlineSource,
+    ...(paneId === leadPaneId && brief.recapMarkdown ? { recapMarkdown: brief.recapMarkdown } : {}),
+    updates,
+    ...(paneId === leadPaneId && brief.next ? { next: brief.next } : {}),
+    updatedAt: Math.max(...updates.map((update) => update.createdAt)),
+  }))
+}
+
 function parseState(value: unknown): StateFile {
-  if (!isRecord(value) || value.version !== 1 || !isRecord(value.briefs)) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2) || !isRecord(value.briefs)) {
     throw new Error('Session brief state file has an invalid structure')
   }
   const briefs: Record<string, SessionBrief> = Object.create(null)
-  for (const [sessionId, candidate] of Object.entries(value.briefs)) {
-    const brief = parseSessionBrief(candidate)
-    if (!brief || brief.sessionId !== sessionId) {
-      throw new Error(`Session brief state contains an invalid entry for ${sessionId}`)
+  if (value.version === 1) {
+    for (const [sessionId, candidate] of Object.entries(value.briefs)) {
+      const brief = parseSessionBriefContent(candidate)
+      if (!brief || brief.sessionId !== sessionId) {
+        throw new Error(`Session brief state contains an invalid entry for ${sessionId}`)
+      }
+      for (const migrated of migrateLegacyBrief(brief)) briefs[migrated.paneId] = migrated
     }
-    briefs[sessionId] = brief
+  } else {
+    for (const [paneId, candidate] of Object.entries(value.briefs)) {
+      const brief = parseSessionBrief(candidate)
+      if (!brief || brief.paneId !== paneId) {
+        throw new Error(`Session brief state contains an invalid entry for ${paneId}`)
+      }
+      briefs[paneId] = brief
+    }
   }
-  return { version: 1, briefs }
+  return { version: 2, briefs }
 }
 
 function cloneBrief(brief: SessionBrief): SessionBrief {
   return {
     ...brief,
     updates: brief.updates.map((update) => ({ ...update })),
-  }
-}
-
-function statusPriority(status: AgentStatusKind): number {
-  switch (status) {
-    case 'failed': return 5
-    case 'needs_input': return 4
-    case 'working': return 3
-    case 'done': return 2
-    case 'stale': return 1
-    case 'unknown': return 0
   }
 }
 
@@ -213,7 +242,7 @@ export class SessionBriefStore {
       for (const brief of Object.values(state.briefs)
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, MAX_BRIEFS)) {
-        this.briefs.set(brief.sessionId, brief)
+        this.briefs.set(brief.paneId, brief)
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
@@ -224,8 +253,8 @@ export class SessionBriefStore {
     }
   }
 
-  get(sessionId: string): SessionBrief | null {
-    const brief = this.briefs.get(sessionId)
+  get(paneId: string): SessionBrief | null {
+    const brief = this.briefs.get(paneId)
     return brief ? cloneBrief(brief) : null
   }
 
@@ -240,47 +269,55 @@ export class SessionBriefStore {
     sessionName: string,
     statuses: AgentStatus[],
     now = Date.now(),
-  ): Promise<SessionBrief | null> {
+  ): Promise<SessionBrief[]> {
     if (!SESSION_ID.test(sessionId)) throw new Error('Invalid tmux session id')
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
-    const previous = this.briefs.get(sessionId)
-    const current = previous?.sessionName === cleanSessionName ? previous : undefined
-    if (statuses.length === 0) {
-      if (!current) return null
+    const changed: SessionBrief[] = []
+    const livePaneIds = new Set(statuses.map((status) => status.paneId))
+    for (const status of statuses) {
+      if (!PANE_ID.test(status.paneId)) continue
+      const previous = this.briefs.get(status.paneId)
+      const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
+        ? previous
+        : undefined
+      const agentUpdates = current?.updates.filter((update) => update.source === 'agent') ?? []
+      const updates = [statusUpdate(status), ...agentUpdates]
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, MAX_UPDATES)
+      const recap = current?.recapMarkdown ?? status.details?.recap?.summary
+      const brief: SessionBrief = {
+        paneId: status.paneId,
+        sessionId,
+        sessionName: cleanSessionName,
+        state: status.status,
+        headline: current?.headlineSource === 'agent'
+          ? current.headline
+          : statusHeadline(status).slice(0, MAX_HEADLINE),
+        headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
+        ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
+        updates,
+        ...(current?.next ? { next: current.next } : {}),
+        updatedAt: Math.max(now, status.updatedAt),
+      }
+      this.briefs.set(status.paneId, brief)
+      changed.push(brief)
+    }
+    for (const current of this.briefs.values()) {
+      if (
+        current.sessionId !== sessionId ||
+        current.sessionName !== cleanSessionName ||
+        livePaneIds.has(current.paneId) ||
+        current.state === 'stale'
+      ) continue
       const brief = { ...current, state: 'stale' as const, updatedAt: now }
-      this.briefs.set(sessionId, brief)
-      await this.persist()
-      return cloneBrief(brief)
+      this.briefs.set(current.paneId, brief)
+      changed.push(brief)
     }
-
-    const ordered = [...statuses].sort((left, right) => (
-      statusPriority(right.status) - statusPriority(left.status) || right.updatedAt - left.updatedAt
-    ))
-    const lead = ordered[0]
-    const agentUpdates = current?.updates.filter((update) => update.source === 'agent') ?? []
-    const updates = [...ordered.map(statusUpdate), ...agentUpdates]
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .slice(0, MAX_UPDATES)
-    const recap = current?.recapMarkdown
-      ?? ordered.find((status) => status.details?.recap)?.details?.recap?.summary
-    const brief: SessionBrief = {
-      sessionId,
-      sessionName: cleanSessionName,
-      state: lead.status,
-      headline: current?.headlineSource === 'agent'
-        ? current.headline
-        : statusHeadline(lead).slice(0, MAX_HEADLINE),
-      headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
-      ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
-      updates,
-      ...(current?.next ? { next: current.next } : {}),
-      updatedAt: Math.max(now, ...ordered.map((status) => status.updatedAt)),
-    }
-    this.briefs.set(sessionId, brief)
+    if (changed.length === 0) return []
     this.prune()
     await this.persist()
-    return cloneBrief(brief)
+    return changed.map(cloneBrief)
   }
 
   async applyAgentPatch(
@@ -293,8 +330,10 @@ export class SessionBriefStore {
     if (!SESSION_ID.test(sessionId) || !PANE_ID.test(paneId)) throw new Error('Invalid tmux target')
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
-    const previous = this.briefs.get(sessionId)
-    const current = previous?.sessionName === cleanSessionName ? previous : undefined
+    const previous = this.briefs.get(paneId)
+    const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
+      ? previous
+      : undefined
     const update = patch.update ? {
       id: `agent:${now}:${randomUUID()}`,
       paneId,
@@ -319,6 +358,7 @@ export class SessionBriefStore {
       ?? patch.next
       ?? 'Session update'
     const brief: SessionBrief = {
+      paneId,
       sessionId,
       sessionName: cleanSessionName,
       state: patch.state ?? current?.state ?? 'working',
@@ -345,7 +385,7 @@ export class SessionBriefStore {
     }
     const validated = parseSessionBrief(brief)
     if (!validated) throw new Error('Invalid session brief patch')
-    this.briefs.set(sessionId, validated)
+    this.briefs.set(paneId, validated)
     this.prune()
     await this.persist()
     return cloneBrief(validated)
@@ -357,7 +397,7 @@ export class SessionBriefStore {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_BRIEFS)
     this.briefs.clear()
-    for (const brief of retained) this.briefs.set(brief.sessionId, brief)
+    for (const brief of retained) this.briefs.set(brief.paneId, brief)
   }
 
   private persist(): Promise<void> {
@@ -373,8 +413,8 @@ export class SessionBriefStore {
     let handle: Awaited<ReturnType<typeof open>> | null = null
     try {
       handle = await open(temporaryPath, 'wx', 0o600)
-      const briefs = Object.fromEntries([...this.briefs].map(([sessionId, brief]) => [sessionId, brief]))
-      await handle.writeFile(`${JSON.stringify({ version: 1, briefs }, null, 2)}\n`, 'utf8')
+      const briefs = Object.fromEntries([...this.briefs].map(([paneId, brief]) => [paneId, brief]))
+      await handle.writeFile(`${JSON.stringify({ version: 2, briefs }, null, 2)}\n`, 'utf8')
       await handle.sync()
       await handle.close()
       handle = null

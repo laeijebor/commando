@@ -1,13 +1,14 @@
 ---
 name: session-updates
-description: Publish a concise whole-session orientation brief to Commando. Use when starting meaningful work, making a decision, encountering a blocker, completing verification, leaving a handoff, or when the user asks for a session summary or update.
+description: Publish a concise pane-local orientation brief to Commando. Use when starting meaningful work, making a decision, encountering a blocker, completing verification, leaving a handoff, or when the user asks for a progress summary or update.
 ---
 
-# Commando session updates
+# Commando pane updates
 
-Keep the current tmux session easy to re-enter after hours or days. Commando
-already derives basic milestones from lifecycle hooks; use the shared CLI when
-you have a deliberate summary, decision, blocker, note, or next action to add.
+Keep the current tmux pane easy to re-enter after hours or days. Commando
+already derives pane-local milestones from lifecycle hooks; use the shared CLI
+when you have a deliberate summary, decision, blocker, note, or next action to
+add to the current pane.
 
 ## Publish an update
 

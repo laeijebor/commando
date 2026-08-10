@@ -276,34 +276,59 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
 }
 
 describe('session update briefs', () => {
-  it('replays one whole-session brief into every pane footer', async () => {
+  it('replays each brief only into its source pane footer', async () => {
     await renderAppWithSnapshot()
-    const brief: SessionBrief = {
+    const apiBrief: SessionBrief = {
+      paneId: '%12',
       sessionId: '$3',
       sessionName: 'work',
       state: 'working',
-      headline: 'Footer capsule dry run',
+      headline: 'API routes are ready',
       headlineSource: 'agent',
-      recapMarkdown: 'Shared across both panes.',
+      recapMarkdown: 'API-only handoff.',
       updates: [{
         id: 'agent:1:test',
-        paneId: '%13',
+        paneId: '%12',
         kind: 'note',
-        text: 'Worker pane updated the handoff',
+        text: 'API pane updated the handoff',
         source: 'agent',
         createdAt: 1,
       }],
-      next: 'Review the screenshots',
+      next: 'Review API output',
       updatedAt: 1,
     }
+    const workerBrief: SessionBrief = {
+      paneId: '%13',
+      sessionId: '$3',
+      sessionName: 'work',
+      state: 'done',
+      headline: 'Worker tests passed',
+      headlineSource: 'hook',
+      updates: [{
+        id: 'hook:13',
+        paneId: '%13',
+        kind: 'check',
+        text: 'Worker tests passed',
+        source: 'hook',
+        createdAt: 2,
+      }],
+      updatedAt: 2,
+    }
 
-    act(() => daemonMessage?.({ type: 'session_brief_snapshot', briefs: [brief] }))
+    act(() => daemonMessage?.({ type: 'session_brief_snapshot', briefs: [apiBrief, workerBrief] }))
 
-    const triggers = await screen.findAllByRole('button', { name: 'Open session updates for work' })
-    expect(triggers).toHaveLength(2)
-    expect(triggers[0]).toHaveTextContent('Footer capsule dry run')
-    fireEvent.click(triggers[0])
-    expect(screen.getByLabelText('Session brief for work')).toHaveAttribute('data-native-terminal-occluder')
+    const apiTrigger = await screen.findByRole('button', { name: 'Open updates for api' })
+    const workerTrigger = screen.getByRole('button', { name: 'Open updates for worker' })
+    expect(apiTrigger).toHaveTextContent('API routes are ready')
+    expect(apiTrigger).not.toHaveTextContent('Worker tests passed')
+    expect(workerTrigger).toHaveTextContent('Worker tests passed')
+    expect(workerTrigger).not.toHaveTextContent('API routes are ready')
+
+    fireEvent.click(apiTrigger)
+    const sheet = screen.getByLabelText('Updates for api')
+    expect(sheet).toHaveAttribute('data-native-terminal-occluder')
+    expect(sheet).toHaveTextContent('API-only handoff.')
+    expect(sheet).not.toHaveTextContent('Worker tests passed')
   })
 })
 

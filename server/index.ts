@@ -582,8 +582,8 @@ async function main(): Promise<void> {
         ))
         void sessionBriefs
           .syncFromStatuses(session.id, session.name, statuses)
-          .then((brief) => {
-            if (brief) publishSessionBrief(brief)
+          .then((briefs) => {
+            for (const brief of briefs) publishSessionBrief(brief)
           })
           .catch((error: unknown) => {
             console.error('[commando] failed to update session brief', error)
