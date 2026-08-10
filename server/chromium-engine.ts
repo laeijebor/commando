@@ -544,6 +544,8 @@ type TileTarget = {
   cdp: CdpConnection
   sinks: Set<ScreencastSink>
   screencasting: boolean
+  /** Shared by subscribers that arrive while Page.startScreencast is in flight. */
+  screencastStarting: Promise<void> | null
   /** URL applied by the last explicit open/navigate, used to detect watchdog loops. */
   currentUrl: string
   /** True once the current screencast delivered at least one real frame. */
@@ -642,22 +644,35 @@ export class ChromiumEngine {
     tile.sinks.add(sink)
     if (tile.lastFrame) sink(tile.lastFrame)
     if (!tile.screencasting) {
-      tile.screencasting = true
-      try {
-        await tile.cdp.send('Page.startScreencast', {
+      let starting = tile.screencastStarting
+      if (!starting) {
+        starting = tile.cdp.send('Page.startScreencast', {
           format: 'png',
           maxWidth: SCREENCAST_MAX_DIMENSION,
           maxHeight: SCREENCAST_MAX_DIMENSION,
           everyNthFrame: 1,
+        }).then(() => {
+          tile.screencasting = true
+          this.armScreencastFallback(tile)
         })
+        tile.screencastStarting = starting
+        void starting.then(
+          () => {
+            if (tile.screencastStarting === starting) tile.screencastStarting = null
+          },
+          () => {
+            if (tile.screencastStarting === starting) tile.screencastStarting = null
+          },
+        )
+      }
+      try {
+        await starting
       } catch (error) {
-        // A failed start must not wedge the tile: leaving the flag set would
-        // make every later subscriber skip the start and hang frameless.
-        tile.screencasting = false
+        // Every concurrent subscriber waits on the same start, so none can be
+        // told the stream is ready after that shared start has failed.
         tile.sinks.delete(sink)
         throw error
       }
-      this.armScreencastFallback(tile)
     }
     return () => {
       tile.sinks.delete(sink)
@@ -1008,6 +1023,7 @@ export class ChromiumEngine {
       cdp,
       sinks: new Set(),
       screencasting: false,
+      screencastStarting: null,
       currentUrl: url,
       gotRealFrame: false,
       fallbackTimer: null,

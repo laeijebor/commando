@@ -336,6 +336,26 @@ describe('ChromiumEngine', () => {
     expect(stale).not.toHaveBeenCalled()
   })
 
+  it('rejects every concurrent subscriber when their shared screencast start fails', async () => {
+    const { stub, engine } = await createHarness()
+    stub.failNext('Page.startScreencast')
+
+    const starts = await Promise.allSettled([
+      engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', vi.fn()),
+      engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', vi.fn()),
+    ])
+
+    expect(starts.map((result) => result.status)).toEqual(['rejected', 'rejected'])
+    expect(stub.calls.filter((call) => call.method === 'Page.startScreencast')).toHaveLength(1)
+
+    const frames: ScreencastFrame[] = []
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', (frame) => {
+      frames.push(frame)
+    })
+    stub.emit('T1', 'Page.screencastFrame', { data: 'AFTER', sessionId: 4, metadata: {} })
+    await until(() => frames.length === 1, 'frame after concurrent start retry')
+  })
+
   it('fails fast when the browser devtools http endpoint hangs', async () => {
     const silent = createServer(() => {
       // Never respond: a wedged browser must not hang the relay forever.
