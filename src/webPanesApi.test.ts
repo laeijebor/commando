@@ -52,12 +52,109 @@ describe('pending note routes', () => {
     expect(JSON.parse(String(calls[1][1].body))).toEqual({
       note: { selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' },
     })
+    expect(JSON.parse(String(calls[3][1].body))).toEqual({})
+  })
+
+  it('updates an answer and note using the expected revision', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { revision: 4, notes: [], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await expect(api.updatePendingNote('w/id', 7, 3, { answer: 'Team', note: 'Need SSO' })).resolves.toEqual({
+      revision: 4,
+      notes: [],
+      knownUpTo: 1,
+      dropped: 0,
+    })
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/web-panes/w%2Fid/pending/7')
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(String(init.body))).toEqual({ expectedRevision: 3, answer: 'Team', note: 'Need SSO' })
+  })
+
+  it('uploads an attachment as the raw file with binary headers', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+    const file = new File(['image bytes'], 'résumé #1.png', { type: 'image/png' })
+
+    await api.uploadPendingAttachment('w/id', 7, 3, file)
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    const headers = new Headers(init.headers)
+    expect(url).toBe('/api/web-panes/w%2Fid/pending/7/attachments')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(file)
+    expect(headers.get('Accept')).toBe('application/json')
+    expect(headers.get('Authorization')).toBe('Bearer token')
+    expect(headers.get('Content-Type')).toBe('image/png')
+    expect(headers.get('X-Pending-Revision')).toBe('3')
+    expect(headers.get('X-File-Name')).toBe('r%C3%A9sum%C3%A9%20%231.png')
+  })
+
+  it('removes an encoded attachment using the expected revision header', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await api.removePendingAttachment('w/id', 7, 3, 'attachment/id.png')
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/web-panes/w%2Fid/pending/7/attachments/attachment%2Fid.png')
+    expect(init.method).toBe('DELETE')
+    expect(new Headers(init.headers).get('X-Pending-Revision')).toBe('3')
+  })
+
+  it('sends only selected pending note ids when provided', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 2, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await api.sendPendingNotes('w-11111111', [2, 4] as const)
+
+    const [, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ ids: [2, 4] })
+  })
+
+  it('builds encoded same-origin attachment URLs and omits an empty token', () => {
+    expect(createWebPanesApi('token/value').pendingAttachmentUrl('w/id', 'attachment/id.png')).toBe(
+      '/api/web-panes/w%2Fid/attachments/attachment%2Fid.png?token=token%2Fvalue',
+    )
+    expect(createWebPanesApi('').pendingAttachmentUrl('w/id', 'attachment/id.png')).toBe(
+      '/api/web-panes/w%2Fid/attachments/attachment%2Fid.png',
+    )
+  })
+
+  it('retains optional snapshot and pending-note fields without adding absent revisions', async () => {
+    const note = {
+      id: 1,
+      revision: 2,
+      selector: '#a',
+      tag: 'button',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'Which plan?: Team\n\nNote: Need SSO',
+      response: { question: 'Which plan?', answer: 'Team', note: 'Need SSO' },
+      attachments: [{ id: 'image.png', name: 'image.png', contentType: 'image/png', size: 12 }],
+    }
+    const fetcher = vi.fn(async () => jsonResponse(200, { revision: 8, notes: [note], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('', fetcher as unknown as typeof fetch)
+
+    const snapshot = await api.pendingNotes('w-11111111')
+    expect(snapshot).toEqual({ revision: 8, notes: [note], knownUpTo: 1, dropped: 0 })
+    expect(snapshot.notes[0]).toEqual(note)
   })
 
   it('surfaces the server error message on a failed send', async () => {
     const fetcher = vi.fn(async () => jsonResponse(429, { error: 'queue full' }))
     const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
     await expect(api.sendPendingNotes('w-11111111')).rejects.toThrowError('queue full')
+  })
+
+  it('decodes server JSON errors from attachment uploads', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(415, { error: 'Only PNG, JPEG, GIF, and WebP images are supported' }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+    const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
+
+    await expect(api.uploadPendingAttachment('w-11111111', 1, 1, file)).rejects.toThrowError(
+      'Only PNG, JPEG, GIF, and WebP images are supported',
+    )
   })
 })
 
