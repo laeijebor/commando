@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol.js'
+import { REDLINE_BINDING_NAME } from '../shared/redline-response.js'
 import {
   ChromiumEngine,
   findChromiumBinary,
@@ -151,10 +152,12 @@ function responseNote(
   id: number,
   answer: string,
   data?: unknown,
+  pageUrl = 'http://localhost:5173/',
 ): WebPanePendingNote {
   return {
     id,
     revision: 3,
+    pageUrl,
     queueKey: 'plan',
     selector: '#plan',
     tag: 'redline-choice',
@@ -466,25 +469,75 @@ describe('ChromiumEngine', () => {
     expect(engine.hasTile('w-11111111')).toBe(true)
   })
 
-  it('never publishes into rejected or browser-owned documents', async () => {
+  it('publishes only to the exact source URL and clears every other document', async () => {
     const { stub, engine, onExternalNavigation } = await createHarness()
-    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro')]))
-    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const sourceUrl = 'http://localhost:5173/review'
+    const secret = 'sensitive expression content'
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([
+      responseNote(1, secret, { secret }, sourceUrl),
+    ]))
+    await engine.cdpInfo('w-11111111', sourceUrl)
+
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: sourceUrl } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'source hydration')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[0])).toMatchObject({
+      controls: [{ response: { answer: secret, data: { secret } } }],
+    })
+
+    stub.emit('T1', 'Page.navigatedWithinDocument', { frameId: 'F1', url: `${sourceUrl}/different` })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'different-path clear')
+    const differentPath = pagePendingEvaluations(stub, 'T1')[1]
+    expect(snapshotFromEvaluation(differentPath)).toEqual({ version: 1, controls: [] })
+    expect(String(differentPath.params?.expression)).not.toContain(secret)
+    expect(String(differentPath.params?.expression)).not.toContain('Which plan?')
+    expect(String(differentPath.params?.expression)).not.toContain('Keep it focused.')
+
+    const confirmedExternal = 'https://external.example/confirmed'
+    await engine.navigate('w-11111111', confirmedExternal)
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: confirmedExternal } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 3, 'confirmed external clear')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[2])).toEqual({ version: 1, controls: [] })
+
+    await engine.navigate('w-11111111', sourceUrl)
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: sourceUrl } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 4, 'source rehydration')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[3])).toMatchObject({
+      controls: [{ response: { answer: secret } }],
+    })
 
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'https://external.example/' } })
     await until(() => onExternalNavigation.mock.calls.length === 1, 'external navigation rejection')
-    stub.emit('T1', 'Page.domContentEventFired', { timestamp: 1 })
-    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([]))
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(pagePendingEvaluations(stub, 'T1')).toHaveLength(0)
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 5, 'rejected external clear')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[4])).toEqual({ version: 1, controls: [] })
 
     for (const url of ['about:blank', 'chrome-error://chromewebdata/', 'devtools://devtools/bundled/inspector.html']) {
       stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url } })
-      stub.emit('T1', 'Page.domContentEventFired', { timestamp: 2 })
-      engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(2, url)]))
     }
-    await new Promise((resolve) => setTimeout(resolve, 30))
-    expect(pagePendingEvaluations(stub, 'T1')).toHaveLength(0)
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 8, 'browser-owned clears')
+    expect(pagePendingEvaluations(stub, 'T1').slice(5).map(snapshotFromEvaluation)).toEqual([
+      { version: 1, controls: [] },
+      { version: 1, controls: [] },
+      { version: 1, controls: [] },
+    ])
+  })
+
+  it('reports the target current main-frame URL with page responses', async () => {
+    const onPageResponse = vi.fn()
+    const { stub, engine } = await createHarness({ onPageResponse })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const currentUrl = 'http://localhost:5173/current/path'
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: currentUrl } })
+    stub.emit('T1', 'Runtime.bindingCalled', {
+      name: REDLINE_BINDING_NAME,
+      payload: JSON.stringify({ question: 'Ship it?', answer: 'yes', queueKey: 'ship' }),
+    })
+
+    await until(() => onPageResponse.mock.calls.length === 1, 'page response callback')
+    expect(onPageResponse).toHaveBeenCalledWith(
+      'w-11111111',
+      { question: 'Ship it?', answer: 'yes', queueKey: 'ship' },
+      currentUrl,
+    )
   })
 
   it('retains the latest snapshot across target recreation', async () => {

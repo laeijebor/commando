@@ -15,6 +15,7 @@ import { PendingNotesJournal, WebPanePendingStore, type PendingNoteInput } from 
 import { WebPaneError } from './web-panes.js'
 
 const PAGE_URL = 'http://127.0.0.1:5173/'
+const OTHER_PAGE_URL = 'http://127.0.0.1:5173/other'
 const dirs: string[] = []
 
 function makeDir(): string {
@@ -83,6 +84,20 @@ describe('PendingNotesJournal', () => {
     expect(state.notes[0]).toMatchObject({ id: 7, revision: 1, attachments: [] })
   })
 
+  it('fills a historical note pageUrl from the journal remembered URL', () => {
+    const dir = makeDir()
+    const path = join(dir, 'w-11111111.pending.jsonl')
+    writeFileSync(path, [
+      JSON.stringify({ k: 'n', id: 7, note: { ...manualNote('old'), id: 7 } }),
+      JSON.stringify({ k: 'u', url: PAGE_URL }),
+      '',
+    ].join('\n'))
+
+    const state = new PendingNotesJournal({ dir }).load('w-11111111')
+
+    expect(state.notes[0]?.pageUrl).toBe(PAGE_URL)
+  })
+
   it('compacts a grown journal without losing live notes or the id counter', () => {
     const dir = makeDir()
     const journal = new PendingNotesJournal({ dir })
@@ -101,7 +116,9 @@ describe('PendingNotesJournal', () => {
   it('pins the snapshot revision through compaction', () => {
     const dir = makeDir()
     const journal = new PendingNotesJournal({ dir })
-    journal.appendNote('w-11111111', { ...manualNote('keep'), id: 1, revision: 3, attachments: [] }, 11)
+    journal.appendNote('w-11111111', {
+      ...manualNote('keep'), id: 1, revision: 3, pageUrl: PAGE_URL, attachments: [],
+    }, 11)
     for (let index = 0; index < JOURNAL_COMPACT_THRESHOLD; index += 1) {
       journal.appendRevision('w-11111111', 11)
     }
@@ -109,6 +126,7 @@ describe('PendingNotesJournal', () => {
     const state = journal.load('w-11111111')
     expect(state.revision).toBe(11)
     expect(state.notes[0]?.revision).toBe(3)
+    expect(state.notes[0]?.pageUrl).toBe(PAGE_URL)
   })
 
   it('remove deletes the journal file', () => {
@@ -137,6 +155,7 @@ describe('WebPanePendingStore', () => {
     expect(notes.map((note) => note.id)).toEqual([1, 2])
     expect(notes.map((note) => note.revision)).toEqual([1, 1])
     expect(notes.map((note) => note.attachments)).toEqual([[], []])
+    expect(notes.map((note) => note.pageUrl)).toEqual([PAGE_URL, PAGE_URL])
     expect(notes[0]?.comment).toBe('Ship it?: yes')
     expect(notes[0]?.response).toEqual({ question: 'Ship it?', answer: 'yes' })
     expect(notes[1]?.comment).toBe('too small')
@@ -168,8 +187,22 @@ describe('WebPanePendingStore', () => {
       text: 'Fresh',
       rect: { x: 1, y: 2, width: 3, height: 4 },
       attachments: [attachment('kept')],
+      pageUrl: PAGE_URL,
       response: { question: 'Ship it?', answer: 'no', note: 'because it is ready' },
     })
+  })
+
+  it('keeps the same queueKey on different pages as separate pending items', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, response('first', 'q1'))
+    store.addResponse('w-11111111', OTHER_PAGE_URL, response('other page', 'q1'))
+    const { notes } = store.addResponse('w-11111111', PAGE_URL, response('replacement', 'q1'))
+
+    expect(notes).toHaveLength(2)
+    expect(notes.map((note) => ({ pageUrl: note.pageUrl, answer: note.response?.answer }))).toEqual([
+      { pageUrl: PAGE_URL, answer: 'replacement' },
+      { pageUrl: OTHER_PAGE_URL, answer: 'other page' },
+    ])
   })
 
   it('keeps distinct queueKeys and keyless answers separate', () => {
@@ -335,10 +368,10 @@ describe('WebPanePendingStore', () => {
     expect(restarted.referencedAttachmentIds()).toEqual(new Set(['orphan']))
   })
 
-  it('send stamps pageUrl/capturedAt, strips queue metadata, and clears sent notes', () => {
+  it('send uses each note pageUrl, stamps capturedAt, strips queue metadata, and clears sent notes', () => {
     const store = makeStore()
     store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1'))
-    store.addNote('w-11111111', PAGE_URL, manualNote('manual'))
+    store.addNote('w-11111111', OTHER_PAGE_URL, manualNote('manual'))
     let enqueued: WebPaneFeedbackNote[] = []
     const { notes: remaining } = store.send('w-11111111', 'http://127.0.0.1:4310/x', 1_234, (notes) => {
       enqueued = notes
@@ -347,9 +380,21 @@ describe('WebPanePendingStore', () => {
     expect(enqueued.map((note) => note.comment)).toEqual(['Ship it?: yes', 'manual'])
     expect(enqueued[0]).not.toHaveProperty('id')
     expect(enqueued[0]).not.toHaveProperty('queueKey')
-    expect(enqueued[0]?.pageUrl).toBe('http://127.0.0.1:4310/x')
+    expect(enqueued.map((note) => note.pageUrl)).toEqual([PAGE_URL, OTHER_PAGE_URL])
     expect(enqueued[0]?.capturedAt).toBe(1_234)
     expect(enqueued[0]?.response?.answer).toBe('yes')
+  })
+
+  it('send falls back to the current-page argument for a historical note without pageUrl', () => {
+    const dir = makeDir()
+    const journal = new PendingNotesJournal({ dir })
+    journal.appendNote('w-11111111', { ...manualNote('historical'), id: 1 })
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    let enqueued: WebPaneFeedbackNote[] = []
+
+    store.send('w-11111111', OTHER_PAGE_URL, 1, (notes) => { enqueued = notes })
+
+    expect(enqueued[0]?.pageUrl).toBe(OTHER_PAGE_URL)
   })
 
   it('send includes daemon attachment paths without releasing transferred ownership', () => {
@@ -470,6 +515,7 @@ describe('WebPanePendingStore adoption', () => {
     expect(snapshot.notes.map((note) => note.id)).toEqual([1, 2])
     expect(snapshot.notes[0]?.response?.answer).toBe('yes')
     expect(snapshot.notes[0]?.attachments).toEqual([attachment('adopted')])
+    expect(snapshot.notes.map((note) => note.pageUrl)).toEqual([PAGE_URL, PAGE_URL])
     // The absorbed journal is deleted, so the notes cannot be adopted twice
     // while the pane that inherited them is still open.
     expect(existsSync(join(dir, 'w-11111111.pending.jsonl'))).toBe(false)

@@ -218,7 +218,7 @@ function replay(raw: string): PendingJournalState {
     if (entry.k === 'n' && typeof entry.id === 'number' && Number.isInteger(entry.id) && entry.id > 0) {
       const note = entry.note as WebPanePendingNote | undefined
       if (typeof note === 'object' && note !== null) {
-        notes.set(entry.id, normalizePendingNote(note, entry.id))
+        notes.set(entry.id, normalizePendingNote(note, entry.id, url))
         if (entry.id > maxId) maxId = entry.id
         revision = Math.max(revision, entryRevision)
       }
@@ -244,20 +244,25 @@ function replay(raw: string): PendingJournalState {
     }
   }
   return {
-    notes: [...notes.values()].sort((a, b) => a.id - b.id),
+    notes: [...notes.values()]
+      .map((note) => normalizePendingNote(note, note.id, url))
+      .sort((a, b) => a.id - b.id),
     nextId: maxId + 1,
     revision,
     ...(url !== undefined ? { url } : {}),
   }
 }
 
-function normalizePendingNote(note: WebPanePendingNote, id: number): WebPanePendingNote {
+function normalizePendingNote(note: WebPanePendingNote, id: number, historicalPageUrl?: string): WebPanePendingNote {
+  const { pageUrl: storedPageUrl, ...pendingNote } = note
   const attachments = Array.isArray(note.attachments)
     ? note.attachments.filter(isImageAttachment).map((attachment) => ({ ...attachment }))
     : []
+  const pageUrl = typeof storedPageUrl === 'string' ? storedPageUrl : historicalPageUrl
   return {
-    ...note,
+    ...pendingNote,
     id,
+    ...(pageUrl !== undefined ? { pageUrl } : {}),
     revision: typeof note.revision === 'number' && Number.isSafeInteger(note.revision) && note.revision > 0
       ? note.revision
       : 1,
@@ -275,7 +280,7 @@ function isImageAttachment(value: unknown): value is WebPaneImageAttachment {
 }
 
 /** A manual (element-annotation) note as submitted by the tile UI. */
-export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
+export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'revision' | 'pageUrl' | 'attachments'>
 
 type PaneState = {
   notes: WebPanePendingNote[]
@@ -322,7 +327,7 @@ export class WebPanePendingStore {
     this.rememberUrl(webPaneId, state, url)
     const existing = response.queueKey === undefined
       ? undefined
-      : state.notes.find((note) => note.queueKey === response.queueKey)
+      : state.notes.find((note) => note.queueKey === response.queueKey && note.pageUrl === url)
     const responseValue = {
       question: response.question,
       answer: response.answer,
@@ -333,6 +338,7 @@ export class WebPanePendingStore {
       const updated: WebPanePendingNote = {
         id: existing.id,
         revision: (existing.revision ?? 1) + 1,
+        pageUrl: url,
         selector: response.selector ?? `redline:${response.queueKey}`,
         tag: response.tag ?? 'redline',
         ...(response.text !== undefined ? { text: response.text } : {}),
@@ -351,6 +357,7 @@ export class WebPanePendingStore {
     const note: WebPanePendingNote = {
       id: state.nextId++,
       revision: 1,
+      pageUrl: url,
       selector: response.selector ?? `redline:${response.queueKey ?? response.question.slice(0, 64)}`,
       tag: response.tag ?? 'redline',
       ...(response.text !== undefined ? { text: response.text } : {}),
@@ -381,7 +388,13 @@ export class WebPanePendingStore {
     if (state.notes.length >= MAX_PENDING_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_PENDING_NOTES} notes can be queued per tile`)
     }
-    const note: WebPanePendingNote = { ...input, id: state.nextId++, revision: 1, attachments: [] }
+    const note: WebPanePendingNote = {
+      ...input,
+      id: state.nextId++,
+      revision: 1,
+      pageUrl: url,
+      attachments: [],
+    }
     state.notes.push(note)
     state.revision += 1
     this.journal.appendNote(webPaneId, note, state.revision)
@@ -567,9 +580,16 @@ export class WebPanePendingStore {
     const state = this.state(webPaneId)
     const wanted = ids === undefined ? state.notes : state.notes.filter((note) => ids.includes(note.id))
     if (wanted.length > 0) {
-      enqueue(wanted.map(({ id: _id, revision: _revision, queueKey: _queueKey, attachments, ...note }) => ({
+      enqueue(wanted.map(({
+        id: _id,
+        revision: _revision,
+        queueKey: _queueKey,
+        pageUrl: sourcePageUrl,
+        attachments,
+        ...note
+      }) => ({
         ...note,
-        pageUrl,
+        pageUrl: sourcePageUrl ?? pageUrl,
         capturedAt,
         ...(attachments && attachments.length > 0 ? {
           attachments: attachments.map((attachment) => ({

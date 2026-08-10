@@ -355,6 +355,8 @@ export type WebPanePendingNote = {
   id: number
   /** Item revision used for optimistic pending-note mutations. */
   revision?: number
+  /** Page that produced this note. Missing only on historical journal entries. */
+  pageUrl?: string
   selector: string
   tag: string
   text?: string

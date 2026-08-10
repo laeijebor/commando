@@ -467,12 +467,12 @@ async function main(): Promise<void> {
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
-    onPageResponse: (webPaneId, response) => {
+    onPageResponse: (webPaneId, response, pageUrl) => {
       const pane = webPanes.get(webPaneId)
       if (!pane) return
       webTileRelay.broadcastPending(
         webPaneId,
-        webPanePending.addResponse(webPaneId, pane.url, response),
+        webPanePending.addResponse(webPaneId, pageUrl, response),
       )
     },
   })
