@@ -6,7 +6,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { MAX_PENDING_NOTES } from '../shared/protocol.js'
+import { MAX_RESPONSE_NOTE } from '../shared/redline-response.js'
 import { WebPanesApi } from './web-panes-api.js'
+import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
@@ -43,14 +45,32 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
   onPendingChanged: ReturnType<typeof vi.fn>
   feedback: WebPaneFeedbackStore
   pending: WebPanePendingStore
+  attachmentStore: WebPaneAttachmentStore
 }> {
   const onChange = vi.fn()
   const onPendingChanged = vi.fn()
   const journalDir = mkdtempSync(join(tmpdir(), 'commando-feedback-api-journal-'))
   temporaryDirectories.push(journalDir)
-  const feedback =
-    overrides.feedback ?? new WebPaneFeedbackStore(new FeedbackJournal({ dir: journalDir }), () => onChange())
-  const pending = overrides.pending ?? new WebPanePendingStore(new PendingNotesJournal({ dir: journalDir }))
+  const attachmentStore = overrides.attachmentStore ?? new WebPaneAttachmentStore({ dir: join(journalDir, 'attachments') })
+  let feedback = overrides.feedback
+  let pending = overrides.pending
+  const releaseAttachment = (attachmentId: string): void => {
+    if (
+      pending?.referencedAttachmentIds().has(attachmentId) ||
+      feedback?.referencedAttachmentIds().has(attachmentId)
+    ) return
+    attachmentStore.remove(attachmentId)
+  }
+  feedback ??= new WebPaneFeedbackStore(
+    new FeedbackJournal({ dir: journalDir }),
+    () => onChange(),
+    Date.now,
+    releaseAttachment,
+  )
+  pending ??= new WebPanePendingStore(
+    new PendingNotesJournal({ dir: journalDir }),
+    releaseAttachment,
+  )
   const api = new WebPanesApi({
     service,
     agentToken: AGENT_TOKEN,
@@ -65,6 +85,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     ...overrides,
     feedback,
     pending,
+    attachmentStore,
   })
   const server = createServer((request, response) => {
     void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
@@ -80,6 +101,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     onPendingChanged,
     feedback,
     pending,
+    attachmentStore,
   }
 }
 
@@ -93,6 +115,20 @@ function post(baseUrl: string, path: string, body: unknown, headers: Record<stri
 
 const agentAuth = { Authorization: `Bearer ${AGENT_TOKEN}` }
 const ownerAuth = { 'x-test-owner': 'yes' }
+const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+
+function uploadAttachment(baseUrl: string, paneId: string, noteId: number, revision: number, headers: Record<string, string> = {}) {
+  return fetch(`${baseUrl}/api/web-panes/${paneId}/pending/${noteId}/attachments`, {
+    method: 'POST',
+    headers: {
+      ...ownerAuth,
+      'Content-Type': 'image/png',
+      'X-Pending-Revision': String(revision),
+      ...headers,
+    },
+    body: pngBytes,
+  })
+}
 
 describe('web panes API', () => {
   it('rejects unauthenticated requests', async () => {
@@ -640,7 +676,7 @@ describe('feedback routes', () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)
     const id = await openChromiumPane(service)
-    const response = { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } }
+    const response = { question: 'Which plan?', answer: 'Pro', note: 'For the launch', data: { choice: 'Pro' } }
     const posted = await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: [{ ...feedbackNote(), response }] }, ownerAuth)
     expect(posted.status).toBe(200)
     const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
@@ -661,6 +697,10 @@ describe('feedback routes', () => {
     expect((await post(
       baseUrl, `/api/web-panes/${id}/feedback`,
       { notes: [{ ...feedbackNote(), response: { question: 'q', answer: 'a', data: 'x'.repeat(5000) } }] }, ownerAuth,
+    )).status).toBe(400)
+    expect((await post(
+      baseUrl, `/api/web-panes/${id}/feedback`,
+      { notes: [{ ...feedbackNote(), response: { question: 'q', answer: 'a', note: 'x'.repeat(MAX_RESPONSE_NOTE + 1) } }] }, ownerAuth,
     )).status).toBe(400)
     expect((await post(
       baseUrl, `/api/web-panes/${id}/feedback`,
@@ -712,14 +752,198 @@ describe('pending note routes', () => {
     const body = pendingNoteBody()
     const note = {
       ...body.note,
+      deliveryKey: 'owner-controlled',
       queueKey: 'q1',
-      response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } },
+      response: { question: 'Which plan?', answer: 'Pro', note: 'For the launch', data: { choice: 'Pro' } },
     }
     const added = await post(baseUrl, `/api/web-panes/${id}/pending`, { note }, ownerAuth)
     expect(added.status).toBe(200)
-    const addedBody = await added.json() as { notes: Array<{ queueKey?: string; response?: unknown }> }
+    const addedBody = await added.json() as {
+      notes: Array<{ deliveryKey?: string; queueKey?: string; response?: unknown }>
+    }
+    expect(addedBody.notes[0]?.deliveryKey).not.toBe('owner-controlled')
     expect(addedBody.notes[0]?.queueKey).toBe('q1')
-    expect(addedBody.notes[0]?.response).toEqual({ question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } })
+    expect(addedBody.notes[0]?.response).toEqual({
+      question: 'Which plan?',
+      answer: 'Pro',
+      note: 'For the launch',
+      data: { choice: 'Pro' },
+    })
+  })
+
+  it('updates pending answers and notes with optimistic revisions', async () => {
+    const service = await createService()
+    const { baseUrl, onPendingChanged } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const input = pendingNoteBody()
+    await post(baseUrl, `/api/web-panes/${id}/pending`, {
+      note: {
+        ...input.note,
+        response: { question: 'Which plan?', answer: 'Pro' },
+      },
+    }, ownerAuth)
+
+    const updated = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'PATCH',
+      headers: { ...ownerAuth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 1, answer: 'Team', note: 'Need SSO' }),
+    })
+    expect(updated.status).toBe(200)
+    const body = await updated.json() as { notes: Array<{ revision?: number; comment: string; response?: unknown }> }
+    expect(body.notes[0]).toMatchObject({
+      revision: 2,
+      comment: 'Which plan?: Team\n\nNote: Need SSO',
+      response: { question: 'Which plan?', answer: 'Team', note: 'Need SSO' },
+    })
+    expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ notes: body.notes }))
+
+    const stale = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'PATCH',
+      headers: { ...ownerAuth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 1, answer: 'Enterprise' }),
+    })
+    expect(stale.status).toBe(409)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'PATCH',
+      headers: { ...agentAuth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 2, answer: 'Enterprise' }),
+    })).status).toBe(403)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'PATCH',
+      headers: { ...ownerAuth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedRevision: 0, answer: 'Enterprise' }),
+    })).status).toBe(400)
+  })
+
+  it('uploads, privately previews, and detaches an image from a pending note', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, onPendingChanged } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1, {
+      'X-File-Name': encodeURIComponent('../résumé screen.png'),
+    })
+    expect(uploaded.status).toBe(200)
+    const body = await uploaded.json() as {
+      notes: Array<{ revision?: number; attachments?: Array<{ id: string; name: string; contentType: string; size: number }> }>
+    }
+    const attachment = body.notes[0]?.attachments?.[0]
+    expect(body.notes[0]?.revision).toBe(2)
+    expect(attachment).toMatchObject({ name: 'résumé screen.png', contentType: 'image/png', size: pngBytes.length })
+    expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ notes: body.notes }))
+
+    const path = `/api/web-panes/${id}/attachments/${attachment?.id}`
+    const preview = await fetch(`${baseUrl}${path}`, { headers: ownerAuth })
+    expect(preview.status).toBe(200)
+    expect(Buffer.from(await preview.arrayBuffer())).toEqual(pngBytes)
+    expect(preview.headers.get('cache-control')).toBe('private, no-store')
+    expect(preview.headers.get('content-security-policy')).toBe('sandbox')
+    expect(preview.headers.get('x-content-type-options')).toBe('nosniff')
+    expect((await fetch(`${baseUrl}${path}`, { headers: agentAuth })).status).toBe(404)
+
+    const detached = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1/attachments/${attachment?.id}`, {
+      method: 'DELETE',
+      headers: { ...ownerAuth, 'X-Pending-Revision': '2' },
+    })
+    expect(detached.status).toBe(200)
+    expect(((await detached.json()) as { notes: Array<{ attachments?: unknown[] }> }).notes[0]?.attachments).toEqual([])
+    expect(attachmentStore.listIds()).toEqual([])
+    expect((await fetch(`${baseUrl}${path}`, { headers: ownerAuth })).status).toBe(404)
+  })
+
+  it('keeps sent attachments available to agents after close and removes them on ack', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const attachmentId = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string }> }>
+    }).notes[0]?.attachments?.[0]?.id
+    await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [1] }, ownerAuth)
+    const path = `/api/web-panes/${id}/attachments/${attachmentId}`
+    expect((await fetch(`${baseUrl}${path}`, { headers: ownerAuth })).status).toBe(200)
+    expect((await fetch(`${baseUrl}${path}`, { headers: agentAuth })).status).toBe(200)
+
+    service.close(id)
+    expect((await fetch(`${baseUrl}${path}`, { headers: agentAuth })).status).toBe(200)
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    const { cursor } = await drained.json() as { cursor: number }
+    const acked = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0&cursor=${cursor}`, { headers: agentAuth })
+    expect(acked.status).toBe(404)
+    expect(attachmentStore.listIds()).toEqual([])
+    expect((await fetch(`${baseUrl}${path}`, { headers: agentAuth })).status).toBe(404)
+  })
+
+  it('does not release bytes while a crash-window duplicate journal still references them', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const pendingItem = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string; name: string; contentType: string; size: number }> }>
+    }).notes[0]
+    const attachment = pendingItem?.attachments?.[0]
+    expect(attachment).toBeDefined()
+    feedback.enqueue(id, [{
+      selector: '#target',
+      tag: 'button',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'duplicate transfer record',
+      pageUrl: 'http://127.0.0.1:5173/',
+      capturedAt: 1,
+      attachments: [{
+        ...attachment!,
+        path: `/api/web-panes/${id}/attachments/${attachment?.id}`,
+      }],
+    }])
+
+    pending.remove(id, 1)
+    expect(attachmentStore.listIds()).toEqual([attachment?.id])
+
+    const delivered = await feedback.drain(id, 0)
+    await feedback.drain(id, 0, { cursor: delivered.cursor })
+    expect(attachmentStore.listIds()).toEqual([])
+  })
+
+  it('drop removes pending references before the reference-aware attachment release', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const attachmentId = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string }> }>
+    }).notes[0]?.attachments?.[0]?.id
+    expect(attachmentStore.listIds()).toEqual([attachmentId])
+
+    pending.drop(id)
+
+    expect(attachmentStore.listIds()).toEqual([])
+  })
+
+  it('rolls back saved bytes when attach fails and validates upload headers and content', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+
+    expect((await uploadAttachment(baseUrl, id, 1, 9)).status).toBe(409)
+    expect(attachmentStore.listIds()).toEqual([])
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1/attachments`, {
+      method: 'POST',
+      headers: { ...ownerAuth, 'Content-Type': 'image/png' },
+      body: pngBytes,
+    })).status).toBe(400)
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1/attachments`, {
+      method: 'POST',
+      headers: { ...agentAuth, 'Content-Type': 'image/png', 'X-Pending-Revision': '1' },
+      body: pngBytes,
+    })).status).toBe(403)
+    expect((await uploadAttachment(baseUrl, id, 1, 1, { 'Content-Type': 'text/plain' })).status).toBe(415)
+    expect(attachmentStore.listIds()).toEqual([])
   })
 
   it('send moves pending notes into the feedback queue with the pane url stamped', async () => {
@@ -755,6 +979,77 @@ describe('pending note routes', () => {
     const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [2] }, ownerAuth)
     const sentBody = await sent.json() as { notes: Array<{ comment: string }> }
     expect(sentBody.notes.map((note) => note.comment)).toEqual(['keep'])
+  })
+
+  it('send with revision-guarded items moves only the exact targets', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('keep'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('go'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 2, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(200)
+    const sentBody = await sent.json() as { notes: Array<{ comment: string }> }
+    expect(sentBody.notes.map((note) => note.comment)).toEqual(['keep'])
+  })
+
+  it('returns 409 without enqueueing when an item revision is stale', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('old'), ownerAuth)
+    pending.update(id, 1, 1, { answer: 'changed' })
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 1, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(409)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['changed'])
+  })
+
+  it('returns 409 atomically when any requested item is missing', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('first'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('second'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      items: [{ id: 1, revision: 1 }, { id: 999, revision: 1 }],
+    }, ownerAuth)
+
+    expect(sent.status).toBe(409)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['first', 'second'])
+  })
+
+  it('validates revision-guarded item targets while retaining legacy send bodies', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const invalidBodies = [
+      { items: [] },
+      { items: [{ id: 1, revision: 1 }, { id: 1, revision: 2 }] },
+      { items: [{ id: 0, revision: 1 }] },
+      { items: [{ id: 1, revision: 0 }] },
+      { items: [{ id: Number.MAX_SAFE_INTEGER + 1, revision: 1 }] },
+      { items: [{ id: 1, revision: 1.5 }] },
+      { items: [1] },
+      { ids: [1], items: [{ id: 1, revision: 1 }] },
+    ]
+
+    for (const body of invalidBodies) {
+      expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, body, ownerAuth)).status).toBe(400)
+    }
+
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [] }, ownerAuth)).status).toBe(200)
+    expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)).status).toBe(200)
   })
 
   it('a full feedback queue leaves pending untouched', async () => {

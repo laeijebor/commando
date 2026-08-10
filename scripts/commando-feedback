@@ -7,9 +7,10 @@
 # (default 30, max 60) and prints the JSON body:
 # {"ok":true,"cursor":N,"notes":[...]}.
 # Each note carries id, selector, tag, text, rect, comment, pageUrl,
-# capturedAt — apply the feedback, then run this again. Exit codes: 0 success
-# (notes may be empty — just re-run), 4 tile gone (stop polling), 1 other
-# errors.
+# capturedAt, and optional response/attachments. Fetch any attachment `path`
+# with the same bearer token before running this again: the next poll acks the
+# prior cursor and releases those bytes. Exit codes: 0 success (notes may be
+# empty — just re-run), 4 tile gone (stop polling), 1 other errors.
 #
 # Delivery is at-least-once: the daemon keeps notes until they are
 # acknowledged by passing the previous response's cursor back, which this

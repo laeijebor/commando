@@ -35,7 +35,8 @@ import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
-import { WebPanePendingStore } from './web-pane-pending.js'
+import { WebPaneAttachmentStore } from './web-pane-attachments.js'
+import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
 import { RedlineApi } from './redline-api.js'
 import { defaultRedlineArtifactStatePath, RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
@@ -438,6 +439,34 @@ async function main(): Promise<void> {
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
   })
+  const webPaneAttachments = new WebPaneAttachmentStore()
+  const feedbackJournal = new FeedbackJournal()
+  const pendingJournal = new PendingNotesJournal()
+  feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
+  webPaneAttachments.cleanup(new Set([
+    ...pendingJournal.referencedAttachmentIds(),
+    ...feedbackJournal.referencedAttachmentIds(),
+  ]))
+  let webPaneFeedback: WebPaneFeedbackStore
+  let webPanePending: WebPanePendingStore
+  const releaseAttachment = (attachmentId: string): void => {
+    if (
+      webPanePending?.referencedAttachmentIds().has(attachmentId) ||
+      webPaneFeedback?.referencedAttachmentIds().has(attachmentId)
+    ) return
+    webPaneAttachments.remove(attachmentId)
+  }
+  // onDrain fires only at request time, safely after publishWebPanes exists.
+  webPaneFeedback = new WebPaneFeedbackStore(
+    feedbackJournal,
+    () => publishWebPanes(),
+    Date.now,
+    releaseAttachment,
+  )
+  webPanePending = new WebPanePendingStore(
+    pendingJournal,
+    releaseAttachment,
+  )
   const chromiumEngine = new ChromiumEngine({
     classify: (url) => webPanes.classify(url),
     onExternalNavigation: (webPaneId, navigatedUrl) => {
@@ -447,12 +476,12 @@ async function main(): Promise<void> {
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
-    onPageResponse: (webPaneId, response) => {
+    onPageResponse: (webPaneId, response, pageUrl) => {
       const pane = webPanes.get(webPaneId)
       if (!pane) return
       webTileRelay.broadcastPending(
         webPaneId,
-        webPanePending.addResponse(webPaneId, pane.url, response),
+        webPanePending.addResponse(webPaneId, pageUrl, response),
       )
     },
   })
@@ -461,11 +490,6 @@ async function main(): Promise<void> {
     service: webPanes,
     pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
-  // onDrain fires only at request time, safely after publishWebPanes exists.
-  const feedbackJournal = new FeedbackJournal()
-  feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
-  const webPaneFeedback = new WebPaneFeedbackStore(feedbackJournal, () => publishWebPanes())
-  const webPanePending = new WebPanePendingStore()
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -1224,6 +1248,7 @@ async function main(): Promise<void> {
     service: webPanes,
     feedback: webPaneFeedback,
     pending: webPanePending,
+    attachmentStore: webPaneAttachments,
     onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
@@ -1250,15 +1275,18 @@ async function main(): Promise<void> {
     cdpInfo: (webPaneId) => {
       const pane = webPanes.get(webPaneId)
       if (!pane) return Promise.reject(new Error('Web pane does not exist'))
+      chromiumEngine.updatePendingSnapshot(webPaneId, webPanePending.snapshot(webPaneId))
       return chromiumEngine.cdpInfo(webPaneId, pane.url)
     },
     onConfirmed: (pane) => {
       if (pane.engine !== 'chromium') return
+      chromiumEngine.updatePendingSnapshot(pane.id, webPanePending.snapshot(pane.id))
       void chromiumEngine.navigate(pane.id, pane.url).catch((error: unknown) => {
         console.error('[commando] chromium tile navigation after confirm failed', error)
       })
     },
     onClosed: (webPaneId) => {
+      chromiumEngine.clearPendingSnapshot(webPaneId)
       chromiumEngine.closeTile(webPaneId)
       webTileRelay.dropTile(webPaneId)
       // The pending journal deliberately survives: reopening the same URL

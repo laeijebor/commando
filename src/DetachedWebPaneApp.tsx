@@ -130,8 +130,27 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
         pendingQueue={{
           list: () => api.pendingNotes(webPaneId),
           add: (note) => api.addPendingNote(webPaneId, note),
+          update: (noteId, revision, change) => api.updatePendingNote(
+            webPaneId,
+            noteId,
+            revision,
+            change,
+          ),
+          upload: (noteId, revision, file) => api.uploadPendingAttachment(
+            webPaneId,
+            noteId,
+            revision,
+            file,
+          ),
+          removeAttachment: (noteId, revision, attachmentId) => api.removePendingAttachment(
+            webPaneId,
+            noteId,
+            revision,
+            attachmentId,
+          ),
+          attachmentUrl: (attachmentId) => api.pendingAttachmentUrl(webPaneId, attachmentId),
           remove: (noteId) => api.removePendingNote(webPaneId, noteId),
-          send: () => api.sendPendingNotes(webPaneId),
+          send: (ids) => api.sendPendingNotes(webPaneId, ids),
           dismissDropped: () => api.dismissPendingDropped(webPaneId),
         }}
       />

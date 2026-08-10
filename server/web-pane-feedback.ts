@@ -1,5 +1,10 @@
 import type { WebPaneFeedbackInfo, WebPaneFeedbackNote } from '../shared/protocol.js'
-import { FeedbackJournal, type JournaledNote } from './web-pane-feedback-journal.js'
+import {
+  DELIVERY_DEDUPE_TTL_MS,
+  FeedbackJournal,
+  type DeliveryKeyRecord,
+  type JournaledNote,
+} from './web-pane-feedback-journal.js'
 import { WebPaneError } from './web-panes.js'
 
 export const MAX_QUEUED_FEEDBACK_NOTES = 50
@@ -38,23 +43,53 @@ export class WebPaneFeedbackStore {
   private readonly panes = new Map<string, PaneState>()
   private readonly waiters = new Map<string, Waiter[]>()
   private readonly drains = new Map<string, { count: number; at: number }>()
+  private readonly deliveryKeys = new Map<string, {
+    historicalAt?: number
+    livePanes: Map<string, number>
+  }>()
 
   constructor(
     private readonly journal: FeedbackJournal = new FeedbackJournal(),
     private readonly onDrain: (webPaneId: string) => void = () => undefined,
     private readonly now: () => number = Date.now,
-  ) {}
+    private readonly releaseAttachment: (attachmentId: string) => void = () => undefined,
+  ) {
+    const currentTime = this.now()
+    for (const record of this.journal.scanDeliveryKeys(currentTime)) {
+      this.retainDeliveryKey(record.webPaneId, record)
+    }
+  }
 
   enqueue(webPaneId: string, notes: WebPaneFeedbackNote[]): void {
     if (notes.length === 0) return
     const state = this.state(webPaneId)
+    const acceptedAt = this.now()
+    this.expireDeliveryKeys(acceptedAt)
+    const batchKeys = new Set<string>()
+    const freshDeliveryKeys: string[] = []
+    const fresh = notes.filter((note) => {
+      if (typeof note.deliveryKey !== 'string' || note.deliveryKey.length === 0) return true
+      if (batchKeys.has(note.deliveryKey) || this.deliveryKeys.has(note.deliveryKey)) return false
+      batchKeys.add(note.deliveryKey)
+      freshDeliveryKeys.push(note.deliveryKey)
+      return true
+    })
+    if (fresh.length === 0) return
     const undelivered = state.notes.filter((entry) => entry.id > state.deliveredUpTo).length
-    if (undelivered + notes.length > MAX_QUEUED_FEEDBACK_NOTES) {
+    if (undelivered + fresh.length > MAX_QUEUED_FEEDBACK_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_QUEUED_FEEDBACK_NOTES} notes can be queued per tile`)
     }
-    const entries: JournaledNote[] = notes.map((note) => ({ id: state.nextId++, note }))
+    const entries: JournaledNote[] = fresh.map((note, index) => ({
+      id: state.nextId + index,
+      at: acceptedAt,
+      note,
+    }))
     this.journal.appendNotes(webPaneId, entries)
+    state.nextId += entries.length
     state.notes.push(...entries)
+    for (const key of freshDeliveryKeys) {
+      this.retainDeliveryKey(webPaneId, { key, at: acceptedAt, live: true })
+    }
     const waiting = this.waiters.get(webPaneId)
     if (waiting && waiting.length > 0) {
       waiting.shift()?.settle(this.deliver(webPaneId, state))
@@ -109,6 +144,22 @@ export class WebPaneFeedbackStore {
     return this.state(webPaneId).notes.length > 0
   }
 
+  referencesAttachment(webPaneId: string, attachmentId: string): boolean {
+    return this.state(webPaneId).notes.some((entry) =>
+      (entry.note.attachments ?? []).some((attachment) => attachment.id === attachmentId),
+    )
+  }
+
+  referencedAttachmentIds(): Set<string> {
+    const ids = this.journal.referencedAttachmentIds()
+    for (const state of this.panes.values()) {
+      for (const entry of state.notes) {
+        for (const attachment of entry.note.attachments ?? []) ids.add(attachment.id)
+      }
+    }
+    return ids
+  }
+
   /**
    * Drops in-memory state and waiters for dead panes. Journals stay on disk —
    * a closed tile's answers remain fetchable until acked or expired.
@@ -145,7 +196,8 @@ export class WebPaneFeedbackStore {
   private state(webPaneId: string): PaneState {
     let state = this.panes.get(webPaneId)
     if (!state) {
-      const loaded = this.journal.load(webPaneId)
+      const loaded = this.journal.load(webPaneId, this.now())
+      for (const record of loaded.deliveryKeyRecords) this.retainDeliveryKey(webPaneId, record)
       state = {
         notes: loaded.notes,
         ackedUpTo: loaded.ackedUpTo,
@@ -165,10 +217,25 @@ export class WebPaneFeedbackStore {
     // silently discard answers nobody has seen.
     const effective = Math.min(Math.floor(cursor), state.deliveredUpTo)
     if (effective <= state.ackedUpTo) return
+    const acknowledged = state.notes.filter((entry) => entry.id <= effective)
+    this.journal.appendAck(webPaneId, effective)
     state.ackedUpTo = effective
     state.notes = state.notes.filter((entry) => entry.id > effective)
-    this.journal.appendAck(webPaneId, effective)
+    for (const entry of acknowledged) {
+      const key = entry.note.deliveryKey
+      if (typeof key !== 'string' || key.length === 0) continue
+      if (state.notes.some((live) => live.note.deliveryKey === key)) continue
+      const retained = this.deliveryKeys.get(key)
+      if (!retained) continue
+      const acceptedAt = retained.livePanes.get(webPaneId) ?? entry.at
+      retained.livePanes.delete(webPaneId)
+      retained.historicalAt = Math.max(retained.historicalAt ?? -Infinity, acceptedAt)
+    }
+    this.expireDeliveryKeys(this.now())
     this.journal.compact(webPaneId)
+    for (const entry of acknowledged) {
+      for (const attachment of entry.note.attachments ?? []) this.releaseAttachment(attachment.id)
+    }
   }
 
   private deliver(webPaneId: string, state: PaneState): FeedbackDrainResult {
@@ -178,5 +245,25 @@ export class WebPaneFeedbackStore {
     this.drains.set(webPaneId, { count: notes.length, at: this.now() })
     this.onDrain(webPaneId)
     return { notes, cursor: state.deliveredUpTo }
+  }
+
+  private retainDeliveryKey(webPaneId: string, record: DeliveryKeyRecord): void {
+    const retained = this.deliveryKeys.get(record.key) ?? { livePanes: new Map<string, number>() }
+    if (record.live) {
+      const current = retained.livePanes.get(webPaneId)
+      retained.livePanes.set(webPaneId, current === undefined ? record.at : Math.min(current, record.at))
+    } else {
+      retained.historicalAt = Math.max(retained.historicalAt ?? -Infinity, record.at)
+    }
+    this.deliveryKeys.set(record.key, retained)
+  }
+
+  private expireDeliveryKeys(now: number): void {
+    const cutoff = now - DELIVERY_DEDUPE_TTL_MS
+    for (const [key, retained] of this.deliveryKeys) {
+      if (retained.livePanes.size === 0 && (retained.historicalAt ?? -Infinity) <= cutoff) {
+        this.deliveryKeys.delete(key)
+      }
+    }
   }
 }

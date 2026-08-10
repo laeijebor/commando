@@ -41,14 +41,20 @@ since the SDK falls back to `key` as the question.
 
 ## Make queued state visible
 
-The SDK already renders a "Queued ✓" state and a "queued — see tile footer"
-badge after a successful queue — don't suppress or restyle that away; it's
-the user's confirmation the answer registered before they hit Send.
+The SDK renders `Queued ✓` only after the daemon's authoritative snapshot
+confirms the answer. Reloads rehydrate the queued values. If the local answer
+or optional note changes, the control turns amber and says `Changed since
+queued`; don't suppress or restyle these states away. The user can update the
+queued answer from the control or edit it in the tile's queue drawer.
 Components arrive self-styled (glass "Aura" look, dark/light-aware) —
 override accents via `--redline-accent`/`--redline-accent2`; the injected
 rules are zero-specificity, so artifact CSS can still restyle them if needed.
 The Commando default artifact theme supplies matching violet/cyan accent
 variables automatically.
+
+Every built-in control has one optional note field. The note is delivered as
+`response.note`, not folded into `response.answer`. The queue drawer also
+supports per-answer image attachments and `Send this` for selective delivery.
 
 ## Prompt quality
 

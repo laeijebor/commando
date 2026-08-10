@@ -81,8 +81,8 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 Chromium tiles have a review mode: the user toggles it in the tile header,
 clicks elements on your page, and queues comments. Each note reaches you
 selector-anchored — `{selector, tag, text, rect, comment, pageUrl, capturedAt,
-response?}` — so you can go straight from note to edit. `response?:
-{question, answer, data?}` is present when the note came from an in-page
+response?, attachments?}` — so you can go straight from note to edit. `response?:
+{question, answer, note?, data?}` is present when the note came from an in-page
 redline component (see the redline skill) rather than an element annotation
 — prefer it over parsing `comment` when it's there.
 
@@ -104,6 +104,10 @@ this — including the cursor bookkeeping below; exit 4 means the review ended.)
   the next poll redelivers them. Acknowledge by passing the previous
   response's `cursor` back (`…&cursor=3`). Polling without a cursor never
   acks; you just see the same notes again — dedupe by note `id`.
+- A note can carry `attachments: [{name, contentType, size, path}]`. Fetch a
+  needed image from `http://127.0.0.1:${COMMANDO_PORT:-4310}<path>` with the
+  same agent hook bearer token before the next `commando-feedback` call: that
+  call acknowledges the previous cursor and releases its attachment bytes.
 - Apply the feedback, verify over the tile's `/cdp` endpoint if useful, and
   reply in your own terminal — there is no chat panel in the tile.
 - A closed tile keeps serving its unacked notes; 404 means the review is over

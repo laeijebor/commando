@@ -157,16 +157,24 @@ Discipline the agent must know:
 - Interacting with a control (checking a box, typing) only updates local
   state — nothing sends yet.
 - The explicit **"Queue answer"** button queues, once per press.
-- Queued answers land in the tile's pill strip next to annotations and only
-  reach you when the user presses **Send** in the tile footer.
+- Every built-in control includes an optional note field. The answer and note
+  remain separate in the structured response.
+- Queued answers land in the tile's compact queue strip next to annotations
+  and only reach you when the user presses **Send all** or **Send this**.
 - Re-answering with the same `key` replaces the unsent one instead of adding
   a duplicate.
+- The daemon rehydrates queued values after page reload. A green `Queued ✓`
+  means the local draft matches the daemon; amber `Changed since queued`
+  means the user must update the queued answer before it is sent. Controls
+  without a key use their captured selector as a best-effort fallback.
+- The queue drawer can edit answers and notes, attach PNG/JPEG/GIF/WebP images,
+  preview/remove attachments, and send one answer without sending the rest.
 - For a custom control, call
-  `window.redline.queueResponse({question, answer, data?, queueKey?, element?})`
+  `window.redline.queueResponse({question, answer, note?, data?, queueKey?, element?})`
   directly.
 
 Notes that carry a component answer have a `response: {question, answer,
-data?}` field — prefer it over parsing `comment`.
+note?, data?}` field — prefer it over parsing `comment`.
 
 Use controls for decisions the user can make faster by clicking than typing;
 use plain annotation for open-ended feedback (lavish's rule).
@@ -202,9 +210,13 @@ one short message: what you built, what to look at first, and that the
    (the script handles acking via the response `cursor`), so a killed or
    timed-out poll loses nothing — re-polling recovers the same notes; dedupe
    by note `id` if you see repeats.
-2. For each note `{selector, tag, text, rect, comment, pageUrl}`: edit the
+2. For each note `{selector, tag, text, rect, comment, pageUrl, attachments?}`:
+   edit the
    artifact section (or the real source behind the running page) that the
    selector points at.
+   Each attachment has `{name, contentType, size, path}`. Fetch every needed
+   `path` with the agent hook bearer token before the next poll acknowledges
+   that batch and releases its image bytes.
 3. Make revisions visible: for an authored artifact, reload the tile over its
    CDP endpoint — `Page.navigate` to the same URL with a `?v=<n>` cache-bust
    — rather than deleting and reopening the tile. For a dev-served page,
@@ -212,7 +224,7 @@ one short message: what you built, what to look at first, and that the
    plain tile reload already shows edits — the cache-bust is harmless, not
    required.)
 4. A note may be a component answer instead of an annotation — it carries a
-   `response: {question, answer, data?}` field. Acknowledge it in your
+   `response: {question, answer, note?, data?}` field. Acknowledge it in your
    terminal reply the same way you acknowledge annotation notes.
 5. Reply in your terminal with what changed per note, then re-poll.
 

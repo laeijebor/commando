@@ -56,6 +56,8 @@ async function startRelay(
 ) {
   const engine = {
     subscribeScreencast: vi.fn(async () => () => undefined),
+    updatePendingSnapshot: vi.fn(),
+    clearPendingSnapshot: vi.fn(),
     dispatchInput: vi.fn(),
     setViewport: vi.fn(async () => undefined),
     reload: vi.fn(async () => undefined),
@@ -143,8 +145,24 @@ describe('web tile relay pending broadcast', () => {
   })
 
   it('broadcastPending is a no-op for unknown panes', async () => {
-    const { relay } = await startRelay()
+    const { engine, relay } = await startRelay()
+    const updatePendingSnapshot = vi.mocked(engine.updatePendingSnapshot)
+    updatePendingSnapshot.mockClear()
     expect(() => relay.broadcastPending('w-deadbeef', emptySnapshot())).not.toThrow()
+    expect(updatePendingSnapshot).toHaveBeenCalledWith('w-deadbeef', emptySnapshot())
+  })
+
+  it('updates the engine even when the tile has no viewer', async () => {
+    const { engine, relay } = await startRelay()
+    relay.dropTile('w-11111111')
+    const updatePendingSnapshot = vi.mocked(engine.updatePendingSnapshot)
+    updatePendingSnapshot.mockClear()
+    const snapshot = snapshotOf([pendingNote('queued without viewer', 2)])
+
+    relay.broadcastPending('w-11111111', snapshot)
+
+    expect(updatePendingSnapshot).toHaveBeenCalledOnce()
+    expect(updatePendingSnapshot).toHaveBeenCalledWith('w-11111111', snapshot)
   })
 
   it('hydrates a connecting socket with the current pending queue', async () => {
@@ -154,9 +172,25 @@ describe('web tile relay pending broadcast', () => {
   })
 
   it('does not send an empty pending message on connect', async () => {
-    const { messages } = await startRelay()
+    const { engine, messages } = await startRelay()
+    const updatePendingSnapshot = vi.mocked(engine.updatePendingSnapshot)
+    const subscribeScreencast = vi.mocked(engine.subscribeScreencast)
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(messages.map((message) => message.type)).not.toContain('pending')
+    expect(updatePendingSnapshot).toHaveBeenCalledWith('w-11111111', emptySnapshot())
+    expect(updatePendingSnapshot.mock.invocationCallOrder[0])
+      .toBeLessThan(subscribeScreencast.mock.invocationCallOrder[0])
+  })
+
+  it('seeds a non-empty engine snapshot before subscribing the target', async () => {
+    const pending = snapshotOf([pendingNote('queued earlier', 4)])
+    const { engine } = await startRelay({}, () => pending)
+    const updatePendingSnapshot = vi.mocked(engine.updatePendingSnapshot)
+    const subscribeScreencast = vi.mocked(engine.subscribeScreencast)
+
+    expect(updatePendingSnapshot).toHaveBeenCalledWith('w-11111111', pending)
+    expect(updatePendingSnapshot.mock.invocationCallOrder[0])
+      .toBeLessThan(subscribeScreencast.mock.invocationCallOrder[0])
   })
 })
 

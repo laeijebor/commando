@@ -19,10 +19,12 @@ function fakeStorage(): Storage {
 function note(id: number, comment = 'align this'): WebPanePendingNote {
   return {
     id,
+    revision: 1,
     selector: '#root > button',
     tag: 'button',
     rect: { x: 1, y: 2, width: 30, height: 10 },
     comment,
+    attachments: [],
   }
 }
 
@@ -36,6 +38,41 @@ describe('pending mirror', () => {
     expect(restored[1]?.queueKey).toBe('q1')
     expect(restored[1]?.response).toEqual({ question: 'q', answer: 'a' })
     expect(loadPendingMirror('w-22222222', storage).map((entry) => entry.comment)).toEqual(['other pane'])
+  })
+
+  it('accepts legacy and revised notes while omitting attachment capabilities', () => {
+    const storage = fakeStorage()
+    storage.setItem('commando.redline.pending.w-11111111', JSON.stringify([
+      {
+        id: 1,
+        selector: '#legacy',
+        tag: 'div',
+        rect: { x: 0, y: 0, width: 1, height: 1 },
+        comment: 'legacy',
+      },
+      {
+        ...note(2),
+        revision: 7,
+        attachments: [{ id: 'private.png', name: 'private.png', contentType: 'image/png', size: 10 }],
+        response: { question: 'q', answer: 'a', note: 'context', data: { value: 1 } },
+      },
+    ]))
+    const restored = loadPendingMirror('w-11111111', storage)
+    expect(restored[0]).toMatchObject({ revision: 1, attachments: [] })
+    expect(restored[1]).toMatchObject({
+      revision: 7,
+      attachments: [],
+      response: { question: 'q', answer: 'a', note: 'context', data: { value: 1 } },
+    })
+  })
+
+  it('does not write attachment references into localStorage', () => {
+    const storage = fakeStorage()
+    savePendingMirror('w-11111111', [{
+      ...note(1),
+      attachments: [{ id: 'private.png', name: 'private.png', contentType: 'image/png', size: 10 }],
+    }], storage)
+    expect(storage.getItem('commando.redline.pending.w-11111111')).not.toContain('private.png')
   })
 
   it('an empty save clears the entry', () => {

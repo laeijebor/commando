@@ -1,4 +1,8 @@
-import { MAX_PENDING_NOTES, type WebPanePendingNote } from '../shared/protocol'
+import {
+  MAX_PENDING_NOTES,
+  type WebPaneImageAttachment,
+  type WebPanePendingNote,
+} from '../shared/protocol'
 
 const KEY_PREFIX = 'commando.redline.pending.'
 
@@ -22,17 +26,28 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
+function isAttachment(value: unknown): value is WebPaneImageAttachment {
+  if (typeof value !== 'object' || value === null) return false
+  const attachment = value as Record<string, unknown>
+  return nonEmptyString(attachment.id) &&
+    nonEmptyString(attachment.name) &&
+    nonEmptyString(attachment.contentType) &&
+    isFinite(attachment.size) && Number.isSafeInteger(attachment.size) && attachment.size > 0
+}
+
 function parseNote(value: unknown): WebPanePendingNote | null {
   if (typeof value !== 'object' || value === null) return null
   const note = value as Record<string, unknown>
   const rect = note.rect as Record<string, unknown> | undefined
   if (
     !isFinite(note.id) ||
+    (note.revision !== undefined && (!isFinite(note.revision) || !Number.isSafeInteger(note.revision) || note.revision <= 0)) ||
     !nonEmptyString(note.selector) ||
     !nonEmptyString(note.tag) ||
     !nonEmptyString(note.comment) ||
     (note.text !== undefined && typeof note.text !== 'string') ||
     (note.queueKey !== undefined && typeof note.queueKey !== 'string') ||
+    (note.attachments !== undefined && (!Array.isArray(note.attachments) || !note.attachments.every(isAttachment))) ||
     typeof rect !== 'object' || rect === null ||
     !isFinite(rect.x) || !isFinite(rect.y) || !isFinite(rect.width) || !isFinite(rect.height)
   ) {
@@ -44,10 +59,15 @@ function parseNote(value: unknown): WebPanePendingNote | null {
     if (typeof raw !== 'object' || raw === null) return null
     if (!nonEmptyString(raw.question) || !nonEmptyString(raw.answer)) return null
     response = { question: raw.question, answer: raw.answer }
+    if (raw.note !== undefined) {
+      if (typeof raw.note !== 'string') return null
+      response.note = raw.note
+    }
     if (raw.data !== undefined) response.data = raw.data
   }
   return {
     id: note.id,
+    revision: note.revision === undefined ? 1 : note.revision as number,
     selector: note.selector,
     tag: note.tag,
     ...(note.text !== undefined ? { text: note.text as string } : {}),
@@ -55,6 +75,9 @@ function parseNote(value: unknown): WebPanePendingNote | null {
     comment: note.comment,
     ...(note.queueKey !== undefined ? { queueKey: note.queueKey as string } : {}),
     ...(response !== undefined ? { response } : {}),
+    // Attachment URLs are daemon capabilities. A localStorage draft may
+    // preserve the pill, but it must never be able to recreate file access.
+    attachments: [],
   }
 }
 
@@ -100,7 +123,7 @@ export function savePendingMirror(
     if (notes.length === 0) {
       storage.removeItem(storageKey(webPaneId))
     } else {
-      storage.setItem(storageKey(webPaneId), JSON.stringify(notes))
+      storage.setItem(storageKey(webPaneId), JSON.stringify(notes.map((note) => ({ ...note, attachments: [] }))))
     }
   } catch {
     // Quota or privacy-mode failure — the daemon still has the notes.

@@ -2448,8 +2448,32 @@ export function App() {
                           pendingQueue={{
                             list: () => webPanesApi.pendingNotes(webPane.id),
                             add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+                            update: (noteId, revision, change) => webPanesApi.updatePendingNote(
+                              webPane.id,
+                              noteId,
+                              revision,
+                              change,
+                            ),
+                            upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
+                              webPane.id,
+                              noteId,
+                              revision,
+                              file,
+                            ),
+                            removeAttachment: (noteId, revision, attachmentId) => (
+                              webPanesApi.removePendingAttachment(
+                                webPane.id,
+                                noteId,
+                                revision,
+                                attachmentId,
+                              )
+                            ),
+                            attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
+                              webPane.id,
+                              attachmentId,
+                            ),
                             remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
-                            send: () => webPanesApi.sendPendingNotes(webPane.id),
+                            send: (ids) => webPanesApi.sendPendingNotes(webPane.id, ids),
                             dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
                           }}
                           onDragStart={(event) => {

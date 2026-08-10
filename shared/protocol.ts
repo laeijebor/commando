@@ -308,12 +308,29 @@ export const MAX_FEEDBACK_NOTES_PER_POST = 20
 export type WebPaneFeedbackResponse = {
   question: string
   answer: string
+  note?: string
   data?: unknown
+}
+
+/** Durable image metadata shared by pending notes and delivered feedback. */
+export type WebPaneImageAttachment = {
+  id: string
+  name: string
+  contentType: string
+  size: number
+}
+
+/** An image attachment after the daemon has made it available to feedback. */
+export type WebPaneFeedbackAttachment = WebPaneImageAttachment & {
+  /** Daemon-relative URL used to fetch the attachment bytes. */
+  path: string
 }
 
 export type WebPaneFeedbackNote = {
   /** Server-assigned delivery id; present on drained notes, used for dedupe. */
   id?: number
+  /** Internal stable key for retrying a pending-to-feedback transfer. */
+  deliveryKey?: string
   selector: string
   tag: string
   text?: string
@@ -323,10 +340,12 @@ export type WebPaneFeedbackNote = {
   capturedAt: number
   /** Present when the note came from an in-page component, not an annotation. */
   response?: WebPaneFeedbackResponse
+  attachments?: WebPaneFeedbackAttachment[]
 }
 
 /** Cap on queued-but-unsent pending notes per tile. */
 export const MAX_PENDING_NOTES = 50
+export const MAX_PENDING_NOTE_ATTACHMENTS = 4
 
 /**
  * A queued-but-unsent review note, held by the daemon until the owner sends
@@ -336,6 +355,12 @@ export const MAX_PENDING_NOTES = 50
 export type WebPanePendingNote = {
   /** Server-assigned id, unique per pane. */
   id: number
+  /** Internal stable key retained when this item moves into feedback. */
+  deliveryKey?: string
+  /** Item revision used for optimistic pending-note mutations. */
+  revision?: number
+  /** Page that produced this note. Missing only on historical journal entries. */
+  pageUrl?: string
   selector: string
   tag: string
   text?: string
@@ -345,10 +370,14 @@ export type WebPanePendingNote = {
   queueKey?: string
   /** Present when the note came from an in-page component, not an annotation. */
   response?: WebPaneFeedbackResponse
+  /** Daemon-owned attachments. Daemon-produced notes always include this. */
+  attachments?: WebPaneImageAttachment[]
 }
 
 /** A tile's pending queue plus the metadata a viewer needs to reason about it. */
 export type WebPanePendingSnapshot = {
+  /** Monotonic daemon revision. Daemon-produced snapshots always include this. */
+  revision?: number
   notes: WebPanePendingNote[]
   /**
    * Highest note id this pane has ever issued, live or since removed. A

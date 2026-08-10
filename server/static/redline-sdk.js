@@ -12,6 +12,8 @@
 ;(() => {
   'use strict'
   const BINDING = '__commandoRedlineQueue'
+  const PENDING_SNAPSHOT = '__commandoRedlinePendingSnapshot'
+  const PENDING_EVENT = 'commando:redline-pending'
 
   // Mirrors shared/redline-response.ts MAX_RESPONSE_DATA_JSON — keep in sync.
   const MAX_RESPONSE_DATA_JSON = 4096
@@ -94,6 +96,9 @@
     const payload = {
       question: input.question.slice(0, 256),
       answer: input.answer.slice(0, 1024),
+    }
+    if (typeof input.note === 'string' && input.note.length > 0) {
+      payload.note = input.note.slice(0, 1024)
     }
     if (input.data !== undefined) {
       let json
@@ -275,12 +280,21 @@
   background: linear-gradient(135deg, #2fbf71, #24a05c);
   box-shadow: 0 0 16px rgb(47 191 113 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
 }
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue[data-changed]) {
+  background: linear-gradient(135deg, #d99124, #b86d18);
+  box-shadow: 0 0 16px rgb(217 145 36 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
+}
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge) {
   display: inline-block; margin-left: .6rem; padding: .22rem .6rem; border-radius: 999px;
   font-size: .75rem; font-weight: 600; color: #2fbf71;
   background: color-mix(in oklab, #2fbf71 14%, transparent);
   border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
   animation: redline-badge-in .25s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge[data-changed]) {
+  color: #d99124;
+  background: color-mix(in oklab, #d99124 14%, transparent);
+  border-color: color-mix(in oklab, #d99124 40%, transparent);
 }
 @keyframes redline-badge-in {
   from { opacity: 0; transform: translateY(3px); }
@@ -392,7 +406,8 @@
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'redline-queue'
-    button.textContent = label || 'Queue answer'
+    button.dataset.defaultLabel = label || 'Queue answer'
+    button.textContent = button.dataset.defaultLabel
     if (!bindingAvailable()) {
       button.disabled = true
       button.title = 'Open this page in a commando tile to queue answers'
@@ -401,17 +416,82 @@
     return button
   }
 
-  const markQueued = (host, button) => {
-    button.textContent = 'Queued ✓'
-    button.dataset.queued = '1'
+  const noteInput = () => {
+    const note = document.createElement('textarea')
+    note.className = 'redline-comment redline-note'
+    note.dataset.redlineNote = '1'
+    note.placeholder = 'Optional note'
+    note.maxLength = 1024
+    return note
+  }
+
+  const pendingControls = new Set()
+  let pendingSnapshot = null
+
+  const validPendingSnapshot = (value) =>
+    value && value.version === 1 && Array.isArray(value.controls)
+
+  const currentPendingSnapshot = () => {
+    const cached = window[PENDING_SNAPSHOT]
+    return validPendingSnapshot(cached) ? cached : pendingSnapshot
+  }
+
+  const matchedPendingControl = (host, snapshot) => {
+    if (!snapshot) return null
+    const queueKey = host.key()
+    if (queueKey) {
+      return snapshot.controls.find((control) => control?.queueKey === queueKey) || null
+    }
+    const selector = cssPath(host)
+    return snapshot.controls.find((control) => !control?.queueKey && control?.selector === selector) || null
+  }
+
+  const pendingBaseline = (response) => JSON.stringify([
+    typeof response?.answer === 'string' ? response.answer.trim() : '',
+    typeof response?.note === 'string' ? response.note.trim() : '',
+  ])
+
+  const renderPendingState = (host) => {
+    const button = host._queueButton
+    if (!button) return
     let badge = host.querySelector('.redline-queued-badge')
+    if (host._queuedBaseline === null) {
+      button.textContent = button.dataset.defaultLabel
+      delete button.dataset.queued
+      delete button.dataset.changed
+      badge?.remove()
+      return
+    }
+    const draft = host.draft()
+    const matches = draft && pendingBaseline(draft) === host._queuedBaseline
+    button.textContent = matches ? 'Queued ✓' : 'Update queued answer'
+    if (matches) {
+      button.dataset.queued = '1'
+      delete button.dataset.changed
+    } else {
+      button.dataset.changed = '1'
+      delete button.dataset.queued
+    }
     if (!badge) {
       badge = document.createElement('span')
       badge.className = 'redline-queued-badge'
-      badge.textContent = 'queued — see tile footer'
       button.after(badge)
     }
+    badge.textContent = matches ? 'queued — see tile footer' : 'Changed since queued'
+    if (matches) delete badge.dataset.changed
+    else badge.dataset.changed = '1'
   }
+
+  const applyPendingSnapshot = (snapshot) => {
+    if (!validPendingSnapshot(snapshot)) return
+    pendingSnapshot = snapshot
+    for (const control of pendingControls) control.applyPendingSnapshot(snapshot)
+  }
+
+  window.addEventListener(PENDING_EVENT, (event) => {
+    const snapshot = validPendingSnapshot(event.detail) ? event.detail : window[PENDING_SNAPSHOT]
+    applyPendingSnapshot(snapshot)
+  })
 
   const promptHeading = (host) => {
     const heading = document.createElement('p')
@@ -423,7 +503,10 @@
   /** Shared base: light-DOM render on connect, one queue press per answer. */
   class RedlineElement extends HTMLElement {
     connectedCallback() {
-      if (this.dataset.redlineReady) return
+      if (this.dataset.redlineReady) {
+        this.registerPendingControl()
+        return
+      }
       this.dataset.redlineReady = '1'
       // Custom-element upgrade fires connectedCallback at the OPENING tag when
       // the SDK loads synchronously (e.g. from <head>) — the parser hasn't
@@ -440,6 +523,9 @@
         this.render()
       }
     }
+    disconnectedCallback() {
+      pendingControls.delete(this)
+    }
     key() {
       return this.getAttribute('key') || undefined
     }
@@ -447,16 +533,64 @@
       return this.getAttribute('prompt') || this.getAttribute('key') || 'Question'
     }
     queue(answer, data) {
-      const sent = queueResponse({
+      return queueResponse({
         question: this.prompt(),
         answer,
+        note: this._noteInput?.value.trim() || undefined,
         data,
         queueKey: this.key(),
         element: this,
       })
-      if (sent) markQueued(this, this.querySelector('button.redline-queue'))
-      return sent
     }
+    finishRender(button, note) {
+      this._queueButton = button
+      this._noteInput = note
+      this._queuedBaseline = null
+      this._localBaseline = this.currentBaseline()
+      this.addEventListener('input', () => renderPendingState(this))
+      this.addEventListener('change', () => renderPendingState(this))
+      this.registerPendingControl()
+    }
+    registerPendingControl() {
+      if (!this._queueButton || !this.isConnected) return
+      pendingControls.add(this)
+      const snapshot = currentPendingSnapshot()
+      if (snapshot) this.applyPendingSnapshot(snapshot)
+    }
+    applyPendingSnapshot(snapshot) {
+      const currentBaseline = this.currentBaseline()
+      const wasClean = currentBaseline === (
+        this._queuedBaseline === null ? this._localBaseline : this._queuedBaseline
+      )
+      const control = matchedPendingControl(this, snapshot)
+      if (!control?.response) {
+        if (this._queuedBaseline !== null) this._localBaseline = currentBaseline
+        this._queuedBaseline = null
+        renderPendingState(this)
+        return
+      }
+      if (wasClean) {
+        this.hydrate(control.response)
+        const restoredNote = typeof control.response.note === 'string'
+          ? control.response.note
+          : this.legacyNote(control.response)
+        this._noteInput.value = restoredNote || ''
+      }
+      this._queuedBaseline = pendingBaseline(this.baseline(control.response))
+      renderPendingState(this)
+    }
+    currentBaseline() {
+      return pendingBaseline(this.draft() || { answer: '', note: this._noteInput?.value || '' })
+    }
+    baseline(response) {
+      return {
+        answer: response.answer,
+        note: typeof response.note === 'string' ? response.note : this.legacyNote(response),
+      }
+    }
+    legacyNote() { return '' }
+    hydrate() {}
+    draft() { return null }
     render() {}
   }
 
@@ -481,12 +615,37 @@
         list.append(label)
       }
       const button = queueButton(this.getAttribute('button-label'))
+      const note = noteInput()
       button.addEventListener('click', () => {
         const chosen = [...this.querySelectorAll('input:checked')].map((input) => input.value)
         if (chosen.length === 0) return
-        this.queue(chosen.join(', '), { choice: multiple ? chosen : chosen[0] })
+        this.queue(chosen.join(', '), {
+          choice: multiple ? chosen : chosen[0],
+          options,
+          multiple,
+        })
       })
-      this.append(list, button)
+      this.append(list, note, button)
+      this._multiple = multiple
+      this.finishRender(button, note)
+    }
+    hydrate(response) {
+      const choice = response.data?.choice
+      const values = Array.isArray(choice)
+        ? choice.map(String)
+        : typeof choice === 'string'
+          ? [choice]
+          : this._multiple
+            ? response.answer.split(', ').map((value) => value.trim())
+            : [response.answer]
+      for (const input of this.querySelectorAll('.redline-options input')) {
+        input.checked = values.includes(input.value)
+      }
+    }
+    draft() {
+      const chosen = [...this.querySelectorAll('.redline-options input:checked')].map((input) => input.value)
+      if (chosen.length === 0) return null
+      return { answer: chosen.join(', '), note: this._noteInput.value }
     }
   }
 
@@ -505,20 +664,34 @@
         label.append(input, document.createTextNode(` ${verdict}`))
         list.append(label)
       }
-      const comment = document.createElement('textarea')
-      comment.className = 'redline-comment'
-      comment.placeholder = 'Optional comment'
+      const note = noteInput()
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
         const selected = this.querySelector('input:checked')
         if (!selected) return
-        const note = comment.value.trim()
-        this.queue(note ? `${selected.value} — ${note}` : selected.value, {
-          verdict: selected.value,
-          ...(note ? { comment: note } : {}),
-        })
+        this.queue(selected.value, { verdict: selected.value })
       })
-      this.append(list, comment, button)
+      this.append(list, note, button)
+      this.finishRender(button, note)
+    }
+    legacyNote(response) {
+      return typeof response.data?.comment === 'string' ? response.data.comment : ''
+    }
+    baseline(response) {
+      return {
+        answer: typeof response.data?.verdict === 'string' ? response.data.verdict : response.answer.split(' — ')[0],
+        note: typeof response.note === 'string' ? response.note : this.legacyNote(response),
+      }
+    }
+    hydrate(response) {
+      const verdict = typeof response.data?.verdict === 'string'
+        ? response.data.verdict
+        : response.answer.split(' — ')[0]
+      for (const input of this.querySelectorAll('.redline-options input')) input.checked = input.value === verdict
+    }
+    draft() {
+      const selected = this.querySelector('.redline-options input:checked')
+      return selected ? { answer: selected.value, note: this._noteInput.value } : null
     }
   }
 
@@ -542,12 +715,23 @@
         list.append(label)
       }
       const button = queueButton(this.getAttribute('button-label'))
+      const note = noteInput()
       button.addEventListener('click', () => {
         const selected = this.querySelector('input:checked')
         if (!selected) return
         this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max })
       })
-      this.append(list, button)
+      this.append(list, note, button)
+      this._max = max
+      this.finishRender(button, note)
+    }
+    hydrate(response) {
+      const rating = response.data?.rating ?? String(response.answer).split('/')[0]
+      for (const input of this.querySelectorAll('.redline-options input')) input.checked = input.value === String(rating)
+    }
+    draft() {
+      const selected = this.querySelector('.redline-options input:checked')
+      return selected ? { answer: `${selected.value}/${this._max}`, note: this._noteInput.value } : null
     }
   }
 
@@ -557,13 +741,23 @@
       const input = document.createElement('textarea')
       input.className = 'redline-comment'
       input.placeholder = this.getAttribute('placeholder') || 'Your answer'
+      const note = noteInput()
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
         const answer = input.value.trim()
         if (!answer) return
         this.queue(answer)
       })
-      this.append(input, button)
+      this.append(input, note, button)
+      this._answerInput = input
+      this.finishRender(button, note)
+    }
+    hydrate(response) {
+      this._answerInput.value = response.answer
+    }
+    draft() {
+      const answer = this._answerInput.value.trim()
+      return answer ? { answer, note: this._noteInput.value } : null
     }
   }
 
@@ -571,29 +765,59 @@
     render() {
       // Wraps author-provided native inputs; only adds the heading + button.
       this.prepend(promptHeading(this))
+      const note = noteInput()
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
-        const data = {}
-        const parts = []
-        for (const field of this.querySelectorAll('input, select, textarea')) {
-          const key = field.name || field.id
-          if (!key) continue
-          if (field.type === 'checkbox') {
-            data[key] = field.checked
-            parts.push(`${key}: ${field.checked ? 'yes' : 'no'}`)
-          } else if (field.type === 'radio') {
-            if (!field.checked) continue
-            data[key] = field.value
-            parts.push(`${key}: ${field.value}`)
-          } else {
-            data[key] = field.value
-            parts.push(`${key}: ${field.value}`)
-          }
-        }
-        if (parts.length === 0) return
-        this.queue(parts.join('; ').slice(0, 1024), data)
+        const draft = this.structuredDraft()
+        if (!draft) return
+        this.queue(draft.answer, draft.data)
       })
-      this.append(button)
+      this.append(note, button)
+      this.finishRender(button, note)
+    }
+    authoredFields() {
+      return [...this.querySelectorAll('input, select, textarea')]
+        .filter((field) => !field.matches('[data-redline-note]'))
+    }
+    structuredDraft() {
+      const data = {}
+      const parts = []
+      for (const field of this.authoredFields()) {
+        const key = field.name || field.id
+        if (!key) continue
+        if (field.type === 'checkbox') {
+          data[key] = field.checked
+          parts.push(`${key}: ${field.checked ? 'yes' : 'no'}`)
+        } else if (field.type === 'radio') {
+          if (!field.checked) continue
+          data[key] = field.value
+          parts.push(`${key}: ${field.value}`)
+        } else {
+          data[key] = field.value
+          parts.push(`${key}: ${field.value}`)
+        }
+      }
+      return parts.length === 0 ? null : { answer: parts.join('; ').slice(0, 1024), data }
+    }
+    hydrate(response) {
+      const data = response.data && typeof response.data === 'object' ? response.data : Object.fromEntries(
+        String(response.answer).split('; ').map((part) => {
+          const separator = part.indexOf(': ')
+          return separator < 0 ? ['', ''] : [part.slice(0, separator), part.slice(separator + 2)]
+        }),
+      )
+      for (const field of this.authoredFields()) {
+        const key = field.name || field.id
+        if (!key || !Object.prototype.hasOwnProperty.call(data, key)) continue
+        const value = data[key]
+        if (field.type === 'checkbox') field.checked = value === true || value === 'yes'
+        else if (field.type === 'radio') field.checked = field.value === String(value)
+        else field.value = String(value)
+      }
+    }
+    draft() {
+      const draft = this.structuredDraft()
+      return draft ? { answer: draft.answer, note: this._noteInput.value } : null
     }
   }
 

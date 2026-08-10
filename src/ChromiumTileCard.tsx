@@ -9,7 +9,7 @@ import {
 } from './chromiumTileInput'
 import { loadPendingMirror, savePendingMirror } from './pendingMirror'
 import { createInspectThrottle } from './tileReview'
-import type { PendingNoteDraft } from './webPanesApi'
+import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
 
 const VIEWPORT_THROTTLE_MS = 200
 const MOUSEMOVE_THROTTLE_MS = 16
@@ -34,6 +34,7 @@ type TileSocketMessage = {
   text?: string
   snippet?: string
   notes?: unknown
+  revision?: number
   dropped?: number
   knownUpTo?: number
 }
@@ -45,8 +46,20 @@ type TileSocketMessage = {
 export type PendingQueueApi = {
   list: () => Promise<WebPanePendingSnapshot>
   add: (note: PendingNoteDraft) => Promise<WebPanePendingSnapshot>
+  update: (
+    noteId: number,
+    expectedRevision: number,
+    change: { answer?: string; note?: string },
+  ) => Promise<WebPanePendingSnapshot>
+  upload: (noteId: number, expectedRevision: number, file: File) => Promise<WebPanePendingSnapshot>
+  removeAttachment: (
+    noteId: number,
+    expectedRevision: number,
+    attachmentId: string,
+  ) => Promise<WebPanePendingSnapshot>
+  attachmentUrl: (attachmentId: string) => string
   remove: (noteId: number) => Promise<WebPanePendingSnapshot>
-  send: () => Promise<WebPanePendingSnapshot>
+  send: (targets?: readonly number[] | readonly PendingSendTarget[]) => Promise<WebPanePendingSnapshot>
   dismissDropped: () => Promise<WebPanePendingSnapshot>
 }
 
@@ -54,6 +67,87 @@ const EMPTY_SNAPSHOT: WebPanePendingSnapshot = {
   notes: [],
   knownUpTo: Number.POSITIVE_INFINITY,
   dropped: 0,
+}
+
+type PendingDraft = {
+  answer: string
+  note: string
+  baseAnswer: string
+  baseNote: string
+  baseRevision: number
+  dirty: boolean
+  conflict: boolean
+}
+
+type DraftReconcile = {
+  reset?: ReadonlySet<number>
+  rebase?: ReadonlySet<number>
+}
+
+type PendingEditor =
+  | { kind: 'choice'; options: string[]; multiple: boolean }
+  | { kind: 'approve'; options: string[] }
+  | { kind: 'rating'; max: number }
+  | { kind: 'text' }
+
+function responseData(note: WebPanePendingNote): Record<string, unknown> {
+  const data = note.response?.data
+  return typeof data === 'object' && data !== null && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : {}
+}
+
+function editorFor(note: WebPanePendingNote): PendingEditor {
+  const data = responseData(note)
+  if (Array.isArray(data.options) && data.options.every((option) => typeof option === 'string')) {
+    return { kind: 'choice', options: data.options, multiple: data.multiple === true }
+  }
+  if (typeof data.verdict === 'string') {
+    return { kind: 'approve', options: ['approve', 'reject', 'needs-changes'] }
+  }
+  if (typeof data.max === 'number' && Number.isInteger(data.max) && data.max >= 2) {
+    return { kind: 'rating', max: Math.min(10, data.max) }
+  }
+  return { kind: 'text' }
+}
+
+function draftValues(note: WebPanePendingNote): { answer: string; note: string } {
+  if (!note.response) return { answer: note.comment, note: '' }
+  const data = responseData(note)
+  const editor = editorFor(note)
+  let answer = note.response.answer
+  if (editor.kind === 'choice') {
+    const choice = data.choice
+    if (Array.isArray(choice)) answer = choice.map(String).join(', ')
+    else if (typeof choice === 'string') answer = choice
+  } else if (editor.kind === 'approve' && typeof data.verdict === 'string') {
+    answer = data.verdict
+  } else if (editor.kind === 'rating') {
+    const rating = typeof data.rating === 'number' ? data.rating : Number.parseInt(answer, 10)
+    if (Number.isFinite(rating)) answer = `${rating}/${editor.max}`
+  }
+  const legacyNote = typeof data.comment === 'string' ? data.comment : ''
+  return { answer, note: note.response.note ?? legacyNote }
+}
+
+function draftFor(note: WebPanePendingNote): PendingDraft {
+  const values = draftValues(note)
+  return {
+    ...values,
+    baseAnswer: values.answer,
+    baseNote: values.note,
+    baseRevision: note.revision ?? 1,
+    dirty: false,
+    conflict: false,
+  }
+}
+
+function itemLabel(note: WebPanePendingNote): string {
+  return note.response ? note.response.question : note.selector
+}
+
+function itemType(note: WebPanePendingNote): string {
+  return note.response ? 'Response' : 'Annotation'
 }
 
 /** Narrows a socket frame already known to be an `inspect_result`. */
@@ -130,7 +224,15 @@ export function ChromiumTileCard({
   const [queued, setQueued] = useState<WebPanePendingNote[]>([])
   const [dropped, setDropped] = useState(0)
   const [hydrated, setHydrated] = useState(false)
-  const [sendState, setSendState] = useState<'idle' | 'sending' | { error: string }>('idle')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [drafts, setDrafts] = useState<Record<number, PendingDraft>>({})
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
+  const busyIdsRef = useRef<ReadonlySet<number>>(new Set())
+  const [sendingAll, setSendingAll] = useState(false)
+  const sendingAllRef = useRef(false)
+  const [queueError, setQueueError] = useState('')
+  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
   const nextInspectId = useRef(0)
   const lastHoverId = useRef('')
@@ -140,12 +242,73 @@ export function ChromiumTileCard({
   reviewModeRef.current = reviewMode
   const pendingQueueRef = useRef(pendingQueue)
   pendingQueueRef.current = pendingQueue
+  const queuedRef = useRef(queued)
+  queuedRef.current = queued
+  const draftsRef = useRef(drafts)
+  draftsRef.current = drafts
+  const latestSnapshotRevisionRef = useRef<number | undefined>(undefined)
+  const attachmentMutationIdsRef = useRef(new Set<number>())
   /** Set once the daemon has pushed a queue over the socket for this tile. */
   const pushedRef = useRef(false)
 
-  const applySnapshot = (snapshot: WebPanePendingSnapshot): void => {
+  const applySnapshot = (snapshot: WebPanePendingSnapshot, reconcile: DraftReconcile = {}): boolean => {
+    const latestRevision = latestSnapshotRevisionRef.current
+    if (
+      snapshot.revision !== undefined &&
+      latestRevision !== undefined &&
+      snapshot.revision < latestRevision
+    ) return false
+    if (snapshot.revision !== undefined) latestSnapshotRevisionRef.current = snapshot.revision
+
+    const currentDrafts = draftsRef.current
+    const nextDrafts: Record<number, PendingDraft> = {}
+    for (const note of snapshot.notes) {
+      const current = currentDrafts[note.id]
+      if (!current || reconcile.reset?.has(note.id)) {
+        nextDrafts[note.id] = draftFor(note)
+        continue
+      }
+      const serverDraft = draftFor(note)
+      if (reconcile.rebase?.has(note.id)) {
+        nextDrafts[note.id] = current.dirty
+          ? {
+              ...current,
+              baseAnswer: serverDraft.baseAnswer,
+              baseNote: serverDraft.baseNote,
+              baseRevision: serverDraft.baseRevision,
+              dirty: current.answer !== serverDraft.baseAnswer || current.note !== serverDraft.baseNote,
+              conflict: current.conflict,
+            }
+          : serverDraft
+        continue
+      }
+      if (current.dirty) {
+        nextDrafts[note.id] = {
+          ...current,
+          conflict: current.conflict || (
+            note.revision !== undefined && note.revision !== current.baseRevision
+          ),
+        }
+      } else {
+        nextDrafts[note.id] = serverDraft
+      }
+    }
+    draftsRef.current = nextDrafts
+    queuedRef.current = snapshot.notes
+    setDrafts(nextDrafts)
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
+    if (snapshot.notes.length === 0) setDrawerOpen(false)
+    const attachmentIds = new Set(snapshot.notes.flatMap((note) => (
+      note.attachments ?? []
+    ).map((attachment) => attachment.id)))
+    setPreview((current) => current && attachmentIds.has(current.id) ? current : null)
+    setSelectedId((current) => (
+      current !== null && snapshot.notes.some((note) => note.id === current)
+        ? current
+        : snapshot.notes[0]?.id ?? null
+    ))
+    return true
   }
   // The socket handler is built once per connection but must always call the
   // current setters, so it goes through a ref.
@@ -286,11 +449,17 @@ export function ChromiumTileCard({
           // The daemon's pending queue is authoritative — replace, never merge.
           if (Array.isArray(message.notes)) {
             pushedRef.current = true
-            applySnapshotRef.current({
+            const snapshot = {
+              ...(typeof message.revision === 'number' ? { revision: message.revision } : {}),
               notes: message.notes as WebPanePendingNote[],
               knownUpTo: typeof message.knownUpTo === 'number' ? message.knownUpTo : 0,
               dropped: typeof message.dropped === 'number' ? message.dropped : 0,
-            })
+            }
+            const attachmentMutations = attachmentMutationIdsRef.current
+            applySnapshotRef.current(
+              snapshot,
+              attachmentMutations.size > 0 ? { rebase: new Set(attachmentMutations) } : undefined,
+            )
             setHydrated(true)
           }
           return
@@ -447,33 +616,234 @@ export function ChromiumTileCard({
     return () => window.clearTimeout(timer)
   }, [hint])
 
-  const reviewActive = reviewMode && state === 'streaming'
+  useEffect(() => {
+    if (!preview) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreview(null)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [preview])
 
-  // A failed send leaves its message on screen until the next send; drop it as
-  // soon as the queue changes so it cannot resurface against unrelated notes.
-  const clearSendError = () =>
-    setSendState((current) => (typeof current === 'object' ? 'idle' : current))
+  const reviewActive = reviewMode && state === 'streaming'
 
   // Every mutation returns the daemon's new authoritative queue; rendering
   // that (rather than patching local state) keeps all viewers consistent.
   const mutateQueue = async (mutate: () => Promise<WebPanePendingSnapshot>, failure: string) => {
     try {
       applySnapshot(await mutate())
-      clearSendError()
+      setQueueError('')
     } catch (error) {
-      setSendState({ error: error instanceof Error ? error.message : failure })
+      setQueueError(error instanceof Error ? error.message : failure)
     }
   }
 
-  // The daemon moves the whole pending queue into the feedback store in one
-  // step; a failure (e.g. the agent's queue is full) leaves it pending.
-  const submitQueued = async () => {
-    setSendState('sending')
+  const changeDraft = (noteId: number, change: Partial<Pick<PendingDraft, 'answer' | 'note'>>) => {
+    const serverNote = queuedRef.current.find((note) => note.id === noteId)
+    if (!serverNote) return
+    const current = draftsRef.current[noteId] ?? draftFor(serverNote)
+    const nextDraft = { ...current, ...change }
+    nextDraft.dirty = nextDraft.answer !== nextDraft.baseAnswer || nextDraft.note !== nextDraft.baseNote
+    if (!nextDraft.dirty) nextDraft.conflict = false
+    const nextDrafts = { ...draftsRef.current, [noteId]: nextDraft }
+    draftsRef.current = nextDrafts
+    setDrafts(nextDrafts)
+    setQueueError('')
+  }
+
+  const resetDraft = (noteId: number) => {
+    const serverNote = queuedRef.current.find((note) => note.id === noteId)
+    if (!serverNote) return
+    const nextDrafts = { ...draftsRef.current, [noteId]: draftFor(serverNote) }
+    draftsRef.current = nextDrafts
+    setDrafts(nextDrafts)
+    setQueueError('')
+  }
+
+  const markBusy = (noteId: number, busy: boolean) => {
+    const next = new Set(busyIdsRef.current)
+    if (busy) next.add(noteId)
+    else next.delete(noteId)
+    busyIdsRef.current = next
+    setBusyIds(next)
+  }
+
+  const saveDraft = async (noteId: number): Promise<boolean> => {
+    const draft = draftsRef.current[noteId]
+    const serverNote = queuedRef.current.find((note) => note.id === noteId)
+    if (!draft || !serverNote || !draft.dirty) return Boolean(serverNote)
+    if (draft.conflict) {
+      setQueueError('This draft changed on the server. Reload it before saving or sending.')
+      return false
+    }
     try {
-      applySnapshot(await pendingQueueRef.current.send())
-      setSendState('idle')
+      const snapshot = await pendingQueueRef.current.update(
+        noteId,
+        draft.baseRevision,
+        serverNote.response
+          ? { answer: draft.answer, note: draft.note }
+          : { answer: draft.answer },
+      )
+      const accepted = applySnapshot(snapshot, { reset: new Set([noteId]) })
+      if (!accepted) {
+        setQueueError('A newer queue snapshot arrived while saving. Reload the draft before sending.')
+        return false
+      }
+      setQueueError('')
+      return true
     } catch (error) {
-      setSendState({ error: error instanceof Error ? error.message : 'Could not send notes' })
+      setQueueError(error instanceof Error ? error.message : 'Could not save changes')
+      return false
+    }
+  }
+
+  const saveOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
+    markBusy(noteId, true)
+    try {
+      await saveDraft(noteId)
+    } finally {
+      markBusy(noteId, false)
+    }
+  }
+
+  const sendOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
+    markBusy(noteId, true)
+    try {
+      if (!(await saveDraft(noteId))) return
+      const latest = queuedRef.current.find((note) => note.id === noteId)
+      if (!latest) {
+        setQueueError('This item changed before it could be sent. Reload the queue and try again.')
+        return
+      }
+      applySnapshot(await pendingQueueRef.current.send([{
+        id: latest.id,
+        revision: latest.revision ?? 1,
+      }]))
+      setQueueError('')
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not send this item')
+    } finally {
+      markBusy(noteId, false)
+    }
+  }
+
+  // Capture the visible ids first so an answer queued during the save pass is
+  // not accidentally included in this explicit send.
+  const sendAll = async () => {
+    if (sendingAllRef.current || busyIdsRef.current.size > 0) return
+    const visible = queuedRef.current.map((note) => ({ id: note.id, revision: note.revision ?? 1 }))
+    const ids = visible.map((note) => note.id)
+    if (ids.length === 0) return
+    const expectedRevisions = new Map(visible.map((note) => [note.id, note.revision]))
+    sendingAllRef.current = true
+    setSendingAll(true)
+    setQueueError('')
+    try {
+      for (const noteId of ids) {
+        const draft = draftsRef.current[noteId]
+        if (draft?.conflict) {
+          setQueueError('Resolve or reload conflicted drafts before sending the queue.')
+          return
+        }
+        if (draft?.dirty) {
+          if (!(await saveDraft(noteId))) return
+          const saved = queuedRef.current.find((note) => note.id === noteId)
+          if (!saved) {
+            setQueueError('The queue changed while saving. Nothing was sent.')
+            return
+          }
+          expectedRevisions.set(noteId, saved.revision ?? 1)
+        }
+      }
+      const targets: PendingSendTarget[] = []
+      for (const noteId of ids) {
+        const note = queuedRef.current.find((candidate) => candidate.id === noteId)
+        const draft = draftsRef.current[noteId]
+        if (
+          !note ||
+          draft?.conflict ||
+          (note.revision ?? 1) !== expectedRevisions.get(noteId)
+        ) {
+          setQueueError('The queue changed while saving. Nothing was sent.')
+          return
+        }
+        targets.push({ id: note.id, revision: note.revision ?? 1 })
+      }
+      applySnapshot(await pendingQueueRef.current.send(targets))
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not send the queue')
+    } finally {
+      sendingAllRef.current = false
+      setSendingAll(false)
+    }
+  }
+
+  const removeOne = async (noteId: number) => {
+    if (sendingAllRef.current) return
+    markBusy(noteId, true)
+    try {
+      applySnapshot(await pendingQueueRef.current.remove(noteId))
+      setQueueError('')
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not remove the item')
+    } finally {
+      markBusy(noteId, false)
+    }
+  }
+
+  const uploadAttachment = async (noteId: number, file: File) => {
+    if (sendingAllRef.current) return
+    const acceptedTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+    if (!acceptedTypes.has(file.type)) {
+      setQueueError('Choose a PNG, JPEG, GIF, or WebP image.')
+      return
+    }
+    const note = queuedRef.current.find((candidate) => candidate.id === noteId)
+    if (!note) return
+    if (draftsRef.current[noteId]?.conflict) {
+      setQueueError('Reload the conflicted draft before changing its attachments.')
+      return
+    }
+    markBusy(noteId, true)
+    attachmentMutationIdsRef.current.add(noteId)
+    try {
+      applySnapshot(
+        await pendingQueueRef.current.upload(noteId, note.revision ?? 1, file),
+        { rebase: new Set([noteId]) },
+      )
+      setQueueError('')
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not upload the attachment')
+    } finally {
+      attachmentMutationIdsRef.current.delete(noteId)
+      markBusy(noteId, false)
+    }
+  }
+
+  const removeAttachment = async (noteId: number, attachmentId: string) => {
+    if (sendingAllRef.current) return
+    const note = queuedRef.current.find((candidate) => candidate.id === noteId)
+    if (!note) return
+    if (draftsRef.current[noteId]?.conflict) {
+      setQueueError('Reload the conflicted draft before changing its attachments.')
+      return
+    }
+    markBusy(noteId, true)
+    attachmentMutationIdsRef.current.add(noteId)
+    try {
+      applySnapshot(
+        await pendingQueueRef.current.removeAttachment(noteId, note.revision ?? 1, attachmentId),
+        { rebase: new Set([noteId]) },
+      )
+      if (preview?.id === attachmentId) setPreview(null)
+      setQueueError('')
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not remove the attachment')
+    } finally {
+      attachmentMutationIdsRef.current.delete(noteId)
+      markBusy(noteId, false)
     }
   }
 
@@ -486,6 +856,11 @@ export function ChromiumTileCard({
     if (!canvas) return
     return attachTileWheelCapture(canvas, send)
   }, [])
+
+  const selected = selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
+  const selectedDraft = selected ? drafts[selected.id] ?? draftFor(selected) : undefined
+  const selectedEditor = selected ? editorFor(selected) : undefined
+  const selectedBusy = selected ? sendingAll || busyIds.has(selected.id) : false
 
   return (
     <div
@@ -617,59 +992,317 @@ export function ChromiumTileCard({
         </div>
       )}
       {(queued.length > 0 || dropped > 0) && (
-        <div className="tile-review-pills">
-          {dropped > 0 && (
-            <span className="tile-review-dropped" role="alert">
-              {`${dropped} older answer${dropped === 1 ? '' : 's'} dropped — the queue is full at ${MAX_PENDING_NOTES}. Send to make room.`}
-              <button
-                type="button"
-                className="tile-review-pill-remove"
-                aria-label="Dismiss the dropped-answer warning"
-                onClick={() => {
-                  void mutateQueue(
-                    () => pendingQueueRef.current.dismissDropped(),
-                    'Could not dismiss the warning',
-                  )
-                }}
-              >
-                ×
-              </button>
-            </span>
-          )}
-          {queued.map((note) => (
-            <span key={note.id} className="tile-review-pill" title={`${note.selector} — ${note.comment}`}>
-              <strong>{note.tag}</strong>
-              <span className="tile-review-pill-comment">{note.comment}</span>
-              <button
-                type="button"
-                className="tile-review-pill-remove"
-                aria-label={`Remove note about ${note.selector}`}
-                onClick={() => {
-                  void mutateQueue(
-                    () => pendingQueueRef.current.remove(note.id),
-                    'Could not remove the note',
-                  )
-                }}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          {queued.length > 0 && (
-            <button
-              type="button"
-              className="web-pane-action"
-              disabled={sendState === 'sending'}
-              onClick={() => void submitQueued()}
+        <>
+          {!drawerOpen ? (
+            <div className="tile-review-strip" data-testid="pending-queue-strip">
+              {dropped > 0 && (
+                <span className="tile-review-dropped" role="alert">
+                  {`${dropped} older answer${dropped === 1 ? '' : 's'} dropped — the queue is full at ${MAX_PENDING_NOTES}. Send to make room.`}
+                  <button
+                    type="button"
+                    className="tile-review-pill-remove"
+                    aria-label="Dismiss the dropped-answer warning"
+                    onClick={() => {
+                      void mutateQueue(
+                        () => pendingQueueRef.current.dismissDropped(),
+                        'Could not dismiss the warning',
+                      )
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+              {queued.length > 0 && (
+                <button
+                  type="button"
+                  className="tile-review-queue-toggle"
+                  aria-expanded="false"
+                  onClick={() => setDrawerOpen(true)}
+                >
+                  Review queue · {queued.length}
+                </button>
+              )}
+              <div className="tile-review-strip-items" aria-hidden="true">
+                {queued.slice(0, 3).map((note) => (
+                  <span key={note.id} className={`tile-review-chip is-${note.response ? 'response' : 'annotation'}`}>
+                    {note.response ? note.response.answer : note.comment}
+                  </span>
+                ))}
+                {queued.length > 3 && <span className="tile-review-chip">+{queued.length - 3}</span>}
+              </div>
+              {queued.length > 0 && (
+                <button
+                  type="button"
+                  className="tile-review-send-all"
+                  disabled={sendingAll || busyIds.size > 0}
+                  onClick={() => void sendAll()}
+                >
+                  {sendingAll ? 'Saving…' : 'Send all'}
+                </button>
+              )}
+              {queueError && <span className="tile-review-error" role="alert">{queueError}</span>}
+            </div>
+          ) : (
+            <section
+              className="tile-review-drawer"
+              role="dialog"
+              aria-label="Pending review queue"
+              data-testid="pending-queue-drawer"
             >
-              {sendState === 'sending'
-                ? 'Sending…'
-                : `Send ${queued.length} note${queued.length === 1 ? '' : 's'}`}
-            </button>
+              <header className="tile-review-drawer-head">
+                <div>
+                  <span className="tile-review-eyebrow">Pending answers</span>
+                  <strong>Review queue · {queued.length}</strong>
+                </div>
+                <div className="tile-review-drawer-actions">
+                  <button
+                    type="button"
+                    className="tile-review-send-all"
+                    disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
+                    onClick={() => void sendAll()}
+                  >
+                    {sendingAll ? 'Saving and sending…' : 'Send all'}
+                  </button>
+                  <button
+                    type="button"
+                    className="tile-review-collapse"
+                    aria-label="Collapse review queue"
+                    onClick={() => setDrawerOpen(false)}
+                  >
+                    ↓
+                  </button>
+                </div>
+              </header>
+              {dropped > 0 && (
+                <div className="tile-review-drawer-warning" role="alert">
+                  <span>{`${dropped} older answer${dropped === 1 ? '' : 's'} dropped because the queue reached ${MAX_PENDING_NOTES}.`}</span>
+                  <button
+                    type="button"
+                    onClick={() => void mutateQueue(
+                      () => pendingQueueRef.current.dismissDropped(),
+                      'Could not dismiss the warning',
+                    )}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+              <div className="tile-review-drawer-body">
+                <nav className="tile-review-drawer-list" aria-label="Queued review items">
+                  {queued.map((note) => {
+                    const draft = drafts[note.id] ?? draftFor(note)
+                    return (
+                      <button
+                        key={note.id}
+                        type="button"
+                        className={`tile-review-list-item${note.id === selectedId ? ' is-selected' : ''}`}
+                        aria-current={note.id === selectedId ? 'true' : undefined}
+                        onClick={() => setSelectedId(note.id)}
+                      >
+                        <span className="tile-review-list-meta">
+                          <span className={`tile-review-type is-${note.response ? 'response' : 'annotation'}`}>
+                            {itemType(note)}
+                          </span>
+                          {(note.attachments?.length ?? 0) > 0 && (
+                            <span>{note.attachments?.length} image{note.attachments?.length === 1 ? '' : 's'}</span>
+                          )}
+                          {draft.dirty && <span className="tile-review-dirty">Edited</span>}
+                        </span>
+                        <strong>{itemLabel(note)}</strong>
+                        <span className="tile-review-list-preview">{draft.answer}</span>
+                      </button>
+                    )
+                  })}
+                </nav>
+                <div className="tile-review-drawer-detail">
+                  {selected && selectedDraft && selectedEditor ? (
+                    <>
+                      <div className="tile-review-detail-heading">
+                        <span className={`tile-review-type is-${selected.response ? 'response' : 'annotation'}`}>
+                          {itemType(selected)}
+                        </span>
+                        <h3>{selected.response?.question ?? selected.selector}</h3>
+                        {!selected.response && <code>{selected.tag}</code>}
+                      </div>
+                      {selectedDraft.conflict && (
+                        <div className="tile-review-conflict" role="alert">
+                          <span>This item changed after you started editing. Reload the server version before continuing.</span>
+                          <button type="button" onClick={() => resetDraft(selected.id)}>Reload draft</button>
+                        </div>
+                      )}
+                      <fieldset className="tile-review-editor" disabled={selectedBusy}>
+                        <legend>{selected.response ? 'Answer' : 'Comment'}</legend>
+                        {selectedEditor.kind === 'choice' && selectedEditor.multiple ? (
+                          <div className="tile-review-checks">
+                            {selectedEditor.options.map((option) => {
+                              const values = selectedDraft.answer.split(', ').filter(Boolean)
+                              return (
+                                <label key={option}>
+                                  <input
+                                    type="checkbox"
+                                    checked={values.includes(option)}
+                                    onChange={(event) => {
+                                      const next = new Set(values)
+                                      if (event.target.checked) next.add(option)
+                                      else next.delete(option)
+                                      changeDraft(selected.id, {
+                                        answer: selectedEditor.options.filter((value) => next.has(value)).join(', '),
+                                      })
+                                    }}
+                                  />
+                                  <span>{option}</span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        ) : selectedEditor.kind === 'choice' ? (
+                          <select
+                            aria-label="Answer"
+                            value={selectedDraft.answer}
+                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
+                          >
+                            {selectedEditor.options.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        ) : selectedEditor.kind === 'approve' ? (
+                          <select
+                            aria-label="Verdict"
+                            value={selectedDraft.answer}
+                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
+                          >
+                            {selectedEditor.options.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        ) : selectedEditor.kind === 'rating' ? (
+                          <div className="tile-review-rating" role="radiogroup" aria-label="Rating">
+                            {Array.from({ length: selectedEditor.max }, (_, index) => index + 1).map((rating) => (
+                              <label key={rating}>
+                                <input
+                                  type="radio"
+                                  name={`pending-rating-${selected.id}`}
+                                  value={rating}
+                                  checked={selectedDraft.answer === `${rating}/${selectedEditor.max}`}
+                                  onChange={() => changeDraft(selected.id, { answer: `${rating}/${selectedEditor.max}` })}
+                                />
+                                <span>{rating}</span>
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <textarea
+                            aria-label={selected.response ? 'Answer' : 'Comment'}
+                            value={selectedDraft.answer}
+                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
+                          />
+                        )}
+                        {selected.response && (
+                          <label className="tile-review-note-field">
+                            <span>Optional note</span>
+                            <textarea
+                              aria-label="Optional note"
+                              value={selectedDraft.note}
+                              onChange={(event) => changeDraft(selected.id, { note: event.target.value })}
+                            />
+                          </label>
+                        )}
+                      </fieldset>
+                      <div className="tile-review-attachments">
+                        <div className="tile-review-section-head">
+                          <strong>Attachments</strong>
+                          <label className={`tile-review-add-image${selectedBusy || selectedDraft.conflict ? ' is-disabled' : ''}`}>
+                            <span>Add image</span>
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/gif,image/webp"
+                              disabled={selectedBusy || selectedDraft.conflict}
+                              aria-label="Add image attachment"
+                              onChange={(event) => {
+                                const file = event.target.files?.[0]
+                                event.currentTarget.value = ''
+                                if (file) void uploadAttachment(selected.id, file)
+                              }}
+                            />
+                          </label>
+                        </div>
+                        {(selected.attachments?.length ?? 0) > 0 ? (
+                          <div className="tile-review-attachment-grid">
+                            {selected.attachments?.map((attachment) => (
+                              <div key={attachment.id} className="tile-review-attachment">
+                                <button
+                                  type="button"
+                                  className="tile-review-attachment-preview"
+                                  onClick={() => setPreview({ id: attachment.id, name: attachment.name })}
+                                  aria-label={`Preview ${attachment.name}`}
+                                >
+                                  <img src={pendingQueue.attachmentUrl(attachment.id)} alt="" />
+                                  <span>{attachment.name}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className="tile-review-attachment-remove"
+                                  disabled={selectedBusy || selectedDraft.conflict}
+                                  aria-label={`Remove ${attachment.name}`}
+                                  onClick={() => void removeAttachment(selected.id, attachment.id)}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : <span className="tile-review-empty-attachments">No images attached</span>}
+                      </div>
+                      <footer className="tile-review-detail-actions">
+                        <button
+                          type="button"
+                          className="tile-review-remove-item"
+                          disabled={selectedBusy}
+                          onClick={() => void removeOne(selected.id)}
+                        >
+                          Remove from queue
+                        </button>
+                        <span className="tile-review-detail-spacer" />
+                        <button
+                          type="button"
+                          className="web-pane-action is-ghost"
+                          disabled={!selectedDraft.dirty || selectedDraft.conflict || selectedBusy || !selectedDraft.answer}
+                          onClick={() => void saveOne(selected.id)}
+                        >
+                          {selectedBusy ? 'Working…' : 'Save changes'}
+                        </button>
+                        <button
+                          type="button"
+                          className="web-pane-action"
+                          disabled={selectedDraft.conflict || selectedBusy || !selectedDraft.answer}
+                          onClick={() => void sendOne(selected.id)}
+                        >
+                          {selectedBusy ? 'Working…' : 'Send this'}
+                        </button>
+                      </footer>
+                    </>
+                  ) : (
+                    <div className="tile-review-empty">Select an item to review.</div>
+                  )}
+                </div>
+              </div>
+              {queueError && <div className="tile-review-drawer-error" role="alert">{queueError}</div>}
+            </section>
           )}
-          {typeof sendState === 'object' && (
-            <span className="tile-review-error" role="alert">{sendState.error}</span>
-          )}
+        </>
+      )}
+      {preview && (
+        <div className="tile-review-preview-backdrop" onMouseDown={() => setPreview(null)}>
+          <div
+            className="tile-review-preview"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Preview ${preview.name}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <strong>{preview.name}</strong>
+              <button type="button" aria-label="Close attachment preview" autoFocus onClick={() => setPreview(null)}>×</button>
+            </header>
+            <img src={pendingQueue.attachmentUrl(preview.id)} alt={preview.name} />
+          </div>
         </div>
       )}
       {state !== 'streaming' && (
