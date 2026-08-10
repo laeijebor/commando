@@ -3,6 +3,11 @@ import XCTest
 @testable import CommandoDesktop
 
 @MainActor
+private final class FirstResponderChildView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
+@MainActor
 private final class DesktopWebHostSpy: DesktopWebHosting {
     let rootView = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     private(set) var reloadCount = 0
@@ -399,7 +404,7 @@ final class DesktopApplicationTests: XCTestCase {
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
     }
 
-    func testWindowRoutesControlVToTheFocusedTerminal() throws {
+    func testWindowRoutesControlVThroughTheFocusedTerminalResponderChain() throws {
         var inputs: [Data] = []
         let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -420,7 +425,9 @@ final class DesktopApplicationTests: XCTestCase {
             defer: false
         )
         window.contentView?.addSubview(surface.view)
-        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        let child = FirstResponderChildView(frame: .zero)
+        surface.view.addSubview(child)
+        XCTAssertTrue(window.makeFirstResponder(child))
         let controlV = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,

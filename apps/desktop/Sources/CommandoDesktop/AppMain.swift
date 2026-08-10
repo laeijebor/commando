@@ -28,7 +28,7 @@ final class DesktopWindow: NSWindow {
                 zoomShortcutWasPressed?(key)
                 return
             }
-            if let terminalView = firstResponder as? HostedTerminalView,
+            if let terminalView = focusedTerminalView(),
                terminalView.handleOptionBackspace(event) ||
                terminalView.handleOptionArrow(event) ||
                terminalView.handleControlV(event) {
@@ -36,6 +36,17 @@ final class DesktopWindow: NSWindow {
             }
         }
         super.sendEvent(event)
+    }
+
+    private func focusedTerminalView() -> HostedTerminalView? {
+        var responder = firstResponder
+        while let current = responder {
+            if let terminalView = current as? HostedTerminalView {
+                return terminalView
+            }
+            responder = current.nextResponder
+        }
+        return nil
     }
 }
 
