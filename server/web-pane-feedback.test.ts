@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPaneFeedbackNote } from '../shared/protocol.js'
-import { FeedbackJournal } from './web-pane-feedback-journal.js'
+import { DELIVERY_DEDUPE_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { MAX_QUEUED_FEEDBACK_NOTES, WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
 import { WebPaneError } from './web-panes.js'
@@ -21,7 +21,7 @@ function makeStore(options: {
   return {
     dir,
     store: new WebPaneFeedbackStore(
-      new FeedbackJournal({ dir }),
+      new FeedbackJournal({ dir, now: options.now }),
       options.onDrain,
       options.now,
       options.releaseAttachment,
@@ -157,6 +157,54 @@ describe('WebPaneFeedbackStore', () => {
       nextId: 2,
     })
     expect(rebornPending.list(paneId)).toEqual([])
+  })
+
+  it('deduplicates a crash-left pending note after it is acknowledged in one pane and adopted into another', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'commando-feedback-cross-pane-retry-'))
+    dirs.push(dir)
+    const paneA = 'w-11111111'
+    const paneB = 'w-22222222'
+    const url = 'http://127.0.0.1:5173/'
+    const firstFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const firstPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    firstPending.addNote(paneA, url, {
+      selector: '#root',
+      tag: 'div',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'survives cross-pane transfer crash',
+    })
+    expect(() => firstPending.send(paneA, url, 1, (notes) => {
+      firstFeedback.enqueue(paneA, notes)
+      throw new Error('simulated crash before pending removal')
+    })).toThrow('simulated crash')
+
+    const rebornFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const rebornPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    const deliveredA = await rebornFeedback.drain(paneA, 0)
+    await rebornFeedback.drain(paneA, 0, { cursor: deliveredA.cursor })
+    const adopted = rebornPending.adopt(paneB, url, new Set([paneB]))
+    rebornPending.send(paneB, url, adopted.revision ?? 0, (notes) => rebornFeedback.enqueue(paneB, notes))
+
+    expect(deliveredA.notes.map((entry) => entry.comment)).toEqual(['survives cross-pane transfer crash'])
+    expect(await rebornFeedback.drain(paneB, 0)).toEqual({ notes: [], cursor: 0 })
+    expect(rebornPending.list(paneB)).toEqual([])
+  })
+
+  it('expires historical cross-pane dedupe but retains an old key while its note is live', async () => {
+    let now = 1_000
+    const { store } = makeStore({ now: () => now })
+    const key = 'pending:w-11111111:1'
+    store.enqueue('w-11111111', [note('old live note', key)])
+    const delivered = await store.drain('w-11111111', 0)
+    now += DELIVERY_DEDUPE_TTL_MS
+
+    store.enqueue('w-22222222', [note('suppressed while live', key)])
+    expect(await store.drain('w-22222222', 0)).toEqual({ notes: [], cursor: 0 })
+
+    await store.drain('w-11111111', 0, { cursor: delivered.cursor })
+    store.enqueue('w-22222222', [note('accepted after expiry', key)])
+    expect((await store.drain('w-22222222', 0)).notes.map((entry) => entry.comment))
+      .toEqual(['accepted after expiry'])
   })
 
   it('keeps direct keyless notes append-only while distinct delivery keys both deliver', async () => {
