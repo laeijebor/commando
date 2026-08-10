@@ -148,6 +148,7 @@ describe('redline-choice', () => {
     const host = document.querySelector('redline-choice') as HTMLElement
     const radios = host.querySelectorAll('input[type="radio"]')
     expect(radios).toHaveLength(2)
+    expect(host.querySelector('.redline-options')?.classList).toContain('redline-options-single')
     const button = host.querySelector('button') as HTMLButtonElement
     ;(radios[1] as HTMLInputElement).click()
     expect(calls).toHaveLength(0) // selection alone must not queue
@@ -172,6 +173,7 @@ describe('redline-choice', () => {
     const host = document.querySelector('redline-choice') as HTMLElement
     const boxes = host.querySelectorAll('input[type="checkbox"]')
     expect(boxes).toHaveLength(3)
+    expect(host.querySelector('.redline-options')?.classList).toContain('redline-options-multiple')
     ;(boxes[0] as HTMLInputElement).click()
     ;(boxes[2] as HTMLInputElement).click()
     ;(host.querySelector('button') as HTMLButtonElement).click()
@@ -400,6 +402,8 @@ describe('injected styles', () => {
     expect(styles).toHaveLength(1)
     expect(styles[0].textContent).toContain(':where(redline-choice')
     expect(styles[0].textContent).toContain('--redline-accent')
+    expect(styles[0].textContent).toContain('.redline-options-single label:has(:checked)')
+    expect(styles[0].textContent).toContain('.redline-options-multiple label:has(:checked)')
   })
 
   it('ships no daisyui utility classes in rendered markup', () => {
