@@ -447,16 +447,25 @@ async function main(): Promise<void> {
     ...pendingJournal.referencedAttachmentIds(),
     ...feedbackJournal.referencedAttachmentIds(),
   ]))
+  let webPaneFeedback: WebPaneFeedbackStore
+  let webPanePending: WebPanePendingStore
+  const releaseAttachment = (attachmentId: string): void => {
+    if (
+      webPanePending?.referencedAttachmentIds().has(attachmentId) ||
+      webPaneFeedback?.referencedAttachmentIds().has(attachmentId)
+    ) return
+    webPaneAttachments.remove(attachmentId)
+  }
   // onDrain fires only at request time, safely after publishWebPanes exists.
-  const webPaneFeedback = new WebPaneFeedbackStore(
+  webPaneFeedback = new WebPaneFeedbackStore(
     feedbackJournal,
     () => publishWebPanes(),
     Date.now,
-    (attachmentId) => webPaneAttachments.remove(attachmentId),
+    releaseAttachment,
   )
-  const webPanePending = new WebPanePendingStore(
+  webPanePending = new WebPanePendingStore(
     pendingJournal,
-    (attachmentId) => webPaneAttachments.remove(attachmentId),
+    releaseAttachment,
   )
   const chromiumEngine = new ChromiumEngine({
     classify: (url) => webPanes.classify(url),

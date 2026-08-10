@@ -52,15 +52,24 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
   const journalDir = mkdtempSync(join(tmpdir(), 'commando-feedback-api-journal-'))
   temporaryDirectories.push(journalDir)
   const attachmentStore = overrides.attachmentStore ?? new WebPaneAttachmentStore({ dir: join(journalDir, 'attachments') })
-  const feedback = overrides.feedback ?? new WebPaneFeedbackStore(
+  let feedback = overrides.feedback
+  let pending = overrides.pending
+  const releaseAttachment = (attachmentId: string): void => {
+    if (
+      pending?.referencedAttachmentIds().has(attachmentId) ||
+      feedback?.referencedAttachmentIds().has(attachmentId)
+    ) return
+    attachmentStore.remove(attachmentId)
+  }
+  feedback ??= new WebPaneFeedbackStore(
     new FeedbackJournal({ dir: journalDir }),
     () => onChange(),
     Date.now,
-    (attachmentId) => attachmentStore.remove(attachmentId),
+    releaseAttachment,
   )
-  const pending = overrides.pending ?? new WebPanePendingStore(
+  pending ??= new WebPanePendingStore(
     new PendingNotesJournal({ dir: journalDir }),
-    (attachmentId) => attachmentStore.remove(attachmentId),
+    releaseAttachment,
   )
   const api = new WebPanesApi({
     service,
@@ -861,6 +870,38 @@ describe('pending note routes', () => {
     expect(acked.status).toBe(404)
     expect(attachmentStore.listIds()).toEqual([])
     expect((await fetch(`${baseUrl}${path}`, { headers: agentAuth })).status).toBe(404)
+  })
+
+  it('does not release bytes while a crash-window duplicate journal still references them', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const pendingItem = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string; name: string; contentType: string; size: number }> }>
+    }).notes[0]
+    const attachment = pendingItem?.attachments?.[0]
+    expect(attachment).toBeDefined()
+    feedback.enqueue(id, [{
+      selector: '#target',
+      tag: 'button',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'duplicate transfer record',
+      pageUrl: 'http://127.0.0.1:5173/',
+      capturedAt: 1,
+      attachments: [{
+        ...attachment!,
+        path: `/api/web-panes/${id}/attachments/${attachment?.id}`,
+      }],
+    }])
+
+    pending.remove(id, 1)
+    expect(attachmentStore.listIds()).toEqual([attachment?.id])
+
+    const delivered = await feedback.drain(id, 0)
+    await feedback.drain(id, 0, { cursor: delivered.cursor })
+    expect(attachmentStore.listIds()).toEqual([])
   })
 
   it('rolls back saved bytes when attach fails and validates upload headers and content', async () => {
