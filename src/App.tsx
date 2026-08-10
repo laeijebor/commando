@@ -55,6 +55,7 @@ import type {
   PaneLayoutCapacity,
   SavedWorkspace,
   ServerMessage,
+  SessionBrief,
   SpecialKey,
   TmuxPane,
   WebPane,
@@ -98,6 +99,7 @@ import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
+import { SessionUpdateCapsule } from './SessionUpdateCapsule'
 import { createNotesApi } from './notesApi'
 import { pinnedNoteFrom, storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
@@ -228,6 +230,7 @@ function displayTime(timestamp: number) {
 type TerminalPaneProps = {
   pane: TmuxPane
   status?: AgentStatus
+  brief?: SessionBrief
   index: number
   count: number
   maximized: boolean
@@ -240,6 +243,7 @@ type TerminalPaneProps = {
   useXtermFallback: boolean
   gitApi: GitDiffApiClient
   onOpenPath: () => Promise<void>
+  onSelectBriefPane: (paneId: string) => void
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onRename: (title: string) => Promise<void>
@@ -266,6 +270,7 @@ type TerminalPaneProps = {
 export function TerminalPaneCard({
   pane,
   status,
+  brief,
   index,
   count,
   maximized,
@@ -278,6 +283,7 @@ export function TerminalPaneCard({
   useXtermFallback,
   gitApi,
   onOpenPath,
+  onSelectBriefPane,
   onFocus,
   onOpenMenu,
   onRename,
@@ -517,8 +523,9 @@ export function TerminalPaneCard({
       />
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
-        <span>{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
-        <span>{pane.width}x{pane.height}</span>
+        <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
+        {brief ? <SessionUpdateCapsule brief={brief} onSelectPane={onSelectBriefPane} /> : null}
+        <span className="pane-footer-dimensions">{pane.width}x{pane.height}</span>
         <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
         <button
           type="button"
@@ -780,6 +787,7 @@ export function App() {
   const [authError, setAuthError] = useState('')
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
+  const [sessionBriefs, setSessionBriefs] = useState<Record<string, SessionBrief>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -1011,6 +1019,17 @@ export function App() {
           delete next[message.paneId]
           return next
         })
+        break
+      case 'session_brief':
+        setSessionBriefs((current) => ({
+          ...current,
+          [message.brief.sessionId]: message.brief,
+        }))
+        break
+      case 'session_brief_snapshot':
+        setSessionBriefs(Object.fromEntries(
+          message.briefs.map((brief) => [brief.sessionId, brief]),
+        ))
         break
       case 'workspace':
         if (message.workspace) {
@@ -2311,6 +2330,7 @@ export function App() {
                             key={rendererIdentity}
                             pane={pane}
                             status={agentStatuses[pane.id]}
+                            brief={sessionBriefs[pane.sessionId]}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             maximized={maximizedPaneId === pane.id}
@@ -2328,6 +2348,7 @@ export function App() {
                             useXtermFallback={rendererControl?.manualXterm ?? false}
                             gitApi={gitDiffApi}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
+                            onSelectBriefPane={jumpToPane}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                             onRename={(title) => renamePane(pane.id, title)}

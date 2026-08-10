@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CommandoSnapshot, LayoutSpec, ServerMessage, TmuxPane } from '../shared/protocol'
+import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPane } from '../shared/protocol'
 import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
@@ -274,6 +274,37 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
   return view
 }
+
+describe('session update briefs', () => {
+  it('replays one whole-session brief into every pane footer', async () => {
+    await renderAppWithSnapshot()
+    const brief: SessionBrief = {
+      sessionId: '$3',
+      sessionName: 'work',
+      state: 'working',
+      headline: 'Footer capsule dry run',
+      recapMarkdown: 'Shared across both panes.',
+      updates: [{
+        id: 'agent:1:test',
+        paneId: '%13',
+        kind: 'note',
+        text: 'Worker pane updated the handoff',
+        source: 'agent',
+        createdAt: 1,
+      }],
+      next: 'Review the screenshots',
+      updatedAt: 1,
+    }
+
+    act(() => daemonMessage?.({ type: 'session_brief_snapshot', briefs: [brief] }))
+
+    const triggers = await screen.findAllByRole('button', { name: 'Open session updates for work' })
+    expect(triggers).toHaveLength(2)
+    expect(triggers[0]).toHaveTextContent('Footer capsule dry run')
+    fireEvent.click(triggers[0])
+    expect(screen.getByLabelText('Session brief for work')).toHaveAttribute('data-native-terminal-occluder')
+  })
+})
 
 describe('HUD tabs', () => {
   it('switches between agents and PRs content and persists the choice', async () => {
@@ -812,6 +843,7 @@ const paneProps = {
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
   },
   onOpenPath: vi.fn().mockResolvedValue(undefined),
+  onSelectBriefPane: vi.fn(),
   onFocus: vi.fn(),
   onOpenMenu: vi.fn(),
   onRename: vi.fn().mockResolvedValue(undefined),
