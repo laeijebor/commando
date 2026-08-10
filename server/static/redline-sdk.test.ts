@@ -384,6 +384,54 @@ describe('daemon pending snapshot state', () => {
     expect(host.querySelector('.redline-queued-badge')?.textContent).toBe('Changed since queued')
   })
 
+  it('preserves answer and note changes made before the first live snapshot', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-ask key="name" prompt="Name?"></redline-ask>'
+    const host = document.querySelector('redline-ask') as HTMLElement
+    const answer = host.querySelector('textarea:not([data-redline-note])') as HTMLTextAreaElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    answer.value = 'Local answer'
+    answer.dispatchEvent(new Event('input', { bubbles: true }))
+    note.value = 'Local note'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+
+    publishSnapshot({ version: 1, controls: [] })
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'name',
+        response: { question: 'Name?', answer: 'Server answer', note: 'Server note' },
+      }],
+    })
+
+    expect(answer.value).toBe('Local answer')
+    expect(note.value).toBe('Local note')
+    expect(host.querySelector('button')?.textContent).toBe('Update queued answer')
+    expect(host.querySelector('.redline-queued-badge')?.textContent).toBe('Changed since queued')
+  })
+
+  it('preserves a note-only change made before the first live snapshot', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-ask key="name" prompt="Name?"></redline-ask>'
+    const host = document.querySelector('redline-ask') as HTMLElement
+    const answer = host.querySelector('textarea:not([data-redline-note])') as HTMLTextAreaElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    note.value = 'Local note before answering'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'name',
+        response: { question: 'Name?', answer: 'Server answer', note: 'Server note' },
+      }],
+    })
+
+    expect(answer.value).toBe('')
+    expect(note.value).toBe('Local note before answering')
+    expect(host.querySelector('button')?.textContent).toBe('Update queued answer')
+  })
+
   it('uses queueKey before selector and selector fallback only for unkeyed controls', () => {
     loadSdk()
     document.body.innerHTML = `

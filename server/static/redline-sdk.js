@@ -546,6 +546,7 @@
       this._queueButton = button
       this._noteInput = note
       this._queuedBaseline = null
+      this._localBaseline = this.currentBaseline()
       this.addEventListener('input', () => renderPendingState(this))
       this.addEventListener('change', () => renderPendingState(this))
       this.registerPendingControl()
@@ -557,12 +558,13 @@
       if (snapshot) this.applyPendingSnapshot(snapshot)
     }
     applyPendingSnapshot(snapshot) {
-      const currentDraft = this.draft()
-      const wasClean = this._queuedBaseline === null || (
-        currentDraft && pendingBaseline(currentDraft) === this._queuedBaseline
+      const currentBaseline = this.currentBaseline()
+      const wasClean = currentBaseline === (
+        this._queuedBaseline === null ? this._localBaseline : this._queuedBaseline
       )
       const control = matchedPendingControl(this, snapshot)
       if (!control?.response) {
+        if (this._queuedBaseline !== null) this._localBaseline = currentBaseline
         this._queuedBaseline = null
         renderPendingState(this)
         return
@@ -576,6 +578,9 @@
       }
       this._queuedBaseline = pendingBaseline(this.baseline(control.response))
       renderPendingState(this)
+    }
+    currentBaseline() {
+      return pendingBaseline(this.draft() || { answer: '', note: this._noteInput?.value || '' })
     }
     baseline(response) {
       return {
