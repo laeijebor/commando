@@ -640,13 +640,19 @@ final class TerminalPaneHostTests: XCTestCase {
 
         let optionUp = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 126))
         let optionDown = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 125))
+        let optionRight = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 124))
+        let optionLeft = try XCTUnwrap(keyEvent(key: "", modifiers: .option, keyCode: 123))
         let plainUp = try XCTUnwrap(keyEvent(key: "", modifiers: [], keyCode: 126))
         XCTAssertTrue(view.handleOptionArrow(optionUp))
         XCTAssertTrue(view.handleOptionArrow(optionDown))
+        XCTAssertTrue(view.handleOptionArrow(optionRight))
+        XCTAssertTrue(view.handleOptionArrow(optionLeft))
 
         XCTAssertEqual(inputs, [
             Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x41]),
             Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x42]),
+            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x43]),
+            Data([0x1b, 0x5b, 0x31, 0x3b, 0x33, 0x44]),
         ])
         XCTAssertFalse(view.handleOptionArrow(plainUp))
     }
