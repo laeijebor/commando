@@ -77,6 +77,7 @@ describe('SessionBriefApi', () => {
       sessionId: '$1',
       sessionName: 'commando',
       headline: 'Dry run verified',
+      headlineSource: 'agent',
       recapMarkdown: 'Validated the **footer capsule**.',
       next: 'Review screenshots',
       updatedAt: 123,

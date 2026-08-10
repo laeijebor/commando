@@ -94,6 +94,7 @@ export function parseSessionBrief(value: unknown): SessionBrief | null {
   if (
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
+    (value.headlineSource !== 'hook' && value.headlineSource !== 'agent') ||
     typeof value.state !== 'string' || !STATUS_KINDS.has(value.state as AgentStatusKind) ||
     !Array.isArray(value.updates) || value.updates.length > MAX_UPDATES ||
     !safeInteger(value.updatedAt)
@@ -107,6 +108,7 @@ export function parseSessionBrief(value: unknown): SessionBrief | null {
     sessionName,
     state: value.state as AgentStatusKind,
     headline,
+    headlineSource: value.headlineSource,
     ...(recapMarkdown ? { recapMarkdown } : {}),
     updates: validUpdates,
     ...(next ? { next } : {}),
@@ -266,7 +268,10 @@ export class SessionBriefStore {
       sessionId,
       sessionName: cleanSessionName,
       state: lead.status,
-      headline: statusHeadline(lead).slice(0, MAX_HEADLINE),
+      headline: current?.headlineSource === 'agent'
+        ? current.headline
+        : statusHeadline(lead).slice(0, MAX_HEADLINE),
+      headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
       ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
       updates,
       ...(current?.next ? { next: current.next } : {}),
@@ -299,6 +304,15 @@ export class SessionBriefStore {
       source: 'agent' as const,
       createdAt: now,
     } : null
+    const previousUpdates = current?.updates ?? []
+    const retainedUpdates = update
+      ? previousUpdates.filter((candidate) => !(
+          candidate.source === 'agent' &&
+          candidate.paneId === paneId &&
+          candidate.kind === update.kind &&
+          candidate.text === update.text
+        ))
+      : previousUpdates
     const headline = patch.headline
       ?? current?.headline
       ?? patch.update?.text
@@ -309,6 +323,7 @@ export class SessionBriefStore {
       sessionName: cleanSessionName,
       state: patch.state ?? current?.state ?? 'working',
       headline,
+      headlineSource: patch.headline ? 'agent' : current?.headlineSource ?? 'agent',
       ...(patch.recapMarkdown === null
         ? {}
         : patch.recapMarkdown !== undefined
@@ -317,8 +332,8 @@ export class SessionBriefStore {
             ? { recapMarkdown: current.recapMarkdown }
             : {}),
       updates: update
-        ? [update, ...(current?.updates ?? [])].slice(0, MAX_UPDATES)
-        : current?.updates ?? [],
+        ? [update, ...retainedUpdates].slice(0, MAX_UPDATES)
+        : retainedUpdates,
       ...(patch.next === null
         ? {}
         : patch.next !== undefined

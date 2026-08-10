@@ -1556,8 +1556,19 @@ kbd {
 .session-update {
   position: static;
   min-width: 0;
-  max-width: 52%;
-  flex: 1;
+  flex: 1 1 180px;
+}
+
+.pane-footer:has(.session-update) .pane-footer-focus {
+  display: none;
+}
+
+.pane-footer:has(.session-update) .pane-footer-dimensions {
+  display: none;
+}
+
+.pane-footer:has(.session-update) .pane-path {
+  max-width: 20%;
 }
 
 .session-update-trigger {

@@ -51,19 +51,24 @@ describe('SessionBriefStore', () => {
       status('%2', 'needs_input', 120, 'Waiting for input'),
     ], 120)
 
-    const updated = await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+    await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
       recapMarkdown: 'Verified the **typed brief** pipeline.',
       next: 'Choose the release target',
       update: { kind: 'decision', text: 'Keep the brief session-scoped' },
     }, 140)
+    const updated = await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+      update: { kind: 'decision', text: 'Keep the brief session-scoped' },
+    }, 150)
 
     expect(updated).toMatchObject({
       sessionId: '$1',
       sessionName: 'gizmo',
       state: 'needs_input',
       headline: 'Choose the release target',
+      headlineSource: 'hook',
       recapMarkdown: 'Verified the **typed brief** pipeline.',
       next: 'Choose the release target',
+      updatedAt: 150,
     })
     expect(updated.updates.map((entry) => [entry.source, entry.paneId, entry.kind])).toEqual([
       ['agent', '%1', 'decision'],
@@ -86,6 +91,22 @@ describe('SessionBriefStore', () => {
     expect(stale?.updates).toHaveLength(1)
   })
 
+  it('keeps an agent-authored headline while hook milestones continue changing', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$3', 'commando', [status('%4', 'working', 100, 'Generic activity')], 100)
+    await briefs.applyAgentPatch('$3', 'commando', '%4', { headline: 'Handoff ready' }, 110)
+
+    const refreshed = await briefs.syncFromStatuses(
+      '$3',
+      'commando',
+      [status('%4', 'working', 120, 'Producing output')],
+      120,
+    )
+
+    expect(refreshed).toMatchObject({ headline: 'Handoff ready', headlineSource: 'agent' })
+    expect(refreshed?.updates[0].createdAt).toBe(120)
+  })
+
   it('rejects oversized or malformed persisted records', () => {
     expect(parseSessionBrief({ sessionId: 'gizmo' })).toBeNull()
     expect(parseSessionBrief({
@@ -93,6 +114,7 @@ describe('SessionBriefStore', () => {
       sessionName: 'gizmo',
       state: 'working',
       headline: 'x'.repeat(181),
+      headlineSource: 'hook',
       updates: [],
       updatedAt: 1,
     })).toBeNull()

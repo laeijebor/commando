@@ -118,6 +118,7 @@ export type SessionBrief = {
   sessionName: string
   state: AgentStatusKind
   headline: string
+  headlineSource: 'hook' | 'agent'
   recapMarkdown?: string
   updates: SessionBriefUpdate[]
   next?: string

@@ -283,6 +283,7 @@ describe('session update briefs', () => {
       sessionName: 'work',
       state: 'working',
       headline: 'Footer capsule dry run',
+      headlineSource: 'agent',
       recapMarkdown: 'Shared across both panes.',
       updates: [{
         id: 'agent:1:test',

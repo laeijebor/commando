@@ -14,6 +14,7 @@ const brief: SessionBrief = {
   sessionName: 'commando',
   state: 'done',
   headline: 'Footer capsule verified',
+  headlineSource: 'agent',
   recapMarkdown: 'All **focused checks** passed.',
   updates: [
     {
