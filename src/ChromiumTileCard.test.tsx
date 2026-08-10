@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
+import type { WebPane, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
 
 class FakeWebSocket {
@@ -91,6 +91,44 @@ const webPane: WebPane = {
 
 const EMPTY_SNAPSHOT: WebPanePendingSnapshot = { notes: [], knownUpTo: 0, dropped: 0 }
 
+function responseNote(
+  id: number,
+  answer = 'Pro',
+  revision = 1,
+  question = 'Which plan?',
+): WebPanePendingNote {
+  return {
+    id,
+    revision,
+    selector: `redline:plan-${id}`,
+    tag: 'redline-choice',
+    rect: { x: 0, y: 0, width: 10, height: 10 },
+    comment: `${question}: ${answer}`,
+    response: {
+      question,
+      answer,
+      data: { choice: answer, options: ['Starter', 'Pro', 'Team'], multiple: false },
+    },
+    attachments: [],
+  }
+}
+
+function annotationNote(id: number, comment: string, revision = 1): WebPanePendingNote {
+  return {
+    id,
+    revision,
+    selector: `#target-${id}`,
+    tag: 'button',
+    rect: { x: 0, y: 0, width: 10, height: 10 },
+    comment,
+    attachments: [],
+  }
+}
+
+function pendingSnapshot(notes: WebPanePendingNote[], revision = 1): WebPanePendingSnapshot {
+  return { revision, notes, knownUpTo: Math.max(0, ...notes.map((note) => note.id)), dropped: 0 }
+}
+
 function tileElement(
   pendingQueue: Partial<PendingQueueApi> = {},
   keepStreamingWhenHidden = false,
@@ -105,6 +143,10 @@ function tileElement(
       pendingQueue={{
         list: async () => EMPTY_SNAPSHOT,
         add: async () => EMPTY_SNAPSHOT,
+        update: async () => EMPTY_SNAPSHOT,
+        upload: async () => EMPTY_SNAPSHOT,
+        removeAttachment: async () => EMPTY_SNAPSHOT,
+        attachmentUrl: (attachmentId) => `/attachments/${attachmentId}`,
         remove: async () => EMPTY_SNAPSHOT,
         send: async () => EMPTY_SNAPSHOT,
         dismissDropped: async () => EMPTY_SNAPSHOT,
@@ -173,6 +215,190 @@ describe('ChromiumTileCard pending hydration', () => {
       socket.message({ type: 'pending', notes: [], knownUpTo: 51, dropped: 2 })
     })
     expect(screen.getByRole('alert')).toHaveTextContent(/2 older answers dropped/i)
+  })
+})
+
+describe('ChromiumTileCard pending queue drawer', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    window.localStorage.clear()
+  })
+
+  it('opens and collapses the tile-contained review drawer', async () => {
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]) })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    expect(screen.getByRole('dialog', { name: 'Pending review queue' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse review queue' }))
+    expect(screen.queryByRole('dialog', { name: 'Pending review queue' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
+  it('renders a response editor and saves answer and note changes at the base revision', async () => {
+    const initial = responseNote(1)
+    const updated = {
+      ...initial,
+      revision: 2,
+      comment: 'Which plan?: Team\n\nNote: Need SSO',
+      response: { ...initial.response!, answer: 'Team', note: 'Need SSO', data: { choice: 'Team', options: ['Starter', 'Pro', 'Team'], multiple: false } },
+    }
+    const update = vi.fn(async () => pendingSnapshot([updated], 2))
+    renderTile({ list: async () => pendingSnapshot([initial]), update })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    expect(screen.getByRole('heading', { name: 'Which plan?' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Optional note' }), { target: { value: 'Need SSO' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 1, { answer: 'Team', note: 'Need SSO' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled())
+  })
+
+  it('preserves a dirty draft and requires reload when a newer snapshot changes the item', async () => {
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]) })
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+
+    act(() => {
+      FakeWebSocket.instances[0].message({
+        type: 'pending',
+        ...pendingSnapshot([responseNote(1, 'Starter', 2)], 2),
+      })
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/changed after you started editing/i)
+    expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Team')
+    expect(screen.getByRole('button', { name: 'Send this' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Reload draft' }))
+    expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Starter')
+  })
+
+  it('saves a dirty item before selectively sending only that item', async () => {
+    const first = responseNote(1)
+    const second = annotationNote(2, 'Keep me queued')
+    const savedFirst = {
+      ...first,
+      revision: 2,
+      response: { ...first.response!, answer: 'Team', data: { choice: 'Team', options: ['Starter', 'Pro', 'Team'], multiple: false } },
+    }
+    const update = vi.fn(async () => pendingSnapshot([savedFirst, second], 2))
+    const send = vi.fn(async () => pendingSnapshot([second], 3))
+    renderTile({ list: async () => pendingSnapshot([first, second]), update, send })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 2' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send this' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith([1]))
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
+    expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Keep me queued')
+  })
+
+  it('saves every dirty visible item before sending the captured ids', async () => {
+    let notes = [responseNote(1), annotationNote(2, 'Original annotation')]
+    let revision = 1
+    const update = vi.fn(async (id: number, _expected: number, change: { answer?: string; note?: string }) => {
+      notes = notes.map((note) => id === note.id
+        ? note.response
+          ? { ...note, revision: (note.revision ?? 1) + 1, response: { ...note.response, answer: change.answer ?? note.response.answer } }
+          : { ...note, revision: (note.revision ?? 1) + 1, comment: change.answer ?? note.comment }
+        : note)
+      revision += 1
+      return pendingSnapshot(notes, revision)
+    })
+    const send = vi.fn(async () => pendingSnapshot([], ++revision))
+    renderTile({ list: async () => pendingSnapshot(notes), update, send })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 2' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: /Original annotation/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Updated annotation' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith([1, 2]))
+    expect(update).toHaveBeenCalledTimes(2)
+    expect(update.mock.invocationCallOrder[1]).toBeLessThan(send.mock.invocationCallOrder[0])
+  })
+
+  it('uploads, previews, and removes an attachment using the latest item revision', async () => {
+    const initial = responseNote(1)
+    const attachment = { id: 'image-1', name: 'screen.png', contentType: 'image/png', size: 12 }
+    const attached = { ...initial, revision: 2, attachments: [attachment] }
+    const upload = vi.fn(async () => pendingSnapshot([attached], 2))
+    const removeAttachment = vi.fn(async () => pendingSnapshot([{ ...attached, revision: 3, attachments: [] }], 3))
+    renderTile({
+      list: async () => pendingSnapshot([initial]),
+      upload,
+      removeAttachment,
+      attachmentUrl: (id) => `/private/${id}`,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    const file = new File(['png'], 'screen.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('Add image attachment'), { target: { files: [file] } })
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(1, 1, file))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview screen.png' }))
+    const preview = screen.getByRole('dialog', { name: 'Preview screen.png' })
+    expect(within(preview).getByRole('img', { name: 'screen.png' })).toHaveAttribute('src', '/private/image-1')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Preview screen.png' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove screen.png' }))
+    await waitFor(() => expect(removeAttachment).toHaveBeenCalledWith(1, 2, 'image-1'))
+    await waitFor(() => expect(screen.getByText('No images attached')).toBeInTheDocument())
+  })
+
+  it('selects the next valid item after removing the current selection', async () => {
+    const first = annotationNote(1, 'First comment')
+    const second = annotationNote(2, 'Second comment')
+    const remove = vi.fn(async () => pendingSnapshot([second], 2))
+    renderTile({ list: async () => pendingSnapshot([first, second]), remove })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 2' }))
+    expect(screen.getByRole('heading', { name: '#target-1' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from queue' }))
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: '#target-2' })).toBeInTheDocument())
+  })
+
+  it('collapses an emptied drawer and keeps a later queue collapsed', async () => {
+    const remove = vi.fn(async () => pendingSnapshot([], 2))
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]), remove })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from queue' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Pending review queue' })).not.toBeInTheDocument())
+
+    act(() => {
+      FakeWebSocket.instances[0].message({
+        type: 'pending',
+        ...pendingSnapshot([responseNote(2)], 3),
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Pending review queue' })).not.toBeInTheDocument()
+  })
+
+  it('uses semantic list/detail regions that container queries can stack for narrow tiles', async () => {
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]) })
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+
+    const drawer = screen.getByTestId('pending-queue-drawer')
+    expect(drawer.querySelector('.tile-review-drawer-body')).toBeInTheDocument()
+    expect(within(drawer).getByRole('navigation', { name: 'Queued review items' })).toHaveClass('tile-review-drawer-list')
+    expect(drawer.querySelector('.tile-review-drawer-detail')).toBeInTheDocument()
+    expect(document.querySelector('.chromium-tile')).toBeInTheDocument()
   })
 })
 
