@@ -54,7 +54,21 @@ if (typeof (globalThis as unknown as { CSS?: { escape?: (v: string) => string } 
   }
 }
 
-type QueueCall = { question: string; answer: string; data?: unknown; queueKey?: string; selector?: string; tag?: string; rect?: unknown }
+type QueueCall = { question: string; answer: string; note?: string; data?: unknown; queueKey?: string; selector?: string; tag?: string; rect?: unknown }
+
+type PendingSnapshot = {
+  version: 1
+  controls: Array<{
+    queueKey?: string
+    selector?: string
+    response: { question: string; answer: string; note?: string; data?: unknown }
+  }>
+}
+
+function publishSnapshot(snapshot: PendingSnapshot): void {
+  ;(window as any).__commandoRedlinePendingSnapshot = snapshot
+  window.dispatchEvent(new CustomEvent('commando:redline-pending', { detail: snapshot }))
+}
 
 function loadSdk(): QueueCall[] {
   const calls: QueueCall[] = []
@@ -70,7 +84,9 @@ beforeEach(() => {
   document.body.innerHTML = ''
   document.head.querySelectorAll('style[data-redline-styles]').forEach((s) => s.remove())
   delete (window as unknown as Record<string, unknown>).__commandoRedlineQueue
+  delete (window as unknown as Record<string, unknown>).__commandoRedlinePendingSnapshot
   delete (window as unknown as Record<string, unknown>).redline
+  window.dispatchEvent(new CustomEvent('commando:redline-pending', { detail: { version: 1, controls: [] } }))
 })
 
 afterEach(() => {
@@ -86,6 +102,7 @@ describe('window.redline.queueResponse', () => {
     const ok = (window as any).redline.queueResponse({
       question: 'Which plan?',
       answer: 'Pro',
+      note: 'Prioritize accessibility.',
       data: { choice: 'Pro' },
       queueKey: 'plan',
       element: target,
@@ -94,6 +111,7 @@ describe('window.redline.queueResponse', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].question).toBe('Which plan?')
     expect(calls[0].answer).toBe('Pro')
+    expect(calls[0].note).toBe('Prioritize accessibility.')
     expect(calls[0].queueKey).toBe('plan')
     expect(calls[0].selector).toBe('#target')
     expect(calls[0].tag).toBe('div')
@@ -138,6 +156,13 @@ describe('window.redline.queueResponse', () => {
     expect(warnSpy).toHaveBeenCalled()
     warnSpy.mockRestore()
   })
+
+  it('caps an optional note without changing the answer', () => {
+    const calls = loadSdk()
+    ;(window as any).redline.queueResponse({ question: 'q', answer: 'a', note: 'n'.repeat(1200) })
+    expect(calls[0]).toMatchObject({ question: 'q', answer: 'a' })
+    expect(calls[0].note).toHaveLength(1024)
+  })
 })
 
 describe('redline-choice', () => {
@@ -155,7 +180,7 @@ describe('redline-choice', () => {
     button.click()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
-    expect(host.textContent).toContain('queued')
+    expect(button.textContent).toBe('Queue answer') // the daemon snapshot is authoritative
   })
 
   it('does nothing when no option is selected', () => {
@@ -182,7 +207,7 @@ describe('redline-choice', () => {
 })
 
 describe('redline-approve', () => {
-  it('queues verdict with optional comment', () => {
+  it('queues verdict and optional note separately', () => {
     const calls = loadSdk()
     document.body.innerHTML = '<redline-approve key="hero" prompt="Hero section ok?"></redline-approve>'
     const host = document.querySelector('redline-approve') as HTMLElement
@@ -190,11 +215,11 @@ describe('redline-approve', () => {
       (input) => (input as HTMLInputElement).value === 'reject',
     ) as HTMLInputElement
     reject.click()
-    const comment = host.querySelector('textarea') as HTMLTextAreaElement
-    comment.value = 'too loud'
+    const note = host.querySelector('textarea') as HTMLTextAreaElement
+    note.value = 'too loud'
     ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
-    expect(calls[0]).toMatchObject({ question: 'Hero section ok?', answer: 'reject — too loud', queueKey: 'hero' })
-    expect(calls[0].data).toMatchObject({ verdict: 'reject', comment: 'too loud' })
+    expect(calls[0]).toMatchObject({ question: 'Hero section ok?', answer: 'reject', note: 'too loud', queueKey: 'hero' })
+    expect(calls[0].data).toEqual({ verdict: 'reject' })
   })
 })
 
@@ -236,6 +261,8 @@ describe('redline-question', () => {
     expect(calls[0].answer).toContain('port: 4310')
     expect(calls[0].answer).toContain('tls: yes')
     expect(calls[0].data).toMatchObject({ port: '4310', tls: true })
+    expect(host.querySelectorAll('textarea[data-redline-note]')).toHaveLength(1)
+    expect((calls[0].data as Record<string, unknown>).note).toBeUndefined()
   })
 
   it('renders in document order: prompt first, author children in the middle, button last', () => {
@@ -254,6 +281,196 @@ describe('redline-question', () => {
     expect(children[0].className).toBe('redline-prompt')
     expect(children[children.length - 1].tagName).toBe('BUTTON')
     expect(children.slice(1, -1).some((el) => el.tagName === 'LABEL')).toBe(true)
+  })
+
+  it('keeps the SDK note separate from authored field data', () => {
+    const calls = loadSdk()
+    document.body.innerHTML = `
+      <redline-question key="opts" prompt="Configure it">
+        <textarea name="details">Keep this authored value</textarea>
+      </redline-question>`
+    const host = document.querySelector('redline-question') as HTMLElement
+    ;(host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement).value = 'Reviewer-only note'
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls[0]).toMatchObject({ note: 'Reviewer-only note', data: { details: 'Keep this authored value' } })
+  })
+})
+
+describe('daemon pending snapshot state', () => {
+  it('hydrates a cached keyed answer and tracks dirty/revert state', () => {
+    const snapshot: PendingSnapshot = {
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro', note: 'Keep it focused.', data: { choice: 'Pro' } },
+      }],
+    }
+    ;(window as any).__commandoRedlinePendingSnapshot = snapshot
+    loadSdk()
+    document.body.innerHTML = '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const radios = host.querySelectorAll('input[type="radio"]')
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+
+    expect((radios[1] as HTMLInputElement).checked).toBe(true)
+    expect(note.value).toBe('Keep it focused.')
+    expect(button.textContent).toBe('Queued ✓')
+    expect(button.dataset.queued).toBe('1')
+
+    ;(radios[0] as HTMLInputElement).click()
+    expect(button.textContent).toBe('Update queued answer')
+    expect(host.querySelector('.redline-queued-badge')?.textContent).toBe('Changed since queued')
+    ;(radios[1] as HTMLInputElement).click()
+    expect(button.textContent).toBe('Queued ✓')
+
+    note.value = 'Changed note'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(button.textContent).toBe('Update queued answer')
+    note.value = 'Keep it focused.'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(button.textContent).toBe('Queued ✓')
+  })
+
+  it('hydrates a changed live baseline when the local draft is clean', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro', note: 'First note', data: { choice: 'Pro' } },
+      }],
+    })
+
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Starter', note: 'Updated in drawer', data: { choice: 'Starter' } },
+      }],
+    })
+    expect((host.querySelector('input[value="Starter"]') as HTMLInputElement).checked).toBe(true)
+    expect(note.value).toBe('Updated in drawer')
+    expect(host.querySelector('button')?.textContent).toBe('Queued ✓')
+  })
+
+  it('preserves a dirty local draft across a changed server baseline', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro,Enterprise"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'plan', response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } } }],
+    })
+    ;(host.querySelector('input[value="Starter"]') as HTMLInputElement).click()
+    note.value = 'Local draft'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Enterprise', note: 'Server note', data: { choice: 'Enterprise' } },
+      }],
+    })
+    expect((host.querySelector('input[value="Starter"]') as HTMLInputElement).checked).toBe(true)
+    expect(note.value).toBe('Local draft')
+    expect(host.querySelector('button')?.textContent).toBe('Update queued answer')
+    expect(host.querySelector('.redline-queued-badge')?.textContent).toBe('Changed since queued')
+  })
+
+  it('uses queueKey before selector and selector fallback only for unkeyed controls', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-choice id="keyed" key="plan" prompt="Keyed" options="A,B"></redline-choice>
+      <redline-choice id="unkeyed" prompt="Unkeyed" options="A,B"></redline-choice>`
+    const keyed = document.querySelector('#keyed') as HTMLElement
+    const unkeyed = document.querySelector('#unkeyed') as HTMLElement
+
+    publishSnapshot({
+      version: 1,
+      controls: [
+        { queueKey: 'other', selector: '#keyed', response: { question: 'Keyed', answer: 'A', data: { choice: 'A' } } },
+        { selector: '#unkeyed', response: { question: 'Unkeyed', answer: 'B', data: { choice: 'B' } } },
+      ],
+    })
+    expect(keyed.querySelector('input:checked')).toBeNull()
+    expect(keyed.querySelector('button')?.textContent).toBe('Queue answer')
+    expect((unkeyed.querySelector('input[value="B"]') as HTMLInputElement).checked).toBe(true)
+    expect(unkeyed.querySelector('button')?.textContent).toBe('Queued ✓')
+
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'plan', selector: '#wrong', response: { question: 'Keyed', answer: 'B', data: { choice: 'B' } } }],
+    })
+    expect((keyed.querySelector('input[value="B"]') as HTMLInputElement).checked).toBe(true)
+    expect(keyed.querySelector('button')?.textContent).toBe('Queued ✓')
+  })
+
+  it('clears a removed baseline without erasing the draft, then hydrates on re-add', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'plan', response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } } }],
+    })
+    ;(host.querySelector('input[value="Starter"]') as HTMLInputElement).click()
+    expect(host.querySelector('button')?.textContent).toBe('Update queued answer')
+
+    publishSnapshot({ version: 1, controls: [] })
+    expect((host.querySelector('input[value="Starter"]') as HTMLInputElement).checked).toBe(true)
+    expect(host.querySelector('button')?.textContent).toBe('Queue answer')
+    expect(host.querySelector('.redline-queued-badge')).toBeNull()
+
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro', note: 'Restored note', data: { choice: 'Pro' } },
+      }],
+    })
+    expect((host.querySelector('input[value="Pro"]') as HTMLInputElement).checked).toBe(true)
+    expect((host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement).value).toBe('Restored note')
+    expect(host.querySelector('button')?.textContent).toBe('Queued ✓')
+  })
+
+  it('waits for a live snapshot after queueing instead of marking optimistically', () => {
+    const calls = loadSdk()
+    document.body.innerHTML = '<redline-ask key="name" prompt="Name?"></redline-ask>'
+    const host = document.querySelector('redline-ask') as HTMLElement
+    const answer = host.querySelector('textarea:not([data-redline-note])') as HTMLTextAreaElement
+    const button = host.querySelector('button') as HTMLButtonElement
+    answer.value = 'Redline'
+    button.click()
+    expect(calls).toHaveLength(1)
+    expect(button.textContent).toBe('Queue answer')
+
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'name', response: { question: 'Name?', answer: 'Redline' } }],
+    })
+    expect(button.textContent).toBe('Queued ✓')
+  })
+
+  it('hydrates legacy approve comments into the note field', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-approve key="hero" prompt="Hero?"></redline-approve>'
+    const host = document.querySelector('redline-approve') as HTMLElement
+    publishSnapshot({
+      version: 1,
+      controls: [{
+        queueKey: 'hero',
+        response: { question: 'Hero?', answer: 'reject — too loud', data: { verdict: 'reject', comment: 'too loud' } },
+      }],
+    })
+    expect((host.querySelector('input[value="reject"]') as HTMLInputElement).checked).toBe(true)
+    expect((host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement).value).toBe('too loud')
+    expect(host.querySelector('button')?.textContent).toBe('Queued ✓')
   })
 })
 

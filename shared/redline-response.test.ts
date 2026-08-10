@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
+  MAX_RESPONSE_NOTE,
   MAX_RESPONSE_QUESTION,
   MAX_RESPONSE_QUEUE_KEY,
   REDLINE_BINDING_NAME,
@@ -18,6 +19,7 @@ describe('parseRedlinePageResponse', () => {
   it('accepts all optional fields', () => {
     const full = {
       ...valid,
+      note: 'Prioritize accessibility.',
       data: { choice: 'Pro' },
       queueKey: 'plan',
       selector: '#plan-picker',
@@ -40,6 +42,7 @@ describe('parseRedlinePageResponse', () => {
     expect(parseRedlinePageResponse({ question: 'q'.repeat(MAX_RESPONSE_QUESTION + 1), answer: 'a' })).toBeNull()
     expect(parseRedlinePageResponse({ question: 'q', answer: 'a'.repeat(MAX_RESPONSE_ANSWER + 1) })).toBeNull()
     expect(parseRedlinePageResponse({ ...valid, queueKey: 'k'.repeat(MAX_RESPONSE_QUEUE_KEY + 1) })).toBeNull()
+    expect(parseRedlinePageResponse({ ...valid, note: 'n'.repeat(MAX_RESPONSE_NOTE + 1) })).toEqual(valid)
   })
 
   it('drops data, keeps answer', () => {
@@ -55,6 +58,7 @@ describe('parseRedlinePageResponse', () => {
     expect(parseRedlinePageResponse({ ...valid, rect: { x: 1 } })).toEqual(valid)
     expect(parseRedlinePageResponse({ ...valid, rect: { x: Infinity, y: 0, width: 1, height: 1 } })).toEqual(valid)
     expect(parseRedlinePageResponse({ ...valid, selector: '' })).toEqual(valid)
+    expect(parseRedlinePageResponse({ ...valid, note: '' })).toEqual(valid)
     expect(parseRedlinePageResponse({ ...valid, tag: 'x'.repeat(64) })).toEqual(valid)
   })
 

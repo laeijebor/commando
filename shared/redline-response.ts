@@ -5,6 +5,7 @@ export const REDLINE_BINDING_NAME = '__commandoRedlineQueue'
 
 export const MAX_RESPONSE_QUESTION = 256
 export const MAX_RESPONSE_ANSWER = 1_024
+export const MAX_RESPONSE_NOTE = 1_024
 export const MAX_RESPONSE_DATA_JSON = 4_096
 export const MAX_RESPONSE_QUEUE_KEY = 128
 /** Upper bound on the raw binding payload string before JSON.parse. */
@@ -18,6 +19,7 @@ export const MAX_RESPONSE_PAYLOAD_BYTES = 16_384
 export type RedlinePageResponse = {
   question: string
   answer: string
+  note?: string
   data?: unknown
   queueKey?: string
   selector?: string
@@ -49,6 +51,7 @@ export function parseRedlinePageResponse(value: unknown): RedlinePageResponse | 
     return null
   }
   const response: RedlinePageResponse = { question: record.question, answer: record.answer }
+  if (boundedString(record.note, MAX_RESPONSE_NOTE)) response.note = record.note
   if (record.queueKey !== undefined) response.queueKey = record.queueKey as string
   if (record.data !== undefined) {
     let json: string | undefined
