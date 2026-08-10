@@ -255,6 +255,92 @@ describe('redline-question', () => {
   })
 })
 
+describe('redline-lightbox', () => {
+  it('opens a figure image with its caption and restores focus on Escape', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <figure>
+        <redline-lightbox>
+          <img src="expanded.png" alt="Expanded whole-session update sheet">
+        </redline-lightbox>
+        <figcaption><strong>Expanded: whole-session handoff</strong><p>Preserves source pane IDs.</p></figcaption>
+      </figure>`
+    const image = document.querySelector('redline-lightbox img') as HTMLImageElement
+    expect(image.getAttribute('role')).toBe('button')
+    expect(image.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(image.tabIndex).toBe(0)
+
+    image.focus()
+    image.click()
+    const dialog = document.querySelector('dialog.redline-lightbox-dialog') as HTMLDialogElement
+    expect(dialog.hasAttribute('open')).toBe(true)
+    expect(dialog.getAttribute('aria-label')).toBe('Expanded whole-session update sheet')
+    expect((dialog.querySelector('.redline-lightbox-image') as HTMLImageElement).src).toContain('/expanded.png')
+    expect(dialog.querySelector('.redline-lightbox-caption')?.innerHTML).toContain(
+      '<strong>Expanded: whole-session handoff</strong>',
+    )
+    expect(dialog.querySelector('.redline-lightbox-caption')?.textContent).toContain('Preserves source pane IDs.')
+    expect(dialog.querySelector('.redline-lightbox-count')?.textContent).toBe('1 / 1')
+    expect(document.documentElement.style.overflow).toBe('hidden')
+
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(dialog.hasAttribute('open')).toBe(false)
+    expect(document.documentElement.style.overflow).toBe('')
+    expect(document.activeElement).toBe(image)
+  })
+
+  it('opens from the keyboard and toggles between fit and intrinsic size', () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-lightbox caption="Annotated terminal"><img src="terminal.png"></redline-lightbox>'
+    const image = document.querySelector('redline-lightbox img') as HTMLImageElement
+    image.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+
+    const dialog = document.querySelector('dialog.redline-lightbox-dialog') as HTMLDialogElement
+    const stage = dialog.querySelector('.redline-lightbox-stage') as HTMLElement
+    const sizeButton = dialog.querySelector('.redline-lightbox-size') as HTMLButtonElement
+    expect(dialog.hasAttribute('open')).toBe(true)
+    expect(dialog.querySelector('.redline-lightbox-caption')?.textContent).toBe('Annotated terminal')
+    expect(stage.dataset.fit).toBe('true')
+
+    sizeButton.click()
+    expect(stage.dataset.fit).toBe('false')
+    expect(sizeButton.textContent).toBe('Fit to window')
+    expect(sizeButton.getAttribute('aria-pressed')).toBe('true')
+    sizeButton.click()
+    expect(stage.dataset.fit).toBe('true')
+    expect(sizeButton.textContent).toBe('Actual size')
+  })
+
+  it('cycles all page lightboxes in document order with controls and arrow keys', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <figure>
+        <redline-lightbox><img src="collapsed.png" alt="Collapsed view"></redline-lightbox>
+        <figcaption><strong>Collapsed</strong></figcaption>
+      </figure>
+      <figure>
+        <redline-lightbox><img src="expanded.png" alt="Expanded view"></redline-lightbox>
+        <figcaption><strong>Expanded</strong></figcaption>
+      </figure>`
+    ;(document.querySelector('redline-lightbox img') as HTMLImageElement).click()
+    const dialog = document.querySelector('dialog.redline-lightbox-dialog') as HTMLDialogElement
+    const modalImage = dialog.querySelector('.redline-lightbox-image') as HTMLImageElement
+    const count = dialog.querySelector('.redline-lightbox-count') as HTMLElement
+
+    ;(dialog.querySelector('.redline-lightbox-next') as HTMLButtonElement).click()
+    expect(modalImage.alt).toBe('Expanded view')
+    expect(count.textContent).toBe('2 / 2')
+    expect(dialog.querySelector('.redline-lightbox-caption')?.textContent).toContain('Expanded')
+
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    expect(modalImage.alt).toBe('Collapsed view')
+    expect(count.textContent).toBe('1 / 2')
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    expect(modalImage.alt).toBe('Expanded view')
+    expect(count.textContent).toBe('2 / 2')
+  })
+})
+
 describe('binding-absent fallback', () => {
   it('disables queue buttons with a hint, and the poll gives up if the binding never appears', () => {
     vi.useFakeTimers()

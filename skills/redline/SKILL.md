@@ -110,6 +110,30 @@ comes from `data-redline-label`, then the section heading, then its id. Keep
 labels short and ordered exactly like the document. The first/current visible
 section receives `aria-current="location"` automatically.
 
+## Image lightboxes
+
+Wrap review screenshots in `<redline-lightbox>` so they can be focused without
+losing their authored context. Keep the ordinary `figure` / `figcaption`
+structure; the component copies the nearest figure caption into its modal:
+
+```html
+<figure>
+  <redline-lightbox>
+    <img src="expanded.png" alt="Expanded whole-session update sheet">
+  </redline-lightbox>
+  <figcaption>
+    <strong>Expanded: whole-session handoff</strong>
+    <p>The sheet overlays upward and preserves source pane IDs.</p>
+  </figcaption>
+</figure>
+```
+
+Click the image or focus it and press Enter/Space. The modal offers fit and
+intrinsic-size views, includes the caption, and cycles every
+`<redline-lightbox>` on the page in document order with Previous/Next buttons
+or Left/Right Arrow keys. Escape or Close dismisses it and restores focus. For
+a simple image without a figure, provide a short `caption` attribute instead.
+
 ## Ready-made review controls (response queuing)
 
 Load the SDK once: `<script src="http://127.0.0.1:4310/redline/sdk.js"></script>`

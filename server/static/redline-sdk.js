@@ -263,6 +263,94 @@
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
 }
+:where(redline-lightbox) {
+  display: block;
+}
+:where(redline-lightbox img[role="button"]) {
+  cursor: zoom-in;
+}
+:where(redline-lightbox img[role="button"]:focus-visible) {
+  outline: 3px solid var(--redline-accent, #7c6cf6);
+  outline-offset: 4px;
+}
+:where(dialog.redline-lightbox-dialog) {
+  --_ac: var(--redline-accent, #7c6cf6);
+  position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none;
+  margin: 0; padding: 0; overflow: hidden; border: 0; color: #f5f3fa;
+  background: rgb(8 6 16 / .97);
+}
+:where(dialog.redline-lightbox-dialog::backdrop) {
+  background: rgb(8 6 16 / .92);
+  backdrop-filter: blur(10px);
+}
+:where(.redline-lightbox-frame) {
+  position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+:where(.redline-lightbox-bar) {
+  z-index: 2; display: flex; min-width: 0; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: max(.75rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) .75rem max(1rem, env(safe-area-inset-left));
+  border-bottom: 1px solid rgb(255 255 255 / .12); background: rgb(8 6 16 / .82);
+  font: 600 .82rem/1.2 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+:where(.redline-lightbox-actions) {
+  display: flex; align-items: center; gap: .5rem;
+}
+:where(.redline-lightbox-dialog button) {
+  min-height: 2.3rem; padding: .45rem .8rem; border: 1px solid rgb(255 255 255 / .18);
+  border-radius: .6rem; color: #f5f3fa; background: rgb(255 255 255 / .08);
+  font: 650 .8rem/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+:where(.redline-lightbox-dialog button:hover:not(:disabled)) {
+  border-color: var(--_ac); background: color-mix(in oklab, var(--_ac) 22%, transparent);
+}
+:where(.redline-lightbox-dialog button:focus-visible) {
+  outline: 2px solid var(--_ac); outline-offset: 2px;
+}
+:where(.redline-lightbox-dialog button:disabled) {
+  visibility: hidden;
+}
+:where(.redline-lightbox-stage) {
+  min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  scrollbar-color: rgb(255 255 255 / .28) transparent;
+}
+:where(.redline-lightbox-canvas) {
+  display: grid; width: 100%; height: 100%; min-width: 100%; min-height: 100%; place-items: center;
+  padding: 1.25rem 4.5rem;
+}
+:where(.redline-lightbox-image) {
+  display: block; max-width: 100%; max-height: 100%; object-fit: contain;
+  box-shadow: 0 24px 80px rgb(0 0 0 / .58); user-select: none;
+}
+:where(.redline-lightbox-stage[data-fit="false"] .redline-lightbox-canvas) {
+  width: max-content; height: max-content;
+}
+:where(.redline-lightbox-stage[data-fit="false"] .redline-lightbox-image) {
+  max-width: none; max-height: none;
+}
+:where(.redline-lightbox-previous, .redline-lightbox-next) {
+  position: absolute; z-index: 3; top: 50%; transform: translateY(-50%);
+  box-shadow: 0 10px 35px rgb(0 0 0 / .45);
+}
+:where(.redline-lightbox-previous) { left: 1rem; }
+:where(.redline-lightbox-next) { right: 1rem; }
+:where(.redline-lightbox-caption) {
+  z-index: 2; max-height: 24dvh; padding: .9rem max(1rem, env(safe-area-inset-right)) max(.9rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  overflow: auto; border-top: 1px solid rgb(255 255 255 / .12); background: rgb(8 6 16 / .88);
+  color: #c6c0d6; font: 400 .86rem/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+:where(.redline-lightbox-caption[hidden]) { display: none; }
+:where(.redline-lightbox-caption > :first-child) { margin-top: 0; }
+:where(.redline-lightbox-caption > :last-child) { margin-bottom: 0; }
+:where(.redline-lightbox-caption strong) { color: #f5f3fa; }
+@media (max-width: 640px) {
+  :where(.redline-lightbox-canvas) { padding: .75rem; }
+  :where(.redline-lightbox-previous, .redline-lightbox-next) { top: auto; bottom: calc(1rem + env(safe-area-inset-bottom)); }
+  :where(.redline-lightbox-previous) { left: 1rem; }
+  :where(.redline-lightbox-next) { right: 1rem; }
+  :where(.redline-lightbox-caption:not([hidden])) { padding-bottom: calc(4.4rem + env(safe-area-inset-bottom)); }
+}
 `
 
   const injectStyles = () => {
@@ -486,6 +574,194 @@
     }
   }
 
+  let activeLightbox = null
+  let lightboxDialog = null
+  let lightboxReturnFocus = null
+  let previousDocumentOverflow = ''
+
+  const lightboxCaption = (host) => {
+    const ownCaption = host.querySelector('figcaption, [data-redline-lightbox-caption]')
+    if (ownCaption) return ownCaption
+    const figure = host.closest('figure')
+    return figure?.querySelector('figcaption, [data-redline-lightbox-caption]') || null
+  }
+
+  const lightboxHosts = () =>
+    [...document.querySelectorAll('redline-lightbox')].filter((host) => host.querySelector('img'))
+
+  const finishLightboxClose = () => {
+    if (!activeLightbox) return
+    activeLightbox = null
+    document.documentElement.style.overflow = previousDocumentOverflow
+    const returnFocus = lightboxReturnFocus
+    lightboxReturnFocus = null
+    if (returnFocus?.isConnected) returnFocus.focus()
+  }
+
+  const closeLightbox = () => {
+    if (!lightboxDialog?.hasAttribute('open')) return
+    finishLightboxClose()
+    if (typeof lightboxDialog.close === 'function') lightboxDialog.close()
+    else lightboxDialog.removeAttribute('open')
+  }
+
+  const renderLightbox = (host) => {
+    const image = host.querySelector('img')
+    if (!image || !lightboxDialog) return
+    activeLightbox = host
+    const hosts = lightboxHosts()
+    const index = hosts.indexOf(host)
+    const modalImage = lightboxDialog.querySelector('.redline-lightbox-image')
+    modalImage.src = image.currentSrc || image.src
+    modalImage.alt = image.alt || ''
+
+    const caption = lightboxCaption(host)
+    const captionPanel = lightboxDialog.querySelector('.redline-lightbox-caption')
+    const attributeCaption = host.getAttribute('caption')
+    captionPanel.replaceChildren()
+    if (caption) {
+      captionPanel.append(...[...caption.childNodes].map((node) => node.cloneNode(true)))
+      captionPanel.hidden = false
+    } else if (attributeCaption) {
+      captionPanel.textContent = attributeCaption
+      captionPanel.hidden = false
+    } else {
+      captionPanel.hidden = true
+    }
+
+    const label = image.alt || caption?.textContent?.trim() || attributeCaption || 'Image preview'
+    lightboxDialog.setAttribute('aria-label', label)
+    lightboxDialog.querySelector('.redline-lightbox-count').textContent = `${index + 1} / ${hosts.length}`
+    const hasMultiple = hosts.length > 1
+    lightboxDialog.querySelector('.redline-lightbox-previous').disabled = !hasMultiple
+    lightboxDialog.querySelector('.redline-lightbox-next').disabled = !hasMultiple
+    const stage = lightboxDialog.querySelector('.redline-lightbox-stage')
+    stage.dataset.fit = 'true'
+    stage.scrollTo?.(0, 0)
+    const sizeButton = lightboxDialog.querySelector('.redline-lightbox-size')
+    sizeButton.textContent = 'Actual size'
+    sizeButton.setAttribute('aria-pressed', 'false')
+  }
+
+  const moveLightbox = (direction) => {
+    const hosts = lightboxHosts()
+    if (hosts.length < 2 || !activeLightbox) return
+    const currentIndex = hosts.indexOf(activeLightbox)
+    const nextIndex = (currentIndex + direction + hosts.length) % hosts.length
+    renderLightbox(hosts[nextIndex])
+  }
+
+  const ensureLightboxDialog = () => {
+    if (lightboxDialog?.isConnected) return lightboxDialog
+    lightboxDialog = null
+    const dialog = document.createElement('dialog')
+    dialog.className = 'redline-lightbox-dialog'
+    dialog.innerHTML = `
+      <div class="redline-lightbox-frame">
+        <header class="redline-lightbox-bar">
+          <span class="redline-lightbox-count" aria-live="polite"></span>
+          <div class="redline-lightbox-actions">
+            <button type="button" class="redline-lightbox-size" aria-pressed="false">Actual size</button>
+            <button type="button" class="redline-lightbox-close">Close</button>
+          </div>
+        </header>
+        <div class="redline-lightbox-stage" data-fit="true">
+          <div class="redline-lightbox-canvas"><img class="redline-lightbox-image" alt=""></div>
+        </div>
+        <button type="button" class="redline-lightbox-previous" aria-label="Previous image">Previous</button>
+        <button type="button" class="redline-lightbox-next" aria-label="Next image">Next</button>
+        <footer class="redline-lightbox-caption"></footer>
+      </div>`
+    dialog.querySelector('.redline-lightbox-close').addEventListener('click', closeLightbox)
+    dialog.querySelector('.redline-lightbox-previous').addEventListener('click', () => moveLightbox(-1))
+    dialog.querySelector('.redline-lightbox-next').addEventListener('click', () => moveLightbox(1))
+    dialog.querySelector('.redline-lightbox-size').addEventListener('click', (event) => {
+      const stage = dialog.querySelector('.redline-lightbox-stage')
+      const fitting = stage.dataset.fit !== 'false'
+      stage.dataset.fit = fitting ? 'false' : 'true'
+      event.currentTarget.textContent = fitting ? 'Fit to window' : 'Actual size'
+      event.currentTarget.setAttribute('aria-pressed', fitting ? 'true' : 'false')
+      if (!fitting) stage.scrollTo?.(0, 0)
+    })
+    dialog.addEventListener('click', (event) => {
+      if (
+        event.target === dialog ||
+        event.target.classList?.contains('redline-lightbox-stage') ||
+        event.target.classList?.contains('redline-lightbox-canvas')
+      ) {
+        closeLightbox()
+      }
+    })
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault()
+      closeLightbox()
+    })
+    dialog.addEventListener('close', finishLightboxClose)
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        moveLightbox(-1)
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        moveLightbox(1)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        closeLightbox()
+      }
+    })
+    document.body.append(dialog)
+    lightboxDialog = dialog
+    return dialog
+  }
+
+  const openLightbox = (host) => {
+    const dialog = ensureLightboxDialog()
+    if (!dialog.hasAttribute('open')) {
+      lightboxReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      previousDocumentOverflow = document.documentElement.style.overflow
+      document.documentElement.style.overflow = 'hidden'
+      if (typeof dialog.showModal === 'function') dialog.showModal()
+      else dialog.setAttribute('open', '')
+    }
+    renderLightbox(host)
+    dialog.querySelector('.redline-lightbox-close').focus()
+  }
+
+  /** Focused image viewing with figure captions and page-wide navigation. */
+  class RedlineLightbox extends HTMLElement {
+    connectedCallback() {
+      if (this.dataset.redlineReady) return
+      this.dataset.redlineReady = '1'
+      const render = () => this.render()
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', render, { once: true })
+      } else {
+        render()
+      }
+    }
+
+    disconnectedCallback() {
+      if (activeLightbox === this) closeLightbox()
+    }
+
+    render() {
+      const image = this.querySelector('img')
+      if (!image) return
+      const caption = lightboxCaption(this)
+      const label = image.alt || caption?.textContent?.trim() || this.getAttribute('caption') || 'image'
+      image.setAttribute('role', 'button')
+      if (!image.hasAttribute('tabindex')) image.tabIndex = 0
+      image.setAttribute('aria-haspopup', 'dialog')
+      image.setAttribute('aria-label', `Open ${label}`)
+      image.addEventListener('click', () => openLightbox(this))
+      image.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        openLightbox(this)
+      })
+    }
+  }
+
   /** Structural navigation for authored artifacts using stable section ids. */
   class RedlineNav extends HTMLElement {
     connectedCallback() {
@@ -590,5 +866,6 @@
   defineOnce('redline-rating', RedlineRating)
   defineOnce('redline-ask', RedlineAsk)
   defineOnce('redline-question', RedlineQuestion)
+  defineOnce('redline-lightbox', RedlineLightbox)
   defineOnce('redline-nav', RedlineNav)
 })()
