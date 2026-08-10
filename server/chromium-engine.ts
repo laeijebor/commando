@@ -541,9 +541,14 @@ type TileTarget = {
   targetId: string
   wsUrl: string
   devtoolsFrontendUrl: string
+  browserCdp: CdpConnection
   cdp: CdpConnection
   sinks: Set<ScreencastSink>
   screencasting: boolean
+  /** Shared by subscribers that arrive while Page.startScreencast is in flight. */
+  screencastStarting: Promise<void> | null
+  /** Lets a real frame complete startup when Chrome omits the command response. */
+  resolveScreencastStart: (() => void) | null
   /** URL applied by the last explicit open/navigate, used to detect watchdog loops. */
   currentUrl: string
   /** True once the current screencast delivered at least one real frame. */
@@ -642,22 +647,51 @@ export class ChromiumEngine {
     tile.sinks.add(sink)
     if (tile.lastFrame) sink(tile.lastFrame)
     if (!tile.screencasting) {
-      tile.screencasting = true
+      let starting = tile.screencastStarting
+      if (!starting) {
+        let resolveStartedByFrame: (() => void) | null = null
+        starting = tile.browserCdp
+          .send('Target.activateTarget', { targetId: tile.targetId })
+          .then(() => {
+            tile.gotRealFrame = false
+            const startedByFrame = new Promise<void>((resolve) => {
+              resolveStartedByFrame = resolve
+              tile.resolveScreencastStart = resolve
+            })
+            return Promise.race([
+              tile.cdp.send('Page.startScreencast', {
+                format: 'png',
+                maxWidth: SCREENCAST_MAX_DIMENSION,
+                maxHeight: SCREENCAST_MAX_DIMENSION,
+                everyNthFrame: 1,
+              }).then(() => undefined),
+              startedByFrame,
+            ])
+          })
+          .then(() => {
+            tile.screencasting = true
+            if (!tile.gotRealFrame) this.armScreencastFallback(tile)
+          })
+        tile.screencastStarting = starting
+        void starting.then(
+          () => {
+            if (tile.screencastStarting === starting) tile.screencastStarting = null
+            if (tile.resolveScreencastStart === resolveStartedByFrame) tile.resolveScreencastStart = null
+          },
+          () => {
+            if (tile.screencastStarting === starting) tile.screencastStarting = null
+            if (tile.resolveScreencastStart === resolveStartedByFrame) tile.resolveScreencastStart = null
+          },
+        )
+      }
       try {
-        await tile.cdp.send('Page.startScreencast', {
-          format: 'png',
-          maxWidth: SCREENCAST_MAX_DIMENSION,
-          maxHeight: SCREENCAST_MAX_DIMENSION,
-          everyNthFrame: 1,
-        })
+        await starting
       } catch (error) {
-        // A failed start must not wedge the tile: leaving the flag set would
-        // make every later subscriber skip the start and hang frameless.
-        tile.screencasting = false
+        // Every concurrent subscriber waits on the same start, so none can be
+        // told the stream is ready after that shared start has failed.
         tile.sinks.delete(sink)
         throw error
       }
-      this.armScreencastFallback(tile)
     }
     return () => {
       tile.sinks.delete(sink)
@@ -1005,9 +1039,12 @@ export class ChromiumEngine {
       targetId,
       wsUrl,
       devtoolsFrontendUrl,
+      browserCdp: browser.cdp,
       cdp,
       sinks: new Set(),
       screencasting: false,
+      screencastStarting: null,
+      resolveScreencastStart: null,
       currentUrl: url,
       gotRealFrame: false,
       fallbackTimer: null,
@@ -1023,6 +1060,7 @@ export class ChromiumEngine {
       const data = params.data
       if (typeof data !== 'string') return
       tile.gotRealFrame = true
+      tile.resolveScreencastStart?.()
       this.stopScreencastFallback(tile)
       const frame: ScreencastFrame = {
         data,

@@ -8,6 +8,11 @@ import type { WebPanePendingSnapshot } from '../shared/protocol.js'
 const WEB_TILE_PATH = /^\/ws\/web-tiles\/(w-[0-9a-f]{8})$/
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024
 
+function isRetryableScreencastStart(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('Page.startScreencast') || message.includes('Not attached to an active page')
+}
+
 /** Extracts the web pane id from a tile-stream upgrade path, if it is one. */
 export function webTilePathId(pathname: string): string | null {
   return WEB_TILE_PATH.exec(pathname)?.[1] ?? null
@@ -113,15 +118,23 @@ export class WebTileRelay {
       }
     }
 
-    this.dependencies.engine
-      .subscribeScreencast(webPaneId, pane.url, (frame) => {
-        if (socket.readyState !== WebSocket.OPEN) return
-        socket.send(JSON.stringify({
-          type: 'frame',
-          data: frame.data,
-          format: frame.format,
-          metadata: frame.metadata,
-        }))
+    const subscribe = () => this.dependencies.engine.subscribeScreencast(webPaneId, pane.url, (frame) => {
+      if (socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({
+        type: 'frame',
+        data: frame.data,
+        format: frame.format,
+        metadata: frame.metadata,
+      }))
+    })
+
+    subscribe()
+      .catch((error: unknown) => {
+        // Chrome can create and navigate a target while rejecting its first
+        // screencast attach. Re-subscribing reuses that now-live target, which
+        // is the same recovery the tile's manual Retry previously performed.
+        if (closed || !isRetryableScreencastStart(error)) throw error
+        return subscribe()
       })
       .then((stop) => {
         if (closed) {
@@ -129,9 +142,8 @@ export class WebTileRelay {
           return
         }
         unsubscribe = stop
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'ready' }))
-        }
+        if (socket.readyState !== WebSocket.OPEN) return
+        socket.send(JSON.stringify({ type: 'ready' }))
       })
       .catch((error: unknown) => {
         if (socket.readyState === WebSocket.OPEN) {

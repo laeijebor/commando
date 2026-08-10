@@ -210,6 +210,22 @@ describe('ChromiumTileCard first-frame watchdog', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
+  it('does not count slow target setup against the first-frame deadline', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => {
+      socket.open()
+      vi.advanceTimersByTime(30_000)
+    })
+    expect(screen.getByText('Starting chromium stream…')).toBeInTheDocument()
+
+    act(() => {
+      socket.message({ type: 'ready' })
+      vi.advanceTimersByTime(12_000)
+    })
+    expect(screen.getByText(/no frames/i)).toBeInTheDocument()
+  })
+
   it('disarms the watchdog only after a frame decodes and is drawn', () => {
     renderTile()
     const socket = FakeWebSocket.instances[0]

@@ -216,12 +216,26 @@ export function ChromiumTileCard({
     let observer: ResizeObserver | undefined
     let stallTimer: number | undefined
     let stalled = false
+    let firstFrameDrawn = false
 
     const disarmStallWatchdog = () => {
       if (stallTimer !== undefined) {
         window.clearTimeout(stallTimer)
         stallTimer = undefined
       }
+    }
+
+    const armStallWatchdog = () => {
+      if (firstFrameDrawn) return
+      disarmStallWatchdog()
+      stallTimer = window.setTimeout(() => {
+        stallTimer = undefined
+        if (disposed) return
+        stalled = true
+        setState('error')
+        setDetail('No frames from the chromium stream. Retry to reconnect.')
+        socket?.close()
+      }, FIRST_FRAME_TIMEOUT_MS)
     }
 
     const sendViewport = () => {
@@ -242,23 +256,13 @@ export function ChromiumTileCard({
       setState('connecting')
       setDetail('')
       stalled = false
+      firstFrameDrawn = false
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const tokenQuery = wsToken ? `?token=${encodeURIComponent(wsToken)}` : ''
       socket = new WebSocket(
         `${wsProtocol}//${window.location.host}/ws/web-tiles/${webPane.id}${tokenQuery}`,
       )
       socketRef.current = socket
-      // A stream that never yields a first frame must become a retryable
-      // error, not an eternal "Starting…" spinner.
-      disarmStallWatchdog()
-      stallTimer = window.setTimeout(() => {
-        stallTimer = undefined
-        if (disposed) return
-        stalled = true
-        setState('error')
-        setDetail('No frames from the chromium stream. Retry to reconnect.')
-        socket?.close()
-      }, FIRST_FRAME_TIMEOUT_MS)
       socket.addEventListener('open', () => {
         sendViewport()
       })
@@ -294,6 +298,10 @@ export function ChromiumTileCard({
         if (message.type === 'ready') {
           // The engine target exists now — (re)assert the tile's viewport.
           sendViewport()
+          // Target creation has its own bounded CDP timeouts and can exceed
+          // the frameless budget on a cold browser. Only time the stream once
+          // the relay says setup completed.
+          armStallWatchdog()
           return
         }
         if (message.type === 'engine_error') {
@@ -346,6 +354,7 @@ export function ChromiumTileCard({
           canvas.height = image.height
         }
         canvas.getContext('2d')?.drawImage(image, 0, 0)
+        firstFrameDrawn = true
         disarmStallWatchdog()
         setState((current) => (current === 'streaming' ? current : 'streaming'))
       }
