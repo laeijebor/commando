@@ -198,6 +198,29 @@
   background: linear-gradient(135deg, var(--_ac), var(--_ac2));
   color: #fff; font-weight: 650; text-shadow: 0 1px 4px rgb(0 0 0 / .25);
 }
+:where(redline-choice) :where(.redline-options label) {
+  display: inline-flex; align-items: center; gap: .48rem; min-height: 2.75rem; box-sizing: border-box;
+}
+:where(redline-choice) :where(.redline-options label)::before {
+  content: ""; display: inline-grid; flex: 0 0 1.05rem; width: 1.05rem; height: 1.05rem;
+  place-items: center; box-sizing: border-box;
+  border: 1.5px solid color-mix(in oklab, currentColor 55%, transparent);
+  transition: border-color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+:where(redline-choice) :where(.redline-options-single label)::before {
+  border-radius: 50%;
+}
+:where(redline-choice) :where(.redline-options-multiple label)::before {
+  border-radius: 4px;
+}
+:where(redline-choice) :where(.redline-options-single label:has(:checked))::before {
+  border-color: rgb(255 255 255 / .92);
+  background: radial-gradient(circle, #fff 0 27%, transparent 31%);
+}
+:where(redline-choice) :where(.redline-options-multiple label:has(:checked))::before {
+  content: "✓"; border-color: rgb(255 255 255 / .92); color: #fff;
+  background: rgb(255 255 255 / .16); font-size: .78rem; font-weight: 800; line-height: 1;
+}
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options input) {
   position: absolute; opacity: 0; pointer-events: none;
 }
@@ -359,7 +382,7 @@
         .filter(Boolean)
       this.append(promptHeading(this))
       const list = document.createElement('div')
-      list.className = 'redline-options'
+      list.className = `redline-options redline-options-${multiple ? 'multiple' : 'single'}`
       for (const option of options) {
         const label = document.createElement('label')
         const input = document.createElement('input')
