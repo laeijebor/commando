@@ -180,6 +180,7 @@ describe('redline-choice', () => {
     button.click()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
+    expect(calls[0].data).toEqual({ choice: 'Pro', options: ['Starter', 'Pro'], multiple: false })
     expect(button.textContent).toBe('Queue answer') // the daemon snapshot is authoritative
   })
 

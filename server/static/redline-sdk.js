@@ -614,7 +614,11 @@
       button.addEventListener('click', () => {
         const chosen = [...this.querySelectorAll('input:checked')].map((input) => input.value)
         if (chosen.length === 0) return
-        this.queue(chosen.join(', '), { choice: multiple ? chosen : chosen[0] })
+        this.queue(chosen.join(', '), {
+          choice: multiple ? chosen : chosen[0],
+          options,
+          multiple,
+        })
       })
       this.append(list, note, button)
       this._multiple = multiple

@@ -441,7 +441,8 @@ export class WebPanePendingStore {
           throw new WebPaneError(400, `Answer must contain 1 to ${MAX_RESPONSE_ANSWER} characters`)
         }
         response.answer = change.answer
-        delete response.data
+        response.data = updatedResponseData(response.data, change.answer)
+        if (response.data === undefined) delete response.data
       }
       if (hasNote) {
         if (typeof change.note !== 'string') throw new WebPaneError(400, 'Note must be a string')
@@ -665,4 +666,24 @@ export class WebPanePendingStore {
 function responseComment(response: { question: string; answer: string; note?: string }): string {
   const answer = `${response.question}: ${response.answer}`
   return response.note ? `${answer}\n\nNote: ${response.note}` : answer
+}
+
+function updatedResponseData(data: unknown, answer: string): unknown {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const current = data as Record<string, unknown>
+  if (Object.prototype.hasOwnProperty.call(current, 'choice')) {
+    const multiple = current.multiple === true || Array.isArray(current.choice)
+    return {
+      ...current,
+      choice: multiple ? answer.split(', ').map((choice) => choice.trim()).filter(Boolean) : answer,
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(current, 'verdict')) {
+    return { ...current, verdict: answer }
+  }
+  if (typeof current.max === 'number' && Object.prototype.hasOwnProperty.call(current, 'rating')) {
+    const rating = Number(answer.split('/', 1)[0])
+    return Number.isFinite(rating) ? { ...current, rating } : undefined
+  }
+  return undefined
 }

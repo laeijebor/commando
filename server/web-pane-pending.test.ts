@@ -251,6 +251,22 @@ describe('WebPanePendingStore', () => {
     expect(restarted.notes[0]?.revision).toBe(4)
   })
 
+  it('updates known choice data without discarding its option set', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, {
+      ...response('Starter', 'plan'),
+      data: { choice: 'Starter', options: ['Starter', 'Pro'], multiple: false },
+    })
+
+    const snapshot = store.update('w-11111111', 1, 1, { answer: 'Pro' })
+
+    expect(snapshot.notes[0]?.response?.data).toEqual({
+      choice: 'Pro',
+      options: ['Starter', 'Pro'],
+      multiple: false,
+    })
+  })
+
   it('edits a manual annotation comment through answer', () => {
     const store = makeStore()
     store.addNote('w-11111111', PAGE_URL, manualNote('old'))
