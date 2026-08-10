@@ -101,6 +101,29 @@ export type AgentStatus = {
   details?: AgentDetails
 }
 
+export type SessionBriefUpdateKind = 'changed' | 'decision' | 'check' | 'blocker' | 'note'
+
+export type SessionBriefUpdate = {
+  id: string
+  paneId: string
+  kind: SessionBriefUpdateKind
+  text: string
+  detail?: string
+  source: 'hook' | 'agent'
+  createdAt: number
+}
+
+export type SessionBrief = {
+  sessionId: string
+  sessionName: string
+  state: AgentStatusKind
+  headline: string
+  recapMarkdown?: string
+  updates: SessionBriefUpdate[]
+  next?: string
+  updatedAt: number
+}
+
 export type PaneTerminalState = {
   width: number
   height: number
@@ -380,6 +403,8 @@ export type ServerMessage =
   | { type: 'agent_status'; status: AgentStatus }
   | { type: 'agent_status_snapshot'; statuses: AgentStatus[] }
   | { type: 'agent_status_removed'; paneId: string }
+  | { type: 'session_brief'; brief: SessionBrief }
+  | { type: 'session_brief_snapshot'; briefs: SessionBrief[] }
   | {
       type: 'workspace'
       sessionId: string

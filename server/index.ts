@@ -16,6 +16,7 @@ import type {
   CommandoSnapshot,
   SavedWorkspace,
   ServerMessage,
+  SessionBrief,
 } from '../shared/protocol.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
@@ -63,6 +64,8 @@ import {
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
+import { SessionBriefApi } from './session-brief-api.js'
+import { SessionBriefStore } from './session-briefs.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
@@ -427,6 +430,10 @@ async function main(): Promise<void> {
     : [port, DEVELOPMENT_WEB_PORT]
   const tmux = new TmuxClient(protectedPorts)
   const workspaces = new WorkspaceStore()
+  const sessionBriefs = new SessionBriefStore()
+  await sessionBriefs.load().catch((error: unknown) => {
+    console.error('[commando] failed to load persisted session briefs', error)
+  })
   const webPanes = new WebPaneService()
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
@@ -518,6 +525,10 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const publishSessionBrief = (brief: SessionBrief): void => {
+    broadcast({ type: 'session_brief', brief })
+  }
+
   const invalidateCompanionOutputRefresh = (paneId: string): void => {
     const timer = companionOutputRefreshTimers.get(paneId)
     if (timer) clearTimeout(timer)
@@ -562,6 +573,23 @@ async function main(): Promise<void> {
       ) primeStatusTail(change.status.paneId)
     }
     if (change) companion?.publish()
+    if (change) {
+      const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      if (pane && session) {
+        const statuses = agentStatuses.values().filter((status) => (
+          paneForId(status.paneId)?.sessionId === session.id
+        ))
+        void sessionBriefs
+          .syncFromStatuses(session.id, session.name, statuses)
+          .then((brief) => {
+            if (brief) publishSessionBrief(brief)
+          })
+          .catch((error: unknown) => {
+            console.error('[commando] failed to update session brief', error)
+          })
+      }
+    }
   }
 
   const reportTmuxError = (error: unknown): void => {
@@ -1182,6 +1210,16 @@ async function main(): Promise<void> {
     onChange: publishAgentStatusChange,
     interactions,
   })
+  const sessionBriefApi = new SessionBriefApi({
+    token: agentHookToken,
+    store: sessionBriefs,
+    paneTarget: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      return pane && session ? { sessionId: session.id, sessionName: session.name } : null
+    },
+    onChange: publishSessionBrief,
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
@@ -1546,6 +1584,7 @@ async function main(): Promise<void> {
     clients.add(client)
     send(client, { type: 'snapshot', snapshot })
     send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
+    send(client, { type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
@@ -1624,6 +1663,7 @@ async function main(): Promise<void> {
       }
 
       if (await agentStatusHooks.handle(request, response, url)) return
+      if (await sessionBriefApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
 
