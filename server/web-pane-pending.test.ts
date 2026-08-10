@@ -267,6 +267,19 @@ describe('WebPanePendingStore', () => {
     })
   })
 
+  it('clears a legacy approve comment when its response note is cleared', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, {
+      ...response('reject', 'approval'),
+      data: { verdict: 'reject', comment: 'legacy note' },
+    })
+
+    const snapshot = store.update('w-11111111', 1, 1, { note: '' })
+
+    expect(snapshot.notes[0]?.response?.data).toEqual({ verdict: 'reject' })
+    expect(snapshot.notes[0]?.response).not.toHaveProperty('note')
+  })
+
   it('edits a manual annotation comment through answer', () => {
     const store = makeStore()
     store.addNote('w-11111111', PAGE_URL, manualNote('old'))

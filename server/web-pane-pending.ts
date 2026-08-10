@@ -452,6 +452,12 @@ export class WebPanePendingStore {
         }
         if (note === '') delete response.note
         else response.note = note
+        if (typeof response.data === 'object' && response.data !== null && !Array.isArray(response.data)) {
+          const data = { ...response.data as Record<string, unknown> }
+          delete data.comment
+          if (Object.keys(data).length === 0) delete response.data
+          else response.data = data
+        }
       }
       updated.response = response
       updated.comment = responseComment(response)
