@@ -1,10 +1,11 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
-import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_QUESTION, MAX_RESPONSE_QUEUE_KEY } from '../shared/redline-response.js'
+import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_NOTE, MAX_RESPONSE_QUESTION, MAX_RESPONSE_QUEUE_KEY } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
+import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
 import type { PendingNoteInput, WebPanePendingStore } from './web-pane-pending.js'
 import { WebPaneError, type WebPaneService } from './web-panes.js'
 
@@ -46,6 +47,8 @@ type WebPanesApiDependencies = {
   feedback: WebPaneFeedbackStore
   /** Queued-but-unsent review notes, owned by the daemon. */
   pending: WebPanePendingStore
+  /** Private bytes referenced by pending and sent review notes. */
+  attachmentStore: WebPaneAttachmentStore
   /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
   onPendingChanged?: (webPaneId: string, snapshot: WebPanePendingSnapshot) => void
   openLimiter?: TokenBucketRateLimiter
@@ -104,6 +107,30 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
+async function readAttachment(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let byteLength = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    byteLength += buffer.length
+    if (byteLength > MAX_WEB_PANE_ATTACHMENT_SIZE) {
+      throw new HttpError(413, `Attachment exceeds the ${MAX_WEB_PANE_ATTACHMENT_SIZE} byte limit`)
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
+function pendingRevision(request: IncomingMessage): number {
+  const raw = request.headers['x-pending-revision']
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) {
+    throw new HttpError(400, 'X-Pending-Revision must be a positive integer')
+  }
+  const revision = Number(raw)
+  if (!Number.isSafeInteger(revision)) throw new HttpError(400, 'X-Pending-Revision must be a positive integer')
+  return revision
+}
+
 const MAX_FEEDBACK_COMMENT = 4_096
 
 function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[] {
@@ -155,6 +182,12 @@ function parseNoteResponse(value: unknown): WebPaneFeedbackNote['response'] {
     throw new HttpError(400, 'Note response is malformed')
   }
   const response: NonNullable<WebPaneFeedbackNote['response']> = { question, answer }
+  if (raw.note !== undefined) {
+    if (typeof raw.note !== 'string' || raw.note.length === 0 || raw.note.length > MAX_RESPONSE_NOTE) {
+      throw new HttpError(400, 'Note response is malformed')
+    }
+    response.note = raw.note
+  }
   if (raw.data !== undefined) {
     let json: string | undefined
     try {
@@ -261,6 +294,25 @@ export class WebPanesApi {
           status: pane.status,
           engine: pane.engine,
         })
+        return true
+      }
+
+      if (route.action === 'attachment') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        const referenced = caller === 'owner'
+          ? this.dependencies.pending.referencesAttachment(route.id, route.attachmentId) ||
+            this.dependencies.feedback.referencesAttachment(route.id, route.attachmentId)
+          : this.dependencies.feedback.referencesAttachment(route.id, route.attachmentId)
+        if (!referenced) throw new HttpError(404, 'Attachment does not exist')
+        const attachment = this.dependencies.attachmentStore.read(route.attachmentId)
+        response.writeHead(200, {
+          'Cache-Control': 'private, no-store',
+          'Content-Length': attachment.data.byteLength,
+          'Content-Security-Policy': 'sandbox',
+          'Content-Type': attachment.metadata.contentType,
+          'X-Content-Type-Options': 'nosniff',
+        })
+        response.end(attachment.data)
         return true
       }
 
@@ -381,8 +433,42 @@ export class WebPanesApi {
         }
 
         if (route.noteId !== undefined) {
-          if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
-          const snapshot = pending.remove(route.id, route.noteId)
+          let snapshot: WebPanePendingSnapshot
+          if (route.attachmentId !== undefined) {
+            if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
+            snapshot = pending.detach(route.id, route.noteId, pendingRevision(request), route.attachmentId)
+          } else if (route.attachments === true) {
+            if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+            const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+            const fileName = request.headers['x-file-name']
+            if (fileName !== undefined && typeof fileName !== 'string') {
+              throw new HttpError(400, 'X-File-Name must be a string')
+            }
+            const expectedRevision = pendingRevision(request)
+            const metadata = this.dependencies.attachmentStore.save({
+              ...(fileName !== undefined ? { name: fileName } : {}),
+              contentType,
+              data: await readAttachment(request),
+            })
+            try {
+              snapshot = pending.attach(route.id, route.noteId, expectedRevision, metadata)
+            } catch (error) {
+              this.dependencies.attachmentStore.remove(metadata.id)
+              throw error
+            }
+          } else if (request.method === 'PATCH') {
+            const body = await readJson(request)
+            if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) <= 0) {
+              throw new HttpError(400, 'expectedRevision must be a positive integer')
+            }
+            const change: { answer?: string; note?: string } = {}
+            if (Object.prototype.hasOwnProperty.call(body, 'answer')) change.answer = body.answer as string
+            if (Object.prototype.hasOwnProperty.call(body, 'note')) change.note = body.note as string
+            snapshot = pending.update(route.id, route.noteId, body.expectedRevision as number, change)
+          } else {
+            if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
+            snapshot = pending.remove(route.id, route.noteId)
+          }
           this.dependencies.onPendingChanged?.(route.id, snapshot)
           writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
           return true
@@ -479,7 +565,7 @@ export class WebPanesApi {
       writeJson(response, 200, { ok: true, webPaneId: route.id })
       return true
     } catch (error) {
-      if (error instanceof WebPaneError || error instanceof HttpError) {
+      if (error instanceof WebPaneError || error instanceof WebPaneAttachmentError || error instanceof HttpError) {
         if (error.status === 401) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         }
@@ -490,9 +576,12 @@ export class WebPanesApi {
               ? 'GET, POST'
               : url.pathname.endsWith('/cdp') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
+              : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
               : url.pathname.endsWith('/pending/send') || url.pathname.endsWith('/pending/dropped') ? 'POST'
-              : /\/pending\/\d+$/.test(url.pathname) ? 'DELETE'
+              : /\/pending\/\d+\/attachments$/.test(url.pathname) ? 'POST'
+              : /\/pending\/\d+\/attachments\/[^/]+$/.test(url.pathname) ? 'DELETE'
+              : /\/pending\/\d+$/.test(url.pathname) ? 'PATCH, DELETE'
               : 'POST, DELETE',
           )
         }
@@ -531,8 +620,27 @@ export class WebPanesApi {
   private route(pathname: string):
     | { kind: 'collection' }
     | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
-    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; send?: boolean; dismissDropped?: boolean } {
+    | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; dismissDropped?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
+    const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
+    if (attachment) {
+      if (!WEB_PANE_ID.test(attachment[1])) throw new HttpError(404, 'Not found')
+      return { kind: 'pane', id: attachment[1], action: 'attachment', attachmentId: attachment[2] }
+    }
+    const pendingAttachment = /^\/api\/web-panes\/([^/]+)\/pending\/(\d+)\/attachments(?:\/([^/]+))?$/.exec(pathname)
+    if (pendingAttachment) {
+      if (!WEB_PANE_ID.test(pendingAttachment[1])) throw new HttpError(404, 'Not found')
+      return {
+        kind: 'pane',
+        id: pendingAttachment[1],
+        action: 'pending',
+        noteId: Number(pendingAttachment[2]),
+        ...(pendingAttachment[3] === undefined
+          ? { attachments: true }
+          : { attachmentId: pendingAttachment[3] }),
+      }
+    }
     const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|dropped|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {

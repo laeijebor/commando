@@ -43,6 +43,7 @@ export class WebPaneFeedbackStore {
     private readonly journal: FeedbackJournal = new FeedbackJournal(),
     private readonly onDrain: (webPaneId: string) => void = () => undefined,
     private readonly now: () => number = Date.now,
+    private readonly releaseAttachment: (attachmentId: string) => void = () => undefined,
   ) {}
 
   enqueue(webPaneId: string, notes: WebPaneFeedbackNote[]): void {
@@ -109,6 +110,22 @@ export class WebPaneFeedbackStore {
     return this.state(webPaneId).notes.length > 0
   }
 
+  referencesAttachment(webPaneId: string, attachmentId: string): boolean {
+    return this.state(webPaneId).notes.some((entry) =>
+      (entry.note.attachments ?? []).some((attachment) => attachment.id === attachmentId),
+    )
+  }
+
+  referencedAttachmentIds(): Set<string> {
+    const ids = this.journal.referencedAttachmentIds()
+    for (const state of this.panes.values()) {
+      for (const entry of state.notes) {
+        for (const attachment of entry.note.attachments ?? []) ids.add(attachment.id)
+      }
+    }
+    return ids
+  }
+
   /**
    * Drops in-memory state and waiters for dead panes. Journals stay on disk —
    * a closed tile's answers remain fetchable until acked or expired.
@@ -165,10 +182,14 @@ export class WebPaneFeedbackStore {
     // silently discard answers nobody has seen.
     const effective = Math.min(Math.floor(cursor), state.deliveredUpTo)
     if (effective <= state.ackedUpTo) return
+    const acknowledged = state.notes.filter((entry) => entry.id <= effective)
+    this.journal.appendAck(webPaneId, effective)
     state.ackedUpTo = effective
     state.notes = state.notes.filter((entry) => entry.id > effective)
-    this.journal.appendAck(webPaneId, effective)
     this.journal.compact(webPaneId)
+    for (const entry of acknowledged) {
+      for (const attachment of entry.note.attachments ?? []) this.releaseAttachment(attachment.id)
+    }
   }
 
   private deliver(webPaneId: string, state: PaneState): FeedbackDrainResult {

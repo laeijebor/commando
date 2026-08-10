@@ -104,6 +104,30 @@ export class FeedbackJournal {
     }
   }
 
+  /** Attachment ids named by every readable unacked feedback journal. */
+  referencedAttachmentIds(): Set<string> {
+    let names: string[]
+    try {
+      names = readdirSync(this.dir)
+    } catch {
+      return new Set()
+    }
+    const ids = new Set<string>()
+    for (const name of names) {
+      if (!name.endsWith('.jsonl') || name.endsWith('.pending.jsonl')) continue
+      const webPaneId = name.slice(0, -'.jsonl'.length)
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(webPaneId)) continue
+      try {
+        for (const entry of replay(readFileSync(join(this.dir, name), 'utf8')).notes) {
+          for (const attachment of entry.note.attachments ?? []) ids.add(attachment.id)
+        }
+      } catch {
+        // A corrupt or concurrently removed journal has no reliable references.
+      }
+    }
+    return ids
+  }
+
   private append(webPaneId: string, lines: string): void {
     const path = this.pathFor(webPaneId)
     if (!this.ready) {

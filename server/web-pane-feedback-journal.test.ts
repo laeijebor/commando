@@ -91,4 +91,30 @@ describe('FeedbackJournal', () => {
     journal.removeExpired(7 * 24 * 60 * 60 * 1_000)
     expect(readdirSync(dir)).toEqual(['w-fresh000.jsonl'])
   })
+
+  it('lists attachment ids from every readable unacked feedback journal', () => {
+    const dir = makeDir()
+    const journal = new FeedbackJournal({ dir })
+    const attached = (id: string): WebPaneFeedbackNote => ({
+      ...note(id),
+      attachments: [{
+        id,
+        name: 'screen.png',
+        contentType: 'image/png',
+        size: 8,
+        path: `/api/web-panes/w-11111111/attachments/${id}`,
+      }],
+    })
+    journal.appendNotes('w-open0000', [{ id: 1, note: attached('open.png') }])
+    journal.appendNotes('w-closed00', [{ id: 1, note: attached('closed.png') }])
+    journal.appendNotes('w-acked000', [{ id: 1, note: attached('acked.png') }])
+    journal.appendAck('w-acked000', 1)
+    writeFileSync(join(dir, 'w-ignore00.pending.jsonl'), JSON.stringify({
+      k: 'n',
+      id: 1,
+      note: attached('pending.png'),
+    }) + '\n')
+
+    expect(journal.referencedAttachmentIds()).toEqual(new Set(['open.png', 'closed.png']))
+  })
 })

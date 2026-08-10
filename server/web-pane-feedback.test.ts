@@ -9,12 +9,22 @@ import { WebPaneError } from './web-panes.js'
 
 const dirs: string[] = []
 
-function makeStore(options: { onDrain?: (id: string) => void; now?: () => number; dir?: string } = {}) {
+function makeStore(options: {
+  onDrain?: (id: string) => void
+  now?: () => number
+  dir?: string
+  releaseAttachment?: (id: string) => void
+} = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'commando-feedback-store-'))
   if (!options.dir) dirs.push(dir)
   return {
     dir,
-    store: new WebPaneFeedbackStore(new FeedbackJournal({ dir }), options.onDrain, options.now),
+    store: new WebPaneFeedbackStore(
+      new FeedbackJournal({ dir }),
+      options.onDrain,
+      options.now,
+      options.releaseAttachment,
+    ),
   }
 }
 
@@ -65,6 +75,31 @@ describe('WebPaneFeedbackStore', () => {
     const pending = store.drain('w-11111111', 5_000, { cursor })
     await vi.advanceTimersByTimeAsync(5_000)
     expect((await pending).notes).toEqual([])
+  })
+
+  it('retains sent attachments until their delivered feedback is acknowledged', async () => {
+    const releaseAttachment = vi.fn()
+    const { store } = makeStore({ releaseAttachment })
+    const attached = {
+      ...note('with image'),
+      attachments: [{
+        id: '11111111-1111-4111-8111-111111111111.png',
+        name: 'screen.png',
+        contentType: 'image/png',
+        size: 8,
+        path: '/api/web-panes/w-11111111/attachments/11111111-1111-4111-8111-111111111111.png',
+      }],
+    }
+    store.enqueue('w-11111111', [attached])
+    expect(store.referencesAttachment('w-11111111', attached.attachments[0].id)).toBe(true)
+    expect(store.referencedAttachmentIds()).toEqual(new Set([attached.attachments[0].id]))
+    expect(releaseAttachment).not.toHaveBeenCalled()
+
+    const { cursor } = await store.drain('w-11111111', 0)
+    expect(releaseAttachment).not.toHaveBeenCalled()
+    await store.drain('w-11111111', 0, { cursor })
+    expect(releaseAttachment).toHaveBeenCalledWith(attached.attachments[0].id)
+    expect(store.referencesAttachment('w-11111111', attached.attachments[0].id)).toBe(false)
   })
 
   it('clamps acks to what was delivered — a wild cursor cannot discard unseen answers', async () => {
