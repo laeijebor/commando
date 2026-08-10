@@ -329,6 +329,8 @@ export type WebPaneFeedbackAttachment = WebPaneImageAttachment & {
 export type WebPaneFeedbackNote = {
   /** Server-assigned delivery id; present on drained notes, used for dedupe. */
   id?: number
+  /** Internal stable key for retrying a pending-to-feedback transfer. */
+  deliveryKey?: string
   selector: string
   tag: string
   text?: string
@@ -353,6 +355,8 @@ export const MAX_PENDING_NOTE_ATTACHMENTS = 4
 export type WebPanePendingNote = {
   /** Server-assigned id, unique per pane. */
   id: number
+  /** Internal stable key retained when this item moves into feedback. */
+  deliveryKey?: string
   /** Item revision used for optimistic pending-note mutations. */
   revision?: number
   /** Page that produced this note. Missing only on historical journal entries. */

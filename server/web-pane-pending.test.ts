@@ -81,7 +81,12 @@ describe('PendingNotesJournal', () => {
     writeFileSync(path, `${JSON.stringify({ k: 'n', id: 7, note: { ...manualNote('old'), id: 7 } })}\n`)
     const state = new PendingNotesJournal({ dir }).load('w-11111111')
     expect(state.revision).toBe(1)
-    expect(state.notes[0]).toMatchObject({ id: 7, revision: 1, attachments: [] })
+    expect(state.notes[0]).toMatchObject({
+      id: 7,
+      deliveryKey: 'pending:w-11111111:7',
+      revision: 1,
+      attachments: [],
+    })
   })
 
   it('fills a historical note pageUrl from the journal remembered URL', () => {
@@ -153,6 +158,10 @@ describe('WebPanePendingStore', () => {
     store.addResponse('w-11111111', PAGE_URL, response('yes'))
     const { notes } = store.addNote('w-11111111', PAGE_URL, manualNote('too small'))
     expect(notes.map((note) => note.id)).toEqual([1, 2])
+    expect(notes.map((note) => note.deliveryKey)).toEqual([
+      'pending:w-11111111:1',
+      'pending:w-11111111:2',
+    ])
     expect(notes.map((note) => note.revision)).toEqual([1, 1])
     expect(notes.map((note) => note.attachments)).toEqual([[], []])
     expect(notes.map((note) => note.pageUrl)).toEqual([PAGE_URL, PAGE_URL])
@@ -175,6 +184,7 @@ describe('WebPanePendingStore', () => {
       rect: { x: 1, y: 2, width: 3, height: 4 },
     })
     expect(first.notes[0]?.id).toBe(snapshot.notes[0]?.id)
+    expect(first.notes[0]?.deliveryKey).toBe(snapshot.notes[0]?.deliveryKey)
     expect(snapshot.notes.map((note) => note.comment)).toEqual([
       'Ship it?: no\n\nNote: because it is ready',
       'keep me',
@@ -368,7 +378,7 @@ describe('WebPanePendingStore', () => {
     expect(restarted.referencedAttachmentIds()).toEqual(new Set(['orphan']))
   })
 
-  it('send uses each note pageUrl, stamps capturedAt, strips queue metadata, and clears sent notes', () => {
+  it('send uses each note pageUrl, carries delivery keys, stamps capturedAt, strips queue metadata, and clears sent notes', () => {
     const store = makeStore()
     store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1'))
     store.addNote('w-11111111', OTHER_PAGE_URL, manualNote('manual'))
@@ -380,6 +390,10 @@ describe('WebPanePendingStore', () => {
     expect(enqueued.map((note) => note.comment)).toEqual(['Ship it?: yes', 'manual'])
     expect(enqueued[0]).not.toHaveProperty('id')
     expect(enqueued[0]).not.toHaveProperty('queueKey')
+    expect(enqueued.map((note) => note.deliveryKey)).toEqual([
+      'pending:w-11111111:1',
+      'pending:w-11111111:2',
+    ])
     expect(enqueued.map((note) => note.pageUrl)).toEqual([PAGE_URL, OTHER_PAGE_URL])
     expect(enqueued[0]?.capturedAt).toBe(1_234)
     expect(enqueued[0]?.response?.answer).toBe('yes')
@@ -417,6 +431,20 @@ describe('WebPanePendingStore', () => {
     store.addNote('w-11111111', PAGE_URL, manualNote('b'))
     const { notes: remaining } = store.send('w-11111111', 'http://x/', 1, () => undefined, [1])
     expect(remaining.map((note) => note.comment)).toEqual(['b'])
+  })
+
+  it('reuses a delivery key for an unsent revision but gives a later item a distinct key', () => {
+    const store = makeStore()
+    const first = store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1')).notes[0]
+    const revised = store.addResponse('w-11111111', PAGE_URL, response('no', 'q1')).notes[0]
+    let firstDeliveryKey: string | undefined
+    store.send('w-11111111', PAGE_URL, 1, (notes) => { firstDeliveryKey = notes[0]?.deliveryKey })
+    const later = store.addResponse('w-11111111', PAGE_URL, response('later', 'q1')).notes[0]
+
+    expect(revised?.revision).toBe(2)
+    expect(revised?.deliveryKey).toBe(first?.deliveryKey)
+    expect(firstDeliveryKey).toBe(first?.deliveryKey)
+    expect(later?.deliveryKey).not.toBe(first?.deliveryKey)
   })
 
   it('revision-guarded send rejects a stale page re-answer without enqueueing anything', () => {
@@ -548,6 +576,10 @@ describe('WebPanePendingStore adoption', () => {
     expect(snapshot.notes.map((note) => note.comment)).toEqual(['Ship it?: yes', 'annotation'])
     expect(snapshot.notes.map((note) => note.id)).toEqual([1, 2])
     expect(snapshot.notes[0]?.response?.answer).toBe('yes')
+    expect(snapshot.notes.map((note) => note.deliveryKey)).toEqual([
+      'pending:w-11111111:1',
+      'pending:w-11111111:2',
+    ])
     expect(snapshot.notes[0]?.attachments).toEqual([attachment('adopted')])
     expect(snapshot.notes.map((note) => note.pageUrl)).toEqual([PAGE_URL, PAGE_URL])
     // The absorbed journal is deleted, so the notes cannot be adopted twice
@@ -556,6 +588,47 @@ describe('WebPanePendingStore adoption', () => {
     expect(
       makeStore(dir).adopt('w-33333333', PAGE_URL, new Set(['w-22222222', 'w-33333333'])).notes,
     ).toEqual([])
+  })
+
+  it('keeps a historical fallback delivery key through compaction and adoption', () => {
+    const dir = makeDir()
+    const journal = new PendingNotesJournal({ dir })
+    const oldPaneId = 'w-11111111'
+    writeFileSync(join(dir, `${oldPaneId}.pending.jsonl`), [
+      JSON.stringify({ k: 'n', id: 7, note: { ...manualNote('historical'), id: 7 } }),
+      JSON.stringify({ k: 'u', url: PAGE_URL }),
+      '',
+    ].join('\n'))
+    const fallback = journal.load(oldPaneId).notes[0]?.deliveryKey
+    for (let index = 0; index < JOURNAL_COMPACT_THRESHOLD; index += 1) {
+      journal.appendRevision(oldPaneId, 1)
+    }
+    journal.compact(oldPaneId)
+
+    const adopted = new WebPanePendingStore(journal)
+      .adopt('w-22222222', PAGE_URL, new Set(['w-22222222']))
+
+    expect(fallback).toBe('pending:w-11111111:7')
+    expect(adopted.notes[0]?.deliveryKey).toBe(fallback)
+    expect(new WebPanePendingStore(new PendingNotesJournal({ dir }))
+      .list('w-22222222')[0]?.deliveryKey).toBe(fallback)
+  })
+
+  it('suppresses an inherited delivery key already copied before an orphan journal deletion crash', () => {
+    const dir = makeDir()
+    const journal = new PendingNotesJournal({ dir })
+    const closed = new WebPanePendingStore(journal)
+    const original = closed.addNote('w-11111111', PAGE_URL, manualNote('copied once')).notes[0]
+    if (!original) throw new Error('expected pending note')
+    journal.appendUrl('w-22222222', PAGE_URL)
+    journal.appendNote('w-22222222', { ...original, id: 1 })
+
+    const snapshot = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+      .adopt('w-22222222', PAGE_URL, new Set(['w-22222222']))
+
+    expect(snapshot.notes.map((note) => note.comment)).toEqual(['copied once'])
+    expect(snapshot.notes.map((note) => note.deliveryKey)).toEqual([original.deliveryKey])
+    expect(existsSync(join(dir, 'w-11111111.pending.jsonl'))).toBe(false)
   })
 
   it('does not inherit notes queued against a different URL', () => {

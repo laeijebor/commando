@@ -67,7 +67,7 @@ export class PendingNotesJournal {
     } catch {
       return { notes: [], nextId: 1, revision: 0 }
     }
-    return replay(raw)
+    return replay(raw, webPaneId)
   }
 
   appendNote(webPaneId: string, note: WebPanePendingNote, revision = note.revision ?? 1): void {
@@ -105,7 +105,7 @@ export class PendingNotesJournal {
       return
     }
     if (raw.split('\n').length < JOURNAL_COMPACT_THRESHOLD) return
-    const state = replay(raw)
+    const state = replay(raw, webPaneId)
     const lines = state.notes.map((note) => JSON.stringify({ k: 'n', id: note.id, at: this.now(), note }))
     // Removals are dropped by the rewrite, so pin the id counter explicitly —
     // otherwise a fully-drained journal would restart ids at 1 and a replayed
@@ -136,7 +136,7 @@ export class PendingNotesJournal {
       if (liveIds.has(webPaneId) || !isSafePaneId(webPaneId)) continue
       let state: PendingJournalState
       try {
-        state = replay(readFileSync(join(this.dir, name), 'utf8'))
+        state = replay(readFileSync(join(this.dir, name), 'utf8'), webPaneId)
       } catch {
         continue
       }
@@ -163,7 +163,7 @@ export class PendingNotesJournal {
       const webPaneId = name.slice(0, -PENDING_SUFFIX.length)
       if (!isSafePaneId(webPaneId)) continue
       try {
-        for (const note of replay(readFileSync(join(this.dir, name), 'utf8')).notes) {
+        for (const note of replay(readFileSync(join(this.dir, name), 'utf8'), webPaneId).notes) {
           for (const attachment of note.attachments ?? []) ids.add(attachment.id)
         }
       } catch {
@@ -199,7 +199,7 @@ function isSafePaneId(webPaneId: string): boolean {
   return /^[A-Za-z0-9_-]{1,64}$/.test(webPaneId)
 }
 
-function replay(raw: string): PendingJournalState {
+function replay(raw: string, webPaneId: string): PendingJournalState {
   const notes = new Map<number, WebPanePendingNote>()
   let maxId = 0
   let revision = 0
@@ -218,7 +218,7 @@ function replay(raw: string): PendingJournalState {
     if (entry.k === 'n' && typeof entry.id === 'number' && Number.isInteger(entry.id) && entry.id > 0) {
       const note = entry.note as WebPanePendingNote | undefined
       if (typeof note === 'object' && note !== null) {
-        notes.set(entry.id, normalizePendingNote(note, entry.id, url))
+        notes.set(entry.id, normalizePendingNote(note, entry.id, webPaneId, url))
         if (entry.id > maxId) maxId = entry.id
         revision = Math.max(revision, entryRevision)
       }
@@ -245,7 +245,7 @@ function replay(raw: string): PendingJournalState {
   }
   return {
     notes: [...notes.values()]
-      .map((note) => normalizePendingNote(note, note.id, url))
+      .map((note) => normalizePendingNote(note, note.id, webPaneId, url))
       .sort((a, b) => a.id - b.id),
     nextId: maxId + 1,
     revision,
@@ -253,7 +253,12 @@ function replay(raw: string): PendingJournalState {
   }
 }
 
-function normalizePendingNote(note: WebPanePendingNote, id: number, historicalPageUrl?: string): WebPanePendingNote {
+function normalizePendingNote(
+  note: WebPanePendingNote,
+  id: number,
+  webPaneId: string,
+  historicalPageUrl?: string,
+): WebPanePendingNote {
   const { pageUrl: storedPageUrl, ...pendingNote } = note
   const attachments = Array.isArray(note.attachments)
     ? note.attachments.filter(isImageAttachment).map((attachment) => ({ ...attachment }))
@@ -262,12 +267,21 @@ function normalizePendingNote(note: WebPanePendingNote, id: number, historicalPa
   return {
     ...pendingNote,
     id,
+    deliveryKey: nonEmptyDeliveryKey(note.deliveryKey) ?? pendingDeliveryKey(webPaneId, id),
     ...(pageUrl !== undefined ? { pageUrl } : {}),
     revision: typeof note.revision === 'number' && Number.isSafeInteger(note.revision) && note.revision > 0
       ? note.revision
       : 1,
     attachments,
   }
+}
+
+function pendingDeliveryKey(webPaneId: string, noteId: number): string {
+  return `pending:${webPaneId}:${noteId}`
+}
+
+function nonEmptyDeliveryKey(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
 function isImageAttachment(value: unknown): value is WebPaneImageAttachment {
@@ -280,7 +294,7 @@ function isImageAttachment(value: unknown): value is WebPaneImageAttachment {
 }
 
 /** A manual (element-annotation) note as submitted by the tile UI. */
-export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'revision' | 'pageUrl' | 'attachments'>
+export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'deliveryKey' | 'revision' | 'pageUrl' | 'attachments'>
 
 export type PendingSendTarget = { id: number; revision: number }
 
@@ -339,6 +353,7 @@ export class WebPanePendingStore {
     if (existing) {
       const updated: WebPanePendingNote = {
         id: existing.id,
+        deliveryKey: existing.deliveryKey ?? pendingDeliveryKey(webPaneId, existing.id),
         revision: (existing.revision ?? 1) + 1,
         pageUrl: url,
         selector: response.selector ?? `redline:${response.queueKey}`,
@@ -356,8 +371,10 @@ export class WebPanePendingStore {
       this.journal.compact(webPaneId)
       return this.snapshot(webPaneId)
     }
+    const id = state.nextId++
     const note: WebPanePendingNote = {
-      id: state.nextId++,
+      id,
+      deliveryKey: pendingDeliveryKey(webPaneId, id),
       revision: 1,
       pageUrl: url,
       selector: response.selector ?? `redline:${response.queueKey ?? response.question.slice(0, 64)}`,
@@ -390,9 +407,11 @@ export class WebPanePendingStore {
     if (state.notes.length >= MAX_PENDING_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_PENDING_NOTES} notes can be queued per tile`)
     }
+    const id = state.nextId++
     const note: WebPanePendingNote = {
       ...input,
-      id: state.nextId++,
+      id,
+      deliveryKey: pendingDeliveryKey(webPaneId, id),
       revision: 1,
       pageUrl: url,
       attachments: [],
@@ -629,8 +648,15 @@ export class WebPanePendingStore {
       .filter((orphan) => orphan.url === url)
     if (orphans.length === 0) return this.snapshot(webPaneId)
 
-    const inherited = orphans.flatMap((orphan) => orphan.notes)
-    state.revision += 1
+    const deliveryKeys = new Set(state.notes.map((note) => nonEmptyDeliveryKey(note.deliveryKey)).filter(Boolean))
+    const inherited = orphans.flatMap((orphan) => orphan.notes).filter((note) => {
+      const deliveryKey = nonEmptyDeliveryKey(note.deliveryKey)
+      if (deliveryKey === undefined) return true
+      if (deliveryKeys.has(deliveryKey)) return false
+      deliveryKeys.add(deliveryKey)
+      return true
+    })
+    if (inherited.length > 0) state.revision += 1
     for (const note of inherited) {
       // Past the cap the oldest goes, matching the live queue's own rule.
       if (state.notes.length >= MAX_PENDING_NOTES) {
@@ -641,7 +667,8 @@ export class WebPanePendingStore {
           this.release([evicted])
         }
       }
-      const adopted: WebPanePendingNote = normalizePendingNote({ ...note, id: state.nextId++ }, state.nextId - 1)
+      const adoptedId = state.nextId++
+      const adopted: WebPanePendingNote = normalizePendingNote({ ...note, id: adoptedId }, adoptedId, webPaneId)
       state.notes.push(adopted)
       this.journal.appendNote(webPaneId, adopted, state.revision)
     }
@@ -664,9 +691,9 @@ export class WebPanePendingStore {
   /** Purges a pane's pending notes outright (nothing keeps them). */
   drop(webPaneId: string): void {
     const state = this.panes.get(webPaneId) ?? { ...this.journal.load(webPaneId), dropped: 0 }
-    this.release(state.notes)
     this.panes.delete(webPaneId)
     this.journal.remove(webPaneId)
+    this.release(state.notes)
   }
 
   private rememberUrl(webPaneId: string, state: PaneState, url: string): void {

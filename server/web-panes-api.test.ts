@@ -752,12 +752,16 @@ describe('pending note routes', () => {
     const body = pendingNoteBody()
     const note = {
       ...body.note,
+      deliveryKey: 'owner-controlled',
       queueKey: 'q1',
       response: { question: 'Which plan?', answer: 'Pro', note: 'For the launch', data: { choice: 'Pro' } },
     }
     const added = await post(baseUrl, `/api/web-panes/${id}/pending`, { note }, ownerAuth)
     expect(added.status).toBe(200)
-    const addedBody = await added.json() as { notes: Array<{ queueKey?: string; response?: unknown }> }
+    const addedBody = await added.json() as {
+      notes: Array<{ deliveryKey?: string; queueKey?: string; response?: unknown }>
+    }
+    expect(addedBody.notes[0]?.deliveryKey).not.toBe('owner-controlled')
     expect(addedBody.notes[0]?.queueKey).toBe('q1')
     expect(addedBody.notes[0]?.response).toEqual({
       question: 'Which plan?',
@@ -901,6 +905,22 @@ describe('pending note routes', () => {
 
     const delivered = await feedback.drain(id, 0)
     await feedback.drain(id, 0, { cursor: delivered.cursor })
+    expect(attachmentStore.listIds()).toEqual([])
+  })
+
+  it('drop removes pending references before the reference-aware attachment release', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const attachmentId = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string }> }>
+    }).notes[0]?.attachments?.[0]?.id
+    expect(attachmentStore.listIds()).toEqual([attachmentId])
+
+    pending.drop(id)
+
     expect(attachmentStore.listIds()).toEqual([])
   })
 

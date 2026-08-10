@@ -49,11 +49,23 @@ export class WebPaneFeedbackStore {
   enqueue(webPaneId: string, notes: WebPaneFeedbackNote[]): void {
     if (notes.length === 0) return
     const state = this.state(webPaneId)
+    const deliveryKeys = new Set(
+      state.notes
+        .map((entry) => entry.note.deliveryKey)
+        .filter((key): key is string => typeof key === 'string' && key.length > 0),
+    )
+    const fresh = notes.filter((note) => {
+      if (typeof note.deliveryKey !== 'string' || note.deliveryKey.length === 0) return true
+      if (deliveryKeys.has(note.deliveryKey)) return false
+      deliveryKeys.add(note.deliveryKey)
+      return true
+    })
+    if (fresh.length === 0) return
     const undelivered = state.notes.filter((entry) => entry.id > state.deliveredUpTo).length
-    if (undelivered + notes.length > MAX_QUEUED_FEEDBACK_NOTES) {
+    if (undelivered + fresh.length > MAX_QUEUED_FEEDBACK_NOTES) {
       throw new WebPaneError(429, `At most ${MAX_QUEUED_FEEDBACK_NOTES} notes can be queued per tile`)
     }
-    const entries: JournaledNote[] = notes.map((note) => ({ id: state.nextId++, note }))
+    const entries: JournaledNote[] = fresh.map((note) => ({ id: state.nextId++, note }))
     this.journal.appendNotes(webPaneId, entries)
     state.notes.push(...entries)
     const waiting = this.waiters.get(webPaneId)
