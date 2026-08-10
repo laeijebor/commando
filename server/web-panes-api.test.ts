@@ -808,14 +808,16 @@ describe('pending note routes', () => {
     const id = await openChromiumPane(service)
     await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
 
-    const uploaded = await uploadAttachment(baseUrl, id, 1, 1, { 'X-File-Name': '../screen.png' })
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1, {
+      'X-File-Name': encodeURIComponent('../résumé screen.png'),
+    })
     expect(uploaded.status).toBe(200)
     const body = await uploaded.json() as {
       notes: Array<{ revision?: number; attachments?: Array<{ id: string; name: string; contentType: string; size: number }> }>
     }
     const attachment = body.notes[0]?.attachments?.[0]
     expect(body.notes[0]?.revision).toBe(2)
-    expect(attachment).toMatchObject({ name: 'screen.png', contentType: 'image/png', size: pngBytes.length })
+    expect(attachment).toMatchObject({ name: 'résumé screen.png', contentType: 'image/png', size: pngBytes.length })
     expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ notes: body.notes }))
 
     const path = `/api/web-panes/${id}/attachments/${attachment?.id}`

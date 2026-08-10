@@ -440,9 +440,17 @@ export class WebPanesApi {
           } else if (route.attachments === true) {
             if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
             const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
-            const fileName = request.headers['x-file-name']
-            if (fileName !== undefined && typeof fileName !== 'string') {
+            const encodedFileName = request.headers['x-file-name']
+            if (encodedFileName !== undefined && typeof encodedFileName !== 'string') {
               throw new HttpError(400, 'X-File-Name must be a string')
+            }
+            let fileName: string | undefined
+            if (encodedFileName !== undefined) {
+              try {
+                fileName = decodeURIComponent(encodedFileName)
+              } catch {
+                throw new HttpError(400, 'X-File-Name must be percent-encoded UTF-8')
+              }
             }
             const expectedRevision = pendingRevision(request)
             const metadata = this.dependencies.attachmentStore.save({
