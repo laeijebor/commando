@@ -108,8 +108,18 @@ final class DesktopWebHostTests: XCTestCase {
             "type": "clipboard.write-text",
             "payload": ["text": " exact\nselection "],
         ])
+        XCTAssertNil(pasteboard.string(forType: .string))
+
+        bridge.authorizeClipboardWrite()
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": " exact\nselection "],
+        ])
         XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
 
+        bridge.authorizeClipboardWrite()
         bridge.receive(body: [
             "protocol": NativeWindowProtocol.protocolName,
             "version": NativeWindowProtocol.version,
@@ -545,6 +555,8 @@ final class DesktopWebHostTests: XCTestCase {
         }
         XCTAssertTrue(ready)
         XCTAssertTrue(window.makeFirstResponder(host.webView))
+        var authorizationCount = 0
+        window.commandCopyWasPressed = { authorizationCount += 1 }
 
         let commandC = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
@@ -568,6 +580,7 @@ final class DesktopWebHostTests: XCTestCase {
         }
         XCTAssertEqual(copied?["trusted"] as? Bool, true)
         XCTAssertEqual(copied?["target"] as? String, "tile")
+        XCTAssertEqual(authorizationCount, 1)
     }
 
     func testPublishesDesktopWindowActivityIntoThePage() async throws {

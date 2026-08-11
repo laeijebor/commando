@@ -40,8 +40,23 @@ function messageHandler(): NativeMessageHandler | null {
   }
 }
 
+function clipboardMessageHandler(): NativeMessageHandler | null {
+  try {
+    const handler = (window as unknown as {
+      webkit?: { messageHandlers?: { commandoNativeClipboard?: NativeMessageHandler } }
+    }).webkit?.messageHandlers?.commandoNativeClipboard
+    return handler && typeof handler.postMessage === 'function' ? handler : null
+  } catch {
+    return null
+  }
+}
+
 export function hasNativeWindowHandler(): boolean {
   return messageHandler() !== null
+}
+
+export function hasNativeClipboardHandler(): boolean {
+  return clipboardMessageHandler() !== null
 }
 
 export class NativeWindowBridge {
@@ -58,8 +73,20 @@ export class NativeWindowBridge {
   }
 
   writeClipboardText(text: string): boolean {
-    return text.length > 0 && text.length <= MAX_NATIVE_CLIPBOARD_TEXT &&
-      this.post('clipboard.write-text', { text })
+    if (text.length === 0 || text.length > MAX_NATIVE_CLIPBOARD_TEXT) return false
+    const handler = clipboardMessageHandler()
+    if (!handler) return false
+    try {
+      handler.postMessage({
+        protocol: NATIVE_WINDOW_PROTOCOL,
+        version: NATIVE_WINDOW_VERSION,
+        type: 'clipboard.write-text',
+        payload: { text },
+      })
+      return true
+    } catch {
+      return false
+    }
   }
 
   private post(type: string, payload: Record<string, unknown>): boolean {

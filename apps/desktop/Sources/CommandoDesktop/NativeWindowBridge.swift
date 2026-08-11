@@ -29,6 +29,7 @@ enum DesktopWindowRole: Equatable, Sendable {
 enum NativeWindowProtocol {
     static let protocolName = "commando.native-window"
     static let handlerName = "commandoNativeWindow"
+    static let clipboardHandlerName = "commandoNativeClipboard"
     static let version = 1
     static let maxClipboardText = 65_536
 
@@ -52,6 +53,7 @@ protocol DesktopWindowCommandHandling: AnyObject {
 final class NativeWindowBridge {
     weak var commandHandler: (any DesktopWindowCommandHandling)?
     private let pasteboard: NSPasteboard
+    private var clipboardWriteAuthorizedUntil = Date.distantPast
 
     init(
         commandHandler: (any DesktopWindowCommandHandling)? = nil,
@@ -59,6 +61,10 @@ final class NativeWindowBridge {
     ) {
         self.commandHandler = commandHandler
         self.pasteboard = pasteboard
+    }
+
+    func authorizeClipboardWrite() {
+        clipboardWriteAuthorizedUntil = Date().addingTimeInterval(2)
     }
 
     func receive(body: Any) {
@@ -73,6 +79,8 @@ final class NativeWindowBridge {
 
         switch type {
         case "clipboard.write-text":
+            guard Date() <= clipboardWriteAuthorizedUntil else { return }
+            clipboardWriteAuthorizedUntil = .distantPast
             guard let text = payload["text"] as? String,
                   !text.isEmpty,
                   text.utf16.count <= NativeWindowProtocol.maxClipboardText

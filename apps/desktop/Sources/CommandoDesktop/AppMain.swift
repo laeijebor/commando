@@ -10,6 +10,7 @@ extension Notification.Name {
 @MainActor
 final class DesktopWindow: NSWindow {
     var zoomShortcutWasPressed: ((String) -> Void)?
+    var commandCopyWasPressed: (() -> Void)?
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let previous = firstResponder
@@ -42,6 +43,7 @@ final class DesktopWindow: NSWindow {
                let responder = firstResponder {
                 // AppKit's Edit menu otherwise consumes Command-C before the
                 // focused WKWebView can deliver a trusted DOM keyboard event.
+                commandCopyWasPressed?()
                 responder.keyDown(with: event)
                 return
             }
@@ -185,6 +187,7 @@ protocol DesktopWebHosting: AnyObject {
     func applyZoomPercent(_ percent: Int)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
+    func authorizeClipboardWrite()
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
     func setDetachedWebPaneIds(_ webPaneIds: [String])
     func cleanUp()
@@ -247,6 +250,9 @@ final class DesktopWindowSession: DesktopWindowControlling {
             default: self?.commandHandler?.zoomIn()
             }
         }
+        window.commandCopyWasPressed = { [weak webHost] in
+            webHost?.authorizeClipboardWrite()
+        }
         if let restoredFrame {
             window.setFrame(restoredFrame, display: false)
         } else {
@@ -295,6 +301,7 @@ final class DesktopWindowSession: DesktopWindowControlling {
         cleanedUp = true
         commandHandler = nil
         (window as? DesktopWindow)?.zoomShortcutWasPressed = nil
+        (window as? DesktopWindow)?.commandCopyWasPressed = nil
         webHost.setWindowActive(false)
         webHost.cleanUp()
         window.contentView = nil

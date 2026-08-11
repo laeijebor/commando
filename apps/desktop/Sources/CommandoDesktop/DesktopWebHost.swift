@@ -164,6 +164,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             windowHandler,
             name: NativeWindowProtocol.handlerName
         )
+        webConfiguration.userContentController.add(
+            windowHandler,
+            name: NativeWindowProtocol.clipboardHandlerName
+        )
 
         webView.autoresizingMask = [.width, .height]
         overlay.autoresizingMask = [.width, .height]
@@ -189,6 +193,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         guard !cleanedUp, active != windowActive else { return }
         windowActive = active
         publishWindowActivity()
+    }
+
+    func authorizeClipboardWrite() {
+        windowBridge.authorizeClipboardWrite()
     }
 
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
@@ -239,6 +247,9 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         )
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: NativeWindowProtocol.handlerName
+        )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: NativeWindowProtocol.clipboardHandlerName
         )
         webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil

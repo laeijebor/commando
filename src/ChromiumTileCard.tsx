@@ -10,7 +10,7 @@ import {
   tileMouseMessage,
 } from './chromiumTileInput'
 import { loadPendingMirror, savePendingMirror } from './pendingMirror'
-import { getNativeWindowBridge } from './nativeWindowBridge'
+import { getNativeWindowBridge, hasNativeClipboardHandler } from './nativeWindowBridge'
 import { createInspectThrottle } from './tileReview'
 import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
 
@@ -246,7 +246,9 @@ export function ChromiumTileCard({
     x: number
     y: number
   } | null>(null)
-  const nativeWindowBridge = useRef(getNativeWindowBridge()).current
+  const nativeWindowBridge = useRef(
+    hasNativeClipboardHandler() ? getNativeWindowBridge() : null,
+  ).current
   const lastHoverId = useRef('')
   const lastClickId = useRef('')
   const lastClickPoint = useRef({ x: 0, y: 0 })
@@ -569,8 +571,11 @@ export function ChromiumTileCard({
       if (keepStreamingWhenHidden) return
       if (document.hidden) {
         disarmStallWatchdog()
+        if (socketRef.current === socket) {
+          socketRef.current = null
+          pendingSelectionId.current = ''
+        }
         socket?.close()
-        socket = null
       } else if (!socketRef.current) {
         connect()
       }

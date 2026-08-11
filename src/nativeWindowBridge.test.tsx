@@ -12,6 +12,7 @@ import {
   detachedWebPaneIdFromLocation,
   getNativeWindowBridge,
   hasNativeWindowHandler,
+  hasNativeClipboardHandler,
   resetNativeWindowBridge,
   useDetachedWebPaneIds,
 } from './nativeWindowBridge'
@@ -24,6 +25,9 @@ function installHandler(messages: PostedMessage[]) {
     value: {
       messageHandlers: {
         commandoNativeWindow: {
+          postMessage: (message: PostedMessage) => messages.push(message),
+        },
+        commandoNativeClipboard: {
           postMessage: (message: PostedMessage) => messages.push(message),
         },
       },
@@ -52,6 +56,7 @@ afterEach(() => {
 describe('NativeWindowBridge', () => {
   it('is absent in ordinary browser clients', () => {
     expect(hasNativeWindowHandler()).toBe(false)
+    expect(hasNativeClipboardHandler()).toBe(false)
     expect(getNativeWindowBridge()).toBeNull()
   })
 

@@ -724,6 +724,7 @@ describe('ChromiumTileCard browser selection', () => {
       value: {
         messageHandlers: {
           commandoNativeWindow: { postMessage: (message: unknown) => posted.push(message) },
+          commandoNativeClipboard: { postMessage: (message: unknown) => posted.push(message) },
         },
       },
     })

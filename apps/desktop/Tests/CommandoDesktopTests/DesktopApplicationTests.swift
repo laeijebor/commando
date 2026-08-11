@@ -21,6 +21,7 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
+    func authorizeClipboardWrite() {}
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {}
     func setDetachedWebPaneIds(_ webPaneIds: [String]) { detachedWebPaneIds.append(webPaneIds) }
     func cleanUp() { cleanUpCount += 1 }
