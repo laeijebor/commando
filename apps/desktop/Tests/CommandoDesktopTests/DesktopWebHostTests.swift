@@ -52,10 +52,14 @@ private final class DesktopWindowCommandHandlerSpy: DesktopWindowCommandHandling
     private(set) var opened: [String] = []
     private(set) var focused: [String] = []
     private(set) var reattached: [String] = []
+    private(set) var zoomCommands: [String] = []
 
     func openWebPaneWindow(webPaneId: String) { opened.append(webPaneId) }
     func focusWebPaneWindow(webPaneId: String) { focused.append(webPaneId) }
     func reattachWebPaneWindow(webPaneId: String) { reattached.append(webPaneId) }
+    func zoomIn() { zoomCommands.append("in") }
+    func zoomOut() { zoomCommands.append("out") }
+    func actualSize() { zoomCommands.append("actual") }
 }
 
 @MainActor
@@ -125,7 +129,7 @@ final class DesktopWebHostTests: XCTestCase {
         }
         XCTAssertTrue(isReady)
 
-        host.zoomIn(nil)
+        host.applyZoomPercent(110)
         var layoutEvents = 0
         for _ in 0..<100 {
             if let result = try? await host.webView.evaluateJavaScript("window.zoomLayoutEvents"),
@@ -142,22 +146,34 @@ final class DesktopWebHostTests: XCTestCase {
         host.cleanUp()
     }
 
-    func testZoomActionsScaleWebContentInBoundedSteps() {
+    func testApplyingAZoomPercentScalesWebContentAndIgnoresUnusableValues() {
         let host = DesktopWebHost()
 
-        host.zoomIn(nil)
+        host.applyZoomPercent(110)
         XCTAssertEqual(host.zoomPercent, 110)
         XCTAssertEqual(host.webView.pageZoom, 1.1, accuracy: 0.001)
-        host.zoomOut(nil)
-        XCTAssertEqual(host.zoomPercent, 100)
-        XCTAssertEqual(host.webView.pageZoom, 1, accuracy: 0.001)
 
-        for _ in 0..<20 { host.zoomOut(nil) }
-        XCTAssertEqual(host.zoomPercent, DesktopWebHost.minimumZoomPercent)
+        host.applyZoomPercent(ZoomPreference.minimumPercent)
         XCTAssertEqual(host.webView.pageZoom, 0.5, accuracy: 0.001)
-        for _ in 0..<20 { host.zoomIn(nil) }
-        XCTAssertEqual(host.zoomPercent, DesktopWebHost.maximumZoomPercent)
+        host.applyZoomPercent(ZoomPreference.maximumPercent)
         XCTAssertEqual(host.webView.pageZoom, 2, accuracy: 0.001)
+
+        host.applyZoomPercent(9_000)
+        XCTAssertEqual(host.zoomPercent, ZoomPreference.defaultPercent)
+        XCTAssertEqual(host.webView.pageZoom, 1, accuracy: 0.001)
+        host.cleanUp()
+    }
+
+    func testFinishedNavigationReassertsTheCurrentZoom() {
+        let host = DesktopWebHost()
+        host.applyZoomPercent(130)
+
+        // A reload drops the webview back to unzoomed; finishing navigation must restore it.
+        host.webView.pageZoom = 1
+        host.webView(host.webView, didFinish: nil)
+
+        XCTAssertEqual(host.zoomPercent, 130)
+        XCTAssertEqual(host.webView.pageZoom, 1.3, accuracy: 0.001)
         host.cleanUp()
     }
 

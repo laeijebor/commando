@@ -41,6 +41,9 @@ protocol DesktopWindowCommandHandling: AnyObject {
     func openWebPaneWindow(webPaneId: String)
     func focusWebPaneWindow(webPaneId: String)
     func reattachWebPaneWindow(webPaneId: String)
+    func zoomIn()
+    func zoomOut()
+    func actualSize()
 }
 
 @MainActor

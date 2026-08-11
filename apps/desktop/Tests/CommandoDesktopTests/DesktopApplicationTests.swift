@@ -11,16 +11,14 @@ private final class FirstResponderChildView: NSView {
 private final class DesktopWebHostSpy: DesktopWebHosting {
     let rootView = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     private(set) var reloadCount = 0
-    private(set) var zoomOutCount = 0
-    private(set) var zoomInCount = 0
+    private(set) var appliedZoomPercents: [Int] = []
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
     private(set) var detachedWebPaneIds: [[String]] = []
 
     func reload(_ sender: Any?) { reloadCount += 1 }
-    func zoomOut(_ sender: Any?) { zoomOutCount += 1 }
-    func zoomIn(_ sender: Any?) { zoomInCount += 1 }
+    func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {}
@@ -36,8 +34,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     private(set) var showCount = 0
     private(set) var closeCount = 0
     private(set) var reloadCount = 0
-    private(set) var zoomOutCount = 0
-    private(set) var zoomInCount = 0
+    private(set) var appliedZoomPercents: [Int] = []
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
@@ -58,8 +55,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     func show() { showCount += 1 }
     func close() { closeCount += 1 }
     func reload() { reloadCount += 1 }
-    func zoomOut() { zoomOutCount += 1 }
-    func zoomIn() { zoomInCount += 1 }
+    func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
@@ -88,6 +84,15 @@ private final class WindowRestorationStoreSpy: WindowRestorationStoring {
     func saveFrames(_ frames: [NSRect]) {
         savedFrames.append(frames)
     }
+}
+
+@MainActor
+private final class ZoomPreferenceStoreSpy: ZoomPreferenceStoring {
+    var percentToLoad = ZoomPreference.defaultPercent
+    private(set) var savedPercents: [Int] = []
+
+    func loadZoomPercent() -> Int { percentToLoad }
+    func saveZoomPercent(_ percent: Int) { savedPercents.append(percent) }
 }
 
 @MainActor
@@ -120,8 +125,9 @@ final class DesktopApplicationTests: XCTestCase {
 
         let viewMenu = try XCTUnwrap(menu.items[3].submenu)
         let viewActions = viewMenu.items.filter { !$0.isSeparatorItem }
-        XCTAssertEqual(viewActions.map(\.title), ["Reload", "Zoom Out", "Zoom In"])
-        XCTAssertEqual(viewActions.map(\.keyEquivalent), ["r", "-", "="])
+        XCTAssertEqual(viewActions.map(\.title), ["Reload", "Zoom Out", "Zoom In", "Actual Size"])
+        XCTAssertEqual(viewActions.map(\.keyEquivalent), ["r", "-", "=", "0"])
+        XCTAssertEqual(viewActions[3].action, #selector(DesktopAppDelegate.actualSize(_:)))
         XCTAssertTrue(viewActions.allSatisfy { $0.keyEquivalentModifierMask == .command })
         XCTAssertTrue(viewActions.allSatisfy { $0.target === actionTarget })
         XCTAssertEqual(viewActions[0].action, #selector(DesktopAppDelegate.reload(_:)))
@@ -238,11 +244,7 @@ final class DesktopApplicationTests: XCTestCase {
 
         keyWindow.window = first.window
         delegate.reload(nil)
-        delegate.zoomOut(nil)
-        delegate.zoomIn(nil)
         XCTAssertEqual(first.reloadCount, 1)
-        XCTAssertEqual(first.zoomOutCount, 1)
-        XCTAssertEqual(first.zoomInCount, 1)
         XCTAssertEqual(second.reloadCount, 0)
 
         keyWindow.window = second.window
@@ -254,6 +256,80 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(created.count, 3)
         XCTAssertEqual(delegate.registry.count, 3)
         XCTAssertEqual(created[2].showCount, 1)
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+    }
+
+    func testStoredZoomIsAppliedToRestoredAndLaterWindows() {
+        var created: [DesktopWindowControllerSpy] = []
+        let restorationStore = WindowRestorationStoreSpy()
+        restorationStore.framesToLoad = [NSRect(x: 0, y: 0, width: 900, height: 700)]
+        let zoomStore = ZoomPreferenceStoreSpy()
+        zoomStore.percentToLoad = 130
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { frame in
+                let controller = DesktopWindowControllerSpy(restoredFrame: frame)
+                created.append(controller)
+                return controller
+            },
+            detachedSessionFactory: { webPaneId in
+                let controller = DesktopWindowControllerSpy(role: .webPane(id: webPaneId))
+                created.append(controller)
+                return controller
+            },
+            restorationStore: restorationStore,
+            zoomStore: zoomStore,
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+
+        delegate.restoreWindows()
+        delegate.newWindow(nil)
+        delegate.openWebPaneWindow(webPaneId: "w-abcd1234")
+
+        XCTAssertEqual(created.count, 3)
+        XCTAssertTrue(created.allSatisfy { $0.appliedZoomPercents == [130] })
+        XCTAssertEqual(zoomStore.savedPercents, [])
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+    }
+
+    func testZoomCommandsRetuneEveryWindowAndPersistImmediately() {
+        var created: [DesktopWindowControllerSpy] = []
+        let zoomStore = ZoomPreferenceStoreSpy()
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { frame in
+                let controller = DesktopWindowControllerSpy(restoredFrame: frame)
+                created.append(controller)
+                return controller
+            },
+            detachedSessionFactory: { webPaneId in
+                let controller = DesktopWindowControllerSpy(role: .webPane(id: webPaneId))
+                created.append(controller)
+                return controller
+            },
+            restorationStore: WindowRestorationStoreSpy(),
+            zoomStore: zoomStore,
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        _ = delegate.openWindow()
+        delegate.openWebPaneWindow(webPaneId: "w-abcd1234")
+
+        delegate.zoomIn(nil)
+
+        XCTAssertEqual(created.count, 2)
+        XCTAssertTrue(created.allSatisfy { $0.appliedZoomPercents == [100, 110] })
+        XCTAssertEqual(zoomStore.savedPercents, [110])
+
+        for _ in 0..<20 { delegate.zoomIn(nil) }
+        XCTAssertEqual(zoomStore.savedPercents.last, ZoomPreference.maximumPercent)
+        let savedAtCeiling = zoomStore.savedPercents.count
+        delegate.zoomIn(nil)
+        XCTAssertEqual(zoomStore.savedPercents.count, savedAtCeiling)
+        XCTAssertEqual(created[0].appliedZoomPercents.last, ZoomPreference.maximumPercent)
+
+        delegate.actualSize(nil)
+        XCTAssertEqual(zoomStore.savedPercents.last, 100)
+        XCTAssertTrue(created.allSatisfy { $0.appliedZoomPercents.last == 100 })
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
     }
 
@@ -344,16 +420,14 @@ final class DesktopApplicationTests: XCTestCase {
         let session = DesktopWindowSession(restoredFrame: frame, webHost: webHost)
 
         session.reload()
-        session.zoomOut()
-        session.zoomIn()
+        session.applyZoomPercent(120)
         session.reapplyTerminalFrames()
         session.cleanUp()
         session.cleanUp()
 
         XCTAssertEqual(session.window.frame, frame)
         XCTAssertEqual(webHost.reloadCount, 1)
-        XCTAssertEqual(webHost.zoomOutCount, 1)
-        XCTAssertEqual(webHost.zoomInCount, 1)
+        XCTAssertEqual(webHost.appliedZoomPercents, [120])
         XCTAssertEqual(webHost.reapplyCount, 1)
         XCTAssertEqual(webHost.cleanUpCount, 1)
         XCTAssertEqual(webHost.windowActivity, [false])
@@ -491,13 +565,15 @@ final class DesktopApplicationTests: XCTestCase {
         window.zoomShortcutWasPressed = { shortcuts.append($0) }
         let commandMinus = try XCTUnwrap(keyEvent(key: "-", modifiers: .command, keyCode: 27))
         let commandEquals = try XCTUnwrap(keyEvent(key: "=", modifiers: .command, keyCode: 24))
+        let commandZero = try XCTUnwrap(keyEvent(key: "0", modifiers: .command, keyCode: 29))
         let commandPlus = try XCTUnwrap(keyEvent(key: "+", modifiers: [.command, .shift], keyCode: 24))
 
         window.sendEvent(commandMinus)
         window.sendEvent(commandEquals)
+        window.sendEvent(commandZero)
         window.sendEvent(commandPlus)
 
-        XCTAssertEqual(shortcuts, ["-", "="])
+        XCTAssertEqual(shortcuts, ["-", "=", "0"])
         window.zoomShortcutWasPressed = nil
         window.orderOut(nil)
     }

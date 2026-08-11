@@ -24,7 +24,7 @@ final class DesktopWindow: NSWindow {
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if modifiers == .command,
                let key = event.charactersIgnoringModifiers,
-               key == "-" || key == "=" {
+               key == "-" || key == "=" || key == "0" {
                 zoomShortcutWasPressed?(key)
                 return
             }
@@ -125,6 +125,12 @@ enum DesktopMainMenu {
             keyEquivalent: "="
         )
         zoomInItem.target = actionTarget
+        let actualSizeItem = viewMenu.addItem(
+            withTitle: "Actual Size",
+            action: #selector(DesktopAppDelegate.actualSize(_:)),
+            keyEquivalent: "0"
+        )
+        actualSizeItem.target = actionTarget
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -156,8 +162,7 @@ enum DesktopMainMenu {
 protocol DesktopWebHosting: AnyObject {
     var rootView: NSView { get }
     func reload(_ sender: Any?)
-    func zoomOut(_ sender: Any?)
-    func zoomIn(_ sender: Any?)
+    func applyZoomPercent(_ percent: Int)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
@@ -174,8 +179,7 @@ protocol DesktopWindowControlling: AnyObject {
     func show()
     func close()
     func reload()
-    func zoomOut()
-    func zoomIn()
+    func applyZoomPercent(_ percent: Int)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
@@ -188,6 +192,7 @@ final class DesktopWindowSession: DesktopWindowControlling {
     let window: NSWindow
     let role: DesktopWindowRole
     private let webHost: any DesktopWebHosting
+    private weak var commandHandler: (any DesktopWindowCommandHandling)?
     private var cleanedUp = false
 
     init(
@@ -216,10 +221,10 @@ final class DesktopWindowSession: DesktopWindowControlling {
         window.contentView = webHost.rootView
         self.window = window
         window.zoomShortcutWasPressed = { [weak self] key in
-            if key == "-" {
-                self?.zoomOut()
-            } else {
-                self?.zoomIn()
+            switch key {
+            case "-": self?.commandHandler?.zoomOut()
+            case "0": self?.commandHandler?.actualSize()
+            default: self?.commandHandler?.zoomIn()
             }
         }
         if let restoredFrame {
@@ -244,12 +249,8 @@ final class DesktopWindowSession: DesktopWindowControlling {
         webHost.reload(nil)
     }
 
-    func zoomOut() {
-        webHost.zoomOut(nil)
-    }
-
-    func zoomIn() {
-        webHost.zoomIn(nil)
+    func applyZoomPercent(_ percent: Int) {
+        webHost.applyZoomPercent(percent)
     }
 
     func reapplyTerminalFrames() {
@@ -261,6 +262,7 @@ final class DesktopWindowSession: DesktopWindowControlling {
     }
 
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
+        commandHandler = handler
         webHost.setWindowCommandHandler(handler)
     }
 
@@ -271,6 +273,7 @@ final class DesktopWindowSession: DesktopWindowControlling {
     func cleanUp() {
         guard !cleanedUp else { return }
         cleanedUp = true
+        commandHandler = nil
         (window as? DesktopWindow)?.zoomShortcutWasPressed = nil
         webHost.setWindowActive(false)
         webHost.cleanUp()
@@ -343,8 +346,10 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     private let sessionFactory: SessionFactory
     private let detachedSessionFactory: DetachedSessionFactory
     private let restorationStore: any WindowRestorationStoring
+    private let zoomStore: any ZoomPreferenceStoring
     private let keyWindowProvider: @MainActor () -> NSWindow?
     private let visibleFramesProvider: @MainActor () -> [NSRect]
+    private var zoomPercent: Int
 
     init(
         sessionFactory: @escaping SessionFactory = { DesktopWindowSession(restoredFrame: $0) },
@@ -352,6 +357,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
             DesktopWindowSession(role: .webPane(id: $0))
         },
         restorationStore: any WindowRestorationStoring = UserDefaultsWindowRestorationStore(),
+        zoomStore: any ZoomPreferenceStoring = UserDefaultsZoomPreferenceStore(),
         keyWindowProvider: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow },
         visibleFramesProvider: @escaping @MainActor () -> [NSRect] = {
             NSScreen.screens.map(\.visibleFrame)
@@ -360,8 +366,10 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         self.sessionFactory = sessionFactory
         self.detachedSessionFactory = detachedSessionFactory
         self.restorationStore = restorationStore
+        self.zoomStore = zoomStore
         self.keyWindowProvider = keyWindowProvider
         self.visibleFramesProvider = visibleFramesProvider
+        zoomPercent = ZoomPreference.sanitize(zoomStore.loadZoomPercent())
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -406,11 +414,38 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     @objc func zoomOut(_ sender: Any?) {
-        activeController?.zoomOut()
+        zoomOut()
     }
 
     @objc func zoomIn(_ sender: Any?) {
-        activeController?.zoomIn()
+        zoomIn()
+    }
+
+    @objc func actualSize(_ sender: Any?) {
+        actualSize()
+    }
+
+    func zoomOut() {
+        setZoomPercent(ZoomPreference.zoomedOut(from: zoomPercent))
+    }
+
+    func zoomIn() {
+        setZoomPercent(ZoomPreference.zoomedIn(from: zoomPercent))
+    }
+
+    func actualSize() {
+        setZoomPercent(ZoomPreference.defaultPercent)
+    }
+
+    /// Zoom is a single app-wide setting: every window re-renders at the new
+    /// percent and the value is stored right away, so a crash cannot lose it.
+    private func setZoomPercent(_ percent: Int) {
+        guard percent != zoomPercent else { return }
+        zoomPercent = percent
+        zoomStore.saveZoomPercent(percent)
+        for controller in registry.all {
+            controller.applyZoomPercent(percent)
+        }
     }
 
     @discardableResult
@@ -444,6 +479,7 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     private func prepare(_ controller: any DesktopWindowControlling) {
         controller.setWindowCommandHandler(self)
+        controller.applyZoomPercent(zoomPercent)
         controller.window.delegate = self
         registry.register(controller)
         publishDetachedWebPaneIds()

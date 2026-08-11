@@ -69,15 +69,11 @@ struct AppKitJavaScriptTextInputPresenter: JavaScriptTextInputPresenting {
 
 @MainActor
 final class DesktopWebHost: NSObject, WKNavigationDelegate {
-    static let minimumZoomPercent = 50
-    static let maximumZoomPercent = 200
-    static let zoomStepPercent = 10
-
     let rootView: NSView
     let webView: WKWebView
     let overlay: TerminalOverlayView
     let connectionStatusView: ConnectionStatusView
-    private(set) var zoomPercent = 100
+    private(set) var zoomPercent = ZoomPreference.defaultPercent
 
     var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
 
@@ -204,12 +200,11 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         publishDetachedWebPaneIds()
     }
 
-    @objc func zoomOut(_ sender: Any?) {
-        setZoomPercent(max(Self.minimumZoomPercent, zoomPercent - Self.zoomStepPercent))
-    }
-
-    @objc func zoomIn(_ sender: Any?) {
-        setZoomPercent(min(Self.maximumZoomPercent, zoomPercent + Self.zoomStepPercent))
+    func applyZoomPercent(_ percent: Int) {
+        let percent = ZoomPreference.sanitize(percent)
+        guard percent != zoomPercent else { return }
+        zoomPercent = percent
+        pushZoom()
     }
 
     @objc func reload(_ sender: Any?) {
@@ -307,6 +302,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         navigationRetryTimer = nil
         isRetrying = false
         connectionStatusView.hide()
+        pushZoom()
         publishWindowActivity()
         publishDetachedWebPaneIds()
     }
@@ -349,9 +345,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         ))
     }
 
-    private func setZoomPercent(_ percent: Int) {
-        guard percent != zoomPercent else { return }
-        zoomPercent = percent
+    /// Pushes the current zoom out to everything that renders at a scale. Kept
+    /// separate from `applyZoomPercent` so a finished navigation can re-assert an
+    /// unchanged percent — a reload resets `pageZoom` even though nothing changed.
+    private func pushZoom() {
         webView.pageZoom = zoomScale
         bridge.setZoomScale(zoomScale)
         webViewTiles.setZoomScale(zoomScale)
