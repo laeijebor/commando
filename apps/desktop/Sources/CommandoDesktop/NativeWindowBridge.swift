@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import WebKit
 
@@ -29,6 +30,7 @@ enum NativeWindowProtocol {
     static let protocolName = "commando.native-window"
     static let handlerName = "commandoNativeWindow"
     static let version = 1
+    static let maxClipboardText = 65_536
 
     static func isWebPaneId(_ value: String) -> Bool {
         guard value.count == 10, value.hasPrefix("w-") else { return false }
@@ -49,9 +51,14 @@ protocol DesktopWindowCommandHandling: AnyObject {
 @MainActor
 final class NativeWindowBridge {
     weak var commandHandler: (any DesktopWindowCommandHandling)?
+    private let pasteboard: NSPasteboard
 
-    init(commandHandler: (any DesktopWindowCommandHandling)? = nil) {
+    init(
+        commandHandler: (any DesktopWindowCommandHandling)? = nil,
+        pasteboard: NSPasteboard = .general
+    ) {
         self.commandHandler = commandHandler
+        self.pasteboard = pasteboard
     }
 
     func receive(body: Any) {
@@ -59,23 +66,42 @@ final class NativeWindowBridge {
               dictionary["protocol"] as? String == NativeWindowProtocol.protocolName,
               (dictionary["version"] as? NSNumber)?.intValue == NativeWindowProtocol.version,
               let type = dictionary["type"] as? String,
-              let payload = dictionary["payload"] as? [String: Any],
-              let webPaneId = payload["webPaneId"] as? String,
-              NativeWindowProtocol.isWebPaneId(webPaneId)
+              let payload = dictionary["payload"] as? [String: Any]
         else {
             return
         }
 
         switch type {
+        case "clipboard.write-text":
+            guard let text = payload["text"] as? String,
+                  !text.isEmpty,
+                  text.utf16.count <= NativeWindowProtocol.maxClipboardText
+            else {
+                return
+            }
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
         case "web-pane.open":
+            guard let webPaneId = validWebPaneId(payload) else { return }
             commandHandler?.openWebPaneWindow(webPaneId: webPaneId)
         case "web-pane.focus":
+            guard let webPaneId = validWebPaneId(payload) else { return }
             commandHandler?.focusWebPaneWindow(webPaneId: webPaneId)
         case "web-pane.reattach":
+            guard let webPaneId = validWebPaneId(payload) else { return }
             commandHandler?.reattachWebPaneWindow(webPaneId: webPaneId)
         default:
             return
         }
+    }
+
+    private func validWebPaneId(_ payload: [String: Any]) -> String? {
+        guard let webPaneId = payload["webPaneId"] as? String,
+              NativeWindowProtocol.isWebPaneId(webPaneId)
+        else {
+            return nil
+        }
+        return webPaneId
     }
 }
 

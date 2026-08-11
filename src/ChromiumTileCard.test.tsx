@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
+import { resetNativeWindowBridge } from './nativeWindowBridge'
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -603,10 +604,14 @@ describe('ChromiumTileCard browser selection', () => {
   beforeEach(() => {
     FakeWebSocket.instances = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    resetNativeWindowBridge()
+    Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
   })
 
   afterEach(() => {
     cleanup()
+    resetNativeWindowBridge()
+    Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
     vi.unstubAllGlobals()
   })
 
@@ -655,9 +660,9 @@ describe('ChromiumTileCard browser selection', () => {
       message as { type?: string }
     ).type === 'selection') as { type: string; id: string }
     expect(selectionRequest.id).toMatch(/^s-/)
-    expect(socket.sent).not.toContainEqual(expect.objectContaining({
+    expect(socket.sent).toContainEqual(expect.objectContaining({
       type: 'input',
-      event: expect.objectContaining({ kind: 'key', key: 'c' }),
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'c' }),
     }))
 
     act(() => socket.message({
@@ -689,5 +694,94 @@ describe('ChromiumTileCard browser selection', () => {
     })
     await act(async () => { await Promise.resolve() })
     expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a pending copy when its tile socket closes', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+
+    act(() => {
+      socket.close()
+      socket.message({ type: 'selection_result', id: request.id, ok: true, source: 'dom', text: 'stale copy' })
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('uses the AppKit clipboard bridge and leaves Control-C to the page', async () => {
+    const posted: unknown[] = []
+    Object.defineProperty(window, 'webkit', {
+      configurable: true,
+      value: {
+        messageHandlers: {
+          commandoNativeWindow: { postMessage: (message: unknown) => posted.push(message) },
+        },
+      },
+    })
+    resetNativeWindowBridge()
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', ctrlKey: true })
+    expect(socket.sent.some((message) => (message as { type?: string }).type === 'selection')).toBe(false)
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'c', modifiers: 2 }),
+    }))
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+    act(() => socket.message({
+      type: 'selection_result',
+      id: request.id,
+      ok: true,
+      source: 'dom',
+      text: 'native copy',
+    }))
+    await waitFor(() => expect(posted).toContainEqual(expect.objectContaining({
+      type: 'clipboard.write-text',
+      payload: { text: 'native copy' },
+    })))
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('releases the remote button through the window when pointer capture fails', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`) as HTMLCanvasElement
+    Object.assign(canvas, {
+      setPointerCapture: () => { throw new Error('capture unavailable') },
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 100 }),
+    })
+
+    fireEvent.pointerDown(canvas, { pointerId: 9, button: 0, buttons: 1, detail: 1 })
+    fireEvent.pointerUp(window, { pointerId: 9, clientX: 80, clientY: 90, button: 0, buttons: 0 })
+
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({
+        type: 'mouseReleased',
+        x: 70,
+        y: 70,
+        buttons: 0,
+      }),
+    }))
   })
 })

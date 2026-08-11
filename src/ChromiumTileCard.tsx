@@ -10,6 +10,7 @@ import {
   tileMouseMessage,
 } from './chromiumTileInput'
 import { loadPendingMirror, savePendingMirror } from './pendingMirror'
+import { getNativeWindowBridge } from './nativeWindowBridge'
 import { createInspectThrottle } from './tileReview'
 import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
 
@@ -239,13 +240,13 @@ export function ChromiumTileCard({
   const nextInspectId = useRef(0)
   const nextSelectionId = useRef(0)
   const pendingSelectionId = useRef('')
-  const copyKeyDown = useRef(false)
   const activePointer = useRef<{
     id: number
     button: 'none' | 'left' | 'middle' | 'right'
     x: number
     y: number
   } | null>(null)
+  const nativeWindowBridge = useRef(getNativeWindowBridge()).current
   const lastHoverId = useRef('')
   const lastClickId = useRef('')
   const lastClickPoint = useRef({ x: 0, y: 0 })
@@ -495,7 +496,10 @@ export function ChromiumTileCard({
         }
       })
       socket.addEventListener('close', (event) => {
-        if (socketRef.current === socket) socketRef.current = null
+        if (socketRef.current === socket) {
+          socketRef.current = null
+          pendingSelectionId.current = ''
+        }
         disarmStallWatchdog()
         if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
         if (stalled) return // the watchdog already set the error state
@@ -531,6 +535,7 @@ export function ChromiumTileCard({
       if (message.id !== pendingSelectionId.current) return
       pendingSelectionId.current = ''
       if (message.ok !== true || typeof message.text !== 'string' || !message.text) return
+      if (nativeWindowBridge?.writeClipboardText(message.text)) return
       void navigator.clipboard?.writeText(message.text).catch(() => undefined)
     }
 
@@ -591,7 +596,10 @@ export function ChromiumTileCard({
       if (viewportTimer) window.clearTimeout(viewportTimer)
       disarmStallWatchdog()
       socket?.close()
-      if (socketRef.current === socket) socketRef.current = null
+      if (socketRef.current === socket) {
+        socketRef.current = null
+        pendingSelectionId.current = ''
+      }
     }
   }, [webPane.id, webPane.url, wsToken, connectEpoch, connected, keepStreamingWhenHidden])
 
@@ -887,6 +895,34 @@ export function ChromiumTileCard({
     return attachTileWheelCapture(canvas, send)
   }, [])
 
+  // Pointer capture is normally enough to deliver an off-canvas release. If
+  // WebKit refuses capture, the window fallback still clears Chromium's held button.
+  useEffect(() => {
+    const releaseOutsideCanvas = (event: PointerEvent) => {
+      const active = activePointer.current
+      const canvas = canvasRef.current
+      if (!active || active.id !== event.pointerId || !canvas) return
+      activePointer.current = null
+      const rect = canvas.getBoundingClientRect()
+      send({
+        kind: 'mouse',
+        type: 'mouseReleased',
+        x: Math.max(0, Math.round(event.clientX - rect.left)),
+        y: Math.max(0, Math.round(event.clientY - rect.top)),
+        button: active.button,
+        buttons: 0,
+        clickCount: 1,
+        modifiers: cdpModifiers(event),
+      })
+    }
+    window.addEventListener('pointerup', releaseOutsideCanvas)
+    window.addEventListener('pointercancel', releaseOutsideCanvas)
+    return () => {
+      window.removeEventListener('pointerup', releaseOutsideCanvas)
+      window.removeEventListener('pointercancel', releaseOutsideCanvas)
+    }
+  }, [])
+
   const selected = selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
   const selectedDraft = selected ? drafts[selected.id] ?? draftFor(selected) : undefined
   const selectedEditor = selected ? editorFor(selected) : undefined
@@ -994,8 +1030,10 @@ export function ChromiumTileCard({
           if (!shouldCaptureKey(event.key)) return
           event.preventDefault()
           event.stopPropagation()
-          if (isCopyShortcut(event.nativeEvent)) {
-            copyKeyDown.current = true
+          if (isCopyShortcut(event.nativeEvent) && (!nativeWindowBridge || event.metaKey)) {
+            // Preserve the page's own copy handlers, then bridge its effective
+            // text selection back to the host clipboard.
+            for (const message of tileKeyMessages(event.nativeEvent)) send(message)
             requestSelectionCopy()
             return
           }
@@ -1008,10 +1046,6 @@ export function ChromiumTileCard({
           if (!shouldCaptureKey(event.key)) return
           event.preventDefault()
           event.stopPropagation()
-          if (copyKeyDown.current && event.key.toLowerCase() === 'c') {
-            copyKeyDown.current = false
-            return
-          }
           for (const message of tileKeyMessages(event.nativeEvent)) {
             send(message)
           }

@@ -81,7 +81,8 @@ final class DesktopWebHostTests: XCTestCase {
 
     func testNativeWindowBridgeRoutesOnlyVersionedValidPaneCommands() {
         let handler = DesktopWindowCommandHandlerSpy()
-        let bridge = NativeWindowBridge(commandHandler: handler)
+        let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
+        let bridge = NativeWindowBridge(commandHandler: handler, pasteboard: pasteboard)
 
         func receive(_ type: String, id: String, version: Int = 1) {
             bridge.receive(body: [
@@ -100,6 +101,23 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(handler.opened, ["w-abcd1234"])
         XCTAssertEqual(handler.focused, ["w-abcd1234"])
         XCTAssertEqual(handler.reattached, ["w-abcd1234"])
+
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": " exact\nselection "],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
+
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": String(repeating: "x", count: NativeWindowProtocol.maxClipboardText + 1)],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
+        pasteboard.clearContents()
     }
     func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
         let url = URL(string: "http://127.0.0.1:5173")!
