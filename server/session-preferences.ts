@@ -142,12 +142,15 @@ export function reconcileSessionTreePreferences(
   }
 
   const claimed = new Set<string>()
+  const claimedNames = new Map<string, string>()
   const reconcileIds = (sessionIds: readonly string[]): string[] => sessionIds.flatMap((sessionId) => {
     const storedName = parsed.sessionNamesById?.[sessionId]
     const restored = storedName ? currentByName.get(storedName) : undefined
     const nextId = restored?.id ?? sessionId
     if (claimed.has(nextId)) return []
     claimed.add(nextId)
+    const name = storedName ?? currentById.get(nextId)?.name
+    if (name) claimedNames.set(nextId, name)
     return [nextId]
   })
   const groups = parsed.groups.map((group) => ({
@@ -158,14 +161,13 @@ export function reconcileSessionTreePreferences(
   for (const session of currentSessions) {
     if (!claimed.has(session.id)) {
       claimed.add(session.id)
+      claimedNames.set(session.id, session.name)
       ungroupedSessionIds.push(session.id)
     }
   }
   const sessionNamesById: Record<string, string> = {}
   for (const sessionId of claimed) {
-    const current = currentById.get(sessionId)
-    const storedName = parsed.sessionNamesById?.[sessionId]
-    const name = current?.name ?? storedName
+    const name = claimedNames.get(sessionId)
     if (name) sessionNamesById[sessionId] = name
   }
   return {
@@ -174,6 +176,19 @@ export function reconcileSessionTreePreferences(
     ungroupedSessionIds,
     ...(Object.keys(sessionNamesById).length > 0 ? { sessionNamesById } : {}),
   }
+}
+
+function hasUnresolvedSessionIdReuse(
+  preferences: SessionTreePreferences,
+  currentSessions: readonly SessionIdentity[],
+): boolean {
+  if (!preferences.sessionNamesById) return false
+  const currentById = new Map(currentSessions.map((session) => [session.id, session]))
+  const currentNames = new Set(currentSessions.map((session) => session.name))
+  return Object.entries(preferences.sessionNamesById).some(([sessionId, storedName]) => {
+    const current = currentById.get(sessionId)
+    return Boolean(current && current.name !== storedName && !currentNames.has(storedName))
+  })
 }
 
 export function visibleSessionTreePreferences(
@@ -212,7 +227,10 @@ export class SessionPreferenceStore {
     await this.writes
     const stored = await this.readState()
     const reconciled = reconcileSessionTreePreferences(stored, currentSessions)
-    if (JSON.stringify(reconciled) !== JSON.stringify(stored)) {
+    if (
+      JSON.stringify(reconciled) !== JSON.stringify(stored) &&
+      !hasUnresolvedSessionIdReuse(stored, currentSessions)
+    ) {
       await this.replace(reconciled, currentSessions)
     }
     return reconciled

@@ -110,6 +110,17 @@ describe('session tree preferences', () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(saved)
 
+    const partialRestore = await new SessionPreferenceStore(path).load([
+      { id: '$1', name: 'other' },
+    ])
+    expect(partialRestore).toEqual({
+      version: 1,
+      groups: [{ id: 'work', name: 'Work', sessionIds: ['$1'] }],
+      ungroupedSessionIds: [],
+      sessionNamesById: { '$1': 'work' },
+    })
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(saved)
+
     const restored = await new SessionPreferenceStore(path).load([
       { id: '$1', name: 'other' },
       { id: '$2', name: 'work' },
