@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   cdpModifiers,
+  cdpHeldMouseButton,
   cdpMouseButton,
   isCopyShortcut,
   tileKeyMessages,
@@ -22,12 +23,15 @@ describe('chromium tile input mapping', () => {
   it('maps mouse events with buttons and click counts', () => {
     expect(cdpMouseButton(0)).toBe('left')
     expect(cdpMouseButton(2)).toBe('right')
+    expect(cdpHeldMouseButton(1)).toBe('left')
+    expect(cdpHeldMouseButton(4)).toBe('middle')
+    expect(cdpHeldMouseButton(2)).toBe('right')
     expect(
       tileMouseMessage({ ...noModifiers, type: 'pointerdown', offsetX: 10.6, offsetY: 4.2, button: 0, buttons: 1, detail: 2 }),
     ).toMatchObject({ type: 'mousePressed', x: 11, y: 4, button: 'left', buttons: 1, clickCount: 2 })
     expect(
       tileMouseMessage({ ...noModifiers, type: 'pointermove', offsetX: 5, offsetY: 6, button: -1, buttons: 1, detail: 0 }),
-    ).toMatchObject({ type: 'mouseMoved', button: 'none', buttons: 1, clickCount: 0 })
+    ).toMatchObject({ type: 'mouseMoved', button: 'left', buttons: 1, clickCount: 0 })
     expect(
       tileMouseMessage({ ...noModifiers, type: 'dblclick', offsetX: 1, offsetY: 1, button: 0, buttons: 0, detail: 2 }),
     ).toBeNull()

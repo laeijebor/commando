@@ -9,9 +9,11 @@ import { resetNativeWindowBridge } from './nativeWindowBridge'
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
   static OPEN = 1
+  static deferClose = false
   readonly url: string
   readyState = 0
   closeCount = 0
+  private closePending = false
   readonly sent: unknown[] = []
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
 
@@ -41,6 +43,16 @@ class FakeWebSocket {
     this.closeCount += 1
     if (this.readyState === 3) return
     this.readyState = 3
+    if (FakeWebSocket.deferClose) {
+      this.closePending = true
+      return
+    }
+    this.dispatch('close', { code: 1005 })
+  }
+
+  flushClose(): void {
+    if (!this.closePending) return
+    this.closePending = false
     this.dispatch('close', { code: 1005 })
   }
 
@@ -173,6 +185,7 @@ function renderTile(
 describe('ChromiumTileCard pending hydration', () => {
   beforeEach(() => {
     FakeWebSocket.instances = []
+    FakeWebSocket.deferClose = false
     vi.stubGlobal('WebSocket', FakeWebSocket)
     window.localStorage.clear()
   })
@@ -634,11 +647,11 @@ describe('ChromiumTileCard browser selection', () => {
 
     const input = socket.sent.filter((message) => (
       message as { type?: string }
-    ).type === 'input') as Array<{ event: { type: string; buttons: number } }>
-    expect(input.map(({ event }) => [event.type, event.buttons])).toEqual([
-      ['mousePressed', 1],
-      ['mouseMoved', 1],
-      ['mouseReleased', 0],
+    ).type === 'input') as Array<{ event: { type: string; button: string; buttons: number } }>
+    expect(input.map(({ event }) => [event.type, event.button, event.buttons])).toEqual([
+      ['mousePressed', 'left', 1],
+      ['mouseMoved', 'left', 1],
+      ['mouseReleased', 'left', 0],
     ])
     expect(setPointerCapture).toHaveBeenCalledWith(4)
     expect(releasePointerCapture).toHaveBeenCalledWith(4)
@@ -715,6 +728,33 @@ describe('ChromiumTileCard browser selection', () => {
     })
     await act(async () => { await Promise.resolve() })
     expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('does not let a delayed old-socket close clear its replacement', () => {
+    FakeWebSocket.deferClose = true
+    renderTile()
+    const first = FakeWebSocket.instances[0]
+    act(() => first.open())
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    const second = FakeWebSocket.instances[1]
+    act(() => {
+      second.open()
+      first.flushClose()
+    })
+
+    fireEvent.keyDown(screen.getByLabelText(`Chromium tile: ${webPane.url}`), {
+      key: 'a',
+      code: 'KeyA',
+    })
+    expect(second.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'a' }),
+    }))
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   })
 
   it('uses the AppKit clipboard bridge and leaves Control-C to the page', async () => {

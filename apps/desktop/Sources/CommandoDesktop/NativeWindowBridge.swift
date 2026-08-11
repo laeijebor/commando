@@ -64,7 +64,7 @@ final class NativeWindowBridge {
     }
 
     func authorizeClipboardWrite() {
-        clipboardWriteAuthorizedUntil = Date().addingTimeInterval(2)
+        clipboardWriteAuthorizedUntil = Date().addingTimeInterval(20)
     }
 
     func receive(body: Any) {
@@ -79,14 +79,14 @@ final class NativeWindowBridge {
 
         switch type {
         case "clipboard.write-text":
-            guard Date() <= clipboardWriteAuthorizedUntil else { return }
-            clipboardWriteAuthorizedUntil = .distantPast
             guard let text = payload["text"] as? String,
                   !text.isEmpty,
-                  text.utf16.count <= NativeWindowProtocol.maxClipboardText
+                  text.utf16.count <= NativeWindowProtocol.maxClipboardText,
+                  Date() <= clipboardWriteAuthorizedUntil
             else {
                 return
             }
+            clipboardWriteAuthorizedUntil = .distantPast
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
         case "web-pane.open":

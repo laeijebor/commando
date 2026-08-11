@@ -415,12 +415,12 @@ export function ChromiumTileCard({
       }, FIRST_FRAME_TIMEOUT_MS)
     }
 
-    const sendViewport = () => {
+    const sendViewport = (targetSocket = socket) => {
       const container = containerRef.current
-      if (!container || !socket || socket.readyState !== WebSocket.OPEN) return
+      if (!container || !targetSocket || targetSocket.readyState !== WebSocket.OPEN) return
       const rect = container.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return
-      socket.send(JSON.stringify({
+      targetSocket.send(JSON.stringify({
         type: 'viewport',
         width: Math.round(rect.width),
         height: Math.round(rect.height),
@@ -436,14 +436,16 @@ export function ChromiumTileCard({
       firstFrameDrawn = false
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const tokenQuery = wsToken ? `?token=${encodeURIComponent(wsToken)}` : ''
-      socket = new WebSocket(
+      const connectedSocket = new WebSocket(
         `${wsProtocol}//${window.location.host}/ws/web-tiles/${webPane.id}${tokenQuery}`,
       )
-      socketRef.current = socket
-      socket.addEventListener('open', () => {
-        sendViewport()
+      socket = connectedSocket
+      socketRef.current = connectedSocket
+      connectedSocket.addEventListener('open', () => {
+        sendViewport(connectedSocket)
       })
-      socket.addEventListener('message', (event) => {
+      connectedSocket.addEventListener('message', (event) => {
+        if (socketRef.current !== connectedSocket) return
         if (typeof event.data !== 'string') return
         let message: TileSocketMessage
         try {
@@ -452,7 +454,7 @@ export function ChromiumTileCard({
           return
         }
         if (message.type === 'frame' && typeof message.data === 'string') {
-          drawFrame(message.data)
+          drawFrame(message.data, connectedSocket)
           return
         }
         if (message.type === 'inspect_result' && typeof message.id === 'string') {
@@ -484,7 +486,7 @@ export function ChromiumTileCard({
         }
         if (message.type === 'ready') {
           // The engine target exists now — (re)assert the tile's viewport.
-          sendViewport()
+          sendViewport(connectedSocket)
           // Target creation has its own bounded CDP timeouts and can exceed
           // the frameless budget on a cold browser. Only time the stream once
           // the relay says setup completed.
@@ -497,8 +499,8 @@ export function ChromiumTileCard({
           setDetail(message.message ?? 'Chromium engine failed')
         }
       })
-      socket.addEventListener('close', (event) => {
-        if (socketRef.current === socket) {
+      connectedSocket.addEventListener('close', (event) => {
+        if (socketRef.current === connectedSocket) {
           socketRef.current = null
           pendingSelectionId.current = ''
         }
@@ -541,10 +543,10 @@ export function ChromiumTileCard({
       void navigator.clipboard?.writeText(message.text).catch(() => undefined)
     }
 
-    const drawFrame = (base64: string) => {
+    const drawFrame = (base64: string, sourceSocket: WebSocket) => {
       const image = new Image()
       image.onload = () => {
-        if (disposed || stalled) return
+        if (disposed || stalled || socketRef.current !== sourceSocket) return
         const canvas = canvasRef.current
         if (!canvas) return
         if (canvas.width !== image.width || canvas.height !== image.height) {
@@ -557,12 +559,12 @@ export function ChromiumTileCard({
         setState((current) => (current === 'streaming' ? current : 'streaming'))
       }
       image.onerror = () => {
-        if (disposed || stalled) return
+        if (disposed || stalled || socketRef.current !== sourceSocket) return
         stalled = true
         disarmStallWatchdog()
         setState('error')
         setDetail('Chromium sent an invalid stream frame. Retry to reconnect.')
-        socket?.close()
+        sourceSocket.close()
       }
       image.src = `data:image/png;base64,${base64}`
     }

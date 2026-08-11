@@ -49,6 +49,14 @@ export function cdpMouseButton(button: number): 'none' | 'left' | 'middle' | 'ri
   return button === 0 ? 'left' : button === 1 ? 'middle' : button === 2 ? 'right' : 'none'
 }
 
+/** CDP still needs the held button named on mouseMoved in older Chromium builds. */
+export function cdpHeldMouseButton(buttons: number): 'none' | 'left' | 'middle' | 'right' {
+  if ((buttons & 1) !== 0) return 'left'
+  if ((buttons & 4) !== 0) return 'middle'
+  if ((buttons & 2) !== 0) return 'right'
+  return 'none'
+}
+
 type TileMouseEvent = ModifierState & {
   type: string
   offsetX: number
@@ -70,7 +78,7 @@ export function tileMouseMessage(event: TileMouseEvent): TileMouseMessage | null
     type,
     x: Math.max(0, Math.round(event.offsetX)),
     y: Math.max(0, Math.round(event.offsetY)),
-    button: type === 'mouseMoved' ? 'none' : cdpMouseButton(event.button),
+    button: type === 'mouseMoved' ? cdpHeldMouseButton(event.buttons) : cdpMouseButton(event.button),
     buttons: Math.max(0, Math.min(31, Math.floor(event.buttons))),
     clickCount: type === 'mouseMoved' ? 0 : Math.max(1, Math.min(3, event.detail || 1)),
     modifiers: cdpModifiers(event),

@@ -102,7 +102,8 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         windowCommandHandler: (any DesktopWindowCommandHandling)? = nil,
         confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter(),
         textInputPresenter: any JavaScriptTextInputPresenting = AppKitJavaScriptTextInputPresenter(),
-        externalURLHandler: (any ExternalURLHandling)? = nil
+        externalURLHandler: (any ExternalURLHandling)? = nil,
+        pasteboard: NSPasteboard = .general
     ) {
         self.configuration = configuration
         self.role = role
@@ -113,7 +114,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             privilegedOrigin: configuration.webOrigin
         )
         self.externalURLHandler = externalURLHandler
-        windowBridge = NativeWindowBridge(commandHandler: windowCommandHandler)
+        windowBridge = NativeWindowBridge(commandHandler: windowCommandHandler, pasteboard: pasteboard)
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1_180, height: 760))
         let webConfiguration = WKWebViewConfiguration()
         webView = WKWebView(frame: rootView.bounds, configuration: webConfiguration)

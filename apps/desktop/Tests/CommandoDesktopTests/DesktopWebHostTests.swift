@@ -127,6 +127,14 @@ final class DesktopWebHostTests: XCTestCase {
             "payload": ["text": String(repeating: "x", count: NativeWindowProtocol.maxClipboardText + 1)],
         ])
         XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
+
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": "authorization survived validation"],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), "authorization survived validation")
         pasteboard.clearContents()
     }
     func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
@@ -505,8 +513,10 @@ final class DesktopWebHostTests: XCTestCase {
 
     func testDesktopWindowForwardsCommandCopyToTheFocusedWebView() async throws {
         let origin = URL(string: "http://127.0.0.1:5173")!
+        let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
         let host = DesktopWebHost(
-            configuration: .init(webURL: origin, prefersMetal: false)
+            configuration: .init(webURL: origin, prefersMetal: false),
+            pasteboard: pasteboard
         )
         let window = DesktopWindow(
             contentRect: host.rootView.bounds,
@@ -528,6 +538,14 @@ final class DesktopWebHostTests: XCTestCase {
                 if (event.metaKey && event.key === "c") {
                   window.copyShortcut = { trusted: event.isTrusted, target: event.target.id };
                   event.preventDefault();
+                  setTimeout(() => {
+                    window.webkit.messageHandlers.commandoNativeClipboard.postMessage({
+                      protocol: "commando.native-window",
+                      version: 1,
+                      type: "clipboard.write-text",
+                      payload: { text: "browser-quality selection" },
+                    });
+                  }, 20);
                 }
               });
               tile.focus();
@@ -556,7 +574,10 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertTrue(ready)
         XCTAssertTrue(window.makeFirstResponder(host.webView))
         var authorizationCount = 0
-        window.commandCopyWasPressed = { authorizationCount += 1 }
+        window.commandCopyWasPressed = {
+            authorizationCount += 1
+            host.authorizeClipboardWrite()
+        }
 
         let commandC = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
@@ -581,6 +602,11 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(copied?["trusted"] as? Bool, true)
         XCTAssertEqual(copied?["target"] as? String, "tile")
         XCTAssertEqual(authorizationCount, 1)
+        for _ in 0..<100 where pasteboard.string(forType: .string) == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "browser-quality selection")
+        pasteboard.clearContents()
     }
 
     func testPublishesDesktopWindowActivityIntoThePage() async throws {
