@@ -8,6 +8,7 @@ export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
+  sessionNamesById?: Record<string, string>
 }
 
 export interface SessionManagementApiClient {

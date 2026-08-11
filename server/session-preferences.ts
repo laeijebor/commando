@@ -13,6 +13,12 @@ export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
+  sessionNamesById?: Record<string, string>
+}
+
+export type SessionIdentity = {
+  id: string
+  name: string
 }
 
 const SESSION_ID = /^\$\d+$/
@@ -85,7 +91,26 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
   }
 
   if (assignedSessionIds.size > MAX_SESSIONS) return null
-  return { version: 1, groups, ungroupedSessionIds }
+  let sessionNamesById: Record<string, string> | undefined
+  if (value.sessionNamesById !== undefined) {
+    if (!isRecord(value.sessionNamesById)) return null
+    const entries = Object.entries(value.sessionNamesById)
+    if (entries.length > MAX_SESSIONS) return null
+    sessionNamesById = {}
+    for (const [sessionId, name] of entries) {
+      if (
+        !SESSION_ID.test(sessionId) ||
+        typeof name !== 'string' ||
+        name.length === 0 ||
+        name.length > 128 ||
+        /[\u0000-\u001f\u007f]/.test(name)
+      ) {
+        return null
+      }
+      sessionNamesById[sessionId] = name
+    }
+  }
+  return { version: 1, groups, ungroupedSessionIds, ...(sessionNamesById ? { sessionNamesById } : {}) }
 }
 
 export function emptySessionTreePreferences(): SessionTreePreferences {
@@ -94,36 +119,68 @@ export function emptySessionTreePreferences(): SessionTreePreferences {
 
 export function reconcileSessionTreePreferences(
   preferences: SessionTreePreferences,
-  currentSessionIds: readonly string[],
+  currentSessions: readonly SessionIdentity[],
 ): SessionTreePreferences {
   const parsed = parseSessionTreePreferences(preferences)
   if (!parsed) throw new Error('Invalid session tree preferences')
 
-  const known = new Set([
-    ...parsed.groups.flatMap((group) => group.sessionIds),
-    ...parsed.ungroupedSessionIds,
-  ])
-  const additions: string[] = []
-  const current = new Set<string>()
-  for (const sessionId of currentSessionIds) {
-    if (!SESSION_ID.test(sessionId)) throw new Error('Invalid tmux session id')
-    if (current.has(sessionId)) continue
-    current.add(sessionId)
-    if (!known.has(sessionId)) additions.push(sessionId)
+  const currentById = new Map<string, SessionIdentity>()
+  const currentByName = new Map<string, SessionIdentity>()
+  for (const session of currentSessions) {
+    if (!SESSION_ID.test(session.id)) throw new Error('Invalid tmux session id')
+    if (
+      typeof session.name !== 'string' ||
+      session.name.length === 0 ||
+      session.name.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(session.name)
+    ) {
+      throw new Error('Invalid tmux session name')
+    }
+    if (currentById.has(session.id) || currentByName.has(session.name)) continue
+    currentById.set(session.id, session)
+    currentByName.set(session.name, session)
   }
 
-  if (additions.length === 0) return parsed
+  const claimed = new Set<string>()
+  const reconcileIds = (sessionIds: readonly string[]): string[] => sessionIds.flatMap((sessionId) => {
+    const storedName = parsed.sessionNamesById?.[sessionId]
+    const restored = storedName ? currentByName.get(storedName) : undefined
+    const nextId = restored?.id ?? sessionId
+    if (claimed.has(nextId)) return []
+    claimed.add(nextId)
+    return [nextId]
+  })
+  const groups = parsed.groups.map((group) => ({
+    ...group,
+    sessionIds: reconcileIds(group.sessionIds),
+  }))
+  const ungroupedSessionIds = reconcileIds(parsed.ungroupedSessionIds)
+  for (const session of currentSessions) {
+    if (!claimed.has(session.id)) {
+      claimed.add(session.id)
+      ungroupedSessionIds.push(session.id)
+    }
+  }
+  const sessionNamesById: Record<string, string> = {}
+  for (const sessionId of claimed) {
+    const current = currentById.get(sessionId)
+    const storedName = parsed.sessionNamesById?.[sessionId]
+    const name = current?.name ?? storedName
+    if (name) sessionNamesById[sessionId] = name
+  }
   return {
-    ...parsed,
-    ungroupedSessionIds: [...parsed.ungroupedSessionIds, ...additions],
+    version: 1,
+    groups,
+    ungroupedSessionIds,
+    ...(Object.keys(sessionNamesById).length > 0 ? { sessionNamesById } : {}),
   }
 }
 
 export function visibleSessionTreePreferences(
   preferences: SessionTreePreferences,
-  currentSessionIds: readonly string[],
+  currentSessions: readonly SessionIdentity[],
 ): SessionTreePreferences {
-  const current = new Set(currentSessionIds)
+  const current = new Set(currentSessions.map((session) => session.id))
   return {
     version: 1,
     groups: preferences.groups.map((group) => ({
@@ -151,30 +208,43 @@ export class SessionPreferenceStore {
     this.statePath = statePath
   }
 
-  async load(currentSessionIds: readonly string[] = []): Promise<SessionTreePreferences> {
+  async load(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
     await this.writes
     const stored = await this.readState()
-    const reconciled = reconcileSessionTreePreferences(stored, currentSessionIds)
-    if (reconciled.ungroupedSessionIds.length !== stored.ungroupedSessionIds.length) {
-      await this.replace(reconciled, currentSessionIds)
+    const reconciled = reconcileSessionTreePreferences(stored, currentSessions)
+    if (JSON.stringify(reconciled) !== JSON.stringify(stored)) {
+      await this.replace(reconciled, currentSessions)
     }
     return reconciled
   }
 
   replace(
     preferences: SessionTreePreferences,
-    currentSessionIds: readonly string[] = [],
+    currentSessions: readonly SessionIdentity[] = [],
   ): Promise<SessionTreePreferences> {
-    let validated: SessionTreePreferences
+    let parsed: SessionTreePreferences
     try {
-      validated = reconcileSessionTreePreferences(preferences, currentSessionIds)
+      const candidate = parseSessionTreePreferences(preferences)
+      if (!candidate) throw new Error('Invalid session tree preferences')
+      parsed = candidate
     } catch (error) {
       return Promise.reject(error)
     }
 
-    const operation = this.writes.then(() => this.writeState(validated))
+    let validated: SessionTreePreferences
+    const operation = this.writes.then(async () => {
+      const stored = await this.readState()
+      validated = reconcileSessionTreePreferences({
+        ...parsed,
+        sessionNamesById: {
+          ...stored.sessionNamesById,
+          ...parsed.sessionNamesById,
+        },
+      }, currentSessions)
+      await this.writeState(validated)
+    })
     this.writes = operation.catch(() => undefined)
-    return operation.then(() => validated)
+    return operation.then(() => validated!)
   }
 
   private async readState(): Promise<SessionTreePreferences> {

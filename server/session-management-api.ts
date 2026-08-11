@@ -17,7 +17,7 @@ const MAX_REQUEST_BYTES = 64 * 1024
 type SessionManagementDependencies = {
   preferences?: SessionPreferenceStore
   actions?: TmuxSessionActions
-  currentSessionIds: () => readonly string[]
+  currentSessions: () => readonly { id: string; name: string }[]
   currentWindowIds: () => readonly string[]
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
@@ -125,7 +125,7 @@ export class SessionManagementApi {
 
       const route = sessionRoute(url.pathname)
       if (route) {
-        if (!this.dependencies.currentSessionIds().includes(route.sessionId)) {
+        if (!this.dependencies.currentSessions().some((session) => session.id === route.sessionId)) {
           throw new HttpError(404, 'Tmux session does not exist')
         }
 
@@ -187,9 +187,9 @@ export class SessionManagementApi {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
-    const currentSessionIds = this.dependencies.currentSessionIds()
+    const currentSessions = this.dependencies.currentSessions()
     if (request.method === 'GET') {
-      const preferences = await this.preferences.load(currentSessionIds)
+      const preferences = await this.preferences.load(currentSessions)
       writeJson(response, 200, { preferences })
       return
     }
@@ -198,7 +198,7 @@ export class SessionManagementApi {
     const body = record(await readJson(request))
     const parsed = parseSessionTreePreferences(body.preferences)
     if (!parsed) throw new HttpError(400, 'Invalid session tree preferences')
-    const preferences = await this.preferences.replace(parsed, currentSessionIds)
+    const preferences = await this.preferences.replace(parsed, currentSessions)
     writeJson(response, 200, { preferences })
   }
 

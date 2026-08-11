@@ -161,7 +161,7 @@ export function SessionTree(props: Props) {
       if (index >= 0) group.sessionIds.splice(index, 0, sessionId)
       else group.sessionIds.push(sessionId)
     }
-    save({ version: 1, groups, ungroupedSessionIds })
+    save({ ...currentPreferences, groups, ungroupedSessionIds })
   }
 
   const createGroup = () => {
@@ -272,7 +272,7 @@ export function SessionTree(props: Props) {
                 .filter((pane) => pane.sessionId === session.id)
                 .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
               const statusPanes = sessionPanes.filter((pane) => props.statuses[pane.id])
-              return [<article className={`managed-session${selected ? ' selected' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
+              return [<article className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
                 <div className="managed-session-row">
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}

@@ -41,9 +41,50 @@ describe('session tree preferences', () => {
     }
     expect(parseSessionTreePreferences(preferences)).toEqual(preferences)
     expect(parseSessionTreePreferences({ ...preferences, ungroupedSessionIds: ['$1'] })).toBeNull()
-    expect(reconcileSessionTreePreferences(preferences, ['$3', '$1'])).toEqual({
+    expect(reconcileSessionTreePreferences(preferences, [
+      { id: '$3', name: 'three' },
+      { id: '$1', name: 'one' },
+    ])).toEqual({
       ...preferences,
       ungroupedSessionIds: ['$2', '$3'],
+      sessionNamesById: { '$1': 'one', '$3': 'three' },
+    })
+  })
+
+  it('keeps restored sessions in place when tmux regenerates and reuses their ids', () => {
+    const preferences = {
+      version: 1 as const,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2'] },
+        { id: 'vivi', name: 'VIVI', sessionIds: ['$3'] },
+      ],
+      ungroupedSessionIds: ['$4'],
+      sessionNamesById: {
+        '$1': 'gizmo-api',
+        '$2': 'gizmo-web',
+        '$3': 'vivi-app',
+        '$4': 'scratch',
+      },
+    }
+
+    expect(reconcileSessionTreePreferences(preferences, [
+      { id: '$1', name: 'scratch' },
+      { id: '$2', name: 'vivi-app' },
+      { id: '$3', name: 'gizmo-web' },
+      { id: '$4', name: 'gizmo-api' },
+    ])).toEqual({
+      version: 1,
+      groups: [
+        { id: 'gizmo', name: 'GIZMO', sessionIds: ['$4', '$3'] },
+        { id: 'vivi', name: 'VIVI', sessionIds: ['$2'] },
+      ],
+      ungroupedSessionIds: ['$1'],
+      sessionNamesById: {
+        '$1': 'scratch',
+        '$2': 'vivi-app',
+        '$3': 'gizmo-web',
+        '$4': 'gizmo-api',
+      },
     })
   })
 
@@ -56,11 +97,30 @@ describe('session tree preferences', () => {
       version: 1,
       groups: [{ id: 'work', name: 'Work', sessionIds: ['$1'] }],
       ungroupedSessionIds: [],
-    }, ['$1', '$2'])
+    }, [
+      { id: '$1', name: 'work' },
+      { id: '$2', name: 'other' },
+    ])
     expect(saved.ungroupedSessionIds).toEqual(['$2'])
-    await expect(new SessionPreferenceStore(path).load(['$1', '$2'])).resolves.toEqual(saved)
+    expect(saved.sessionNamesById).toEqual({ '$1': 'work', '$2': 'other' })
+    await expect(new SessionPreferenceStore(path).load([
+      { id: '$1', name: 'work' },
+      { id: '$2', name: 'other' },
+    ])).resolves.toEqual(saved)
     expect((await stat(path)).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(saved)
+
+    const restored = await new SessionPreferenceStore(path).load([
+      { id: '$1', name: 'other' },
+      { id: '$2', name: 'work' },
+    ])
+    expect(restored).toEqual({
+      version: 1,
+      groups: [{ id: 'work', name: 'Work', sessionIds: ['$2'] }],
+      ungroupedSessionIds: ['$1'],
+      sessionNamesById: { '$1': 'other', '$2': 'work' },
+    })
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(restored)
   })
 })
 
@@ -96,7 +156,7 @@ describe('session management API', () => {
     const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
     const api = new SessionManagementApi({
       actions: new TmuxSessionActions(execute, { COMMANDO_TMUX_SOCKET_NAME: 'qa' }),
-      currentSessionIds: () => ['$1'],
+      currentSessions: () => [{ id: '$1', name: 'work' }],
       currentWindowIds: () => ['@7'],
       beforeWindowDeleted,
       onSessionsChanged,
@@ -124,7 +184,7 @@ describe('session management API', () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const api = new SessionManagementApi({
       actions: new TmuxSessionActions(execute, {}),
-      currentSessionIds: () => ['$1'],
+      currentSessions: () => [{ id: '$1', name: 'work' }],
       currentWindowIds: () => ['@7'],
     })
     const baseUrl = await startApi(api)

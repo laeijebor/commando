@@ -17,6 +17,7 @@
 .session-pref-group > header > button[title^='Create a new session']:hover { color: var(--accent); }
 .managed-session { border-top: 1px solid var(--surface-hover); background: var(--surface-raised); }
 .managed-session.selected { background: var(--surface-soft); }
+.managed-session.dragging { opacity: .45; }
 .managed-session-row { display: flex; align-items: center; }
 .managed-session-main { min-width: 0; flex: 1; padding: 9px 7px; display: flex; gap: 7px; align-items: center; text-align: left; }
 .managed-session-main > svg { flex: 0 0 auto; width: 13px; height: 13px; color: var(--muted-dim); }

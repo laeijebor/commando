@@ -216,6 +216,55 @@ describe('SessionTree', () => {
     })
   })
 
+  it('reorders sessions within their current group by drag and drop', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2', '$3'] }],
+      ungroupedSessionIds: [],
+    })
+    render(
+      <SessionTree
+        token="token"
+        sessions={[
+          { id: '$1', name: 'first', attached: false, activeWindowId: null, windowIds: [] },
+          { id: '$2', name: 'second', attached: false, activeWindowId: null, windowIds: [] },
+          { id: '$3', name: 'third', attached: false, activeWindowId: null, windowIds: [] },
+        ]}
+        windows={[]}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('GIZMO')
+    const third = screen.getByText('third').closest('article')
+    const first = screen.getByText('first').closest('article')
+    expect(third).not.toBeNull()
+    expect(first).not.toBeNull()
+
+    fireEvent.dragStart(third!)
+    await waitFor(() => expect(third).toHaveClass('dragging'))
+    fireEvent.dragOver(first!)
+    fireEvent.drop(first!)
+
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledTimes(1))
+    expect(sessionApi.savePreferences).toHaveBeenCalledWith({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$3', '$1', '$2'] }],
+      ungroupedSessionIds: [],
+    })
+  })
+
   it('collapses and expands every session group from its title', async () => {
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,
