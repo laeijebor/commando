@@ -4,13 +4,17 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
+import { resetNativeWindowBridge } from './nativeWindowBridge'
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
   static OPEN = 1
+  static deferClose = false
   readonly url: string
   readyState = 0
   closeCount = 0
+  private closePending = false
+  readonly sent: unknown[] = []
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
 
   constructor(url: string) {
@@ -31,12 +35,24 @@ class FakeWebSocket {
     this.listeners.get(type)?.delete(handler)
   }
 
-  send(): void {}
+  send(payload: string): void {
+    this.sent.push(JSON.parse(payload))
+  }
 
   close(): void {
     this.closeCount += 1
     if (this.readyState === 3) return
     this.readyState = 3
+    if (FakeWebSocket.deferClose) {
+      this.closePending = true
+      return
+    }
+    this.dispatch('close', { code: 1005 })
+  }
+
+  flushClose(): void {
+    if (!this.closePending) return
+    this.closePending = false
     this.dispatch('close', { code: 1005 })
   }
 
@@ -169,6 +185,7 @@ function renderTile(
 describe('ChromiumTileCard pending hydration', () => {
   beforeEach(() => {
     FakeWebSocket.instances = []
+    FakeWebSocket.deferClose = false
     vi.stubGlobal('WebSocket', FakeWebSocket)
     window.localStorage.clear()
   })
@@ -593,5 +610,220 @@ describe('ChromiumTileCard detached visibility', () => {
     act(() => document.dispatchEvent(new Event('visibilitychange')))
 
     expect(socket.closeCount).toBe(1)
+  })
+})
+
+describe('ChromiumTileCard browser selection', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    resetNativeWindowBridge()
+    Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+  })
+
+  afterEach(() => {
+    cleanup()
+    resetNativeWindowBridge()
+    Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+    vi.unstubAllGlobals()
+  })
+
+  it('forwards held-button state throughout a captured pointer drag', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`) as HTMLCanvasElement
+    const setPointerCapture = vi.fn()
+    const releasePointerCapture = vi.fn()
+    Object.assign(canvas, {
+      setPointerCapture,
+      releasePointerCapture,
+      hasPointerCapture: () => true,
+    })
+
+    fireEvent.pointerDown(canvas, { pointerId: 4, button: 0, buttons: 1, detail: 1 })
+    fireEvent.pointerMove(canvas, { pointerId: 4, button: -1, buttons: 1 })
+    fireEvent.pointerUp(canvas, { pointerId: 4, button: 0, buttons: 0, detail: 1 })
+
+    const input = socket.sent.filter((message) => (
+      message as { type?: string }
+    ).type === 'input') as Array<{ event: { type: string; button: string; buttons: number } }>
+    expect(input.map(({ event }) => [event.type, event.button, event.buttons])).toEqual([
+      ['mousePressed', 'left', 1],
+      ['mouseMoved', 'left', 1],
+      ['mouseReleased', 'left', 0],
+    ])
+    expect(setPointerCapture).toHaveBeenCalledWith(4)
+    expect(releasePointerCapture).toHaveBeenCalledWith(4)
+  })
+
+  it('copies the correlated remote selection on Command-C', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const selectionRequest = socket.sent.find((message) => (
+      message as { type?: string }
+    ).type === 'selection') as { type: string; id: string }
+    expect(selectionRequest.id).toMatch(/^s-/)
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'c' }),
+    }))
+
+    act(() => socket.message({
+      type: 'selection_result',
+      id: selectionRequest.id,
+      ok: true,
+      source: 'dom',
+      text: ' exact\nselection ',
+    }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(' exact\nselection '))
+  })
+
+  it('ignores stale and empty selection results', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+    act(() => {
+      socket.message({ type: 'selection_result', id: 'stale', ok: true, source: 'dom', text: 'wrong' })
+      socket.message({ type: 'selection_result', id: request.id, ok: true, source: 'none', text: '' })
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a pending copy when its tile socket closes', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+
+    act(() => {
+      socket.close()
+      socket.message({ type: 'selection_result', id: request.id, ok: true, source: 'dom', text: 'stale copy' })
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('does not let a delayed old-socket close clear its replacement', () => {
+    FakeWebSocket.deferClose = true
+    renderTile()
+    const first = FakeWebSocket.instances[0]
+    act(() => first.open())
+
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    const second = FakeWebSocket.instances[1]
+    act(() => {
+      second.open()
+      first.flushClose()
+    })
+
+    fireEvent.keyDown(screen.getByLabelText(`Chromium tile: ${webPane.url}`), {
+      key: 'a',
+      code: 'KeyA',
+    })
+    expect(second.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'a' }),
+    }))
+    expect(screen.queryByText('Stream closed.')).not.toBeInTheDocument()
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+  })
+
+  it('uses the AppKit clipboard bridge and leaves Control-C to the page', async () => {
+    const posted: unknown[] = []
+    Object.defineProperty(window, 'webkit', {
+      configurable: true,
+      value: {
+        messageHandlers: {
+          commandoNativeWindow: { postMessage: (message: unknown) => posted.push(message) },
+          commandoNativeClipboard: { postMessage: (message: unknown) => posted.push(message) },
+        },
+      },
+    })
+    resetNativeWindowBridge()
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', ctrlKey: true })
+    expect(socket.sent.some((message) => (message as { type?: string }).type === 'selection')).toBe(false)
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'c', modifiers: 2 }),
+    }))
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+    act(() => socket.message({
+      type: 'selection_result',
+      id: request.id,
+      ok: true,
+      source: 'dom',
+      text: 'native copy',
+    }))
+    await waitFor(() => expect(posted).toContainEqual(expect.objectContaining({
+      type: 'clipboard.write-text',
+      payload: { text: 'native copy' },
+    })))
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('releases the remote button through the window when pointer capture fails', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`) as HTMLCanvasElement
+    Object.assign(canvas, {
+      setPointerCapture: () => { throw new Error('capture unavailable') },
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 100 }),
+    })
+
+    fireEvent.pointerDown(canvas, { pointerId: 9, button: 0, buttons: 1, detail: 1 })
+    fireEvent.pointerUp(window, { pointerId: 9, clientX: 80, clientY: 90, button: 0, buttons: 0 })
+
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({
+        type: 'mouseReleased',
+        x: 70,
+        y: 70,
+        buttons: 0,
+      }),
+    }))
   })
 })

@@ -13,6 +13,7 @@ import {
   findChromiumBinary,
   parseTileInputEvent,
   parseTileInspectRequest,
+  parseTileSelectionRequest,
   reclaimStaleChromiumProfile,
   type ChromiumEngineOptions,
   type ChromiumLaunch,
@@ -324,8 +325,8 @@ describe('chromium process ownership', () => {
 
 describe('parseTileInputEvent', () => {
   it('accepts the supported shapes and rejects everything else', () => {
-    expect(parseTileInputEvent({ kind: 'mouse', type: 'mousePressed', x: 10, y: 20, button: 'left', clickCount: 1 }))
-      .toMatchObject({ kind: 'mouse', type: 'mousePressed', x: 10, y: 20 })
+    expect(parseTileInputEvent({ kind: 'mouse', type: 'mousePressed', x: 10, y: 20, button: 'left', buttons: 1, clickCount: 1 }))
+      .toMatchObject({ kind: 'mouse', type: 'mousePressed', x: 10, y: 20, buttons: 1 })
     expect(parseTileInputEvent({ kind: 'wheel', x: 1, y: 2, deltaX: 0, deltaY: 120 }))
       .toMatchObject({ kind: 'wheel', deltaY: 120 })
     expect(parseTileInputEvent({ kind: 'key', type: 'char', text: 'a' }))
@@ -846,7 +847,7 @@ describe('ChromiumEngine', () => {
     const { stub, engine } = await createHarness()
     await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
     engine.dispatchInput('w-11111111', {
-      kind: 'mouse', type: 'mousePressed', x: 12, y: 34, button: 'left', clickCount: 1,
+      kind: 'mouse', type: 'mousePressed', x: 12, y: 34, button: 'left', buttons: 1, clickCount: 1,
     })
     engine.dispatchInput('w-11111111', { kind: 'wheel', x: 5, y: 6, deltaX: 0, deltaY: -120 })
     engine.dispatchInput('w-11111111', { kind: 'key', type: 'char', text: 'a' })
@@ -855,7 +856,7 @@ describe('ChromiumEngine', () => {
       'input forwarding',
     )
     const mouse = stub.calls.find((call) => call.method === 'Input.dispatchMouseEvent' && call.params?.type === 'mousePressed')
-    expect(mouse?.params).toMatchObject({ x: 12, y: 34, button: 'left', clickCount: 1 })
+    expect(mouse?.params).toMatchObject({ x: 12, y: 34, button: 'left', buttons: 1, clickCount: 1 })
     const wheel = stub.calls.find((call) => call.params?.type === 'mouseWheel')
     expect(wheel?.params).toMatchObject({ deltaY: -120 })
   })
@@ -957,6 +958,38 @@ describe('ChromiumEngine', () => {
       expect(result.ok).toBe(false)
     })
   })
+
+  describe('readSelection', () => {
+    it('evaluates and validates the page selection', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = { ok: true, source: 'textarea', text: 'line one\nline two' }
+
+      await expect(engine.readSelection('w-11111111')).resolves.toEqual(stub.evaluateValue)
+      const call = stub.calls.filter((entry) => entry.method === 'Runtime.evaluate').at(-1)
+      expect(call?.params?.returnByValue).toBe(true)
+      expect(String(call?.params?.expression)).toContain('readPageSelection')
+    })
+
+    it('does not create a target for a missing tile', async () => {
+      const { stub, engine } = await createHarness()
+      await expect(engine.readSelection('w-99999999')).resolves.toEqual({
+        ok: false,
+        error: 'Tile has no live chromium target',
+      })
+      expect(stub.calls.some((entry) => entry.method === 'Target.createTarget')).toBe(false)
+    })
+
+    it('returns a bounded failure for malformed page data', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = { ok: true, source: 'dom', text: 42 }
+      await expect(engine.readSelection('w-11111111')).resolves.toEqual({
+        ok: false,
+        error: 'Page returned an invalid selection result',
+      })
+    })
+  })
 })
 
 describe('parseTileInspectRequest', () => {
@@ -971,5 +1004,14 @@ describe('parseTileInspectRequest', () => {
     expect(parseTileInspectRequest({ type: 'inspect', id: 'i', x: -1, y: 1, grade: 'hover' })).toBeNull()
     expect(parseTileInspectRequest({ type: 'inspect', id: 'x'.repeat(65), x: 1, y: 1, grade: 'hover' })).toBeNull()
     expect(parseTileInspectRequest({ type: 'inspect', x: 1, y: 1, grade: 'hover' })).toBeNull()
+  })
+})
+
+describe('parseTileSelectionRequest', () => {
+  it('accepts bounded correlation ids and rejects malformed ones', () => {
+    expect(parseTileSelectionRequest({ type: 'selection', id: 's-12' })).toEqual({ id: 's-12' })
+    expect(parseTileSelectionRequest({ type: 'selection', id: '' })).toBeNull()
+    expect(parseTileSelectionRequest({ type: 'selection', id: 'contains spaces' })).toBeNull()
+    expect(parseTileSelectionRequest({ type: 'selection', id: 'x'.repeat(65) })).toBeNull()
   })
 })

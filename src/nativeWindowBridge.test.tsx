@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   DETACHED_WEB_PANES_EVENT,
+  MAX_NATIVE_CLIPBOARD_TEXT,
   NATIVE_WINDOW_PROTOCOL,
   NativeWindowBridge,
   detachedWebPaneIdFromLocation,
   getNativeWindowBridge,
   hasNativeWindowHandler,
+  hasNativeClipboardHandler,
   resetNativeWindowBridge,
   useDetachedWebPaneIds,
 } from './nativeWindowBridge'
@@ -23,6 +25,9 @@ function installHandler(messages: PostedMessage[]) {
     value: {
       messageHandlers: {
         commandoNativeWindow: {
+          postMessage: (message: PostedMessage) => messages.push(message),
+        },
+        commandoNativeClipboard: {
           postMessage: (message: PostedMessage) => messages.push(message),
         },
       },
@@ -51,6 +56,7 @@ afterEach(() => {
 describe('NativeWindowBridge', () => {
   it('is absent in ordinary browser clients', () => {
     expect(hasNativeWindowHandler()).toBe(false)
+    expect(hasNativeClipboardHandler()).toBe(false)
     expect(getNativeWindowBridge()).toBeNull()
   })
 
@@ -73,6 +79,20 @@ describe('NativeWindowBridge', () => {
       expect.objectContaining({ type: 'web-pane.focus' }),
       expect.objectContaining({ type: 'web-pane.reattach' }),
     ])
+  })
+
+  it('posts only bounded nonempty clipboard text', () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWindowBridge()
+
+    expect(bridge.writeClipboardText(' exact\nselection ')).toBe(true)
+    expect(bridge.writeClipboardText('')).toBe(false)
+    expect(bridge.writeClipboardText('x'.repeat(MAX_NATIVE_CLIPBOARD_TEXT + 1))).toBe(false)
+    expect(messages).toEqual([expect.objectContaining({
+      type: 'clipboard.write-text',
+      payload: { text: ' exact\nselection ' },
+    })])
   })
 
   it('tracks authoritative detached ids published by AppKit', () => {

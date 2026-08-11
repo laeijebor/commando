@@ -102,7 +102,8 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         windowCommandHandler: (any DesktopWindowCommandHandling)? = nil,
         confirmationPresenter: any JavaScriptConfirmationPresenting = AppKitJavaScriptConfirmationPresenter(),
         textInputPresenter: any JavaScriptTextInputPresenting = AppKitJavaScriptTextInputPresenter(),
-        externalURLHandler: (any ExternalURLHandling)? = nil
+        externalURLHandler: (any ExternalURLHandling)? = nil,
+        pasteboard: NSPasteboard = .general
     ) {
         self.configuration = configuration
         self.role = role
@@ -113,7 +114,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             privilegedOrigin: configuration.webOrigin
         )
         self.externalURLHandler = externalURLHandler
-        windowBridge = NativeWindowBridge(commandHandler: windowCommandHandler)
+        windowBridge = NativeWindowBridge(commandHandler: windowCommandHandler, pasteboard: pasteboard)
         rootView = NSView(frame: NSRect(x: 0, y: 0, width: 1_180, height: 760))
         let webConfiguration = WKWebViewConfiguration()
         webView = WKWebView(frame: rootView.bounds, configuration: webConfiguration)
@@ -164,6 +165,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             windowHandler,
             name: NativeWindowProtocol.handlerName
         )
+        webConfiguration.userContentController.add(
+            windowHandler,
+            name: NativeWindowProtocol.clipboardHandlerName
+        )
 
         webView.autoresizingMask = [.width, .height]
         overlay.autoresizingMask = [.width, .height]
@@ -189,6 +194,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         guard !cleanedUp, active != windowActive else { return }
         windowActive = active
         publishWindowActivity()
+    }
+
+    func authorizeClipboardWrite() {
+        windowBridge.authorizeClipboardWrite()
     }
 
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
@@ -239,6 +248,9 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         )
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: NativeWindowProtocol.handlerName
+        )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: NativeWindowProtocol.clipboardHandlerName
         )
         webView.configuration.userContentController.removeAllUserScripts()
         scriptMessageHandler = nil

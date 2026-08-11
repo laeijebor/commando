@@ -1,7 +1,12 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
-import { parseTileInputEvent, parseTileInspectRequest, type ChromiumEngine } from './chromium-engine.js'
+import {
+  parseTileInputEvent,
+  parseTileInspectRequest,
+  parseTileSelectionRequest,
+  type ChromiumEngine,
+} from './chromium-engine.js'
 import type { WebPaneService } from './web-panes.js'
 import type { WebPanePendingSnapshot } from '../shared/protocol.js'
 
@@ -210,6 +215,18 @@ export class WebTileRelay {
         .then((result) => {
           if (socket.readyState !== WebSocket.OPEN) return
           socket.send(JSON.stringify({ type: 'inspect_result', id: request.id, ...result }))
+        })
+      return
+    }
+    if (message.type === 'selection') {
+      const request = parseTileSelectionRequest(message)
+      if (!request) return
+      void this.dependencies.engine
+        .readSelection(webPaneId)
+        .catch(() => ({ ok: false as const, error: 'Could not read the page selection' }))
+        .then((result) => {
+          if (socket.readyState !== WebSocket.OPEN) return
+          socket.send(JSON.stringify({ type: 'selection_result', id: request.id, ...result }))
         })
     }
   }

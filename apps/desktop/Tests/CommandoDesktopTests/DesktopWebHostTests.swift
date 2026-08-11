@@ -81,7 +81,8 @@ final class DesktopWebHostTests: XCTestCase {
 
     func testNativeWindowBridgeRoutesOnlyVersionedValidPaneCommands() {
         let handler = DesktopWindowCommandHandlerSpy()
-        let bridge = NativeWindowBridge(commandHandler: handler)
+        let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
+        let bridge = NativeWindowBridge(commandHandler: handler, pasteboard: pasteboard)
 
         func receive(_ type: String, id: String, version: Int = 1) {
             bridge.receive(body: [
@@ -100,6 +101,41 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(handler.opened, ["w-abcd1234"])
         XCTAssertEqual(handler.focused, ["w-abcd1234"])
         XCTAssertEqual(handler.reattached, ["w-abcd1234"])
+
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": " exact\nselection "],
+        ])
+        XCTAssertNil(pasteboard.string(forType: .string))
+
+        bridge.authorizeClipboardWrite()
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": " exact\nselection "],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
+
+        bridge.authorizeClipboardWrite()
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": String(repeating: "x", count: NativeWindowProtocol.maxClipboardText + 1)],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), " exact\nselection ")
+
+        bridge.receive(body: [
+            "protocol": NativeWindowProtocol.protocolName,
+            "version": NativeWindowProtocol.version,
+            "type": "clipboard.write-text",
+            "payload": ["text": "authorization survived validation"],
+        ])
+        XCTAssertEqual(pasteboard.string(forType: .string), "authorization survived validation")
+        pasteboard.clearContents()
     }
     func testZoomNotifiesThePageToRepublishNativeFrames() async throws {
         let url = URL(string: "http://127.0.0.1:5173")!
@@ -473,6 +509,104 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(clicks[2]["trusted"] as? Bool, false)
         XCTAssertEqual(opener.openedURLs, [URL(string: "https://example.com/port")!])
         XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
+    }
+
+    func testDesktopWindowForwardsCommandCopyToTheFocusedWebView() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
+        let host = DesktopWebHost(
+            configuration: .init(webURL: origin, prefersMetal: false),
+            pasteboard: pasteboard
+        )
+        let window = DesktopWindow(
+            contentRect: host.rootView.bounds,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.contentView = host.rootView
+        window.orderFront(nil)
+        host.webView.stopLoading()
+        host.webView.loadHTMLString(
+            """
+            <canvas id="tile" tabindex="0"></canvas>
+            <script>
+              window.copyShortcut = null;
+              const tile = document.getElementById("tile");
+              tile.addEventListener("keydown", (event) => {
+                if (event.metaKey && event.key === "c") {
+                  window.copyShortcut = { trusted: event.isTrusted, target: event.target.id };
+                  event.preventDefault();
+                  setTimeout(() => {
+                    window.webkit.messageHandlers.commandoNativeClipboard.postMessage({
+                      protocol: "commando.native-window",
+                      version: 1,
+                      type: "clipboard.write-text",
+                      payload: { text: "browser-quality selection" },
+                    });
+                  }, 20);
+                }
+              });
+              tile.focus();
+              window.testPageReady = true;
+            </script>
+            """,
+            baseURL: origin
+        )
+        defer {
+            host.cleanUp()
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        var ready = false
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript(
+                "window.testPageReady === true && document.activeElement?.id === 'tile'"
+            ),
+               (result as? NSNumber)?.boolValue == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(ready)
+        XCTAssertTrue(window.makeFirstResponder(host.webView))
+        var authorizationCount = 0
+        window.commandCopyWasPressed = {
+            authorizationCount += 1
+            host.authorizeClipboardWrite()
+        }
+
+        let commandC = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "c",
+            charactersIgnoringModifiers: "c",
+            isARepeat: false,
+            keyCode: 8
+        ))
+        window.sendEvent(commandC)
+
+        var copied: [String: Any]?
+        for _ in 0..<100 {
+            copied = try? await host.webView.evaluateJavaScript("window.copyShortcut") as? [String: Any]
+            if copied != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(copied?["trusted"] as? Bool, true)
+        XCTAssertEqual(copied?["target"] as? String, "tile")
+        XCTAssertEqual(authorizationCount, 1)
+        for _ in 0..<100 where pasteboard.string(forType: .string) == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "browser-quality selection")
+        pasteboard.clearContents()
     }
 
     func testPublishesDesktopWindowActivityIntoThePage() async throws {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   cdpModifiers,
+  cdpHeldMouseButton,
   cdpMouseButton,
+  isCopyShortcut,
   tileKeyMessages,
   tileMouseMessage,
   tileWheelMessage,
@@ -21,15 +23,26 @@ describe('chromium tile input mapping', () => {
   it('maps mouse events with buttons and click counts', () => {
     expect(cdpMouseButton(0)).toBe('left')
     expect(cdpMouseButton(2)).toBe('right')
+    expect(cdpHeldMouseButton(1)).toBe('left')
+    expect(cdpHeldMouseButton(4)).toBe('middle')
+    expect(cdpHeldMouseButton(2)).toBe('right')
     expect(
-      tileMouseMessage({ ...noModifiers, type: 'mousedown', offsetX: 10.6, offsetY: 4.2, button: 0, detail: 2 }),
-    ).toMatchObject({ type: 'mousePressed', x: 11, y: 4, button: 'left', clickCount: 2 })
+      tileMouseMessage({ ...noModifiers, type: 'pointerdown', offsetX: 10.6, offsetY: 4.2, button: 0, buttons: 1, detail: 2 }),
+    ).toMatchObject({ type: 'mousePressed', x: 11, y: 4, button: 'left', buttons: 1, clickCount: 2 })
     expect(
-      tileMouseMessage({ ...noModifiers, type: 'mousemove', offsetX: 5, offsetY: 6, button: 0, detail: 0 }),
-    ).toMatchObject({ type: 'mouseMoved', button: 'none', clickCount: 0 })
+      tileMouseMessage({ ...noModifiers, type: 'pointermove', offsetX: 5, offsetY: 6, button: -1, buttons: 1, detail: 0 }),
+    ).toMatchObject({ type: 'mouseMoved', button: 'left', buttons: 1, clickCount: 0 })
     expect(
-      tileMouseMessage({ ...noModifiers, type: 'dblclick', offsetX: 1, offsetY: 1, button: 0, detail: 2 }),
+      tileMouseMessage({ ...noModifiers, type: 'dblclick', offsetX: 1, offsetY: 1, button: 0, buttons: 0, detail: 2 }),
     ).toBeNull()
+  })
+
+  it('recognizes only exact browser copy shortcuts', () => {
+    expect(isCopyShortcut({ ...noModifiers, metaKey: true, key: 'c' })).toBe(true)
+    expect(isCopyShortcut({ ...noModifiers, ctrlKey: true, key: 'C' })).toBe(true)
+    expect(isCopyShortcut({ ...noModifiers, metaKey: true, shiftKey: true, key: 'c' })).toBe(false)
+    expect(isCopyShortcut({ ...noModifiers, metaKey: true, ctrlKey: true, key: 'c' })).toBe(false)
+    expect(isCopyShortcut({ ...noModifiers, key: 'c' })).toBe(false)
   })
 
   it('passes DOM wheel deltas through unchanged (CDP shares the DOM sign convention)', () => {
