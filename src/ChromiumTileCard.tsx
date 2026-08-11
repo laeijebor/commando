@@ -500,10 +500,9 @@ export function ChromiumTileCard({
         }
       })
       connectedSocket.addEventListener('close', (event) => {
-        if (socketRef.current === connectedSocket) {
-          socketRef.current = null
-          pendingSelectionId.current = ''
-        }
+        if (socketRef.current !== connectedSocket) return
+        socketRef.current = null
+        pendingSelectionId.current = ''
         disarmStallWatchdog()
         if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
         if (stalled) return // the watchdog already set the error state

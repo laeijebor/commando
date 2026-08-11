@@ -754,6 +754,7 @@ describe('ChromiumTileCard browser selection', () => {
       type: 'input',
       event: expect.objectContaining({ kind: 'key', type: 'keyDown', key: 'a' }),
     }))
+    expect(screen.queryByText('Stream closed.')).not.toBeInTheDocument()
     Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   })
 
