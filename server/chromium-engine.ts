@@ -11,6 +11,11 @@ import {
   type TileInspectResult,
 } from '../shared/tile-inspect.js'
 import {
+  parseTileSelectionResult,
+  selectionExpression,
+  type TileSelectionResult,
+} from '../shared/tile-selection.js'
+import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
   MAX_RESPONSE_NOTE,
@@ -457,6 +462,7 @@ export type TileInputEvent =
       x: number
       y: number
       button?: 'none' | 'left' | 'middle' | 'right'
+      buttons?: number
       clickCount?: number
       modifiers?: number
     }
@@ -492,8 +498,9 @@ export function parseTileInputEvent(value: unknown): TileInputEvent | null {
       event.button === 'left' || event.button === 'middle' || event.button === 'right' || event.button === 'none'
         ? event.button
         : undefined
+    const buttons = finiteInRange(event.buttons, 0, 31) ? Math.floor(event.buttons) : undefined
     const clickCount = finiteInRange(event.clickCount, 0, 8) ? Math.floor(event.clickCount) : undefined
-    return { kind: 'mouse', type: event.type, x: event.x, y: event.y, button, clickCount, modifiers }
+    return { kind: 'mouse', type: event.type, x: event.x, y: event.y, button, buttons, clickCount, modifiers }
   }
   if (event.kind === 'wheel') {
     if (
@@ -524,6 +531,15 @@ export function parseTileInputEvent(value: unknown): TileInputEvent | null {
 }
 
 export type TileInspectRequest = { id: string; x: number; y: number; grade: TileInspectGrade }
+
+export type TileSelectionRequest = { id: string }
+
+/** Validates a correlated selection request from a tile viewer. */
+export function parseTileSelectionRequest(value: unknown): TileSelectionRequest | null {
+  if (typeof value !== 'object' || value === null) return null
+  const id = (value as Record<string, unknown>).id
+  return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id) ? { id } : null
+}
 
 /** Validates a client-supplied inspect request down to the exact forwarded shape. */
 export function parseTileInspectRequest(value: unknown): TileInspectRequest | null {
@@ -955,6 +971,7 @@ export class ChromiumEngine {
         x: event.x,
         y: event.y,
         button: event.button ?? 'none',
+        buttons: event.buttons ?? 0,
         clickCount: event.clickCount ?? 0,
         modifiers: event.modifiers ?? 0,
         pointerType: 'mouse',
@@ -1015,6 +1032,28 @@ export class ChromiumEngine {
     return (
       parseTileInspectResult(evaluated.result?.value) ??
       { ok: false, error: 'Page returned an invalid inspect result' }
+    )
+  }
+
+  /** Returns the text Chromium currently considers selected in this tile. */
+  async readSelection(webPaneId: string): Promise<TileSelectionResult> {
+    const tile = this.tiles.get(webPaneId)
+    if (!tile) return { ok: false, error: 'Tile has no live chromium target' }
+    let evaluated: { result?: { value?: unknown }; exceptionDetails?: unknown }
+    try {
+      evaluated = (await tile.cdp.send('Runtime.evaluate', {
+        expression: selectionExpression(),
+        returnByValue: true,
+      })) as typeof evaluated
+    } catch {
+      return { ok: false, error: 'Could not read the page selection' }
+    }
+    if (evaluated.exceptionDetails) {
+      return { ok: false, error: 'Page threw while reading its selection' }
+    }
+    return (
+      parseTileSelectionResult(evaluated.result?.value) ??
+      { ok: false, error: 'Page returned an invalid selection result' }
     )
   }
 

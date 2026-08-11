@@ -475,6 +475,83 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
     }
 
+    func testDesktopWindowForwardsCommandCopyToTheFocusedWebView() async throws {
+        let origin = URL(string: "http://127.0.0.1:5173")!
+        let host = DesktopWebHost(
+            configuration: .init(webURL: origin, prefersMetal: false)
+        )
+        let window = DesktopWindow(
+            contentRect: host.rootView.bounds,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.contentView = host.rootView
+        window.orderFront(nil)
+        host.webView.stopLoading()
+        host.webView.loadHTMLString(
+            """
+            <canvas id="tile" tabindex="0"></canvas>
+            <script>
+              window.copyShortcut = null;
+              const tile = document.getElementById("tile");
+              tile.addEventListener("keydown", (event) => {
+                if (event.metaKey && event.key === "c") {
+                  window.copyShortcut = { trusted: event.isTrusted, target: event.target.id };
+                  event.preventDefault();
+                }
+              });
+              tile.focus();
+              window.testPageReady = true;
+            </script>
+            """,
+            baseURL: origin
+        )
+        defer {
+            host.cleanUp()
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        var ready = false
+        for _ in 0..<100 {
+            if let result = try? await host.webView.evaluateJavaScript(
+                "window.testPageReady === true && document.activeElement?.id === 'tile'"
+            ),
+               (result as? NSNumber)?.boolValue == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(ready)
+        XCTAssertTrue(window.makeFirstResponder(host.webView))
+
+        let commandC = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "c",
+            charactersIgnoringModifiers: "c",
+            isARepeat: false,
+            keyCode: 8
+        ))
+        window.sendEvent(commandC)
+
+        var copied: [String: Any]?
+        for _ in 0..<100 {
+            copied = try? await host.webView.evaluateJavaScript("window.copyShortcut") as? [String: Any]
+            if copied != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(copied?["trusted"] as? Bool, true)
+        XCTAssertEqual(copied?["target"] as? String, "tile")
+    }
+
     func testPublishesDesktopWindowActivityIntoThePage() async throws {
         let origin = URL(string: "http://127.0.0.1:5173")!
         let host = DesktopWebHost(configuration: .init(webURL: origin, prefersMetal: false))

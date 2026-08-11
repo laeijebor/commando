@@ -9,6 +9,7 @@ export type TileMouseMessage = {
   x: number
   y: number
   button: 'none' | 'left' | 'middle' | 'right'
+  buttons: number
   clickCount: number
   modifiers: number
 }
@@ -53,14 +54,15 @@ type TileMouseEvent = ModifierState & {
   offsetX: number
   offsetY: number
   button: number
+  buttons: number
   detail: number
 }
 
 export function tileMouseMessage(event: TileMouseEvent): TileMouseMessage | null {
   const type =
-    event.type === 'mousedown' ? 'mousePressed'
-    : event.type === 'mouseup' ? 'mouseReleased'
-    : event.type === 'mousemove' ? 'mouseMoved'
+    event.type === 'mousedown' || event.type === 'pointerdown' ? 'mousePressed'
+    : event.type === 'mouseup' || event.type === 'pointerup' ? 'mouseReleased'
+    : event.type === 'mousemove' || event.type === 'pointermove' ? 'mouseMoved'
     : null
   if (!type) return null
   return {
@@ -69,6 +71,7 @@ export function tileMouseMessage(event: TileMouseEvent): TileMouseMessage | null
     x: Math.max(0, Math.round(event.offsetX)),
     y: Math.max(0, Math.round(event.offsetY)),
     button: type === 'mouseMoved' ? 'none' : cdpMouseButton(event.button),
+    buttons: Math.max(0, Math.min(31, Math.floor(event.buttons))),
     clickCount: type === 'mouseMoved' ? 0 : Math.max(1, Math.min(3, event.detail || 1)),
     modifiers: cdpModifiers(event),
   }
@@ -209,6 +212,15 @@ export function tileKeyMessages(event: TileKeyboardEvent): TileKeyMessage[] {
     messages.push({ kind: 'key', type: 'char', text: '\r', key: 'Enter', modifiers })
   }
   return messages
+}
+
+/** Exact browser copy shortcut; shifted/alternate variants keep their own meaning. */
+export function isCopyShortcut(event: ModifierState & { key: string }): boolean {
+  return event.key.toLowerCase() === 'c' &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.metaKey !== event.ctrlKey) &&
+    (event.metaKey || event.ctrlKey)
 }
 
 /** Keys the tile consumes: stop the cockpit's own shortcuts and scrolling. */

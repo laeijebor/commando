@@ -3,6 +3,8 @@ import { MAX_PENDING_NOTES, type WebPane, type WebPanePendingNote, type WebPaneP
 import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
 import {
   attachTileWheelCapture,
+  cdpModifiers,
+  isCopyShortcut,
   shouldCaptureKey,
   tileKeyMessages,
   tileMouseMessage,
@@ -235,6 +237,15 @@ export function ChromiumTileCard({
   const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
   const nextInspectId = useRef(0)
+  const nextSelectionId = useRef(0)
+  const pendingSelectionId = useRef('')
+  const copyKeyDown = useRef(false)
+  const activePointer = useRef<{
+    id: number
+    button: 'none' | 'left' | 'middle' | 'right'
+    x: number
+    y: number
+  } | null>(null)
   const lastHoverId = useRef('')
   const lastClickId = useRef('')
   const lastClickPoint = useRef({ x: 0, y: 0 })
@@ -445,6 +456,10 @@ export function ChromiumTileCard({
           routeInspectResult(message.id, toInspectResult(message))
           return
         }
+        if (message.type === 'selection_result' && typeof message.id === 'string') {
+          routeSelectionResult(message)
+          return
+        }
         if (message.type === 'pending') {
           // The daemon's pending queue is authoritative — replace, never merge.
           if (Array.isArray(message.notes)) {
@@ -510,6 +525,13 @@ export function ChromiumTileCard({
         inspect: result,
         ...cardPosition(result.rect, containerRef.current?.getBoundingClientRect() ?? null),
       })
+    }
+
+    const routeSelectionResult = (message: TileSocketMessage) => {
+      if (message.id !== pendingSelectionId.current) return
+      pendingSelectionId.current = ''
+      if (message.ok !== true || typeof message.text !== 'string' || !message.text) return
+      void navigator.clipboard?.writeText(message.text).catch(() => undefined)
     }
 
     const drawFrame = (base64: string) => {
@@ -585,6 +607,14 @@ export function ChromiumTileCard({
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'inspect', id, x, y, grade }))
     }
+  }
+
+  const requestSelectionCopy = () => {
+    const socket = socketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    const id = `s-${nextSelectionId.current++}`
+    pendingSelectionId.current = id
+    socket.send(JSON.stringify({ type: 'selection', id }))
   }
 
   // Hover inspects are throttled so a sweep across the page costs a handful of
@@ -873,7 +903,7 @@ export function ChromiumTileCard({
         className="chromium-tile-canvas"
         tabIndex={0}
         aria-label={`Chromium tile: ${webPane.url}`}
-        onMouseDown={(event) => {
+        onPointerDown={(event) => {
           if (reviewMode) {
             if (!reviewActive || event.button !== 0) return
             const x = Math.max(0, Math.round(event.nativeEvent.offsetX))
@@ -886,14 +916,30 @@ export function ChromiumTileCard({
           }
           event.currentTarget.focus()
           const message = tileMouseMessage(event.nativeEvent)
-          if (message) send(message)
+          if (!message) return
+          activePointer.current = {
+            id: event.pointerId,
+            button: message.button,
+            x: message.x,
+            y: message.y,
+          }
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId)
+          } catch {
+            // The release handler still clears the remote button state.
+          }
+          send(message)
         }}
-        onMouseUp={(event) => {
+        onPointerUp={(event) => {
           if (reviewMode) return
           const message = tileMouseMessage(event.nativeEvent)
           if (message) send(message)
+          if (activePointer.current?.id === event.pointerId) activePointer.current = null
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
         }}
-        onMouseMove={(event) => {
+        onPointerMove={(event) => {
           if (reviewMode) {
             if (!reviewActive) return
             hoverThrottle.current?.schedule(
@@ -906,13 +952,53 @@ export function ChromiumTileCard({
           if (now - lastMove.current < MOUSEMOVE_THROTTLE_MS) return
           lastMove.current = now
           const message = tileMouseMessage(event.nativeEvent)
-          if (message) send(message)
+          if (!message) return
+          if (activePointer.current?.id === event.pointerId) {
+            activePointer.current.x = message.x
+            activePointer.current.y = message.y
+          }
+          send(message)
+        }}
+        onPointerCancel={(event) => {
+          const active = activePointer.current
+          if (!active || active.id !== event.pointerId) return
+          activePointer.current = null
+          send({
+            kind: 'mouse',
+            type: 'mouseReleased',
+            x: active.x,
+            y: active.y,
+            button: active.button,
+            buttons: 0,
+            clickCount: 1,
+            modifiers: cdpModifiers(event.nativeEvent),
+          })
+        }}
+        onLostPointerCapture={(event) => {
+          const active = activePointer.current
+          if (!active || active.id !== event.pointerId) return
+          activePointer.current = null
+          send({
+            kind: 'mouse',
+            type: 'mouseReleased',
+            x: active.x,
+            y: active.y,
+            button: active.button,
+            buttons: 0,
+            clickCount: 1,
+            modifiers: 0,
+          })
         }}
         onKeyDown={(event) => {
           if (reviewMode) return
           if (!shouldCaptureKey(event.key)) return
           event.preventDefault()
           event.stopPropagation()
+          if (isCopyShortcut(event.nativeEvent)) {
+            copyKeyDown.current = true
+            requestSelectionCopy()
+            return
+          }
           for (const message of tileKeyMessages(event.nativeEvent)) {
             send(message)
           }
@@ -922,6 +1008,10 @@ export function ChromiumTileCard({
           if (!shouldCaptureKey(event.key)) return
           event.preventDefault()
           event.stopPropagation()
+          if (copyKeyDown.current && event.key.toLowerCase() === 'c') {
+            copyKeyDown.current = false
+            return
+          }
           for (const message of tileKeyMessages(event.nativeEvent)) {
             send(message)
           }

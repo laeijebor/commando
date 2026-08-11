@@ -62,6 +62,7 @@ async function startRelay(
     setViewport: vi.fn(async () => undefined),
     reload: vi.fn(async () => undefined),
     inspectAt: vi.fn(async () => ({ ok: true as const, selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 } })),
+    readSelection: vi.fn(async () => ({ ok: true as const, source: 'dom' as const, text: 'selected text' })),
     ...engineOverrides,
   } as unknown as ChromiumEngine
   const service = { get: (id: string) => (id === 'w-11111111' ? pane() : undefined) } as unknown as WebPaneService
@@ -133,6 +134,44 @@ describe('web tile relay inspect routing', () => {
     const reply = nextMessage(socket, 'inspect_result')
     socket.send(JSON.stringify({ type: 'inspect', id: 'i-8', x: 1, y: 1, grade: 'click' }))
     expect(await reply).toMatchObject({ id: 'i-8', ok: false })
+  })
+})
+
+describe('web tile relay selection routing', () => {
+  it('returns a correlated selection result', async () => {
+    const { socket, engine } = await startRelay()
+    const reply = nextMessage(socket, 'selection_result')
+    socket.send(JSON.stringify({ type: 'selection', id: 's-7' }))
+
+    expect(await reply).toEqual({
+      type: 'selection_result',
+      id: 's-7',
+      ok: true,
+      source: 'dom',
+      text: 'selected text',
+    })
+    expect(engine.readSelection).toHaveBeenCalledWith('w-11111111')
+  })
+
+  it('ignores malformed selection requests', async () => {
+    const { socket, engine } = await startRelay()
+    socket.send(JSON.stringify({ type: 'selection', id: 'not valid' }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(engine.readSelection).not.toHaveBeenCalled()
+  })
+
+  it('turns engine failures into a stable reply', async () => {
+    const { socket } = await startRelay({
+      readSelection: vi.fn(async () => { throw new Error('private CDP detail') }),
+    } as unknown as Partial<ChromiumEngine>)
+    const reply = nextMessage(socket, 'selection_result')
+    socket.send(JSON.stringify({ type: 'selection', id: 's-8' }))
+    expect(await reply).toEqual({
+      type: 'selection_result',
+      id: 's-8',
+      ok: false,
+      error: 'Could not read the page selection',
+    })
   })
 })
 

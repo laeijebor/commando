@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 
 extension Notification.Name {
     static let commandoFirstResponderDidChange = Notification.Name(
@@ -34,6 +35,16 @@ final class DesktopWindow: NSWindow {
                terminalView.handleControlV(event) {
                 return
             }
+            if modifiers == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "c",
+               focusedTerminalView() == nil,
+               focusedWebView() != nil,
+               let responder = firstResponder {
+                // AppKit's Edit menu otherwise consumes Command-C before the
+                // focused WKWebView can deliver a trusted DOM keyboard event.
+                responder.keyDown(with: event)
+                return
+            }
         }
         super.sendEvent(event)
     }
@@ -45,6 +56,15 @@ final class DesktopWindow: NSWindow {
                 return terminalView
             }
             responder = current.nextResponder
+        }
+        return nil
+    }
+
+    private func focusedWebView() -> WKWebView? {
+        var view = firstResponder as? NSView
+        while let current = view {
+            if let webView = current as? WKWebView { return webView }
+            view = current.superview
         }
         return nil
     }

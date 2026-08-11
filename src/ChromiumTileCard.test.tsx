@@ -11,6 +11,7 @@ class FakeWebSocket {
   readonly url: string
   readyState = 0
   closeCount = 0
+  readonly sent: unknown[] = []
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
 
   constructor(url: string) {
@@ -31,7 +32,9 @@ class FakeWebSocket {
     this.listeners.get(type)?.delete(handler)
   }
 
-  send(): void {}
+  send(payload: string): void {
+    this.sent.push(JSON.parse(payload))
+  }
 
   close(): void {
     this.closeCount += 1
@@ -593,5 +596,98 @@ describe('ChromiumTileCard detached visibility', () => {
     act(() => document.dispatchEvent(new Event('visibilitychange')))
 
     expect(socket.closeCount).toBe(1)
+  })
+})
+
+describe('ChromiumTileCard browser selection', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
+
+  it('forwards held-button state throughout a captured pointer drag', () => {
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`) as HTMLCanvasElement
+    const setPointerCapture = vi.fn()
+    const releasePointerCapture = vi.fn()
+    Object.assign(canvas, {
+      setPointerCapture,
+      releasePointerCapture,
+      hasPointerCapture: () => true,
+    })
+
+    fireEvent.pointerDown(canvas, { pointerId: 4, button: 0, buttons: 1, detail: 1 })
+    fireEvent.pointerMove(canvas, { pointerId: 4, button: -1, buttons: 1 })
+    fireEvent.pointerUp(canvas, { pointerId: 4, button: 0, buttons: 0, detail: 1 })
+
+    const input = socket.sent.filter((message) => (
+      message as { type?: string }
+    ).type === 'input') as Array<{ event: { type: string; buttons: number } }>
+    expect(input.map(({ event }) => [event.type, event.buttons])).toEqual([
+      ['mousePressed', 1],
+      ['mouseMoved', 1],
+      ['mouseReleased', 0],
+    ])
+    expect(setPointerCapture).toHaveBeenCalledWith(4)
+    expect(releasePointerCapture).toHaveBeenCalledWith(4)
+  })
+
+  it('copies the correlated remote selection on Command-C', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const selectionRequest = socket.sent.find((message) => (
+      message as { type?: string }
+    ).type === 'selection') as { type: string; id: string }
+    expect(selectionRequest.id).toMatch(/^s-/)
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'key', key: 'c' }),
+    }))
+
+    act(() => socket.message({
+      type: 'selection_result',
+      id: selectionRequest.id,
+      ok: true,
+      source: 'dom',
+      text: ' exact\nselection ',
+    }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(' exact\nselection '))
+  })
+
+  it('ignores stale and empty selection results', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    renderTile()
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.keyDown(canvas, { key: 'c', code: 'KeyC', metaKey: true })
+    const request = socket.sent.find((message) => (message as { type?: string }).type === 'selection') as { id: string }
+    act(() => {
+      socket.message({ type: 'selection_result', id: 'stale', ok: true, source: 'dom', text: 'wrong' })
+      socket.message({ type: 'selection_result', id: request.id, ok: true, source: 'none', text: '' })
+    })
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).not.toHaveBeenCalled()
   })
 })
