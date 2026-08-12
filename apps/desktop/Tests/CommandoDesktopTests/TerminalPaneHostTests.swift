@@ -149,8 +149,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(surface.view.getTerminal().rows, 40)
         XCTAssertGreaterThan(surface.view.frame.width, unzoomedSize.width)
         XCTAssertGreaterThan(surface.view.frame.height, unzoomedSize.height)
-        XCTAssertEqual(surface.view.frame.minX, 10, accuracy: 0.001)
-        XCTAssertEqual(surface.view.frame.maxY, 590, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.minX, 12, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.maxY, 588, accuracy: 0.001)
         XCTAssertTrue(surface.isFocused)
 
         XCTAssertTrue(host.applyReset(.init(
@@ -200,7 +200,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
-            width: viewportWidth,
+            width: viewportWidth / zoomScale,
             height: 300,
             visible: true,
             resizeOwner: false,
@@ -220,7 +220,7 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.focus(identity))
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
-            width: viewportWidth,
+            width: viewportWidth / zoomScale,
             height: 300,
             visible: true,
             resizeOwner: true,
@@ -260,8 +260,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
             x: 0,
-            width: 4_600,
-            height: 2_600,
+            width: 9_200,
+            height: 5_200,
             visible: true,
             resizeOwner: true,
             scale: Double(window.backingScaleFactor)
@@ -269,7 +269,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
         let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
         XCTAssertFalse(surface.view.isHidden)
-        XCTAssertEqual(surface.view.frame, NSRect(x: 0, y: 270, width: 4_600, height: 2_600))
+        XCTAssertEqual(surface.view.frame, NSRect(x: 0, y: 275, width: 4_600, height: 2_600))
         XCTAssertGreaterThan(surface.view.getTerminal().cols, 500)
         XCTAssertGreaterThan(surface.view.getTerminal().rows, 200)
         host.destroyAll()
@@ -1121,8 +1121,8 @@ final class TerminalPaneHostTests: XCTestCase {
         host.attach(.init(identity: high, ariaLabel: "High"))
         XCTAssertTrue(host.applyFrame(frame(
             identity: low,
-            x: 3_010,
-            width: 980,
+            x: 4_300,
+            width: 1_400,
             visible: true,
             resizeOwner: false,
             order: 1
@@ -1130,7 +1130,7 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.applyFrame(frame(
             identity: high,
             x: 0,
-            width: 4_760,
+            width: 6_800,
             visible: true,
             resizeOwner: false,
             order: 10
