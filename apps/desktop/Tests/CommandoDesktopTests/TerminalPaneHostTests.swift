@@ -767,6 +767,46 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(view.acceptsFirstMouse(for: nil))
     }
 
+    func testEmbeddedTerminalKeepsNativeScrollerHiddenWhenFocused() throws {
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let identity = PaneIdentity(paneId: "%1", attachmentId: "hidden-scroller")
+        host.attach(.init(identity: identity, ariaLabel: "Terminal"))
+        XCTAssertTrue(host.applyFrame(frame(
+            identity: identity,
+            visible: true,
+            resizeOwner: true,
+            scale: Double(window.backingScaleFactor)
+        )))
+
+        let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
+        let scroller = try XCTUnwrap(surface.view.subviews.compactMap { $0 as? NSScroller }.first)
+        XCTAssertTrue(scroller.isHidden)
+        XCTAssertEqual(surface.view.embeddedScrollerWidth, 0)
+
+        XCTAssertTrue(host.focus(identity))
+        surface.view.setFrameSize(surface.view.frame.size)
+
+        XCTAssertTrue(surface.isFocused)
+        XCTAssertTrue(scroller.isHidden)
+        XCTAssertEqual(surface.view.embeddedScrollerWidth, 0)
+        host.destroyAll()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testPageUpAndDownScrollNormalBufferButReachAlternateScreen() {
         var inputs: [Data] = []
         let surface = TerminalSurface(

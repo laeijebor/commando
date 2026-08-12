@@ -182,6 +182,18 @@ final class HostedTerminalView: TerminalView {
         true
     }
 
+    func hideEmbeddedScroller() {
+        for case let scroller as NSScroller in subviews {
+            scroller.isHidden = true
+        }
+    }
+
+    var embeddedScrollerWidth: CGFloat {
+        subviews.contains { $0 is NSScroller && !$0.isHidden }
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle)
+            : 0
+    }
+
     func setVisibleRegions(_ regions: [CGRect]) {
         visibleHitRegions = regions.compactMap { region in
             let clipped = region.intersection(bounds)
@@ -655,6 +667,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         TerminalProfile.apply(to: view)
         view.caretViewTracksFocus = true
         view.scrollerStyle = .overlay
+        view.hideEmbeddedScroller()
         view.changeScrollback(5_000)
         view.setAccessibilityElement(true)
         view.setAccessibilityRole(.textArea)
@@ -829,10 +842,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         let optimal = view.getOptimalFrameSize().size
         let cols = max(terminal.cols, 1)
         let rows = max(terminal.rows, 1)
-        let reservedScrollerWidth = NSScroller.scrollerWidth(
-            for: .regular,
-            scrollerStyle: view.scrollerStyle
-        )
+        let reservedScrollerWidth = view.embeddedScrollerWidth
         let cellWidth = (optimal.width - reservedScrollerWidth) / CGFloat(cols)
         let cellHeight = optimal.height / CGFloat(rows)
         guard cellWidth.isFinite, cellHeight.isFinite,
