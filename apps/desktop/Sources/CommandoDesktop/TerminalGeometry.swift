@@ -46,8 +46,7 @@ enum TerminalGeometry {
     static func placement(
         for payload: PaneFramePayload,
         viewportSize: CGSize,
-        backingScale: CGFloat,
-        contentScale: CGFloat = 1
+        backingScale: CGFloat
     ) -> TerminalPlacement {
         guard payload.visible,
                viewportSize.width > 0,
@@ -58,8 +57,6 @@ enum TerminalGeometry {
                viewportSize.height.isFinite,
                backingScale.isFinite,
                (minBackingScale...maxBackingScale).contains(backingScale),
-               contentScale.isFinite,
-               (minContentScale...maxContentScale).contains(contentScale),
                NativeTerminalProtocol.isValidFrameCoordinate(payload.x),
                NativeTerminalProtocol.isValidFrameCoordinate(payload.y),
                NativeTerminalProtocol.isValidFrameDimension(payload.width, allowsZero: true),
@@ -75,7 +72,7 @@ enum TerminalGeometry {
             return hiddenPlacement
         }
 
-        let pointsPerCSSPixel = payload.scale / Double(backingScale) * Double(contentScale)
+        let pointsPerCSSPixel = payload.scale / Double(backingScale)
         guard pointsPerCSSPixel.isFinite,
               pointsPerCSSPixel > 0,
               pointsPerCSSPixel <= maxPointsPerCSSPixel

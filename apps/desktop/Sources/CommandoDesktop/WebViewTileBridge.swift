@@ -411,8 +411,7 @@ final class WebViewTileBridge: NSObject {
             viewportSize: overlay.bounds.size,
             backingScale: overlay.window?.backingScaleFactor
                 ?? NSScreen.main?.backingScaleFactor
-                ?? CGFloat(frame.scale),
-            contentScale: zoomScale
+                ?? CGFloat(frame.scale)
         )
     }
 

@@ -66,18 +66,17 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
     }
 
-    func testAccountsForWebKitPageZoomInLayoutCoordinates() {
+    func testDoesNotDoubleApplyWebKitPageZoomToLayoutCoordinates() {
         let zoomed = TerminalGeometry.placement(
             for: frame(x: 100, y: 50, width: 400, height: 200, scale: 2),
             viewportSize: .init(width: 1_000, height: 700),
-            backingScale: 2,
-            contentScale: 1.25
+            backingScale: 2
         )
         XCTAssertEqual(
             zoomed,
             .init(
-                frame: .init(x: 125, y: 387.5, width: 500, height: 250),
-                visibleFrames: [.init(x: 125, y: 387.5, width: 500, height: 250)],
+                frame: .init(x: 100, y: 450, width: 400, height: 200),
+                visibleFrames: [.init(x: 100, y: 450, width: 400, height: 200)],
                 isHidden: false
             )
         )
