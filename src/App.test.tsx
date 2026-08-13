@@ -655,6 +655,37 @@ describe('webPaneUrlFromQuery', () => {
   })
 })
 
+describe('run command palette action', () => {
+  it('parses only commands with a non-empty run suffix', async () => {
+    const { runCommandFromQuery } = await import('./App')
+    expect(runCommandFromQuery('run open .')).toBe('open .')
+    expect(runCommandFromQuery(' RUN   npm test ')).toBe('npm test')
+    expect(runCommandFromQuery('run')).toBeNull()
+    expect(runCommandFromQuery('runner open .')).toBeNull()
+  })
+
+  it('runs from the focused visible pane without sending terminal input', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.focus(screen.getByTestId('renderer-%13'))
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+
+    const input = await screen.findByRole('textbox', { name: 'Search commands' })
+    fireEvent.change(input, { target: { value: 'run open .' } })
+    expect(screen.getByRole('option', { name: /Run open \.Run from \/tmp\/project/ })).toBeVisible()
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/pane-management/panes/%2513/run',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ command: 'open .' }),
+      }),
+    ))
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
+    expect(appMocks.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'input' }))
+  })
+})
+
 describe('desktop resize authority', () => {
   it('keeps focused split weights stable across tmux resize echoes', async () => {
     await renderAppWithSnapshot()

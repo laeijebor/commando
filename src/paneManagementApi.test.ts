@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { createPaneManagementApi } from './paneManagementApi'
 
 describe('pane management API client', () => {
-  it('sends authenticated rename, confirmed delete, and open-path requests', async () => {
+  it('sends authenticated rename, confirmed delete, open-path, and run requests', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true }))
     const api = createPaneManagementApi('secret', fetcher)
 
     await api.renamePane('%12', 'tests')
     await api.deletePane('%12')
     await api.openPanePath('%12')
+    await api.runInPanePath('%12', 'open .')
 
     expect(fetcher).toHaveBeenNthCalledWith(1, '/api/pane-management/panes/%2512/rename', expect.objectContaining({
       method: 'POST',
@@ -21,6 +22,11 @@ describe('pane management API client', () => {
     }))
     expect(fetcher).toHaveBeenNthCalledWith(3, '/api/pane-management/panes/%2512/open', expect.objectContaining({
       method: 'POST',
+      headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(4, '/api/pane-management/panes/%2512/run', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ command: 'open .' }),
       headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
     }))
   })

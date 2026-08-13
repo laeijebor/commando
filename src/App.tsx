@@ -636,6 +636,12 @@ export function webPaneUrlFromQuery(query: string): string | null {
   return null
 }
 
+export function runCommandFromQuery(query: string): string | null {
+  const match = /^run\s+(.+)$/i.exec(query.trim())
+  const command = match?.[1]?.trim()
+  return command || null
+}
+
 type CommandoArea = 'workspace' | 'linear' | 'notes'
 
 function defaultOwnerName(email: string | null): string {
@@ -1786,10 +1792,28 @@ export function App() {
   }
 
   const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
+  const paletteRunCommand = runCommandFromQuery(paletteQuery)
+  const paletteRunPane = currentPrPane && !currentPrPane.dead ? currentPrPane : undefined
   const webPaneAnchorId = activeGroup && focusedPaneId && activeGroup.paneIds.includes(focusedPaneId)
     ? focusedPaneId
     : activeGroup?.paneIds[0]
   const commands: PaletteCommand[] = [
+    ...(paletteRunCommand ? [{
+      id: 'command:run',
+      label: `Run ${paletteRunCommand}`,
+      detail: paletteRunPane
+        ? `Run from ${paletteRunPane.path}`
+        : 'No active pane available',
+      kind: 'action' as const,
+      run: () => {
+        setPaletteOpen(false)
+        if (!paletteRunPane) return
+        setPaneActionError('')
+        void paneManagementApi.runInPanePath(paletteRunPane.id, paletteRunCommand).catch((cause) => {
+          setPaneActionError(cause instanceof Error ? cause.message : 'Unable to run command')
+        })
+      },
+    }] : []),
     ...(paletteWebPaneUrl ? [{
       id: 'web-pane:open',
       label: `Open ${paletteWebPaneUrl} as a web tile`,

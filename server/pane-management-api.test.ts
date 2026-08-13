@@ -55,6 +55,44 @@ describe('pane management API', () => {
     expect(openFolder).not.toHaveBeenCalled()
   })
 
+  it('runs a validated command from the server-resolved pane path', async () => {
+    const runCommand = vi.fn<(command: string, cwd: string) => Promise<void>>().mockResolvedValue(undefined)
+    const api = new PaneManagementApi({
+      currentPaneIds: () => ['%12'],
+      panePath: (paneId) => paneId === '%12' ? '/tmp/project' : undefined,
+      runCommand,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'open .' }),
+    })
+
+    expect(response.status).toBe(202)
+    expect(runCommand).toHaveBeenCalledWith('open .', '/tmp/project')
+  })
+
+  it('rejects invalid commands before launching them', async () => {
+    const runCommand = vi.fn<(command: string, cwd: string) => Promise<void>>().mockResolvedValue(undefined)
+    const api = new PaneManagementApi({
+      currentPaneIds: () => ['%12'],
+      panePath: () => '/tmp/project',
+      runCommand,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'open .\nwhoami' }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
   it('releases resize ownership and deletes an exactly confirmed pane', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const beforePaneDeleted = vi.fn().mockResolvedValue(undefined)

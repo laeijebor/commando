@@ -2,6 +2,7 @@ export interface PaneManagementApiClient {
   renamePane(paneId: string, title: string): Promise<void>
   deletePane(paneId: string): Promise<void>
   openPanePath(paneId: string): Promise<void>
+  runInPanePath(paneId: string, command: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -44,6 +45,10 @@ export function createPaneManagementApi(
     }),
     openPanePath: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/open`, {
       method: 'POST',
+    }),
+    runInPanePath: (paneId, command) => request(`/panes/${encodeURIComponent(paneId)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
     }),
   }
 }
