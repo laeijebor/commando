@@ -213,7 +213,6 @@ describe('agent hook installer', () => {
     expect(claudeBridge).toContain('for await (const chunk of process.stdin)')
     expect(claudeBridge).toContain('prompt_id: boundedText(input.prompt_id, 200)')
     expect(claudeBridge).toContain('backgroundTasks: Array.isArray(input.background_tasks)')
-    expect(claudeBridge).not.toContain('tool_response')
     expect(claudeBridge).not.toContain('transcript_path')
     expect(openCodePlugin).toContain('/api/agent-status/hooks/opencode')
     expect(openCodePlugin).toContain("type: 'commando.turn.started'")
@@ -329,12 +328,29 @@ describe('agent hook installer', () => {
         task_description: 'raw-task-description',
       })
       await send({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'TodoWrite',
+        tool_input: {
+          todos: [
+            { content: 'Map current behavior', status: 'completed' },
+            { content: 'Build plan support', status: 'in_progress' },
+          ],
+        },
+        tool_response: { content: 'raw-todo-output' },
+      })
+      await send({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'TaskUpdate',
+        tool_input: { taskId: 'task-1', status: 'in_progress' },
+        tool_response: { success: true, taskId: 'task-1' },
+      })
+      await send({
         hook_event_name: 'Stop',
         last_assistant_message: `Finished\nBearer raw-final-secret ${'y'.repeat(2100)}\n🟢 Shipped safely`,
         background_tasks: [{ command: 'raw-background-command' }, { prompt: 'raw-background-prompt' }],
       })
 
-      expect(received).toHaveLength(6)
+      expect(received).toHaveLength(8)
       expect(received.some(({ body }) => body.prompt_id === 'synthetic-task-notification')).toBe(false)
       for (const request of received) {
         expect(request.authorization).toBe(`Bearer ${token}`)
@@ -355,7 +371,8 @@ describe('agent hook installer', () => {
         activity: { label: 'Running tests', kind: 'check', state: 'running' },
         check: { label: 'tests', status: 'running' },
       })
-      expect(bodies.get('PostToolUse')).toMatchObject({
+      const write = received.find(({ body }) => body.tool_name === 'Write')?.body
+      expect(write).toMatchObject({
         activity: { label: 'Editing private.ts', kind: 'edit', state: 'completed' },
         filePath: '/repo/src/private.ts',
       })
@@ -368,6 +385,17 @@ describe('agent hook installer', () => {
           subject: 'Implement login TOKEN=[REDACTED]',
           state: 'created',
         },
+      })
+      const todoWrite = received.find(({ body }) => body.tool_name === 'TodoWrite')?.body
+      expect(todoWrite).toMatchObject({
+        taskSnapshot: [
+          { content: 'Map current behavior', status: 'completed', priority: 'medium' },
+          { content: 'Build plan support', status: 'in_progress', priority: 'medium' },
+        ],
+      })
+      const taskUpdate = received.find(({ body }) => body.tool_name === 'TaskUpdate')?.body
+      expect(taskUpdate).toMatchObject({
+        taskPatch: { id: 'task-1', status: 'in_progress' },
       })
       expect(String(bodies.get('Stop')?.finalMessage).length).toBeLessThanOrEqual(2000)
       expect(String(bodies.get('Stop')?.finalMessage)).toMatch(/\n🟢 Shipped safely$/)
@@ -388,6 +416,7 @@ describe('agent hook installer', () => {
         'raw-attention-secret',
         'raw-task-secret',
         'raw-task-description',
+        'raw-todo-output',
         'raw-final-secret',
         'raw-background-command',
         'raw-background-prompt',

@@ -159,10 +159,51 @@ describe('SessionBriefStore', () => {
     }])
     expect(changed[0]?.updates.map((update) => [update.source, update.text])).toEqual([
       ['hook', 'Writing tests'],
-      ['agent', 'Keep history pane-local'],
       ['hook', 'tests: passed'],
+      ['agent', 'Keep history pane-local'],
     ])
     expect(new Set(changed[0]?.updates.map((update) => update.id)).size).toBe(3)
+  })
+
+  it('coalesces repeated lifecycle text when its kind or detail changes', async () => {
+    const briefs = await store()
+    const intent = 'OK great - create the local branch and run Tilt'
+    const first = status('%5', 'working', 100, intent)
+    first.details = { ...first.details!, checks: [], intent }
+    await briefs.syncFromStatuses('$4', 'worklog', [first], 100)
+
+    const changed = status('%5', 'working', 120, intent)
+    changed.details = {
+      ...changed.details!,
+      checks: [],
+      intent,
+      changes: { fileCount: 2, additions: 5, deletions: 1 },
+    }
+    await briefs.syncFromStatuses('$4', 'worklog', [changed], 120)
+
+    expect(briefs.get('%5')?.updates).toEqual([
+      expect.objectContaining({ text: intent, kind: 'changed', detail: '2 files · +5 −1' }),
+    ])
+  })
+
+  it('dedupes repeated lifecycle text while loading existing state', async () => {
+    const briefs = await store()
+    await mkdir(dirname(briefs.statePath), { recursive: true })
+    const entry = {
+      paneId: '%5', sessionId: '$4', sessionName: 'worklog', state: 'working',
+      headline: 'Current', headlineSource: 'hook', updatedAt: 120,
+      updates: [
+        { id: 'hook:new', paneId: '%5', kind: 'changed', text: 'Repeated intent', detail: '2 files', source: 'hook', createdAt: 120 },
+        { id: 'hook:old', paneId: '%5', kind: 'note', text: 'Repeated intent', source: 'hook', createdAt: 100 },
+      ],
+    }
+    await writeFile(briefs.statePath, JSON.stringify({ version: 3, briefs: { '%5': entry } }))
+
+    await briefs.load()
+
+    expect(briefs.get('%5')?.updates).toEqual([
+      expect.objectContaining({ id: 'hook:new', kind: 'changed' }),
+    ])
   })
 
   it('drops generic command and heartbeat churn but records task transitions', async () => {
@@ -192,6 +233,17 @@ describe('SessionBriefStore', () => {
     expect(briefs.get('%5')?.updates.map((update) => update.text)).toEqual([
       'Task completed: Implement worklog',
     ])
+  })
+
+  it('clears the current plan when the provider sends an empty task snapshot', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$4', 'worklog', [status('%5', 'working', 100, 'Starting', 'Implement worklog')], 100)
+    const cleared = status('%5', 'working', 120, 'Done')
+    cleared.details = { ...cleared.details!, tasks: [], progress: { completed: 0, total: 0 } }
+
+    await briefs.syncFromStatuses('$4', 'worklog', [cleared], 120)
+
+    expect(briefs.get('%5')?.tasks).toEqual([])
   })
 
   it('bounds pane history to 150 meaningful updates', async () => {

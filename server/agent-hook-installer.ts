@@ -348,6 +348,64 @@ function taskFor(input) {
   }
 }
 
+function taskStatus(value) {
+  if (value === 'deleted') return 'cancelled'
+  return value === 'pending' || value === 'in_progress' || value === 'completed' || value === 'cancelled'
+    ? value
+    : undefined
+}
+
+function sanitizedTask(value) {
+  const task = asObject(value)
+  const content = boundedText(task.subject ?? task.content, 240)
+  const status = taskStatus(task.status)
+  if (!content || !status) return undefined
+  return {
+    id: boundedText(task.id ?? task.taskId, 120),
+    content,
+    status,
+    priority: task.priority === 'high' || task.priority === 'low' ? task.priority : 'medium',
+    createdAt: Number.isSafeInteger(task.createdAt) && task.createdAt >= 0 ? task.createdAt : undefined,
+    updatedAt: Number.isSafeInteger(task.updatedAt) && task.updatedAt >= 0 ? task.updatedAt : undefined,
+  }
+}
+
+function sanitizeTaskList(value) {
+  if (!Array.isArray(value)) return undefined
+  const tasks = value.map(sanitizedTask).filter(Boolean)
+  return tasks.length || value.length === 0 ? tasks : undefined
+}
+
+function planUpdateFor(input) {
+  if (input.hook_event_name !== 'PostToolUse') return {}
+  const tool = boundedText(input.tool_name, 80)?.toLowerCase()
+  const args = asObject(input.tool_input)
+  const response = asObject(input.tool_response ?? input.tool_result)
+  const data = asObject(response.data)
+  if (tool === 'todowrite') {
+    const tasks = sanitizeTaskList(args.todos)
+    return tasks ? { taskSnapshot: tasks } : {}
+  }
+  if (tool === 'tasklist') {
+    const source = Array.isArray(response.tasks) ? response.tasks : Array.isArray(data.tasks) ? data.tasks : undefined
+    const tasks = sanitizeTaskList(source)
+    return tasks ? { taskSnapshot: tasks } : {}
+  }
+  if (tool === 'taskcreate') {
+    const task = asObject(response.task ?? data.task)
+    const id = boundedText(task.id ?? response.taskId ?? data.taskId, 120)
+    const content = boundedText(task.subject ?? args.subject, 240)
+    return id && content ? { taskPatch: { id, content, status: 'pending' } } : {}
+  }
+  if (tool === 'taskupdate') {
+    const id = boundedText(args.taskId ?? response.taskId ?? data.taskId, 120)
+    const status = taskStatus(args.status)
+    const content = boundedText(args.subject, 240)
+    return id && (status || content) ? { taskPatch: { id, content, status } } : {}
+  }
+  return {}
+}
+
 async function main() {
   try {
     const pane = process.env.TMUX_PANE
@@ -384,6 +442,7 @@ async function main() {
       ? boundedText(input.error_details ?? input.error, 200)
       : undefined
     const request = interactionFor(input)
+    const planUpdate = planUpdateFor(input)
     const body = JSON.stringify({
       hook_event_name: boundedText(event, 80),
       session_id: boundedText(input.session_id, 200),
@@ -398,6 +457,8 @@ async function main() {
       attention: attentionFor(input),
       request,
       task: taskFor(input),
+      taskPatch: planUpdate.taskPatch,
+      taskSnapshot: planUpdate.taskSnapshot,
       filePath: tool.filePath,
       check: tool.check,
       finalMessage,

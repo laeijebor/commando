@@ -294,22 +294,32 @@ function taskTransitionUpdates(
 }
 
 function sameUpdateMeaning(left: SessionBriefUpdate, right: SessionBriefUpdate): boolean {
-  return left.source === right.source &&
-    left.kind === right.kind &&
-    left.text === right.text &&
-    left.detail === right.detail
+  if (left.source !== right.source || left.text !== right.text) return false
+  // Lifecycle state can promote the same semantic event from note to changed,
+  // blocker, or check as more metadata arrives. Keep the newest projection.
+  return left.source === 'hook' || (left.kind === right.kind && left.detail === right.detail)
 }
 
 function appendUpdate(
   updates: SessionBriefUpdate[],
   update: SessionBriefUpdate,
 ): SessionBriefUpdate[] {
-  const duplicate = update.source === 'hook'
-    ? updates.find((candidate) => candidate.source === 'hook')
-    : undefined
-  if (duplicate && sameUpdateMeaning(duplicate, update)) return updates
-  return [...updates, update]
+  const retained = update.source === 'hook'
+    ? updates.filter((candidate) => !sameUpdateMeaning(candidate, update))
+    : updates
+  return [...retained, update]
     .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, MAX_UPDATES)
+}
+
+function dedupeUpdates(updates: SessionBriefUpdate[]): SessionBriefUpdate[] {
+  return [...updates]
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .reduce((retained, update) => (
+      update.source === 'hook' && retained.some((candidate) => sameUpdateMeaning(candidate, update))
+        ? retained
+        : [...retained, update]
+    ), [] as SessionBriefUpdate[])
     .slice(0, MAX_UPDATES)
 }
 
@@ -335,7 +345,7 @@ export class SessionBriefStore {
       for (const brief of Object.values(state.briefs)
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, MAX_BRIEFS)) {
-        this.briefs.set(brief.paneId, brief)
+        this.briefs.set(brief.paneId, { ...brief, updates: dedupeUpdates(brief.updates) })
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
@@ -389,9 +399,11 @@ export class SessionBriefStore {
           : statusHeadline(status).slice(0, MAX_HEADLINE),
         headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
         ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
-        ...(status.details?.tasks?.length
+        ...(status.details?.tasks !== undefined
           ? { tasks: status.details.tasks.map((task) => ({ ...task })) }
-          : {}),
+          : current?.tasks !== undefined
+            ? { tasks: current.tasks.map((task) => ({ ...task })) }
+            : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
         updatedAt: Math.max(now, status.updatedAt),

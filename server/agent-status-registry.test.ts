@@ -404,6 +404,34 @@ describe('AgentStatusRegistry', () => {
     ])
   })
 
+  it('hydrates Claude plans from successful task tool snapshots and patches', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('PostToolUse', {
+      taskSnapshot: [
+        { content: 'Map current behavior', status: 'completed', priority: 'high' },
+        { content: 'Build plan support', status: 'pending', priority: 'medium' },
+      ],
+    }), 10)
+    const pending = registry.get(paneId)?.details?.tasks?.find((task) => task.content === 'Build plan support')
+    expect(pending).toMatchObject({ status: 'pending' })
+
+    registry.applyClaudeHook(paneId, claudePayload('PostToolUse', {
+      taskPatch: { id: pending?.id, status: 'in_progress' },
+    }), 20)
+
+    expect(registry.get(paneId)?.details).toMatchObject({
+      progress: { completed: 1, total: 2, active: 'Build plan support' },
+      tasks: [
+        expect.objectContaining({ content: 'Map current behavior', status: 'completed' }),
+        expect.objectContaining({ content: 'Build plan support', status: 'in_progress', updatedAt: 20 }),
+      ],
+    })
+
+    registry.applyClaudeHook(paneId, claudePayload('PostToolUse', { taskSnapshot: [] }), 30)
+    expect(registry.get(paneId)?.details?.progress).toEqual({ completed: 0, total: 0 })
+    expect(registry.get(paneId)?.details?.tasks).toEqual([])
+  })
+
   it('excludes cancelled OpenCode todos from unfinished progress', () => {
     const registry = new AgentStatusRegistry()
     registry.applyOpenCodeEvent(paneId, openCodeEvent('todo.updated', {

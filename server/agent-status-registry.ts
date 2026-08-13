@@ -451,6 +451,34 @@ function updateClaudeTask(
   updateProgress(tasks, details)
 }
 
+function updateClaudeTaskPatch(
+  tasks: Map<string, AgentTask>,
+  details: AgentDetails,
+  value: unknown,
+  updatedAt: number,
+): void {
+  if (!isRecord(value)) return
+  const id = boundedText(value.id, MAX_TASK_ID_LENGTH)
+  if (!id) return
+  const previous = tasks.get(id)
+  const content = boundedText(value.content ?? value.subject, MAX_TASK_SUBJECT_LENGTH) ?? previous?.content
+  const rawStatus = boundedText(value.status, 40)
+  const status = rawStatus === 'deleted' ? 'cancelled' : rawStatus ?? previous?.status
+  if (
+    !content ||
+    (status !== 'pending' && status !== 'in_progress' && status !== 'completed' && status !== 'cancelled')
+  ) return
+  tasks.set(id, {
+    id,
+    content,
+    status,
+    priority: taskPriority(value.priority, previous?.priority),
+    createdAt: previous?.createdAt ?? updatedAt,
+    updatedAt,
+  })
+  updateProgress(tasks, details)
+}
+
 function updateTodos(
   tasks: Map<string, AgentTask>,
   details: AgentDetails,
@@ -889,7 +917,11 @@ export class AgentStatusRegistry {
     }
     updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
     addChangedFile(details, changedFiles, payload.filePath)
-    updateClaudeTask(tasks, details, payload.task, updatedAt)
+    if (Array.isArray(payload.taskSnapshot)) updateTodos(tasks, details, payload.taskSnapshot, updatedAt)
+    else {
+      updateClaudeTask(tasks, details, payload.task, updatedAt)
+      updateClaudeTaskPatch(tasks, details, payload.taskPatch, updatedAt)
+    }
 
     const notificationType = stringProperty(payload, 'notification_type', 80)
     if (
