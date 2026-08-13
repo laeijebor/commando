@@ -1044,7 +1044,7 @@ async function main(): Promise<void> {
     if (snapshotRefresh) return snapshotRefresh
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
-      .then((nextSnapshot) => {
+      .then(async (nextSnapshot) => {
         const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
         const previousRenderingState = new Map(
           snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
@@ -1055,6 +1055,13 @@ async function main(): Promise<void> {
         snapshotRevision = nextSnapshot.revision
         snapshot = nextSnapshot
         lastTmuxError = ''
+
+        const briefsRemoved = await sessionBriefs.removeMissingSessions(
+          snapshot.sessions.map((session) => session.id),
+        )
+        if (briefsRemoved) {
+          broadcast({ type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
+        }
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {

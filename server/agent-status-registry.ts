@@ -9,17 +9,15 @@ import type {
   AgentRecap,
   AgentStatus,
   AgentStatusKind,
+  AgentTask,
+  AgentTaskPriority,
+  AgentTaskStatus,
 } from '../shared/protocol.js'
 
 export type AgentStatusChange =
   | { type: 'upsert'; status: AgentStatus }
   | { type: 'remove'; paneId: string }
   | null
-
-type TaskState = {
-  subject: string
-  state: 'created' | 'completed'
-}
 
 type PendingRequest = {
   attention: string
@@ -34,7 +32,7 @@ type RegistryRecord = {
   runningActivities: Map<string, AgentActivity>
   runningChecks: Map<string, AgentCheck>
   changedFiles: Set<string>
-  tasks: Map<string, TaskState>
+  tasks: Map<string, AgentTask>
   turnId: string | null
   retainedCompletion: boolean
 }
@@ -137,6 +135,7 @@ function cloneDetails(details: AgentDetails): AgentDetails {
   if (details.intent !== undefined) clone.intent = details.intent
   if (details.currentActivity) clone.currentActivity = { ...details.currentActivity }
   if (details.progress) clone.progress = { ...details.progress }
+  if (details.tasks) clone.tasks = details.tasks.map((task) => ({ ...task }))
   if (details.changes) clone.changes = { ...details.changes }
   if (details.attention !== undefined) clone.attention = details.attention
   if (details.recap) clone.recap = { ...details.recap }
@@ -392,59 +391,106 @@ function updateDiff(
   details.changes = { fileCount: changedFiles.size, additions, deletions }
 }
 
-function updateProgress(tasks: Map<string, TaskState>, details: AgentDetails): void {
+function updateProgress(tasks: Map<string, AgentTask>, details: AgentDetails): void {
   let completed = 0
   let active: string | undefined
   for (const task of tasks.values()) {
-    if (task.state === 'completed') completed += 1
-    else active = task.subject
+    if (task.status === 'cancelled') continue
+    if (task.status === 'completed') completed += 1
+    else if (task.status === 'in_progress' || active === undefined) active = task.content
   }
-  details.progress = { completed, total: tasks.size }
+  details.tasks = [...tasks.values()].map((task) => ({ ...task }))
+  details.progress = {
+    completed,
+    total: details.tasks.filter((task) => task.status !== 'cancelled').length,
+  }
   if (active) details.progress.active = active
 }
 
+function taskPriority(value: unknown, fallback?: AgentTaskPriority): AgentTaskPriority {
+  return value === 'high' || value === 'medium' || value === 'low' ? value : fallback ?? 'medium'
+}
+
+function taskTimestamp(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function stableTaskKey(content: string): string {
+  let hash = 2_166_136_261
+  for (let index = 0; index < content.length; index += 1) {
+    hash = Math.imul(hash ^ content.charCodeAt(index), 16_777_619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
 function updateClaudeTask(
-  tasks: Map<string, TaskState>,
+  tasks: Map<string, AgentTask>,
   details: AgentDetails,
   value: unknown,
+  updatedAt: number,
 ): void {
   if (!isRecord(value)) return
   const id = boundedText(value.id, MAX_TASK_ID_LENGTH)
   const subject = boundedText(value.subject, MAX_TASK_SUBJECT_LENGTH)
   const state = value.state
   if (!id || !subject || (state !== 'created' && state !== 'completed')) return
+  const previous = tasks.get(id)
+  const status: AgentTaskStatus = state === 'completed' ? 'completed' : 'pending'
   if (!tasks.has(id) && tasks.size >= MAX_TASKS) {
     const oldestTaskId = tasks.keys().next().value
     if (oldestTaskId !== undefined) tasks.delete(oldestTaskId)
   }
-  tasks.delete(id)
-  tasks.set(id, { subject, state })
+  tasks.set(id, {
+    id,
+    content: subject,
+    status,
+    priority: taskPriority(value.priority, previous?.priority),
+    createdAt: taskTimestamp(value.createdAt) ?? previous?.createdAt ?? updatedAt,
+    updatedAt: taskTimestamp(value.updatedAt) ?? updatedAt,
+  })
   updateProgress(tasks, details)
 }
 
 function updateTodos(
-  tasks: Map<string, TaskState>,
+  tasks: Map<string, AgentTask>,
   details: AgentDetails,
   value: unknown,
+  updatedAt: number,
 ): void {
   if (!Array.isArray(value)) return
-  tasks.clear()
-  let active: string | undefined
-  let completed = 0
-  for (const [index, candidate] of value.slice(0, MAX_TODOS).entries()) {
+  const nextTasks = new Map<string, AgentTask>()
+  const occurrences = new Map<string, number>()
+  for (const candidate of value.slice(0, MAX_TODOS)) {
     if (!isRecord(candidate)) continue
     const subject = boundedText(candidate.content, MAX_TASK_SUBJECT_LENGTH)
-    const status = boundedText(candidate.status, 40)
-    boundedText(candidate.priority, 40)
-    if (!subject || !status) continue
-    if (status === 'cancelled' || status === 'canceled') continue
-    const state = status === 'completed' ? 'completed' : 'created'
-    tasks.set(String(index), { subject, state })
-    if (state === 'completed') completed += 1
-    if (status === 'in_progress' && active === undefined) active = subject
+    const rawStatus = boundedText(candidate.status, 40)
+    const status = rawStatus === 'canceled' ? 'cancelled' : rawStatus
+    if (
+      !subject ||
+      (status !== 'pending' && status !== 'in_progress' && status !== 'completed' && status !== 'cancelled')
+    ) continue
+    const occurrence = occurrences.get(subject) ?? 0
+    occurrences.set(subject, occurrence + 1)
+    const explicitId = boundedText(candidate.id, MAX_TASK_ID_LENGTH)
+    const id = explicitId ?? `opencode:${stableTaskKey(subject)}:${occurrence}`
+    const previous = tasks.get(id)
+    const priority = taskPriority(candidate.priority, previous?.priority)
+    const changed = !previous ||
+      previous.content !== subject ||
+      previous.status !== status ||
+      previous.priority !== priority
+    nextTasks.set(id, {
+      id,
+      content: subject,
+      status,
+      priority,
+      createdAt: taskTimestamp(candidate.createdAt) ?? previous?.createdAt ?? updatedAt,
+      updatedAt: taskTimestamp(candidate.updatedAt) ?? (changed ? updatedAt : previous?.updatedAt ?? updatedAt),
+    })
   }
-  details.progress = { completed, total: tasks.size }
-  if (active) details.progress.active = active
+  tasks.clear()
+  for (const [id, task] of nextTasks) tasks.set(id, task)
+  updateProgress(tasks, details)
 }
 
 function attentionFallback(provider: Exclude<AgentProvider, 'unknown'>): string {
@@ -807,7 +853,7 @@ export class AgentStatusRegistry {
     const details = resetDetails
       ? emptyDetails(eventName === 'UserPromptSubmit' ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
-    const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
+    const tasks = resetDetails ? new Map<string, AgentTask>() : new Map(previous.tasks)
     const pendingRequests = resetDetails
       ? new Map<string, PendingRequest>()
       : new Map(previous.pendingRequests)
@@ -843,7 +889,7 @@ export class AgentStatusRegistry {
     }
     updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
     addChangedFile(details, changedFiles, payload.filePath)
-    updateClaudeTask(tasks, details, payload.task)
+    updateClaudeTask(tasks, details, payload.task, updatedAt)
 
     const notificationType = stringProperty(payload, 'notification_type', 80)
     if (
@@ -950,7 +996,7 @@ export class AgentStatusRegistry {
     const details = resetDetails
       ? emptyDetails(startsNewTurn ? intent : null)
       : cloneDetails(previous.status.details ?? emptyDetails())
-    const tasks = resetDetails ? new Map<string, TaskState>() : new Map(previous.tasks)
+    const tasks = resetDetails ? new Map<string, AgentTask>() : new Map(previous.tasks)
     const pendingRequests = resetDetails
       ? new Map<string, PendingRequest>()
       : new Map(previous.pendingRequests)
@@ -1058,7 +1104,7 @@ export class AgentStatusRegistry {
     )
     addChangedFile(details, changedFiles, event.properties.filePath)
     if (event.type === 'todo.updated' || event.type === 'session.idle' || event.type === 'session.status') {
-      updateTodos(tasks, details, event.properties.todos)
+      updateTodos(tasks, details, event.properties.todos, updatedAt)
     }
     if (event.type === 'session.diff' || event.type === 'session.idle' || event.type === 'session.status') {
       updateDiff(details, changedFiles, event.properties.diff)

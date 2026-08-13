@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -20,6 +20,7 @@ function status(
   state: AgentStatus['status'],
   updatedAt: number,
   summary: string,
+  taskContent?: string,
 ): AgentStatus {
   return {
     paneId,
@@ -34,6 +35,16 @@ function status(
       intent: 'Ship session updates',
       recentActivities: [],
       checks: state === 'needs_input' ? [] : [{ label: 'tests', status: 'passed', updatedAt }],
+      ...(taskContent ? {
+        tasks: [{
+          id: 'task-1',
+          content: taskContent,
+          status: state === 'done' ? 'completed' : 'in_progress',
+          priority: 'high',
+          createdAt: 50,
+          updatedAt,
+        }],
+      } : {}),
       ...(state === 'needs_input' ? { attention: 'Choose the release target' } : {}),
     },
   }
@@ -73,6 +84,7 @@ describe('SessionBriefStore', () => {
     })
     expect(updated.updates.map((entry) => [entry.source, entry.paneId, entry.kind])).toEqual([
       ['agent', '%1', 'decision'],
+      ['agent', '%1', 'decision'],
       ['hook', '%1', 'check'],
     ])
     expect(briefs.get('%2')).toMatchObject({
@@ -105,12 +117,80 @@ describe('SessionBriefStore', () => {
     const refreshed = await briefs.syncFromStatuses(
       '$3',
       'commando',
-      [status('%4', 'working', 120, 'Producing output')],
+      [{
+        ...status('%4', 'working', 120, 'Producing output'),
+        details: {
+          ...status('%4', 'working', 120, 'Producing output').details!,
+          checks: [],
+          currentActivity: { label: 'Producing output', kind: 'other', state: 'running', updatedAt: 120 },
+        },
+      }],
       120,
     )
 
     expect(refreshed[0]).toMatchObject({ headline: 'Handoff ready', headlineSource: 'agent' })
     expect(refreshed[0]?.updates[0].createdAt).toBe(120)
+    expect(refreshed[0]?.updates).toHaveLength(2)
+  })
+
+  it('keeps meaningful hook history, current tasks, and dedupes identical heartbeats', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$4', 'worklog', [status('%5', 'working', 100, 'Starting', 'Implement worklog')], 100)
+    await briefs.applyAgentPatch('$4', 'worklog', '%5', {
+      update: { kind: 'decision', text: 'Keep history pane-local' },
+    }, 110)
+    await briefs.syncFromStatuses('$4', 'worklog', [status('%5', 'working', 120, 'Starting', 'Implement worklog')], 120)
+    const changed = await briefs.syncFromStatuses('$4', 'worklog', [{
+      ...status('%5', 'working', 130, 'Writing tests', 'Implement worklog'),
+      details: {
+        ...status('%5', 'working', 130, 'Writing tests', 'Implement worklog').details!,
+        checks: [],
+        currentActivity: { label: 'Writing tests', kind: 'check', state: 'running', updatedAt: 130 },
+      },
+    }], 130)
+
+    expect(changed[0]?.tasks).toEqual([{
+      id: 'task-1',
+      content: 'Implement worklog',
+      status: 'in_progress',
+      priority: 'high',
+      createdAt: 50,
+      updatedAt: 130,
+    }])
+    expect(changed[0]?.updates.map((update) => [update.source, update.text])).toEqual([
+      ['hook', 'Writing tests'],
+      ['agent', 'Keep history pane-local'],
+      ['hook', 'tests: passed'],
+    ])
+    expect(new Set(changed[0]?.updates.map((update) => update.id)).size).toBe(3)
+  })
+
+  it('bounds pane history to 150 meaningful updates', async () => {
+    const briefs = await store()
+    for (let index = 0; index < 155; index += 1) {
+      await briefs.applyAgentPatch('$5', 'bounded', '%6', {
+        update: { kind: 'note', text: `Milestone ${index}` },
+      }, index + 1)
+    }
+
+    const retained = briefs.get('%6')?.updates ?? []
+    expect(retained).toHaveLength(150)
+    expect(retained[0]?.text).toBe('Milestone 154')
+    expect(retained.at(-1)?.text).toBe('Milestone 5')
+  })
+
+  it('removes briefs only for tmux sessions that no longer exist and persists cleanup', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$6', 'keep', [status('%7', 'working', 10, 'Keep')], 10)
+    await briefs.syncFromStatuses('$7', 'remove', [status('%8', 'working', 20, 'Remove')], 20)
+
+    expect(await briefs.removeMissingSessions(['$6'])).toBe(true)
+    expect(briefs.get('%7')).not.toBeNull()
+    expect(briefs.get('%8')).toBeNull()
+
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.values().map((brief) => brief.sessionId)).toEqual(['$6'])
   })
 
   it('splits persisted session aggregates into pane-local briefs', async () => {
@@ -152,6 +232,39 @@ describe('SessionBriefStore', () => {
     })
     expect(briefs.get('%2')).not.toHaveProperty('recapMarkdown')
     expect(briefs.get('%2')).not.toHaveProperty('next')
+  })
+
+  it('loads v2 briefs and writes the richer v3 format without losing history', async () => {
+    const briefs = await store()
+    await mkdir(dirname(briefs.statePath), { recursive: true })
+    await writeFile(briefs.statePath, JSON.stringify({
+      version: 2,
+      briefs: {
+        '%9': {
+          paneId: '%9',
+          sessionId: '$9',
+          sessionName: 'legacy',
+          state: 'working',
+          headline: 'Legacy brief',
+          headlineSource: 'hook',
+          updates: [
+            { id: 'hook:9', paneId: '%9', kind: 'note', text: 'Legacy update', source: 'hook', createdAt: 10 },
+          ],
+          updatedAt: 10,
+        },
+      },
+    }))
+
+    await briefs.load()
+    await briefs.applyAgentPatch('$9', 'legacy', '%9', {
+      update: { kind: 'check', text: 'Migration verified' },
+    }, 20)
+
+    expect(briefs.get('%9')?.updates.map((update) => update.text)).toEqual([
+      'Migration verified',
+      'Legacy update',
+    ])
+    expect(JSON.parse(await readFile(briefs.statePath, 'utf8'))).toMatchObject({ version: 3 })
   })
 
   it('rejects oversized or malformed persisted records', () => {

@@ -30,6 +30,19 @@ export type AgentProgress = {
   active?: string
 }
 
+export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+export type AgentTaskPriority = 'high' | 'medium' | 'low'
+
+export type AgentTask = {
+  id: string
+  content: string
+  status: AgentTaskStatus
+  priority: AgentTaskPriority
+  createdAt?: number
+  updatedAt?: number
+}
+
 export type AgentChanges = {
   fileCount: number
   additions: number
@@ -80,6 +93,7 @@ export type AgentDetails = {
   currentActivity?: AgentActivity
   recentActivities: AgentActivity[]
   progress?: AgentProgress
+  tasks?: AgentTask[]
   changes?: AgentChanges
   checks: AgentCheck[]
   attention?: string
@@ -121,6 +135,7 @@ export type SessionBrief = {
   headline: string
   headlineSource: 'hook' | 'agent'
   recapMarkdown?: string
+  tasks?: AgentTask[]
   updates: SessionBriefUpdate[]
   next?: string
   updatedAt: number

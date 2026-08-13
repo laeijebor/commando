@@ -712,9 +712,12 @@ function sanitizeTodos(value) {
   return value.slice(0, 20).map((candidate) => {
     const todo = asObject(candidate)
     return {
+      id: boundedText(todo.id, 120),
       content: boundedText(todo.content, 240),
       status: boundedText(todo.status, 40),
       priority: boundedText(todo.priority, 40),
+      createdAt: Number.isSafeInteger(todo.createdAt) && todo.createdAt >= 0 ? todo.createdAt : undefined,
+      updatedAt: Number.isSafeInteger(todo.updatedAt) && todo.updatedAt >= 0 ? todo.updatedAt : undefined,
     }
   })
 }

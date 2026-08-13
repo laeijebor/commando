@@ -6,13 +6,16 @@ import { dirname, join } from 'node:path'
 import type {
   AgentStatus,
   AgentStatusKind,
+  AgentTask,
+  AgentTaskPriority,
+  AgentTaskStatus,
   SessionBrief,
   SessionBriefUpdate,
   SessionBriefUpdateKind,
 } from '../shared/protocol.js'
 
 type StateFile = {
-  version: 2
+  version: 3
   briefs: Record<string, SessionBrief>
 }
 
@@ -34,7 +37,7 @@ const SESSION_ID = /^\$\d+$/
 const PANE_ID = /^%\d+$/
 const UPDATE_ID = /^[A-Za-z0-9:._-]{1,128}$/
 const MAX_BRIEFS = 64
-const MAX_UPDATES = 8
+const MAX_UPDATES = 150
 const MAX_HEADLINE = 180
 const MAX_RECAP = 2_000
 const MAX_NEXT = 240
@@ -42,6 +45,8 @@ const MAX_UPDATE_TEXT = 240
 const MAX_UPDATE_DETAIL = 360
 const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note'])
 const STATUS_KINDS = new Set<AgentStatusKind>(['working', 'needs_input', 'done', 'failed', 'stale', 'unknown'])
+const TASK_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed', 'cancelled'])
+const TASK_PRIORITIES = new Set<AgentTaskPriority>(['high', 'medium', 'low'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -87,17 +92,44 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
   }
 }
 
+function parseTask(value: unknown, index: number): AgentTask | null {
+  if (!isRecord(value)) return null
+  const content = cleanText(value.content ?? value.subject, 240)
+  const id = cleanText(value.id, 120) ?? (content ? `legacy:${index}:${content}` : null)
+  const rawStatus = value.status ?? value.state
+  const status = rawStatus === 'created' ? 'pending' : rawStatus
+  const priority = value.priority ?? 'medium'
+  const createdAt = value.createdAt === undefined ? undefined : safeInteger(value.createdAt) ? value.createdAt : null
+  const updatedAt = value.updatedAt === undefined ? undefined : safeInteger(value.updatedAt) ? value.updatedAt : null
+  if (
+    !id || !content ||
+    typeof status !== 'string' || !TASK_STATUSES.has(status as AgentTaskStatus) ||
+    typeof priority !== 'string' || !TASK_PRIORITIES.has(priority as AgentTaskPriority) ||
+    createdAt === null || updatedAt === null
+  ) return null
+  return {
+    id,
+    content,
+    status: status as AgentTaskStatus,
+    priority: priority as AgentTaskPriority,
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+  }
+}
+
 function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (!isRecord(value)) return null
   const sessionName = cleanText(value.sessionName, 128)
   const headline = cleanText(value.headline, MAX_HEADLINE)
   const recapMarkdown = cleanOptionalText(value.recapMarkdown, MAX_RECAP)
   const next = cleanOptionalText(value.next, MAX_NEXT)
+  const taskValues = value.tasks === undefined ? [] : value.tasks
   if (
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
     (value.headlineSource !== 'hook' && value.headlineSource !== 'agent') ||
     typeof value.state !== 'string' || !STATUS_KINDS.has(value.state as AgentStatusKind) ||
+    !Array.isArray(taskValues) || taskValues.length > 100 ||
     !Array.isArray(value.updates) || value.updates.length > MAX_UPDATES ||
     !safeInteger(value.updatedAt)
   ) return null
@@ -105,6 +137,10 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (updates.some((update) => update === null)) return null
   const validUpdates = updates as SessionBriefUpdate[]
   if (new Set(validUpdates.map((update) => update.id)).size !== validUpdates.length) return null
+  const tasks = taskValues.map(parseTask)
+  if (tasks.some((task) => task === null)) return null
+  const validTasks = tasks as AgentTask[]
+  if (new Set(validTasks.map((task) => task.id)).size !== validTasks.length) return null
   return {
     sessionId: value.sessionId,
     sessionName,
@@ -112,6 +148,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     headline,
     headlineSource: value.headlineSource,
     ...(recapMarkdown ? { recapMarkdown } : {}),
+    ...(validTasks.length ? { tasks: validTasks } : {}),
     updates: validUpdates,
     ...(next ? { next } : {}),
     updatedAt: value.updatedAt,
@@ -147,7 +184,7 @@ function migrateLegacyBrief(brief: LegacySessionBrief): SessionBrief[] {
 }
 
 function parseState(value: unknown): StateFile {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2) || !isRecord(value.briefs)) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3) || !isRecord(value.briefs)) {
     throw new Error('Session brief state file has an invalid structure')
   }
   const briefs: Record<string, SessionBrief> = Object.create(null)
@@ -168,12 +205,13 @@ function parseState(value: unknown): StateFile {
       briefs[paneId] = brief
     }
   }
-  return { version: 2, briefs }
+  return { version: 3, briefs }
 }
 
 function cloneBrief(brief: SessionBrief): SessionBrief {
   return {
     ...brief,
+    ...(brief.tasks ? { tasks: brief.tasks.map((task) => ({ ...task })) } : {}),
     updates: brief.updates.map((update) => ({ ...update })),
   }
 }
@@ -210,7 +248,7 @@ function statusUpdate(status: AgentStatus): SessionBriefUpdate {
     ? `${changes.fileCount} ${changes.fileCount === 1 ? 'file' : 'files'} · +${changes.additions} −${changes.deletions}`
     : undefined
   return {
-    id: `hook:${status.paneId.slice(1)}`,
+    id: `hook:${status.paneId.slice(1)}:${status.updatedAt}:${randomUUID()}`,
     paneId: status.paneId,
     kind,
     text: text.slice(0, MAX_UPDATE_TEXT),
@@ -218,6 +256,26 @@ function statusUpdate(status: AgentStatus): SessionBriefUpdate {
     source: 'hook',
     createdAt: status.updatedAt,
   }
+}
+
+function sameUpdateMeaning(left: SessionBriefUpdate, right: SessionBriefUpdate): boolean {
+  return left.source === right.source &&
+    left.kind === right.kind &&
+    left.text === right.text &&
+    left.detail === right.detail
+}
+
+function appendUpdate(
+  updates: SessionBriefUpdate[],
+  update: SessionBriefUpdate,
+): SessionBriefUpdate[] {
+  const duplicate = update.source === 'hook'
+    ? updates.find((candidate) => candidate.source === 'hook')
+    : undefined
+  if (duplicate && sameUpdateMeaning(duplicate, update)) return updates
+  return [...updates, update]
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, MAX_UPDATES)
 }
 
 export function defaultSessionBriefStatePath(): string {
@@ -281,10 +339,7 @@ export class SessionBriefStore {
       const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
         ? previous
         : undefined
-      const agentUpdates = current?.updates.filter((update) => update.source === 'agent') ?? []
-      const updates = [statusUpdate(status), ...agentUpdates]
-        .sort((left, right) => right.createdAt - left.createdAt)
-        .slice(0, MAX_UPDATES)
+      const updates = appendUpdate(current?.updates ?? [], statusUpdate(status))
       const recap = current?.recapMarkdown ?? status.details?.recap?.summary
       const brief: SessionBrief = {
         paneId: status.paneId,
@@ -296,6 +351,9 @@ export class SessionBriefStore {
           : statusHeadline(status).slice(0, MAX_HEADLINE),
         headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
         ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
+        ...(status.details?.tasks?.length
+          ? { tasks: status.details.tasks.map((task) => ({ ...task })) }
+          : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
         updatedAt: Math.max(now, status.updatedAt),
@@ -344,14 +402,6 @@ export class SessionBriefStore {
       createdAt: now,
     } : null
     const previousUpdates = current?.updates ?? []
-    const retainedUpdates = update
-      ? previousUpdates.filter((candidate) => !(
-          candidate.source === 'agent' &&
-          candidate.paneId === paneId &&
-          candidate.kind === update.kind &&
-          candidate.text === update.text
-        ))
-      : previousUpdates
     const headline = patch.headline
       ?? current?.headline
       ?? patch.update?.text
@@ -371,9 +421,8 @@ export class SessionBriefStore {
           : current?.recapMarkdown
             ? { recapMarkdown: current.recapMarkdown }
             : {}),
-      updates: update
-        ? [update, ...retainedUpdates].slice(0, MAX_UPDATES)
-        : retainedUpdates,
+      ...(current?.tasks?.length ? { tasks: current.tasks.map((task) => ({ ...task })) } : {}),
+      updates: update ? appendUpdate(previousUpdates, update) : previousUpdates,
       ...(patch.next === null
         ? {}
         : patch.next !== undefined
@@ -389,6 +438,18 @@ export class SessionBriefStore {
     this.prune()
     await this.persist()
     return cloneBrief(validated)
+  }
+
+  async removeMissingSessions(sessionIds: Iterable<string>): Promise<boolean> {
+    const retained = new Set(sessionIds)
+    let changed = false
+    for (const [paneId, brief] of this.briefs) {
+      if (retained.has(brief.sessionId)) continue
+      this.briefs.delete(paneId)
+      changed = true
+    }
+    if (changed) await this.persist()
+    return changed
   }
 
   private prune(): void {
@@ -414,7 +475,7 @@ export class SessionBriefStore {
     try {
       handle = await open(temporaryPath, 'wx', 0o600)
       const briefs = Object.fromEntries([...this.briefs].map(([paneId, brief]) => [paneId, brief]))
-      await handle.writeFile(`${JSON.stringify({ version: 2, briefs }, null, 2)}\n`, 'utf8')
+      await handle.writeFile(`${JSON.stringify({ version: 3, briefs }, null, 2)}\n`, 'utf8')
       await handle.sync()
       await handle.close()
       handle = null

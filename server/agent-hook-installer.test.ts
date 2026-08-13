@@ -684,11 +684,14 @@ describe('agent hook installer', () => {
       }),
       send('todo.updated', 'main', {
         todos: Array.from({ length: 21 }, (_, index) => ({
+          id: `todo-${index}`,
           content: index === 0
             ? 'Implement auth\nTOKEN=raw-todo-secret'
             : `Todo ${index}`,
           status: index === 0 ? 'in_progress' : 'pending',
           priority: 'high',
+          createdAt: 100 + index,
+          updatedAt: 200 + index,
           output: 'raw-todo-output',
         })),
       }),
@@ -780,9 +783,12 @@ describe('agent hook installer', () => {
     expect(events[9]?.properties.error).toBe('Failed API_KEY=[REDACTED]')
     expect(events[10]?.properties.todos).toHaveLength(20)
     expect(events[10]?.properties.todos).toContainEqual({
+      id: 'todo-0',
       content: 'Implement auth TOKEN=[REDACTED]',
       status: 'in_progress',
       priority: 'high',
+      createdAt: 100,
+      updatedAt: 200,
     })
     expect(events[11]?.properties.diff).toHaveLength(20)
     expect(events[11]?.properties.diff).toContainEqual({

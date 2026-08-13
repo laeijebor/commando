@@ -362,6 +362,24 @@ describe('AgentStatusRegistry', () => {
       total: 2,
       active: 'Second task',
     })
+    expect(claude.get(paneId)?.details?.tasks).toEqual([
+      {
+        id: 'one',
+        content: 'First task',
+        status: 'completed',
+        priority: 'medium',
+        createdAt: expect.any(Number),
+        updatedAt: expect.any(Number),
+      },
+      {
+        id: 'two',
+        content: 'Second task',
+        status: 'pending',
+        priority: 'medium',
+        createdAt: expect.any(Number),
+        updatedAt: expect.any(Number),
+      },
+    ])
 
     const openCode = new AgentStatusRegistry()
     openCode.applyOpenCodeEvent(paneId, openCodeEvent('todo.updated', {
@@ -380,6 +398,10 @@ describe('AgentStatusRegistry', () => {
       total: 20,
       active: 'In flight',
     })
+    expect(openCode.get(paneId)?.details?.tasks?.slice(0, 2)).toEqual([
+      expect.objectContaining({ content: 'Done', status: 'completed', priority: 'high' }),
+      expect.objectContaining({ content: 'In flight', status: 'in_progress', priority: 'medium' }),
+    ])
   })
 
   it('excludes cancelled OpenCode todos from unfinished progress', () => {
@@ -392,6 +414,34 @@ describe('AgentStatusRegistry', () => {
     }))
 
     expect(registry.get(paneId)?.details?.progress).toEqual({ completed: 1, total: 1 })
+    expect(registry.get(paneId)?.details?.tasks).toEqual([
+      expect.objectContaining({ content: 'Done', status: 'completed' }),
+      expect.objectContaining({ content: 'No longer needed', status: 'cancelled' }),
+    ])
+  })
+
+  it('keeps OpenCode todo order and stable generated ids across status changes', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('todo.updated', {
+      todos: [
+        { content: 'First', status: 'pending', priority: 'high' },
+        { content: 'Second', status: 'in_progress', priority: 'low' },
+      ],
+    }), 10)
+    const initial = registry.get(paneId)?.details?.tasks ?? []
+
+    registry.applyOpenCodeEvent(paneId, openCodeEvent('todo.updated', {
+      todos: [
+        { content: 'First', status: 'completed', priority: 'high' },
+        { content: 'Second', status: 'in_progress', priority: 'low' },
+      ],
+    }), 20)
+    const updated = registry.get(paneId)?.details?.tasks ?? []
+
+    expect(updated.map((task) => task.content)).toEqual(['First', 'Second'])
+    expect(updated.map((task) => task.id)).toEqual(initial.map((task) => task.id))
+    expect(updated[0]).toMatchObject({ createdAt: 10, updatedAt: 20, status: 'completed' })
+    expect(updated[1]).toMatchObject({ createdAt: 10, updatedAt: 10, status: 'in_progress' })
   })
 
   it('bounds unique changed files, merges diffs, and keeps four checks by label', () => {
