@@ -99,7 +99,7 @@ import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
-import { SessionUpdateCapsule } from './SessionUpdateCapsule'
+import { PaneWorklog } from './PaneWorklog'
 import { createNotesApi } from './notesApi'
 import { pinnedNoteFrom, storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
@@ -243,7 +243,6 @@ type TerminalPaneProps = {
   useXtermFallback: boolean
   gitApi: GitDiffApiClient
   onOpenPath: () => Promise<void>
-  onSelectBriefPane: (paneId: string) => void
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onRename: (title: string) => Promise<void>
@@ -283,7 +282,6 @@ export function TerminalPaneCard({
   useXtermFallback,
   gitApi,
   onOpenPath,
-  onSelectBriefPane,
   onFocus,
   onOpenMenu,
   onRename,
@@ -493,40 +491,40 @@ export function TerminalPaneCard({
           aria-hidden="true"
         />
       )}
-      <TerminalPaneRenderer
-        paneId={pane.id}
-        cols={pane.width}
-        rows={pane.height}
-        terminalState={pane}
-        connected={connected}
-        resizeOwner={resizeOwner}
-        measurementKey={measurementKey}
-        ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
-        order={index}
-        nativeRetryKey={nativeRetryKey}
-        useXtermFallback={useXtermFallback}
-        onFocus={onFocus}
-        onInput={onInput}
-        onInputBytes={onInputBytes}
-        onOpenMenu={(x, y) => {
-          onFocus()
-          onOpenMenu(x, y)
-        }}
-        onKey={onKey}
-        onPaste={onPaste}
-        onSelectionCopied={showSelectionCopied}
-        onResize={onResize}
-        onRequestReset={onRequestReset}
-        onRendererChange={onRendererChange}
-        registerSink={registerSink}
-        registerFocusable={registerFocusable}
-      />
+      <div className={`terminal-pane-body${brief ? ' has-worklog' : ''}`}>
+        <TerminalPaneRenderer
+          paneId={pane.id}
+          cols={pane.width}
+          rows={pane.height}
+          terminalState={pane}
+          connected={connected}
+          resizeOwner={resizeOwner}
+          measurementKey={`${measurementKey}:${brief ? 'worklog' : 'terminal'}`}
+          ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
+          order={index}
+          nativeRetryKey={nativeRetryKey}
+          useXtermFallback={useXtermFallback}
+          onFocus={onFocus}
+          onInput={onInput}
+          onInputBytes={onInputBytes}
+          onOpenMenu={(x, y) => {
+            onFocus()
+            onOpenMenu(x, y)
+          }}
+          onKey={onKey}
+          onPaste={onPaste}
+          onSelectionCopied={showSelectionCopied}
+          onResize={onResize}
+          onRequestReset={onRequestReset}
+          onRendererChange={onRendererChange}
+          registerSink={registerSink}
+          registerFocusable={registerFocusable}
+        />
+        {brief ? <PaneWorklog brief={brief} paneLabel={paneLabel} /> : null}
+      </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
-        {brief ? (
-          <SessionUpdateCapsule brief={brief} paneLabel={paneLabel} onSelectPane={onSelectBriefPane} />
-        ) : null}
         <span className="pane-footer-dimensions">{pane.width}x{pane.height}</span>
         <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
         <button
@@ -2374,7 +2372,6 @@ export function App() {
                             useXtermFallback={rendererControl?.manualXterm ?? false}
                             gitApi={gitDiffApi}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
-                            onSelectBriefPane={jumpToPane}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                             onRename={(title) => renamePane(pane.id, title)}

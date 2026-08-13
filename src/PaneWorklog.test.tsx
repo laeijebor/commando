@@ -1,0 +1,67 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import type { SessionBrief } from '../shared/protocol'
+import { PaneWorklog } from './PaneWorklog'
+
+const brief: SessionBrief = {
+  paneId: '%12',
+  sessionId: '$1',
+  sessionName: 'commando',
+  state: 'working',
+  headline: 'Building pane worklog',
+  headlineSource: 'agent',
+  recapMarkdown: 'Keeping **history** visible.',
+  tasks: [
+    { id: 'map', content: 'Map current behavior', status: 'completed', priority: 'high' },
+    { id: 'build', content: 'Build pane-local UI', status: 'in_progress', priority: 'high' },
+    { id: 'verify', content: 'Verify the flow', status: 'pending', priority: 'medium' },
+    { id: 'old', content: 'Discard old direction', status: 'cancelled', priority: 'low' },
+  ],
+  updates: [
+    { id: 'new', paneId: '%12', kind: 'decision', text: 'Use a pane-local split', source: 'agent', createdAt: 20 },
+    { id: 'old', paneId: '%12', kind: 'check', text: 'Current flow mapped', source: 'hook', createdAt: 10 },
+  ],
+  next: 'Verify the running app',
+  updatedAt: 20,
+}
+
+afterEach(() => {
+  cleanup()
+  window.localStorage.clear()
+})
+
+describe('PaneWorklog', () => {
+  it('shows the current plan and chronological activity in its source pane', () => {
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+
+    const worklog = screen.getByLabelText('Worklog for Tests')
+    expect(worklog).toHaveTextContent('1/3')
+    expect(worklog).toHaveTextContent('Map current behavior')
+    expect(worklog).toHaveTextContent('Build pane-local UI')
+    expect(worklog).toHaveTextContent('Discard old direction')
+    expect(worklog).toHaveTextContent('Verify the running app')
+
+    const events = screen.getByLabelText('Activity for Tests').querySelectorAll('.pane-worklog-event')
+    expect(events[0]).toHaveTextContent('Current flow mapped')
+    expect(events[1]).toHaveTextContent('Use a pane-local split')
+  })
+
+  it('persists the minimized and plan-collapse controls per pane identity', () => {
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse plan for Tests' }))
+    expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for Tests' }))
+    expect(screen.getByLabelText('Minimized worklog for Tests')).toBeInTheDocument()
+    expect(window.localStorage.getItem('commando.pane-worklog.$1:%12')).toContain('"minimized":true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByLabelText('Worklog for Tests')).toBeInTheDocument()
+    expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
+  })
+})

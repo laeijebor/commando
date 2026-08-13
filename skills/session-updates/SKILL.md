@@ -1,14 +1,16 @@
 ---
 name: session-updates
-description: Publish a concise pane-local orientation brief to Commando. Use when starting meaningful work, making a decision, encountering a blocker, completing verification, leaving a handoff, or when the user asks for a progress summary or update.
+description: Maintain a pane-local Commando worklog. Use when starting meaningful work, creating or updating a plan, making a decision, encountering a blocker, completing verification, leaving a handoff, or when the user asks for a progress summary or update.
 ---
 
-# Commando pane updates
+# Commando pane worklogs
 
-Keep the current tmux pane easy to re-enter after hours or days. Commando
-already derives pane-local milestones from lifecycle hooks; use the shared CLI
-when you have a deliberate summary, decision, blocker, note, or next action to
-add to the current pane.
+Keep the current tmux pane easy to re-enter throughout its session. Commando
+shows provider tasks automatically and derives pane-local milestones from
+lifecycle hooks. Use the shared CLI when you have a deliberate summary,
+decision, blocker, note, or next action to add to the current pane's worklog.
+The worklog appears automatically after its first plan or activity and keeps
+completed, current, and pending tasks visible above chronological history.
 
 ## Publish an update
 
@@ -51,7 +53,10 @@ JSON
 ## Content rules
 
 - Keep the headline under one short sentence.
-- Record only meaningful milestones, not every tool call.
+- Keep the agent's task list current so Commando can render checked, active,
+  pending, and cancelled work accurately.
+- Record only meaningful milestones, not every tool call. Lifecycle history is
+  append-only for the tmux session, so repetitive updates become noise.
 - Name a decision's consequence, not just that a decision happened.
 - Use a blocker only when the user or another system must act.
 - Keep exactly one current next action.

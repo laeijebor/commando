@@ -276,7 +276,7 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
 }
 
 describe('session update briefs', () => {
-  it('replays each brief only into its source pane footer', async () => {
+  it('replays each worklog only into its source terminal pane', async () => {
     await renderAppWithSnapshot()
     const apiBrief: SessionBrief = {
       paneId: '%12',
@@ -286,6 +286,7 @@ describe('session update briefs', () => {
       headline: 'API routes are ready',
       headlineSource: 'agent',
       recapMarkdown: 'API-only handoff.',
+      tasks: [{ id: 'api-task', content: 'Review API output', status: 'in_progress', priority: 'high' }],
       updates: [{
         id: 'agent:1:test',
         paneId: '%12',
@@ -317,18 +318,17 @@ describe('session update briefs', () => {
 
     act(() => daemonMessage?.({ type: 'session_brief_snapshot', briefs: [apiBrief, workerBrief] }))
 
-    const apiTrigger = await screen.findByRole('button', { name: 'Open updates for api' })
-    const workerTrigger = screen.getByRole('button', { name: 'Open updates for worker' })
-    expect(apiTrigger).toHaveTextContent('API routes are ready')
-    expect(apiTrigger).not.toHaveTextContent('Worker tests passed')
-    expect(workerTrigger).toHaveTextContent('Worker tests passed')
-    expect(workerTrigger).not.toHaveTextContent('API routes are ready')
+    const apiWorklog = await screen.findByLabelText('Worklog for api')
+    const workerWorklog = screen.getByLabelText('Worklog for worker')
+    expect(apiWorklog).toHaveTextContent('API routes are ready')
+    expect(apiWorklog).toHaveTextContent('Review API output')
+    expect(apiWorklog).not.toHaveTextContent('Worker tests passed')
+    expect(workerWorklog).toHaveTextContent('Worker tests passed')
+    expect(workerWorklog).not.toHaveTextContent('API routes are ready')
 
-    fireEvent.click(apiTrigger)
-    const sheet = screen.getByLabelText('Updates for api')
-    expect(sheet).toHaveAttribute('data-native-terminal-occluder')
-    expect(sheet).toHaveTextContent('API-only handoff.')
-    expect(sheet).not.toHaveTextContent('Worker tests passed')
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for api' }))
+    expect(screen.getByLabelText('Minimized worklog for api')).toBeInTheDocument()
+    expect(screen.getByLabelText('Worklog for worker')).toBeInTheDocument()
   })
 })
 
