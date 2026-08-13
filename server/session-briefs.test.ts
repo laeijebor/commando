@@ -122,7 +122,7 @@ describe('SessionBriefStore', () => {
         details: {
           ...status('%4', 'working', 120, 'Producing output').details!,
           checks: [],
-          currentActivity: { label: 'Producing output', kind: 'other', state: 'running', updatedAt: 120 },
+          currentActivity: { label: 'Producing output', kind: 'edit', state: 'running', updatedAt: 120 },
         },
       }],
       120,
@@ -163,6 +163,35 @@ describe('SessionBriefStore', () => {
       ['hook', 'tests: passed'],
     ])
     expect(new Set(changed[0]?.updates.map((update) => update.id)).size).toBe(3)
+  })
+
+  it('drops generic command and heartbeat churn but records task transitions', async () => {
+    const briefs = await store()
+    const initial = status('%5', 'working', 100, 'OpenCode is working', 'Implement worklog')
+    initial.details = {
+      ...initial.details!,
+      checks: [],
+      intent: undefined,
+      currentActivity: { label: 'bash', kind: 'command', state: 'running', updatedAt: 100 },
+    }
+
+    expect(await briefs.syncFromStatuses('$4', 'worklog', [initial], 100)).toHaveLength(1)
+    expect(briefs.get('%5')?.updates).toEqual([])
+
+    const completed = status('%5', 'working', 120, 'OpenCode is working', 'Implement worklog')
+    completed.details = {
+      ...completed.details!,
+      checks: [],
+      intent: undefined,
+      tasks: completed.details!.tasks!.map((task) => ({ ...task, status: 'completed' as const, updatedAt: 120 })),
+      currentActivity: { label: 'OpenCode is working', kind: 'other', state: 'running', updatedAt: 120 },
+    }
+
+    await briefs.syncFromStatuses('$4', 'worklog', [completed], 120)
+
+    expect(briefs.get('%5')?.updates.map((update) => update.text)).toEqual([
+      'Task completed: Implement worklog',
+    ])
   })
 
   it('bounds pane history to 150 meaningful updates', async () => {

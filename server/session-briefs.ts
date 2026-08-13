@@ -224,26 +224,33 @@ function statusHeadline(status: AgentStatus): string {
     ?? status.summary
 }
 
-function statusUpdate(status: AgentStatus): SessionBriefUpdate {
+function statusUpdate(status: AgentStatus): SessionBriefUpdate | null {
   const recap = status.details?.recap
   const attention = status.details?.attention
   const check = status.details?.checks.find((candidate) => candidate.status === 'failed')
     ?? status.details?.checks.find((candidate) => candidate.status === 'running')
     ?? status.details?.checks[0]
   const changes = status.details?.changes
+  const activity = status.details?.currentActivity
+  const meaningfulActivity = activity && (
+    activity.kind === 'edit' ||
+    activity.kind === 'check' ||
+    activity.kind === 'delegate' ||
+    activity.kind === 'task'
+  ) ? activity : undefined
   const kind: SessionBriefUpdateKind = status.status === 'failed' || status.status === 'needs_input'
     ? 'blocker'
     : check
       ? 'check'
-      : changes?.fileCount
+      : meaningfulActivity?.kind === 'edit' || changes?.fileCount
         ? 'changed'
         : 'note'
   const text = recap?.summary
     ?? attention
     ?? (check ? `${check.label}: ${check.status}` : undefined)
-    ?? status.details?.currentActivity?.label
+    ?? meaningfulActivity?.label
     ?? status.details?.intent
-    ?? status.summary
+  if (!text) return null
   const detail = changes?.fileCount
     ? `${changes.fileCount} ${changes.fileCount === 1 ? 'file' : 'files'} · +${changes.additions} −${changes.deletions}`
     : undefined
@@ -256,6 +263,34 @@ function statusUpdate(status: AgentStatus): SessionBriefUpdate {
     source: 'hook',
     createdAt: status.updatedAt,
   }
+}
+
+function taskTransitionUpdates(
+  previous: AgentTask[] | undefined,
+  current: AgentTask[] | undefined,
+  status: AgentStatus,
+): SessionBriefUpdate[] {
+  if (!previous?.length || !current?.length) return []
+  const previousById = new Map(previous.map((task) => [task.id, task]))
+  return current.flatMap((task) => {
+    const before = previousById.get(task.id)
+    if (!before || before.status === task.status) return []
+    const prefix = task.status === 'completed'
+      ? 'Task completed'
+      : task.status === 'in_progress'
+        ? 'Task started'
+        : task.status === 'cancelled'
+          ? 'Task cancelled'
+          : 'Task queued'
+    return [{
+      id: `hook:${status.paneId.slice(1)}:${status.updatedAt}:${randomUUID()}`,
+      paneId: status.paneId,
+      kind: task.status === 'completed' ? 'check' as const : 'note' as const,
+      text: `${prefix}: ${task.content}`.slice(0, MAX_UPDATE_TEXT),
+      source: 'hook' as const,
+      createdAt: status.updatedAt,
+    }]
+  })
 }
 
 function sameUpdateMeaning(left: SessionBriefUpdate, right: SessionBriefUpdate): boolean {
@@ -339,7 +374,10 @@ export class SessionBriefStore {
       const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
         ? previous
         : undefined
-      const updates = appendUpdate(current?.updates ?? [], statusUpdate(status))
+      const statusEvent = statusUpdate(status)
+      const taskEvents = taskTransitionUpdates(current?.tasks, status.details?.tasks, status)
+      const updates = [...taskEvents, ...(statusEvent ? [statusEvent] : [])]
+        .reduce(appendUpdate, current?.updates ?? [])
       const recap = current?.recapMarkdown ?? status.details?.recap?.summary
       const brief: SessionBrief = {
         paneId: status.paneId,
@@ -358,6 +396,7 @@ export class SessionBriefStore {
         ...(current?.next ? { next: current.next } : {}),
         updatedAt: Math.max(now, status.updatedAt),
       }
+      if (!current && !brief.tasks?.length && brief.updates.length === 0) continue
       this.briefs.set(status.paneId, brief)
       changed.push(brief)
     }
