@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Circle,
   CircleAlert,
   CircleDot,
@@ -98,11 +99,11 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
   const activeTasks = tasks.filter((task) => task.status !== 'cancelled')
   const completedTasks = activeTasks.filter((task) => task.status === 'completed').length
   const progress = activeTasks.length ? Math.round((completedTasks / activeTasks.length) * 100) : 0
-  const scrollToBottom = (behavior?: ScrollBehavior) => {
+  const scrollToStart = (behavior?: ScrollBehavior) => {
     const node = activityRef.current
     if (!node) return
-    if (typeof node.scrollTo === 'function') node.scrollTo({ top: node.scrollHeight, behavior })
-    else node.scrollTop = node.scrollHeight
+    if (typeof node.scrollTo === 'function') node.scrollTo({ top: 0, behavior })
+    else node.scrollTop = 0
   }
 
   useEffect(() => {
@@ -131,7 +132,7 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
     previousUpdateCount.current = brief.updates.length
     if (!added) return
     if (following && !preferences.minimized && !compact) {
-      window.requestAnimationFrame(() => scrollToBottom())
+      window.requestAnimationFrame(() => scrollToStart())
     } else {
       setUnread((current) => current + added)
     }
@@ -139,7 +140,7 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
 
   useEffect(() => {
     if (preferences.minimized || compact) return
-    window.requestAnimationFrame(() => scrollToBottom())
+    window.requestAnimationFrame(() => scrollToStart())
   }, [compact, preferences.minimized])
 
   const setMinimized = (minimized: boolean) => {
@@ -185,9 +186,9 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
 
       <div className="pane-worklog-scroll" ref={activityRef} onScroll={(event) => {
         const node = event.currentTarget
-        const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 12
-        setFollowing(atBottom)
-        if (atBottom) setUnread(0)
+        const atStart = node.scrollTop < 12
+        setFollowing(atStart)
+        if (atStart) setUnread(0)
       }}>
         {brief.recapMarkdown ? (
           <div className="pane-worklog-recap">
@@ -253,11 +254,11 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
 
       {!following || unread ? (
         <button type="button" className="pane-worklog-follow" onClick={() => {
-          scrollToBottom('smooth')
+          scrollToStart('smooth')
           setFollowing(true)
           setUnread(0)
         }}>
-          <ChevronDown aria-hidden="true" />{unread ? `${unread} new` : 'Follow live'}
+          <ChevronUp aria-hidden="true" />{unread ? `${unread} new` : 'Follow live'}
         </button>
       ) : null}
     </aside>

@@ -69,4 +69,29 @@ describe('PaneWorklog', () => {
     expect(screen.getByLabelText('Worklog for Tests')).toBeInTheDocument()
     expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
   })
+
+  it('follows newest-first activity from the top edge', () => {
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    const scroll = view.container.querySelector<HTMLElement>('.pane-worklog-scroll')!
+
+    scroll.scrollTop = 120
+    fireEvent.scroll(scroll)
+    expect(screen.getByRole('button', { name: 'Follow live' })).toBeInTheDocument()
+
+    view.rerender(<PaneWorklog
+      brief={{
+        ...brief,
+        updates: [
+          { id: 'latest', paneId: '%12', kind: 'note', text: 'Newest update', source: 'agent', createdAt: 40 },
+          ...brief.updates,
+        ],
+      }}
+      paneLabel="Tests"
+    />)
+    expect(screen.getByRole('button', { name: '1 new' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '1 new' }))
+    expect(scroll.scrollTop).toBe(0)
+    expect(screen.queryByRole('button', { name: 'Follow live' })).not.toBeInTheDocument()
+  })
 })
