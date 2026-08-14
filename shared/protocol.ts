@@ -123,6 +123,7 @@ export type SessionBriefUpdate = {
   kind: SessionBriefUpdateKind
   text: string
   detail?: string
+  author?: 'user'
   source: 'hook' | 'agent'
   createdAt: number
 }

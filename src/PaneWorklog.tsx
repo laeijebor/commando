@@ -230,12 +230,12 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
             <header><strong>Activity</strong><small>{brief.updates.length}</small></header>
             <div className="pane-worklog-timeline">
               {brief.updates.map((update) => (
-                <article className={`pane-worklog-event kind-${update.kind}`} key={update.id}>
+                <article className={`pane-worklog-event kind-${update.kind}${update.author === 'user' ? ' is-user' : ''}`} key={update.id}>
                   <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
                   <div>
                     <strong>{update.text}</strong>
                     {update.detail ? <p>{update.detail}</p> : null}
-                    <small>{update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
+                    <small>{update.author === 'user' ? 'You' : update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
                   </div>
                 </article>
               ))}

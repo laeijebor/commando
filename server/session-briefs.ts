@@ -78,6 +78,7 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
     typeof value.paneId !== 'string' || !PANE_ID.test(value.paneId) ||
     typeof value.kind !== 'string' || !UPDATE_KINDS.has(value.kind as SessionBriefUpdateKind) ||
     text === null || detail === null ||
+    (value.author !== undefined && value.author !== 'user') ||
     (value.source !== 'hook' && value.source !== 'agent') ||
     !safeInteger(value.createdAt)
   ) return null
@@ -87,6 +88,7 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
     kind: value.kind as SessionBriefUpdateKind,
     text,
     ...(detail ? { detail } : {}),
+    ...(value.author === 'user' ? { author: 'user' as const } : {}),
     source: value.source,
     createdAt: value.createdAt,
   }
@@ -251,6 +253,9 @@ function statusUpdate(status: AgentStatus): SessionBriefUpdate | null {
     ?? meaningfulActivity?.label
     ?? status.details?.intent
   if (!text) return null
+  const author = !recap && !attention && !check && !meaningfulActivity && status.details?.intent
+    ? 'user' as const
+    : undefined
   const detail = changes?.fileCount
     ? `${changes.fileCount} ${changes.fileCount === 1 ? 'file' : 'files'} · +${changes.additions} −${changes.deletions}`
     : undefined
@@ -260,6 +265,7 @@ function statusUpdate(status: AgentStatus): SessionBriefUpdate | null {
     kind,
     text: text.slice(0, MAX_UPDATE_TEXT),
     ...(detail ? { detail } : {}),
+    ...(author ? { author } : {}),
     source: 'hook',
     createdAt: status.updatedAt,
   }
@@ -294,7 +300,7 @@ function taskTransitionUpdates(
 }
 
 function sameUpdateMeaning(left: SessionBriefUpdate, right: SessionBriefUpdate): boolean {
-  if (left.source !== right.source || left.text !== right.text) return false
+  if (left.source !== right.source || left.author !== right.author || left.text !== right.text) return false
   // Lifecycle state can promote the same semantic event from note to changed,
   // blocker, or check as more metadata arrives. Keep the newest projection.
   return left.source === 'hook' || (left.kind === right.kind && left.detail === right.detail)

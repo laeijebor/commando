@@ -182,7 +182,7 @@ describe('SessionBriefStore', () => {
     await briefs.syncFromStatuses('$4', 'worklog', [changed], 120)
 
     expect(briefs.get('%5')?.updates).toEqual([
-      expect.objectContaining({ text: intent, kind: 'changed', detail: '2 files · +5 −1' }),
+      expect.objectContaining({ text: intent, kind: 'changed', detail: '2 files · +5 −1', author: 'user' }),
     ])
   })
 

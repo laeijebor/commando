@@ -22,6 +22,7 @@ const brief: SessionBrief = {
     { id: 'old', content: 'Discard old direction', status: 'cancelled', priority: 'low' },
   ],
   updates: [
+    { id: 'user', paneId: '%12', kind: 'note', text: 'Keep it chat-like', author: 'user', source: 'hook', createdAt: 30 },
     { id: 'new', paneId: '%12', kind: 'decision', text: 'Use a pane-local split', source: 'agent', createdAt: 20 },
     { id: 'old', paneId: '%12', kind: 'check', text: 'Current flow mapped', source: 'hook', createdAt: 10 },
   ],
@@ -46,8 +47,12 @@ describe('PaneWorklog', () => {
     expect(worklog).toHaveTextContent('Verify the running app')
 
     const events = screen.getByLabelText('Activity for Tests').querySelectorAll('.pane-worklog-event')
-    expect(events[0]).toHaveTextContent('Use a pane-local split')
-    expect(events[1]).toHaveTextContent('Current flow mapped')
+    expect(events[0]).toHaveTextContent('Keep it chat-like')
+    expect(events[0]).toHaveTextContent('You')
+    expect(events[0]).toHaveClass('is-user')
+    expect(events[1]).toHaveTextContent('Use a pane-local split')
+    expect(events[1]).not.toHaveClass('is-user')
+    expect(events[2]).toHaveTextContent('Current flow mapped')
   })
 
   it('persists the minimized and plan-collapse controls per pane identity', () => {
