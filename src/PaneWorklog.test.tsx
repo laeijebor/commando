@@ -35,7 +35,7 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
-  it('shows the current plan and chronological activity in its source pane', () => {
+  it('shows the current plan and newest-first activity in its source pane', () => {
     render(<PaneWorklog brief={brief} paneLabel="Tests" />)
 
     const worklog = screen.getByLabelText('Worklog for Tests')
@@ -46,8 +46,8 @@ describe('PaneWorklog', () => {
     expect(worklog).toHaveTextContent('Verify the running app')
 
     const events = screen.getByLabelText('Activity for Tests').querySelectorAll('.pane-worklog-event')
-    expect(events[0]).toHaveTextContent('Current flow mapped')
-    expect(events[1]).toHaveTextContent('Use a pane-local split')
+    expect(events[0]).toHaveTextContent('Use a pane-local split')
+    expect(events[1]).toHaveTextContent('Current flow mapped')
   })
 
   it('persists the minimized and plan-collapse controls per pane identity', () => {

@@ -229,7 +229,7 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
           <section className="pane-worklog-activity" aria-label={`Activity for ${paneLabel}`}>
             <header><strong>Activity</strong><small>{brief.updates.length}</small></header>
             <div className="pane-worklog-timeline">
-              {[...brief.updates].reverse().map((update) => (
+              {brief.updates.map((update) => (
                 <article className={`pane-worklog-event kind-${update.kind}`} key={update.id}>
                   <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
                   <div>
