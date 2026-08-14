@@ -45,7 +45,7 @@ describe('HudPinnedNote', () => {
     const saved = {
       ...note,
       title: 'Updated checklist',
-      body: '## Ready\n\n- [x] Ship it',
+      body: '## Ready\n\n- [x] Ship it\n\n* Follow up',
       updatedAt: note.updatedAt + 1,
     }
     const onSave = vi.fn().mockResolvedValue(saved)

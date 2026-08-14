@@ -69,7 +69,7 @@ test('keeps semantically equivalent Markdown editable', async ({ page, request }
   const response = await createNote(
     request,
     title,
-    'Paragraph before a list\n- [x] Hyphen task marker\n\n- [ ] Blank line within the list',
+    'Paragraph before a list\n- [x] Hyphen task marker\n\n- [ ] Blank line within the list\n\n* Separate bullet group',
   )
   expect(response.ok()).toBe(true)
 

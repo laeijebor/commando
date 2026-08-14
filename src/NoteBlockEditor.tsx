@@ -55,6 +55,17 @@ function normalizeMarkdownNode(value: unknown): unknown {
         : node
       const previous = merged.at(-1)
       if (
+        typeof previous === 'object' && previous !== null && 'type' in previous && previous.type === 'list'
+        && 'ordered' in previous && previous.ordered === false
+        && 'children' in previous && Array.isArray(previous.children)
+        && typeof lineBreak === 'object' && lineBreak !== null && 'type' in lineBreak && lineBreak.type === 'list'
+        && 'ordered' in lineBreak && lineBreak.ordered === false
+        && 'children' in lineBreak && Array.isArray(lineBreak.children)
+      ) {
+        previous.children.push(...lineBreak.children)
+        continue
+      }
+      if (
         typeof previous === 'object' && previous !== null && 'type' in previous && previous.type === 'text'
         && typeof lineBreak === 'object' && lineBreak !== null && 'type' in lineBreak && lineBreak.type === 'text'
         && 'value' in previous && typeof previous.value === 'string'

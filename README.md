@@ -218,7 +218,7 @@ Folders in the sidebar map directly to directories in the active vault. Creating
 
 The first startup after this format change imports notes from `COMMANDO_NOTES_PATH`, writes them as Markdown, and renames the source file to `notes.json.migrated`. IDs and timestamps are preserved. Commando polls for edits made in Obsidian and requires an explicit reload or overwrite if an external edit conflicts with unsaved browser changes.
 
-The block editor intentionally exposes only content that round-trips through standard Markdown: paragraphs, headings, bulleted and numbered lists, checklists, quotes, code blocks, dividers, links, bold, italic, strikethrough, and inline code.
+The block editor intentionally exposes only content that round-trips through standard Markdown: paragraphs, headings, bulleted and numbered lists, checklists, tables, quotes, code blocks, dividers, links, images, bold, italic, strikethrough, and inline code.
 
 ## Pane Model
 

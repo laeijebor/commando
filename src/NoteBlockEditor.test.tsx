@@ -55,6 +55,9 @@ ${affectedMarkdown}`}
     expect(comparableMarkdown('Live\nLive ops\nBelts')).toBe(
       comparableMarkdown('Live\\\nLive ops\\\nBelts'),
     )
+    expect(comparableMarkdown('- First\n\n* Second')).toBe(
+      comparableMarkdown('* First\n* Second'),
+    )
   })
 
   it('keeps soft-wrapped vault notes editable', async () => {
@@ -67,6 +70,21 @@ Live
 Live ops
 Belts
 Consistent share mechanism`}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        uploadImage={vi.fn()}
+        resolveImageUrl={(url) => url}
+      />,
+    )
+
+    await waitFor(() => expect(screen.queryByText(/cannot preserve/)).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Note body')).toHaveAttribute('contenteditable', 'true')
+  })
+
+  it('keeps blank-separated unordered lists with different markers editable', async () => {
+    render(
+      <NoteBlockEditor
+        markdown={'- [ ] Task one\n- Note two\n\n* Live power ups\n* Live battles'}
         onChange={vi.fn()}
         onSave={vi.fn()}
         uploadImage={vi.fn()}
