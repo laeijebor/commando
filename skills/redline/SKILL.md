@@ -18,13 +18,15 @@ availability checks, say so and deliver the content in chat instead.
 ## 1. Get a URL
 
 - **Args name a running page** (dev server, storybook, report): use that URL.
-- **Otherwise author an artifact**: write a single self-contained HTML file to
+- **Otherwise author an artifact**: write an HTML entry point to
   `.redline/<topic>.html` in the working directory (committed or not — user's
-  repo conventions decide). Structure it for annotation: every logical section
-  gets a stable `id`, so a note's `selector` maps straight to an edit point.
-  Prevent horizontal overflow at every nesting level. Prefer inline SVG or
-  server-rendered content — no CDN dependencies beyond the daemon's own kit
-  (below).
+  repo conventions decide). If faithful rendering needs project fonts, images,
+  screenshots, or other local assets, copy them into a sibling
+  `.redline/<topic>/` directory and reference them relatively. Structure the
+  artifact for annotation: every logical section gets a stable `id`, so a
+  note's `selector` maps straight to an edit point. Prevent horizontal overflow
+  at every nesting level. Prefer local assets, inline SVG, or server-rendered
+  content — no remote CDN dependencies beyond the daemon's own kit (below).
 - **Serve it via the daemon** — no port picking, no separate server process:
   `scripts/commando-serve .redline` (from a commando repo checkout), or
   directly:
@@ -41,11 +43,26 @@ availability checks, say so and deliver the content in chat instead.
   id and URLs, expiring after 7 days). If an artifact URL 404s anyway (dir
   moved or expired), just re-register — the same directory gets its old id
   back while the registration is alive.
-- **Design, in priority order:**
-  1. The user named a look — use it.
-  2. Otherwise, inspect the subject project and match its design system.
-  3. Otherwise, use Commando's default artifact theme — local, no CDN,
-     responsive, and deliberately easy for later author CSS to override:
+## Design source gate (required before writing HTML)
+
+Decide the visual source in this strict order. Do not move to the next option
+until the current one genuinely yields no evidence:
+
+1. If the user named a look or design system, use it.
+2. Otherwise, **inspect the subject project before authoring**. The subject may
+   differ from the current working directory. Read the actual theme/Tailwind
+   config, CSS variables, shared component styles, font setup, icons/assets,
+   and representative screens. Reuse exact values and behavior rather than
+   approximating them from memory. This step is complete only when you can name
+   the files or running screens that supplied the visual evidence.
+3. Only when the artifact is not representing an existing product, or the
+   subject truly has no visual system, choose a deliberate new art direction.
+   Define its typography, palette, spacing, component grammar, and interaction
+   states explicitly. Do not present a generic wireframe as a faithful product
+   mockup.
+4. Use Commando's default artifact theme only as **document chrome** when none
+   of the above supplies styling for the explanatory document. It is a local,
+   responsive fallback for prose, tables, code, and review controls:
 
      ```html
      <html lang="en" data-redline-theme="commando">
@@ -82,7 +99,7 @@ availability checks, say so and deliver the content in chat instead.
      CSS layer; normal artifact styles loaded after it win. Do not load it on
      an existing running/project-styled page.
 
-     Every authored fallback artifact must use the `redline-layout` +
+     Every document using this fallback must use the `redline-layout` +
      `<redline-nav>` shell, even when it has only a few sections. Give each
      logical section a stable `id`, `data-redline-section`, and a short
      `data-redline-label`; the component builds the left-hand structural links
@@ -99,6 +116,22 @@ availability checks, say so and deliver the content in chat instead.
      <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/daisyui-themes.css">
      <script src="http://127.0.0.1:4310/redline/design/tailwind.js"></script>
      ```
+
+### Product UI is not document chrome
+
+If the artifact previews, proposes, or compares product UI, read
+`playbooks/mockup.md` in addition to every other applicable playbook. The
+default theme may frame the explanation around a preview, but it must never be
+the design source for the product surface itself. Scope the product CSS so it
+uses the subject's own tokens, typography, assets, density, and states rather
+than inheriting the fallback body's styles.
+
+When showing current UI, capture and embed the real running page or screenshot
+instead of rebuilding it from prose. When showing a proposed change, start from
+that real state or a source-faithful replica and change only what the proposal
+requires. If an exact source is unavailable, label the result as a concept and
+state the chosen art direction; never imply that an invented miniature is a
+faithful rendering.
 
 ## Structural navigation
 
@@ -181,8 +214,9 @@ use plain annotation for open-ended feedback (lavish's rule).
 
 ## Playbooks
 
-Read the playbook that matches what you're building — before writing artifact
-HTML, not after — from this skill's own directory:
+Read **every** playbook that matches what you're building before writing
+artifact HTML, not after. A plan containing a UI proposal requires both the
+plan and mockup playbooks; a mockup comparison also requires comparison.
 
 | playbook | use when |
 |---|---|
@@ -191,25 +225,50 @@ HTML, not after — from this skill's own directory:
 | `playbooks/table.md` | dense records needing scan-friendly review |
 | `playbooks/code.md` | source, patches, diffs, before/after code |
 | `playbooks/plan.md` | product/technical plan for review |
+| `playbooks/mockup.md` | current or proposed product UI, screens, components, states |
 | `playbooks/input.md` | collecting decisions/choices/triage from the user |
 
 ## 2. Open for review
 
 Open the URL as a tile per show-in-commando with `"engine":"chromium"` —
-review mode is chromium-only. Save the `webPaneId`. Then tell the user, in
-one short message: what you built, what to look at first, and that the
-**"Review this page"** toggle in the tile header starts annotation
-(click an element → comment → Send).
+review mode is chromium-only. Save the `webPaneId`.
+
+### Actual-tile quality gate
+
+Before inviting the user to review, attach to that tile through its CDP
+endpoint and inspect the page at the viewport the user is actually seeing:
+
+1. Capture a screenshot of the full page and the first review viewport. Do not
+   approve the artifact from HTML source alone.
+2. Check console/runtime errors, broken images/fonts, horizontal page overflow,
+   clipped controls, overlapping text, and empty or obviously placeholder UI.
+3. For product UI, compare the screenshot against the inspected source screen,
+   tokens, and component density. Product text and controls must remain legible
+   at the tile width. Render previews at 1:1 scale when practical; if a scaled
+   overview is necessary, label the scale and provide a focused full-size view
+   or lightbox. Never shrink a whole phone/desktop into an illegible ornament.
+4. Exercise the narrow layout and any interaction the review depends on. A
+   responsive document is not enough if the embedded product mockup itself
+   collapses poorly.
+5. Fix and reload the same tile until these checks pass. If fidelity cannot be
+   verified, say exactly what evidence is missing instead of calling it ready.
+
+Then tell the user, in one short message: what you built, which design source
+you used and why, what to look at first, and that the **"Review this page"**
+toggle in the tile header starts annotation (click an element → comment →
+Send).
 
 ## 3. The loop
 
-1. Long-poll for notes in a background task (`scripts/commando-feedback
-   <webPaneId>` in the commando repo, else the skill's curl). Empty notes
-   after ~30s is normal — re-poll. Keep doing other queued work meanwhile.
-   Delivery is at-least-once: notes are journaled daemon-side until acked
-   (the script handles acking via the response `cursor`), so a killed or
-   timed-out poll loses nothing — re-polling recovers the same notes; dedupe
-   by note `id` if you see repeats.
+1. Start a continuous long-poll loop in a background task
+   (`scripts/commando-feedback <webPaneId>` in the commando repo, else the
+   skill's curl). Empty notes after ~30s are heartbeats, not completion, so
+   immediately re-poll. Keep the loop alive until the user ends review or the
+   endpoint returns 404; if the task runner times out, restart it while review
+   is active. Do not claim to be watching for notes unless a poll is actually
+   running. Delivery is at-least-once: notes are journaled daemon-side until
+   acked (the script handles the response `cursor`), so re-polling recovers
+   unread notes; dedupe by note `id` if you see repeats.
 2. For each note `{selector, tag, text, rect, comment, pageUrl, attachments?}`:
    edit the
    artifact section (or the real source behind the running page) that the
@@ -233,6 +292,8 @@ one short message: what you built, what to look at first, and that the
 - 404 from the feedback poll = the review ended AND nothing is left unread
   (a closed tile keeps serving unacked notes until you've fetched them):
   stop polling.
+- If polling stops for any other reason, immediately tell the user why and
+  that you are no longer watching for notes. Never let polling lapse silently.
 - When the user says it's done: close the tile you opened, unregister the
   artifact dir (`scripts/commando-serve --stop <id>`), and give the absolute
   path of the final artifact — the tile and registration are session
