@@ -136,6 +136,27 @@ describe('WebPaneCard maximize', () => {
 describe('WebPaneCard AppKit popout', () => {
   const chromiumPane: WebPane = { ...webPane, engine: 'chromium' }
 
+  it('groups chromium metadata separately from the complete action set', () => {
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        onOpenDevtools={() => undefined}
+        onPopOut={() => undefined}
+        onMaximize={() => undefined}
+      />,
+    )
+
+    const metadata = document.querySelector('.web-pane-meta')
+    const actions = document.querySelector('.web-pane-actions')
+    expect(metadata).toHaveTextContent('web')
+    expect(metadata).toHaveTextContent('chromium')
+    expect(actions?.querySelectorAll('button')).toHaveLength(7)
+    expect(screen.getByRole('button', { name: 'Review this page' })).toHaveClass('web-pane-button')
+    expect(screen.getByRole('button', { name: 'Close web pane' })).toHaveClass('web-pane-button')
+  })
+
   it('offers popout for an attached chromium pane', () => {
     const onPopOut = vi.fn()
     render(

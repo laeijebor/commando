@@ -12,10 +12,13 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+  container-name: web-pane;
+  container-type: inline-size;
 }
 
 .web-pane-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   min-height: 26px;
@@ -68,7 +71,6 @@
 }
 
 .web-pane-url-form {
-  flex: 1;
   min-width: 0;
 }
 
@@ -93,6 +95,18 @@
   text-transform: uppercase;
   color: var(--cyan);
   background: color-mix(in srgb, var(--cyan) 12%, transparent);
+}
+
+.web-pane-meta,
+.web-pane-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.web-pane-actions {
+  justify-content: flex-end;
 }
 
 .web-pane-chip.is-agent {
@@ -129,6 +143,35 @@
 .web-pane-button svg {
   width: 12px;
   height: 12px;
+}
+
+@container web-pane (max-width: 760px) {
+  .web-pane-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .web-pane-meta {
+    grid-column: 1 / 3;
+    padding-left: 18px;
+  }
+
+  .web-pane-actions {
+    grid-column: 3;
+  }
+}
+
+@container web-pane (max-width: 420px) {
+  .web-pane-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .web-pane-meta {
+    grid-column: 1 / -1;
+  }
+
+  .web-pane-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 .web-pane-body {

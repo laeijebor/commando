@@ -218,98 +218,102 @@ export function WebPaneCard({
             {path ? <span className="web-pane-path">{path}</span> : null}
           </span>
         )}
-        <span className={`web-pane-chip${webPane.openedBy === 'agent' ? ' is-agent' : ''}`}>
-          {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
+        <span className="web-pane-meta">
+          <span className={`web-pane-chip${webPane.openedBy === 'agent' ? ' is-agent' : ''}`}>
+            {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
+          </span>
+          {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
         </span>
-        {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
-        {chromium && !pending && !detached && (
+        <span className="web-pane-actions">
+          {chromium && !pending && !detached && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={() => setReview((current) => !current)}
+              aria-pressed={review}
+              title="Review this page"
+              aria-label="Review this page"
+            >
+              <MessageSquarePlus aria-hidden="true" />
+            </button>
+          )}
+          {chromium && !pending && !detached && onOpenDevtools && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={onOpenDevtools}
+              title="Open DevTools as a tile"
+              aria-label="Open DevTools as a tile"
+            >
+              <Wrench aria-hidden="true" />
+            </button>
+          )}
+          {chromium && !pending && !detached && !detachedWindow && onPopOut && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={onPopOut}
+              title="Pop out web pane"
+              aria-label="Pop out web pane"
+            >
+              <PictureInPicture2 aria-hidden="true" />
+            </button>
+          )}
+          {detachedWindow && onReattach && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={onReattach}
+              title="Return web pane to workspace"
+              aria-label="Return web pane to workspace"
+            >
+              <PictureInPicture2 aria-hidden="true" />
+            </button>
+          )}
+          {onMaximize && !detached && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={onMaximize}
+              title={maximized ? 'Restore web pane' : 'Maximize web pane'}
+              aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}
+            >
+              {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+            </button>
+          )}
+          {!pending && !detached && (
+            <button
+              type="button"
+              className="web-pane-button"
+              onClick={() => {
+                setPhase('loading')
+                setReloadKey((current) => current + 1)
+              }}
+              title="Reload page"
+              aria-label="Reload page"
+            >
+              <RotateCw aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
             className="web-pane-button"
-            onClick={() => setReview((current) => !current)}
-            aria-pressed={review}
-            title="Review this page"
-            aria-label="Review this page"
+            onClick={() => window.open(webPane.url, '_blank', 'noopener,noreferrer')}
+            title="Open in browser"
+            aria-label="Open in browser"
           >
-            <MessageSquarePlus aria-hidden="true" />
+            <ExternalLink aria-hidden="true" />
           </button>
-        )}
-        {chromium && !pending && !detached && onOpenDevtools && (
           <button
             type="button"
             className="web-pane-button"
-            onClick={onOpenDevtools}
-            title="Open DevTools as a tile"
-            aria-label="Open DevTools as a tile"
+            onClick={onClose}
+            title="Close web pane"
+            aria-label="Close web pane"
           >
-            <Wrench aria-hidden="true" />
+            <X aria-hidden="true" />
           </button>
-        )}
-        {chromium && !pending && !detached && !detachedWindow && onPopOut && (
-          <button
-            type="button"
-            className="web-pane-button"
-            onClick={onPopOut}
-            title="Pop out web pane"
-            aria-label="Pop out web pane"
-          >
-            <PictureInPicture2 aria-hidden="true" />
-          </button>
-        )}
-        {detachedWindow && onReattach && (
-          <button
-            type="button"
-            className="web-pane-button"
-            onClick={onReattach}
-            title="Return web pane to workspace"
-            aria-label="Return web pane to workspace"
-          >
-            <PictureInPicture2 aria-hidden="true" />
-          </button>
-        )}
-        {onMaximize && !detached && (
-          <button
-            type="button"
-            className="web-pane-button"
-            onClick={onMaximize}
-            title={maximized ? 'Restore web pane' : 'Maximize web pane'}
-            aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}
-          >
-            {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          </button>
-        )}
-        {!pending && !detached && (
-          <button
-            type="button"
-            className="web-pane-button"
-            onClick={() => {
-              setPhase('loading')
-              setReloadKey((current) => current + 1)
-            }}
-            title="Reload page"
-            aria-label="Reload page"
-          >
-            <RotateCw aria-hidden="true" />
-          </button>
-        )}
-        <button
-          type="button"
-          className="web-pane-button"
-          onClick={() => window.open(webPane.url, '_blank', 'noopener,noreferrer')}
-          title="Open in browser"
-          aria-label="Open in browser"
-        >
-          <ExternalLink aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="web-pane-button"
-          onClick={onClose}
-          title="Close web pane"
-          aria-label="Close web pane"
-        >
-          <X aria-hidden="true" />
-        </button>
+        </span>
       </header>
 
       {detached ? (
