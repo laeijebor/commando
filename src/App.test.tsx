@@ -131,6 +131,7 @@ beforeEach(() => {
     if (url.includes('/api/prs')) {
       return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, mineTruncated: false, fetchedAt: 0 } })
     }
+    if (url.endsWith('/rename')) return json({ ok: true })
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
   }))
   daemonMessage = undefined
@@ -683,6 +684,27 @@ describe('run command palette action', () => {
     ))
     expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
     expect(appMocks.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'input' }))
+  })
+
+  it('renames the selected session', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('  focused-work  ')
+    await renderAppWithSnapshot()
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+
+    const input = await screen.findByRole('textbox', { name: 'Search commands' })
+    fireEvent.change(input, { target: { value: 'rename session' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(prompt).toHaveBeenCalledWith('Rename tmux session', 'work')
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/session-management/sessions/%243/rename',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'focused-work' }),
+        headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+      }),
+    ))
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
   })
 })
 

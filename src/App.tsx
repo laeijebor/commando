@@ -111,7 +111,7 @@ import {
   type AgentHudDismissals,
   type AgentHudFilter,
 } from './agentHud'
-import type { SessionTreePreferences } from './sessionManagementApi'
+import { createSessionManagementApi, type SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { useDesktopWindowActivity } from './desktopWindowActivity'
@@ -1659,8 +1659,22 @@ export function App() {
   }
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
+  const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
   const webPanesApi = createWebPanesApi(token)
+
+  const renameSelectedSession = async () => {
+    if (!selectedSession) return
+    setPaletteOpen(false)
+    const name = window.prompt('Rename tmux session', selectedSession.name)?.trim()
+    if (!name || name === selectedSession.name) return
+    setPaneActionError('')
+    try {
+      await sessionManagementApi.renameSession(selectedSession.id, name)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to rename session')
+    }
+  }
 
   const openWebPane = async (url: string, anchorPaneId: string, engine?: WebPaneEngine) => {
     setPaneActionError('')
@@ -1842,6 +1856,13 @@ export function App() {
       kind: 'action',
       run: refresh,
     },
+    ...(selectedSession ? [{
+      id: `session:rename:${selectedSession.id}`,
+      label: `Rename session: ${selectedSession.name}`,
+      detail: 'Change the name of the selected tmux session',
+      kind: 'session' as const,
+      run: () => { void renameSelectedSession() },
+    }] : []),
     ...(snapshot?.sessions.map((session) => ({
       id: `session:${session.id}`,
       label: `Open session: ${session.name}`,
