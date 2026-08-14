@@ -23,6 +23,7 @@ const markdownSchema = BlockNoteSchema.create({
     codeBlock: defaultBlockSpecs.codeBlock,
     divider: defaultBlockSpecs.divider,
     image: defaultBlockSpecs.image,
+    table: defaultBlockSpecs.table,
   },
   inlineContentSpecs: defaultInlineContentSpecs,
   styleSpecs: {
@@ -43,10 +44,42 @@ type NoteBlockEditorProps = {
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm)
 
+function normalizeMarkdownNode(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const normalized = value.map(normalizeMarkdownNode)
+    const merged: unknown[] = []
+
+    for (const node of normalized) {
+      const lineBreak = typeof node === 'object' && node !== null && 'type' in node && node.type === 'break'
+        ? { type: 'text', value: '\n' }
+        : node
+      const previous = merged.at(-1)
+      if (
+        typeof previous === 'object' && previous !== null && 'type' in previous && previous.type === 'text'
+        && typeof lineBreak === 'object' && lineBreak !== null && 'type' in lineBreak && lineBreak.type === 'text'
+        && 'value' in previous && typeof previous.value === 'string'
+        && 'value' in lineBreak && typeof lineBreak.value === 'string'
+      ) {
+        previous.value += lineBreak.value
+      } else {
+        merged.push(lineBreak)
+      }
+    }
+
+    return merged
+  }
+
+  if (typeof value !== 'object' || value === null) return value
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'position' && key !== 'spread')
+      .map(([key, child]) => [key, normalizeMarkdownNode(child)]),
+  )
+}
+
 export function comparableMarkdown(markdown: string): string {
-  return JSON.stringify(markdownParser.parse(markdown), (key, value) => (
-    key === 'position' || key === 'spread' ? undefined : value
-  ))
+  return JSON.stringify(normalizeMarkdownNode(markdownParser.parse(markdown)))
 }
 
 export function NoteBlockEditor({

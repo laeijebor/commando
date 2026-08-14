@@ -81,7 +81,7 @@ test('keeps semantically equivalent Markdown editable', async ({ page, request }
   await expect(page.getByText(/cannot preserve/)).toHaveCount(0)
 })
 
-test('keeps unsupported Obsidian Markdown read-only instead of rewriting it', async ({ page, request }) => {
+test('keeps GFM tables editable', async ({ page, request }) => {
   const title = `Obsidian table ${Date.now()}`
   const response = await createNote(
     request,
@@ -94,6 +94,23 @@ test('keeps unsupported Obsidian Markdown read-only instead of rewriting it', as
   await page.getByRole('button', { name: 'Notes' }).click()
   await page.locator('.notes-items > button').filter({ hasText: title }).click()
 
-  await expect(page.getByText(/cannot preserve/)).toBeVisible()
-  await expect(page.getByLabel('Note body')).toHaveAttribute('contenteditable', 'false')
+  await expect(page.getByText(/cannot preserve/)).toHaveCount(0)
+  await expect(page.getByLabel('Note body')).toHaveAttribute('contenteditable', 'true')
+})
+
+test('keeps soft-wrapped Markdown editable', async ({ page, request }) => {
+  const title = `Soft-wrapped Markdown ${Date.now()}`
+  const response = await createNote(
+    request,
+    title,
+    'Live\nLive ops\nBelts\nConsistent share mechanism',
+  )
+  expect(response.ok()).toBe(true)
+
+  await page.goto(`${baseUrl}/#token=${encodeURIComponent(token)}`)
+  await page.getByRole('button', { name: 'Notes' }).click()
+  await page.locator('.notes-items > button').filter({ hasText: title }).click()
+
+  await expect(page.getByText(/cannot preserve/)).toHaveCount(0)
+  await expect(page.getByLabel('Note body')).toHaveAttribute('contenteditable', 'true')
 })
