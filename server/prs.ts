@@ -601,12 +601,19 @@ export class PrService {
     this.now = options?.now ?? Date.now
   }
 
-  async listPullRequests(repoInput: unknown, filterInput: unknown): Promise<PrList> {
+  async listPullRequests(
+    repoInput: unknown,
+    filterInput: unknown,
+    options?: { refresh?: boolean },
+  ): Promise<PrList> {
     const repo = validateRepo(repoInput)
     const filter = validateStateFilter(filterInput)
     const key = `${repo}::${filter}`
     const cached = this.listCache.get(key)
     if (cached?.value) {
+      if (options?.refresh) {
+        return cached.refresh ?? this.refreshPullRequests(key, repo, filter, cached)
+      }
       if (this.now() - cached.at >= this.listTtlMs && !cached.refresh) {
         void this.refreshPullRequests(key, repo, filter, cached).catch(() => undefined)
       }

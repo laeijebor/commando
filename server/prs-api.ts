@@ -63,8 +63,16 @@ export async function handlePrsApi(
         json(response, 405, { error: 'Method not allowed' })
         return true
       }
+      const refresh = url.searchParams.get('refresh')
+      if (refresh !== null && refresh !== '1') {
+        throw new PrServiceError(400, 'invalid_request', 'Refresh must be 1')
+      }
       json(response, 200, {
-        list: await service.listPullRequests(url.searchParams.get('repo'), url.searchParams.get('state')),
+        list: await service.listPullRequests(
+          url.searchParams.get('repo'),
+          url.searchParams.get('state'),
+          { refresh: refresh === '1' },
+        ),
       })
       return true
     }

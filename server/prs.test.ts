@@ -359,6 +359,26 @@ describe('pull request listing', () => {
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
+  it('force refreshes inside the TTL and shares the awaited refresh', async () => {
+    let finishRefresh: ((value: string) => void) | undefined
+    const runner = vi.fn(async () => {
+      if (runner.mock.calls.length === 1) {
+        return graphqlPayload([pullRequestNode({ title: 'cached title' })])
+      }
+      return new Promise<string>((resolve) => { finishRefresh = resolve })
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', listTtlMs: 60_000 })
+    await service.listPullRequests('acme/widgets', 'open')
+
+    const first = service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    const second = service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    expect(runner).toHaveBeenCalledTimes(2)
+
+    finishRefresh?.(graphqlPayload([pullRequestNode({ title: 'refreshed title' })]))
+    expect((await first).pullRequests[0].title).toBe('refreshed title')
+    expect((await second).pullRequests[0].title).toBe('refreshed title')
+  })
+
   it('returns stale data while one background refresh updates the cache', async () => {
     let clock = 0
     let finishRefresh: ((value: string) => void) | undefined

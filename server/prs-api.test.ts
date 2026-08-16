@@ -58,4 +58,11 @@ describe('PR pane repository API', () => {
     expect(missing.status).toBe(404)
     await expect(missing.json()).resolves.toMatchObject({ code: 'pane_not_found' })
   })
+
+  it('rejects unsupported refresh values', async () => {
+    const base = await startApi(() => undefined)
+    const response = await fetch(`${base}/api/prs?repo=acme%2Fwidgets&state=open&refresh=true`)
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' })
+  })
 })
