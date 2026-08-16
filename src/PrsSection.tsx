@@ -279,6 +279,7 @@ export function PrsSection({
   const repoRef = useRef('')
   const filterRef = useRef<PrStateFilter>('open')
   const manualPaneContext = useRef<string | null>(null)
+  const refreshList = useRef<(() => Promise<void>) | null>(null)
   const [repos, setRepos] = useState<string[]>([])
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([])
   const [repo, setRepo] = useState('')
@@ -373,13 +374,13 @@ export function PrsSection({
     const key = `${repo}::${filter}`
     const cached = listCache.current.get(key) ?? null
 
-    const load = async (background: boolean) => {
-      if (inFlight || (background && document.visibilityState !== 'visible')) return
+    const load = async (background: boolean, refresh = false) => {
+      if (inFlight || (background && !refresh && document.visibilityState !== 'visible')) return
       inFlight = true
       if (background) setPolling(true)
       else setLoading(true)
       try {
-        const next = await api.list(repo, filter)
+        const next = await api.list(repo, filter, { refresh })
         if (!active) return
         listCache.current.set(key, next)
         setList(next)
@@ -398,6 +399,9 @@ export function PrsSection({
       }
     }
 
+    const manualRefresh = () => load(true, true)
+    refreshList.current = manualRefresh
+
     setList(cached)
     setError('')
     setErrorCode('')
@@ -409,6 +413,7 @@ export function PrsSection({
     document.addEventListener('visibilitychange', handleVisibility)
     return () => {
       active = false
+      if (refreshList.current === manualRefresh) refreshList.current = null
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
@@ -602,14 +607,21 @@ export function PrsSection({
           </>
         ) : null}
       </div>
-      <footer className="prs-sync">
+      <button
+        type="button"
+        className="prs-sync"
+        onClick={() => { void refreshList.current?.() }}
+        disabled={!repo || loading || polling}
+        aria-label="Resync pull requests"
+        title={polling ? 'Syncing pull requests' : 'Resync pull requests'}
+      >
         <RefreshCw aria-hidden="true" className={polling ? 'spinning' : ''} />
-        <span>
+        <span aria-live="polite">
           {list ? `synced ${relativeTime(new Date(list.fetchedAt).toISOString())}` : 'not synced yet'}
           {list ? ` · gh · ${list.viewer}` : ''}
           {error && list ? ' · stale' : ''}
         </span>
-      </footer>
+      </button>
     </div>
   )
 }

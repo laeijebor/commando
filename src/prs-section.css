@@ -492,14 +492,33 @@
 }
 
 .prs-sync {
+  width: 100%;
   display: flex;
   gap: 6px;
   align-items: center;
   padding: 6px 4px 0;
+  border: 0;
   border-top: 1px solid var(--border);
   color: var(--text-faint);
+  background: transparent;
   font-family: var(--mono);
   font-size: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prs-sync:hover:not(:disabled),
+.prs-sync:focus-visible {
+  color: var(--text-soft);
+}
+
+.prs-sync:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.prs-sync:disabled {
+  cursor: default;
 }
 
 .prs-sync svg {

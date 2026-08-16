@@ -73,8 +73,10 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
-    list: async (repo: string, state: PrStateFilter) =>
-      (await request<{ list: PrList }>(`?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}`)).list,
+    list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean }) =>
+      (await request<{ list: PrList }>(
+        `?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}${options?.refresh ? '&refresh=1' : ''}`,
+      )).list,
     threads: async (repo: string, number: number) =>
       (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,
     repoForPane: async (paneId: string) =>

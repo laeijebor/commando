@@ -246,6 +246,33 @@ describe('PrsSection', () => {
     })
   })
 
+  it('resyncs from GitHub when the sync footer is pressed', async () => {
+    let calls = 0
+    let finishRefresh: ((response: Response) => void) | undefined
+    stubFetch({
+      list: (url) => {
+        calls += 1
+        if (calls === 1) {
+          return jsonResponse({ list: listWith([pr({ title: 'cached title' })]) })
+        }
+        expect(url).toContain('refresh=1')
+        return new Promise<Response>((resolve) => { finishRefresh = resolve })
+      },
+    })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByText('cached title')).toBeInTheDocument()
+
+    const sync = screen.getByRole('button', { name: 'Resync pull requests' })
+    fireEvent.click(sync)
+    await waitFor(() => expect(requests.some((request) => request.url.includes('refresh=1'))).toBe(true))
+    expect(screen.getByText('cached title')).toBeInTheDocument()
+    expect(sync).toBeDisabled()
+
+    finishRefresh?.(jsonResponse({ list: listWith([pr({ title: 'refreshed title' })]) }))
+    expect(await screen.findByText('refreshed title')).toBeInTheDocument()
+    expect(sync).not.toBeDisabled()
+  })
+
   it('keeps cached repo data visible while switching back and revalidating', async () => {
     let widgetsCalls = 0
     let finishRefresh: ((response: Response) => void) | undefined
