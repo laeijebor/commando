@@ -32,6 +32,7 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
     baseRefName: 'main',
     viewerIsAuthor: true,
     viewerReviewRequested: false,
+    commandoMarker: null,
     ...overrides,
   }
 }
@@ -122,6 +123,45 @@ describe('PrsSection', () => {
     const number = screen.getByText('#12')
     expect(number).toBeInTheDocument()
     expect(title.contains(number)).toBe(false)
+  })
+
+  it('jumps to a live pane named by the PR body marker', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    const onJumpToTarget = vi.fn()
+    stubFetch({
+      list: () => jsonResponse({
+        list: listWith([pr({
+          commandoMarker: { version: 1, targetId, relation: 'created' },
+        })]),
+      }),
+    })
+
+    render(
+      <PrsSection
+        token="t"
+        liveTargetIds={new Set([targetId])}
+        onJumpToTarget={onJumpToTarget}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' }))
+
+    expect(onJumpToTarget).toHaveBeenCalledWith(targetId)
+  })
+
+  it('does not offer a jump when the marked pane is no longer live', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    stubFetch({
+      list: () => jsonResponse({
+        list: listWith([pr({
+          commandoMarker: { version: 1, targetId, relation: 'created' },
+        })]),
+      }),
+    })
+
+    render(<PrsSection token="t" liveTargetIds={new Set()} />)
+    await screen.findByRole('link', { name: 'feat: add thing' })
+
+    expect(screen.queryByRole('button', { name: /Jump to producing pane/ })).not.toBeInTheDocument()
   })
 
   it('opens a hover popover with details after a delay and lazily loads thread excerpts', async () => {

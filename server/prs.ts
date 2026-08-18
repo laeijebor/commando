@@ -2,6 +2,11 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import {
+  parseCommandoPrMarker,
+  stripCommandoPrMarkers,
+  type CommandoPrMarker,
+} from '../shared/pane-target.js'
 
 const COMMAND_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
@@ -75,6 +80,7 @@ export type PrSummary = {
   baseRefName: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
+  commandoMarker: CommandoPrMarker | null
 }
 
 export type PrList = {
@@ -422,6 +428,7 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
   const commitsConnection = objectField(node, 'commits')
   const commitNodes = nodes(node, 'commits')
   const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
+  const body = typeof node.body === 'string' ? node.body : ''
 
   return {
     number: requiredNumber(node, 'number'),
@@ -430,7 +437,7 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     state,
     isDraft: requiredBoolean(node, 'isDraft'),
     author: authorLogin,
-    bodyExcerpt: typeof node.body === 'string' ? node.body.slice(0, BODY_EXCERPT_CHARS) : '',
+    bodyExcerpt: stripCommandoPrMarkers(body).trim().slice(0, BODY_EXCERPT_CHARS),
     additions: requiredNumber(node, 'additions'),
     deletions: requiredNumber(node, 'deletions'),
     changedFiles: requiredNumber(node, 'changedFiles'),
@@ -448,6 +455,7 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     baseRefName: typeof node.baseRefName === 'string' ? node.baseRefName : '',
     viewerIsAuthor: authorLogin !== null && authorLogin === viewer,
     viewerReviewRequested,
+    commandoMarker: parseCommandoPrMarker(body),
   }
 }
 

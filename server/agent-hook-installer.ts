@@ -41,6 +41,7 @@ const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
 const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
+const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 
 type JsonObject = Record<string, unknown>
 
@@ -49,6 +50,7 @@ export type AgentHookInstallerOptions = {
   claudeSettingsPath?: string
   home?: string
   openCodePluginPath?: string
+  prMarkerCliPath?: string
   sessionBriefCliPath?: string
   tokenPath?: string
 }
@@ -57,6 +59,7 @@ export type AgentHookInstallResult = {
   claudeBridgePath: string
   claudeSettingsPath: string
   openCodePluginPath: string
+  prMarkerCliPath: string
   sessionBriefCliPath: string
   tokenPath: string
 }
@@ -572,6 +575,38 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error))
   usage()
+  process.exitCode = 1
+}
+`
+}
+
+function generatedPrMarkerCli(tokenPath: string): string {
+  return `#!/usr/bin/env node
+import { readFile } from 'node:fs/promises'
+
+const tokenPath = ${JSON.stringify(tokenPath)}
+
+try {
+  const paneId = process.env.TMUX_PANE
+  if (!/^%\\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
+  const port = Number.parseInt(process.env.COMMANDO_PORT ?? '4310', 10)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('COMMANDO_PORT is invalid')
+  const token = (await readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch('http://127.0.0.1:' + port + '/api/pane-target-marker', {
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'X-Commando-Pane': paneId,
+    },
+    signal: AbortSignal.timeout(3_000),
+  })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.error ?? ('Commando returned ' + response.status))
+  if (typeof result.marker !== 'string' || !/^<!-- commando:v1 target=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12} relation=created -->$/.test(result.marker)) {
+    throw new Error('Commando returned an invalid PR marker')
+  }
+  process.stdout.write(result.marker + '\\n')
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
   process.exitCode = 1
 }
 `
@@ -1175,6 +1210,10 @@ export class AgentHookInstaller {
         options.openCodePluginPath
           ?? resolve(resolvedHome, '.config', 'opencode', 'plugins', OPENCODE_PLUGIN_FILENAME),
       ),
+      prMarkerCliPath: resolve(
+        options.prMarkerCliPath
+          ?? resolve(resolvedHome, '.commando', 'hooks', PR_MARKER_CLI_FILENAME),
+      ),
       sessionBriefCliPath: resolve(
         options.sessionBriefCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', SESSION_BRIEF_CLI_FILENAME),
@@ -1199,6 +1238,11 @@ export class AgentHookInstaller {
     await writeAtomically(
       this.paths.sessionBriefCliPath,
       generatedSessionBriefCli(this.paths.tokenPath),
+      0o700,
+    )
+    await writeAtomically(
+      this.paths.prMarkerCliPath,
+      generatedPrMarkerCli(this.paths.tokenPath),
       0o700,
     )
 

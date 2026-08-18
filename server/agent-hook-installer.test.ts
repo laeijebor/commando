@@ -207,6 +207,7 @@ describe('agent hook installer', () => {
     const claudeBridge = await readFile(paths.claudeBridgePath, 'utf8')
     const openCodePlugin = await readFile(paths.openCodePluginPath, 'utf8')
     const sessionBriefCli = await readFile(paths.sessionBriefCliPath, 'utf8')
+    const prMarkerCli = await readFile(paths.prMarkerCliPath, 'utf8')
 
     expect(claudeBridge).toContain('/api/agent-status/hooks/claude')
     expect(claudeBridge).toContain('X-Commando-Pane')
@@ -222,13 +223,17 @@ describe('agent hook installer', () => {
     expect(openCodePlugin).not.toContain('output.output')
     expect(sessionBriefCli).toContain('/api/session-brief')
     expect(sessionBriefCli).toContain('X-Commando-Pane')
+    expect(prMarkerCli).toContain('/api/pane-target-marker')
+    expect(prMarkerCli).toContain('X-Commando-Pane')
     for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)
     expect(claudeBridge).not.toContain(token)
     expect(openCodePlugin).not.toContain(token)
     expect(sessionBriefCli).not.toContain(token)
+    expect(prMarkerCli).not.toContain(token)
     expect((await stat(paths.claudeBridgePath)).mode & 0o777).toBe(0o600)
     expect((await stat(paths.openCodePluginPath)).mode & 0o777).toBe(0o600)
     expect((await stat(paths.sessionBriefCliPath)).mode & 0o777).toBe(0o700)
+    expect((await stat(paths.prMarkerCliPath)).mode & 0o777).toBe(0o700)
     const cliExit = await new Promise<number | null>((resolve) => {
       const child = spawn(process.execPath, [paths.sessionBriefCliPath], {
         env: { ...process.env, TMUX_PANE: '%1' },

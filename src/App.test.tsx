@@ -380,6 +380,50 @@ describe('HUD tabs', () => {
       expect.any(Object),
     ))
   })
+
+  it('jumps from a marked PR to its producing pane', async () => {
+    const targetId = adjacentPane.targetId
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const json = (value: unknown) => new Response(JSON.stringify(value), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (url.includes('/api/prs/prefs')) {
+        return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+      }
+      if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
+      if (url.includes('/api/prs/repo')) return json({ repo: null })
+      if (url.includes('/api/prs')) {
+        return json({ list: {
+          repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false,
+          mineTruncated: false, fetchedAt: 0,
+          pullRequests: [{
+            number: 12, title: 'feat: pane marker', url: 'https://github.com/acme/widgets/pull/12',
+            state: 'open', isDraft: false, author: 'leo', bodyExcerpt: '', additions: 1, deletions: 0,
+            changedFiles: 1, commitCount: 1, unresolvedThreads: 0, threadsTruncated: false,
+            reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false, checks: null,
+            createdAt: '', updatedAt: new Date().toISOString(), headRefName: 'feat/pane-marker',
+            baseRefName: 'main', viewerIsAuthor: true, viewerReviewRequested: false,
+            commandoMarker: { version: 1, targetId, relation: 'created' },
+          }],
+        } })
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+    })
+
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('renderer-%13').closest('.terminal-pane')).toHaveClass('is-focused')
+    })
+  })
 })
 
 const openWebPane = {

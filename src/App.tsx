@@ -823,7 +823,10 @@ export function App() {
     setHudTab(tab)
     storeHudTab(tab)
   }, [])
-  const [pendingFocusPaneId, setPendingFocusPaneId] = useState<string | null>(null)
+  const [pendingPaneFocus, setPendingPaneFocus] = useState<{
+    paneId: string
+    expectedTargetId?: string
+  } | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
   const [paneRendererControls, setPaneRendererControls] = useState<ReadonlyMap<string, PaneRendererControl>>(
@@ -1203,6 +1206,7 @@ export function App() {
       : defaultGroupsForSession(snapshot, selectedSessionId)
     : []
   const paneMap = new Map(snapshot?.panes.map((pane) => [pane.id, pane]) ?? [])
+  const livePaneTargetIds = new Set(snapshot?.panes.map((pane) => pane.targetId) ?? [])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
   const selectedTabWindowId = selectedSessionId ? activeTabs[selectedSessionId] : undefined
@@ -1311,24 +1315,24 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!pendingFocusPaneId) return
-    const pane = paneMap.get(pendingFocusPaneId)
-    if (!pane) {
-      setPendingFocusPaneId(null)
+    if (!pendingPaneFocus) return
+    const pane = paneMap.get(pendingPaneFocus.paneId)
+    if (!pane || (pendingPaneFocus.expectedTargetId && pane.targetId !== pendingPaneFocus.expectedTargetId)) {
+      setPendingPaneFocus(null)
       return
     }
-    const group = groups.find((candidate) => candidate.paneIds.includes(pendingFocusPaneId))
+    const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
     if (group && group !== activeGroup) {
       setActiveTabs((current) => ({ ...current, [pane.sessionId]: group.windowId }))
       return
     }
     const frame = window.requestAnimationFrame(() => {
-      const node = paneRefs.current.get(pendingFocusPaneId)
+      const node = paneRefs.current.get(pendingPaneFocus.paneId)
       if (!node?.isConnected) return
       node.scrollIntoView({ behavior: 'smooth', block: 'center' })
       node.focus({ preventScroll: true })
-      setFocusedPaneId(pendingFocusPaneId)
-      setPendingFocusPaneId(null)
+      setFocusedPaneId(pendingPaneFocus.paneId)
+      setPendingPaneFocus(null)
     })
     return () => window.cancelAnimationFrame(frame)
   })
@@ -1369,16 +1373,22 @@ export function App() {
     setLeftPanelOpen(false)
   }
 
-  const jumpToPane = (paneId: string) => {
+  const jumpToPane = (paneId: string, expectedTargetId?: string) => {
     const pane = paneMap.get(paneId)
     if (!pane) return
     setArea('workspace')
     setMaximizedPaneId(null)
     setSelectedSessionId(pane.sessionId)
-    setPendingFocusPaneId(paneId)
+    setPendingPaneFocus({ paneId, expectedTargetId })
     setPaletteOpen(false)
     setLeftPanelOpen(false)
     setRightPanelOpen(false)
+  }
+
+  const jumpToPaneTarget = (targetId: string) => {
+    const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
+    if (matches.length !== 1) return
+    jumpToPane(matches[0].id, targetId)
   }
 
   const openPaneMaximized = (paneId: string) => {
@@ -1776,7 +1786,7 @@ export function App() {
         cwd: pane.path,
       })
       setMaximizedPaneId(null)
-      setPendingFocusPaneId(created.paneId)
+      setPendingPaneFocus({ paneId: created.paneId })
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to split pane')
     } finally {
@@ -2702,6 +2712,8 @@ export function App() {
               currentPaneId={currentPrPane?.id}
               currentPanePath={currentPrPane?.path}
               onAttentionChange={setPrsAttention}
+              liveTargetIds={livePaneTargetIds}
+              onJumpToTarget={jumpToPaneTarget}
             />
           </div>
           <button type="button" className="quick-jump" onClick={() => setPaletteOpen(true)}>

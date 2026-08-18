@@ -29,6 +29,7 @@ export type PrSummary = {
   baseRefName: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
+  commandoMarker: CommandoPrMarker | null
 }
 export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
 export type PrThreads = { repo: string; number: number; threads: PrThreadExcerpt[]; truncated: boolean; fetchedAt: number }
@@ -87,3 +88,4 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       (await request<{ prefs: PrPreferences }>('/prefs', { method: 'PUT', body: JSON.stringify(patch) })).prefs,
   }
 }
+import type { CommandoPrMarker } from '../shared/pane-target'

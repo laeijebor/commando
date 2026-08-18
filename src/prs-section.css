@@ -240,6 +240,18 @@
   line-height: 1.3;
 }
 
+.pr-pane-link {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pr-pane-link:hover,
+.pr-pane-link:focus-visible {
+  color: var(--accent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
 .pr-chip.ok, .pr-chip.pass { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, var(--border)); }
 .pr-chip.bad, .pr-chip.fail { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--border)); }
 .pr-chip.warn, .pr-chip.pending { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }

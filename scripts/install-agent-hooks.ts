@@ -7,4 +7,5 @@ console.log(`Commando agent hooks installed:
   Claude bridge: ${installed.claudeBridgePath}
   OpenCode plugin: ${installed.openCodePluginPath}
   Session update CLI: ${installed.sessionBriefCliPath}
+  PR marker CLI: ${installed.prMarkerCliPath}
   Hook token: ${installed.tokenPath}`)

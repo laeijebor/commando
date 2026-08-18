@@ -316,6 +316,28 @@ describe('pull request listing', () => {
     expect(pr.requestedReviewers).toEqual(['dana'])
   })
 
+  it('parses a canonical Commando marker and removes it from the visible excerpt', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    const marker = `<!-- commando:v1 target=${targetId} relation=created -->`
+    const { service } = serviceWith(graphqlPayload([
+      pullRequestNode({ body: `Ships pane linking.\n\n${marker}` }),
+    ]))
+
+    const pr = (await service.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    expect(pr.commandoMarker).toEqual({ version: 1, targetId, relation: 'created' })
+    expect(pr.bodyExcerpt).toBe('Ships pane linking.')
+  })
+
+  it('fails closed when a PR body contains conflicting Commando markers', async () => {
+    const body = [
+      '<!-- commando:v1 target=550e8400-e29b-41d4-a716-446655440000 relation=created -->',
+      '<!-- commando:v1 target=6ba7b810-9dad-41d1-80b4-00c04fd430c8 relation=created -->',
+    ].join('\n')
+    const { service } = serviceWith(graphqlPayload([pullRequestNode({ body })]))
+
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].commandoMarker).toBeNull()
+  })
+
   it('maps the state filter onto the search queries', async () => {
     const open = serviceWith(graphqlPayload([]))
     await open.service.listPullRequests('acme/widgets', 'open')

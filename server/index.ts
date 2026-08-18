@@ -66,6 +66,7 @@ import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
+import { PaneTargetApi } from './pane-target-api.js'
 import { SessionBriefStore } from './session-briefs.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
@@ -1251,6 +1252,13 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
+  const paneTargetApi = new PaneTargetApi({
+    token: agentHookToken,
+    paneTarget: (paneId) => {
+      const pane = paneForId(paneId)
+      return pane ? { targetId: pane.targetId } : null
+    },
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
@@ -1699,6 +1707,7 @@ async function main(): Promise<void> {
 
       if (await agentStatusHooks.handle(request, response, url)) return
       if (await sessionBriefApi.handle(request, response, url)) return
+      if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
 

@@ -57,13 +57,15 @@ function fileName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave }: {
+function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, targetIsLive, onJumpToTarget }: {
   pr: PrSummary
   position: { top: number; left: number }
   threads: PrThreads | null
   threadsFailed: boolean
   onEnter: () => void
   onLeave: () => void
+  targetIsLive: boolean
+  onJumpToTarget?: (targetId: string) => void
 }) {
   const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
   const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
@@ -148,6 +150,15 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave }: {
         </div>
       ) : null}
       <div className="pr-pop-actions">
+        {targetIsLive && pr.commandoMarker ? (
+          <button
+            type="button"
+            className="pr-pop-btn primary"
+            onClick={() => onJumpToTarget?.(pr.commandoMarker!.targetId)}
+          >
+            Jump to pane
+          </button>
+        ) : null}
         <a className="pr-pop-btn primary" href={pr.url} target="_blank" rel="noreferrer">Open on GitHub</a>
         <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
         <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
@@ -158,15 +169,19 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave }: {
   )
 }
 
-function PrCard({ pr, viewer, repo, api }: {
+function PrCard({ pr, viewer, repo, api, liveTargetIds, onJumpToTarget }: {
   pr: PrSummary
   viewer: string
   repo: string
   api: ReturnType<typeof createPrsApi>
+  liveTargetIds: ReadonlySet<string>
+  onJumpToTarget?: (targetId: string) => void
 }) {
   const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
   const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
   const attention = pr.state === 'open' && (pr.conflicting || (pr.viewerIsAuthor && pr.checks?.state === 'fail'))
+  const targetId = pr.commandoMarker?.targetId
+  const targetIsLive = targetId !== undefined && liveTargetIds.has(targetId)
 
   const cardRef = useRef<HTMLElement | null>(null)
   const openTimer = useRef<number | null>(null)
@@ -238,6 +253,8 @@ function PrCard({ pr, viewer, repo, api }: {
           threadsFailed={threadsFailed}
           onEnter={keepOpen}
           onLeave={scheduleClose}
+          targetIsLive={targetIsLive}
+          onJumpToTarget={onJumpToTarget}
         />
       ) : null}
       <div className="pr-meta">
@@ -246,6 +263,16 @@ function PrCard({ pr, viewer, repo, api }: {
           <span className="minus">−{formatCount(pr.deletions)}</span>
         </span>
         <ChecksChip checks={pr.checks} />
+        {targetIsLive ? (
+          <button
+            type="button"
+            className="pr-chip pr-pane-link"
+            aria-label={`Jump to producing pane for PR #${pr.number}`}
+            onClick={() => onJumpToTarget?.(targetId)}
+          >
+            pane
+          </button>
+        ) : null}
         {pr.unresolvedThreads > 0 ? (
           <span className="pr-chip warn">{pr.unresolvedThreads}{pr.threadsTruncated ? '+' : ''} unresolved</span>
         ) : null}
@@ -268,11 +295,15 @@ export function PrsSection({
   currentPaneId,
   currentPanePath,
   onAttentionChange,
+  liveTargetIds = new Set<string>(),
+  onJumpToTarget,
 }: {
   token: string
   currentPaneId?: string | null
   currentPanePath?: string | null
   onAttentionChange?: (attention: boolean) => void
+  liveTargetIds?: ReadonlySet<string>
+  onJumpToTarget?: (targetId: string) => void
 }) {
   const api = useMemo(() => createPrsApi(token), [token])
   const listCache = useRef(new Map<string, PrList>())
@@ -572,19 +603,19 @@ export function PrsSection({
             {groups.yours.length > 0 ? (
               <section className="prs-group" aria-label="Your pull requests">
                 <header><strong>Yours</strong><small>{groups.yours.length}</small></header>
-                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
+                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} key={pr.number} />)}
               </section>
             ) : null}
             {groups.needsReview.length > 0 ? (
               <section className="prs-group" aria-label="Pull requests awaiting your review">
                 <header><strong>Needs your review</strong><small>{groups.needsReview.length}</small></header>
-                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
+                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} key={pr.number} />)}
               </section>
             ) : null}
             {showEveryone && groups.everyone.length > 0 ? (
               <section className="prs-group" aria-label="Everyone's pull requests">
                 <header><strong>Everyone&rsquo;s</strong><small>{groups.everyone.length}</small></header>
-                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} key={pr.number} />)}
+                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} key={pr.number} />)}
               </section>
             ) : null}
             {list.mineTruncated ? (
