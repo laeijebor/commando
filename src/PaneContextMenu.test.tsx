@@ -8,6 +8,29 @@ import { PaneContextMenu } from './PaneContextMenu'
 afterEach(cleanup)
 
 describe('PaneContextMenu', () => {
+  it('dismisses on an outside pointer press without dismissing inside the menu', () => {
+    const onClose = vi.fn()
+    const { container } = render(
+      <PaneContextMenu
+        paneLabel="api"
+        x={50}
+        y={60}
+        onClose={onClose}
+        onRename={vi.fn()}
+        onSplit={vi.fn()}
+        onKill={vi.fn()}
+      />,
+    )
+
+    fireEvent.pointerDown(screen.getByRole('menu'))
+    expect(onClose).not.toHaveBeenCalled()
+
+    const backdrop = container.querySelector('.pane-context-menu-backdrop')
+    expect(backdrop).toHaveAttribute('data-native-terminal-occluder', '')
+    fireEvent.pointerDown(backdrop!)
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it.each(['up', 'down', 'left', 'right'] as const)('selects the %s split direction', (direction) => {
     const onClose = vi.fn()
     const onSplit = vi.fn()
