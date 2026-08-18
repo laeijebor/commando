@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pane status signals</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-synthesis: none;
+      --surface-deep: #0a0812;
+      --bg: #0c0a14;
+      --surface: #100d1a;
+      --surface-raised: #131020;
+      --surface-soft: #181428;
+      --surface-hover: #1f1a31;
+      --border: #2c2542;
+      --border-mid: #363048;
+      --border-strong: #443a63;
+      --text: #f5f3fa;
+      --text-soft: #c6c0d6;
+      --text-dim: #655f78;
+      --muted: #8f87a6;
+      --muted-dim: #7a7590;
+      --green: #85f4b1;
+      --accent: #b9a3ff;
+      --accent-ink: #0e0a1c;
+      --cyan: #73d9e2;
+      --amber: #f3c66b;
+      --red: #ff8d89;
+      --purple: #b9a3ff;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --terminal-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+      --redline-accent: var(--accent);
+      --redline-accent2: var(--cyan);
+    }
+
+    * { box-sizing: border-box; min-width: 0; }
+    html { scroll-behavior: smooth; background: var(--bg); }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 8% -5%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 420px),
+        radial-gradient(circle at 96% 10%, color-mix(in srgb, var(--cyan) 7%, transparent), transparent 460px),
+        var(--bg);
+      overflow-x: hidden;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    svg { width: 16px; height: 16px; stroke-width: 1.8; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .artifact {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+      padding: 24px clamp(14px, 3vw, 32px) 64px;
+    }
+    .artifact-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 18px;
+      padding: 16px 0 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .eyebrow, .section-kicker, .micro-label {
+      color: var(--accent);
+      font: 700 10px/1 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(28px, 5vw, 52px); line-height: .96; letter-spacing: -.045em; }
+    h2 { margin-bottom: 8px; font-size: clamp(21px, 3vw, 30px); letter-spacing: -.035em; }
+    h3 { margin-bottom: 6px; font-size: 17px; letter-spacing: -.02em; }
+    .lead { max-width: 64ch; margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.6; }
+    .status-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid color-mix(in srgb, var(--green) 28%, var(--border));
+      border-radius: 999px;
+      color: var(--green);
+      background: color-mix(in srgb, var(--green) 7%, var(--surface));
+      font: 700 9px/1 var(--mono);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .status-tag::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; box-shadow: 0 0 10px currentColor; }
+    .jump-nav { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px 0 0; }
+    .jump-nav a {
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--surface-raised);
+      font: 600 9px/1 var(--mono);
+      text-decoration: none;
+    }
+    .jump-nav a:hover { color: var(--text); border-color: var(--border-strong); }
+
+    section[data-redline-section] { scroll-margin-top: 20px; }
+    .section { margin-top: 34px; }
+    .section-intro { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 15px; }
+    .section-intro > div { max-width: 68ch; }
+    .section-intro p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .principle {
+      min-height: 118px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--surface-raised) 90%, transparent);
+    }
+    .principle strong { display: block; margin: 11px 0 5px; color: var(--text-soft); font-size: 12px; }
+    .principle p { margin: 0; color: var(--muted-dim); font-size: 10px; line-height: 1.5; }
+    .principle svg { color: var(--accent); }
+
+    .concept-list { display: grid; gap: 18px; }
+    .concept {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--surface-raised) 94%, transparent);
+      box-shadow: 0 20px 55px rgba(0, 0, 0, .22);
+    }
+    .concept.recommended { border-color: color-mix(in srgb, var(--accent) 56%, var(--border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 24px 70px rgba(0,0,0,.35); }
+    .concept-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 12px;
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .concept-number {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      color: var(--accent);
+      background: var(--surface-soft);
+      font: 800 10px/1 var(--mono);
+    }
+    .concept-head h3 { margin: 0; }
+    .concept-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .recommend-badge { padding: 5px 7px; border-radius: 999px; color: var(--accent-ink); background: var(--accent); font: 800 8px/1 var(--mono); text-transform: uppercase; }
+    .demo-toolbar { display: flex; gap: 5px; flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--bg); }
+    .state-button {
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--surface-raised);
+      font: 700 9px/1 var(--mono);
+      cursor: pointer;
+    }
+    .state-button:hover, .state-button.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+    .demo-state-copy { margin-left: auto; align-self: center; color: var(--muted-dim); font: 600 8px/1 var(--mono); }
+
+    .cockpit-preview { padding: 12px; background: #09070f; }
+    .preview-topbar {
+      height: 30px;
+      display: grid;
+      grid-template-columns: 155px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      background: var(--surface-deep);
+      font: 700 8px/1 var(--mono);
+    }
+    .preview-brand { display: flex; align-items: center; gap: 6px; }
+    .preview-brand i { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 5px; color: var(--accent-ink); background: var(--accent); font-style: normal; }
+    .preview-location { overflow: hidden; color: var(--muted-dim); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+    .preview-live { color: var(--green); }
+    .pane-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      padding: 1px;
+      border: 1px solid var(--border);
+      background: var(--border);
+    }
+    .mini-pane {
+      position: relative;
+      min-height: 137px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: var(--surface-deep);
+    }
+    .mini-head {
+      min-height: 27px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 5px;
+      border-bottom: 1px solid var(--surface-hover);
+      background: var(--surface);
+      transition: 180ms ease;
+    }
+    .mini-icon { width: 17px; height: 17px; flex: 0 0 17px; display: grid; place-items: center; border-radius: 5px; color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+    .mini-icon svg { width: 10px; height: 10px; }
+    .mini-heading { min-width: 0; flex: 1; }
+    .mini-heading strong, .mini-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mini-heading strong { color: var(--text-soft); font-size: 8px; }
+    .mini-heading small { margin-top: 2px; color: var(--muted-dim); font: 500 6px/1 var(--mono); }
+    .mini-index, .agent-pill { flex: 0 0 auto; padding: 3px 5px; border-radius: 999px; color: var(--muted-dim); background: var(--surface-soft); font: 700 6px/1 var(--mono); text-transform: uppercase; }
+    .agent-pill.working { color: var(--green); }
+    .agent-pill.needs { color: var(--amber); }
+    .terminal-copy { padding: 8px; overflow: hidden; color: #a9a5b2; background: #0a0a0a; font: 500 7px/1.6 var(--terminal-mono); }
+    .terminal-copy p { margin: 0; white-space: nowrap; }
+    .terminal-copy .prompt { color: var(--green); }
+    .terminal-copy .command { color: #e6e3eb; }
+    .terminal-copy .dim { color: #56515f; }
+    .terminal-copy .accent-line { color: var(--accent); }
+    .mini-footer { min-height: 17px; display: flex; align-items: center; gap: 5px; padding: 1px 5px; border-top: 1px solid var(--surface-hover); color: var(--muted-dim); background: var(--bg); font: 500 6px/1 var(--mono); }
+    .mini-footer i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+    .mini-footer span:last-child { margin-left: auto; }
+
+    .manual-chip { display: none; align-items: center; gap: 4px; flex: 0 0 auto; padding: 4px 6px; border-radius: 4px; font: 900 6px/1 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .manual-chip svg { width: 8px; height: 8px; }
+    .marked .manual-chip { display: inline-flex; }
+    .concept-demo[data-state="idle"] .marked .manual-chip { display: none; }
+
+    /* Option A: the entire pane becomes the marker. */
+    .style-frame .marked { box-shadow: inset 0 0 0 3px var(--amber); }
+    .style-frame .marked .mini-head { padding-left: 8px; color: var(--amber); background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 24%, var(--surface)), var(--surface)); }
+    .style-frame .marked .manual-chip { color: #171005; background: var(--amber); }
+    .style-frame[data-state="activity"] .marked { box-shadow: inset 0 0 0 3px var(--cyan), 0 0 22px color-mix(in srgb, var(--cyan) 34%, transparent); }
+    .style-frame[data-state="activity"] .marked .mini-head { background: linear-gradient(90deg, color-mix(in srgb, var(--cyan) 30%, var(--surface)), color-mix(in srgb, var(--accent) 16%, var(--surface))); }
+    .style-frame[data-state="activity"] .marked .manual-chip { color: #061417; background: var(--cyan); }
+
+    /* Option B: a loud flag in the header, leaving the terminal untouched. */
+    .style-flag .marked .mini-head { min-height: 33px; align-items: flex-start; padding-top: 4px; }
+    .style-flag .marked .manual-chip { align-self: stretch; border-radius: 0 0 5px 5px; color: #171005; background: var(--amber); box-shadow: 0 4px 14px color-mix(in srgb, var(--amber) 22%, transparent); }
+    .style-flag[data-state="activity"] .marked .manual-chip { color: #071218; background: var(--cyan); animation: flag-beacon 1.6s ease-in-out infinite; }
+    .style-flag[data-state="activity"] .marked .manual-chip::after { content: " +3"; }
+
+    /* Option C: persistent semantic rail + a separate activity alarm. */
+    .style-rail .marked::before {
+      position: absolute;
+      z-index: 3;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--amber);
+      box-shadow: 0 0 14px color-mix(in srgb, var(--amber) 55%, transparent);
+      content: "";
+    }
+    .style-rail .marked .mini-head, .style-rail .marked .mini-footer { padding-left: 9px; }
+    .style-rail .marked .manual-chip { color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); }
+    .activity-alarm { display: none; position: absolute; z-index: 4; top: 27px; right: 0; left: 5px; height: 16px; align-items: center; padding: 0 6px; color: #061418; background: var(--cyan); font: 900 6px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; box-shadow: 0 5px 18px color-mix(in srgb, var(--cyan) 26%, transparent); }
+    .activity-alarm span { margin-left: auto; }
+    .style-rail[data-state="activity"] .marked::before { background: repeating-linear-gradient(180deg, var(--amber) 0 9px, var(--cyan) 9px 18px); background-size: 100% 36px; animation: chase 1.1s linear infinite; }
+    .style-rail[data-state="activity"] .marked .activity-alarm { display: flex; }
+    .style-rail[data-state="activity"] .marked .terminal-copy { padding-top: 24px; }
+
+    @keyframes chase { to { background-position-y: 36px; } }
+    @keyframes flag-beacon { 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 22%, transparent), 0 0 20px color-mix(in srgb, var(--cyan) 44%, transparent); } }
+
+    .concept-foot {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--border);
+    }
+    .concept-foot > div { padding: 12px 14px; border-right: 1px solid var(--border); }
+    .concept-foot > div:last-child { border-right: 0; }
+    .concept-foot strong { display: block; margin-bottom: 4px; color: var(--text-soft); font-size: 10px; }
+    .concept-foot p { margin: 0; color: var(--muted-dim); font-size: 9px; line-height: 1.45; }
+
+    .detail-stage {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 255px;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+      border-radius: 12px;
+      background: var(--surface-raised);
+    }
+    .detail-pane {
+      position: relative;
+      min-height: 320px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--surface-deep);
+      box-shadow: inset 5px 0 var(--amber);
+    }
+    .detail-pane.activity { box-shadow: inset 5px 0 var(--amber), inset 10px 0 var(--cyan), 0 0 28px color-mix(in srgb, var(--cyan) 13%, transparent); }
+    .detail-head { min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 4px 7px 4px 14px; border-bottom: 1px solid var(--surface-hover); background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 10%, var(--surface)), var(--surface)); }
+    .detail-head .mini-icon { width: 20px; height: 20px; flex-basis: 20px; }
+    .detail-head .mini-heading strong { font-size: 10px; }
+    .detail-head .mini-heading small { font-size: 7px; }
+    .detail-manual { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent); border-radius: 5px; color: var(--amber); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); font: 900 7px/1 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .detail-actions { display: flex; gap: 2px; }
+    .detail-actions button { width: 23px; height: 23px; display: grid; place-items: center; border: 0; border-radius: 5px; color: var(--muted-dim); background: transparent; }
+    .detail-actions button:hover { color: var(--text); background: var(--surface-hover); }
+    .detail-actions svg { width: 12px; height: 12px; }
+    .detail-alarm { min-height: 23px; display: flex; align-items: center; gap: 7px; padding: 0 10px 0 14px; color: #061418; background: var(--cyan); font: 900 7px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .detail-alarm span { margin-left: auto; }
+    .detail-terminal { padding: 13px 16px; color: #aaa5b4; background: #0a0a0a; font: 500 9px/1.65 var(--terminal-mono); overflow: hidden; }
+    .detail-terminal p { margin: 0; white-space: nowrap; }
+    .detail-terminal .prompt { color: var(--green); }
+    .detail-terminal .command { color: #f0edf5; }
+    .detail-terminal .new-output { margin: 9px -5px 0; padding: 7px 5px; border-left: 2px solid var(--cyan); color: var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, transparent); }
+    .detail-footer { min-height: 21px; display: flex; align-items: center; gap: 6px; padding: 2px 7px 2px 14px; border-top: 1px solid var(--surface-hover); color: var(--muted-dim); background: var(--bg); font: 600 7px/1 var(--mono); }
+    .detail-footer .ack { margin-left: auto; color: var(--cyan); }
+    .mark-menu { align-self: start; overflow: hidden; border: 1px solid var(--border-mid); border-radius: 8px; background: var(--surface); box-shadow: 0 18px 44px rgba(0,0,0,.48); }
+    .mark-menu h3 { margin: 0; padding: 11px 12px 9px; border-bottom: 1px solid var(--surface-hover); color: var(--muted-dim); font: 800 8px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .menu-group-label { padding: 11px 11px 5px; color: var(--muted-dim); font: 700 7px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .mark-option { width: 100%; min-height: 34px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 10px; border: 0; color: var(--text-soft); background: transparent; text-align: left; cursor: pointer; }
+    .mark-option:hover, .mark-option.selected { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .mark-option i { width: 8px; height: 8px; border-radius: 2px; background: currentColor; box-shadow: 0 0 8px currentColor; }
+    .mark-option strong { font-size: 10px; }
+    .mark-option small { color: var(--muted-dim); font: 600 7px/1 var(--mono); }
+    .mark-option[data-color="green"] { color: var(--green); }
+    .mark-option[data-color="amber"] { color: var(--amber); }
+    .mark-option[data-color="red"] { color: var(--red); }
+    .mark-option[data-color="purple"] { color: var(--accent); }
+    .shortcut { display: flex; justify-content: space-between; gap: 8px; padding: 10px 11px; border-top: 1px solid var(--surface-hover); color: var(--muted-dim); font: 600 7px/1.3 var(--mono); }
+    kbd { padding: 2px 4px; border: 1px solid var(--border-mid); border-radius: 4px; background: var(--surface-deep); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      align-items: stretch;
+    }
+    .flow-step { position: relative; padding: 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+    .flow-step:not(:last-child)::after { position: absolute; z-index: 2; top: 26px; right: -13px; width: 17px; height: 1px; background: var(--border-strong); content: ""; }
+    .flow-step b { display: grid; width: 23px; height: 23px; place-items: center; margin-bottom: 12px; border-radius: 7px; color: var(--accent-ink); background: var(--accent); font: 800 9px/1 var(--mono); }
+    .flow-step strong { display: block; margin-bottom: 5px; color: var(--text-soft); font-size: 11px; }
+    .flow-step p { margin: 0; color: var(--muted-dim); font-size: 9px; line-height: 1.5; }
+    .flow-step.hot { border-color: color-mix(in srgb, var(--cyan) 48%, var(--border)); background: color-mix(in srgb, var(--cyan) 6%, var(--surface)); }
+    .flow-step.hot b { color: #061418; background: var(--cyan); }
+
+    .decision-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: 12px; align-items: start; }
+    .verdict { padding: 17px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border)); border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 11%, var(--surface)), var(--surface-raised)); }
+    .verdict h3 { margin-top: 8px; }
+    .verdict > p { color: var(--text-soft); font-size: 12px; line-height: 1.55; }
+    .verdict ul { margin: 14px 0 0; padding: 0; list-style: none; }
+    .verdict li { display: flex; gap: 8px; padding: 7px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .verdict li::before { color: var(--green); content: "✓"; font-weight: 900; }
+    .questions { display: grid; gap: 10px; }
+
+    .source-note { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted-dim); font: 500 8px/1.6 var(--mono); }
+    .source-note code { color: var(--text-soft); }
+
+    @media (max-width: 900px) {
+      .principles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail-stage, .decision-grid { grid-template-columns: 1fr; }
+      .mark-menu { width: min(340px, 100%); }
+    }
+    @media (max-width: 680px) {
+      .artifact { padding-inline: 10px; }
+      .artifact-head { grid-template-columns: 1fr; align-items: start; }
+      .section-intro { display: block; }
+      .pane-grid { grid-template-columns: 1fr 1fr; }
+      .concept-foot, .flow { grid-template-columns: 1fr; }
+      .concept-foot > div { border-right: 0; border-bottom: 1px solid var(--border); }
+      .concept-foot > div:last-child { border-bottom: 0; }
+      .flow-step:not(:last-child)::after { display: none; }
+      .demo-state-copy { width: 100%; margin-left: 0; }
+      .preview-topbar { grid-template-columns: 1fr auto; }
+      .preview-location { display: none; }
+    }
+    @media (max-width: 420px) {
+      .principles, .pane-grid { grid-template-columns: 1fr; }
+      .concept-head { grid-template-columns: auto minmax(0, 1fr); }
+      .recommend-badge { grid-column: 2; justify-self: start; }
+      .mini-pane { min-height: 128px; }
+      .detail-head { flex-wrap: wrap; }
+      .detail-actions { margin-left: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="artifact">
+    <header class="artifact-head">
+      <div>
+        <span class="eyebrow">Commando / pane awareness</span>
+        <h1>Make marked panes impossible to miss.</h1>
+        <p class="lead">Three source-faithful directions for manually marking a pane, then escalating it when meaningful agent activity happens after the mark.</p>
+      </div>
+      <span class="status-tag">Ready for review</span>
+    </header>
+    <nav class="jump-nav" aria-label="Artifact sections">
+      <a href="#principles">Design rules</a>
+      <a href="#concepts">Three directions</a>
+      <a href="#recommended-detail">Recommended detail</a>
+      <a href="#behavior">Behavior</a>
+      <a href="#decision">Decision</a>
+    </nav>
+
+    <section id="principles" data-redline-section data-redline-label="Design rules" class="section">
+      <div class="section-intro">
+        <div>
+          <span class="section-kicker">What the signal must do</span>
+          <h2>Two states, readable across a wall of panes</h2>
+          <p>The manual mark and post-mark activity should never collapse into one ambiguous “busy” color. The pane must retain the user’s intent while adding a second, unmistakable alarm.</p>
+        </div>
+      </div>
+      <div class="principles">
+        <article class="principle" id="rule-distance">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12h16M4 12l3-3m-3 3 3 3m13-3-3-3m3 3-3 3"/></svg>
+          <strong>Visible at a glance</strong>
+          <p>Shape and placement do the work before labels become readable.</p>
+        </article>
+        <article class="principle" id="rule-dual-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 4v16M12 4v16M19 4v16"/></svg>
+          <strong>Preserve both facts</strong>
+          <p>“Waiting for PR” remains visible when “new activity” is added.</p>
+        </article>
+        <article class="principle" id="rule-quiet">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12h3l2-7 4 14 2-7h5"/></svg>
+          <strong>Escalate meaningfully</strong>
+          <p>Trigger on semantic agent milestones, not spinner churn or every byte.</p>
+        </article>
+        <article class="principle" id="rule-accessible">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/></svg>
+          <strong>More than color</strong>
+          <p>Rail, label, motion, and count remain legible across themes.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="concepts" data-redline-section data-redline-label="Three directions" class="section">
+      <div class="section-intro">
+        <div>
+          <span class="section-kicker">Interactive comparison</span>
+          <h2>Try each direction in both states</h2>
+          <p>Use “Marked” and “Activity arrived” above each mockup. The same pane, labels, terminal content, and grid density are held constant.</p>
+        </div>
+      </div>
+      <div class="concept-list">
+        <article class="concept" id="concept-frame">
+          <header class="concept-head">
+            <span class="concept-number">01</span>
+            <div><h3>Full-frame takeover</h3><p>The entire pane border and header wash carry the status. Activity swaps the frame to cyan.</p></div>
+          </header>
+          <div class="concept-demo style-frame" data-state="marked">
+            <div class="demo-toolbar">
+              <button class="state-button" data-demo-state="idle">Idle</button>
+              <button class="state-button active" data-demo-state="marked">Marked</button>
+              <button class="state-button" data-demo-state="activity">Activity arrived</button>
+              <span class="demo-state-copy">State: <b>Waiting for PR</b></span>
+            </div>
+            <div class="cockpit-preview">
+              <div class="preview-topbar"><span class="preview-brand"><i>⌘</i> Commando</span><span class="preview-location">workspace / release-train</span><span class="preview-live">● Live</span></div>
+              <div class="pane-grid"></div>
+            </div>
+          </div>
+          <footer class="concept-foot"><div><strong>Visibility</strong><p>Highest. The frame survives peripheral vision and a 20-pane grid.</p></div><div><strong>Tradeoff</strong><p>Visually expensive; several marked panes can make the cockpit feel alarmed.</p></div><div><strong>Best for</strong><p>Rare, urgent statuses such as blocked deploys or release holds.</p></div></footer>
+        </article>
+
+        <article class="concept" id="concept-flag">
+          <header class="concept-head">
+            <span class="concept-number">02</span>
+            <div><h3>Header flag</h3><p>A chunky hanging label occupies header space. Activity adds a count and beacon.</p></div>
+          </header>
+          <div class="concept-demo style-flag" data-state="marked">
+            <div class="demo-toolbar">
+              <button class="state-button" data-demo-state="idle">Idle</button>
+              <button class="state-button active" data-demo-state="marked">Marked</button>
+              <button class="state-button" data-demo-state="activity">Activity arrived</button>
+              <span class="demo-state-copy">State: <b>Waiting for PR</b></span>
+            </div>
+            <div class="cockpit-preview">
+              <div class="preview-topbar"><span class="preview-brand"><i>⌘</i> Commando</span><span class="preview-location">workspace / release-train</span><span class="preview-live">● Live</span></div>
+              <div class="pane-grid"></div>
+            </div>
+          </div>
+          <footer class="concept-foot"><div><strong>Visibility</strong><p>Strong label recognition with little interference in terminal content.</p></div><div><strong>Tradeoff</strong><p>Consumes scarce header width and degrades first on very narrow panes.</p></div><div><strong>Best for</strong><p>Teams that rely on named workflow states more than color.</p></div></footer>
+        </article>
+
+        <article class="concept recommended" id="concept-rail">
+          <header class="concept-head">
+            <span class="concept-number">03</span>
+            <div><h3>Semantic rail + activity alarm</h3><p>A persistent rail carries the manual mark. New activity adds a separate cyan strip and moving two-tone rail.</p></div>
+            <span class="recommend-badge">Recommended</span>
+          </header>
+          <div class="concept-demo style-rail" data-state="marked">
+            <div class="demo-toolbar">
+              <button class="state-button" data-demo-state="idle">Idle</button>
+              <button class="state-button active" data-demo-state="marked">Marked</button>
+              <button class="state-button" data-demo-state="activity">Activity arrived</button>
+              <span class="demo-state-copy">State: <b>Waiting for PR</b></span>
+            </div>
+            <div class="cockpit-preview">
+              <div class="preview-topbar"><span class="preview-brand"><i>⌘</i> Commando</span><span class="preview-location">workspace / release-train</span><span class="preview-live">● Live</span></div>
+              <div class="pane-grid"></div>
+            </div>
+          </div>
+          <footer class="concept-foot"><div><strong>Visibility</strong><p>Distinct silhouette at grid scale; label remains available in the header.</p></div><div><strong>Tradeoff</strong><p>Needs a clear rule for acknowledging new activity without clearing the mark.</p></div><div><strong>Best for</strong><p>Mixed statuses across 12–20 panes where calm and urgency must coexist.</p></div></footer>
+        </article>
+      </div>
+    </section>
+
+    <section id="recommended-detail" data-redline-section data-redline-label="Recommended detail" class="section">
+      <div class="section-intro">
+        <div>
+          <span class="section-kicker">Focused at 1:1 scale</span>
+          <h2>The mark persists; activity layers on top</h2>
+          <p>The rail is semantic amber for “Waiting for PR.” The cyan alarm means “something happened since you marked this,” with a count and timestamp. Acknowledge the alarm without losing the original status.</p>
+        </div>
+      </div>
+      <div class="detail-stage">
+        <article class="detail-pane activity" id="recommended-pane">
+          <header class="detail-head">
+            <span class="mini-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 8V4H8M6 8h12v10H6zM9 12h.01M15 12h.01M9 16h6"/></svg></span>
+            <span class="mini-heading"><strong>release-candidate</strong><small>opencode · /commando</small></span>
+            <span class="agent-pill working">working</span>
+            <span class="detail-manual">Waiting for PR</span>
+            <span class="mini-index">7</span>
+            <span class="detail-actions"><button aria-label="Maximize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button></span>
+          </header>
+          <div>
+            <div class="detail-alarm">● Activity since mark <span>3 events · 2m</span></div>
+            <div class="detail-terminal">
+              <p><span class="prompt">commando</span> <span class="command">git status --short</span></p>
+              <p class="dim"> M src/App.tsx</p>
+              <p class="dim"> M src/styles.css</p>
+              <p class="new-output">Agent update: PR checks passed; review requested</p>
+              <p><span class="prompt">commando</span> <span class="command">npm test</span></p>
+              <p>Test Files&nbsp; 98 passed (98)</p>
+              <p>Tests&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 1,074 passed</p>
+            </div>
+          </div>
+          <footer class="detail-footer"><span>● Focused / keys go here</span><span class="ack">Acknowledge activity ⇧⌘A</span></footer>
+        </article>
+        <aside class="mark-menu" id="status-menu">
+          <h3>Mark release-candidate</h3>
+          <div class="menu-group-label">Status</div>
+          <button class="mark-option selected" data-color="amber"><i></i><strong>Waiting for PR</strong><small>⌘1</small></button>
+          <button class="mark-option" data-color="green"><i></i><strong>Ready to merge</strong><small>⌘2</small></button>
+          <button class="mark-option" data-color="red"><i></i><strong>Blocked</strong><small>⌘3</small></button>
+          <button class="mark-option" data-color="purple"><i></i><strong>Release window</strong><small>⌘4</small></button>
+          <button class="mark-option"><i></i><strong>Parked</strong><small>⌘5</small></button>
+          <div class="shortcut"><span>Pane menu or command palette</span><kbd>⇧⌘M</kbd></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="behavior" data-redline-section data-redline-label="Behavior" class="section">
+      <div class="section-intro">
+        <div>
+          <span class="section-kicker">State model</span>
+          <h2>A mark is a durable intent, not a notification</h2>
+          <p>Activity only changes the presentation. It never silently clears or replaces the user’s chosen status.</p>
+        </div>
+      </div>
+      <div class="flow">
+        <article class="flow-step" id="flow-mark"><b>1</b><strong>Mark the pane</strong><p>Context menu, command palette, or ⇧⌘M. Choose a named status and optional note.</p></article>
+        <article class="flow-step" id="flow-persist"><b>2</b><strong>Persist with the pane</strong><p>Show the same rail in the grid, session tree, maximized view, and after reload.</p></article>
+        <article class="flow-step hot" id="flow-activity"><b>3</b><strong>Activity arrives</strong><p>Meaningful agent milestone adds a cyan alarm, count, and timestamp without changing the mark.</p></article>
+        <article class="flow-step" id="flow-ack"><b>4</b><strong>Acknowledge separately</strong><p>Clear the activity alarm or open recent events. Keep, change, or remove the manual mark explicitly.</p></article>
+      </div>
+    </section>
+
+    <section id="decision" data-redline-section data-redline-label="Decision" class="section">
+      <div class="section-intro">
+        <div>
+          <span class="section-kicker">Recommendation</span>
+          <h2>Use the rail as identity and the alarm as change</h2>
+          <p>This is the only direction where the two facts remain visually independent at both pane scale and session-tree scale.</p>
+        </div>
+      </div>
+      <div class="decision-grid">
+        <article class="verdict" id="verdict">
+          <span class="micro-label">Recommended direction</span>
+          <h3>Semantic rail + activity alarm</h3>
+          <p>Keep the pane calm after marking, then deliberately break that calm only when something meaningful happens.</p>
+          <ul>
+            <li>Named statuses: Waiting for PR, Ready to merge, Blocked, Release window, Parked.</li>
+            <li>Default trigger: semantic lifecycle or agent milestones; optional “any output” mode per mark.</li>
+            <li>Activity acknowledgement is separate from clearing or changing the manual mark.</li>
+            <li>Mirror the rail as a square marker in the session tree and as a count in the session row.</li>
+          </ul>
+        </article>
+        <div class="questions" id="review-questions">
+          <redline-choice key="pane-status-direction" prompt="Which visual direction should we take forward?" options="Semantic rail + activity alarm,Full-frame takeover,Header flag"></redline-choice>
+          <redline-choice key="pane-status-trigger" prompt="What should trigger the post-mark activity alarm by default?" options="Meaningful agent milestones,Any terminal output,Configurable each time"></redline-choice>
+          <redline-ask key="pane-status-labels" prompt="Which status labels would you actually use most?"></redline-ask>
+        </div>
+      </div>
+    </section>
+
+    <footer class="source-note">
+      Visual evidence: <code>src/styles.css</code> pane tokens and 26px header density, <code>src/App.tsx</code> pane chrome and agent pills, <code>src/session-tree.css</code> compact status markers, <code>src/PaneWorklog.tsx</code> pane-local durable state, and <code>src/PaneContextMenu.tsx</code> existing action grammar.
+    </footer>
+  </main>
+
+  <template id="pane-template">
+    <article class="mini-pane">
+      <header class="mini-head">
+        <span class="mini-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 8V4H8M6 8h12v10H6zM9 12h.01M15 12h.01M9 16h6"/></svg></span>
+        <span class="mini-heading"><strong></strong><small></small></span>
+        <span class="agent-pill"></span>
+        <span class="manual-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 3h12v18l-6-4-6 4z"/></svg><span>Waiting PR</span></span>
+        <span class="mini-index"></span>
+      </header>
+      <div class="activity-alarm">● Activity since mark <span>+3</span></div>
+      <div class="terminal-copy"></div>
+      <footer class="mini-footer"><i></i><span>Focused</span><span>96×31</span></footer>
+    </article>
+  </template>
+
+  <script>
+    const panes = [
+      { name: 'release-candidate', detail: 'opencode · /commando', agent: 'working', index: '7', marked: true, lines: ['git status --short', 'M src/App.tsx', 'PR checks passed'] },
+      { name: 'api-contract', detail: 'claude · /gateway', agent: 'needs', index: '3', lines: ['npm run typecheck', 'Waiting on schema answer', '12m idle'] },
+      { name: 'ios-cutover', detail: 'codex · /mobile', agent: 'working', index: '4', lines: ['xcodebuild -scheme App', 'Build succeeded', 'Uploading symbols'] },
+      { name: 'billing-migration', detail: 'opencode · /billing', agent: 'done', index: '8', lines: ['npm test', '144 tests passed', 'Ready for review'] },
+      { name: 'docs-release', detail: 'zsh · /docs', agent: '', index: '1', lines: ['git log --oneline -3', 'Update migration guide', 'Preview on :5173'] },
+      { name: 'hotfix-watch', detail: 'claude · /api', agent: 'working', index: '6', lines: ['railway logs', 'HTTP 5xx: 0.02%', 'Watching deploy'] }
+    ];
+
+    for (const grid of document.querySelectorAll('.pane-grid')) {
+      for (const pane of panes) {
+        const fragment = document.querySelector('#pane-template').content.cloneNode(true);
+        const root = fragment.querySelector('.mini-pane');
+        if (pane.marked) root.classList.add('marked');
+        fragment.querySelector('.mini-heading strong').textContent = pane.name;
+        fragment.querySelector('.mini-heading small').textContent = pane.detail;
+        const agent = fragment.querySelector('.agent-pill');
+        agent.textContent = pane.agent === 'needs' ? 'needs input' : pane.agent;
+        agent.classList.add(pane.agent);
+        if (!pane.agent) agent.remove();
+        fragment.querySelector('.mini-index').textContent = pane.index;
+        fragment.querySelector('.terminal-copy').innerHTML = pane.lines.map((line, index) => `<p class="${index === 0 ? 'command' : index === 2 ? 'accent-line' : 'dim'}">${index === 0 ? '<span class="prompt">$</span> ' : ''}${line}</p>`).join('');
+        grid.append(fragment);
+      }
+    }
+
+    for (const demo of document.querySelectorAll('.concept-demo')) {
+      const stateCopy = demo.querySelector('.demo-state-copy b');
+      for (const button of demo.querySelectorAll('[data-demo-state]')) {
+        button.addEventListener('click', () => {
+          const state = button.dataset.demoState;
+          demo.dataset.state = state;
+          for (const peer of demo.querySelectorAll('[data-demo-state]')) peer.classList.toggle('active', peer === button);
+          stateCopy.textContent = state === 'idle' ? 'Unmarked' : state === 'activity' ? 'Waiting for PR + new activity' : 'Waiting for PR';
+        });
+      }
+    }
+
+    for (const option of document.querySelectorAll('.mark-option')) {
+      option.addEventListener('click', () => {
+        for (const peer of document.querySelectorAll('.mark-option')) peer.classList.toggle('selected', peer === option);
+        document.querySelector('.detail-manual').textContent = option.querySelector('strong').textContent;
+      });
+    }
+  </script>
+  <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+</body>
+</html>
