@@ -42,6 +42,20 @@ describe('PaneWorklog', () => {
     expect(screen.getByLabelText('Minimized worklog for Tests')).toBeInTheDocument()
   })
 
+  it('migrates legacy auto-open preferences to the minimized default', () => {
+    window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({
+      minimized: false,
+      tasksCollapsed: true,
+    }))
+
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    expect(screen.getByLabelText('Minimized worklog for Tests')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem('commando.pane-worklog.$1:%12')).toContain('"visibilitySet":true')
+  })
+
   it('shows the current plan and newest-first activity in its source pane', () => {
     render(<PaneWorklog brief={brief} paneLabel="Tests" />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
@@ -63,7 +77,7 @@ describe('PaneWorklog', () => {
   })
 
   it('persists the minimized and plan-collapse controls per pane identity', () => {
-    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse plan for Tests' }))
@@ -74,6 +88,11 @@ describe('PaneWorklog', () => {
     expect(window.localStorage.getItem('commando.pane-worklog.$1:%12')).toContain('"minimized":true')
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByLabelText('Worklog for Tests')).toBeInTheDocument()
+    expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
+
+    view.unmount()
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
     expect(screen.getByLabelText('Worklog for Tests')).toBeInTheDocument()
     expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
   })

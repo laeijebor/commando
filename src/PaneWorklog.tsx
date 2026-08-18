@@ -24,6 +24,7 @@ const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 type WorklogPreferences = {
   minimized: boolean
   tasksCollapsed: boolean
+  visibilitySet: boolean
 }
 
 const markdownComponents: Components = {
@@ -42,12 +43,14 @@ function preferenceKey(brief: SessionBrief): string {
 function storedPreferences(brief: SessionBrief): WorklogPreferences {
   try {
     const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief)) ?? '{}') as Partial<WorklogPreferences>
+    const visibilitySet = value.visibilitySet === true
     return {
-      minimized: value.minimized !== false,
+      minimized: visibilitySet ? value.minimized !== false : true,
       tasksCollapsed: value.tasksCollapsed === true,
+      visibilitySet,
     }
   } catch {
-    return { minimized: true, tasksCollapsed: false }
+    return { minimized: true, tasksCollapsed: false, visibilitySet: false }
   }
 }
 
@@ -144,7 +147,7 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
   }, [compact, preferences.minimized])
 
   const setMinimized = (minimized: boolean) => {
-    setPreferences((current) => ({ ...current, minimized }))
+    setPreferences((current) => ({ ...current, minimized, visibilitySet: true }))
     if (!minimized) {
       setFollowing(true)
       setUnread(0)
