@@ -80,50 +80,53 @@ export function PaneContextMenu({
   }
 
   return (
-    <div
-      ref={menuRef}
-      className="pane-context-menu"
-      data-native-terminal-occluder=""
-      style={{ left: position.x, top: position.y }}
-      role="menu"
-      aria-label={`Pane actions for ${paneLabel}`}
-      onKeyDown={moveFocus}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <div className="pane-context-menu__title">{paneLabel}</div>
-      <button type="button" role="menuitem" disabled={busy} onClick={() => choose(onRename)}>
-        <Pencil aria-hidden="true" />
-        Rename
-      </button>
-      <div className="pane-context-menu__label">Add pane</div>
-      <div className="pane-context-menu__directions" role="group" aria-label="Add pane direction">
-        <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('up'))}>
-          <ArrowUp aria-hidden="true" /> Up
+    <>
+      <div className="pane-context-menu-backdrop" data-native-terminal-occluder="" aria-hidden="true" />
+      <div
+        ref={menuRef}
+        className="pane-context-menu"
+        data-native-terminal-occluder=""
+        style={{ left: position.x, top: position.y }}
+        role="menu"
+        aria-label={`Pane actions for ${paneLabel}`}
+        onKeyDown={moveFocus}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div className="pane-context-menu__title">{paneLabel}</div>
+        <button type="button" role="menuitem" disabled={busy} onClick={() => choose(onRename)}>
+          <Pencil aria-hidden="true" />
+          Rename
         </button>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('down'))}>
-          <ArrowDown aria-hidden="true" /> Down
-        </button>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('left'))}>
-          <ArrowLeft aria-hidden="true" /> Left
-        </button>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('right'))}>
-          <ArrowRight aria-hidden="true" /> Right
+        <div className="pane-context-menu__label">Add pane</div>
+        <div className="pane-context-menu__directions" role="group" aria-label="Add pane direction">
+          <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('up'))}>
+            <ArrowUp aria-hidden="true" /> Up
+          </button>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('down'))}>
+            <ArrowDown aria-hidden="true" /> Down
+          </button>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('left'))}>
+            <ArrowLeft aria-hidden="true" /> Left
+          </button>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('right'))}>
+            <ArrowRight aria-hidden="true" /> Right
+          </button>
+        </div>
+        {(nativeTerminalAvailable || useXtermFallback) && onUseXtermFallbackChange ? (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => choose(() => onUseXtermFallbackChange(!useXtermFallback))}
+          >
+            <Terminal aria-hidden="true" />
+            {useXtermFallback ? 'Use native terminal' : 'Use xterm fallback'}
+          </button>
+        ) : null}
+        <button type="button" className="danger" role="menuitem" disabled={busy} onClick={() => choose(onKill)}>
+          <Trash2 aria-hidden="true" />
+          Kill pane
         </button>
       </div>
-      {(nativeTerminalAvailable || useXtermFallback) && onUseXtermFallbackChange ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => choose(() => onUseXtermFallbackChange(!useXtermFallback))}
-        >
-          <Terminal aria-hidden="true" />
-          {useXtermFallback ? 'Use native terminal' : 'Use xterm fallback'}
-        </button>
-      ) : null}
-      <button type="button" className="danger" role="menuitem" disabled={busy} onClick={() => choose(onKill)}>
-        <Trash2 aria-hidden="true" />
-        Kill pane
-      </button>
-    </div>
+    </>
   )
 }

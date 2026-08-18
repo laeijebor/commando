@@ -1354,6 +1354,12 @@ kbd {
   gap: 1px;
 }
 
+.pane-context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 79;
+}
+
 .pane-context-menu {
   position: fixed;
   z-index: 80;
