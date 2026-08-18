@@ -331,6 +331,21 @@
     .mark-option[data-color="amber"] { color: var(--amber); }
     .mark-option[data-color="red"] { color: var(--red); }
     .mark-option[data-color="purple"] { color: var(--accent); }
+    .custom-mark-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; padding: 4px 10px 10px; }
+    .custom-mark-form input {
+      width: 100%;
+      height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--border-mid);
+      border-radius: 5px;
+      outline: 0;
+      color: var(--text);
+      background: var(--surface-deep);
+      font: 600 9px/1 var(--mono);
+    }
+    .custom-mark-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+    .custom-mark-form button { min-width: 44px; height: 30px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius: 5px; color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); font: 800 8px/1 var(--mono); text-transform: uppercase; }
+    .custom-mark-form button:hover { color: var(--accent-ink); background: var(--accent); }
     .shortcut { display: flex; justify-content: space-between; gap: 8px; padding: 10px 11px; border-top: 1px solid var(--surface-hover); color: var(--muted-dim); font: 600 7px/1.3 var(--mono); }
     kbd { padding: 2px 4px; border: 1px solid var(--border-mid); border-radius: 4px; background: var(--surface-deep); }
 
@@ -349,6 +364,8 @@
     .flow-step.hot b { color: #061418; background: var(--cyan); }
 
     .decision-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: 12px; align-items: start; }
+    .decision-confirmed { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--green) 32%, var(--border)); border-radius: 8px; color: var(--green); background: color-mix(in srgb, var(--green) 6%, var(--surface)); font: 700 9px/1.35 var(--mono); }
+    .decision-confirmed::before { width: 18px; height: 18px; display: grid; flex: 0 0 18px; place-items: center; border-radius: 50%; color: var(--accent-ink); background: var(--green); content: "✓"; font-weight: 900; }
     .verdict { padding: 17px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border)); border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 11%, var(--surface)), var(--surface-raised)); }
     .verdict h3 { margin-top: 8px; }
     .verdict > p { color: var(--text-soft); font-size: 12px; line-height: 1.55; }
@@ -553,6 +570,11 @@
           <button class="mark-option" data-color="red"><i></i><strong>Blocked</strong><small>⌘3</small></button>
           <button class="mark-option" data-color="purple"><i></i><strong>Release window</strong><small>⌘4</small></button>
           <button class="mark-option"><i></i><strong>Parked</strong><small>⌘5</small></button>
+          <div class="menu-group-label">Custom</div>
+          <form class="custom-mark-form">
+            <input name="custom-status" maxlength="28" placeholder="e.g. Waiting on App Review" aria-label="Custom pane status">
+            <button type="submit">Add</button>
+          </form>
           <div class="shortcut"><span>Pane menu or command palette</span><kbd>⇧⌘M</kbd></div>
         </aside>
       </div>
@@ -584,12 +606,13 @@
       </div>
       <div class="decision-grid">
         <article class="verdict" id="verdict">
-          <span class="micro-label">Recommended direction</span>
+          <div class="decision-confirmed">Review decision captured: use the rail, trigger on meaningful milestones, and support presets plus custom labels.</div>
+          <span class="micro-label">Selected direction</span>
           <h3>Semantic rail + activity alarm</h3>
           <p>Keep the pane calm after marking, then deliberately break that calm only when something meaningful happens.</p>
           <ul>
-            <li>Named statuses: Waiting for PR, Ready to merge, Blocked, Release window, Parked.</li>
-            <li>Default trigger: semantic lifecycle or agent milestones; optional “any output” mode per mark.</li>
+            <li>Preset statuses: Waiting for PR, Ready to merge, Blocked, Release window, and Parked, with a custom label field.</li>
+            <li>Default trigger: meaningful semantic lifecycle or agent milestones, not raw terminal output.</li>
             <li>Activity acknowledgement is separate from clearing or changing the manual mark.</li>
             <li>Mirror the rail as a square marker in the session tree and as a count in the session row.</li>
           </ul>
@@ -670,6 +693,16 @@
         document.querySelector('.detail-manual').textContent = option.querySelector('strong').textContent;
       });
     }
+
+    document.querySelector('.custom-mark-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = event.currentTarget.elements.namedItem('custom-status');
+      const label = input.value.trim();
+      if (!label) return input.focus();
+      for (const peer of document.querySelectorAll('.mark-option')) peer.classList.remove('selected');
+      document.querySelector('.detail-manual').textContent = label;
+      input.value = '';
+    });
   </script>
   <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
 </body>
