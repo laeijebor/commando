@@ -43,11 +43,11 @@ function storedPreferences(brief: SessionBrief): WorklogPreferences {
   try {
     const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief)) ?? '{}') as Partial<WorklogPreferences>
     return {
-      minimized: value.minimized === true,
+      minimized: value.minimized !== false,
       tasksCollapsed: value.tasksCollapsed === true,
     }
   } catch {
-    return { minimized: false, tasksCollapsed: false }
+    return { minimized: true, tasksCollapsed: false }
   }
 }
 

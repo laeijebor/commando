@@ -319,11 +319,17 @@ describe('session update briefs', () => {
 
     act(() => daemonMessage?.({ type: 'session_brief_snapshot', briefs: [apiBrief, workerBrief] }))
 
-    const apiWorklog = await screen.findByLabelText('Worklog for api')
-    const workerWorklog = screen.getByLabelText('Worklog for worker')
+    expect(await screen.findByLabelText('Minimized worklog for api')).toBeInTheDocument()
+    expect(screen.getByLabelText('Minimized worklog for worker')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for api' }))
+    const apiWorklog = screen.getByLabelText('Worklog for api')
     expect(apiWorklog).toHaveTextContent('API routes are ready')
     expect(apiWorklog).toHaveTextContent('Review API output')
     expect(apiWorklog).not.toHaveTextContent('Worker tests passed')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for worker' }))
+    const workerWorklog = screen.getByLabelText('Worklog for worker')
     expect(workerWorklog).toHaveTextContent('Worker tests passed')
     expect(workerWorklog).not.toHaveTextContent('API routes are ready')
 

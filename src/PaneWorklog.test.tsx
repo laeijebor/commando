@@ -36,8 +36,15 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('starts minimized when the pane has no saved preference', () => {
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+
+    expect(screen.getByLabelText('Minimized worklog for Tests')).toBeInTheDocument()
+  })
+
   it('shows the current plan and newest-first activity in its source pane', () => {
     render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
 
     const worklog = screen.getByLabelText('Worklog for Tests')
     expect(worklog).toHaveTextContent('1/3')
@@ -57,6 +64,7 @@ describe('PaneWorklog', () => {
 
   it('persists the minimized and plan-collapse controls per pane identity', () => {
     render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse plan for Tests' }))
     expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
@@ -72,6 +80,7 @@ describe('PaneWorklog', () => {
 
   it('follows newest-first activity from the top edge', () => {
     const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
     const scroll = view.container.querySelector<HTMLElement>('.pane-worklog-scroll')!
 
     scroll.scrollTop = 120
