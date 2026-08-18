@@ -640,9 +640,12 @@
         fragment.querySelector('.mini-heading strong').textContent = pane.name;
         fragment.querySelector('.mini-heading small').textContent = pane.detail;
         const agent = fragment.querySelector('.agent-pill');
-        agent.textContent = pane.agent === 'needs' ? 'needs input' : pane.agent;
-        agent.classList.add(pane.agent);
-        if (!pane.agent) agent.remove();
+        if (pane.agent) {
+          agent.textContent = pane.agent === 'needs' ? 'needs input' : pane.agent;
+          agent.classList.add(pane.agent);
+        } else {
+          agent.remove();
+        }
         fragment.querySelector('.mini-index').textContent = pane.index;
         fragment.querySelector('.terminal-copy').innerHTML = pane.lines.map((line, index) => `<p class="${index === 0 ? 'command' : index === 2 ? 'accent-line' : 'dim'}">${index === 0 ? '<span class="prompt">$</span> ' : ''}${line}</p>`).join('');
         grid.append(fragment);
