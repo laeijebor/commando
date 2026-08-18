@@ -6,6 +6,7 @@ import type {
   TmuxWindow,
 } from '../shared/protocol.js'
 import { parseWindowLayout } from '../shared/window-layout.js'
+import type { PaneTargetObservation } from './tmux-pane-targets.js'
 
 export const TMUX_FIELD_SEPARATOR = '\u001f'
 
@@ -64,6 +65,7 @@ export const PANE_FORMAT = [
   '#{pane_dead}',
   ...PANE_TERMINAL_STATE_FIELDS,
   '#{pane_pid}',
+  '#{@commando_target}',
 ].join(TMUX_FIELD_SEPARATOR)
 
 const SESSION_ID = /^\$\d+$/
@@ -264,10 +266,19 @@ export function parseWindows(output: string): TmuxWindow[] {
   return windows
 }
 
-export function parsePanes(output: string): TmuxPane[] {
+export function parsePaneTargetObservations(output: string): PaneTargetObservation[] {
+  return rows(output, 11 + PANE_TERMINAL_STATE_FIELDS.length)
+    .filter(([paneId]) => PANE_ID.test(paneId))
+    .map((fields) => ({ paneId: fields[0], storedValue: fields.at(-1) ?? '' }))
+}
+
+export function parsePanes(
+  output: string,
+  targetIds: ReadonlyMap<string, string>,
+): TmuxPane[] {
   const panes: TmuxPane[] = []
 
-  for (const fields of rows(output, 10 + PANE_TERMINAL_STATE_FIELDS.length)) {
+  for (const fields of rows(output, 11 + PANE_TERMINAL_STATE_FIELDS.length)) {
     const [
       id,
       indexValue,
@@ -280,7 +291,8 @@ export function parsePanes(output: string): TmuxPane[] {
       deadValue,
     ] = fields
     const index = integer(indexValue)
-    const processId = integer(fields.at(-1) ?? '')
+    const processId = integer(fields.at(-2) ?? '')
+    const targetId = targetIds.get(id)
     const active = flag(activeValue)
     const dead = flag(deadValue)
     const terminalState = parseTerminalState(
@@ -294,6 +306,7 @@ export function parsePanes(output: string): TmuxPane[] {
       index === null ||
       processId === null ||
       processId < 1 ||
+      !targetId ||
       active === null ||
       dead === null ||
       terminalState === null
@@ -303,6 +316,7 @@ export function parsePanes(output: string): TmuxPane[] {
 
     panes.push({
       id,
+      targetId,
       processId,
       index,
       windowId,
@@ -327,10 +341,10 @@ export type TmuxPaneProcess = {
 
 export function parsePaneProcesses(output: string): TmuxPaneProcess[] {
   const processes: TmuxPaneProcess[] = []
-  for (const fields of rows(output, 10 + PANE_TERMINAL_STATE_FIELDS.length)) {
+  for (const fields of rows(output, 11 + PANE_TERMINAL_STATE_FIELDS.length)) {
     const paneId = fields[0]
     const sessionId = fields[3]
-    const processId = integer(fields.at(-1) ?? '')
+    const processId = integer(fields.at(-2) ?? '')
     if (
       !PANE_ID.test(paneId) ||
       !SESSION_ID.test(sessionId) ||
@@ -363,6 +377,7 @@ export function parseTmuxSnapshot(
   paneOutput: string,
   revision: number,
   capturedAt: number,
+  targetIds: ReadonlyMap<string, string>,
 ): CommandoSnapshot {
   const sessions = parseSessions(sessionOutput)
   const sessionIds = new Set(sessions.map((session) => session.id))
@@ -374,7 +389,7 @@ export function parseTmuxSnapshot(
         : left.sessionId.localeCompare(right.sessionId),
     )
   const windowIds = new Set(windows.map((window) => window.id))
-  const panes = parsePanes(paneOutput)
+  const panes = parsePanes(paneOutput, targetIds)
     .filter(
       (pane) => sessionIds.has(pane.sessionId) && windowIds.has(pane.windowId),
     )

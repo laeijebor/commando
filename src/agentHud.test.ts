@@ -31,7 +31,15 @@ function status(
 }
 
 function pane(id: string, sessionId: string, index = 0): TmuxPane {
-  return { id, sessionId, index, windowId: `@${sessionId}`, title: '', command: 'zsh' } as TmuxPane
+  return {
+    id,
+    targetId: `550e8400-e29b-41d4-a716-${id.slice(1).padStart(12, '0')}`,
+    sessionId,
+    index,
+    windowId: `@${sessionId}`,
+    title: '',
+    command: 'zsh',
+  } as TmuxPane
 }
 
 const sessions: TmuxSession[] = [

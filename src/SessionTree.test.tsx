@@ -32,6 +32,7 @@ beforeEach(() => {
 function pane(id: string, index: number, title: string): TmuxPane {
   return {
     id,
+    targetId: `550e8400-e29b-41d4-a716-${id.slice(1).padStart(12, '0')}`,
     index,
     title,
     windowId: '@1',

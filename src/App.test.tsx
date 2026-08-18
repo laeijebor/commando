@@ -220,6 +220,7 @@ describe('owner authentication form', () => {
 
 const pane = {
   id: '%12',
+  targetId: '550e8400-e29b-41d4-a716-446655440012',
   processId: 1_200,
   index: 1,
   windowId: '@2',
@@ -236,6 +237,7 @@ const pane = {
 const adjacentPane = {
   ...pane,
   id: '%13',
+  targetId: '550e8400-e29b-41d4-a716-446655440013',
   processId: 1_300,
   index: 2,
   title: 'worker',

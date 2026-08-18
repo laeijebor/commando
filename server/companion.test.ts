@@ -14,7 +14,7 @@ const snapshot: CommandoSnapshot = {
     { id: '@1', index: 0, sessionId: '$1', name: 'app', active: true, layout: '', paneIds: ['%1'] },
   ],
   panes: [{
-    id: '%1', index: 0, windowId: '@1', sessionId: '$1', title: 'OpenCode', command: 'opencode',
+    id: '%1', targetId: '550e8400-e29b-41d4-a716-446655440001', index: 0, windowId: '@1', sessionId: '$1', title: 'OpenCode', command: 'opencode',
     path: '/private/worktree', active: true, dead: false, width: 80, height: 24, cursorX: 0,
     cursorY: 0, alternateSavedX: 0, alternateSavedY: 0, alternateOn: false,
     cursorVisible: true, cursorShape: 'default', cursorBlinking: false, scrollRegionUpper: 0,

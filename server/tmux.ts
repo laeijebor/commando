@@ -11,6 +11,7 @@ import {
   SESSION_FORMAT,
   WINDOW_FORMAT,
   parsePaneProcesses,
+  parsePaneTargetObservations,
   parseTmuxSnapshot,
 } from './tmux-parsers.js'
 import { OpenPortScanner } from './open-ports.js'
@@ -21,6 +22,7 @@ import {
   type TmuxControllerHandlers,
 } from './tmux-control.js'
 import { TmuxResizeLeaseManager } from './tmux-resize-lease.js'
+import { TMUX_PANE_TARGET_OPTION, TmuxPaneTargets } from './tmux-pane-targets.js'
 
 const DISCOVERY_TIMEOUT_MS = 1_500
 const DISCOVERY_BUFFER_BYTES = 4 * 1024 * 1024
@@ -129,6 +131,12 @@ export class TmuxClient {
   private readonly socketArgs = configuredSocketArgs()
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
   private readonly openPorts: OpenPortScanner
+  private readonly paneTargets = new TmuxPaneTargets((paneId, value) =>
+    this.run(
+      ['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, value],
+      { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 },
+    ).then(() => undefined),
+  )
   private readonly resizeLeases = new TmuxResizeLeaseManager((args) =>
     this.run(args, { timeout: 3_000, maxBuffer: 64 * 1024 }),
   )
@@ -161,7 +169,8 @@ export class TmuxClient {
           maxBuffer: DISCOVERY_BUFFER_BYTES,
         }),
       ])
-      const snapshot = parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt)
+      const targetIds = await this.paneTargets.reconcile(parsePaneTargetObservations(panes))
+      const snapshot = parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt, targetIds)
       snapshot.ports = await this.openPorts.scan(parsePaneProcesses(panes), capturedAt)
       return snapshot
     } catch (error) {

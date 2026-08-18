@@ -24,6 +24,7 @@ const snapshot: CommandoSnapshot = {
   }],
   panes: [{
     id: '%1',
+    targetId: '550e8400-e29b-41d4-a716-446655440000',
     index: 0,
     windowId: '@1',
     sessionId: '$1',
@@ -89,6 +90,7 @@ describe('snapshotsHaveSameState', () => {
     ['sessions', { ...snapshot, sessions: [{ ...snapshot.sessions[0], name: 'renamed' }] }],
     ['windows', { ...snapshot, windows: [{ ...snapshot.windows[0], layout: 'layout-2' }] }],
     ['pane titles', { ...snapshot, panes: [{ ...snapshot.panes[0], title: 'renamed' }] }],
+    ['pane targets', { ...snapshot, panes: [{ ...snapshot.panes[0], targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }] }],
     ['pane dimensions', { ...snapshot, panes: [{ ...snapshot.panes[0], width: 120 }] }],
     ['pane terminal modes', { ...snapshot, panes: [{ ...snapshot.panes[0], mouseAnyFlag: true }] }],
     ['ports', { ...snapshot, ports: [{ ...snapshot.ports[0], processName: 'vite' }] }],

@@ -175,7 +175,7 @@ type PaneRendererControl = {
 }
 
 function paneRendererIdentity(pane: TmuxPane): string {
-  return JSON.stringify([pane.sessionId, pane.windowId, pane.id, pane.processId ?? null])
+  return JSON.stringify([pane.targetId, pane.sessionId, pane.windowId, pane.id, pane.processId ?? null])
 }
 
 function storedPanelHidden(key: string): boolean {

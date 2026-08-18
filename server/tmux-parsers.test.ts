@@ -2,12 +2,27 @@ import { describe, expect, it } from 'vitest'
 import {
   TMUX_FIELD_SEPARATOR,
   parsePaneProcesses,
+  parsePaneTargetObservations,
   parsePaneTerminalState,
   parsePanes,
   parseTmuxSnapshot,
 } from './tmux-parsers.js'
 
 const row = (...fields: string[]): string => fields.join(TMUX_FIELD_SEPARATOR)
+const targetIds = new Map([
+  ['%1', '550e8400-e29b-41d4-a716-446655440001'],
+  ['%2', '550e8400-e29b-41d4-a716-446655440002'],
+  ['%3', '550e8400-e29b-41d4-a716-446655440003'],
+  ['%4', '550e8400-e29b-41d4-a716-446655440004'],
+  ['%5', '550e8400-e29b-41d4-a716-446655440005'],
+  ['%6', '550e8400-e29b-41d4-a716-446655440006'],
+  ['%7', '550e8400-e29b-41d4-a716-446655440007'],
+  ['%8', '550e8400-e29b-41d4-a716-446655440008'],
+  ['%9', '550e8400-e29b-41d4-a716-446655440009'],
+  ['%10', '550e8400-e29b-41d4-a716-446655440010'],
+  ['%11', '550e8400-e29b-41d4-a716-446655440011'],
+  ['%63', '550e8400-e29b-41d4-a716-446655440063'],
+])
 
 const defaultTerminalState = [
   '0',
@@ -49,7 +64,13 @@ function paneRow(
   const terminalState = Array.isArray(fields.at(-1))
     ? (fields.pop() as string[])
     : undefined
-  return row(...(fields as string[]), ...(terminalState ?? defaultTerminalState), '1234')
+  const paneId = fields[0] as string
+  return row(
+    ...(fields as string[]),
+    ...(terminalState ?? defaultTerminalState),
+    '1234',
+    `v1:${paneId}:${targetIds.get(paneId) ?? '550e8400-e29b-41d4-a716-446655440000'}`,
+  )
 }
 
 describe('tmux format parsers', () => {
@@ -70,6 +91,7 @@ describe('tmux format parsers', () => {
       ].join('\n'),
       7,
       1234,
+      targetIds,
     )
 
     expect(snapshot.revision).toBe(7)
@@ -94,6 +116,7 @@ describe('tmux format parsers', () => {
     expect(snapshot.windows.some((window) => window.id === '@6')).toBe(false)
     expect(snapshot.panes.find((pane) => pane.id === '%8')).toMatchObject({
       processId: 1234,
+      targetId: targetIds.get('%8'),
       cursorX: 17,
       cursorY: 8,
       cursorVisible: true,
@@ -142,7 +165,7 @@ describe('tmux format parsers', () => {
       terminalFields,
     )
 
-    expect(parsePanes(output)[0]).toMatchObject({
+    expect(parsePanes(output, targetIds)[0]).toMatchObject({
       alternateOn: true,
       alternateSavedX: 4,
       alternateSavedY: 5,
@@ -191,7 +214,7 @@ describe('tmux format parsers', () => {
       terminalFields,
     )
 
-    expect(parsePanes(output)[0]).toMatchObject({
+    expect(parsePanes(output, targetIds)[0]).toMatchObject({
       id: '%2',
       alternateSavedX: 0,
       alternateSavedY: 0,
@@ -221,7 +244,7 @@ describe('tmux format parsers', () => {
       ],
     )
 
-    expect(parsePanes(output)[0]).toMatchObject({
+    expect(parsePanes(output, targetIds)[0]).toMatchObject({
       id: '%63',
       cursorX: 79,
       cursorY: 23,
@@ -249,12 +272,21 @@ describe('tmux format parsers', () => {
       'too-few-fields',
     ].join('\n')
 
-    expect(parsePanes(output).map((pane) => pane.id)).toEqual(['%1'])
+    expect(parsePanes(output, targetIds).map((pane) => pane.id)).toEqual(['%1'])
     expect(
       parsePaneTerminalState(
         row('%1', '80', '24', '0', '0', ...defaultTerminalState.slice(0, 15), '8,nope'),
         '%1',
       ),
     ).toBeNull()
+  })
+
+  it('extracts raw pane target observations for reconciliation', () => {
+    expect(parsePaneTargetObservations(
+      paneRow('%8', '1', '@3', '$1', 'Claude Code', 'claude', '/repo', '1', '0', '120', '40', '17', '8'),
+    )).toEqual([{
+      paneId: '%8',
+      storedValue: `v1:%8:${targetIds.get('%8')}`,
+    }])
   })
 })
