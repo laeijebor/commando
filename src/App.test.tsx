@@ -343,6 +343,18 @@ describe('session update briefs', () => {
 })
 
 describe('pane marks', () => {
+  it('offers pane mark commands for the active pane before terminal focus', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search commands' }), {
+      target: { value: 'Mark pane' },
+    })
+
+    expect(screen.getByRole('option', { name: /Mark pane: Waiting for PR/ })).toBeVisible()
+    expect(screen.getByRole('option', { name: /Mark pane: Custom status/ })).toBeVisible()
+  })
+
   it('sets a preset mark from the targeted pane menu', async () => {
     await renderAppWithSnapshot(snapshotWith([pane]))
 

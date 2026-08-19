@@ -1896,7 +1896,7 @@ export function App() {
   const webPaneAnchorId = activeGroup && focusedPaneId && activeGroup.paneIds.includes(focusedPaneId)
     ? focusedPaneId
     : activeGroup?.paneIds[0]
-  const paletteMarkPane = focusedPaneId ? paneMap.get(focusedPaneId) : undefined
+  const paletteMarkPane = focusedPaneId ? paneMap.get(focusedPaneId) : currentPrPane
   const palettePaneMark = paletteMarkPane ? paneMarks[paletteMarkPane.targetId] : undefined
   const commands: PaletteCommand[] = [
     ...(paletteRunCommand ? [{
