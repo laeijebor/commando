@@ -8,6 +8,47 @@ import { PaneContextMenu } from './PaneContextMenu'
 afterEach(cleanup)
 
 describe('PaneContextMenu', () => {
+  it('sets preset and custom marks, then exposes acknowledgement and clear actions', () => {
+    const onSetMark = vi.fn()
+    const onAcknowledgeMark = vi.fn()
+    const onClearMark = vi.fn()
+    render(
+      <PaneContextMenu
+        paneLabel="release"
+        x={50}
+        y={60}
+        mark={{
+          targetId: '11111111-1111-4111-8111-111111111111',
+          label: 'Waiting for PR',
+          tone: 'amber',
+          markedAt: 100,
+          activityCount: 3,
+          lastActivityAt: 120,
+        }}
+        onClose={vi.fn()}
+        onRename={vi.fn()}
+        onSplit={vi.fn()}
+        onSetMark={onSetMark}
+        onAcknowledgeMark={onAcknowledgeMark}
+        onClearMark={onClearMark}
+        onKill={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('menuitemradio', { name: 'Waiting for PR' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Ready to merge' }))
+    expect(onSetMark).toHaveBeenCalledWith('Ready to merge', 'green')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Custom pane status' }), { target: { value: 'Waiting on App Review' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Set custom pane status' }))
+    expect(onSetMark).toHaveBeenLastCalledWith('Waiting on App Review', 'purple')
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Acknowledge 3 activities' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Clear pane status' }))
+    expect(onAcknowledgeMark).toHaveBeenCalledOnce()
+    expect(onClearMark).toHaveBeenCalledOnce()
+  })
+
   it('dismisses on an outside pointer press without dismissing inside the menu', () => {
     const onClose = vi.fn()
     const { container } = render(

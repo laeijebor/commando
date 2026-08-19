@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Bookmark,
   Bot,
   Check,
   CircleDotDashed,
@@ -53,6 +54,8 @@ import type {
   CommandoSnapshot,
   LayoutSpec,
   PaneLayoutCapacity,
+  PaneMark,
+  PaneMarkTone,
   SavedWorkspace,
   ServerMessage,
   SessionBrief,
@@ -89,6 +92,7 @@ import { SessionTree } from './SessionTree'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi } from './paneManagementApi'
+import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
@@ -231,6 +235,7 @@ type TerminalPaneProps = {
   pane: TmuxPane
   status?: AgentStatus
   brief?: SessionBrief
+  mark?: PaneMark
   index: number
   count: number
   maximized: boolean
@@ -245,6 +250,7 @@ type TerminalPaneProps = {
   onOpenPath: () => Promise<void>
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
+  onAcknowledgeMark?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -270,6 +276,7 @@ export function TerminalPaneCard({
   pane,
   status,
   brief,
+  mark,
   index,
   count,
   maximized,
@@ -284,6 +291,7 @@ export function TerminalPaneCard({
   onOpenPath,
   onFocus,
   onOpenMenu,
+  onAcknowledgeMark,
   onRename,
   onRenameFinished,
   onMove,
@@ -388,7 +396,7 @@ export function TerminalPaneCard({
 
   return (
     <article
-      className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}`}
+      className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -451,6 +459,12 @@ export function TerminalPaneCard({
         </span>
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
+        {mark ? (
+          <span className={`pane-mark-chip tone-${mark.tone}`} title={`Pane status: ${mark.label}`}>
+            <Bookmark aria-hidden="true" />
+            <span>{mark.label}</span>
+          </span>
+        ) : null}
         <span className="pane-index">{pane.index}</span>
         <span className="pane-actions">
           <button
@@ -491,6 +505,19 @@ export function TerminalPaneCard({
           aria-hidden="true"
         />
       )}
+      {mark?.activityCount ? (
+        <button
+          type="button"
+          className="pane-mark-alarm"
+          onClick={onAcknowledgeMark}
+          aria-label={`Acknowledge ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since ${mark.label} was applied`}
+          title="Acknowledge activity and keep the pane status"
+        >
+          <Activity aria-hidden="true" />
+          <strong>Activity since mark</strong>
+          <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
+        </button>
+      ) : null}
       <div className={`terminal-pane-body${brief ? ' has-worklog' : ''}`}>
         <TerminalPaneRenderer
           paneId={pane.id}
@@ -794,6 +821,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<CommandoSnapshot | null>(null)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
+  const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -1039,6 +1067,20 @@ export function App() {
         setPaneBriefs(Object.fromEntries(
           message.briefs.map((brief) => [brief.paneId, brief]),
         ))
+        break
+      case 'pane_mark':
+        setPaneMarks((current) => ({ ...current, [message.mark.targetId]: message.mark }))
+        break
+      case 'pane_mark_snapshot':
+        setPaneMarks(Object.fromEntries(message.marks.map((mark) => [mark.targetId, mark])))
+        break
+      case 'pane_mark_removed':
+        setPaneMarks((current) => {
+          if (!(message.targetId in current)) return current
+          const next = { ...current }
+          delete next[message.targetId]
+          return next
+        })
         break
       case 'workspace':
         if (message.workspace) {
@@ -1771,6 +1813,33 @@ export function App() {
     await paneManagementApi.renamePane(paneId, title)
   }
 
+  const setPaneMark = async (paneId: string, label: string, tone: PaneMarkTone) => {
+    setPaneActionError('')
+    try {
+      await paneManagementApi.setPaneMark(paneId, label, tone)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark pane')
+    }
+  }
+
+  const acknowledgePaneMark = async (paneId: string) => {
+    setPaneActionError('')
+    try {
+      await paneManagementApi.acknowledgePaneMark(paneId)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to acknowledge pane activity')
+    }
+  }
+
+  const clearPaneMark = async (paneId: string) => {
+    setPaneActionError('')
+    try {
+      await paneManagementApi.clearPaneMark(paneId)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to clear pane status')
+    }
+  }
+
   const splitPane = async (paneId: string, direction: PaneSplitDirection) => {
     const pane = paneMap.get(paneId)
     if (!pane || paneActionPending) return
@@ -1819,6 +1888,8 @@ export function App() {
   const webPaneAnchorId = activeGroup && focusedPaneId && activeGroup.paneIds.includes(focusedPaneId)
     ? focusedPaneId
     : activeGroup?.paneIds[0]
+  const paletteMarkPane = focusedPaneId ? paneMap.get(focusedPaneId) : undefined
+  const palettePaneMark = paletteMarkPane ? paneMarks[paletteMarkPane.targetId] : undefined
   const commands: PaletteCommand[] = [
     ...(paletteRunCommand ? [{
       id: 'command:run',
@@ -1857,6 +1928,49 @@ export function App() {
       run: () => {
         if (webPaneAnchorId) void openWebPane(paletteWebPaneUrl, webPaneAnchorId, 'chromium')
         setPaletteOpen(false)
+      },
+    }] : []),
+    ...(paletteMarkPane ? PANE_MARK_PRESETS.map((preset) => ({
+      id: `pane-mark:${preset.id}`,
+      label: `Mark pane: ${preset.label}`,
+      detail: palettePaneMark?.label === preset.label
+        ? `Current status for ${paletteMarkPane.title || paletteMarkPane.command || `pane ${paletteMarkPane.index}`}`
+        : `Apply to ${paletteMarkPane.title || paletteMarkPane.command || `pane ${paletteMarkPane.index}`}`,
+      kind: 'action' as const,
+      run: () => {
+        setPaletteOpen(false)
+        void setPaneMark(paletteMarkPane.id, preset.label, preset.tone)
+      },
+    })) : []),
+    ...(paletteMarkPane ? [{
+      id: 'pane-mark:custom',
+      label: 'Mark pane: Custom status',
+      detail: `Apply a custom label to ${paletteMarkPane.title || paletteMarkPane.command || `pane ${paletteMarkPane.index}`}`,
+      kind: 'action' as const,
+      run: () => {
+        setPaletteOpen(false)
+        const label = window.prompt('Custom pane status', palettePaneMark?.label ?? '')?.trim()
+        if (label) void setPaneMark(paletteMarkPane.id, label, 'purple')
+      },
+    }] : []),
+    ...(paletteMarkPane && palettePaneMark?.activityCount ? [{
+      id: 'pane-mark:acknowledge',
+      label: `Acknowledge pane activity (${palettePaneMark.activityCount})`,
+      detail: `Keep “${palettePaneMark.label}” and clear its activity alarm`,
+      kind: 'action' as const,
+      run: () => {
+        setPaletteOpen(false)
+        void acknowledgePaneMark(paletteMarkPane.id)
+      },
+    }] : []),
+    ...(paletteMarkPane && palettePaneMark ? [{
+      id: 'pane-mark:clear',
+      label: 'Clear pane status',
+      detail: `Remove “${palettePaneMark.label}” from this pane`,
+      kind: 'action' as const,
+      run: () => {
+        setPaletteOpen(false)
+        void clearPaneMark(paletteMarkPane.id)
       },
     }] : []),
     {
@@ -2184,6 +2298,7 @@ export function App() {
               panes={snapshot?.panes ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
+              marks={paneMarks}
               selectedSessionId={selectedSessionId}
               focusedPaneId={focusedPaneId}
               onSelectSession={selectSession}
@@ -2386,6 +2501,7 @@ export function App() {
                             pane={pane}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
+                            mark={paneMarks[pane.targetId]}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             maximized={maximizedPaneId === pane.id}
@@ -2405,6 +2521,7 @@ export function App() {
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
+                            onAcknowledgeMark={() => { void acknowledgePaneMark(pane.id) }}
                             onRename={(title) => renamePane(pane.id, title)}
                             onRenameFinished={() => setRenamingPaneId((current) => current === pane.id ? null : current)}
                             onMove={(direction) => {
@@ -2740,6 +2857,7 @@ export function App() {
           busy={paneActionPending || !connected}
           nativeTerminalAvailable={nativeTerminalAvailable || Boolean(contextRendererControl?.manualXterm)}
           useXtermFallback={contextUsesXterm}
+          mark={paneMarks[contextPane.targetId]}
           onClose={closePaneMenu}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
@@ -2751,6 +2869,9 @@ export function App() {
               retryKey: useXtermFallback ? current.retryKey : current.retryKey + 1,
             }))
           }}
+          onSetMark={(label, tone) => { void setPaneMark(paneMenu.paneId, label, tone) }}
+          onAcknowledgeMark={() => { void acknowledgePaneMark(paneMenu.paneId) }}
+          onClearMark={() => { void clearPaneMark(paneMenu.paneId) }}
           onKill={() => { void killPane(paneMenu.paneId) }}
         />
       ) : null}

@@ -131,6 +131,7 @@ beforeEach(() => {
     if (url.includes('/api/prs')) {
       return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, mineTruncated: false, fetchedAt: 0 } })
     }
+    if (url.includes('/api/pane-management/') && url.includes('/mark')) return json({ ok: true })
     if (url.endsWith('/rename')) return json({ ok: true })
     return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
   }))
@@ -338,6 +339,59 @@ describe('session update briefs', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for api' }))
     expect(screen.getByLabelText('Minimized worklog for api')).toBeInTheDocument()
     expect(screen.getByLabelText('Worklog for worker')).toBeInTheDocument()
+  })
+})
+
+describe('pane marks', () => {
+  it('sets a preset mark from the targeted pane menu', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+
+    fireEvent.contextMenu(document.querySelector('[data-pane-id="%12"]')!, {
+      clientX: 120,
+      clientY: 80,
+      altKey: true,
+    })
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Blocked' }))
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/pane-management/panes/%2512/mark',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ label: 'Blocked', tone: 'red' }),
+      }),
+    ))
+  })
+
+  it('hydrates by durable target, displays activity, acknowledges it, and avoids pane-id reuse', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const mark = {
+      targetId: pane.targetId,
+      label: 'Waiting for PR',
+      tone: 'amber' as const,
+      markedAt: 100,
+      activityCount: 0,
+    }
+
+    act(() => daemonMessage?.({ type: 'pane_mark_snapshot', marks: [mark] }))
+    expect(screen.getByTitle('Pane status: Waiting for PR')).toBeVisible()
+
+    act(() => daemonMessage?.({
+      type: 'pane_mark',
+      mark: { ...mark, activityCount: 2, lastActivityAt: 120 },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 2 activities since Waiting for PR was applied' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/pane-management/panes/%2512/mark/acknowledge',
+      expect.objectContaining({ method: 'POST' }),
+    ))
+
+    act(() => daemonMessage?.({
+      type: 'snapshot',
+      snapshot: snapshotWith([{ ...pane, targetId: adjacentPane.targetId }]),
+    }))
+    await waitFor(() => expect(screen.queryByTitle('Pane status: Waiting for PR')).not.toBeInTheDocument())
+
+    act(() => daemonMessage?.({ type: 'pane_mark_removed', targetId: pane.targetId }))
   })
 })
 
@@ -999,6 +1053,30 @@ const paneProps = {
 }
 
 describe('terminal pane actions', () => {
+  it('renders a semantic pane rail and acknowledges post-mark activity without clearing the label', () => {
+    const onAcknowledgeMark = vi.fn()
+    const view = render(
+      <TerminalPaneCard
+        {...paneProps}
+        mark={{
+          targetId: pane.targetId,
+          label: 'Waiting for PR',
+          tone: 'amber',
+          markedAt: 100,
+          activityCount: 3,
+          lastActivityAt: 120,
+        }}
+        onAcknowledgeMark={onAcknowledgeMark}
+      />,
+    )
+
+    expect(view.container.querySelector('.terminal-pane')).toHaveClass('has-pane-mark', 'tone-amber', 'has-pane-mark-activity')
+    expect(screen.getByTitle('Pane status: Waiting for PR')).toHaveTextContent('Waiting for PR')
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 3 activities since Waiting for PR was applied' }))
+    expect(onAcknowledgeMark).toHaveBeenCalledOnce()
+    expect(screen.getByText('Waiting for PR')).toBeVisible()
+  })
+
   it('confirms when a terminal selection is copied', () => {
     render(<TerminalPaneCard {...paneProps} />)
 

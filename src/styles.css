@@ -1204,6 +1204,22 @@ kbd {
   transition: opacity 150ms ease;
 }
 
+.terminal-pane.has-pane-mark {
+  --pane-mark-color: var(--muted-dim);
+  border-inline-start: 5px solid var(--pane-mark-color);
+}
+
+.terminal-pane.has-pane-mark.tone-amber { --pane-mark-color: var(--amber); }
+.terminal-pane.has-pane-mark.tone-green { --pane-mark-color: var(--green); }
+.terminal-pane.has-pane-mark.tone-red { --pane-mark-color: var(--red); }
+.terminal-pane.has-pane-mark.tone-purple { --pane-mark-color: var(--accent); }
+.terminal-pane.has-pane-mark.tone-muted { --pane-mark-color: var(--muted-dim); }
+.terminal-pane.has-pane-mark-activity {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border-inline-start-color: var(--cyan);
+  box-shadow: inset 3px 0 var(--pane-mark-color), 0 0 18px color-mix(in srgb, var(--cyan) 12%, transparent);
+}
+
 .terminal-pane-body {
   min-width: 0;
   min-height: 0;
@@ -1349,6 +1365,52 @@ kbd {
 .pane-state.failed,
 .pane-state.dead { color: var(--red); }
 
+.pane-mark-chip {
+  min-width: 0;
+  max-width: 128px;
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 5px;
+  color: var(--muted);
+  background: color-mix(in srgb, currentColor 7%, var(--surface));
+  font: 800 7px/1 var(--mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.pane-mark-chip.tone-amber { color: var(--amber); }
+.pane-mark-chip.tone-green { color: var(--green); }
+.pane-mark-chip.tone-red { color: var(--red); }
+.pane-mark-chip.tone-purple { color: var(--accent); }
+.pane-mark-chip.tone-muted { color: var(--muted); }
+.pane-mark-chip svg { width: 9px; height: 9px; }
+.pane-mark-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pane-mark-alarm {
+  width: 100%;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border: 0;
+  color: var(--accent-ink);
+  background: var(--cyan);
+  font: 800 7px/1 var(--mono);
+  letter-spacing: .06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.pane-mark-alarm:hover { filter: brightness(1.08); }
+.pane-mark-alarm svg { width: 10px; height: 10px; }
+.pane-mark-alarm span { margin-left: auto; font-weight: 700; }
+.pane-mark-alarm b { font: inherit; }
+
 .pane-actions {
   display: flex;
   gap: 1px;
@@ -1364,6 +1426,8 @@ kbd {
   position: fixed;
   z-index: 80;
   width: 216px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 6px;
   border: 1px solid var(--border-mid);
   border-radius: 8px;
@@ -1438,6 +1502,48 @@ kbd {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2px;
+}
+
+.pane-mark-options { display: grid; gap: 1px; }
+.pane-context-menu .pane-mark-option { grid-template-columns: 11px minmax(0, 1fr) auto; }
+.pane-mark-swatch { width: 7px; height: 11px; border-radius: 2px; background: currentColor; box-shadow: 0 0 7px color-mix(in srgb, currentColor 52%, transparent); }
+.pane-mark-option.tone-amber { color: var(--amber); }
+.pane-mark-option.tone-green { color: var(--green); }
+.pane-mark-option.tone-red { color: var(--red); }
+.pane-mark-option.tone-purple { color: var(--accent); }
+.pane-mark-option.tone-muted { color: var(--muted); }
+.pane-mark-option-check { margin-left: auto; width: 11px !important; height: 11px !important; }
+
+.pane-mark-custom {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 8px;
+}
+
+.pane-mark-custom > svg { width: 11px; height: 11px; color: var(--muted-dim); }
+.pane-mark-custom input {
+  width: 100%;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-mid);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--text);
+  background: var(--surface-deep);
+  font: 600 9px/1 var(--mono);
+}
+.pane-mark-custom input:focus { border-color: var(--accent); }
+.pane-mark-custom button { width: auto; min-height: 26px; padding: 0 6px; border: 1px solid var(--border-mid); color: var(--accent); background: var(--surface-soft); font: 800 7px/1 var(--mono); text-transform: uppercase; }
+.pane-context-menu .pane-mark-acknowledge { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, transparent); }
+.pane-context-menu .pane-mark-clear { color: var(--muted); }
+
+@container (max-width: 360px) {
+  .pane-mark-chip { flex: 0 0 auto; }
+  .pane-mark-chip span { display: none; }
+  .pane-mark-alarm strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-mark-alarm time { display: none; }
 }
 
 .pane-action-error {

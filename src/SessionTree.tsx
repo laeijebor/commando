@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
-import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
+import type { AgentStatus, PaneMark, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { sessionShortcutIndex } from './sessionShortcuts'
@@ -23,6 +23,7 @@ type Props = {
   panes: TmuxPane[]
   displayedPaneIds: string[]
   statuses: Record<string, AgentStatus>
+  marks?: Record<string, PaneMark>
   selectedSessionId: string | null
   focusedPaneId: string | null
   onSelectSession: (id: string) => void
@@ -59,6 +60,10 @@ function statusLabel(status: AgentStatus, pane: TmuxPane): string {
   return `${providerLabels[status.provider]}: ${statusLabels[status.status]} - ${paneLabel(pane)}`
 }
 
+function markLabel(mark: PaneMark, pane: TmuxPane): string {
+  return `${mark.label}${mark.activityCount ? `, ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since mark` : ''} - ${paneLabel(pane)}`
+}
+
 function suggestedDirectories(sessionIds: readonly string[], panes: readonly TmuxPane[]): string[] {
   const sessions = new Set(sessionIds)
   const counts = new Map<string, { count: number; order: number }>()
@@ -88,6 +93,7 @@ export function SessionTree(props: Props) {
   const preferenceSaveVersion = useRef(0)
   const windowMap = new Map(props.windows.map((window) => [window.id, window]))
   const paneMap = new Map(props.panes.map((pane) => [pane.id, pane]))
+  const marks = props.marks ?? {}
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
 
@@ -272,13 +278,15 @@ export function SessionTree(props: Props) {
                 .filter((pane) => pane.sessionId === session.id)
                 .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
               const statusPanes = sessionPanes.filter((pane) => props.statuses[pane.id])
+              const markedPanes = sessionPanes.filter((pane) => marks[pane.targetId])
               return [<article className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
                 <div className="managed-session-row">
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
+                  {markedPanes.length ? <span className="session-mark-cluster">{markedPanes.map((pane) => { const mark = marks[pane.targetId]; const label = markLabel(mark, pane); return <button type="button" key={pane.targetId} className={`session-mark-dot tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</button> })}</span> : null}
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
-                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const label = paneLabel(pane); const agentLabel = status ? statusLabel(status, pane) : ''; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{status ? <i className={`mini-status ${status.status}`} role="img" aria-label={agentLabel} title={agentLabel} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
+                {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const mark = marks[pane.targetId]; const label = paneLabel(pane); const agentLabel = status ? statusLabel(status, pane) : ''; const paneMarkLabel = mark ? markLabel(mark, pane) : ''; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{mark ? <i className={`mini-pane-mark tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} role="img" aria-label={paneMarkLabel} title={paneMarkLabel}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</i> : null}{status ? <i className={`mini-status ${status.status}`} role="img" aria-label={agentLabel} title={agentLabel} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
               </article>]
             })}
             {!container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}

@@ -525,6 +525,46 @@ describe('SessionTree', () => {
     expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
   })
 
+  it('mirrors durable pane marks and activity counts in session and pane rows', () => {
+    const panes = [pane('%1', 0, 'Release pane'), pane('%2', 1, 'API pane')]
+    const onSelectPane = vi.fn()
+    const marks = {
+      [panes[0].targetId]: { targetId: panes[0].targetId, label: 'Waiting for PR', tone: 'amber' as const, markedAt: 10, activityCount: 0 },
+      [panes[1].targetId]: { targetId: panes[1].targetId, label: 'Blocked', tone: 'red' as const, markedAt: 20, activityCount: 3, lastActivityAt: 30 },
+    }
+    const { container } = render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
+        panes={panes}
+        displayedPaneIds={['%2', '%1']}
+        statuses={{}}
+        marks={marks}
+        selectedSessionId="$1"
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={onSelectPane}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+
+    const dots = [...container.querySelectorAll<HTMLButtonElement>('.session-mark-dot')]
+    expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
+      'Blocked, 3 activities since mark - API pane',
+      'Waiting for PR - Release pane',
+    ])
+    expect(dots[0]).toHaveClass('tone-red', 'has-activity')
+    expect(dots[0]).toHaveTextContent('3')
+    expect(container.querySelectorAll('.mini-pane-mark')).toHaveLength(2)
+    fireEvent.click(dots[0])
+    expect(onSelectPane).toHaveBeenCalledWith('%2')
+  })
+
   it('does not show attachment or placeholder dots without pane statuses', () => {
     const panes = [pane('%1', 0, 'No agent')]
     const { container } = render(

@@ -1,5 +1,7 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Pencil, Terminal, Trash2 } from 'lucide-react'
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, Pencil, Terminal, Trash2, X } from 'lucide-react'
+import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { PaneMark, PaneMarkTone } from '../shared/protocol'
+import { PANE_MARK_PRESETS } from './paneMarks'
 
 export type PaneSplitDirection = 'up' | 'down' | 'left' | 'right'
 
@@ -10,10 +12,14 @@ type PaneContextMenuProps = {
   busy?: boolean
   nativeTerminalAvailable?: boolean
   useXtermFallback?: boolean
+  mark?: PaneMark
   onClose: () => void
   onRename: () => void
   onSplit: (direction: PaneSplitDirection) => void
   onUseXtermFallbackChange?: (useXtermFallback: boolean) => void
+  onSetMark?: (label: string, tone: PaneMarkTone) => void
+  onAcknowledgeMark?: () => void
+  onClearMark?: () => void
   onKill: () => void
 }
 
@@ -24,14 +30,19 @@ export function PaneContextMenu({
   busy = false,
   nativeTerminalAvailable = false,
   useXtermFallback = false,
+  mark,
   onClose,
   onRename,
   onSplit,
   onUseXtermFallbackChange,
+  onSetMark = () => {},
+  onAcknowledgeMark = () => {},
+  onClearMark = () => {},
   onKill,
 }: PaneContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState({ x, y })
+  const [customLabel, setCustomLabel] = useState('')
 
   useLayoutEffect(() => {
     const bounds = menuRef.current?.getBoundingClientRect()
@@ -59,6 +70,7 @@ export function PaneContextMenu({
   }, [onClose])
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target instanceof HTMLInputElement) return
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
     if (!items.length) return
@@ -79,6 +91,13 @@ export function PaneContextMenu({
     action()
   }
 
+  const submitCustomMark = (event: FormEvent) => {
+    event.preventDefault()
+    const label = customLabel.trim()
+    if (!label) return
+    choose(() => onSetMark(label, 'purple'))
+  }
+
   return (
     <>
       <div className="pane-context-menu-backdrop" data-native-terminal-occluder="" aria-hidden="true" />
@@ -97,6 +116,51 @@ export function PaneContextMenu({
           <Pencil aria-hidden="true" />
           Rename
         </button>
+        <div className="pane-context-menu__label">Mark pane</div>
+        <div className="pane-mark-options" role="group" aria-label="Pane status">
+          {PANE_MARK_PRESETS.map((preset) => {
+            const selected = mark?.label === preset.label && mark.tone === preset.tone
+            return (
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={selected}
+                className={`pane-mark-option tone-${preset.tone}`}
+                disabled={busy}
+                onClick={() => choose(() => onSetMark(preset.label, preset.tone))}
+                key={preset.id}
+              >
+                <span className="pane-mark-swatch" aria-hidden="true" />
+                {preset.label}
+                {selected ? <Check className="pane-mark-option-check" aria-hidden="true" /> : null}
+              </button>
+            )
+          })}
+        </div>
+        <form className="pane-mark-custom" onSubmit={submitCustomMark}>
+          <Bookmark aria-hidden="true" />
+          <input
+            value={customLabel}
+            maxLength={48}
+            placeholder="Custom status"
+            aria-label="Custom pane status"
+            disabled={busy}
+            onChange={(event) => setCustomLabel(event.target.value)}
+          />
+          <button type="submit" disabled={busy || !customLabel.trim()} aria-label="Set custom pane status">Add</button>
+        </form>
+        {mark?.activityCount ? (
+          <button type="button" className="pane-mark-acknowledge" role="menuitem" disabled={busy} onClick={() => choose(onAcknowledgeMark)}>
+            <Activity aria-hidden="true" />
+            Acknowledge {mark.activityCount} {mark.activityCount === 1 ? 'activity' : 'activities'}
+          </button>
+        ) : null}
+        {mark ? (
+          <button type="button" className="pane-mark-clear" role="menuitem" disabled={busy} onClick={() => choose(onClearMark)}>
+            <X aria-hidden="true" />
+            Clear pane status
+          </button>
+        ) : null}
         <div className="pane-context-menu__label">Add pane</div>
         <div className="pane-context-menu__directions" role="group" aria-label="Add pane direction">
           <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplit('up'))}>
