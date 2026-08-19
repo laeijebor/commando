@@ -85,12 +85,27 @@ describe('PaneMarkStore', () => {
       lastActivityAt: 130,
     })
 
-    expect(await marks.observeBrief(TARGET_ID, deliberate, { ...deliberate, state: 'done', updatedAt: 140 })).toBeNull()
+    expect(await marks.observeBrief(TARGET_ID, deliberate, { ...deliberate, state: 'done', updatedAt: 140 })).toMatchObject({
+      activityCount: 3,
+      lastActivityAt: 140,
+    })
     expect(await marks.acknowledge(TARGET_ID)).toMatchObject({
       label: 'Blocked',
       activityCount: 0,
-      lastActivityAt: 130,
+      lastActivityAt: 140,
     })
+  })
+
+  it('prunes marks whose durable targets no longer exist', async () => {
+    const marks = await store()
+    await marks.set(TARGET_ID, { label: 'Parked', tone: 'muted' }, 100)
+
+    expect(await marks.retainTargets([])).toEqual([TARGET_ID])
+    expect(marks.values()).toEqual([])
+
+    const replay = new PaneMarkStore(marks.statePath)
+    await replay.load()
+    expect(replay.values()).toEqual([])
   })
 
   it('rejects invalid labels, tones, targets, and persisted records', async () => {

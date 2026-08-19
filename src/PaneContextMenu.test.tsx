@@ -9,6 +9,7 @@ afterEach(cleanup)
 
 describe('PaneContextMenu', () => {
   it('sets preset and custom marks, then exposes acknowledgement and clear actions', () => {
+    vi.spyOn(window, 'prompt').mockReturnValue('Waiting on App Review')
     const onSetMark = vi.fn()
     const onAcknowledgeMark = vi.fn()
     const onClearMark = vi.fn()
@@ -39,8 +40,7 @@ describe('PaneContextMenu', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Ready to merge' }))
     expect(onSetMark).toHaveBeenCalledWith('Ready to merge', 'green')
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Custom pane status' }), { target: { value: 'Waiting on App Review' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Set custom pane status' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Custom status…' }))
     expect(onSetMark).toHaveBeenLastCalledWith('Waiting on App Review', 'purple')
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Acknowledge 3 activities' }))

@@ -46,10 +46,18 @@ describe('pane management API', () => {
     const setResponse = await fetch(markUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Waiting for PR', tone: 'amber' }),
+      body: JSON.stringify({ targetId, label: 'Waiting for PR', tone: 'amber' }),
     })
-    const acknowledgeResponse = await fetch(`${markUrl}/acknowledge`, { method: 'POST' })
-    const clearResponse = await fetch(markUrl, { method: 'DELETE' })
+    const acknowledgeResponse = await fetch(`${markUrl}/acknowledge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetId }),
+    })
+    const clearResponse = await fetch(markUrl, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetId }),
+    })
 
     expect(setResponse.status).toBe(200)
     expect(acknowledgeResponse.status).toBe(200)
@@ -75,10 +83,34 @@ describe('pane management API', () => {
     const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/mark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: '', tone: 'cyan', activityCount: 99 }),
+      body: JSON.stringify({ targetId: '11111111-1111-4111-8111-111111111111', label: '', tone: 'cyan', activityCount: 99 }),
     })
 
     expect(response.status).toBe(400)
+    expect(setPaneMark).not.toHaveBeenCalled()
+  })
+
+  it('rejects a delayed mark request after the pane id points at another target', async () => {
+    const setPaneMark = vi.fn()
+    const api = new PaneManagementApi({
+      currentPaneIds: () => ['%12'],
+      panePath: () => undefined,
+      paneTargetId: () => '22222222-2222-4222-8222-222222222222',
+      setPaneMark,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/mark`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetId: '11111111-1111-4111-8111-111111111111',
+        label: 'Waiting for PR',
+        tone: 'amber',
+      }),
+    })
+
+    expect(response.status).toBe(409)
     expect(setPaneMark).not.toHaveBeenCalled()
   })
 

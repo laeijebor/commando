@@ -5,9 +5,9 @@ export interface PaneManagementApiClient {
   deletePane(paneId: string): Promise<void>
   openPanePath(paneId: string): Promise<void>
   runInPanePath(paneId: string, command: string): Promise<void>
-  setPaneMark(paneId: string, label: string, tone: PaneMarkTone): Promise<void>
-  acknowledgePaneMark(paneId: string): Promise<void>
-  clearPaneMark(paneId: string): Promise<void>
+  setPaneMark(paneId: string, targetId: string, label: string, tone: PaneMarkTone): Promise<void>
+  acknowledgePaneMark(paneId: string, targetId: string): Promise<void>
+  clearPaneMark(paneId: string, targetId: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -55,15 +55,17 @@ export function createPaneManagementApi(
       method: 'POST',
       body: JSON.stringify({ command }),
     }),
-    setPaneMark: (paneId, label, tone) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+    setPaneMark: (paneId, targetId, label, tone) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
       method: 'POST',
-      body: JSON.stringify({ label, tone }),
+      body: JSON.stringify({ targetId, label, tone }),
     }),
-    acknowledgePaneMark: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/mark/acknowledge`, {
+    acknowledgePaneMark: (paneId, targetId) => request(`/panes/${encodeURIComponent(paneId)}/mark/acknowledge`, {
       method: 'POST',
+      body: JSON.stringify({ targetId }),
     }),
-    clearPaneMark: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+    clearPaneMark: (paneId, targetId) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
       method: 'DELETE',
+      body: JSON.stringify({ targetId }),
     }),
   }
 }

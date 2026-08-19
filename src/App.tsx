@@ -510,6 +510,8 @@ export function TerminalPaneCard({
           type="button"
           className="pane-mark-alarm"
           onClick={onAcknowledgeMark}
+          aria-live="polite"
+          aria-atomic="true"
           aria-label={`Acknowledge ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since ${mark.label} was applied`}
           title="Acknowledge activity and keep the pane status"
         >
@@ -1814,27 +1816,33 @@ export function App() {
   }
 
   const setPaneMark = async (paneId: string, label: string, tone: PaneMarkTone) => {
+    const targetId = paneMap.get(paneId)?.targetId
+    if (!targetId) return
     setPaneActionError('')
     try {
-      await paneManagementApi.setPaneMark(paneId, label, tone)
+      await paneManagementApi.setPaneMark(paneId, targetId, label, tone)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark pane')
     }
   }
 
   const acknowledgePaneMark = async (paneId: string) => {
+    const targetId = paneMap.get(paneId)?.targetId
+    if (!targetId) return
     setPaneActionError('')
     try {
-      await paneManagementApi.acknowledgePaneMark(paneId)
+      await paneManagementApi.acknowledgePaneMark(paneId, targetId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to acknowledge pane activity')
     }
   }
 
   const clearPaneMark = async (paneId: string) => {
+    const targetId = paneMap.get(paneId)?.targetId
+    if (!targetId) return
     setPaneActionError('')
     try {
-      await paneManagementApi.clearPaneMark(paneId)
+      await paneManagementApi.clearPaneMark(paneId, targetId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to clear pane status')
     }

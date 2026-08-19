@@ -357,7 +357,7 @@ describe('pane marks', () => {
       '/api/pane-management/panes/%2512/mark',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ label: 'Blocked', tone: 'red' }),
+        body: JSON.stringify({ targetId: pane.targetId, label: 'Blocked', tone: 'red' }),
       }),
     ))
   })
@@ -382,7 +382,7 @@ describe('pane marks', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 2 activities since Waiting for PR was applied' }))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       '/api/pane-management/panes/%2512/mark/acknowledge',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ targetId: pane.targetId }) }),
     ))
 
     act(() => daemonMessage?.({
@@ -1072,7 +1072,9 @@ describe('terminal pane actions', () => {
 
     expect(view.container.querySelector('.terminal-pane')).toHaveClass('has-pane-mark', 'tone-amber', 'has-pane-mark-activity')
     expect(screen.getByTitle('Pane status: Waiting for PR')).toHaveTextContent('Waiting for PR')
-    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge 3 activities since Waiting for PR was applied' }))
+    const alarm = screen.getByRole('button', { name: 'Acknowledge 3 activities since Waiting for PR was applied' })
+    expect(alarm).toHaveAttribute('aria-live', 'polite')
+    fireEvent.click(alarm)
     expect(onAcknowledgeMark).toHaveBeenCalledOnce()
     expect(screen.getByText('Waiting for PR')).toBeVisible()
   })

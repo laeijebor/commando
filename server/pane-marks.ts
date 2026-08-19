@@ -183,6 +183,18 @@ export class PaneMarkStore {
     return true
   }
 
+  async retainTargets(targetIds: Iterable<string>): Promise<string[]> {
+    const retained = new Set(targetIds)
+    const removed: string[] = []
+    for (const targetId of this.marks.keys()) {
+      if (retained.has(targetId)) continue
+      this.marks.delete(targetId)
+      removed.push(targetId)
+    }
+    if (removed.length > 0) await this.persist()
+    return removed
+  }
+
   async observeBrief(
     targetId: string,
     previous: SessionBrief | null,
@@ -191,11 +203,20 @@ export class PaneMarkStore {
     const mark = this.marks.get(targetId)
     if (!mark) return null
     const milestones = newMilestones(previous, current, mark.markedAt)
-    if (milestones.length === 0) return null
+    const meaningfulStateTransition = previous !== null &&
+      previous.state !== current.state &&
+      current.updatedAt > mark.markedAt &&
+      current.state !== 'stale' &&
+      current.state !== 'unknown'
+    if (milestones.length === 0 && !meaningfulStateTransition) return null
+    const activityCount = Math.max(milestones.length, 1)
+    const activityAt = milestones.length > 0
+      ? Math.max(...milestones.map((update) => update.createdAt))
+      : current.updatedAt
     const next: PaneMark = {
       ...mark,
-      activityCount: mark.activityCount + milestones.length,
-      lastActivityAt: Math.max(mark.lastActivityAt ?? 0, ...milestones.map((update) => update.createdAt)),
+      activityCount: mark.activityCount + activityCount,
+      lastActivityAt: Math.max(mark.lastActivityAt ?? 0, activityAt),
     }
     this.marks.set(targetId, next)
     await this.persist()

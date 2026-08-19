@@ -1,5 +1,5 @@
 import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, Pencil, Terminal, Trash2, X } from 'lucide-react'
-import { type FormEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PaneMark, PaneMarkTone } from '../shared/protocol'
 import { PANE_MARK_PRESETS } from './paneMarks'
 
@@ -42,7 +42,6 @@ export function PaneContextMenu({
 }: PaneContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState({ x, y })
-  const [customLabel, setCustomLabel] = useState('')
 
   useLayoutEffect(() => {
     const bounds = menuRef.current?.getBoundingClientRect()
@@ -70,7 +69,6 @@ export function PaneContextMenu({
   }, [onClose])
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.target instanceof HTMLInputElement) return
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
     if (!items.length) return
@@ -89,13 +87,6 @@ export function PaneContextMenu({
   const choose = (action: () => void) => {
     onClose()
     action()
-  }
-
-  const submitCustomMark = (event: FormEvent) => {
-    event.preventDefault()
-    const label = customLabel.trim()
-    if (!label) return
-    choose(() => onSetMark(label, 'purple'))
   }
 
   return (
@@ -137,18 +128,19 @@ export function PaneContextMenu({
             )
           })}
         </div>
-        <form className="pane-mark-custom" onSubmit={submitCustomMark}>
+        <button
+          type="button"
+          className="pane-mark-custom"
+          role="menuitem"
+          disabled={busy}
+          onClick={() => {
+            const label = window.prompt('Custom pane status', mark?.label ?? '')?.trim()
+            if (label) choose(() => onSetMark(label, 'purple'))
+          }}
+        >
           <Bookmark aria-hidden="true" />
-          <input
-            value={customLabel}
-            maxLength={48}
-            placeholder="Custom status"
-            aria-label="Custom pane status"
-            disabled={busy}
-            onChange={(event) => setCustomLabel(event.target.value)}
-          />
-          <button type="submit" disabled={busy || !customLabel.trim()} aria-label="Set custom pane status">Add</button>
-        </form>
+          Custom status…
+        </button>
         {mark?.activityCount ? (
           <button type="button" className="pane-mark-acknowledge" role="menuitem" disabled={busy} onClick={() => choose(onAcknowledgeMark)}>
             <Activity aria-hidden="true" />

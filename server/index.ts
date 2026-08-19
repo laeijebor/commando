@@ -1084,6 +1084,13 @@ async function main(): Promise<void> {
         snapshot = nextSnapshot
         lastTmuxError = ''
 
+        const removedPaneMarks = await paneMarks.retainTargets(
+          snapshot.panes.map((pane) => pane.targetId),
+        )
+        for (const targetId of removedPaneMarks) {
+          broadcast({ type: 'pane_mark_removed', targetId })
+        }
+
         const briefsRemoved = await sessionBriefs.removeMissingSessions(
           snapshot.sessions.map((session) => session.id),
         )

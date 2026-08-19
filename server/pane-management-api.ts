@@ -154,6 +154,8 @@ export class PaneManagementApi {
         if (!targetId) throw new HttpError(404, 'Pane target is unavailable')
         if (route.action === 'acknowledge-mark') {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = await readJson(request)
+          if (body.targetId !== targetId) throw new HttpError(409, 'Pane target changed')
           if (!this.dependencies.acknowledgePaneMark) throw new Error('Pane mark store is unavailable')
           const mark = await this.dependencies.acknowledgePaneMark(targetId)
           if (!mark) throw new HttpError(404, 'Pane is not marked')
@@ -162,6 +164,8 @@ export class PaneManagementApi {
           return true
         }
         if (request.method === 'DELETE') {
+          const body = await readJson(request)
+          if (body.targetId !== targetId) throw new HttpError(409, 'Pane target changed')
           if (!this.dependencies.clearPaneMark) throw new Error('Pane mark store is unavailable')
           const removed = await this.dependencies.clearPaneMark(targetId)
           if (removed) this.dependencies.onPaneMarkChanged?.({ type: 'remove', targetId })
@@ -171,7 +175,9 @@ export class PaneManagementApi {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         let input: PaneMarkInput
         try {
-          input = validatePaneMarkInput(await readJson(request))
+          const body = await readJson(request)
+          if (body.targetId !== targetId) throw new HttpError(409, 'Pane target changed')
+          input = validatePaneMarkInput(body)
         } catch (error) {
           if (error instanceof HttpError) throw error
           throw new HttpError(400, error instanceof Error ? error.message : 'Invalid pane mark')
