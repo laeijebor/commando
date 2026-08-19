@@ -117,6 +117,12 @@ describe('PaneWorklog', () => {
     expect(screen.getByRole('textbox', { name: 'Note for Tests' })).toHaveValue(
       'Remember to check the release logs.',
     )
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note for Tests' }), {
+      target: { value: '' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for Tests' }))
+    expect(screen.queryByTitle('Personal note saved')).not.toBeInTheDocument()
   })
 
   it('keeps personal notes isolated by pane identity', () => {
