@@ -25,7 +25,10 @@ type WorklogPreferences = {
   minimized: boolean
   tasksCollapsed: boolean
   visibilitySet: boolean
+  note: string
 }
+
+const MAX_NOTE_LENGTH = 4_000
 
 const markdownComponents: Components = {
   a({ node: _node, ...props }) {
@@ -48,9 +51,10 @@ function storedPreferences(brief: SessionBrief): WorklogPreferences {
       minimized: visibilitySet ? value.minimized !== false : true,
       tasksCollapsed: value.tasksCollapsed === true,
       visibilitySet,
+      note: typeof value.note === 'string' ? value.note.slice(0, MAX_NOTE_LENGTH) : '',
     }
   } catch {
-    return { minimized: true, tasksCollapsed: false, visibilitySet: false }
+    return { minimized: true, tasksCollapsed: false, visibilitySet: false, note: '' }
   }
 }
 
@@ -167,6 +171,11 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
         >
           <ChevronLeft aria-hidden="true" />
           <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
+          {preferences.note.trim() ? (
+            <span className="pane-worklog-note-indicator" title="Personal note saved" aria-label="Personal note saved">
+              <MessageSquareText aria-hidden="true" />
+            </span>
+          ) : null}
           <strong>{completedTasks}/{activeTasks.length}</strong>
           {unread ? <small>{unread}</small> : null}
         </button>
@@ -200,6 +209,17 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
             </ReactMarkdown>
           </div>
         ) : null}
+
+        <section className="pane-worklog-note" aria-label={`Personal notes for ${paneLabel}`}>
+          <header><strong>My notes</strong><small>Saved locally</small></header>
+          <textarea
+            value={preferences.note}
+            maxLength={MAX_NOTE_LENGTH}
+            placeholder="Add a note for this pane..."
+            aria-label={`Note for ${paneLabel}`}
+            onChange={(event) => setPreferences((current) => ({ ...current, note: event.target.value }))}
+          />
+        </section>
 
         {tasks.length ? (
           <section className="pane-worklog-plan" aria-label={`Plan for ${paneLabel}`}>

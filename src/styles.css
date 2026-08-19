@@ -2032,6 +2032,32 @@ kbd {
 .pane-worklog-restore strong { margin-top: auto; color: var(--muted-dim); font: 700 6px/1 var(--mono); writing-mode: vertical-rl; }
 .pane-worklog-restore small { min-width: 14px; height: 14px; display: grid; place-items: center; border-radius: 999px; color: var(--bg); background: var(--accent); font: 800 6px/1 var(--mono); }
 
+.pane-worklog-note-indicator {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.pane-worklog-note-indicator::after {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--surface);
+  border-radius: 50%;
+  background: var(--accent);
+  content: '';
+}
+
+.pane-worklog-note-indicator svg { width: 10px; height: 10px; }
+
 .pane-worklog-scroll {
   min-height: 0;
   overflow: auto;
@@ -2040,6 +2066,7 @@ kbd {
 }
 
 .pane-worklog-recap,
+.pane-worklog-note,
 .pane-worklog-plan,
 .pane-worklog-activity,
 .pane-worklog-next {
@@ -2054,6 +2081,34 @@ kbd {
 .pane-worklog-recap code { color: var(--amber); }
 .pane-worklog-recap ul,
 .pane-worklog-recap ol { padding-left: 16px; }
+
+.pane-worklog-note > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.pane-worklog-note > header strong { color: var(--text-soft); font: 800 7px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+.pane-worklog-note > header small { color: var(--muted-dim); font: 600 6px/1 var(--mono); text-transform: uppercase; }
+
+.pane-worklog-note textarea {
+  width: 100%;
+  min-height: 74px;
+  max-height: 220px;
+  padding: 7px 8px;
+  resize: vertical;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--bg) 44%, var(--surface));
+  font: 500 8px/1.45 var(--sans);
+}
+
+.pane-worklog-note textarea::placeholder { color: var(--muted-dim); }
+.pane-worklog-note textarea:hover { border-color: var(--border-strong); }
+.pane-worklog-note textarea:focus { border-color: color-mix(in srgb, var(--accent) 65%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
 
 .pane-worklog-section-toggle {
   width: 100%;
