@@ -97,6 +97,48 @@ describe('PaneWorklog', () => {
     expect(screen.queryByText('Map current behavior')).not.toBeInTheDocument()
   })
 
+  it('autosaves a personal note and shows an indicator while minimized', () => {
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note for Tests' }), {
+      target: { value: 'Remember to check the release logs.' },
+    })
+    expect(window.localStorage.getItem('commando.pane-worklog.$1:%12')).toContain(
+      'Remember to check the release logs.',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for Tests' }))
+    expect(screen.getByTitle('Personal note saved')).toBeVisible()
+
+    view.unmount()
+    render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('textbox', { name: 'Note for Tests' })).toHaveValue(
+      'Remember to check the release logs.',
+    )
+  })
+
+  it('keeps personal notes isolated by pane identity', () => {
+    window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({
+      minimized: false,
+      tasksCollapsed: false,
+      visibilitySet: true,
+      note: 'First pane note',
+    }))
+    window.localStorage.setItem('commando.pane-worklog.$1:%13', JSON.stringify({
+      minimized: false,
+      tasksCollapsed: false,
+      visibilitySet: true,
+      note: 'Second pane note',
+    }))
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
+    expect(screen.getByRole('textbox', { name: 'Note for Tests' })).toHaveValue('First pane note')
+
+    view.rerender(<PaneWorklog brief={{ ...brief, paneId: '%13' }} paneLabel="Worker" />)
+    expect(screen.getByRole('textbox', { name: 'Note for Worker' })).toHaveValue('Second pane note')
+  })
+
   it('follows newest-first activity from the top edge', () => {
     const view = render(<PaneWorklog brief={brief} paneLabel="Tests" />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
