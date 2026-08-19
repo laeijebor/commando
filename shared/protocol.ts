@@ -142,6 +142,17 @@ export type SessionBrief = {
   updatedAt: number
 }
 
+export type PaneMarkTone = 'amber' | 'green' | 'red' | 'purple' | 'muted'
+
+export type PaneMark = {
+  targetId: string
+  label: string
+  tone: PaneMarkTone
+  markedAt: number
+  activityCount: number
+  lastActivityAt?: number
+}
+
 export type PaneTerminalState = {
   width: number
   height: number
@@ -453,6 +464,9 @@ export type ServerMessage =
   | { type: 'agent_status_removed'; paneId: string }
   | { type: 'session_brief'; brief: SessionBrief }
   | { type: 'session_brief_snapshot'; briefs: SessionBrief[] }
+  | { type: 'pane_mark'; mark: PaneMark }
+  | { type: 'pane_mark_snapshot'; marks: PaneMark[] }
+  | { type: 'pane_mark_removed'; targetId: string }
   | {
       type: 'workspace'
       sessionId: string

@@ -14,6 +14,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   AgentStatus,
   CommandoSnapshot,
+  PaneMark,
   SavedWorkspace,
   ServerMessage,
   SessionBrief,
@@ -68,6 +69,7 @@ import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
 import { PaneTargetApi } from './pane-target-api.js'
 import { SessionBriefStore } from './session-briefs.js'
+import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
@@ -436,6 +438,10 @@ async function main(): Promise<void> {
   await sessionBriefs.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted session briefs', error)
   })
+  const paneMarks = new PaneMarkStore()
+  await paneMarks.load().catch((error: unknown) => {
+    console.error('[commando] failed to load persisted pane marks', error)
+  })
   const webPanes = new WebPaneService()
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
@@ -550,7 +556,28 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const publishedBriefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
+  const briefTargetIds = new Map<string, string>()
+
+  const publishPaneMark = (mark: PaneMark): void => {
+    broadcast({ type: 'pane_mark', mark })
+  }
+
   const publishSessionBrief = (brief: SessionBrief): void => {
+    const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
+    const previousTargetId = briefTargetIds.get(brief.paneId)
+    const previous = previousTargetId === undefined || previousTargetId === pane?.targetId
+      ? publishedBriefs.get(brief.paneId) ?? null
+      : null
+    publishedBriefs.set(brief.paneId, brief)
+    if (pane) {
+      briefTargetIds.set(brief.paneId, pane.targetId)
+      void paneMarks.observeBrief(pane.targetId, previous, brief)
+        .then((mark) => { if (mark) publishPaneMark(mark) })
+        .catch((error: unknown) => {
+          console.error('[commando] failed to record pane mark activity', error)
+        })
+    }
     broadcast({ type: 'session_brief', brief })
   }
 
@@ -1186,6 +1213,14 @@ async function main(): Promise<void> {
   const paneManagement = new PaneManagementApi({
     currentPaneIds: () => snapshot.panes.map((pane) => pane.id),
     panePath: (paneId) => paneForId(paneId)?.path,
+    paneTargetId: (paneId) => paneForId(paneId)?.targetId,
+    setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
+    acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
+    clearPaneMark: (targetId) => paneMarks.remove(targetId),
+    onPaneMarkChanged: (change) => {
+      if (change.type === 'upsert') publishPaneMark(change.mark)
+      else broadcast({ type: 'pane_mark_removed', targetId: change.targetId })
+    },
     beforePaneDeleted: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId
       if (windowId) await tmux.releaseWindowPaneResizes(windowId)
@@ -1628,6 +1663,7 @@ async function main(): Promise<void> {
     send(client, { type: 'snapshot', snapshot })
     send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
     send(client, { type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
+    send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {

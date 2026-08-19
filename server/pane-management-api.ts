@@ -6,6 +6,8 @@ import {
 } from './tmux-pane-actions.js'
 import { openFolderInFinder } from './open-folder.js'
 import { runCommand, validateRunCommand } from './run-command.js'
+import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
+import type { PaneMark } from '../shared/protocol.js'
 
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -14,6 +16,11 @@ type PaneManagementDependencies = {
   actions?: TmuxPaneActions
   currentPaneIds: () => readonly string[]
   panePath: (paneId: string) => string | undefined
+  paneTargetId?: (paneId: string) => string | undefined
+  setPaneMark?: (targetId: string, input: PaneMarkInput) => Promise<PaneMark>
+  acknowledgePaneMark?: (targetId: string) => Promise<PaneMark | null>
+  clearPaneMark?: (targetId: string) => Promise<boolean>
+  onPaneMarkChanged?: (change: { type: 'upsert'; mark: PaneMark } | { type: 'remove'; targetId: string }) => void
   openFolder?: (path: string) => Promise<void>
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
@@ -64,13 +71,17 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-function paneRoute(pathname: string): { paneId: string; action: 'rename' | 'delete' | 'open' | 'run' } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|run)$/.exec(pathname)
+type PaneAction = 'rename' | 'delete' | 'open' | 'run' | 'mark' | 'acknowledge-mark'
+
+function paneRoute(pathname: string): { paneId: string; action: PaneAction } | null {
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|run|mark)(?:\/(acknowledge))?$/.exec(pathname)
   if (!match) return null
   try {
     return {
       paneId: validateTmuxPaneId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete' | 'open' | 'run',
+      action: match[2] === 'mark' && match[3] === 'acknowledge'
+        ? 'acknowledge-mark'
+        : match[2] as PaneAction,
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux pane id')
@@ -138,6 +149,40 @@ export class PaneManagementApi {
         return true
       }
 
+      if (route.action === 'mark' || route.action === 'acknowledge-mark') {
+        const targetId = this.dependencies.paneTargetId?.(route.paneId)
+        if (!targetId) throw new HttpError(404, 'Pane target is unavailable')
+        if (route.action === 'acknowledge-mark') {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          if (!this.dependencies.acknowledgePaneMark) throw new Error('Pane mark store is unavailable')
+          const mark = await this.dependencies.acknowledgePaneMark(targetId)
+          if (!mark) throw new HttpError(404, 'Pane is not marked')
+          this.dependencies.onPaneMarkChanged?.({ type: 'upsert', mark })
+          writeJson(response, 200, { ok: true, paneId: route.paneId, mark })
+          return true
+        }
+        if (request.method === 'DELETE') {
+          if (!this.dependencies.clearPaneMark) throw new Error('Pane mark store is unavailable')
+          const removed = await this.dependencies.clearPaneMark(targetId)
+          if (removed) this.dependencies.onPaneMarkChanged?.({ type: 'remove', targetId })
+          writeJson(response, 200, { ok: true, paneId: route.paneId, removed })
+          return true
+        }
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        let input: PaneMarkInput
+        try {
+          input = validatePaneMarkInput(await readJson(request))
+        } catch (error) {
+          if (error instanceof HttpError) throw error
+          throw new HttpError(400, error instanceof Error ? error.message : 'Invalid pane mark')
+        }
+        if (!this.dependencies.setPaneMark) throw new Error('Pane mark store is unavailable')
+        const mark = await this.dependencies.setPaneMark(targetId, input)
+        this.dependencies.onPaneMarkChanged?.({ type: 'upsert', mark })
+        writeJson(response, 200, { ok: true, paneId: route.paneId, mark })
+        return true
+      }
+
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
       const body = await readJson(request)
       if (body.confirmPaneId !== route.paneId) {
@@ -151,7 +196,7 @@ export class PaneManagementApi {
     } catch (error) {
       if (error instanceof HttpError) {
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname.endsWith('/delete') ? 'DELETE' : 'POST')
+          response.setHeader('Allow', url.pathname.endsWith('/delete') ? 'DELETE' : url.pathname.endsWith('/mark') ? 'POST, DELETE' : 'POST')
         }
         writeJson(response, error.status, { error: error.message })
         return true

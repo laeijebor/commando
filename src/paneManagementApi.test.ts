@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createPaneManagementApi } from './paneManagementApi'
 
 describe('pane management API client', () => {
-  it('sends authenticated rename, confirmed delete, open-path, and run requests', async () => {
+  it('sends authenticated pane management and mark requests', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true }))
     const api = createPaneManagementApi('secret', fetcher)
 
@@ -10,6 +10,9 @@ describe('pane management API client', () => {
     await api.deletePane('%12')
     await api.openPanePath('%12')
     await api.runInPanePath('%12', 'open .')
+    await api.setPaneMark('%12', 'Waiting for PR', 'amber')
+    await api.acknowledgePaneMark('%12')
+    await api.clearPaneMark('%12')
 
     expect(fetcher).toHaveBeenNthCalledWith(1, '/api/pane-management/panes/%2512/rename', expect.objectContaining({
       method: 'POST',
@@ -28,6 +31,16 @@ describe('pane management API client', () => {
       method: 'POST',
       body: JSON.stringify({ command: 'open .' }),
       headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(5, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ label: 'Waiting for PR', tone: 'amber' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(6, '/api/pane-management/panes/%2512/mark/acknowledge', expect.objectContaining({
+      method: 'POST',
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(7, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
+      method: 'DELETE',
     }))
   })
 

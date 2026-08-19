@@ -24,6 +24,64 @@ async function startApi(api: PaneManagementApi): Promise<string> {
 }
 
 describe('pane management API', () => {
+  it('sets, acknowledges, and clears a mark through the pane target id', async () => {
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    const mark = { targetId, label: 'Waiting for PR', tone: 'amber' as const, markedAt: 100, activityCount: 2 }
+    const setPaneMark = vi.fn().mockResolvedValue({ ...mark, activityCount: 0 })
+    const acknowledgePaneMark = vi.fn().mockResolvedValue(mark)
+    const clearPaneMark = vi.fn().mockResolvedValue(true)
+    const onPaneMarkChanged = vi.fn()
+    const api = new PaneManagementApi({
+      currentPaneIds: () => ['%12'],
+      panePath: () => undefined,
+      paneTargetId: () => targetId,
+      setPaneMark,
+      acknowledgePaneMark,
+      clearPaneMark,
+      onPaneMarkChanged,
+    })
+    const baseUrl = await startApi(api)
+    const markUrl = `${baseUrl}/api/pane-management/panes/%2512/mark`
+
+    const setResponse = await fetch(markUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'Waiting for PR', tone: 'amber' }),
+    })
+    const acknowledgeResponse = await fetch(`${markUrl}/acknowledge`, { method: 'POST' })
+    const clearResponse = await fetch(markUrl, { method: 'DELETE' })
+
+    expect(setResponse.status).toBe(200)
+    expect(acknowledgeResponse.status).toBe(200)
+    expect(clearResponse.status).toBe(200)
+    expect(setPaneMark).toHaveBeenCalledWith(targetId, { label: 'Waiting for PR', tone: 'amber' })
+    expect(acknowledgePaneMark).toHaveBeenCalledWith(targetId)
+    expect(clearPaneMark).toHaveBeenCalledWith(targetId)
+    expect(onPaneMarkChanged).toHaveBeenNthCalledWith(1, { type: 'upsert', mark: { ...mark, activityCount: 0 } })
+    expect(onPaneMarkChanged).toHaveBeenNthCalledWith(2, { type: 'upsert', mark })
+    expect(onPaneMarkChanged).toHaveBeenNthCalledWith(3, { type: 'remove', targetId })
+  })
+
+  it('rejects invalid pane mark input before changing the store', async () => {
+    const setPaneMark = vi.fn()
+    const api = new PaneManagementApi({
+      currentPaneIds: () => ['%12'],
+      panePath: () => undefined,
+      paneTargetId: () => '11111111-1111-4111-8111-111111111111',
+      setPaneMark,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/mark`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: '', tone: 'cyan', activityCount: 99 }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(setPaneMark).not.toHaveBeenCalled()
+  })
+
   it('opens the server-resolved path for an existing pane', async () => {
     const openFolder = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)
     const api = new PaneManagementApi({

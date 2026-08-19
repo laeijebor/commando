@@ -1,8 +1,13 @@
+import type { PaneMarkTone } from '../shared/protocol'
+
 export interface PaneManagementApiClient {
   renamePane(paneId: string, title: string): Promise<void>
   deletePane(paneId: string): Promise<void>
   openPanePath(paneId: string): Promise<void>
   runInPanePath(paneId: string, command: string): Promise<void>
+  setPaneMark(paneId: string, label: string, tone: PaneMarkTone): Promise<void>
+  acknowledgePaneMark(paneId: string): Promise<void>
+  clearPaneMark(paneId: string): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -49,6 +54,16 @@ export function createPaneManagementApi(
     runInPanePath: (paneId, command) => request(`/panes/${encodeURIComponent(paneId)}/run`, {
       method: 'POST',
       body: JSON.stringify({ command }),
+    }),
+    setPaneMark: (paneId, label, tone) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+      method: 'POST',
+      body: JSON.stringify({ label, tone }),
+    }),
+    acknowledgePaneMark: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/mark/acknowledge`, {
+      method: 'POST',
+    }),
+    clearPaneMark: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+      method: 'DELETE',
     }),
   }
 }
