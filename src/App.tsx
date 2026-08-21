@@ -98,6 +98,7 @@ import { WebPaneCard } from './WebPaneCard'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
+import { createPrsApi, type PrsApiClient } from './prsApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -247,6 +248,7 @@ type TerminalPaneProps = {
   nativeRetryKey: number
   useXtermFallback: boolean
   gitApi: GitDiffApiClient
+  prsApi?: PrsApiClient
   onOpenPath: () => Promise<void>
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
@@ -288,6 +290,7 @@ export function TerminalPaneCard({
   nativeRetryKey,
   useXtermFallback,
   gitApi,
+  prsApi,
   onOpenPath,
   onFocus,
   onOpenMenu,
@@ -549,7 +552,7 @@ export function TerminalPaneCard({
           registerSink={registerSink}
           registerFocusable={registerFocusable}
         />
-        {brief ? <PaneWorklog brief={brief} paneLabel={paneLabel} /> : null}
+        {brief ? <PaneWorklog brief={brief} paneLabel={paneLabel} prsApi={prsApi} connected={connected} /> : null}
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
@@ -1715,6 +1718,7 @@ export function App() {
   const paneManagementApi = createPaneManagementApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
+  const prsApi = createPrsApi(token)
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -2526,6 +2530,7 @@ export function App() {
                             nativeRetryKey={rendererControl?.retryKey ?? 0}
                             useXtermFallback={rendererControl?.manualXterm ?? false}
                             gitApi={gitDiffApi}
+                            prsApi={prsApi}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}

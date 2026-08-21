@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import {
+  isCommandoTargetId,
   parseCommandoPrMarker,
   stripCommandoPrMarkers,
   type CommandoPrMarker,
@@ -19,6 +20,7 @@ const PULL_REQUEST_PAGE_SIZE = 30
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
+const PANE_PULL_REQUEST_PAGE_SIZE = 30
 
 const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
@@ -27,6 +29,18 @@ query($owner: String!, $name: String!, $number: Int!) {
       reviewThreads(first: ${THREAD_PAGE_SIZE}) {
         totalCount
         nodes { isResolved path comments(first: 1) { nodes { author { login } body } } }
+      }
+    }
+  }
+}`.trim()
+const PANE_PULL_REQUESTS_QUERY = `
+query($targetQuery: String!) {
+  linked: search(query: $targetQuery, type: ISSUE, first: ${PANE_PULL_REQUEST_PAGE_SIZE}) {
+    issueCount
+    nodes {
+      ... on PullRequest {
+        number title url state isDraft body createdAt updatedAt
+        repository { nameWithOwner }
       }
     }
   }
@@ -91,6 +105,25 @@ export type PrList = {
   pullRequests: PrSummary[]
   truncated: boolean
   mineTruncated: boolean
+  fetchedAt: number
+}
+
+export type PanePrSummary = {
+  repo: string
+  number: number
+  title: string
+  url: string
+  state: 'open' | 'merged' | 'closed'
+  isDraft: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type PanePrList = {
+  targetId: string
+  totalCount: number
+  pullRequests: PanePrSummary[]
+  truncated: boolean
   fetchedAt: number
 }
 
@@ -233,14 +266,14 @@ function nodes(record: JsonRecord, key: string): JsonRecord[] {
   return value.filter(isRecord)
 }
 
-function searchConnection(data: JsonRecord, key: string): { nodes: JsonRecord[]; truncated: boolean } {
+function searchConnection(data: JsonRecord, key: string): { nodes: JsonRecord[]; totalCount: number; truncated: boolean } {
   const connection = objectField(data, key)
   const value = connection.nodes
   if (!Array.isArray(value)) throw invalidUpstream()
   // Non-PR search hits surface as empty objects from the inline fragment.
   const prNodes = value.filter(isRecord).filter((node) => typeof node.number === 'number')
   const issueCount = typeof connection.issueCount === 'number' ? connection.issueCount : value.length
-  return { nodes: prNodes, truncated: issueCount > value.length }
+  return { nodes: prNodes, totalCount: issueCount, truncated: issueCount > value.length }
 }
 
 export function validateRepo(value: unknown): string {
@@ -281,6 +314,13 @@ export function validateStateFilter(value: unknown): PrStateFilter {
   if (value === undefined || value === null || value === '') return 'open'
   if (value === 'open' || value === 'closed' || value === 'all') return value
   throw new PrServiceError(400, 'invalid_request', 'state must be "open", "closed", or "all"')
+}
+
+export function validatePaneTargetId(value: unknown): string {
+  if (!isCommandoTargetId(value)) {
+    throw new PrServiceError(400, 'invalid_request', 'targetId must be a Commando pane target id')
+  }
+  return value
 }
 
 function statesArgument(filter: PrStateFilter): string {
@@ -337,6 +377,31 @@ function searchStateQualifier(filter: PrStateFilter): string {
 
 function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested', filter: PrStateFilter): string {
   return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
+}
+
+function paneTargetSearchQuery(targetId: string): string {
+  return `is:pr in:body ${targetId}`
+}
+
+function parsePanePullRequest(node: JsonRecord, targetId: string): PanePrSummary | null {
+  const body = typeof node.body === 'string' ? node.body : ''
+  if (parseCommandoPrMarker(body)?.targetId !== targetId) return null
+  const repository = optionalObject(node, 'repository')
+  const repo = repository && typeof repository.nameWithOwner === 'string'
+    ? repository.nameWithOwner
+    : null
+  if (!repo || !REPO_PATTERN.test(repo)) return null
+  const stateValue = requiredString(node, 'state')
+  return {
+    repo,
+    number: requiredNumber(node, 'number'),
+    title: requiredString(node, 'title'),
+    url: requiredString(node, 'url'),
+    state: stateValue === 'OPEN' ? 'open' : stateValue === 'MERGED' ? 'merged' : 'closed',
+    isDraft: requiredBoolean(node, 'isDraft'),
+    createdAt: requiredString(node, 'createdAt'),
+    updatedAt: requiredString(node, 'updatedAt'),
+  }
 }
 
 function checkRunState(node: JsonRecord): PrCheckRun | null {
@@ -587,6 +652,7 @@ export class PrService {
   private readonly repoContextTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
+  private readonly paneListCache = new Map<string, CacheEntry<PanePrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
@@ -631,6 +697,49 @@ export class PrService {
     const entry: SwrCacheEntry<PrList> = { at: 0, value: null, refresh: null }
     this.listCache.set(key, entry)
     return this.refreshPullRequests(key, repo, filter, entry)
+  }
+
+  async listPanePullRequests(targetIdInput: unknown): Promise<PanePrList> {
+    const targetId = validatePaneTargetId(targetIdInput)
+    const cached = this.paneListCache.get(targetId)
+    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    const promise = this.fetchPanePullRequests(targetId)
+    const entry = { at: this.now(), promise }
+    this.paneListCache.set(targetId, entry)
+    promise.catch(() => {
+      if (this.paneListCache.get(targetId) === entry) this.paneListCache.delete(targetId)
+    })
+    return promise
+  }
+
+  private async fetchPanePullRequests(targetId: string): Promise<PanePrList> {
+    const output = await this.runner([
+      'api', 'graphql',
+      '-f', `query=${PANE_PULL_REQUESTS_QUERY}`,
+      '-f', `targetQuery=${paneTargetSearchQuery(targetId)}`,
+    ])
+    let payload: unknown
+    try {
+      payload = JSON.parse(output)
+    } catch {
+      throw invalidUpstream()
+    }
+    if (!isRecord(payload)) throw invalidUpstream()
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+      throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the pane pull request query')
+    }
+    const linked = searchConnection(objectField(payload, 'data'), 'linked')
+    const pullRequests = linked.nodes
+      .map((node) => parsePanePullRequest(node, targetId))
+      .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    return {
+      targetId,
+      totalCount: linked.totalCount,
+      pullRequests,
+      truncated: linked.truncated,
+      fetchedAt: this.now(),
+    }
   }
 
   private refreshPullRequests(

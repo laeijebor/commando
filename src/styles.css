@@ -2068,6 +2068,7 @@ kbd {
 .pane-worklog-recap,
 .pane-worklog-note,
 .pane-worklog-plan,
+.pane-worklog-prs,
 .pane-worklog-activity,
 .pane-worklog-next {
   padding: 9px;
@@ -2121,8 +2122,10 @@ kbd {
 
 .pane-worklog-section-toggle span { display: flex; align-items: center; gap: 6px; }
 .pane-worklog-section-toggle strong,
+.pane-worklog-prs > header strong,
 .pane-worklog-activity > header strong { color: var(--text-soft); font: 800 7px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
 .pane-worklog-section-toggle small,
+.pane-worklog-prs > header small,
 .pane-worklog-activity > header small { color: var(--muted-dim); font: 600 7px/1 var(--mono); }
 .pane-worklog-section-toggle svg { width: 10px; height: 10px; }
 
@@ -2152,6 +2155,28 @@ kbd {
 .pane-worklog-task.is-completed { color: var(--muted-dim); }
 .pane-worklog-task.is-completed strong { text-decoration: line-through; text-decoration-color: var(--border-mid); }
 .pane-worklog-task.is-cancelled { color: var(--muted-dim); opacity: .68; }
+
+.pane-worklog-prs > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.pane-worklog-pr-list { display: grid; gap: 4px; }
+.pane-worklog-pr {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+.pane-worklog-pr:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.pane-worklog-pr-icon { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+.pane-worklog-pr.is-merged .pane-worklog-pr-icon { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.pane-worklog-pr.is-closed .pane-worklog-pr-icon { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.pane-worklog-pr-icon svg { width: 10px; height: 10px; }
+.pane-worklog-pr strong { display: block; overflow: hidden; color: inherit; font: 700 8px/1.25 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.pane-worklog-pr small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.pane-worklog-pr-truncated { margin: 6px 0 0; color: var(--muted-dim); font: 500 6px/1.3 var(--sans); }
 
 .pane-worklog-activity > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .pane-worklog-timeline { margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--border-mid); }

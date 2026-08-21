@@ -6,7 +6,12 @@ import { PrService } from './prs.js'
 
 const servers: Server[] = []
 
-async function startApi(panePath: (paneId: string) => string | undefined): Promise<string> {
+const TARGET_ID = '123e4567-e89b-42d3-a456-426614174000'
+
+async function startApi(
+  panePath: (paneId: string) => string | undefined,
+  paneTargetId: (paneId: string) => string | undefined = () => undefined,
+): Promise<string> {
   const gitRunner = vi.fn(async (args: string[]) => {
     if (args.join(' ') === 'rev-parse --show-toplevel') return '/workspace\n'
     if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') return 'feature\n'
@@ -15,14 +20,14 @@ async function startApi(panePath: (paneId: string) => string | undefined): Promi
     throw new Error(`Unexpected git command: ${args.join(' ')}`)
   })
   const service = new PrService({
-    runner: vi.fn(async () => '[]'),
+    runner: vi.fn(async () => JSON.stringify({ data: { linked: { issueCount: 0, nodes: [] } } })),
     gitRunner,
     preferencesPath: '/nonexistent/prs.json',
   })
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? '/', 'http://localhost')
-      if (!(await handlePrsApi(request, response, url, service, { panePath }))) {
+      if (!(await handlePrsApi(request, response, url, service, { panePath, paneTargetId }))) {
         response.writeHead(404)
         response.end()
       }
@@ -64,5 +69,23 @@ describe('PR pane repository API', () => {
     const response = await fetch(`${base}/api/prs?repo=acme%2Fwidgets&state=open&refresh=true`)
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' })
+  })
+
+  it('resolves pane-linked pull requests through the pane target', async () => {
+    const base = await startApi(
+      () => '/workspace',
+      (paneId) => paneId === '%1' ? TARGET_ID : undefined,
+    )
+    const response = await fetch(`${base}/api/prs/pane?paneId=%251`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      list: { targetId: TARGET_ID, pullRequests: [] },
+    })
+  })
+
+  it('rejects invalid and unknown pane ids for pane-linked pull requests', async () => {
+    const base = await startApi(() => '/workspace')
+    expect((await fetch(`${base}/api/prs/pane?paneId=bad`)).status).toBe(400)
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251`)).status).toBe(404)
   })
 })

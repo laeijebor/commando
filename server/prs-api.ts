@@ -7,6 +7,7 @@ const MAX_BODY_BYTES = 64 * 1024
 
 type PrsApiDependencies = {
   panePath: (paneId: string) => string | undefined
+  paneTargetId: (paneId: string) => string | undefined
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -86,6 +87,24 @@ export async function handlePrsApi(
       json(response, 200, {
         threads: await service.listUnresolvedThreads(url.searchParams.get('repo'), url.searchParams.get('number')),
       })
+      return true
+    }
+
+    if (path.length === 1 && path[0] === 'pane') {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      let paneId: string
+      try {
+        paneId = validateTmuxPaneId(url.searchParams.get('paneId'))
+      } catch {
+        throw new PrServiceError(400, 'invalid_request', 'Invalid tmux pane id')
+      }
+      const targetId = dependencies.paneTargetId(paneId)
+      if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'Tmux pane does not exist')
+      json(response, 200, { list: await service.listPanePullRequests(targetId) })
       return true
     }
 

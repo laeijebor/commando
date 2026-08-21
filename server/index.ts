@@ -1792,6 +1792,7 @@ async function main(): Promise<void> {
         if (await handleLinearApi(request, response, url, linear)) return
         if (await handlePrsApi(request, response, url, prs, {
           panePath: (paneId) => paneForId(paneId)?.path,
+          paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return

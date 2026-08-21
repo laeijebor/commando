@@ -18,6 +18,8 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type { AgentTaskStatus, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol'
+import { PanePullRequests } from './PanePullRequests'
+import type { PrsApiClient } from './prsApi'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -95,7 +97,17 @@ function taskIcon(status: AgentTaskStatus): ReactNode {
   }
 }
 
-export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLabel: string }) {
+export function PaneWorklog({
+  brief,
+  paneLabel,
+  prsApi,
+  connected = true,
+}: {
+  brief: SessionBrief
+  paneLabel: string
+  prsApi?: Pick<PrsApiClient, 'pane'>
+  connected?: boolean
+}) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
   const [compact, setCompact] = useState(false)
   const [following, setFollowing] = useState(true)
@@ -248,6 +260,8 @@ export function PaneWorklog({ brief, paneLabel }: { brief: SessionBrief; paneLab
             ) : null}
           </section>
         ) : null}
+
+        {prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} /> : null}
 
         {brief.updates.length ? (
           <section className="pane-worklog-activity" aria-label={`Activity for ${paneLabel}`}>

@@ -43,6 +43,23 @@ export type PrList = {
   mineTruncated: boolean
   fetchedAt: number
 }
+export type PanePrSummary = {
+  repo: string
+  number: number
+  title: string
+  url: string
+  state: 'open' | 'merged' | 'closed'
+  isDraft: boolean
+  createdAt: string
+  updatedAt: string
+}
+export type PanePrList = {
+  targetId: string
+  totalCount: number
+  pullRequests: PanePrSummary[]
+  truncated: boolean
+  fetchedAt: number
+}
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
 export type PrPreferences = {
   version: 1
@@ -80,6 +97,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       )).list,
     threads: async (repo: string, number: number) =>
       (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,
+    pane: async (paneId: string) =>
+      (await request<{ list: PanePrList }>(`/pane?paneId=${encodeURIComponent(paneId)}`)).list,
     repoForPane: async (paneId: string) =>
       (await request<{ repo: string | null }>(`/repo?paneId=${encodeURIComponent(paneId)}`)).repo,
     repos: async () => (await request<{ repos: PrRepoOption[] }>('/repos')).repos,
@@ -88,4 +107,5 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       (await request<{ prefs: PrPreferences }>('/prefs', { method: 'PUT', body: JSON.stringify(patch) })).prefs,
   }
 }
+export type PrsApiClient = ReturnType<typeof createPrsApi>
 import type { CommandoPrMarker } from '../shared/pane-target'

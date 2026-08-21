@@ -8,6 +8,7 @@ import {
   PrPreferencesStore,
   repoFromGithubRemote,
   validateRepo,
+  validatePaneTargetId,
   validateStateFilter,
 } from './prs.js'
 
@@ -95,6 +96,75 @@ describe('input validation', () => {
     expect(validateStateFilter('closed')).toBe('closed')
     expect(validateStateFilter('all')).toBe('all')
     expect(() => validateStateFilter('merged')).toThrow(PrServiceError)
+  })
+
+  it('accepts only durable Commando pane target ids', () => {
+    expect(validatePaneTargetId('123e4567-e89b-42d3-a456-426614174000')).toBe('123e4567-e89b-42d3-a456-426614174000')
+    expect(() => validatePaneTargetId('not-a-target')).toThrow(PrServiceError)
+  })
+})
+
+describe('pane pull request history', () => {
+  const targetId = '123e4567-e89b-42d3-a456-426614174000'
+  const marker = `<!-- commando:v1 target=${targetId} relation=created -->`
+
+  it('returns every exact marker match across repositories and states', async () => {
+    const output = JSON.stringify({
+      data: {
+        linked: {
+          issueCount: 4,
+          nodes: [
+            {
+              number: 12,
+              title: 'First pane PR',
+              url: 'https://github.com/acme/widgets/pull/12',
+              state: 'MERGED',
+              isDraft: false,
+              body: `Ships widgets.\n\n${marker}`,
+              createdAt: '2026-08-19T09:00:00Z',
+              updatedAt: '2026-08-20T09:00:00Z',
+              repository: { nameWithOwner: 'acme/widgets' },
+            },
+            {
+              number: 44,
+              title: 'Second pane PR',
+              url: 'https://github.com/acme/gadgets/pull/44',
+              state: 'OPEN',
+              isDraft: true,
+              body: `Ships gadgets.\n\n${marker}`,
+              createdAt: '2026-08-21T09:00:00Z',
+              updatedAt: '2026-08-21T10:00:00Z',
+              repository: { nameWithOwner: 'acme/gadgets' },
+            },
+            {
+              number: 99,
+              title: 'Search false positive',
+              url: 'https://github.com/acme/widgets/pull/99',
+              state: 'CLOSED',
+              isDraft: false,
+              body: `Mentions ${targetId} without the canonical marker.`,
+              createdAt: '2026-08-21T11:00:00Z',
+              updatedAt: '2026-08-21T11:00:00Z',
+              repository: { nameWithOwner: 'acme/widgets' },
+            },
+          ],
+        },
+      },
+    })
+    const { service, runner } = serviceWith(output)
+
+    await expect(service.listPanePullRequests(targetId)).resolves.toMatchObject({
+      targetId,
+      totalCount: 4,
+      truncated: true,
+      pullRequests: [
+        { repo: 'acme/gadgets', number: 44, state: 'open', isDraft: true },
+        { repo: 'acme/widgets', number: 12, state: 'merged', isDraft: false },
+      ],
+    })
+    expect(runner).toHaveBeenCalledWith(expect.arrayContaining([
+      '-f', `targetQuery=is:pr in:body ${targetId}`,
+    ]))
   })
 })
 
