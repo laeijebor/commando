@@ -20,7 +20,7 @@ const PULL_REQUEST_PAGE_SIZE = 30
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
-const PANE_PULL_REQUEST_PAGE_SIZE = 30
+const PANE_PULL_REQUEST_PAGE_SIZE = 100
 
 const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
@@ -48,6 +48,7 @@ query($targetQuery: String!) {
 const MAX_PINNED_REPOS = 30
 const MAX_RECENT_REPOS = 20
 const MAX_LIST_CACHE_ENTRIES = 100
+const MAX_PANE_LIST_CACHE_ENTRIES = 100
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
 type JsonRecord = Record<string, unknown>
@@ -380,7 +381,7 @@ function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested
 }
 
 function paneTargetSearchQuery(targetId: string): string {
-  return `is:pr in:body ${targetId}`
+  return `is:pr in:body ${targetId} sort:created-desc`
 }
 
 function parsePanePullRequest(node: JsonRecord, targetId: string): PanePrSummary | null {
@@ -706,6 +707,15 @@ export class PrService {
     const promise = this.fetchPanePullRequests(targetId)
     const entry = { at: this.now(), promise }
     this.paneListCache.set(targetId, entry)
+    if (this.paneListCache.size > MAX_PANE_LIST_CACHE_ENTRIES) {
+      const oldest = [...this.paneListCache.entries()]
+        .filter(([key]) => key !== targetId)
+        .sort((left, right) => left[1].at - right[1].at)
+      for (const [key] of oldest) {
+        if (this.paneListCache.size <= MAX_PANE_LIST_CACHE_ENTRIES) break
+        this.paneListCache.delete(key)
+      }
+    }
     promise.catch(() => {
       if (this.paneListCache.get(targetId) === entry) this.paneListCache.delete(targetId)
     })

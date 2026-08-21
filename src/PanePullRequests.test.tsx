@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PanePullRequests } from './PanePullRequests'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('PanePullRequests', () => {
   it('renders multiple linked pull requests with repository and state', async () => {
@@ -44,7 +47,7 @@ describe('PanePullRequests', () => {
     render(<PanePullRequests paneId="%12" api={api} connected />)
 
     expect(await screen.findByRole('link', {
-      name: 'Open open pull request acme/gadgets #44: Second pane PR',
+      name: 'Open draft pull request acme/gadgets #44: Second pane PR',
     })).toHaveTextContent('acme/gadgets #44 · draft')
     expect(screen.getByRole('link', {
       name: 'Open merged pull request acme/widgets #12: First pane PR',
@@ -66,5 +69,40 @@ describe('PanePullRequests', () => {
     render(<PanePullRequests paneId="%12" api={api} connected />)
     await vi.waitFor(() => expect(api.pane).toHaveBeenCalled())
     expect(screen.queryByText('Pull requests')).not.toBeInTheDocument()
+  })
+
+  it('keeps the last successful list when a background refresh fails', async () => {
+    vi.useFakeTimers()
+    const api = {
+      pane: vi.fn()
+        .mockResolvedValueOnce({
+          targetId: '123e4567-e89b-42d3-a456-426614174000',
+          totalCount: 1,
+          truncated: false,
+          fetchedAt: 1,
+          pullRequests: [{
+            repo: 'acme/widgets',
+            number: 12,
+            title: 'Stable pane PR',
+            url: 'https://github.com/acme/widgets/pull/12',
+            state: 'open' as const,
+            isDraft: false,
+            createdAt: '2026-08-21T09:00:00Z',
+            updatedAt: '2026-08-21T10:00:00Z',
+          }],
+        })
+        .mockRejectedValueOnce(new Error('rate limited')),
+    }
+
+    render(<PanePullRequests paneId="%12" api={api} connected />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('Stable pane PR')).toBeInTheDocument()
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+    expect(api.pane).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Stable pane PR')).toBeInTheDocument()
   })
 })

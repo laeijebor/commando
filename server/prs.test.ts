@@ -163,7 +163,7 @@ describe('pane pull request history', () => {
       ],
     })
     expect(runner).toHaveBeenCalledWith(expect.arrayContaining([
-      '-f', `targetQuery=is:pr in:body ${targetId}`,
+      '-f', `targetQuery=is:pr in:body ${targetId} sort:created-desc`,
     ]))
   })
 })

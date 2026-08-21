@@ -23,15 +23,18 @@ export function PanePullRequests({
     if (!connected) return
     let cancelled = false
     const refresh = () => {
+      if (document.visibilityState === 'hidden') return
       apiRef.current.pane(paneId)
         .then((next) => { if (!cancelled) setList(next) })
-        .catch(() => { if (!cancelled) setList(null) })
+        .catch(() => undefined)
     }
     refresh()
     const timer = window.setInterval(refresh, POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', refresh)
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refresh)
     }
   }, [connected, paneId])
 
@@ -47,7 +50,7 @@ export function PanePullRequests({
             target="_blank"
             rel="noreferrer"
             className={`pane-worklog-pr is-${pullRequest.state}`}
-            aria-label={`Open ${pullRequest.state} pull request ${pullRequest.repo} #${pullRequest.number}: ${pullRequest.title}`}
+            aria-label={`Open ${pullRequest.isDraft ? 'draft' : pullRequest.state} pull request ${pullRequest.repo} #${pullRequest.number}: ${pullRequest.title}`}
             key={pullRequest.url}
           >
             <span className="pane-worklog-pr-icon" aria-hidden="true">
@@ -60,7 +63,7 @@ export function PanePullRequests({
           </a>
         ))}
       </div>
-      {list.truncated ? <p className="pane-worklog-pr-truncated">Showing the 30 most relevant linked PRs.</p> : null}
+      {list.truncated ? <p className="pane-worklog-pr-truncated">Additional linked PRs are available on GitHub.</p> : null}
     </section>
   )
 }
