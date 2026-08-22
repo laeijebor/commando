@@ -161,6 +161,37 @@ describe('tmux session actions', () => {
 })
 
 describe('session management API', () => {
+  it('enqueues a save after deleting a session, including the final session', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const afterSessionDeleted = vi.fn()
+    const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, { COMMANDO_TMUX_SOCKET_NAME: 'qa' }),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => ['@7'],
+      afterSessionDeleted,
+      onSessionsChanged,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ ok: true, sessionId: '$1' })
+    expect(execute).toHaveBeenCalledWith(
+      'tmux',
+      ['-L', 'qa', 'kill-session', '-t', '$1'],
+      expect.objectContaining({ shell: false, timeout: 3_000 }),
+    )
+    expect(afterSessionDeleted).toHaveBeenCalledWith('$1')
+    expect(execute.mock.invocationCallOrder[0]).toBeLessThan(afterSessionDeleted.mock.invocationCallOrder[0])
+    expect(onSessionsChanged).toHaveBeenCalled()
+  })
+
   it('releases resize ownership and closes an existing window', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const beforeWindowDeleted = vi.fn().mockResolvedValue(undefined)

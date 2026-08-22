@@ -19,6 +19,7 @@ type SessionManagementDependencies = {
   actions?: TmuxSessionActions
   currentSessions: () => readonly { id: string; name: string }[]
   currentWindowIds: () => readonly string[]
+  afterSessionDeleted?: (sessionId: string) => void
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
 }
@@ -150,6 +151,7 @@ export class SessionManagementApi {
           throw new HttpError(400, 'Deletion requires an exact confirmSessionId')
         }
         await this.actions.delete(route.sessionId)
+        this.dependencies.afterSessionDeleted?.(route.sessionId)
         await this.dependencies.onSessionsChanged?.()
         writeJson(response, 200, { ok: true, sessionId: route.sessionId })
         return true

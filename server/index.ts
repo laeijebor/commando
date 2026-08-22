@@ -76,6 +76,7 @@ import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
 import { stripAnsi } from './terminal-text.js'
+import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -433,6 +434,11 @@ async function main(): Promise<void> {
     ? [port]
     : [port, DEVELOPMENT_WEB_PORT]
   const tmux = new TmuxClient(protectedPorts)
+  const resurrectSaver = new TmuxResurrectSaver({
+    onError: (error) => {
+      console.error('[commando] tmux Resurrect save failed', error)
+    },
+  })
   const workspaces = new WorkspaceStore()
   const sessionBriefs = new SessionBriefStore()
   await sessionBriefs.load().catch((error: unknown) => {
@@ -1198,6 +1204,11 @@ async function main(): Promise<void> {
   const sessionManagement = new SessionManagementApi({
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    afterSessionDeleted: () => {
+      void resurrectSaver.save().catch((error: unknown) => {
+        console.error('[commando] tmux Resurrect save failed after session deletion', error)
+      })
+    },
     beforeWindowDeleted: async (windowId) => {
       await tmux.releaseWindowPaneResizes(windowId)
     },
@@ -1897,6 +1908,7 @@ async function main(): Promise<void> {
   const snapshotTimer = setInterval(() => {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
+  resurrectSaver.start()
 
   const encodedToken = encodeURIComponent(token)
   console.log(`[commando] development: http://127.0.0.1:${DEVELOPMENT_WEB_PORT}/${auth ? '' : `#token=${encodedToken}`}`)
@@ -1914,6 +1926,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     clearInterval(snapshotTimer)
+    resurrectSaver.stop()
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     companion?.close()
