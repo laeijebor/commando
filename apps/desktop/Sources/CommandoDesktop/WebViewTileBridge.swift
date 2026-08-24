@@ -64,6 +64,7 @@ final class WebViewTileHostView: NSView {
 }
 
 enum WebViewTileEvent {
+    case loaded
     case failed(code: String)
 }
 
@@ -125,6 +126,13 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.uiDelegate = nil
         webView.removeFromSuperview()
         hostView.removeFromSuperview()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFinish navigation: WKNavigation!
+    ) {
+        eventSink(identity, .loaded)
     }
 
     func webView(
@@ -315,6 +323,11 @@ final class WebViewTileBridge: NSObject {
             externalURLHandler: externalURLHandler
         ) { [weak self] identity, event in
             switch event {
+            case .loaded:
+                self?.emit(type: "webview.loaded", payload: [
+                    "webPaneId": identity.paneId,
+                    "attachmentId": identity.attachmentId,
+                ])
             case let .failed(code):
                 self?.emitFailure(identity, code: code)
             }

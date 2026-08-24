@@ -126,6 +126,12 @@ describe('NativeWebViewBridge', () => {
     })
     expect(events).toEqual(['webview.attached'])
 
+    receive(bridge, 3, 'webview.loaded', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+    })
+    expect(events).toEqual(['webview.attached', 'webview.loaded'])
+
     expect(bridge.frame(attachment.attachmentId, {
       x: 10,
       y: 20,

@@ -1,17 +1,67 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WebPane } from '../shared/protocol'
-import { WebPaneCard } from './WebPaneCard'
+import { resetNativeWebViewBridge } from './nativeWebViewBridge'
+import { CHROMIUM_RENDERER_STORAGE_KEY, WebPaneCard } from './WebPaneCard'
 
 vi.mock('./ChromiumTileCard', () => ({
   ChromiumTileCard: () => <div data-testid="chromium-tile" />,
 }))
 
-afterEach(() => cleanup())
+vi.mock('./NativeWebViewTile', () => ({
+  NativeWebViewTile: ({ onLoaded, onFallback }: { onLoaded?: () => void; onFallback: () => void }) => (
+    <div data-testid="native-webview-tile">
+      <button type="button" onClick={onLoaded}>mark native loaded</button>
+      <button type="button" onClick={onFallback}>fail native renderer</button>
+    </div>
+  ),
+}))
+
+type PostedMessage = Record<string, unknown>
+
+function installNativeHandler(messages: PostedMessage[]) {
+  Object.defineProperty(window, 'webkit', {
+    configurable: true,
+    value: {
+      messageHandlers: {
+        commandoNativeWebView: {
+          postMessage: (message: PostedMessage) => messages.push(message),
+        },
+      },
+    },
+  })
+}
+
+async function makeNativeBridgeAvailable(messages: PostedMessage[]) {
+  await waitFor(() => expect(messages).toHaveLength(1))
+  const connect = messages[0]
+  act(() => {
+    window.__commandoNativeWebViewReceive?.({
+      version: 1,
+      pageId: connect.pageId,
+      eventSequence: 1,
+      type: 'bridge.connected',
+      payload: { capabilities: ['webview.embed.v1'], maxWebViews: 4 },
+    })
+  })
+  await screen.findByRole('button', { name: 'Use native web view renderer' })
+}
+
+beforeEach(() => {
+  resetNativeWebViewBridge()
+  window.localStorage.clear()
+  Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+})
+
+afterEach(() => {
+  cleanup()
+  resetNativeWebViewBridge()
+  Object.defineProperty(window, 'webkit', { configurable: true, value: undefined })
+})
 
 const webPane: WebPane = {
   id: 'w-0badcafe',
@@ -209,5 +259,77 @@ describe('WebPaneCard AppKit popout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Return web pane to workspace' }))
     expect(onReattach).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('WebPaneCard Chromium renderer experiment', () => {
+  const chromiumPane: WebPane = { ...webPane, engine: 'chromium' }
+
+  it('switches between the canvas stream and native WKWebView locally', async () => {
+    const messages: PostedMessage[] = []
+    installNativeHandler(messages)
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+      />,
+    )
+    await makeNativeBridgeAvailable(messages)
+
+    expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Use native web view renderer' }))
+    expect(screen.getByTestId('native-webview-tile')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Review this page' })).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
+    expect(screen.getByText('native loading')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'mark native loaded' }))
+    expect(screen.getByText('native preview')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Use canvas stream renderer' }))
+    expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review this page' })).toBeInTheDocument()
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('canvas')
+  })
+
+  it('falls back to the canvas when the native renderer fails', async () => {
+    const messages: PostedMessage[] = []
+    installNativeHandler(messages)
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+      />,
+    )
+    await makeNativeBridgeAvailable(messages)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use native web view renderer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'fail native renderer' }))
+    expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('canvas')
+  })
+
+  it('falls back when the native renderer never finishes loading', async () => {
+    const messages: PostedMessage[] = []
+    installNativeHandler(messages)
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+      />,
+    )
+    await makeNativeBridgeAvailable(messages)
+
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Use native web view renderer' }))
+      act(() => vi.advanceTimersByTime(8_000))
+      expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
+      expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('canvas')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -114,6 +114,21 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.web-pane-chip.is-renderer {
+  border: 0;
+  cursor: pointer;
+}
+
+.web-pane-chip.is-renderer:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.web-pane-chip.is-renderer.is-native {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
 .web-pane-button {
   flex: none;
   display: inline-flex;

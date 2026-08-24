@@ -8,6 +8,25 @@ import './web-pane.css'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000
+export const CHROMIUM_RENDERER_STORAGE_KEY = 'commando.chromium.renderer.v1'
+
+type ChromiumRenderer = 'canvas' | 'native'
+
+function loadChromiumRenderer(): ChromiumRenderer {
+  try {
+    return window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY) === 'native' ? 'native' : 'canvas'
+  } catch {
+    return 'canvas'
+  }
+}
+
+function saveChromiumRenderer(renderer: ChromiumRenderer): void {
+  try {
+    window.localStorage.setItem(CHROMIUM_RENDERER_STORAGE_KEY, renderer)
+  } catch {
+    // The in-memory choice still works when storage is unavailable.
+  }
+}
 
 /** Inert fallback for callers that never wire a pending queue (tests). */
 const EMPTY_PENDING_SNAPSHOT = { notes: [], knownUpTo: Number.POSITIVE_INFINITY, dropped: 0 }
@@ -112,17 +131,19 @@ export function WebPaneCard({
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [review, setReview] = useState(false)
+  const [chromiumRenderer, setChromiumRenderer] = useState<ChromiumRenderer>(loadChromiumRenderer)
+  const [nativeLoaded, setNativeLoaded] = useState(false)
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'stalled'>('loading')
   const [attributionVisible, setAttributionVisible] = useState(
     () => webPane.openedBy === 'agent' && Date.now() - webPane.createdAt < ATTRIBUTION_VISIBLE_MS,
   )
   const chromium = webPane.engine === 'chromium'
-  // External origins prefer the desktop shell's native WKWebView tier (no
-  // framing limits); everything else — localhost, browsers, native failure —
-  // uses the sandboxed iframe. Chromium-engine tiles stream instead.
+  // External WebKit panes prefer the desktop shell's native WKWebView tier.
+  // Chromium panes may opt into the same surface locally for the fidelity
+  // experiment while retaining their daemon-side engine and CDP endpoint.
   const nativeBridge = useRef<NativeWebViewBridge | null>(
-    chromium || isLocalWebPaneUrl(webPane.url) ? null : getNativeWebViewBridge(),
+    !chromium && isLocalWebPaneUrl(webPane.url) ? null : getNativeWebViewBridge(),
   ).current
   const [tier, setTier] = useState<'undecided' | 'native' | 'iframe'>(
     nativeBridge ? 'undecided' : 'iframe',
@@ -160,6 +181,27 @@ export function WebPaneCard({
   const { host, path } = urlParts(webPane.url)
   const opener = webPane.openerLabel ?? (webPane.openedBy === 'agent' ? 'an agent' : 'you')
   const pending = webPane.status === 'pending'
+  const nativeChromium = chromium && chromiumRenderer === 'native' && tier === 'native' && nativeBridge !== null
+
+  const setRenderer = (renderer: ChromiumRenderer) => {
+    setChromiumRenderer(renderer)
+    saveChromiumRenderer(renderer)
+    setNativeLoaded(false)
+    if (renderer === 'native') setReview(false)
+  }
+
+  useEffect(() => {
+    if (nativeChromium) setNativeLoaded(false)
+  }, [nativeChromium, webPane.url])
+
+  useEffect(() => {
+    if (!nativeChromium || nativeLoaded) return
+    const watchdog = window.setTimeout(() => {
+      setChromiumRenderer('canvas')
+      saveChromiumRenderer('canvas')
+    }, LOAD_WATCHDOG_MS)
+    return () => window.clearTimeout(watchdog)
+  }, [nativeChromium, nativeLoaded, webPane.url])
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
@@ -223,9 +265,23 @@ export function WebPaneCard({
             {webPane.openedBy === 'agent' ? 'web · agent' : 'web'}
           </span>
           {chromium && <span className="web-pane-chip is-chromium">chromium</span>}
+          {chromium && tier === 'native' && nativeBridge && (
+            <button
+              type="button"
+              className={`web-pane-chip is-renderer${nativeChromium ? ' is-native' : ''}`}
+              onClick={() => setRenderer(nativeChromium ? 'canvas' : 'native')}
+              aria-pressed={nativeChromium}
+              aria-label={nativeChromium ? 'Use canvas stream renderer' : 'Use native web view renderer'}
+              title={nativeChromium
+                ? 'Native preview active · switch to the Chromium canvas stream'
+                : 'Canvas stream active · preview the native WKWebView surface'}
+            >
+              {nativeChromium ? (nativeLoaded ? 'native preview' : 'native loading') : 'canvas'}
+            </button>
+          )}
         </span>
         <span className="web-pane-actions">
-          {chromium && !pending && !detached && (
+          {chromium && !nativeChromium && !pending && !detached && (
             <button
               type="button"
               className="web-pane-button"
@@ -287,6 +343,7 @@ export function WebPaneCard({
               className="web-pane-button"
               onClick={() => {
                 setPhase('loading')
+                if (nativeChromium) setNativeLoaded(false)
                 setReloadKey((current) => current + 1)
               }}
               title="Reload page"
@@ -355,7 +412,15 @@ export function WebPaneCard({
         </div>
       ) : (
         <div className="web-pane-body">
-          {chromium ? (
+          {nativeChromium ? (
+            <NativeWebViewTile
+              bridge={nativeBridge}
+              webPane={webPane}
+              reloadKey={reloadKey}
+              onLoaded={() => setNativeLoaded(true)}
+              onFallback={() => setRenderer('canvas')}
+            />
+          ) : chromium ? (
             <ChromiumTileCard
               webPane={webPane}
               wsToken={wsToken}

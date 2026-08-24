@@ -2,10 +2,10 @@ import type { NativeTerminalFramePayload } from './nativeTerminalBridge'
 import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
 
 /**
- * Bridge to the desktop shell's native web-view tier. Localhost tiles render
- * as iframes everywhere; this bridge lets the desktop app place a real
- * WKWebView over a tile's rectangle for external origins that refuse framing.
- * A small sibling of the native terminal bridge with the same envelope shape.
+ * Bridge to the desktop shell's native web-view tier. WebKit panes use it for
+ * external origins that refuse framing; Chromium panes can also use it as an
+ * experimental, client-local visible surface. A small sibling of the native
+ * terminal bridge with the same envelope shape.
  */
 export const NATIVE_WEBVIEW_PROTOCOL = 'commando.native-webview' as const
 export const NATIVE_WEBVIEW_VERSION = 1 as const
@@ -27,6 +27,7 @@ export type NativeWebViewNegotiation =
 
 export type NativeWebViewTileEvent =
   | { type: 'webview.attached' }
+  | { type: 'webview.loaded' }
   | { type: 'webview.failed'; code: string }
 
 export type NativeWebViewAttachment = {
@@ -243,6 +244,8 @@ export class NativeWebViewBridge {
 
     if (type === 'webview.attached') {
       record.listener({ type: 'webview.attached' })
+    } else if (type === 'webview.loaded') {
+      record.listener({ type: 'webview.loaded' })
     } else if (type === 'webview.failed') {
       record.listener({
         type: 'webview.failed',

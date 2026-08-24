@@ -20,16 +20,20 @@ export function NativeWebViewTile({
   bridge,
   webPane,
   reloadKey,
+  onLoaded,
   onFallback,
 }: {
   bridge: NativeWebViewBridge
   webPane: WebPane
   reloadKey: number
+  onLoaded?: () => void
   onFallback: () => void
 }) {
   const slotRef = useRef<HTMLDivElement>(null)
   const attachmentIdRef = useRef<string | null>(null)
+  const loadedRef = useRef(onLoaded)
   const fallbackRef = useRef(onFallback)
+  loadedRef.current = onLoaded
   fallbackRef.current = onFallback
 
   useEffect(() => {
@@ -37,7 +41,9 @@ export function NativeWebViewTile({
     let attachment
     try {
       attachment = bridge.attach(webPane.id, webPane.url, (event) => {
-        if (active && event.type === 'webview.failed') fallbackRef.current()
+        if (!active) return
+        if (event.type === 'webview.loaded') loadedRef.current?.()
+        if (event.type === 'webview.failed') fallbackRef.current()
       })
     } catch {
       fallbackRef.current()

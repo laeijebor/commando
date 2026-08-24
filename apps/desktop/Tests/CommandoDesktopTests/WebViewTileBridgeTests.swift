@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import CommandoDesktop
 
 @MainActor
@@ -67,6 +68,28 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(event?["type"] as? String, "webview.attached")
         let payload = event?["payload"] as? [String: Any]
         XCTAssertEqual(payload?["webPaneId"] as? String, "w-abcd1234")
+    }
+
+    func testFinishedNavigationEmitsLoaded() throws {
+        let events = NSMutableArray()
+        let (bridge, overlay) = makeBridge(events: events)
+        connect(bridge)
+        bridge.receive(body: envelope(sequence: 2, type: "webview.attach", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "url": "http://127.0.0.1:9/",
+        ]))
+        let hostView = overlay.subviews.compactMap { $0 as? WebViewTileHostView }.first
+        let webView = try XCTUnwrap(hostView?.subviews.compactMap { $0 as? WKWebView }.first)
+        let delegate = try XCTUnwrap(webView.navigationDelegate as? WebViewTile)
+
+        delegate.webView(webView, didFinish: nil)
+
+        let event = events.lastObject as? [String: Any]
+        XCTAssertEqual(event?["type"] as? String, "webview.loaded")
+        let payload = event?["payload"] as? [String: Any]
+        XCTAssertEqual(payload?["webPaneId"] as? String, "w-abcd1234")
+        XCTAssertEqual(payload?["attachmentId"] as? String, "page-1:1")
     }
 
     func testAttachRejectsNonHTTPURL() {
