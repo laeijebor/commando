@@ -13,6 +13,7 @@ import {
   findChromiumBinary,
   parseTileInputEvent,
   parseTileInspectRequest,
+  parseTileSelectorResolveRequest,
   parseTileSelectionRequest,
   reclaimStaleChromiumProfile,
   type ChromiumEngineOptions,
@@ -959,6 +960,40 @@ describe('ChromiumEngine', () => {
     })
   })
 
+  describe('resolveSelectors', () => {
+    it('resolves a selector batch with one validated page evaluation', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = [{ noteId: 7, rect: { x: 10, y: 20, width: 30, height: 40 } }]
+
+      await expect(engine.resolveSelectors('w-11111111', [
+        { noteId: 7, selector: '#target' },
+      ])).resolves.toEqual(stub.evaluateValue)
+
+      const call = stub.calls.filter((entry) => entry.method === 'Runtime.evaluate').at(-1)
+      expect(call?.params?.returnByValue).toBe(true)
+      expect(String(call?.params?.expression)).toContain('#target')
+    })
+
+    it('rejects malformed page anchor data', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = [{ noteId: 7, rect: { x: 10, y: 20, width: 0, height: 40 } }]
+      await expect(engine.resolveSelectors('w-11111111', [
+        { noteId: 7, selector: '#target' },
+      ])).rejects.toThrow('invalid selector anchors')
+    })
+
+    it('rejects anchors the page returned for an unrequested note', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+      stub.evaluateValue = [{ noteId: 8, rect: { x: 10, y: 20, width: 30, height: 40 } }]
+      await expect(engine.resolveSelectors('w-11111111', [
+        { noteId: 7, selector: '#target' },
+      ])).rejects.toThrow('unrequested selector anchor')
+    })
+  })
+
   describe('readSelection', () => {
     it('evaluates and validates the page selection', async () => {
       const { stub, engine } = await createHarness()
@@ -1004,6 +1039,28 @@ describe('parseTileInspectRequest', () => {
     expect(parseTileInspectRequest({ type: 'inspect', id: 'i', x: -1, y: 1, grade: 'hover' })).toBeNull()
     expect(parseTileInspectRequest({ type: 'inspect', id: 'x'.repeat(65), x: 1, y: 1, grade: 'hover' })).toBeNull()
     expect(parseTileInspectRequest({ type: 'inspect', x: 1, y: 1, grade: 'hover' })).toBeNull()
+  })
+})
+
+describe('parseTileSelectorResolveRequest', () => {
+  it('accepts a bounded unique selector batch', () => {
+    expect(parseTileSelectorResolveRequest({
+      type: 'resolve_selectors',
+      id: 'r-2',
+      items: [{ noteId: 1, selector: '#target' }],
+    })).toEqual({ id: 'r-2', items: [{ noteId: 1, selector: '#target' }] })
+  })
+
+  it('rejects duplicate ids, oversized selectors, and empty batches', () => {
+    expect(parseTileSelectorResolveRequest({ id: 'r-2', items: [] })).toBeNull()
+    expect(parseTileSelectorResolveRequest({
+      id: 'r-2',
+      items: [{ noteId: 1, selector: '#a' }, { noteId: 1, selector: '#b' }],
+    })).toBeNull()
+    expect(parseTileSelectorResolveRequest({
+      id: 'r-2',
+      items: [{ noteId: 1, selector: 'x'.repeat(1025) }],
+    })).toBeNull()
   })
 })
 

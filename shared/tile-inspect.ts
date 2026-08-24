@@ -16,11 +16,15 @@ export type TileInspectSuccess = {
 }
 export type TileInspectFailure = { ok: false; error: string }
 export type TileInspectResult = TileInspectSuccess | TileInspectFailure
+export type TileSelectorResolveItem = { noteId: number; selector: string }
+export type TileSelectorAnchor = { noteId: number; rect: TileInspectRect }
 
 export const MAX_INSPECT_SELECTOR = 1_024
 export const MAX_INSPECT_TAG = 32
 export const MAX_INSPECT_TEXT = 512
 export const MAX_INSPECT_SNIPPET = 2_048
+export const MAX_SELECTOR_RESOLVE_ITEMS = 50
+export const MAX_SELECTOR_RESOLVE_BYTES = 12 * 1_024
 
 /**
  * The page-side probe. It is STRINGIFIED into a CDP Runtime.evaluate
@@ -91,6 +95,52 @@ export function inspectExpression(x: number, y: number, grade: TileInspectGrade)
   return `(() => { var __name = (fn) => fn; return (${inspectPageAt.toString()})(document, ${x}, ${y}, ${JSON.stringify(grade)}); })()`
 }
 
+/**
+ * Resolves persisted selectors against the page's current layout. This is also
+ * stringified into Runtime.evaluate, so it must remain self-contained.
+ */
+export function resolvePageSelectors(
+  doc: Document,
+  items: TileSelectorResolveItem[],
+): TileSelectorAnchor[] {
+  const anchors: TileSelectorAnchor[] = []
+  for (const item of items) {
+    if (anchors.length >= 50) break
+    if (item.selector.startsWith('redline:')) continue
+    let element: Element | null = null
+    try {
+      element = doc.querySelector(item.selector)
+    } catch {
+      continue
+    }
+    if (!element || !element.isConnected) continue
+    const rect = element.getBoundingClientRect()
+    if (
+      !Number.isFinite(rect.x) || !Number.isFinite(rect.y) ||
+      !Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+      rect.width <= 0 || rect.height <= 0
+    ) continue
+    const viewportWidth = doc.documentElement.clientWidth
+    const viewportHeight = doc.documentElement.clientHeight
+    const x = viewportWidth > 0 ? Math.max(0, rect.x) : rect.x
+    const y = viewportHeight > 0 ? Math.max(0, rect.y) : rect.y
+    const right = viewportWidth > 0 ? Math.min(viewportWidth, rect.x + rect.width) : rect.x + rect.width
+    const bottom = viewportHeight > 0 ? Math.min(viewportHeight, rect.y + rect.height) : rect.y + rect.height
+    if (right <= x || bottom <= y) continue
+    anchors.push({
+      noteId: item.noteId,
+      rect: { x, y, width: right - x, height: bottom - y },
+    })
+  }
+  return anchors
+}
+
+/** Serializes one bounded batch of selector lookups into Runtime.evaluate. */
+export function selectorResolveExpression(items: readonly TileSelectorResolveItem[]): string {
+  const payload = JSON.stringify(items)
+  return `(() => { var __name = (fn) => fn; return (${resolvePageSelectors.toString()})(document, JSON.parse(${JSON.stringify(payload)})); })()`
+}
+
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -129,4 +179,30 @@ export function parseTileInspectResult(value: unknown): TileInspectResult | null
     ...(record.text !== undefined ? { text: record.text.slice(0, MAX_INSPECT_TEXT) } : {}),
     ...(record.snippet !== undefined ? { snippet: record.snippet.slice(0, MAX_INSPECT_SNIPPET) } : {}),
   }
+}
+
+/** Re-validates selector anchors returned by the page. */
+export function parseTileSelectorAnchors(value: unknown): TileSelectorAnchor[] | null {
+  if (!Array.isArray(value) || value.length > MAX_SELECTOR_RESOLVE_ITEMS) return null
+  const anchors: TileSelectorAnchor[] = []
+  const seen = new Set<number>()
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return null
+    const record = item as Record<string, unknown>
+    const rect = record.rect as Record<string, unknown> | undefined
+    if (
+      typeof record.noteId !== 'number' || !Number.isSafeInteger(record.noteId) || record.noteId < 1 ||
+      seen.has(record.noteId) ||
+      typeof rect !== 'object' || rect === null ||
+      !finiteNumber(rect.x) || !finiteNumber(rect.y) ||
+      !finiteNumber(rect.width) || !finiteNumber(rect.height) ||
+      rect.width <= 0 || rect.height <= 0
+    ) return null
+    seen.add(record.noteId)
+    anchors.push({
+      noteId: record.noteId,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    })
+  }
+  return anchors
 }

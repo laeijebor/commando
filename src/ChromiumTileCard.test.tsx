@@ -149,13 +149,14 @@ function tileElement(
   pendingQueue: Partial<PendingQueueApi> = {},
   keepStreamingWhenHidden = false,
   connected = true,
+  reviewMode = false,
 ) {
   return (
     <ChromiumTileCard
       webPane={webPane}
       wsToken="t"
       reloadKey={0}
-      reviewMode={false}
+      reviewMode={reviewMode}
       pendingQueue={{
         list: async () => EMPTY_SNAPSHOT,
         add: async () => EMPTY_SNAPSHOT,
@@ -178,8 +179,9 @@ function renderTile(
   pendingQueue: Partial<PendingQueueApi> = {},
   keepStreamingWhenHidden = false,
   connected = true,
+  reviewMode = false,
 ) {
-  return render(tileElement(pendingQueue, keepStreamingWhenHidden, connected))
+  return render(tileElement(pendingQueue, keepStreamingWhenHidden, connected, reviewMode))
 }
 
 describe('ChromiumTileCard pending hydration', () => {
@@ -479,6 +481,134 @@ describe('ChromiumTileCard pending queue drawer', () => {
     expect(within(drawer).getByRole('navigation', { name: 'Queued review items' })).toHaveClass('tile-review-drawer-list')
     expect(drawer.querySelector('.tile-review-drawer-detail')).toBeInTheDocument()
     expect(document.querySelector('.chromium-tile')).toBeInTheDocument()
+  })
+})
+
+describe('ChromiumTileCard queued selector highlights', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    FakeImage.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('Image', FakeImage)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    window.localStorage.clear()
+  })
+
+  async function startReviewStream(): Promise<FakeWebSocket> {
+    const socket = FakeWebSocket.instances[0]
+    await act(async () => {
+      socket.open()
+      socket.message({ type: 'ready' })
+      socket.message({ type: 'frame', data: 'QUJD' })
+      FakeImage.instances.at(-1)?.load()
+    })
+    await waitFor(() => expect(screen.queryByText('Starting chromium stream…')).not.toBeInTheDocument())
+    return socket
+  }
+
+  it('tracks the current selector rectangle and edits the queued response in a popover', async () => {
+    const initial = {
+      ...responseNote(1),
+      selector: '#plan',
+      rect: { x: 3, y: 4, width: 30, height: 20 },
+    }
+    const updated = {
+      ...initial,
+      revision: 2,
+      response: {
+        ...initial.response!,
+        answer: 'Team',
+        data: { choice: 'Team', options: ['Starter', 'Pro', 'Team'], multiple: false },
+      },
+    }
+    const update = vi.fn(async () => pendingSnapshot([updated], 2))
+    renderTile({ list: async () => pendingSnapshot([initial]), update }, false, true, true)
+    await screen.findByRole('button', { name: 'Review queue · 1' })
+    const socket = await startReviewStream()
+
+    await waitFor(() => expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'resolve_selectors',
+      items: [{ noteId: 1, selector: '#plan' }],
+    })))
+    const request = socket.sent.find((message) => (
+      message as { type?: string }
+    ).type === 'resolve_selectors') as { id: string }
+    act(() => socket.message({
+      type: 'resolve_selectors_result',
+      id: request.id,
+      ok: true,
+      anchors: [{ noteId: 1, rect: { x: 44, y: 55, width: 120, height: 40 } }],
+    }))
+
+    const highlight = screen.getByRole('button', { name: 'Edit queued response: Which plan?' })
+    expect(highlight).toHaveStyle({ left: '44px', top: '55px', width: '120px', height: '40px' })
+    fireEvent.click(highlight)
+
+    const popover = screen.getByRole('dialog', { name: 'Edit queued response' })
+    fireEvent.change(within(popover).getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(within(popover).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 1, { answer: 'Team', note: '' }))
+  })
+
+  it('sends an annotation from its highlighted-element popover and removes the overlay', async () => {
+    const note = {
+      ...annotationNote(2, 'Tighten this copy'),
+      rect: { x: 8, y: 9, width: 90, height: 24 },
+    }
+    const send = vi.fn(async () => pendingSnapshot([], 2))
+    renderTile({ list: async () => pendingSnapshot([note]), send }, false, true, true)
+    await screen.findByRole('button', { name: 'Review queue · 1' })
+    await startReviewStream()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued annotation: #target-2' }))
+    const popover = screen.getByRole('dialog', { name: 'Edit queued annotation' })
+    fireEvent.click(within(popover).getByRole('button', { name: 'Send this' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith([{ id: 2, revision: 1 }]))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit queued annotation' })).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Edit queued annotation: #target-2' })).not.toBeInTheDocument()
+  })
+
+  it('does not highlight synthetic fallback selectors', async () => {
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]) }, false, true, true)
+    await screen.findByRole('button', { name: 'Review queue · 1' })
+    const socket = await startReviewStream()
+    expect(screen.queryByRole('button', { name: /Edit queued response/ })).not.toBeInTheDocument()
+    expect(socket.sent.some((message) => (
+      message as { type?: string }
+    ).type === 'resolve_selectors')).toBe(false)
+  })
+
+  it('removes a capture-rectangle fallback when the selector no longer resolves', async () => {
+    const note = annotationNote(3, 'Old target')
+    renderTile({ list: async () => pendingSnapshot([note]) }, false, true, true)
+    await screen.findByRole('button', { name: 'Review queue · 1' })
+    const socket = await startReviewStream()
+    const highlight = screen.getByRole('button', { name: 'Edit queued annotation: #target-3' })
+    expect(highlight).toBeInTheDocument()
+    const request = await waitFor(() => {
+      const match = socket.sent.find((message) => (
+        message as { type?: string }
+      ).type === 'resolve_selectors') as { id: string } | undefined
+      expect(match).toBeDefined()
+      return match as { id: string }
+    })
+
+    act(() => socket.message({
+      type: 'resolve_selectors_result',
+      id: request.id,
+      ok: true,
+      anchors: [],
+    }))
+    expect(screen.queryByRole('button', { name: 'Edit queued annotation: #target-3' })).not.toBeInTheDocument()
   })
 })
 

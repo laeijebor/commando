@@ -6,9 +6,15 @@ import { WebSocket, type RawData } from 'ws'
 import {
   inspectExpression,
   MAX_INSPECT_SELECTOR,
+  MAX_SELECTOR_RESOLVE_BYTES,
+  MAX_SELECTOR_RESOLVE_ITEMS,
   parseTileInspectResult,
+  parseTileSelectorAnchors,
+  selectorResolveExpression,
   type TileInspectGrade,
   type TileInspectResult,
+  type TileSelectorAnchor,
+  type TileSelectorResolveItem,
 } from '../shared/tile-inspect.js'
 import {
   parseTileSelectionResult,
@@ -534,6 +540,8 @@ export type TileInspectRequest = { id: string; x: number; y: number; grade: Tile
 
 export type TileSelectionRequest = { id: string }
 
+export type TileSelectorResolveRequest = { id: string; items: TileSelectorResolveItem[] }
+
 /** Validates a correlated selection request from a tile viewer. */
 export function parseTileSelectionRequest(value: unknown): TileSelectionRequest | null {
   if (typeof value !== 'object' || value === null) return null
@@ -554,6 +562,34 @@ export function parseTileInspectRequest(value: unknown): TileInspectRequest | nu
     return null
   }
   return { id: record.id, x: record.x, y: record.y, grade: record.grade }
+}
+
+/** Validates a bounded selector-resolution batch from a tile viewer. */
+export function parseTileSelectorResolveRequest(value: unknown): TileSelectorResolveRequest | null {
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(record.id) ||
+    !Array.isArray(record.items) || record.items.length < 1 ||
+    record.items.length > MAX_SELECTOR_RESOLVE_ITEMS
+  ) return null
+  const items: TileSelectorResolveItem[] = []
+  const seen = new Set<number>()
+  for (const item of record.items) {
+    if (typeof item !== 'object' || item === null) return null
+    const candidate = item as Record<string, unknown>
+    if (
+      typeof candidate.noteId !== 'number' || !Number.isSafeInteger(candidate.noteId) ||
+      candidate.noteId < 1 || seen.has(candidate.noteId) ||
+      typeof candidate.selector !== 'string' || candidate.selector.length < 1 ||
+      candidate.selector.length > MAX_INSPECT_SELECTOR
+    ) return null
+    seen.add(candidate.noteId)
+    items.push({ noteId: candidate.noteId, selector: candidate.selector })
+  }
+  return Buffer.byteLength(JSON.stringify(items), 'utf8') <= MAX_SELECTOR_RESOLVE_BYTES
+    ? { id: record.id, items }
+    : null
 }
 
 function sameOrigin(a: string, b: string): boolean {
@@ -1033,6 +1069,27 @@ export class ChromiumEngine {
       parseTileInspectResult(evaluated.result?.value) ??
       { ok: false, error: 'Page returned an invalid inspect result' }
     )
+  }
+
+  /** Resolves queued selectors to their current viewport rectangles in one page call. */
+  async resolveSelectors(
+    webPaneId: string,
+    items: readonly TileSelectorResolveItem[],
+  ): Promise<TileSelectorAnchor[]> {
+    const tile = this.tiles.get(webPaneId)
+    if (!tile) throw new WebPaneError(404, 'Tile has no live chromium target')
+    const evaluated = (await tile.cdp.send('Runtime.evaluate', {
+      expression: selectorResolveExpression(items),
+      returnByValue: true,
+    })) as { result?: { value?: unknown }; exceptionDetails?: unknown }
+    if (evaluated.exceptionDetails) throw new WebPaneError(502, 'Page threw while resolving selectors')
+    const anchors = parseTileSelectorAnchors(evaluated.result?.value)
+    if (!anchors) throw new WebPaneError(502, 'Page returned invalid selector anchors')
+    const requested = new Set(items.map((item) => item.noteId))
+    if (anchors.some((anchor) => !requested.has(anchor.noteId))) {
+      throw new WebPaneError(502, 'Page returned an unrequested selector anchor')
+    }
+    return anchors
   }
 
   /** Returns the text Chromium currently considers selected in this tile. */

@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
 import { describe, expect, it, vi } from 'vitest'
-import { inspectExpression, inspectPageAt, parseTileInspectResult } from './tile-inspect.js'
+import {
+  inspectExpression,
+  inspectPageAt,
+  parseTileInspectResult,
+  parseTileSelectorAnchors,
+  resolvePageSelectors,
+  selectorResolveExpression,
+} from './tile-inspect.js'
 
 function mount(html: string): void {
   document.body.innerHTML = html
@@ -151,5 +158,62 @@ describe('parseTileInspectResult', () => {
     expect(parseTileInspectResult({ ok: true })).toBeNull()
     expect(parseTileInspectResult({ ok: true, selector: 'a', tag: 'b', rect: { x: 'no' } })).toBeNull()
     expect(parseTileInspectResult({ ok: false, error: 42 })).toBeNull()
+  })
+})
+
+describe('queued selector resolution', () => {
+  it('resolves current non-zero rectangles and skips missing or synthetic selectors', () => {
+    mount('<button id="first">First</button><button id="second">Second</button>')
+    const second = document.querySelector('#second') as HTMLElement
+    vi.spyOn(second, 'getBoundingClientRect').mockReturnValue({
+      x: 11,
+      y: 12,
+      width: 80,
+      height: 24,
+      top: 12,
+      right: 91,
+      bottom: 36,
+      left: 11,
+      toJSON: () => ({}),
+    })
+
+    expect(resolvePageSelectors(document, [
+      { noteId: 1, selector: 'redline:synthetic' },
+      { noteId: 2, selector: '#missing' },
+      { noteId: 3, selector: '#second' },
+    ])).toEqual([{ noteId: 3, rect: { x: 11, y: 12, width: 80, height: 24 } }])
+  })
+
+  it('emits a self-contained batched expression', () => {
+    mount('<div id="target">Target</div>')
+    const target = document.querySelector('#target') as HTMLElement
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+      top: 2,
+      right: 4,
+      bottom: 6,
+      left: 1,
+      toJSON: () => ({}),
+    })
+    // eslint-disable-next-line no-eval
+    expect((0, eval)(selectorResolveExpression([{ noteId: 7, selector: '#target' }]))).toEqual([
+      { noteId: 7, rect: { x: 1, y: 2, width: 3, height: 4 } },
+    ])
+  })
+
+  it('validates unique positive note ids and finite non-zero rectangles', () => {
+    expect(parseTileSelectorAnchors([
+      { noteId: 1, rect: { x: 1, y: 2, width: 3, height: 4 } },
+    ])).toEqual([{ noteId: 1, rect: { x: 1, y: 2, width: 3, height: 4 } }])
+    expect(parseTileSelectorAnchors([
+      { noteId: 1, rect: { x: 1, y: 2, width: 3, height: 4 } },
+      { noteId: 1, rect: { x: 5, y: 6, width: 7, height: 8 } },
+    ])).toBeNull()
+    expect(parseTileSelectorAnchors([
+      { noteId: 2, rect: { x: 1, y: 2, width: 0, height: 4 } },
+    ])).toBeNull()
   })
 })
