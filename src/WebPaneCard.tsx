@@ -276,7 +276,7 @@ export function WebPaneCard({
                 ? 'Native preview active · switch to the Chromium canvas stream'
                 : 'Canvas stream active · preview the native WKWebView surface'}
             >
-              {nativeChromium ? (nativeLoaded ? 'native preview' : 'native loading') : 'canvas'}
+              {nativeChromium ? (nativeLoaded ? 'native' : 'loading') : 'canvas'}
             </button>
           )}
         </span>

@@ -282,10 +282,10 @@ describe('WebPaneCard Chromium renderer experiment', () => {
     expect(screen.getByTestId('native-webview-tile')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Review this page' })).not.toBeInTheDocument()
     expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
-    expect(screen.getByText('native loading')).toBeInTheDocument()
+    expect(screen.getByText('loading')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'mark native loaded' }))
-    expect(screen.getByText('native preview')).toBeInTheDocument()
+    expect(screen.getByText('native')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Use canvas stream renderer' }))
     expect(screen.getByTestId('chromium-tile')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Review this page' })).toBeInTheDocument()
