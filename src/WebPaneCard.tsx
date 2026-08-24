@@ -182,6 +182,7 @@ export function WebPaneCard({
   const opener = webPane.openerLabel ?? (webPane.openedBy === 'agent' ? 'an agent' : 'you')
   const pending = webPane.status === 'pending'
   const nativeChromium = chromium && chromiumRenderer === 'native' && tier === 'native' && nativeBridge !== null
+  const nativeChromiumVisible = nativeChromium && !review
 
   const setRenderer = (renderer: ChromiumRenderer) => {
     setChromiumRenderer(renderer)
@@ -195,13 +196,13 @@ export function WebPaneCard({
   }, [nativeChromium, webPane.url])
 
   useEffect(() => {
-    if (!nativeChromium || nativeLoaded) return
+    if (!nativeChromiumVisible || nativeLoaded) return
     const watchdog = window.setTimeout(() => {
       setChromiumRenderer('canvas')
       saveChromiumRenderer('canvas')
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
-  }, [nativeChromium, nativeLoaded, webPane.url])
+  }, [nativeChromiumVisible, nativeLoaded, webPane.url])
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
@@ -281,7 +282,7 @@ export function WebPaneCard({
           )}
         </span>
         <span className="web-pane-actions">
-          {chromium && !nativeChromium && !pending && !detached && (
+          {chromium && !pending && !detached && (
             <button
               type="button"
               className="web-pane-button"
@@ -412,24 +413,30 @@ export function WebPaneCard({
         </div>
       ) : (
         <div className="web-pane-body">
-          {nativeChromium ? (
-            <NativeWebViewTile
-              bridge={nativeBridge}
-              webPane={webPane}
-              reloadKey={reloadKey}
-              onLoaded={() => setNativeLoaded(true)}
-              onFallback={() => setRenderer('canvas')}
-            />
-          ) : chromium ? (
-            <ChromiumTileCard
-              webPane={webPane}
-              wsToken={wsToken}
-              reloadKey={reloadKey}
-              reviewMode={review}
-              pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
-              connected={connected}
-              keepStreamingWhenHidden={keepStreamingWhenHidden}
-            />
+          {chromium ? (
+            <>
+              {nativeChromium && (
+                <NativeWebViewTile
+                  bridge={nativeBridge}
+                  webPane={webPane}
+                  reloadKey={reloadKey}
+                  hidden={review}
+                  onLoaded={() => setNativeLoaded(true)}
+                  onFallback={() => setRenderer('canvas')}
+                />
+              )}
+              {(!nativeChromium || review) && (
+                <ChromiumTileCard
+                  webPane={webPane}
+                  wsToken={wsToken}
+                  reloadKey={reloadKey}
+                  reviewMode={review}
+                  pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
+                  connected={connected}
+                  keepStreamingWhenHidden={keepStreamingWhenHidden}
+                />
+              )}
+            </>
           ) : tier === 'native' && nativeBridge ? (
             <NativeWebViewTile
               bridge={nativeBridge}

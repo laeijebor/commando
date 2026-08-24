@@ -20,12 +20,14 @@ export function NativeWebViewTile({
   bridge,
   webPane,
   reloadKey,
+  hidden = false,
   onLoaded,
   onFallback,
 }: {
   bridge: NativeWebViewBridge
   webPane: WebPane
   reloadKey: number
+  hidden?: boolean
   onLoaded?: () => void
   onFallback: () => void
 }) {
@@ -132,5 +134,12 @@ export function NativeWebViewTile({
     }
   }, [bridge])
 
-  return <div ref={slotRef} className="web-pane-native-slot" data-web-pane-native={webPane.id} />
+  return (
+    <div
+      ref={slotRef}
+      className="web-pane-native-slot"
+      data-web-pane-native={webPane.id}
+      hidden={hidden}
+    />
+  )
 }
