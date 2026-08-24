@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { MAX_PENDING_NOTES, type WebPane, type WebPanePendingNote, type WebPanePendingSnapshot } from '../shared/protocol'
-import type { TileInspectRect, TileInspectResult, TileInspectSuccess } from '../shared/tile-inspect'
+import {
+  MAX_SELECTOR_RESOLVE_BYTES,
+  MAX_SELECTOR_RESOLVE_ITEMS,
+  parseTileSelectorAnchors,
+  type TileInspectRect,
+  type TileInspectResult,
+  type TileInspectSuccess,
+  type TileSelectorResolveItem,
+} from '../shared/tile-inspect'
 import {
   attachTileWheelCapture,
   cdpModifiers,
@@ -21,6 +29,9 @@ const INSPECT_HINT_MS = 2_000
 const REVIEW_CARD_WIDTH = 240
 const REVIEW_CARD_HEIGHT = 132
 const REVIEW_CARD_GAP = 8
+const REVIEW_POPOVER_WIDTH = 280
+const REVIEW_POPOVER_HEIGHT = 300
+const ANCHOR_REFRESH_MS = 500
 
 type StreamState = 'connecting' | 'streaming' | 'closed' | 'error'
 
@@ -40,6 +51,7 @@ type TileSocketMessage = {
   revision?: number
   dropped?: number
   knownUpTo?: number
+  anchors?: unknown
 }
 
 /**
@@ -153,6 +165,101 @@ function itemType(note: WebPanePendingNote): string {
   return note.response ? 'Response' : 'Annotation'
 }
 
+function resolvableSelector(selector: string): boolean {
+  return selector.length > 0 && !selector.startsWith('redline:')
+}
+
+function PendingEditorFields({
+  note,
+  draft,
+  editor,
+  busy,
+  onChange,
+}: {
+  note: WebPanePendingNote
+  draft: PendingDraft
+  editor: PendingEditor
+  busy: boolean
+  onChange: (change: Partial<Pick<PendingDraft, 'answer' | 'note'>>) => void
+}) {
+  return (
+    <fieldset className="tile-review-editor" disabled={busy}>
+      <legend>{note.response ? 'Answer' : 'Comment'}</legend>
+      {editor.kind === 'choice' && editor.multiple ? (
+        <div className="tile-review-checks">
+          {editor.options.map((option) => {
+            const values = draft.answer.split(', ').filter(Boolean)
+            return (
+              <label key={option}>
+                <input
+                  type="checkbox"
+                  checked={values.includes(option)}
+                  onChange={(event) => {
+                    const next = new Set(values)
+                    if (event.target.checked) next.add(option)
+                    else next.delete(option)
+                    onChange({
+                      answer: editor.options.filter((value) => next.has(value)).join(', '),
+                    })
+                  }}
+                />
+                <span>{option}</span>
+              </label>
+            )
+          })}
+        </div>
+      ) : editor.kind === 'choice' ? (
+        <select
+          aria-label="Answer"
+          value={draft.answer}
+          onChange={(event) => onChange({ answer: event.target.value })}
+        >
+          {editor.options.map((option) => <option key={option}>{option}</option>)}
+        </select>
+      ) : editor.kind === 'approve' ? (
+        <select
+          aria-label="Verdict"
+          value={draft.answer}
+          onChange={(event) => onChange({ answer: event.target.value })}
+        >
+          {editor.options.map((option) => <option key={option}>{option}</option>)}
+        </select>
+      ) : editor.kind === 'rating' ? (
+        <div className="tile-review-rating" role="radiogroup" aria-label="Rating">
+          {Array.from({ length: editor.max }, (_, index) => index + 1).map((rating) => (
+            <label key={rating}>
+              <input
+                type="radio"
+                name={`pending-rating-${note.id}`}
+                value={rating}
+                checked={draft.answer === `${rating}/${editor.max}`}
+                onChange={() => onChange({ answer: `${rating}/${editor.max}` })}
+              />
+              <span>{rating}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <textarea
+          aria-label={note.response ? 'Answer' : 'Comment'}
+          value={draft.answer}
+          onChange={(event) => onChange({ answer: event.target.value })}
+        />
+      )}
+      {note.response && (
+        <label className="tile-review-note-field">
+          <span>Optional note</span>
+          <textarea
+            aria-label="Optional note"
+            value={draft.note}
+            onChange={(event) => onChange({ note: event.target.value })}
+          />
+        </label>
+      )}
+    </fieldset>
+  )
+}
+
 /** Narrows a socket frame already known to be an `inspect_result`. */
 function toInspectResult(message: TileSocketMessage): TileInspectResult {
   if (message.ok !== true || !message.selector || !message.tag || !message.rect) {
@@ -172,17 +279,22 @@ function toInspectResult(message: TileSocketMessage): TileInspectResult {
  * Places the comment card just below the inspected element, then clamps it
  * inside the tile so a hit near an edge stays fully readable.
  */
-function cardPosition(rect: TileInspectRect, container: DOMRect | null): { x: number; y: number } {
-  const width = container?.width ?? REVIEW_CARD_WIDTH
-  const height = container?.height ?? REVIEW_CARD_HEIGHT
+function cardPosition(
+  rect: TileInspectRect,
+  container: DOMRect | null,
+  cardWidth = REVIEW_CARD_WIDTH,
+  cardHeight = REVIEW_CARD_HEIGHT,
+): { x: number; y: number } {
+  const width = container?.width ?? cardWidth
+  const height = container?.height ?? cardHeight
   const below = rect.y + rect.height + REVIEW_CARD_GAP
-  const y = below + REVIEW_CARD_HEIGHT <= height
+  const y = below + cardHeight <= height
     ? below
-    : Math.max(REVIEW_CARD_GAP, rect.y - REVIEW_CARD_GAP - REVIEW_CARD_HEIGHT)
+    : Math.max(REVIEW_CARD_GAP, rect.y - REVIEW_CARD_GAP - cardHeight)
   return {
     x: Math.max(
       REVIEW_CARD_GAP,
-      Math.min(rect.x, Math.max(REVIEW_CARD_GAP, width - REVIEW_CARD_WIDTH - REVIEW_CARD_GAP)),
+      Math.min(rect.x, Math.max(REVIEW_CARD_GAP, width - cardWidth - REVIEW_CARD_GAP)),
     ),
     y: Math.max(REVIEW_CARD_GAP, Math.min(y, Math.max(REVIEW_CARD_GAP, height - REVIEW_CARD_GAP))),
   }
@@ -229,6 +341,8 @@ export function ChromiumTileCard({
   const [hydrated, setHydrated] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [popoverId, setPopoverId] = useState<number | null>(null)
+  const [queuedAnchors, setQueuedAnchors] = useState<Record<number, TileInspectRect | null>>({})
   const [drafts, setDrafts] = useState<Record<number, PendingDraft>>({})
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
   const busyIdsRef = useRef<ReadonlySet<number>>(new Set())
@@ -238,8 +352,11 @@ export function ChromiumTileCard({
   const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
   const [hint, setHint] = useState<{ x: number; y: number } | null>(null)
   const nextInspectId = useRef(0)
+  const nextSelectorResolveId = useRef(0)
   const nextSelectionId = useRef(0)
   const pendingSelectionId = useRef('')
+  const pendingSelectorResolveId = useRef('')
+  const pendingSelectorNoteIds = useRef<number[]>([])
   const activePointer = useRef<{
     id: number
     button: 'none' | 'left' | 'middle' | 'right'
@@ -264,6 +381,7 @@ export function ChromiumTileCard({
   const attachmentMutationIdsRef = useRef(new Set<number>())
   /** Set once the daemon has pushed a queue over the socket for this tile. */
   const pushedRef = useRef(false)
+  const requestQueuedAnchorsRef = useRef<() => void>(() => undefined)
 
   const applySnapshot = (snapshot: WebPanePendingSnapshot, reconcile: DraftReconcile = {}): boolean => {
     const latestRevision = latestSnapshotRevisionRef.current
@@ -313,6 +431,11 @@ export function ChromiumTileCard({
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
     if (snapshot.notes.length === 0) setDrawerOpen(false)
+    const noteIds = new Set(snapshot.notes.map((note) => note.id))
+    setQueuedAnchors((current) => Object.fromEntries(
+      Object.entries(current).filter(([noteId]) => noteIds.has(Number(noteId))),
+    ))
+    setPopoverId((current) => current !== null && noteIds.has(current) ? current : null)
     const attachmentIds = new Set(snapshot.notes.flatMap((note) => (
       note.attachments ?? []
     ).map((attachment) => attachment.id)))
@@ -392,8 +515,44 @@ export function ChromiumTileCard({
     let viewportTimer: number | undefined
     let observer: ResizeObserver | undefined
     let stallTimer: number | undefined
+    let anchorTimer: number | undefined
     let stalled = false
     let firstFrameDrawn = false
+
+    const requestQueuedAnchors = () => {
+      const targetSocket = socketRef.current
+      if (
+        disposed || !reviewModeRef.current ||
+        !targetSocket || targetSocket.readyState !== WebSocket.OPEN
+      ) return
+      const items: TileSelectorResolveItem[] = []
+      for (const note of queuedRef.current) {
+        if (!resolvableSelector(note.selector) || items.length >= MAX_SELECTOR_RESOLVE_ITEMS) continue
+        const item = { noteId: note.id, selector: note.selector }
+        const candidate = [...items, item]
+        if (new TextEncoder().encode(JSON.stringify(candidate)).byteLength > MAX_SELECTOR_RESOLVE_BYTES) break
+        items.push(item)
+      }
+      if (items.length === 0) {
+        pendingSelectorResolveId.current = ''
+        pendingSelectorNoteIds.current = []
+        setQueuedAnchors({})
+        return
+      }
+      const id = `r-${nextSelectorResolveId.current++}`
+      pendingSelectorResolveId.current = id
+      pendingSelectorNoteIds.current = items.map((item) => item.noteId)
+      targetSocket.send(JSON.stringify({ type: 'resolve_selectors', id, items }))
+    }
+
+    const scheduleAnchorRefresh = (delay = ANCHOR_REFRESH_MS) => {
+      if (anchorTimer !== undefined) return
+      anchorTimer = window.setTimeout(() => {
+        anchorTimer = undefined
+        requestQueuedAnchors()
+      }, delay)
+    }
+    requestQueuedAnchorsRef.current = requestQueuedAnchors
 
     const disarmStallWatchdog = () => {
       if (stallTimer !== undefined) {
@@ -426,6 +585,7 @@ export function ChromiumTileCard({
         height: Math.round(rect.height),
         deviceScaleFactor: Math.min(4, Math.max(1, window.devicePixelRatio || 1)),
       }))
+      scheduleAnchorRefresh(VIEWPORT_THROTTLE_MS)
     }
 
     const connect = () => {
@@ -461,6 +621,23 @@ export function ChromiumTileCard({
           routeInspectResult(message.id, toInspectResult(message))
           return
         }
+        if (message.type === 'resolve_selectors_result' && typeof message.id === 'string') {
+          if (message.id !== pendingSelectorResolveId.current) return
+          pendingSelectorResolveId.current = ''
+          if (message.ok !== true) return
+          const anchors = parseTileSelectorAnchors(message.anchors)
+          if (!anchors) return
+          const resolved: Record<number, TileInspectRect | null> = Object.fromEntries(
+            pendingSelectorNoteIds.current.map((noteId) => [noteId, null]),
+          )
+          for (const anchor of anchors) {
+            if (Object.hasOwn(resolved, anchor.noteId)) resolved[anchor.noteId] = anchor.rect
+          }
+          pendingSelectorNoteIds.current = []
+          setQueuedAnchors(resolved)
+          setPopoverId((current) => current !== null && resolved[current] === null ? null : current)
+          return
+        }
         if (message.type === 'selection_result' && typeof message.id === 'string') {
           routeSelectionResult(message)
           return
@@ -481,6 +658,7 @@ export function ChromiumTileCard({
               attachmentMutations.size > 0 ? { rebase: new Set(attachmentMutations) } : undefined,
             )
             setHydrated(true)
+            scheduleAnchorRefresh(0)
           }
           return
         }
@@ -503,6 +681,8 @@ export function ChromiumTileCard({
         if (socketRef.current !== connectedSocket) return
         socketRef.current = null
         pendingSelectionId.current = ''
+        pendingSelectorResolveId.current = ''
+        pendingSelectorNoteIds.current = []
         disarmStallWatchdog()
         if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
         if (stalled) return // the watchdog already set the error state
@@ -556,6 +736,7 @@ export function ChromiumTileCard({
         firstFrameDrawn = true
         disarmStallWatchdog()
         setState((current) => (current === 'streaming' ? current : 'streaming'))
+        scheduleAnchorRefresh()
       }
       image.onerror = () => {
         if (disposed || stalled || socketRef.current !== sourceSocket) return
@@ -600,11 +781,17 @@ export function ChromiumTileCard({
       if (!keepStreamingWhenHidden) document.removeEventListener('visibilitychange', onVisibility)
       observer?.disconnect()
       if (viewportTimer) window.clearTimeout(viewportTimer)
+      if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
       disarmStallWatchdog()
       socket?.close()
       if (socketRef.current === socket) {
         socketRef.current = null
         pendingSelectionId.current = ''
+        pendingSelectorResolveId.current = ''
+        pendingSelectorNoteIds.current = []
+      }
+      if (requestQueuedAnchorsRef.current === requestQueuedAnchors) {
+        requestQueuedAnchorsRef.current = () => undefined
       }
     }
   }, [webPane.id, webPane.url, wsToken, connectEpoch, connected, keepStreamingWhenHidden])
@@ -640,6 +827,7 @@ export function ChromiumTileCard({
       setHighlight(null)
       setCard(null)
       setHint(null)
+      setPopoverId(null)
       return
     }
     const throttle = createInspectThrottle((x, y) => {
@@ -655,6 +843,12 @@ export function ChromiumTileCard({
   }, [reviewMode])
 
   useEffect(() => {
+    if (reviewMode && state === 'streaming' && queued.length > 0) {
+      requestQueuedAnchorsRef.current()
+    }
+  }, [queued, reviewMode, state])
+
+  useEffect(() => {
     if (!hint) return
     const timer = window.setTimeout(() => setHint(null), INSPECT_HINT_MS)
     return () => window.clearTimeout(timer)
@@ -668,6 +862,15 @@ export function ChromiumTileCard({
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [preview])
+
+  useEffect(() => {
+    if (popoverId === null) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPopoverId(null)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [popoverId])
 
   const reviewActive = reviewMode && state === 'streaming'
 
@@ -933,6 +1136,21 @@ export function ChromiumTileCard({
   const selectedDraft = selected ? drafts[selected.id] ?? draftFor(selected) : undefined
   const selectedEditor = selected ? editorFor(selected) : undefined
   const selectedBusy = selected ? sendingAll || busyIds.has(selected.id) : false
+  const popoverNote = popoverId === null ? undefined : queued.find((note) => note.id === popoverId)
+  const popoverDraft = popoverNote ? drafts[popoverNote.id] ?? draftFor(popoverNote) : undefined
+  const popoverEditor = popoverNote ? editorFor(popoverNote) : undefined
+  const popoverBusy = popoverNote ? sendingAll || busyIds.has(popoverNote.id) : false
+  const popoverRect = popoverNote
+    ? queuedAnchors[popoverNote.id] === undefined ? popoverNote.rect : queuedAnchors[popoverNote.id]
+    : undefined
+  const popoverPosition = popoverRect
+    ? cardPosition(
+        popoverRect,
+        containerRef.current?.getBoundingClientRect() ?? null,
+        REVIEW_POPOVER_WIDTH,
+        REVIEW_POPOVER_HEIGHT,
+      )
+    : undefined
 
   return (
     <div
@@ -1057,6 +1275,30 @@ export function ChromiumTileCard({
           }
         }}
       />
+      {reviewActive && queued.map((note) => {
+        if (!resolvableSelector(note.selector)) return null
+        const rect = queuedAnchors[note.id] === undefined ? note.rect : queuedAnchors[note.id]
+        if (!rect) return null
+        if (rect.width <= 0 || rect.height <= 0) return null
+        const label = `Edit queued ${itemType(note).toLowerCase()}: ${itemLabel(note)}`
+        return (
+          <button
+            key={note.id}
+            type="button"
+            className={`tile-review-pending-highlight is-${note.response ? 'response' : 'annotation'}${popoverId === note.id ? ' is-selected' : ''}`}
+            style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+            aria-label={label}
+            title={label}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => {
+              setDrawerOpen(false)
+              setSelectedId(note.id)
+              setPopoverId(note.id)
+              setQueueError('')
+            }}
+          />
+        )
+      })}
       {reviewActive && highlight && (
         <div
           className="tile-review-highlight"
@@ -1121,6 +1363,72 @@ export function ChromiumTileCard({
           </div>
         </div>
       )}
+      {reviewActive && popoverNote && popoverDraft && popoverEditor && popoverPosition && (
+        <section
+          className="tile-review-pending-popover"
+          role="dialog"
+          aria-label={`Edit queued ${itemType(popoverNote).toLowerCase()}`}
+          style={{ left: popoverPosition.x, top: popoverPosition.y }}
+        >
+          <header>
+            <div>
+              <span className={`tile-review-type is-${popoverNote.response ? 'response' : 'annotation'}`}>
+                {itemType(popoverNote)}
+              </span>
+              <strong>{itemLabel(popoverNote)}</strong>
+            </div>
+            <button type="button" aria-label="Close queued item editor" onClick={() => setPopoverId(null)}>×</button>
+          </header>
+          {popoverDraft.conflict && (
+            <div className="tile-review-conflict" role="alert">
+              <span>This item changed after you started editing.</span>
+              <button type="button" onClick={() => resetDraft(popoverNote.id)}>Reload draft</button>
+            </div>
+          )}
+          <PendingEditorFields
+            note={popoverNote}
+            draft={popoverDraft}
+            editor={popoverEditor}
+            busy={popoverBusy}
+            onChange={(change) => changeDraft(popoverNote.id, change)}
+          />
+          {(popoverNote.attachments?.length ?? 0) > 0 && (
+            <span className="tile-review-popover-attachments">
+              {popoverNote.attachments?.length} image{popoverNote.attachments?.length === 1 ? '' : 's'} in full queue
+            </span>
+          )}
+          {queueError && <div className="tile-review-popover-error" role="alert">{queueError}</div>}
+          <footer>
+            <button
+              type="button"
+              className="web-pane-action is-ghost"
+              onClick={() => {
+                setPopoverId(null)
+                setDrawerOpen(true)
+              }}
+            >
+              Open full queue
+            </button>
+            <span />
+            <button
+              type="button"
+              className="web-pane-action is-ghost"
+              disabled={!popoverDraft.dirty || popoverDraft.conflict || popoverBusy || !popoverDraft.answer}
+              onClick={() => void saveOne(popoverNote.id)}
+            >
+              {popoverBusy ? 'Working…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              className="web-pane-action"
+              disabled={popoverDraft.conflict || popoverBusy || !popoverDraft.answer}
+              onClick={() => void sendOne(popoverNote.id)}
+            >
+              {popoverBusy ? 'Working…' : 'Send this'}
+            </button>
+          </footer>
+        </section>
+      )}
       {(queued.length > 0 || dropped > 0) && (
         <>
           {!drawerOpen ? (
@@ -1148,7 +1456,10 @@ export function ChromiumTileCard({
                   type="button"
                   className="tile-review-queue-toggle"
                   aria-expanded="false"
-                  onClick={() => setDrawerOpen(true)}
+                  onClick={() => {
+                    setPopoverId(null)
+                    setDrawerOpen(true)
+                  }}
                 >
                   Review queue · {queued.length}
                 </button>
@@ -1261,80 +1572,13 @@ export function ChromiumTileCard({
                           <button type="button" onClick={() => resetDraft(selected.id)}>Reload draft</button>
                         </div>
                       )}
-                      <fieldset className="tile-review-editor" disabled={selectedBusy}>
-                        <legend>{selected.response ? 'Answer' : 'Comment'}</legend>
-                        {selectedEditor.kind === 'choice' && selectedEditor.multiple ? (
-                          <div className="tile-review-checks">
-                            {selectedEditor.options.map((option) => {
-                              const values = selectedDraft.answer.split(', ').filter(Boolean)
-                              return (
-                                <label key={option}>
-                                  <input
-                                    type="checkbox"
-                                    checked={values.includes(option)}
-                                    onChange={(event) => {
-                                      const next = new Set(values)
-                                      if (event.target.checked) next.add(option)
-                                      else next.delete(option)
-                                      changeDraft(selected.id, {
-                                        answer: selectedEditor.options.filter((value) => next.has(value)).join(', '),
-                                      })
-                                    }}
-                                  />
-                                  <span>{option}</span>
-                                </label>
-                              )
-                            })}
-                          </div>
-                        ) : selectedEditor.kind === 'choice' ? (
-                          <select
-                            aria-label="Answer"
-                            value={selectedDraft.answer}
-                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
-                          >
-                            {selectedEditor.options.map((option) => <option key={option}>{option}</option>)}
-                          </select>
-                        ) : selectedEditor.kind === 'approve' ? (
-                          <select
-                            aria-label="Verdict"
-                            value={selectedDraft.answer}
-                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
-                          >
-                            {selectedEditor.options.map((option) => <option key={option}>{option}</option>)}
-                          </select>
-                        ) : selectedEditor.kind === 'rating' ? (
-                          <div className="tile-review-rating" role="radiogroup" aria-label="Rating">
-                            {Array.from({ length: selectedEditor.max }, (_, index) => index + 1).map((rating) => (
-                              <label key={rating}>
-                                <input
-                                  type="radio"
-                                  name={`pending-rating-${selected.id}`}
-                                  value={rating}
-                                  checked={selectedDraft.answer === `${rating}/${selectedEditor.max}`}
-                                  onChange={() => changeDraft(selected.id, { answer: `${rating}/${selectedEditor.max}` })}
-                                />
-                                <span>{rating}</span>
-                              </label>
-                            ))}
-                          </div>
-                        ) : (
-                          <textarea
-                            aria-label={selected.response ? 'Answer' : 'Comment'}
-                            value={selectedDraft.answer}
-                            onChange={(event) => changeDraft(selected.id, { answer: event.target.value })}
-                          />
-                        )}
-                        {selected.response && (
-                          <label className="tile-review-note-field">
-                            <span>Optional note</span>
-                            <textarea
-                              aria-label="Optional note"
-                              value={selectedDraft.note}
-                              onChange={(event) => changeDraft(selected.id, { note: event.target.value })}
-                            />
-                          </label>
-                        )}
-                      </fieldset>
+                      <PendingEditorFields
+                        note={selected}
+                        draft={selectedDraft}
+                        editor={selectedEditor}
+                        busy={selectedBusy}
+                        onChange={(change) => changeDraft(selected.id, change)}
+                      />
                       <div className="tile-review-attachments">
                         <div className="tile-review-section-head">
                           <strong>Attachments</strong>

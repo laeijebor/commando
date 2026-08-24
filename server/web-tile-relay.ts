@@ -4,6 +4,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import {
   parseTileInputEvent,
   parseTileInspectRequest,
+  parseTileSelectorResolveRequest,
   parseTileSelectionRequest,
   type ChromiumEngine,
 } from './chromium-engine.js'
@@ -215,6 +216,19 @@ export class WebTileRelay {
         .then((result) => {
           if (socket.readyState !== WebSocket.OPEN) return
           socket.send(JSON.stringify({ type: 'inspect_result', id: request.id, ...result }))
+        })
+      return
+    }
+    if (message.type === 'resolve_selectors') {
+      const request = parseTileSelectorResolveRequest(message)
+      if (!request) return
+      void this.dependencies.engine
+        .resolveSelectors(webPaneId, request.items)
+        .then((anchors) => ({ ok: true as const, anchors }))
+        .catch(() => ({ ok: false as const, anchors: [] }))
+        .then((result) => {
+          if (socket.readyState !== WebSocket.OPEN) return
+          socket.send(JSON.stringify({ type: 'resolve_selectors_result', id: request.id, ...result }))
         })
       return
     }

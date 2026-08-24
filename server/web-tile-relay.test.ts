@@ -62,6 +62,7 @@ async function startRelay(
     setViewport: vi.fn(async () => undefined),
     reload: vi.fn(async () => undefined),
     inspectAt: vi.fn(async () => ({ ok: true as const, selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 } })),
+    resolveSelectors: vi.fn(async () => [{ noteId: 4, rect: { x: 1, y: 2, width: 3, height: 4 } }]),
     readSelection: vi.fn(async () => ({ ok: true as const, source: 'dom' as const, text: 'selected text' })),
     ...engineOverrides,
   } as unknown as ChromiumEngine
@@ -172,6 +173,35 @@ describe('web tile relay selection routing', () => {
       ok: false,
       error: 'Could not read the page selection',
     })
+  })
+})
+
+describe('web tile relay selector resolution', () => {
+  it('returns correlated current rectangles for a valid batch', async () => {
+    const { socket, engine } = await startRelay()
+    const reply = nextMessage(socket, 'resolve_selectors_result')
+    socket.send(JSON.stringify({
+      type: 'resolve_selectors',
+      id: 'r-7',
+      items: [{ noteId: 4, selector: '#target' }],
+    }))
+
+    expect(await reply).toEqual({
+      type: 'resolve_selectors_result',
+      id: 'r-7',
+      ok: true,
+      anchors: [{ noteId: 4, rect: { x: 1, y: 2, width: 3, height: 4 } }],
+    })
+    expect(engine.resolveSelectors).toHaveBeenCalledWith('w-11111111', [
+      { noteId: 4, selector: '#target' },
+    ])
+  })
+
+  it('ignores malformed batches', async () => {
+    const { socket, engine } = await startRelay()
+    socket.send(JSON.stringify({ type: 'resolve_selectors', id: 'r-7', items: [] }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(engine.resolveSelectors).not.toHaveBeenCalled()
   })
 })
 

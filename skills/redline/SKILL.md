@@ -202,6 +202,9 @@ Discipline the agent must know:
   without a key use their captured selector as a best-effort fallback.
 - The queue drawer can edit answers and notes, attach PNG/JPEG/GIF/WebP images,
   preview/remove attachments, and send one answer without sending the rest.
+- While review mode is active, queued selector-based notes stay highlighted on
+  the live page. Click a highlight to edit or send that answer/comment in an
+  anchored popover; use **Open full queue** there for attachments or removal.
 - For a custom control, call
   `window.redline.queueResponse({question, answer, note?, data?, queueKey?, element?})`
   directly.
