@@ -30,6 +30,8 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
     updatedAt: new Date().toISOString(),
     headRefName: 'leo/thing',
     baseRefName: 'main',
+    headRefOid: '2222222222222222222222222222222222222222',
+    baseRefOid: '1111111111111111111111111111111111111111',
     viewerIsAuthor: true,
     viewerReviewRequested: false,
     commandoMarker: null,

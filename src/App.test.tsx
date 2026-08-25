@@ -474,7 +474,8 @@ describe('HUD tabs', () => {
             changedFiles: 1, commitCount: 1, unresolvedThreads: 0, threadsTruncated: false,
             reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false, checks: null,
             createdAt: '', updatedAt: new Date().toISOString(), headRefName: 'feat/pane-marker',
-            baseRefName: 'main', viewerIsAuthor: true, viewerReviewRequested: false,
+            baseRefName: 'main', headRefOid: '2222222222222222222222222222222222222222',
+            baseRefOid: '1111111111111111111111111111111111111111', viewerIsAuthor: true, viewerReviewRequested: false,
             commandoMarker: { version: 1, targetId, relation: 'created' },
           }],
         } })

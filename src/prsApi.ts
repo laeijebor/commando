@@ -27,6 +27,8 @@ export type PrSummary = {
   updatedAt: string
   headRefName: string
   baseRefName: string
+  headRefOid: string
+  baseRefOid: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
   commandoMarker: CommandoPrMarker | null

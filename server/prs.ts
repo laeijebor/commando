@@ -93,6 +93,8 @@ export type PrSummary = {
   updatedAt: string
   headRefName: string
   baseRefName: string
+  headRefOid: string
+  baseRefOid: string
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
   commandoMarker: CommandoPrMarker | null
@@ -356,7 +358,7 @@ fragment PrFields on PullRequest {
   number title url state isDraft body
   author { login }
   additions deletions changedFiles
-  reviewDecision mergeable createdAt updatedAt headRefName baseRefName
+  reviewDecision mergeable createdAt updatedAt headRefName baseRefName headRefOid baseRefOid
   reviewThreads(first: 50) { totalCount nodes { isResolved } }
   reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
   latestReviews(first: 10) { nodes { author { login } state } }
@@ -519,6 +521,8 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     updatedAt: requiredString(node, 'updatedAt'),
     headRefName: requiredString(node, 'headRefName'),
     baseRefName: typeof node.baseRefName === 'string' ? node.baseRefName : '',
+    headRefOid: requiredString(node, 'headRefOid'),
+    baseRefOid: requiredString(node, 'baseRefOid'),
     viewerIsAuthor: authorLogin !== null && authorLogin === viewer,
     viewerReviewRequested,
     commandoMarker: parseCommandoPrMarker(body),
