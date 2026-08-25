@@ -580,6 +580,117 @@
     }
   }
 
+  /* --- iteration state: open vs settled topics, folded history, decision log --- */
+  :where(html[data-redline-theme="commando"]) [data-redline-status="open"] {
+    border-color: color-mix(in srgb, var(--redline-page-violet) 50%, var(--redline-page-border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--redline-page-violet) 14%, transparent);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"] {
+    background: color-mix(in srgb, var(--redline-page-surface) 55%, transparent);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"] :is(h2, h3) {
+    color: var(--redline-page-text-soft);
+    font-weight: 600;
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-status]::before {
+    content: attr(data-redline-status);
+    display: inline-block;
+    margin-bottom: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--redline-page-border-strong);
+    font-family: var(--redline-page-mono, ui-monospace, monospace);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-status="open"]::before {
+    border-color: color-mix(in srgb, var(--redline-page-violet) 55%, transparent);
+    background: color-mix(in srgb, var(--redline-page-violet) 12%, transparent);
+    color: var(--redline-page-violet);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"]::before {
+    border-color: color-mix(in srgb, var(--redline-page-green) 45%, transparent);
+    background: color-mix(in srgb, var(--redline-page-green) 10%, transparent);
+    color: var(--redline-page-green);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-changed]::after {
+    content: "new this round";
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--redline-page-cyan) 45%, transparent);
+    background: color-mix(in srgb, var(--redline-page-cyan) 10%, transparent);
+    color: var(--redline-page-cyan);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread {
+    margin-top: 12px;
+    border: 1px solid var(--redline-page-border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--redline-page-raised) 70%, transparent);
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 13px;
+    color: var(--redline-page-muted);
+    cursor: pointer;
+    font-size: 13px;
+    list-style: none;
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread > summary::before {
+    content: "\25B8";
+    font-size: 11px;
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread[open] > summary::before {
+    content: "\25BE";
+  }
+
+  :where(html[data-redline-theme="commando"]) details.redline-thread > summary:hover {
+    color: var(--redline-page-text-soft);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-exchange {
+    margin: 10px 13px 13px;
+    padding: 10px 13px;
+    border-left: 2px solid var(--redline-page-border-strong);
+    border-radius: 0 10px 10px 0;
+    background: color-mix(in srgb, var(--redline-page-raised) 55%, transparent);
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-exchange > .redline-exchange-answer {
+    color: var(--redline-page-green);
+    font-family: var(--redline-page-mono, ui-monospace, monospace);
+    font-size: 13px;
+  }
+
+  :where(html[data-redline-theme="commando"]) .redline-log {
+    border: 1px dashed var(--redline-page-border-strong);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--redline-page-deep) 60%, transparent);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     :where(html[data-redline-theme="commando"]) *,
     :where(html[data-redline-theme="commando"]) *::before,

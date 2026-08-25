@@ -343,6 +343,17 @@
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
 }
+:where(.redline-nav-links a[data-redline-status="open"])::after {
+  content: ""; display: inline-block; width: 5px; height: 5px; margin-left: .5rem;
+  border-radius: 50%; vertical-align: middle;
+  background: var(--redline-accent, #7c6cf6);
+}
+:where(.redline-nav-links a[data-redline-status="decided"]) {
+  opacity: .72;
+}
+:where(.redline-nav-counts) {
+  margin: .35rem 0 0; font-size: .78rem; opacity: .7;
+}
 :where(redline-lightbox) {
   display: block;
 }
@@ -1206,9 +1217,35 @@
           section.getAttribute('data-redline-label') ||
           section.querySelector('h2, h3, h4')?.textContent?.trim() ||
           section.id.replace(/[-_]+/g, ' ')
+        // A multi-round review needs the open work to stand out from what is
+        // already settled, so the nav mirrors each section's status.
+        const status = section.getAttribute('data-redline-status')
+        if (status) link.dataset.redlineStatus = status
+        if (section.hasAttribute('data-redline-changed')) link.dataset.redlineChanged = '1'
         navigation.append(link)
         return link
       })
+
+      const counts = sections.reduce(
+        (totals, section) => {
+          const status = section.getAttribute('data-redline-status')
+          if (status === 'open') totals.open += 1
+          else if (status === 'decided') totals.decided += 1
+          if (section.hasAttribute('data-redline-changed')) totals.changed += 1
+          return totals
+        },
+        { open: 0, decided: 0, changed: 0 },
+      )
+      if (counts.open > 0 || counts.decided > 0) {
+        const tally = document.createElement('p')
+        tally.className = 'redline-nav-counts'
+        const parts = []
+        if (counts.open > 0) parts.push(`${counts.open} open`)
+        if (counts.decided > 0) parts.push(`${counts.decided} decided`)
+        if (counts.changed > 0) parts.push(`${counts.changed} new`)
+        tally.textContent = parts.join(' \u00b7 ')
+        brand.append(tally)
+      }
 
       this.replaceChildren(brand, navigation)
       if (links.length === 0) return

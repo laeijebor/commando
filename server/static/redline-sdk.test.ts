@@ -718,6 +718,43 @@ describe('redline-nav', () => {
     ])
     expect(links[0]?.getAttribute('aria-current')).toBe('location')
   })
+
+  it('mirrors section status and counts open work', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Iteration"></redline-nav>
+        <main>
+          <section id="build" data-redline-section data-redline-status="open" data-redline-changed="r3"><h2>Build</h2></section>
+          <section id="structure" data-redline-section data-redline-status="decided"><h2>Structure</h2></section>
+          <section id="recall" data-redline-section data-redline-status="decided"><h2>Recall</h2></section>
+          <section id="log" data-redline-section><h2>Log</h2></section>
+        </main>
+      </div>`
+    await Promise.resolve()
+
+    const nav = document.querySelector('redline-nav') as HTMLElement
+    const links = [...nav.querySelectorAll('a')]
+    expect(links.map((link) => link.dataset.redlineStatus)).toEqual([
+      'open',
+      'decided',
+      'decided',
+      undefined,
+    ])
+    expect(links[0]?.dataset.redlineChanged).toBe('1')
+    expect(nav.querySelector('.redline-nav-counts')?.textContent).toBe('1 open \u00b7 2 decided \u00b7 1 new')
+  })
+
+  it('omits the tally when no section declares a status', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Plain"></redline-nav>
+        <main><section id="a" data-redline-section><h2>A</h2></section></main>
+      </div>`
+    await Promise.resolve()
+    expect(document.querySelector('.redline-nav-counts')).toBeNull()
+  })
 })
 
 describe('injected styles', () => {
