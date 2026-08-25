@@ -1,11 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { WebPane } from '../shared/protocol'
-import type { NativeWebViewBridge } from './nativeWebViewBridge'
+import type { NativeWebViewAttachment, NativeWebViewBridge } from './nativeWebViewBridge'
 import {
   clippingRect,
   computeNativeTerminalVisibleRegions,
   isVisibleElement,
 } from './NativeTerminalPane'
+import type { PendingQueueApi } from './pendingQueueApi'
+import { TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
+import { subscribeWebTilePending } from './webTilePendingSubscription'
 
 const FRAME_PUBLISH_FALLBACK_MS = 100
 
@@ -20,23 +23,43 @@ export function NativeWebViewTile({
   bridge,
   webPane,
   reloadKey,
-  hidden = false,
+  reviewMode = false,
+  wsToken = '',
+  pendingQueue,
+  connected = true,
   onLoaded,
+  onReviewFallback,
   onFallback,
 }: {
   bridge: NativeWebViewBridge
   webPane: WebPane
   reloadKey: number
-  hidden?: boolean
+  reviewMode?: boolean
+  wsToken?: string
+  pendingQueue?: PendingQueueApi
+  connected?: boolean
   onLoaded?: () => void
+  onReviewFallback?: () => void
   onFallback: () => void
 }) {
   const slotRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLDivElement>(null)
   const attachmentIdRef = useRef<string | null>(null)
+  const [attachment, setAttachment] = useState<NativeWebViewAttachment | null>(null)
   const loadedRef = useRef(onLoaded)
   const fallbackRef = useRef(onFallback)
+  const reviewFallbackRef = useRef(onReviewFallback)
+  const reviewModeRef = useRef(reviewMode)
+  const reviewFallbackSentRef = useRef(false)
   loadedRef.current = onLoaded
   fallbackRef.current = onFallback
+  reviewFallbackRef.current = onReviewFallback
+  reviewModeRef.current = reviewMode
+  const requestReviewFallback = useCallback(() => {
+    if (reviewFallbackSentRef.current) return
+    reviewFallbackSentRef.current = true
+    reviewFallbackRef.current?.()
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -52,9 +75,11 @@ export function NativeWebViewTile({
       return
     }
     attachmentIdRef.current = attachment.attachmentId
+    setAttachment(attachment)
     return () => {
       active = false
       if (attachmentIdRef.current === attachment.attachmentId) attachmentIdRef.current = null
+      setAttachment((current) => current === attachment ? null : current)
       attachment.detach()
     }
   }, [bridge, webPane.id, webPane.url])
@@ -63,6 +88,57 @@ export function NativeWebViewTile({
     const attachmentId = attachmentIdRef.current
     if (reloadKey > 0 && attachmentId) bridge.reload(attachmentId)
   }, [bridge, reloadKey])
+
+  useEffect(() => {
+    if (!attachment) return
+    if (!reviewMode) {
+      reviewFallbackSentRef.current = false
+      attachment.presentReviewHighlights([])
+      attachment.setReviewInput(false)
+      return
+    }
+    if (!attachment.supportsReview || !attachment.setReviewInput(true)) {
+      requestReviewFallback()
+      return
+    }
+    return () => {
+      attachment.presentReviewHighlights([])
+      attachment.setReviewInput(false)
+    }
+  }, [attachment, requestReviewFallback, reviewMode])
+
+  const reviewSurface = useMemo<TileReviewSurface>(() => ({
+    inspect: (x, y, grade, receive) => {
+      if (!attachment) {
+        receive({ ok: false, error: 'Native review surface is unavailable' })
+        return
+      }
+      void attachment.inspectAtPoint(x, y, grade).then(receive, (error: unknown) => {
+        receive({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Native inspection failed',
+        })
+      })
+    },
+    resolveSelectors: (items, receive, reject) => {
+      if (!attachment) {
+        reject?.(new Error('Native review surface is unavailable'))
+        return
+      }
+      void attachment.resolveSelectors(items).then(receive, reject)
+    },
+    subscribePending: (listener) => (
+      connected ? subscribeWebTilePending(webPane.id, wsToken, listener) : () => undefined
+    ),
+    presentHighlights: ({ hover, queued }) => {
+      if (!attachment) return
+      const ok = attachment.presentReviewHighlights([
+        ...(hover ? [{ rect: hover, kind: 'hover' as const }] : []),
+        ...queued,
+      ])
+      if (!ok && attachment.supportsReview && reviewModeRef.current) requestReviewFallback()
+    },
+  }), [attachment, connected, requestReviewFallback, webPane.id, wsToken])
 
   useEffect(() => {
     const slot = slotRef.current
@@ -137,9 +213,21 @@ export function NativeWebViewTile({
   return (
     <div
       ref={slotRef}
-      className="web-pane-native-slot"
+      className={`web-pane-native-slot${reviewMode ? ' is-reviewing' : ''}`}
       data-web-pane-native={webPane.id}
-      hidden={hidden}
-    />
+    >
+      <div ref={inputRef} className="web-pane-native-review-input" />
+      {pendingQueue && attachment && (
+        <TileReviewLayer
+          webPaneId={webPane.id}
+          reviewMode={reviewMode}
+          active={reviewMode && attachment?.supportsReview === true}
+          containerRef={slotRef}
+          inputRef={inputRef}
+          pendingQueue={pendingQueue}
+          surface={reviewSurface}
+        />
+      )}
+    </div>
   )
 }

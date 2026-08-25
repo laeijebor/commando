@@ -7,6 +7,7 @@ import {
   parseTileInspectResult,
   parseTileSelectorAnchors,
   type TileInspectGrade,
+  type TileInspectRect,
   type TileInspectResult,
   type TileSelectorAnchor,
   type TileSelectorResolveItem,
@@ -23,6 +24,8 @@ export const NATIVE_WEBVIEW_VERSION = 1 as const
 export const REQUIRED_NATIVE_WEBVIEW_CAPABILITIES = ['webview.embed.v1'] as const
 export const NATIVE_WEBVIEW_INSPECT_CAPABILITY = 'webview.inspectAtPoint.v1' as const
 export const NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY = 'webview.resolveSelectors.v1' as const
+export const NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY = 'webview.reviewInput.v1' as const
+export const NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY = 'webview.reviewHighlights.v1' as const
 
 type NativeMessageHandler = {
   postMessage: (message: Record<string, unknown>) => void
@@ -45,9 +48,18 @@ export type NativeWebViewTileEvent =
 
 export type NativeWebViewAttachment = {
   attachmentId: string
+  supportsReview: boolean
   inspectAtPoint: (x: number, y: number, grade: TileInspectGrade) => Promise<TileInspectResult>
   resolveSelectors: (items: readonly TileSelectorResolveItem[]) => Promise<TileSelectorAnchor[]>
+  setReviewInput: (enabled: boolean) => boolean
+  presentReviewHighlights: (highlights: readonly NativeWebViewReviewHighlight[]) => boolean
   detach: () => void
+}
+
+export type NativeWebViewReviewHighlight = {
+  rect: TileInspectRect
+  kind: 'hover' | 'annotation' | 'response'
+  selected?: boolean
 }
 
 type AttachmentRecord = {
@@ -60,6 +72,7 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1_000
 const INSPECTION_TIMEOUT_MS = 5_000
 const MAX_INSPECTION_COORDINATE = 100_000
 const MAX_PENDING_INSPECTIONS = 32
+const MAX_REVIEW_HIGHLIGHTS = MAX_SELECTOR_RESOLVE_ITEMS + 1
 
 type PendingInspect = {
   attachmentId: string
@@ -163,8 +176,11 @@ export class NativeWebViewBridge {
     }
     return {
       attachmentId,
+      supportsReview: this.supportsReview(),
       inspectAtPoint: (x, y, grade) => this.inspectAtPoint(attachmentId, x, y, grade),
       resolveSelectors: (items) => this.resolveSelectors(attachmentId, items),
+      setReviewInput: (enabled) => this.setReviewInput(attachmentId, enabled),
+      presentReviewHighlights: (highlights) => this.presentReviewHighlights(attachmentId, highlights),
       detach: () => {
         if (this.attachments.delete(attachmentId)) {
           this.rejectPendingForAttachment(attachmentId, 'Native web view attachment detached')
@@ -181,6 +197,43 @@ export class NativeWebViewBridge {
 
   reload(attachmentId: string): boolean {
     return this.postForAttachment('webview.reload', attachmentId, {})
+  }
+
+  private supportsReview(): boolean {
+    return (
+      this.capabilities.has(NATIVE_WEBVIEW_INSPECT_CAPABILITY) &&
+      this.capabilities.has(NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY) &&
+      this.capabilities.has(NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY) &&
+      this.capabilities.has(NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY)
+    )
+  }
+
+  private setReviewInput(attachmentId: string, enabled: boolean): boolean {
+    if (!this.capabilities.has(NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY)) return false
+    return this.postForAttachment('webview.reviewInput', attachmentId, { enabled })
+  }
+
+  private presentReviewHighlights(
+    attachmentId: string,
+    value: readonly NativeWebViewReviewHighlight[],
+  ): boolean {
+    if (!this.capabilities.has(NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY)) return false
+    if (!Array.isArray(value) || value.length > MAX_REVIEW_HIGHLIGHTS) return false
+    const highlights: NativeWebViewReviewHighlight[] = []
+    for (const highlight of value) {
+      const { rect, kind, selected } = highlight
+      if (
+        !rect ||
+        !Number.isFinite(rect.x) || Math.abs(rect.x) > MAX_INSPECTION_COORDINATE ||
+        !Number.isFinite(rect.y) || Math.abs(rect.y) > MAX_INSPECTION_COORDINATE ||
+        !Number.isFinite(rect.width) || rect.width <= 0 || rect.width > MAX_INSPECTION_COORDINATE ||
+        !Number.isFinite(rect.height) || rect.height <= 0 || rect.height > MAX_INSPECTION_COORDINATE ||
+        (kind !== 'hover' && kind !== 'annotation' && kind !== 'response') ||
+        (selected !== undefined && typeof selected !== 'boolean')
+      ) return false
+      highlights.push({ rect: { ...rect }, kind, ...(selected !== undefined ? { selected } : {}) })
+    }
+    return this.postForAttachment('webview.presentReviewHighlights', attachmentId, { highlights })
   }
 
   dispose(): void {

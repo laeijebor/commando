@@ -36,6 +36,16 @@ export type TileReviewSurface = {
     reject?: (error: Error) => void,
   ) => void
   subscribePending: (listener: (snapshot: WebPanePendingSnapshot) => void) => () => void
+  presentHighlights?: (presentation: TileReviewHighlightPresentation) => void
+}
+
+export type TileReviewHighlightPresentation = {
+  hover: TileInspectRect | null
+  queued: Array<{
+    rect: TileInspectRect
+    kind: 'annotation' | 'response'
+    selected: boolean
+  }>
 }
 
 export type TileReviewLayerProps = {
@@ -443,6 +453,27 @@ export function TileReviewLayer({
     return () => window.clearInterval(timer)
   }, [active, queued, reviewMode, surface])
 
+  useEffect(() => {
+    const presentation: TileReviewHighlightPresentation = {
+      hover: active ? highlight : null,
+      queued: active ? queued.flatMap((note) => {
+        if (!resolvableSelector(note.selector)) return []
+        const rect = queuedAnchors[note.id] === undefined ? note.rect : queuedAnchors[note.id]
+        if (!rect || rect.width <= 0 || rect.height <= 0) return []
+        return [{
+          rect,
+          kind: note.response ? 'response' as const : 'annotation' as const,
+          selected: popoverId === note.id,
+        }]
+      }) : [],
+    }
+    surface.presentHighlights?.(presentation)
+  }, [active, highlight, popoverId, queued, queuedAnchors, surface])
+
+  useEffect(() => () => {
+    surface.presentHighlights?.({ hover: null, queued: [] })
+  }, [surface])
+
   const hoverThrottle = useRef<ReturnType<typeof createInspectThrottle> | null>(null)
   useEffect(() => {
     if (!reviewMode) {
@@ -805,12 +836,21 @@ export function TileReviewLayer({
         />
       )}
       {active && hint && (
-        <div className="tile-review-hint" style={{ left: hint.x, top: hint.y }} role="status">
+        <div
+          className="tile-review-hint"
+          style={{ left: hint.x, top: hint.y }}
+          role="status"
+          data-native-terminal-occluder=""
+        >
           couldn't resolve an element here
         </div>
       )}
       {active && card && (
-        <div className="tile-review-card" style={{ left: card.x, top: card.y }}>
+        <div
+          className="tile-review-card"
+          style={{ left: card.x, top: card.y }}
+          data-native-terminal-occluder=""
+        >
           <span className="tile-review-card-target" title={card.inspect.selector}>
             {card.inspect.tag}
           </span>
@@ -863,6 +903,7 @@ export function TileReviewLayer({
           role="dialog"
           aria-label={`Edit queued ${itemType(popoverNote).toLowerCase()}`}
           style={{ left: popoverPosition.x, top: popoverPosition.y }}
+          data-native-terminal-occluder=""
         >
           <header>
             <div>
@@ -926,7 +967,11 @@ export function TileReviewLayer({
       {(queued.length > 0 || dropped > 0) && (
         <>
           {!drawerOpen ? (
-            <div className="tile-review-strip" data-testid="pending-queue-strip">
+            <div
+              className="tile-review-strip"
+              data-testid="pending-queue-strip"
+              data-native-terminal-occluder=""
+            >
               {dropped > 0 && (
                 <span className="tile-review-dropped" role="alert">
                   {`${dropped} older answer${dropped === 1 ? '' : 's'} dropped — the queue is full at ${MAX_PENDING_NOTES}. Send to make room.`}
@@ -984,6 +1029,7 @@ export function TileReviewLayer({
               role="dialog"
               aria-label="Pending review queue"
               data-testid="pending-queue-drawer"
+              data-native-terminal-occluder=""
             >
               <header className="tile-review-drawer-head">
                 <div>
@@ -1164,6 +1210,7 @@ export function TileReviewLayer({
             aria-modal="true"
             aria-label={`Preview ${preview.name}`}
             onMouseDown={(event) => event.stopPropagation()}
+            data-native-terminal-occluder=""
           >
             <header>
               <strong>{preview.name}</strong>

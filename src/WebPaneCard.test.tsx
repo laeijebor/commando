@@ -16,16 +16,19 @@ vi.mock('./ChromiumTileCard', () => ({
 
 vi.mock('./NativeWebViewTile', () => ({
   NativeWebViewTile: ({
-    hidden,
+    reviewMode,
     onLoaded,
+    onReviewFallback,
     onFallback,
   }: {
-    hidden?: boolean
+    reviewMode?: boolean
     onLoaded?: () => void
+    onReviewFallback?: () => void
     onFallback: () => void
   }) => (
-    <div data-testid="native-webview-tile" hidden={hidden}>
+    <div data-testid="native-webview-tile" data-review-mode={reviewMode}>
       <button type="button" onClick={onLoaded}>mark native loaded</button>
+      <button type="button" onClick={onReviewFallback}>fail native review</button>
       <button type="button" onClick={onFallback}>fail native renderer</button>
     </div>
   ),
@@ -302,7 +305,7 @@ describe('WebPaneCard Chromium renderer experiment', () => {
     expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('canvas')
   })
 
-  it('temporarily hands native rendering into canvas review without losing the preference or attachment', async () => {
+  it('keeps the native tile mounted for review without mounting the canvas renderer', async () => {
     const messages: PostedMessage[] = []
     installNativeHandler(messages)
     window.localStorage.setItem(CHROMIUM_RENDERER_STORAGE_KEY, 'native')
@@ -317,18 +320,38 @@ describe('WebPaneCard Chromium renderer experiment', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'mark native loaded' }))
     const nativeTile = screen.getByTestId('native-webview-tile')
-    expect(nativeTile).not.toHaveAttribute('hidden')
     expect(screen.queryByTestId('chromium-tile')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Review this page' }))
-    expect(nativeTile).toHaveAttribute('hidden')
+    expect(nativeTile).toHaveAttribute('data-review-mode', 'true')
+    expect(screen.queryByTestId('chromium-tile')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review this page' }))
+    expect(nativeTile).toHaveAttribute('data-review-mode', 'false')
+    expect(screen.queryByTestId('chromium-tile')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
+  })
+
+  it('falls back to canvas review when the native review commands fail', async () => {
+    const messages: PostedMessage[] = []
+    installNativeHandler(messages)
+    window.localStorage.setItem(CHROMIUM_RENDERER_STORAGE_KEY, 'native')
+    render(
+      <WebPaneCard
+        webPane={chromiumPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+      />,
+    )
+    await makeNativeBridgeAvailable(messages)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review this page' }))
+    fireEvent.click(screen.getByRole('button', { name: 'fail native review' }))
+
+    expect(screen.queryByTestId('native-webview-tile')).not.toBeInTheDocument()
     expect(screen.getByTestId('chromium-tile')).toHaveAttribute('data-review-mode', 'true')
-    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Review this page' }))
-    expect(nativeTile).not.toHaveAttribute('hidden')
-    expect(screen.queryByTestId('chromium-tile')).not.toBeInTheDocument()
-    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('native')
+    expect(window.localStorage.getItem(CHROMIUM_RENDERER_STORAGE_KEY)).toBe('canvas')
   })
 
   it('falls back to the canvas when the native renderer fails', async () => {

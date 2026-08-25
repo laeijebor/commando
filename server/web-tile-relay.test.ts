@@ -53,6 +53,7 @@ function pendingNote(comment: string, id: number): WebPanePendingNote {
 async function startRelay(
   engineOverrides: Partial<ChromiumEngine> = {},
   pendingNotes: (webPaneId: string) => WebPanePendingSnapshot = () => emptySnapshot(),
+  reviewOnly = false,
 ) {
   const engine = {
     subscribeScreencast: vi.fn(async () => () => undefined),
@@ -77,7 +78,9 @@ async function startRelay(
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = (server.address() as AddressInfo).port
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/web-tiles/w-11111111`)
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/web-tiles/w-11111111${reviewOnly ? '?mode=review' : ''}`,
+  )
   sockets.push(socket)
   // Collect from the first tick — connect-time messages (pending hydration)
   // can arrive in the same I/O batch as the open event.
@@ -238,6 +241,22 @@ describe('web tile relay pending broadcast', () => {
     const { socket, messages } = await startRelay({}, () => snapshotOf([pendingNote('queued earlier', 3)]))
     const message = await messageOfType(socket, messages, 'pending')
     expect(message).toMatchObject({ notes: [{ id: 3, comment: 'queued earlier' }] })
+  })
+
+  it('hydrates and broadcasts to review-only subscribers without starting a screencast', async () => {
+    const initial = snapshotOf([pendingNote('queued earlier', 5)])
+    const { socket, engine, relay, messages } = await startRelay({}, () => initial, true)
+
+    expect(await messageOfType(socket, messages, 'pending')).toMatchObject({
+      notes: [{ id: 5, comment: 'queued earlier' }],
+    })
+    expect(engine.subscribeScreencast).not.toHaveBeenCalled()
+    expect(engine.updatePendingSnapshot).not.toHaveBeenCalled()
+
+    const pushed = nextMessage(socket, 'pending')
+    relay.broadcastPending('w-11111111', snapshotOf([pendingNote('new snapshot', 6)]))
+    expect(await pushed).toMatchObject({ notes: [{ id: 6, comment: 'new snapshot' }] })
+    expect(engine.subscribeScreencast).not.toHaveBeenCalled()
   })
 
   it('does not send an empty pending message on connect', async () => {

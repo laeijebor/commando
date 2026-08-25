@@ -205,8 +205,24 @@
 
 /* Rect reserved for the desktop shell's native WKWebView tile. */
 .web-pane-native-slot {
+  position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+  container-name: chromium-tile;
+  container-type: inline-size;
+}
+
+.web-pane-native-review-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.web-pane-native-slot.is-reviewing .web-pane-native-review-input {
+  pointer-events: auto;
+  cursor: crosshair;
 }
 
 .web-pane-overlay {

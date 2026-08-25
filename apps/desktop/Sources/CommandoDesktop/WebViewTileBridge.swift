@@ -20,6 +20,8 @@ enum WebViewTileProtocol {
         "webview.embed.v1",
         "webview.inspectAtPoint.v1",
         "webview.resolveSelectors.v1",
+        "webview.reviewInput.v1",
+        "webview.reviewHighlights.v1",
     ]
     static let maxURLLength = 2_048
     static let maxRequestIdLength = 64
@@ -32,6 +34,7 @@ enum WebViewTileProtocol {
     static let maxSelectorResolveItems = 50
     static let maxSelectorResolveBytes = 12 * 1_024
     static let maxPendingInspectionRequests = 32
+    static let maxReviewHighlights = maxSelectorResolveItems + 1
     /// Tile host views sort above the terminal surfaces in the shared overlay.
     static let hostOrderBase = 1_000
 
@@ -162,13 +165,59 @@ final class WebViewTileScriptMessageHandler: NSObject, WKScriptMessageHandler {
 final class WebViewTileHostView: NSView {
     var hostOrderRank = 0
     var visibleRegions: [CGRect] = []
+    var reviewInputPassThrough = false
 
     override var isOpaque: Bool { false }
     override var tag: Int { WebViewTileProtocol.hostOrderBase + hostOrderRank }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !reviewInputPassThrough else { return nil }
         guard !isHidden, visibleRegions.contains(where: { $0.contains(point) }) else { return nil }
         return super.hitTest(point)
+    }
+}
+
+struct WebViewTileReviewHighlight: Equatable {
+    enum Kind: String {
+        case hover
+        case annotation
+        case response
+    }
+
+    let rect: CGRect
+    let kind: Kind
+    let selected: Bool
+}
+
+@MainActor
+final class WebViewTileReviewOverlayView: NSView {
+    var highlights: [WebViewTileReviewHighlight] = [] {
+        didSet {
+            isHidden = highlights.isEmpty
+            needsDisplay = true
+        }
+    }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        for highlight in highlights where highlight.rect.intersects(dirtyRect) {
+            let color = highlight.kind == .response
+                ? NSColor(calibratedRed: 0.45, green: 0.85, blue: 0.91, alpha: 1)
+                : NSColor(calibratedRed: 0.49, green: 0.36, blue: 1, alpha: 1)
+            color.withAlphaComponent(0.12).setFill()
+            color.setStroke()
+            let path = NSBezierPath(
+                roundedRect: highlight.rect,
+                xRadius: 4,
+                yRadius: 4
+            )
+            path.lineWidth = highlight.selected ? 3 : 2
+            path.fill()
+            path.stroke()
+        }
     }
 }
 
@@ -182,11 +231,13 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     let identity: PaneIdentity
     let hostView = WebViewTileHostView(frame: .zero)
     let webView: WKWebView
+    let reviewOverlay = WebViewTileReviewOverlayView(frame: .zero)
     private(set) var latestFrame: PaneFramePayload?
     private let externalURLHandler: any ExternalURLHandling
     private let eventSink: (PaneIdentity, WebViewTileEvent) -> Void
     private let scriptEvaluator: WebViewTileScriptEvaluator
     private let mask = CAShapeLayer()
+    private let reviewMask = CAShapeLayer()
     private(set) var documentRevision = 0
     private(set) var isDocumentReady = false
 
@@ -207,7 +258,10 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.uiDelegate = self
         hostView.wantsLayer = true
         webView.wantsLayer = true
+        reviewOverlay.wantsLayer = true
+        reviewOverlay.isHidden = true
         hostView.addSubview(webView)
+        hostView.addSubview(reviewOverlay, positioned: .above, relativeTo: webView)
         webView.load(URLRequest(url: url))
     }
 
@@ -219,6 +273,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         hostView.layer?.zPosition = CGFloat(WebViewTileProtocol.hostOrderBase + payload.order)
         guard !placement.isHidden else { return }
         webView.frame = placement.frame
+        reviewOverlay.frame = placement.frame
         let path = CGMutablePath()
         for region in placement.visibleFrames {
             path.addRect(region.offsetBy(dx: -placement.frame.minX, dy: -placement.frame.minY))
@@ -226,6 +281,9 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         mask.frame = webView.bounds
         mask.path = path
         webView.layer?.mask = mask
+        reviewMask.frame = reviewOverlay.bounds
+        reviewMask.path = path
+        reviewOverlay.layer?.mask = reviewMask
     }
 
     func reload() {
@@ -234,8 +292,18 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
+    func setReviewInput(_ enabled: Bool) {
+        hostView.reviewInputPassThrough = enabled
+    }
+
+    func presentReviewHighlights(_ highlights: [WebViewTileReviewHighlight]) {
+        reviewOverlay.highlights = highlights
+    }
+
     func destroy() {
         invalidateDocument()
+        setReviewInput(false)
+        presentReviewHighlights([])
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -419,6 +487,10 @@ final class WebViewTileBridge: NSObject {
             inspectAtPoint(payload)
         case "webview.resolveSelectors":
             resolveSelectors(payload)
+        case "webview.reviewInput":
+            setReviewInput(payload)
+        case "webview.presentReviewHighlights":
+            presentReviewHighlights(payload)
         case "webview.detach":
             detach(payload)
         default:
@@ -666,6 +738,22 @@ final class WebViewTileBridge: NSObject {
         }
     }
 
+    private func setReviewInput(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload), let enabled = payload["enabled"] as? Bool else {
+            return
+        }
+        tile.setReviewInput(enabled)
+    }
+
+    private func presentReviewHighlights(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload),
+              let highlights = reviewHighlights(from: payload["highlights"])
+        else {
+            return
+        }
+        tile.presentReviewHighlights(highlights)
+    }
+
     private func detach(_ payload: [String: Any]) {
         guard let identity = identity(from: payload),
               let tile = tiles.removeValue(forKey: identity.attachmentId)
@@ -739,6 +827,48 @@ final class WebViewTileBridge: NSObject {
             return nil
         }
         return items
+    }
+
+    private func reviewHighlights(from value: Any?) -> [WebViewTileReviewHighlight]? {
+        guard let rawHighlights = value as? [[String: Any]],
+              rawHighlights.count <= WebViewTileProtocol.maxReviewHighlights
+        else {
+            return nil
+        }
+        var highlights: [WebViewTileReviewHighlight] = []
+        for rawHighlight in rawHighlights {
+            guard let rawKind = rawHighlight["kind"] as? String,
+                  let kind = WebViewTileReviewHighlight.Kind(rawValue: rawKind),
+                  rawHighlight["selected"] == nil || rawHighlight["selected"] is Bool,
+                  let rect = reviewHighlightRect(from: rawHighlight["rect"])
+            else {
+                return nil
+            }
+            highlights.append(WebViewTileReviewHighlight(
+                rect: rect,
+                kind: kind,
+                selected: rawHighlight["selected"] as? Bool ?? false
+            ))
+        }
+        return highlights
+    }
+
+    private func reviewHighlightRect(from value: Any?) -> CGRect? {
+        guard let rawRect = value as? [String: Any],
+              let x = finiteDouble(rawRect["x"]),
+              let y = finiteDouble(rawRect["y"]),
+              let width = finiteDouble(rawRect["width"]),
+              let height = finiteDouble(rawRect["height"]),
+              abs(x) <= WebViewTileProtocol.maxInspectionCoordinate,
+              abs(y) <= WebViewTileProtocol.maxInspectionCoordinate,
+              width > 0,
+              width <= WebViewTileProtocol.maxInspectionCoordinate,
+              height > 0,
+              height <= WebViewTileProtocol.maxInspectionCoordinate
+        else {
+            return nil
+        }
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     private func inspectResult(from value: Any?) -> [String: Any]? {

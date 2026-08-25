@@ -48,8 +48,10 @@ export class WebTileRelay {
   constructor(private readonly dependencies: RelayDependencies) {}
 
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, webPaneId: string): void {
+    const mode = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('mode')
+    const reviewOnly = mode === 'review'
     this.webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      this.connect(webSocket, webPaneId)
+      this.connect(webSocket, webPaneId, reviewOnly)
     })
   }
 
@@ -90,7 +92,7 @@ export class WebTileRelay {
     this.webSocketServer.close()
   }
 
-  private connect(socket: WebSocket, webPaneId: string): void {
+  private connect(socket: WebSocket, webPaneId: string, reviewOnly: boolean): void {
     const pane = this.dependencies.service.get(webPaneId)
     if (!pane || pane.engine !== 'chromium' || pane.status !== 'open') {
       socket.close(4404, 'No streamable chromium tile with this id')
@@ -106,7 +108,7 @@ export class WebTileRelay {
     const pending = this.dependencies.pendingNotes(webPaneId)
     // Seed before target subscription so the initial navigation can hydrate
     // the page even when the full replacement is empty.
-    this.dependencies.engine.updatePendingSnapshot(webPaneId, pending)
+    if (!reviewOnly) this.dependencies.engine.updatePendingSnapshot(webPaneId, pending)
 
     // Hydrate the viewer's pill queue immediately — answers queued while no
     // viewer was connected (or while another session was focused) must
@@ -128,6 +130,14 @@ export class WebTileRelay {
         if (remaining.size === 0) this.subscribers.delete(webPaneId)
       }
     }
+
+    socket.on('message', (data: RawData) => {
+      if (!reviewOnly) this.receive(socket, webPaneId, data)
+    })
+    socket.on('close', cleanup)
+    socket.on('error', cleanup)
+
+    if (reviewOnly) return
 
     const subscribe = () => this.dependencies.engine.subscribeScreencast(webPaneId, pane.url, (frame) => {
       if (socket.readyState !== WebSocket.OPEN) return
@@ -165,10 +175,6 @@ export class WebTileRelay {
         }
         socket.close(4503, 'Chromium engine unavailable')
       })
-
-    socket.on('message', (data: RawData) => this.receive(socket, webPaneId, data))
-    socket.on('close', cleanup)
-    socket.on('error', cleanup)
   }
 
   private receive(socket: WebSocket, webPaneId: string, data: RawData): void {

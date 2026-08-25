@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   NATIVE_WEBVIEW_INSPECT_CAPABILITY,
   NATIVE_WEBVIEW_PROTOCOL,
+  NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY,
+  NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
   NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
   NativeWebViewBridge,
   resetNativeWebViewBridge,
@@ -237,8 +239,25 @@ describe('NativeWebViewBridge', () => {
       'webview.embed.v1',
       NATIVE_WEBVIEW_INSPECT_CAPABILITY,
       NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
+      NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
+      NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY,
     ])
     const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+    expect(attachment.supportsReview).toBe(true)
+
+    expect(attachment.setReviewInput(true)).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'webview.reviewInput',
+      payload: { enabled: true },
+    })
+    expect(attachment.presentReviewHighlights([{
+      kind: 'hover',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+    }])).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'webview.presentReviewHighlights',
+      payload: { highlights: [{ kind: 'hover', rect: { x: 1, y: 2, width: 3, height: 4 } }] },
+    })
 
     const inspect = attachment.inspectAtPoint(12, 34, 'click')
     const inspectMessage = messages.at(-1)!
@@ -298,6 +317,39 @@ describe('NativeWebViewBridge', () => {
     await expect(attachment.resolveSelectors([{ noteId: 1, selector: '#target' }]))
       .rejects.toThrow('not supported')
     expect(messages).toHaveLength(count)
+  })
+
+  it('rejects review input and invalid highlight presentations without capabilities or posts', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge)
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+    const count = messages.length
+
+    expect(attachment.supportsReview).toBe(false)
+    expect(attachment.setReviewInput(true)).toBe(false)
+    expect(attachment.presentReviewHighlights([])).toBe(false)
+    expect(messages).toHaveLength(count)
+
+    attachment.detach()
+
+    const capable = new NativeWebViewBridge()
+    await connect(capable, [
+      'webview.embed.v1',
+      NATIVE_WEBVIEW_INSPECT_CAPABILITY,
+      NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
+      NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
+      NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY,
+    ])
+    const capableAttachment = capable.attach('w-abcd1234', 'https://example.com/', () => undefined)
+    const capableCount = messages.length
+    expect(capableAttachment.presentReviewHighlights([{
+      kind: 'annotation',
+      rect: { x: 0, y: 0, width: -1, height: 2 },
+    }])).toBe(false)
+    expect(messages).toHaveLength(capableCount)
+    capable.dispose()
   })
 
   it('bounds selector batches and rejects pending work when detached', async () => {

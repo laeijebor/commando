@@ -183,7 +183,6 @@ export function WebPaneCard({
   const opener = webPane.openerLabel ?? (webPane.openedBy === 'agent' ? 'an agent' : 'you')
   const pending = webPane.status === 'pending'
   const nativeChromium = chromium && chromiumRenderer === 'native' && tier === 'native' && nativeBridge !== null
-  const nativeChromiumVisible = nativeChromium && !review
 
   const setRenderer = (renderer: ChromiumRenderer) => {
     setChromiumRenderer(renderer)
@@ -197,13 +196,13 @@ export function WebPaneCard({
   }, [nativeChromium, webPane.url])
 
   useEffect(() => {
-    if (!nativeChromiumVisible || nativeLoaded) return
+    if (!nativeChromium || nativeLoaded) return
     const watchdog = window.setTimeout(() => {
       setChromiumRenderer('canvas')
       saveChromiumRenderer('canvas')
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
-  }, [nativeChromiumVisible, nativeLoaded, webPane.url])
+  }, [nativeChromium, nativeLoaded, webPane.url])
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
@@ -421,12 +420,16 @@ export function WebPaneCard({
                   bridge={nativeBridge}
                   webPane={webPane}
                   reloadKey={reloadKey}
-                  hidden={review}
+                  reviewMode={review}
+                  wsToken={wsToken}
+                  pendingQueue={pendingQueue ?? EMPTY_PENDING_QUEUE}
+                  connected={connected}
                   onLoaded={() => setNativeLoaded(true)}
+                  onReviewFallback={() => setRenderer('canvas')}
                   onFallback={() => setRenderer('canvas')}
                 />
               )}
-              {(!nativeChromium || review) && (
+              {!nativeChromium && (
                 <ChromiumTileCard
                   webPane={webPane}
                   wsToken={wsToken}

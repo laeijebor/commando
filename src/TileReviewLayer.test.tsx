@@ -145,4 +145,71 @@ describe('TileReviewLayer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/changed after you started editing/i)
     expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Local draft')
   })
+
+  it('occludes native surfaces only for opaque review UI, not highlight hit targets', async () => {
+    let publish: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const inspect: TileReviewSurface['inspect'] = vi.fn((_x, _y, grade, receive) => {
+      receive(grade === 'click'
+        ? {
+            ok: true,
+            selector: '#target',
+            tag: 'button',
+            rect: { x: 10, y: 12, width: 80, height: 24 },
+          }
+        : { ok: false, error: 'not found' })
+    })
+    const input = document.createElement('div')
+    Object.defineProperty(input, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 }),
+    })
+    render(
+      <TileReviewLayer
+        webPaneId="w-native"
+        reviewMode
+        active
+        containerRef={{ current: input }}
+        inputRef={{ current: input }}
+        pendingQueue={queue()}
+        surface={surface({
+          inspect,
+          resolveSelectors: (_items, receive) => receive([{
+            noteId: 1,
+            rect: { x: 10, y: 12, width: 80, height: 24 },
+          }]),
+          subscribePending: (listener) => {
+            publish = listener
+            return () => { publish = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => publish?.({
+      revision: 1,
+      notes: [{
+        ...annotation(1),
+        attachments: [{ id: 'image-1', name: 'capture.png', size: 12, contentType: 'image/png' }],
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }))
+
+    const hitTarget = await screen.findByRole('button', { name: /Edit queued annotation/ })
+    expect(hitTarget).not.toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(hitTarget)
+    expect(screen.getByRole('dialog', { name: 'Edit queued annotation' }))
+      .toHaveAttribute('data-native-terminal-occluder', '')
+
+    fireEvent.pointerDown(input, { button: 0, clientX: 20, clientY: 24 })
+    expect(screen.getByRole('textbox', { name: 'Note about #target' }).closest('.tile-review-card'))
+      .toHaveAttribute('data-native-terminal-occluder', '')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review queue · 1' }))
+    expect(screen.getByTestId('pending-queue-drawer'))
+      .toHaveAttribute('data-native-terminal-occluder', '')
+    fireEvent.click(screen.getByRole('button', { name: 'Preview capture.png' }))
+    expect(screen.getByRole('dialog', { name: 'Preview capture.png' }))
+      .toHaveAttribute('data-native-terminal-occluder', '')
+  })
 })
