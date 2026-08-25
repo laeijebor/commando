@@ -93,9 +93,35 @@ dropping an unanswered question is how a review loses a requirement.
 
 ## Several discussions in one artifact
 
-When a review grows a deep dive — an overall requirements thread plus, say,
-backend architecture and UI — keep one artifact and give every topic a
-`data-redline-track`. Present the tracks as a tab strip with per-track open
-counts, and keep the decision log global across all of them. A deep dive that
-outgrows a tab can graduate to its own artifact under `.redline/<topic>/`
-without changing the topic-thread model underneath.
+A review often grows past a single thread — an overall requirements
+discussion plus deep dives such as backend architecture and UI. Keep one
+artifact and give every topic a `data-redline-track`, then present the tracks
+as a tab strip with per-track open counts. The decision log stays global
+across every track, so there is still one place that answers "what have we
+settled?".
+
+```html
+<section id="auth-shape" data-redline-section data-redline-track="backend"
+         data-redline-status="open" data-redline-round="3">
+```
+
+Organise for the reader's cognitive load, not for tidiness. A hundred-screen
+scroll is hard to reason about, and so is a strip of twenty tabs — judge from
+the actual topics and the amount of detail each carries. Useful defaults:
+
+- **One track** until the document genuinely holds separate conversations.
+  Do not open tracks up front on the chance they fill up.
+- **Split when a topic accumulates its own sub-topics** — the moment a subject
+  has several open questions and its own history, it reads better as a track.
+- **Distinct UI surfaces usually deserve their own track**, since their
+  questions, screenshots and decisions rarely interleave usefully.
+- **Merge back** if a track ends up holding one settled topic; a tab that
+  never changes is noise.
+
+Every section still needs a stable `id`: hidden tracks stay in the DOM, and a
+review note's selector has to survive the user switching tabs between writing
+the note and you applying it.
+
+A deep dive that outgrows a tab can graduate to its own artifact under
+`.redline/<topic>/` without changing the topic-thread model underneath — the
+tracks, statuses and resolved controls all work the same there.
