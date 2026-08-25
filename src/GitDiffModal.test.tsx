@@ -74,7 +74,7 @@ describe('GitDiffModal engine and layout toggles', () => {
 
   it('keeps an explicit PR comparison fixed across summary and file requests', async () => {
     const api = fakeApi()
-    render(
+    const view = render(
       <GitDiffModal
         paneId="%1"
         panePath="/repo"
@@ -110,6 +110,23 @@ describe('GitDiffModal engine and layout toggles', () => {
       'base-oid',
       'head-oid',
     ))
+
+    view.rerender(
+      <GitDiffModal
+        paneId="%1"
+        panePath="/repo"
+        api={api}
+        initialSummary={summary}
+        comparison={{
+          base: 'new-base-oid',
+          head: 'head-oid',
+          baseLabel: 'release',
+          headLabel: 'feature/pr-diff',
+        }}
+        onClose={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(api.summary).toHaveBeenCalledWith('%1', 'new-base-oid', 'head-oid'))
   })
 })
 

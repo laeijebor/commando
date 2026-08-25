@@ -229,6 +229,14 @@ describe('GitDiffApi', () => {
     })
   })
 
+  it('rejects an empty head instead of falling back to the working tree', async () => {
+    const base = await startApi()
+
+    const response = await fetch(`${base}/api/git/summary?paneId=%251&target=main&head=`)
+
+    expect(response.status).toBe(400)
+  })
+
   it('rejects invalid pane ids', async () => {
     const base = await startApi()
     const response = await fetch(`${base}/api/git/summary?paneId=abc`)

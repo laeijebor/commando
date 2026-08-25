@@ -230,7 +230,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [targetDraft, setTargetDraft] = useState('')
-  const [appliedTarget, setAppliedTarget] = useState<string | undefined>(comparison?.base)
+  const [appliedTarget, setAppliedTarget] = useState<string | undefined>(undefined)
   const [branchList, setBranchList] = useState<string[]>([])
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [filtering, setFiltering] = useState(false)
@@ -276,6 +276,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   const generation = useRef(0)
   const diffGeneration = useRef(0)
   const searchGeneration = useRef(0)
+  const selectedTarget = comparison?.base ?? appliedTarget
 
   const maximumFilePanelWidth = () => {
     const bodyWidth = bodyRef.current?.clientWidth
@@ -369,8 +370,8 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
     setSummaryLoading(true)
     setSummaryError('')
     const summaryRequest = comparison
-      ? apiRef.current.summary(paneId, appliedTarget, comparison.head)
-      : apiRef.current.summary(paneId, appliedTarget)
+      ? apiRef.current.summary(paneId, selectedTarget, comparison.head)
+      : apiRef.current.summary(paneId, selectedTarget)
     summaryRequest
       .then((next) => {
         if (request !== generation.current) return
@@ -383,7 +384,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
       .finally(() => {
         if (request === generation.current) setSummaryLoading(false)
       })
-  }, [paneId, appliedTarget, comparison?.head])
+  }, [paneId, selectedTarget, comparison?.head])
 
   const files = summary?.files ?? []
   const deferredFileFilter = useDeferredValue(fileFilter)
@@ -434,7 +435,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
       : 180
     apiRef.current
       .fileDiff(paneId, selectedFile, {
-        target: appliedTarget,
+        target: selectedTarget,
         ...(comparison ? { head: comparison.head } : {}),
         width,
         engine,
@@ -452,7 +453,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
       .finally(() => {
         if (request === diffGeneration.current) setDiffLoading(false)
       })
-  }, [paneId, appliedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
+  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
 
   useEffect(() => {
     const query = diffSearch.trim()
@@ -469,8 +470,8 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
     setAllSearchError('')
     const timeout = window.setTimeout(() => {
       const searchRequest = comparison
-        ? apiRef.current.search(paneId, query, appliedTarget, comparison.head)
-        : apiRef.current.search(paneId, query, appliedTarget)
+        ? apiRef.current.search(paneId, query, selectedTarget, comparison.head)
+        : apiRef.current.search(paneId, query, selectedTarget)
       searchRequest
         .then((next) => {
           if (request !== searchGeneration.current) return
@@ -493,7 +494,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
       window.clearTimeout(timeout)
       if (searchGeneration.current === request) searchGeneration.current += 1
     }
-  }, [paneId, appliedTarget, comparison?.head, diffSearch, searchScope])
+  }, [paneId, selectedTarget, comparison?.head, diffSearch, searchScope])
 
   useEffect(() => {
     setActiveDiffMatch(0)

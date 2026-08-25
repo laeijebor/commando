@@ -539,6 +539,9 @@ describe('HUD tabs', () => {
       `/api/git/summary?paneId=%2513&target=${baseRefOid}&head=${headRefOid}`,
       expect.any(Object),
     ))
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane]) }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })
 

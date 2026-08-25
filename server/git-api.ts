@@ -59,8 +59,8 @@ export class GitDiffApi {
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
 
       const { paneId, path: panePath } = this.resolvePane(url)
-      const target = url.searchParams.get('target')?.trim() || undefined
-      const head = url.searchParams.get('head')?.trim() || undefined
+      const target = url.searchParams.get('target') ?? undefined
+      const head = url.searchParams.get('head') ?? undefined
 
       if (url.pathname === `${API_ROOT}/summary`) {
         let summary = await this.inspector.summary(panePath, target, head)

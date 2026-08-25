@@ -854,7 +854,7 @@ export function App() {
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
   const [prDiff, setPrDiff] = useState<{
-    pane: TmuxPane
+    targetId: string
     comparison: GitDiffComparison
   } | null>(null)
   const switchHudTab = useCallback((tab: HudTab) => {
@@ -1259,6 +1259,13 @@ export function App() {
     : []
   const paneMap = new Map(snapshot?.panes.map((pane) => [pane.id, pane]) ?? [])
   const livePaneTargetIds = new Set(snapshot?.panes.map((pane) => pane.targetId) ?? [])
+  const prDiffPaneMatches = prDiff
+    ? snapshot?.panes.filter((pane) => pane.targetId === prDiff.targetId) ?? []
+    : []
+  const prDiffPane = prDiffPaneMatches.length === 1 ? prDiffPaneMatches[0] : undefined
+  useEffect(() => {
+    if (prDiff && snapshot && prDiffPaneMatches.length !== 1) setPrDiff(null)
+  }, [prDiff, prDiffPaneMatches.length, snapshot])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
   const selectedTabWindowId = selectedSessionId ? activeTabs[selectedSessionId] : undefined
@@ -1449,7 +1456,7 @@ export function App() {
     const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
     if (matches.length !== 1) return
     setPrDiff({
-      pane: matches[0],
+      targetId,
       comparison: {
         base: pr.baseRefOid,
         head: pr.headRefOid,
@@ -2884,11 +2891,11 @@ export function App() {
         <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
       ) : null}
 
-      {prDiff ? (
+      {prDiff && prDiffPane ? (
         <GitDiffModal
-          key={`${prDiff.pane.id}:${prDiff.comparison.head}`}
-          paneId={prDiff.pane.id}
-          panePath={prDiff.pane.path}
+          key={`${prDiffPane.id}:${prDiff.comparison.base}:${prDiff.comparison.head}`}
+          paneId={prDiffPane.id}
+          panePath={prDiffPane.path}
           api={gitDiffApi}
           initialSummary={null}
           comparison={prDiff.comparison}
