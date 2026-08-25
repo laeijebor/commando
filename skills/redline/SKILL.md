@@ -208,6 +208,12 @@ Discipline the agent must know:
 - For a custom control, call
   `window.redline.queueResponse({question, answer, note?, data?, queueKey?, element?})`
   directly.
+- A question the user has answered should be rewritten as settled rather than
+  left live: `<redline-choice key="plan" resolved answer="Pro"
+  answered-in="Round 2" note="…">` renders the recorded answer plus a
+  **Reopen** button that restores the live control pre-filled. Add `locked` to
+  drop the Reopen button. Multi-select answers keep the queued `"A, C"` form
+  and render one chip per value.
 
 Notes that carry a component answer have a `response: {question, answer,
 note?, data?}` field — prefer it over parsing `comment`.
@@ -230,6 +236,7 @@ plan and mockup playbooks; a mockup comparison also requires comparison.
 | `playbooks/plan.md` | product/technical plan for review |
 | `playbooks/mockup.md` | current or proposed product UI, screens, components, states |
 | `playbooks/input.md` | collecting decisions/choices/triage from the user |
+| `playbooks/iteration.md` | second round onward: settled vs live content, resolved controls |
 
 ## 2. Open for review
 
@@ -276,6 +283,12 @@ Send).
    edit the
    artifact section (or the real source behind the running page) that the
    selector points at.
+   From the second round onward this is not just an edit — read
+   `playbooks/iteration.md` and apply it: mark the section's
+   `data-redline-status`, stamp `data-redline-changed`, rewrite every answered
+   control as `resolved` with the answer you received, fold the previous
+   exchange into that topic's thread, and mirror the decision into the log.
+   An answered question left live and empty makes the user answer it twice.
    Each attachment has `{name, contentType, size, path}`. Fetch every needed
    `path` with the agent hook bearer token before the next poll acknowledges
    that batch and releases its image bytes.
