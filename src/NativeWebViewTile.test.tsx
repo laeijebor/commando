@@ -98,7 +98,11 @@ function nativeHarness(supportsReview = true) {
     frame: vi.fn(() => true),
     reload: vi.fn(() => true),
   } as unknown as NativeWebViewBridge
-  return { attachment, bridge, loaded: () => listener?.({ type: 'webview.loaded' }) }
+  return {
+    attachment,
+    bridge,
+    loaded: (url?: string) => listener?.({ type: 'webview.loaded', ...(url ? { url } : {}) }),
+  }
 }
 
 beforeEach(() => {
@@ -183,5 +187,38 @@ describe('NativeWebViewTile review integration', () => {
     )
 
     await waitFor(() => expect(onReviewFallback).toHaveBeenCalledOnce())
+  })
+
+  it('stamps manual notes with a same-window native navigation URL without reattaching', async () => {
+    const { attachment, bridge, loaded } = nativeHarness()
+    const add = vi.fn(async () => emptySnapshot)
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        reviewMode
+        pendingQueue={{ ...pendingQueue, add }}
+        onFallback={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(attachment.setReviewInput).toHaveBeenCalledWith(true))
+
+    act(() => loaded('https://example.com/after-navigation'))
+    fireEvent.pointerDown(document.querySelector('.web-pane-native-review-input')!, {
+      button: 0,
+      clientX: 20,
+      clientY: 24,
+    })
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Note about #target' }), {
+      target: { value: 'Wrong destination' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue note' }))
+
+    await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({
+      comment: 'Wrong destination',
+      pageUrl: 'https://example.com/after-navigation',
+    })))
+    expect(bridge.attach).toHaveBeenCalledOnce()
   })
 })

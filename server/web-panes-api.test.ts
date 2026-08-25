@@ -745,6 +745,46 @@ describe('pending note routes', () => {
     expect(((await removed.json()) as { notes: unknown[] }).notes).toHaveLength(0)
   })
 
+  it('lets only the owner override a manual note page URL after strict validation', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const navigatedUrl = 'https://example.com/after-navigation?tab=review'
+    const body = pendingNoteBody('native navigation')
+
+    const agentAttempt = await post(baseUrl, `/api/web-panes/${id}/pending`, {
+      note: { ...body.note, pageUrl: navigatedUrl },
+    }, agentAuth)
+    expect(agentAttempt.status).toBe(403)
+
+    const ownerAdded = await post(baseUrl, `/api/web-panes/${id}/pending`, {
+      note: { ...body.note, pageUrl: navigatedUrl },
+    }, ownerAuth)
+    expect(ownerAdded.status).toBe(200)
+    const ownerBody = await ownerAdded.json() as { notes: Array<{ pageUrl?: string }> }
+    expect(ownerBody.notes[0]?.pageUrl).toBe(navigatedUrl)
+
+    const defaultAdded = await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('default URL'), ownerAuth)
+    const defaultBody = await defaultAdded.json() as { notes: Array<{ pageUrl?: string }> }
+    expect(defaultBody.notes[1]?.pageUrl).toBe('http://127.0.0.1:5173/')
+
+    await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [1] }, ownerAuth)
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    const drainedBody = await drained.json() as { notes: Array<{ pageUrl: string }> }
+    expect(drainedBody.notes[0]?.pageUrl).toBe(navigatedUrl)
+
+    for (const pageUrl of [
+      'file:///etc/passwd',
+      'https://user:password@example.com/private',
+      `https://example.com/${'x'.repeat(2_100)}`,
+    ]) {
+      const invalid = await post(baseUrl, `/api/web-panes/${id}/pending`, {
+        note: { ...body.note, pageUrl },
+      }, ownerAuth)
+      expect(invalid.status).toBe(400)
+    }
+  })
+
   it('accepts a queued note carrying a response and queueKey (restore path)', async () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)

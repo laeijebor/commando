@@ -43,7 +43,7 @@ export type NativeWebViewNegotiation =
 
 export type NativeWebViewTileEvent =
   | { type: 'webview.attached' }
-  | { type: 'webview.loaded' }
+  | { type: 'webview.loaded'; url?: string }
   | { type: 'webview.failed'; code: string }
 
 export type NativeWebViewAttachment = {
@@ -91,6 +91,21 @@ type PendingResolve = {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function boundedHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username !== '' ||
+      url.password !== ''
+    ) return undefined
+    return url.toString()
+  } catch {
+    return undefined
+  }
 }
 
 function messageHandler(): NativeMessageHandler | null {
@@ -501,7 +516,8 @@ export class NativeWebViewBridge {
     if (type === 'webview.attached') {
       record.listener({ type: 'webview.attached' })
     } else if (type === 'webview.loaded') {
-      record.listener({ type: 'webview.loaded' })
+      const url = boundedHttpUrl(payload.url)
+      record.listener({ type: 'webview.loaded', ...(url ? { url } : {}) })
     } else if (type === 'webview.failed') {
       record.listener({
         type: 'webview.failed',

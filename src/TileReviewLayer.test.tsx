@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
+import type { TileInspectResult } from '../shared/tile-inspect'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
 
@@ -106,6 +107,44 @@ describe('TileReviewLayer', () => {
       comment: 'Needs hierarchy',
     }))
     expect(await screen.findByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
+  it('drops a late click result after review deactivation and teardown', async () => {
+    let receiveClick: ((result: TileInspectResult) => void) | undefined
+    const input = document.createElement('div')
+    const container = document.createElement('div')
+    Object.defineProperty(input, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 }),
+    })
+    Object.defineProperty(container, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 500, bottom: 400, width: 500, height: 400 }),
+    })
+    const reviewSurface = surface({
+      inspect: (_x, _y, grade, receive) => {
+        if (grade === 'click') receiveClick = receive
+      },
+    })
+    const props = {
+      webPaneId: 'w-stale-click',
+      containerRef: { current: container },
+      inputRef: { current: input },
+      pendingQueue: queue(),
+      surface: reviewSurface,
+    }
+    const view = render(<TileReviewLayer {...props} reviewMode active />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.pointerDown(input, { button: 0, clientX: 20, clientY: 24 })
+
+    view.rerender(<TileReviewLayer {...props} reviewMode={false} active={false} />)
+    act(() => receiveClick?.({
+      ok: true,
+      selector: '#stale',
+      tag: 'button',
+      rect: { x: 10, y: 12, width: 80, height: 24 },
+    }))
+    view.rerender(<TileReviewLayer {...props} reviewMode active />)
+
+    expect(screen.queryByRole('textbox', { name: 'Note about #stale' })).not.toBeInTheDocument()
   })
 
   it('hydrates and reconciles pushed queue snapshots through the surface contract', async () => {

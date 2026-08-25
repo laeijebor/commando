@@ -3,16 +3,58 @@ import WebKit
 @testable import CommandoDesktop
 
 @MainActor
+private final class WebViewLoadWaiter: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func loadHTML(_ html: String, in webView: WKWebView) async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            webView.navigationDelegate = self
+            webView.loadHTMLString(html, baseURL: URL(string: "https://example.com/"))
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFail navigation: WKNavigation!,
+        withError error: any Error
+    ) {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: any Error
+    ) {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class WebViewScriptResult: @unchecked Sendable {
+    var result: Result<Any, any Error>?
+}
+
+@MainActor
 final class WebViewTileBridgeTests: XCTestCase {
     private final class ScriptCapture: @unchecked Sendable {
         var script: String?
         var arguments: [String: Any]?
+        var contentWorld: WKContentWorld?
         var completion: WebViewTileScriptCompletion?
         var callCount = 0
     }
 
     private func makeBridge(
         events: NSMutableArray,
+        inspectionTimeout: Duration = WebViewTileProtocol.inspectionTimeout,
         scriptEvaluator: WebViewTileScriptEvaluator? = nil
     ) -> (WebViewTileBridge, TerminalOverlayView) {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 1_200, height: 800))
@@ -21,6 +63,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             bridge = WebViewTileBridge(
                 webView: nil,
                 overlay: overlay,
+                inspectionTimeout: inspectionTimeout,
                 scriptEvaluator: scriptEvaluator,
                 eventObserver: { event in events.add(event) }
             )
@@ -28,6 +71,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             bridge = WebViewTileBridge(
                 webView: nil,
                 overlay: overlay,
+                inspectionTimeout: inspectionTimeout,
                 eventObserver: { event in events.add(event) }
             )
         }
@@ -116,6 +160,16 @@ final class WebViewTileBridgeTests: XCTestCase {
         let payload = event?["payload"] as? [String: Any]
         XCTAssertEqual(payload?["webPaneId"] as? String, "w-abcd1234")
         XCTAssertEqual(payload?["attachmentId"] as? String, "page-1:1")
+        XCTAssertEqual(payload?["url"] as? String, "http://127.0.0.1:9/")
+
+        let navigatedURL = try XCTUnwrap(URL(string: "https://example.com/after-navigation"))
+        webView.load(URLRequest(url: navigatedURL))
+        delegate.webView(webView, didFinish: nil)
+
+        let navigatedEvent = try XCTUnwrap(events.lastObject as? [String: Any])
+        let navigatedPayload = try XCTUnwrap(navigatedEvent["payload"] as? [String: Any])
+        XCTAssertEqual(navigatedPayload["url"] as? String, navigatedURL.absoluteString)
+        XCTAssertEqual(bridge.tileCount, 1)
     }
 
     func testAttachRejectsNonHTTPURL() {
@@ -225,6 +279,49 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(hostView?.isHidden, true)
     }
 
+    func testZoomTracksExistingAndFutureTilesAndScalesNativeHighlights() throws {
+        let events = NSMutableArray()
+        let (bridge, overlay) = makeBridge(events: events)
+        connect(bridge)
+        bridge.setZoomScale(1.25)
+        bridge.receive(body: envelope(sequence: 2, type: "webview.attach", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "url": "https://example.com/",
+        ]))
+        let hostView = try XCTUnwrap(
+            overlay.subviews.compactMap { $0 as? WebViewTileHostView }.first
+        )
+        let webView = try XCTUnwrap(hostView.subviews.compactMap { $0 as? WKWebView }.first)
+        let tile = try XCTUnwrap(webView.navigationDelegate as? WebViewTile)
+        XCTAssertEqual(webView.pageZoom, 1.25, accuracy: 0.001)
+
+        bridge.receive(body: envelope(
+            sequence: 3,
+            type: "webview.presentReviewHighlights",
+            payload: [
+                "webPaneId": "w-abcd1234",
+                "attachmentId": "page-1:1",
+                "highlights": [[
+                    "kind": "hover",
+                    "rect": ["x": 10, "y": 12, "width": 80, "height": 24],
+                ]],
+            ]
+        ))
+        XCTAssertEqual(
+            tile.reviewOverlay.highlights.first?.rect,
+            CGRect(x: 12.5, y: 15, width: 100, height: 30)
+        )
+
+        bridge.setZoomScale(1.5)
+
+        XCTAssertEqual(webView.pageZoom, 1.5, accuracy: 0.001)
+        XCTAssertEqual(
+            tile.reviewOverlay.highlights.first?.rect,
+            CGRect(x: 15, y: 18, width: 120, height: 36)
+        )
+    }
+
     func testReconnectDestroysExistingTiles() {
         let events = NSMutableArray()
         let (bridge, overlay) = makeBridge(events: events)
@@ -247,10 +344,11 @@ final class WebViewTileBridgeTests: XCTestCase {
     func testInspectUsesFixedScriptAndBoundArgumentsThenEmitsCorrelatedResult() throws {
         let events = NSMutableArray()
         let capture = ScriptCapture()
-        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, completion in
+        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, contentWorld, completion in
             capture.callCount += 1
             capture.script = script
             capture.arguments = arguments
+            capture.contentWorld = contentWorld
             capture.completion = completion
         }
         connect(bridge)
@@ -281,6 +379,8 @@ final class WebViewTileBridgeTests: XCTestCase {
 
         XCTAssertEqual(capture.callCount, 1)
         XCTAssertEqual(capture.script, WebViewTileProtocol.inspectAtPointScript)
+        XCTAssertTrue(capture.contentWorld === WKContentWorld.defaultClient)
+        XCTAssertTrue(WebViewTileProtocol.inspectAtPointScript.contains(#"`\\${char}`"#))
         XCTAssertEqual(capture.arguments?["inspectX"] as? Double, 12)
         XCTAssertEqual(capture.arguments?["inspectY"] as? Double, 34)
         XCTAssertEqual(capture.arguments?["inspectGrade"] as? String, "click")
@@ -301,12 +401,56 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(result["selector"] as? String, "#target")
     }
 
+    func testInspectionScriptRunsOutsidePageWorldOverrides() async throws {
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let window = NSWindow(
+            contentRect: webView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = webView
+        let waiter = WebViewLoadWaiter()
+        await waiter.loadHTML(
+            """
+            <!doctype html>
+            <style>html,body { margin: 0 } #target { width: 120px; height: 80px }</style>
+            <button id="target">Target</button>
+            <script>document.elementFromPoint = () => null;</script>
+            """,
+            in: webView
+        )
+
+        let scriptResult = WebViewScriptResult()
+        let scriptCompleted = expectation(description: "isolated inspection completed")
+        webView.callAsyncJavaScript(
+            WebViewTileProtocol.inspectAtPointScript,
+            arguments: ["inspectX": 10, "inspectY": 10, "inspectGrade": "click"],
+            in: nil,
+            in: .defaultClient
+        ) { result in
+            scriptResult.result = result
+            scriptCompleted.fulfill()
+        }
+        await fulfillment(of: [scriptCompleted], timeout: 2)
+
+        let value = try XCTUnwrap(scriptResult.result).get()
+        let result = try XCTUnwrap(value as? [String: Any])
+        XCTAssertEqual(result["ok"] as? Bool, true)
+        XCTAssertEqual(result["selector"] as? String, "#target")
+        XCTAssertEqual(result["text"] as? String, "Target")
+        webView.navigationDelegate = nil
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testDocumentRevisionSuppressesStaleInspectCompletion() throws {
         let events = NSMutableArray()
         let capture = ScriptCapture()
-        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, completion in
+        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, contentWorld, completion in
             capture.script = script
             capture.arguments = arguments
+            capture.contentWorld = contentWorld
             capture.completion = completion
         }
         connect(bridge)
@@ -346,13 +490,77 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(events.count, countBeforeCompletion)
     }
 
+    func testInspectionTimeoutExpiresNativeKeyAndSuppressesLateCompletion() async throws {
+        let events = NSMutableArray()
+        let capture = ScriptCapture()
+        let (bridge, overlay) = makeBridge(
+            events: events,
+            inspectionTimeout: .milliseconds(10)
+        ) { _, _, _, _, completion in
+            capture.callCount += 1
+            capture.completion = completion
+        }
+        connect(bridge)
+        bridge.receive(body: envelope(sequence: 2, type: "webview.attach", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "url": "https://example.com/",
+        ]))
+        let webView = try XCTUnwrap(
+            overlay.subviews
+                .compactMap { $0 as? WebViewTileHostView }
+                .first?
+                .subviews
+                .compactMap { $0 as? WKWebView }
+                .first
+        )
+        let tile = try XCTUnwrap(webView.navigationDelegate as? WebViewTile)
+        tile.webView(webView, didFinish: nil)
+        bridge.receive(body: envelope(sequence: 3, type: "webview.inspectAtPoint", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "requestId": "r-timeout",
+            "x": 1,
+            "y": 2,
+            "grade": "hover",
+        ]))
+        let lateCompletion = capture.completion
+
+        try await Task.sleep(for: .milliseconds(30))
+
+        let timeoutEvent = try XCTUnwrap(events.lastObject as? [String: Any])
+        let timeoutPayload = try XCTUnwrap(timeoutEvent["payload"] as? [String: Any])
+        let timeoutResult = try XCTUnwrap(timeoutPayload["result"] as? [String: Any])
+        XCTAssertEqual(timeoutPayload["requestId"] as? String, "r-timeout")
+        XCTAssertEqual(timeoutResult["ok"] as? Bool, false)
+        let countAfterTimeout = events.count
+        lateCompletion?(.success([
+            "ok": true,
+            "selector": "#late",
+            "tag": "div",
+            "rect": ["x": 1, "y": 2, "width": 3, "height": 4],
+        ]))
+        XCTAssertEqual(events.count, countAfterTimeout)
+
+        bridge.receive(body: envelope(sequence: 4, type: "webview.inspectAtPoint", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "requestId": "r-next",
+            "x": 1,
+            "y": 2,
+            "grade": "hover",
+        ]))
+        XCTAssertEqual(capture.callCount, 2)
+    }
+
     func testResolveSelectorsValidatesBoundsAndEmitsOnlyRequestedAnchors() throws {
         let events = NSMutableArray()
         let capture = ScriptCapture()
-        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, completion in
+        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, contentWorld, completion in
             capture.callCount += 1
             capture.script = script
             capture.arguments = arguments
+            capture.contentWorld = contentWorld
             capture.completion = completion
         }
         connect(bridge)
@@ -402,6 +610,63 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(payload["requestId"] as? String, "r2")
         XCTAssertEqual(payload["ok"] as? Bool, true)
         XCTAssertEqual((payload["anchors"] as? [[String: Any]])?.count, 1)
+    }
+
+    func testRejectsUnboundedAndNonPositivePageResultRectangles() throws {
+        let events = NSMutableArray()
+        let capture = ScriptCapture()
+        let (bridge, overlay) = makeBridge(events: events) { _, _, _, _, completion in
+            capture.completion = completion
+        }
+        connect(bridge)
+        bridge.receive(body: envelope(sequence: 2, type: "webview.attach", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "url": "https://example.com/",
+        ]))
+        let webView = try XCTUnwrap(
+            overlay.subviews
+                .compactMap { $0 as? WebViewTileHostView }
+                .first?
+                .subviews
+                .compactMap { $0 as? WKWebView }
+                .first
+        )
+        let tile = try XCTUnwrap(webView.navigationDelegate as? WebViewTile)
+        tile.webView(webView, didFinish: nil)
+
+        bridge.receive(body: envelope(sequence: 3, type: "webview.inspectAtPoint", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "requestId": "r-bad-inspect",
+            "x": 1,
+            "y": 2,
+            "grade": "click",
+        ]))
+        capture.completion?(.success([
+            "ok": true,
+            "selector": "#target",
+            "tag": "button",
+            "rect": ["x": 1, "y": 2, "width": 0, "height": 4],
+        ]))
+        var event = try XCTUnwrap(events.lastObject as? [String: Any])
+        var payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        let result = try XCTUnwrap(payload["result"] as? [String: Any])
+        XCTAssertEqual(result["ok"] as? Bool, false)
+
+        bridge.receive(body: envelope(sequence: 4, type: "webview.resolveSelectors", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "requestId": "r-bad-anchor",
+            "items": [["noteId": 7, "selector": "#target"]],
+        ]))
+        capture.completion?(.success([[
+            "noteId": 7,
+            "rect": ["x": 100_001, "y": 2, "width": 3, "height": 4],
+        ]]))
+        event = try XCTUnwrap(events.lastObject as? [String: Any])
+        payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        XCTAssertEqual(payload["ok"] as? Bool, false)
     }
 
     func testReviewInputPassesHitTestingThroughAndCleansUpOnExitAndDetach() throws {
@@ -462,10 +727,11 @@ final class WebViewTileBridgeTests: XCTestCase {
     func testReviewHighlightsUseBoundedNativeOverlayWithoutScriptEvaluation() throws {
         let events = NSMutableArray()
         let capture = ScriptCapture()
-        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, completion in
+        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, contentWorld, completion in
             capture.callCount += 1
             capture.script = script
             capture.arguments = arguments
+            capture.contentWorld = contentWorld
             capture.completion = completion
         }
         connect(bridge)
@@ -504,8 +770,25 @@ final class WebViewTileBridgeTests: XCTestCase {
         )])
         XCTAssertEqual(capture.callCount, 0)
 
+        tile.webView(webView, didStartProvisionalNavigation: nil)
+        XCTAssertTrue(tile.reviewOverlay.highlights.isEmpty)
+
         bridge.receive(body: envelope(
             sequence: 4,
+            type: "webview.presentReviewHighlights",
+            payload: [
+                "webPaneId": "w-abcd1234",
+                "attachmentId": "page-1:1",
+                "highlights": [[
+                    "kind": "response",
+                    "selected": true,
+                    "rect": ["x": 10, "y": 12, "width": 80, "height": 24],
+                ]],
+            ]
+        ))
+
+        bridge.receive(body: envelope(
+            sequence: 5,
             type: "webview.presentReviewHighlights",
             payload: [
                 "webPaneId": "w-abcd1234",

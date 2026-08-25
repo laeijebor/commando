@@ -294,7 +294,9 @@ function isImageAttachment(value: unknown): value is WebPaneImageAttachment {
 }
 
 /** A manual (element-annotation) note as submitted by the tile UI. */
-export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'deliveryKey' | 'revision' | 'pageUrl' | 'attachments'>
+export type PendingNoteInput = Omit<WebPanePendingNote, 'id' | 'deliveryKey' | 'revision' | 'pageUrl' | 'attachments'> & {
+  pageUrl?: string
+}
 
 export type PendingSendTarget = { id: number; revision: number }
 
@@ -408,12 +410,13 @@ export class WebPanePendingStore {
       throw new WebPaneError(429, `At most ${MAX_PENDING_NOTES} notes can be queued per tile`)
     }
     const id = state.nextId++
+    const { pageUrl = url, ...noteInput } = input
     const note: WebPanePendingNote = {
-      ...input,
+      ...noteInput,
       id,
       deliveryKey: pendingDeliveryKey(webPaneId, id),
       revision: 1,
-      pageUrl: url,
+      pageUrl,
       attachments: [],
     }
     state.notes.push(note)

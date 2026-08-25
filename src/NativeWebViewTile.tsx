@@ -46,6 +46,7 @@ export function NativeWebViewTile({
   const inputRef = useRef<HTMLDivElement>(null)
   const attachmentIdRef = useRef<string | null>(null)
   const [attachment, setAttachment] = useState<NativeWebViewAttachment | null>(null)
+  const [pageUrl, setPageUrl] = useState(webPane.url)
   const loadedRef = useRef(onLoaded)
   const fallbackRef = useRef(onFallback)
   const reviewFallbackRef = useRef(onReviewFallback)
@@ -64,10 +65,14 @@ export function NativeWebViewTile({
   useEffect(() => {
     let active = true
     let attachment
+    setPageUrl(webPane.url)
     try {
       attachment = bridge.attach(webPane.id, webPane.url, (event) => {
         if (!active) return
-        if (event.type === 'webview.loaded') loadedRef.current?.()
+        if (event.type === 'webview.loaded') {
+          if (event.url) setPageUrl(event.url)
+          loadedRef.current?.()
+        }
         if (event.type === 'webview.failed') fallbackRef.current()
       })
     } catch {
@@ -220,6 +225,7 @@ export function NativeWebViewTile({
       {pendingQueue && attachment && (
         <TileReviewLayer
           webPaneId={webPane.id}
+          pageUrl={pageUrl}
           reviewMode={reviewMode}
           active={reviewMode && attachment?.supportsReview === true}
           containerRef={slotRef}

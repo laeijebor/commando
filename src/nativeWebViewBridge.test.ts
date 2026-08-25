@@ -9,6 +9,7 @@ import {
   NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
   NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
   NativeWebViewBridge,
+  type NativeWebViewTileEvent,
   resetNativeWebViewBridge,
   getNativeWebViewBridge,
   hasNativeWebViewHandler,
@@ -189,6 +190,32 @@ describe('NativeWebViewBridge', () => {
       code: 'load_failed',
     })
     expect(events).toEqual([{ type: 'webview.failed', code: 'load_failed' }])
+  })
+
+  it('routes only bounded http(s) current URLs on loaded events', async () => {
+    installHandler([])
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge)
+    const events: NativeWebViewTileEvent[] = []
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', (event) => {
+      events.push(event)
+    })
+
+    receive(bridge, 2, 'webview.loaded', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      url: 'https://example.com/after-navigation',
+    })
+    receive(bridge, 3, 'webview.loaded', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      url: 'file:///etc/passwd',
+    })
+
+    expect(events).toEqual([
+      { type: 'webview.loaded', url: 'https://example.com/after-navigation' },
+      { type: 'webview.loaded' },
+    ])
   })
 
   it('ignores stale and mismatched events', async () => {

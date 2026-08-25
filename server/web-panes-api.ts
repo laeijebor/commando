@@ -7,7 +7,7 @@ import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
 import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from './web-pane-pending.js'
-import { WebPaneError, type WebPaneService } from './web-panes.js'
+import { classifyWebPaneUrl, WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -242,8 +242,8 @@ function parseNoteResponse(value: unknown): WebPaneFeedbackNote['response'] {
 
 /**
  * Validates a queued-note body ({note: {...}}) — a feedback note before it
- * has a pageUrl/capturedAt, plus the optional replace-key. Also accepts the
- * client's localStorage restore of a previously queued note.
+ * has capturedAt, plus an optional owner-stamped pageUrl and replace-key.
+ * Also accepts the client's localStorage restore of a previously queued note.
  */
 function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput {
   const raw = body.note
@@ -263,12 +263,20 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
     throw new HttpError(400, 'Note is malformed')
   }
   const response = parseNoteResponse(note.response)
+  let pageUrl: string | undefined
+  if (note.pageUrl !== undefined) {
+    if (typeof note.pageUrl !== 'string') throw new HttpError(400, 'pageUrl must be an http or https URL')
+    const decision = classifyWebPaneUrl(note.pageUrl, new Set())
+    if (decision.kind === 'invalid') throw new HttpError(400, `pageUrl ${decision.reason}`)
+    pageUrl = decision.url
+  }
   return {
     selector: note.selector,
     tag: note.tag,
     ...(note.text !== undefined ? { text: note.text } : {}),
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     comment: note.comment,
+    ...(pageUrl !== undefined ? { pageUrl } : {}),
     ...(note.queueKey !== undefined ? { queueKey: note.queueKey } : {}),
     ...(response !== undefined ? { response } : {}),
   }

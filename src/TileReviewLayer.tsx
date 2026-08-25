@@ -50,6 +50,7 @@ export type TileReviewHighlightPresentation = {
 
 export type TileReviewLayerProps = {
   webPaneId: string
+  pageUrl?: string
   reviewMode: boolean
   active: boolean
   containerRef: RefObject<HTMLElement | null>
@@ -275,6 +276,7 @@ function selectorBatch(notes: readonly WebPanePendingNote[]): TileSelectorResolv
 
 export function TileReviewLayer({
   webPaneId,
+  pageUrl,
   reviewMode,
   active,
   containerRef,
@@ -314,6 +316,15 @@ export function TileReviewLayer({
   const hoverGeneration = useRef(0)
   const clickGeneration = useRef(0)
   const anchorGeneration = useRef(0)
+
+  useEffect(() => {
+    hoverGeneration.current += 1
+    clickGeneration.current += 1
+    anchorGeneration.current += 1
+    setHighlight(null)
+    setCard(null)
+    setHint(null)
+  }, [pageUrl])
 
   const applySnapshot = (snapshot: WebPanePendingSnapshot, reconcile: DraftReconcile = {}): boolean => {
     const latestRevision = latestSnapshotRevisionRef.current
@@ -476,7 +487,8 @@ export function TileReviewLayer({
 
   const hoverThrottle = useRef<ReturnType<typeof createInspectThrottle> | null>(null)
   useEffect(() => {
-    if (!reviewMode) {
+    if (!reviewMode || !active) {
+      clickGeneration.current += 1
       setHighlight(null)
       setCard(null)
       setHint(null)
@@ -493,10 +505,11 @@ export function TileReviewLayer({
     hoverThrottle.current = throttle
     return () => {
       hoverGeneration.current += 1
+      clickGeneration.current += 1
       throttle.dispose()
       hoverThrottle.current = null
     }
-  }, [reviewMode, surface])
+  }, [active, reviewMode, surface])
 
   useEffect(() => {
     const input = inputRef.current
@@ -875,6 +888,7 @@ export function TileReviewLayer({
                     ...(text !== undefined ? { text } : {}),
                     rect,
                     comment: comment.trim(),
+                    ...(pageUrl ? { pageUrl } : {}),
                   }),
                   'Could not queue the note',
                 )

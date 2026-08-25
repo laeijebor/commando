@@ -34,6 +34,7 @@ enum WebViewTileProtocol {
     static let maxSelectorResolveItems = 50
     static let maxSelectorResolveBytes = 12 * 1_024
     static let maxPendingInspectionRequests = 32
+    static let inspectionTimeout: Duration = .seconds(5)
     static let maxReviewHighlights = maxSelectorResolveItems + 1
     /// Tile host views sort above the terminal surfaces in the shared overlay.
     static let hostOrderBase = 1_000
@@ -46,7 +47,7 @@ enum WebViewTileProtocol {
     const escapeCss = (value) =>
         typeof CSS !== "undefined" && typeof CSS.escape === "function"
             ? CSS.escape(value)
-            : value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\${char}`);
+            : value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\\\${char}`);
     const nthStep = (element) => {
         const tag = element.tagName.toLowerCase();
         const parent = element.parentElement;
@@ -131,6 +132,7 @@ typealias WebViewTileScriptEvaluator = @MainActor (
     WKWebView,
     String,
     [String: Any],
+    WKContentWorld,
     @escaping WebViewTileScriptCompletion
 ) -> Void
 
@@ -222,7 +224,7 @@ final class WebViewTileReviewOverlayView: NSView {
 }
 
 enum WebViewTileEvent {
-    case loaded
+    case loaded(url: String?)
     case failed(code: String)
 }
 
@@ -238,6 +240,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let scriptEvaluator: WebViewTileScriptEvaluator
     private let mask = CAShapeLayer()
     private let reviewMask = CAShapeLayer()
+    private var reviewHighlights: [WebViewTileReviewHighlight] = []
     private(set) var documentRevision = 0
     private(set) var isDocumentReady = false
 
@@ -297,7 +300,13 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func presentReviewHighlights(_ highlights: [WebViewTileReviewHighlight]) {
-        reviewOverlay.highlights = highlights
+        reviewHighlights = highlights
+        renderReviewHighlights()
+    }
+
+    func setZoomScale(_ scale: CGFloat) {
+        webView.pageZoom = scale
+        renderReviewHighlights()
     }
 
     func destroy() {
@@ -316,12 +325,29 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         arguments: [String: Any],
         completion: @escaping WebViewTileScriptCompletion
     ) {
-        scriptEvaluator(webView, script, arguments, completion)
+        scriptEvaluator(webView, script, arguments, .defaultClient, completion)
     }
 
     private func invalidateDocument() {
         documentRevision += 1
         isDocumentReady = false
+        presentReviewHighlights([])
+    }
+
+    private func renderReviewHighlights() {
+        let scale = webView.pageZoom
+        reviewOverlay.highlights = reviewHighlights.map { highlight in
+            WebViewTileReviewHighlight(
+                rect: CGRect(
+                    x: highlight.rect.origin.x * scale,
+                    y: highlight.rect.origin.y * scale,
+                    width: highlight.rect.width * scale,
+                    height: highlight.rect.height * scale
+                ),
+                kind: highlight.kind,
+                selected: highlight.selected
+            )
+        }
     }
 
     func webView(
@@ -341,7 +367,19 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     ) {
         documentRevision += 1
         isDocumentReady = true
-        eventSink(identity, .loaded)
+        let boundedURL = webView.url.flatMap { url -> String? in
+            guard let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  url.absoluteString.utf16.count <= WebViewTileProtocol.maxURLLength
+            else {
+                return nil
+            }
+            return url.absoluteString
+        }
+        eventSink(
+            identity,
+            .loaded(url: boundedURL)
+        )
     }
 
     func webView(
@@ -421,19 +459,21 @@ final class WebViewTileBridge: NSObject {
     private var lastSequence = 0
     private var eventSequence = 0
     private var tiles: [String: WebViewTile] = [:]
-    private var pendingInspectionRequests: Set<InspectionRequestKey> = []
+    private var pendingInspectionRequests: [InspectionRequestKey: Task<Void, Never>] = [:]
     private(set) var zoomScale: CGFloat = 1
+    private let inspectionTimeout: Duration
 
     init(
         webView: WKWebView?,
         overlay: TerminalOverlayView,
         externalURLHandler: (any ExternalURLHandling)? = nil,
-        scriptEvaluator: @escaping WebViewTileScriptEvaluator = { webView, script, arguments, completion in
+        inspectionTimeout: Duration = WebViewTileProtocol.inspectionTimeout,
+        scriptEvaluator: @escaping WebViewTileScriptEvaluator = { webView, script, arguments, contentWorld, completion in
             webView.callAsyncJavaScript(
                 script,
                 arguments: arguments,
                 in: nil,
-                in: .page,
+                in: contentWorld,
                 completionHandler: completion
             )
         },
@@ -442,6 +482,7 @@ final class WebViewTileBridge: NSObject {
         hostWebView = webView
         self.overlay = overlay
         self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
+        self.inspectionTimeout = inspectionTimeout
         self.scriptEvaluator = scriptEvaluator
         self.eventObserver = eventObserver
     }
@@ -525,6 +566,9 @@ final class WebViewTileBridge: NSObject {
             return
         }
         zoomScale = scale
+        for tile in tiles.values {
+            tile.setZoomScale(scale)
+        }
         reapplyFrames()
     }
 
@@ -571,15 +615,18 @@ final class WebViewTileBridge: NSObject {
             scriptEvaluator: scriptEvaluator
         ) { [weak self] identity, event in
             switch event {
-            case .loaded:
-                self?.emit(type: "webview.loaded", payload: [
+            case let .loaded(url):
+                var payload: [String: Any] = [
                     "webPaneId": identity.paneId,
                     "attachmentId": identity.attachmentId,
-                ])
+                ]
+                if let url { payload["url"] = url }
+                self?.emit(type: "webview.loaded", payload: payload)
             case let .failed(code):
                 self?.emitFailure(identity, code: code)
             }
         }
+        tile.setZoomScale(zoomScale)
         tile.hostView.frame = overlay.bounds
         tile.hostView.autoresizingMask = [.width, .height]
         tile.hostView.isHidden = true
@@ -616,7 +663,7 @@ final class WebViewTileBridge: NSObject {
             attachmentId: tile.identity.attachmentId,
             requestId: requestId
         )
-        guard !pendingInspectionRequests.contains(key) else { return }
+        guard pendingInspectionRequests[key] == nil else { return }
         guard pendingInspectionRequests.count < WebViewTileProtocol.maxPendingInspectionRequests else {
             emitInspectResult(
                 tile.identity,
@@ -625,9 +672,7 @@ final class WebViewTileBridge: NSObject {
             )
             return
         }
-        guard pendingInspectionRequests.insert(key).inserted else { return }
         guard tile.isDocumentReady, let requestPageId = pageId else {
-            pendingInspectionRequests.remove(key)
             emitInspectResult(
                 tile.identity,
                 requestId: requestId,
@@ -636,13 +681,33 @@ final class WebViewTileBridge: NSObject {
             return
         }
         let revision = tile.documentRevision
+        pendingInspectionRequests[key] = inspectionTimeoutTask { [weak self, weak tile] in
+            guard let self,
+                  self.pendingInspectionRequests.removeValue(forKey: key) != nil,
+                  self.pageId == requestPageId,
+                  let tile,
+                  self.tiles[tile.identity.attachmentId] === tile,
+                  tile.documentRevision == revision,
+                  tile.isDocumentReady
+            else {
+                return
+            }
+            self.emitInspectResult(
+                tile.identity,
+                requestId: requestId,
+                result: ["ok": false, "error": "Inspect timed out"]
+            )
+        }
         tile.evaluateInspection(
             script: WebViewTileProtocol.inspectAtPointScript,
             arguments: ["inspectX": x, "inspectY": y, "inspectGrade": grade]
         ) { [weak self, weak tile] result in
             guard let self else { return }
-            guard self.pendingInspectionRequests.remove(key) != nil,
-                  self.pageId == requestPageId,
+            guard let timeoutTask = self.pendingInspectionRequests.removeValue(forKey: key) else {
+                return
+            }
+            timeoutTask.cancel()
+            guard self.pageId == requestPageId,
                   let tile,
                   self.tiles[tile.identity.attachmentId] === tile,
                   tile.documentRevision == revision,
@@ -673,7 +738,7 @@ final class WebViewTileBridge: NSObject {
             attachmentId: tile.identity.attachmentId,
             requestId: requestId
         )
-        guard !pendingInspectionRequests.contains(key) else { return }
+        guard pendingInspectionRequests[key] == nil else { return }
         guard pendingInspectionRequests.count < WebViewTileProtocol.maxPendingInspectionRequests else {
             emitSelectorResult(
                 tile.identity,
@@ -682,9 +747,7 @@ final class WebViewTileBridge: NSObject {
             )
             return
         }
-        guard pendingInspectionRequests.insert(key).inserted else { return }
         guard tile.isDocumentReady, let requestPageId = pageId else {
-            pendingInspectionRequests.remove(key)
             emitSelectorResult(
                 tile.identity,
                 requestId: requestId,
@@ -694,13 +757,33 @@ final class WebViewTileBridge: NSObject {
         }
         let revision = tile.documentRevision
         let requestedNoteIds = Set(items.compactMap { ($0["noteId"] as? NSNumber)?.intValue })
+        pendingInspectionRequests[key] = inspectionTimeoutTask { [weak self, weak tile] in
+            guard let self,
+                  self.pendingInspectionRequests.removeValue(forKey: key) != nil,
+                  self.pageId == requestPageId,
+                  let tile,
+                  self.tiles[tile.identity.attachmentId] === tile,
+                  tile.documentRevision == revision,
+                  tile.isDocumentReady
+            else {
+                return
+            }
+            self.emitSelectorResult(
+                tile.identity,
+                requestId: requestId,
+                error: "Selector resolution timed out"
+            )
+        }
         tile.evaluateInspection(
             script: WebViewTileProtocol.resolveSelectorsScript,
             arguments: ["selectorItems": items]
         ) { [weak self, weak tile] result in
             guard let self else { return }
-            guard self.pendingInspectionRequests.remove(key) != nil,
-                  self.pageId == requestPageId,
+            guard let timeoutTask = self.pendingInspectionRequests.removeValue(forKey: key) else {
+                return
+            }
+            timeoutTask.cancel()
+            guard self.pageId == requestPageId,
                   let tile,
                   self.tiles[tile.identity.attachmentId] === tile,
                   tile.documentRevision == revision,
@@ -760,9 +843,7 @@ final class WebViewTileBridge: NSObject {
         else {
             return
         }
-        pendingInspectionRequests = pendingInspectionRequests.filter {
-            $0.attachmentId != identity.attachmentId
-        }
+        cancelPendingInspectionRequests(attachmentId: identity.attachmentId)
         tile.destroy()
         emit(type: "webview.detached", payload: [
             "webPaneId": identity.paneId,
@@ -947,7 +1028,13 @@ final class WebViewTileBridge: NSObject {
               let x = finiteDouble(rect["x"]),
               let y = finiteDouble(rect["y"]),
               let width = finiteDouble(rect["width"]),
-              let height = finiteDouble(rect["height"])
+              let height = finiteDouble(rect["height"]),
+              abs(x) <= WebViewTileProtocol.maxInspectionCoordinate,
+              abs(y) <= WebViewTileProtocol.maxInspectionCoordinate,
+              width > 0,
+              width <= WebViewTileProtocol.maxInspectionCoordinate,
+              height > 0,
+              height <= WebViewTileProtocol.maxInspectionCoordinate
         else {
             return nil
         }
@@ -1057,11 +1144,36 @@ final class WebViewTileBridge: NSObject {
     }
 
     private func destroyAllTiles() {
+        for task in pendingInspectionRequests.values {
+            task.cancel()
+        }
         pendingInspectionRequests.removeAll()
         for tile in tiles.values {
             tile.destroy()
         }
         tiles.removeAll()
+    }
+
+    private func inspectionTimeoutTask(
+        _ action: @escaping @MainActor @Sendable () -> Void
+    ) -> Task<Void, Never> {
+        let timeout = inspectionTimeout
+        return Task { @MainActor in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+    }
+
+    private func cancelPendingInspectionRequests(attachmentId: String) {
+        let keys = pendingInspectionRequests.keys.filter { $0.attachmentId == attachmentId }
+        for key in keys {
+            pendingInspectionRequests.removeValue(forKey: key)?.cancel()
+        }
     }
 
     private func sortOverlaySubviews() {
