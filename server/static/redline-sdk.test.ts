@@ -207,6 +207,66 @@ describe('redline-choice', () => {
   })
 })
 
+describe('resolved controls', () => {
+  it('renders the recorded answer instead of a live question', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro" resolved answer="Pro" answered-in="Round 2" note="cheaper"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.dataset.redlineResolved).toBe('1')
+    expect(host.querySelector('.redline-prompt')?.textContent).toBe('Which plan?')
+    expect(host.querySelector('.redline-resolved-answer')?.textContent).toBe('\u2713 Pro')
+    expect(host.querySelector('.redline-resolved-note')?.textContent).toBe('cheaper')
+    expect(host.querySelector('.redline-resolved-when')?.textContent).toBe('Round 2')
+    expect(host.querySelector('button.redline-queue')).toBeNull()
+    expect(host.querySelector('input')).toBeNull()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('renders one chip per answer for a multi-select', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="f" prompt="Keep which?" options="A,B,C" multiple resolved answer="A, C"></redline-choice>'
+    const chips = [...document.querySelectorAll('.redline-resolved-answer')].map((c) => c.textContent)
+    expect(chips).toEqual(['\u2713 A', '\u2713 C'])
+  })
+
+  it('reopens into a live control pre-filled with the recorded answer', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro" resolved answer="Pro" note="cheaper"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    ;(host.querySelector('button.redline-reopen') as HTMLButtonElement).click()
+    expect(host.hasAttribute('resolved')).toBe(false)
+    expect(host.dataset.redlineResolved).toBeUndefined()
+    const checked = host.querySelector('input:checked') as HTMLInputElement
+    expect(checked?.value).toBe('Pro')
+    expect((host.querySelector('.redline-comment') as HTMLTextAreaElement).value).toBe('cheaper')
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ answer: 'Pro', note: 'cheaper', queueKey: 'plan' })
+  })
+
+  it('restores a question\'s author fields on reopen', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-question key="cfg" prompt="Tune it" resolved answer="poll=30"><label>Poll <input name="poll" value="30"></label></redline-question>'
+    const host = document.querySelector('redline-question') as HTMLElement
+    expect(host.querySelector('input[name="poll"]')).toBeNull()
+    ;(host.querySelector('button.redline-reopen') as HTMLButtonElement).click()
+    expect((host.querySelector('input[name="poll"]') as HTMLInputElement)?.value).toBe('30')
+    expect(host.querySelector('button.redline-queue')).not.toBeNull()
+  })
+
+  it('omits the reopen button when locked', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-approve key="x" prompt="ok?" resolved answer="approve" locked></redline-approve>'
+    expect(document.querySelector('button.redline-reopen')).toBeNull()
+    expect(document.querySelector('.redline-resolved-when')?.textContent).toBe('Answered earlier')
+  })
+})
+
 describe('redline-approve', () => {
   it('queues verdict and optional note separately', () => {
     const calls = loadSdk()
@@ -657,6 +717,156 @@ describe('redline-nav', () => {
       ['Fitdo exchange', '#fitdo'],
     ])
     expect(links[0]?.getAttribute('aria-current')).toBe('location')
+  })
+
+  it('mirrors section status and counts open work', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Iteration"></redline-nav>
+        <main>
+          <section id="build" data-redline-section data-redline-status="open" data-redline-changed="r3"><h2>Build</h2></section>
+          <section id="structure" data-redline-section data-redline-status="decided"><h2>Structure</h2></section>
+          <section id="recall" data-redline-section data-redline-status="decided"><h2>Recall</h2></section>
+          <section id="log" data-redline-section><h2>Log</h2></section>
+        </main>
+      </div>`
+    await Promise.resolve()
+
+    const nav = document.querySelector('redline-nav') as HTMLElement
+    const links = [...nav.querySelectorAll('a')]
+    expect(links.map((link) => link.dataset.redlineStatus)).toEqual([
+      'open',
+      'decided',
+      'decided',
+      undefined,
+    ])
+    expect(links[0]?.dataset.redlineChanged).toBe('1')
+    expect(nav.querySelector('.redline-nav-counts')?.textContent).toBe('1 open \u00b7 2 decided \u00b7 1 new')
+  })
+
+  it('omits the tally when no section declares a status', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Plain"></redline-nav>
+        <main><section id="a" data-redline-section><h2>A</h2></section></main>
+      </div>`
+    await Promise.resolve()
+    expect(document.querySelector('.redline-nav-counts')).toBeNull()
+  })
+})
+
+describe('redline-tracks', () => {
+  const markup = `
+    <redline-tracks default="backend" label="Discussions"></redline-tracks>
+    <section id="req" data-redline-track="requirements" data-redline-track-label="Requirements" data-redline-status="open"><h2>Req</h2></section>
+    <section id="scope" data-redline-track="requirements" data-redline-status="decided"><h2>Scope</h2></section>
+    <section id="auth" data-redline-track="backend" data-redline-status="open"><h2>Auth</h2></section>
+    <section id="store" data-redline-track="backend" data-redline-status="open"><h2>Store</h2></section>
+    <section id="log" data-redline-track="requirements" data-redline-track-all><h2>Decision log</h2></section>`
+
+  it('builds one tab per track with open counts and honours default', async () => {
+    loadSdk()
+    document.body.innerHTML = markup
+    await Promise.resolve()
+
+    const tabs = [...document.querySelectorAll<HTMLElement>('button.redline-track-tab')]
+    expect(tabs.map((tab) => tab.dataset.redlineTrack)).toEqual(['requirements', 'backend'])
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Requirements1', 'backend2'])
+    expect(document.querySelector('[role="tablist"]')?.getAttribute('aria-label')).toBe('Discussions')
+    expect(tabs[1]?.dataset.redlineActive).toBe('1')
+    expect(tabs[1]?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('hides other tracks without removing them from the DOM', async () => {
+    loadSdk()
+    document.body.innerHTML = markup
+    await Promise.resolve()
+
+    const hidden = (id: string) =>
+      (document.getElementById(id) as HTMLElement).hasAttribute('data-redline-track-hidden')
+    expect(hidden('auth')).toBe(false)
+    expect(hidden('req')).toBe(true)
+    // still present, so a review note captured there resolves by selector
+    expect(document.querySelector('#req h2')?.textContent).toBe('Req')
+  })
+
+  it('keeps track-all sections visible on every tab', async () => {
+    loadSdk()
+    document.body.innerHTML = markup
+    await Promise.resolve()
+
+    const log = document.getElementById('log') as HTMLElement
+    expect(log.hasAttribute('data-redline-track-hidden')).toBe(false)
+    ;(document.querySelectorAll('button.redline-track-tab')[0] as HTMLButtonElement).click()
+    expect(log.hasAttribute('data-redline-track-hidden')).toBe(false)
+    expect((document.getElementById('req') as HTMLElement).hasAttribute('data-redline-track-hidden')).toBe(false)
+    expect((document.getElementById('auth') as HTMLElement).hasAttribute('data-redline-track-hidden')).toBe(true)
+  })
+
+  it('emits a track-change event on switch', async () => {
+    loadSdk()
+    document.body.innerHTML = markup
+    await Promise.resolve()
+
+    const seen: string[] = []
+    document.addEventListener('redline-track-change', (event) => {
+      seen.push((event as CustomEvent<{ track: string }>).detail.track)
+    })
+    ;(document.querySelectorAll('button.redline-track-tab')[0] as HTMLButtonElement).click()
+    expect(seen).toEqual(['requirements'])
+  })
+
+  it('falls back to the first track when default names an unknown one', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-tracks default="nope"></redline-tracks>
+      <section id="a" data-redline-track="alpha"><h2>A</h2></section>
+      <section id="b" data-redline-track="beta"><h2>B</h2></section>`
+    await Promise.resolve()
+    expect((document.querySelectorAll('button.redline-track-tab')[0] as HTMLElement).dataset.redlineActive).toBe('1')
+    expect((document.getElementById('b') as HTMLElement).hasAttribute('data-redline-track-hidden')).toBe(true)
+  })
+
+  it('keeps every tab visible when switching tracks', async () => {
+    loadSdk()
+    document.body.innerHTML = markup
+    await Promise.resolve()
+
+    const tabs = [...document.querySelectorAll('button.redline-track-tab')] as HTMLElement[]
+    ;(tabs[0] as HTMLButtonElement).click()
+    expect(tabs.map((tab) => tab.hasAttribute('data-redline-track-hidden'))).toEqual([false, false])
+  })
+
+  it('hides nav links whose track is not showing and retallies', async () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Tracks"></redline-nav>
+        <main>
+          <redline-tracks default="backend"></redline-tracks>
+          <section id="req" data-redline-section data-redline-track="requirements" data-redline-status="open"><h2>Req</h2></section>
+          <section id="auth" data-redline-section data-redline-track="backend" data-redline-status="open"><h2>Auth</h2></section>
+          <section id="store" data-redline-section data-redline-track="backend" data-redline-status="decided"><h2>Store</h2></section>
+        </main>
+      </div>`
+    await Promise.resolve()
+
+    const links = [...document.querySelectorAll('.redline-nav-links a')]
+    expect(links.map((link) => link.hasAttribute('data-redline-track-hidden'))).toEqual([true, false, false])
+    expect(document.querySelector('.redline-nav-counts')?.textContent).toBe('1 open \u00b7 1 decided')
+
+    ;(document.querySelectorAll('button.redline-track-tab')[0] as HTMLButtonElement).click()
+    expect(links.map((link) => link.hasAttribute('data-redline-track-hidden'))).toEqual([false, true, true])
+    expect(document.querySelector('.redline-nav-counts')?.textContent).toBe('1 open')
+  })
+
+  it('renders nothing when no section declares a track', async () => {
+    loadSdk()
+    document.body.innerHTML = '<redline-tracks></redline-tracks><section id="a"><h2>A</h2></section>'
+    await Promise.resolve()
+    expect(document.querySelector('.redline-tracks-strip')).toBeNull()
   })
 })
 

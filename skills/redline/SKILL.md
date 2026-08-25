@@ -143,6 +143,32 @@ comes from `data-redline-label`, then the section heading, then its id. Keep
 labels short and ordered exactly like the document. The first/current visible
 section receives `aria-current="location"` automatically.
 
+## Discussion tracks
+
+When one artifact holds several distinct conversations — requirements plus
+deep dives like backend architecture and UI — give each topic a
+`data-redline-track` and drop in the strip:
+
+```html
+<redline-tracks default="requirements" label="Discussions"></redline-tracks>
+
+<section id="auth" data-redline-section data-redline-track="backend"
+         data-redline-track-label="Backend" data-redline-status="open"> … </section>
+<section id="log" data-redline-section data-redline-track="requirements"
+         data-redline-track-all> … </section>
+```
+
+The strip renders one tab per track in document order, badged with that
+track's open-question count, and switches which sections show. A section
+marked `data-redline-track-all` (the decision log) stays visible on every
+tab, and `<redline-nav>` follows the active track so it never links to a
+section the user cannot see. Hidden tracks stay in the DOM, so a review note
+captured on one tab still resolves by selector after the user switches.
+
+`data-redline-track-label` on any section names its track; without one the
+raw track key is shown. Read `playbooks/iteration.md` for when to split a
+discussion into tracks at all.
+
 ## Image lightboxes
 
 Wrap review screenshots in `<redline-lightbox>` so they can be focused without
@@ -208,6 +234,12 @@ Discipline the agent must know:
 - For a custom control, call
   `window.redline.queueResponse({question, answer, note?, data?, queueKey?, element?})`
   directly.
+- A question the user has answered should be rewritten as settled rather than
+  left live: `<redline-choice key="plan" resolved answer="Pro"
+  answered-in="Round 2" note="…">` renders the recorded answer plus a
+  **Reopen** button that restores the live control pre-filled. Add `locked` to
+  drop the Reopen button. Multi-select answers keep the queued `"A, C"` form
+  and render one chip per value.
 
 Notes that carry a component answer have a `response: {question, answer,
 note?, data?}` field — prefer it over parsing `comment`.
@@ -230,6 +262,7 @@ plan and mockup playbooks; a mockup comparison also requires comparison.
 | `playbooks/plan.md` | product/technical plan for review |
 | `playbooks/mockup.md` | current or proposed product UI, screens, components, states |
 | `playbooks/input.md` | collecting decisions/choices/triage from the user |
+| `playbooks/iteration.md` | second round onward: settled vs live content, resolved controls |
 
 ## 2. Open for review
 
@@ -276,6 +309,12 @@ Send).
    edit the
    artifact section (or the real source behind the running page) that the
    selector points at.
+   From the second round onward this is not just an edit — read
+   `playbooks/iteration.md` and apply it: mark the section's
+   `data-redline-status`, stamp `data-redline-changed`, rewrite every answered
+   control as `resolved` with the answer you received, fold the previous
+   exchange into that topic's thread, and mirror the decision into the log.
+   An answered question left live and empty makes the user answer it twice.
    Each attachment has `{name, contentType, size, path}`. Fetch every needed
    `path` with the agent hook bearer token before the next poll acknowledges
    that batch and releases its image bytes.

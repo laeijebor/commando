@@ -296,9 +296,96 @@
   background: color-mix(in oklab, #d99124 14%, transparent);
   border-color: color-mix(in oklab, #d99124 40%, transparent);
 }
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] {
+  background: color-mix(in oklab, #2fbf71 6%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::before {
+  background: linear-gradient(135deg, color-mix(in oklab, #2fbf71 40%, transparent),
+              transparent 45%, color-mix(in oklab, #2fbf71 22%, transparent));
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::after {
+  background: radial-gradient(closest-side, color-mix(in oklab, #2fbf71 12%, transparent), transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] :where(.redline-prompt) {
+  opacity: .85; font-weight: 600;
+}
+:where(.redline-resolved-answers) {
+  display: flex; flex-wrap: wrap; gap: .4rem;
+}
+:where(.redline-resolved-answer) {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .4rem .85rem; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
+  background: color-mix(in oklab, #2fbf71 14%, transparent);
+  color: #2fbf71; font-weight: 650; font-size: .9rem;
+}
+:where(.redline-resolved-note) {
+  margin: .6rem 0 0; padding: .5rem .7rem; border-radius: 9px;
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  font-size: .85rem; opacity: .85;
+}
+:where(.redline-resolved-meta) {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
+  margin-top: .7rem; font-size: .78rem; opacity: .7;
+}
+:where(button.redline-reopen) {
+  padding: .3rem .7rem; cursor: pointer;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  border-radius: 8px; background: transparent; color: inherit;
+  font: inherit; font-size: .78rem;
+  transition: background .14s ease;
+}
+:where(button.redline-reopen:hover) {
+  background: color-mix(in oklab, currentColor 10%, transparent);
+}
 @keyframes redline-badge-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
+}
+:where(.redline-nav-links a[data-redline-status="open"])::after {
+  content: ""; flex: none; display: inline-block; width: 5px; height: 5px;
+  margin-left: .5rem; border-radius: 50%; vertical-align: middle;
+  background: var(--redline-accent, #7c6cf6);
+}
+:where(.redline-nav-links a[data-redline-status="decided"]) {
+  opacity: .72;
+}
+:where(.redline-nav-counts) {
+  margin: .35rem 0 0; font-size: .78rem; opacity: .7;
+}
+:where(redline-tracks) {
+  display: block; margin: 1.25rem 0;
+}
+:where(.redline-tracks-strip) {
+  display: flex; flex-wrap: wrap; gap: .35rem;
+}
+:where(button.redline-track-tab) {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .45rem .9rem; cursor: pointer;
+  border: 1px solid color-mix(in oklab, currentColor 16%, transparent);
+  border-radius: 10px; background: color-mix(in oklab, currentColor 5%, transparent);
+  color: inherit; font: inherit; font-size: .88rem;
+  transition: background .14s ease, border-color .14s ease;
+}
+:where(button.redline-track-tab:hover) {
+  background: color-mix(in oklab, currentColor 10%, transparent);
+}
+:where(button.redline-track-tab[data-redline-active]) {
+  border-color: color-mix(in oklab, var(--redline-accent, #7c6cf6) 55%, transparent);
+  background: color-mix(in oklab, var(--redline-accent, #7c6cf6) 16%, transparent);
+  font-weight: 650;
+}
+:where(.redline-track-count) {
+  padding: 0 .4rem; border-radius: 999px;
+  background: color-mix(in oklab, var(--redline-accent, #7c6cf6) 30%, transparent);
+  font-size: .72rem; font-weight: 700;
+}
+:where([data-redline-track-hidden]) {
+  display: none !important;
+}
+:where(.redline-nav-links a[data-redline-track-hidden]) {
+  display: none;
 }
 :where(redline-lightbox) {
   display: block;
@@ -517,10 +604,11 @@
       // the document is no longer 'loading' (or in tests, where innerHTML
       // parses the whole subtree upfront) children are already present and
       // render() runs immediately as before.
+      const start = () => this.renderForState()
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+        document.addEventListener('DOMContentLoaded', start, { once: true })
       } else {
-        this.render()
+        start()
       }
     }
     disconnectedCallback() {
@@ -592,6 +680,93 @@
     hydrate() {}
     draft() { return null }
     render() {}
+    /**
+     * A control the agent has marked settled renders its recorded answer
+     * instead of a live question, so a decision the user already sent stays
+     * visible in the box that asked it. The answer lives in the attributes
+     * the agent rewrites, so it survives reloads with no daemon retention.
+     */
+    renderForState() {
+      if (this.hasAttribute('resolved')) this.renderResolved()
+      else this.render()
+    }
+    resolvedAnswers() {
+      const answer = this.getAttribute('answer') || ''
+      // Multi-select queues its answer as `a, b` — split it back into chips.
+      return answer ? answer.split(', ').map((value) => value.trim()).filter(Boolean) : []
+    }
+    renderResolved() {
+      // Author children (a redline-question's own fields) are detached rather
+      // than dropped so Reopen can rebuild the live control exactly.
+      const stash = document.createDocumentFragment()
+      while (this.firstChild) stash.append(this.firstChild)
+      this._resolvedStash = stash
+      this.dataset.redlineResolved = '1'
+
+      const heading = promptHeading(this)
+      this.append(heading)
+
+      const answers = this.resolvedAnswers()
+      if (answers.length > 0) {
+        const list = document.createElement('div')
+        list.className = 'redline-resolved-answers'
+        for (const answer of answers) {
+          const chip = document.createElement('span')
+          chip.className = 'redline-resolved-answer'
+          chip.textContent = `\u2713 ${answer}`
+          list.append(chip)
+        }
+        this.append(list)
+      }
+
+      const noteText = this.getAttribute('note')
+      if (noteText) {
+        const note = document.createElement('p')
+        note.className = 'redline-resolved-note'
+        note.textContent = noteText
+        this.append(note)
+      }
+
+      const meta = document.createElement('div')
+      meta.className = 'redline-resolved-meta'
+      const when = document.createElement('span')
+      when.className = 'redline-resolved-when'
+      when.textContent = this.getAttribute('answered-in') || 'Answered earlier'
+      meta.append(when)
+      if (!this.hasAttribute('locked')) {
+        const reopen = document.createElement('button')
+        reopen.type = 'button'
+        reopen.className = 'redline-reopen'
+        reopen.textContent = this.getAttribute('reopen-label') || 'Reopen'
+        reopen.addEventListener('click', () => this.reopen())
+        meta.append(reopen)
+      }
+      this.append(meta)
+    }
+    /** Restores the live control, pre-filled with the recorded answer. */
+    reopen() {
+      this.removeAttribute('resolved')
+      delete this.dataset.redlineResolved
+      this.replaceChildren()
+      if (this._resolvedStash) {
+        this.append(this._resolvedStash)
+        this._resolvedStash = null
+      }
+      const answer = this.getAttribute('answer') || ''
+      const note = this.getAttribute('note') || ''
+      this.render()
+      if (answer) {
+        try {
+          this.hydrate({ question: this.prompt(), answer, note })
+        } catch (error) {
+          console.warn('redline: could not restore the recorded answer', error)
+        }
+      }
+      if (this._noteInput) this._noteInput.value = note
+      this._localBaseline = this.currentBaseline()
+      renderPendingState(this)
+      this.dispatchEvent(new CustomEvent('redline-reopen', { bubbles: true }))
+    }
   }
 
   class RedlineChoice extends RedlineElement {
@@ -1025,6 +1200,10 @@
     disconnectedCallback() {
       this._observer?.disconnect()
       this._observer = null
+      if (this._onTrackChange) {
+        document.removeEventListener('redline-track-change', this._onTrackChange)
+        this._onTrackChange = null
+      }
     }
 
     render() {
@@ -1075,12 +1254,62 @@
           section.getAttribute('data-redline-label') ||
           section.querySelector('h2, h3, h4')?.textContent?.trim() ||
           section.id.replace(/[-_]+/g, ' ')
+        // A multi-round review needs the open work to stand out from what is
+        // already settled, so the nav mirrors each section's status.
+        const status = section.getAttribute('data-redline-status')
+        if (status) link.dataset.redlineStatus = status
+        if (section.hasAttribute('data-redline-changed')) link.dataset.redlineChanged = '1'
         navigation.append(link)
         return link
       })
 
+      const counts = sections.reduce(
+        (totals, section) => {
+          const status = section.getAttribute('data-redline-status')
+          if (status === 'open') totals.open += 1
+          else if (status === 'decided') totals.decided += 1
+          if (section.hasAttribute('data-redline-changed')) totals.changed += 1
+          return totals
+        },
+        { open: 0, decided: 0, changed: 0 },
+      )
+      if (counts.open > 0 || counts.decided > 0) {
+        const tally = document.createElement('p')
+        tally.className = 'redline-nav-counts'
+        const parts = []
+        if (counts.open > 0) parts.push(`${counts.open} open`)
+        if (counts.decided > 0) parts.push(`${counts.decided} decided`)
+        if (counts.changed > 0) parts.push(`${counts.changed} new`)
+        tally.textContent = parts.join(' \u00b7 ')
+        brand.append(tally)
+      }
+
       this.replaceChildren(brand, navigation)
       if (links.length === 0) return
+
+      // A link to a section on a hidden track scrolls nowhere — follow the
+      // track strip so the nav only offers what is actually reachable.
+      const followTracks = () => {
+        let anyHidden = false
+        links.forEach((link, index) => {
+          const hidden = sections[index]?.hasAttribute('data-redline-track-hidden')
+          link.toggleAttribute('data-redline-track-hidden', Boolean(hidden))
+          if (hidden) anyHidden = true
+        })
+        if (!anyHidden) return
+        const tally = this.querySelector('.redline-nav-counts')
+        if (!tally) return
+        const visible = sections.filter((section) => !section.hasAttribute('data-redline-track-hidden'))
+        const open = visible.filter((s) => s.getAttribute('data-redline-status') === 'open').length
+        const decided = visible.filter((s) => s.getAttribute('data-redline-status') === 'decided').length
+        const parts = []
+        if (open > 0) parts.push(`${open} open`)
+        if (decided > 0) parts.push(`${decided} decided`)
+        tally.textContent = parts.join(' \u00b7 ')
+      }
+      followTracks()
+      this._onTrackChange = () => followTracks()
+      document.addEventListener('redline-track-change', this._onTrackChange)
       const activate = (id) => {
         for (const link of links) {
           if (decodeURIComponent(link.hash.slice(1)) === id) link.setAttribute('aria-current', 'location')
@@ -1102,6 +1331,110 @@
     }
   }
 
+  /**
+   * Tab strip over topics that declare data-redline-track, so a review holding
+   * several distinct discussions (requirements plus deep dives) reads as
+   * separate conversations without splitting into separate artifacts.
+   *
+   * Hidden tracks stay in the DOM: a review note captured on one tab must
+   * still resolve by selector after the user switches to another, and the
+   * decision log stays visible across every track via data-redline-track-all.
+   */
+  class RedlineTracks extends HTMLElement {
+    connectedCallback() {
+      if (this.dataset.redlineReady) return
+      this.dataset.redlineReady = '1'
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+      } else {
+        this.render()
+      }
+    }
+
+    trackedSections() {
+      // The strip's own tabs carry data-redline-track too — exclude anything
+      // inside this element, or switching tracks hides the other tabs.
+      return [...document.querySelectorAll('[data-redline-track]')].filter(
+        (section) => !this.contains(section),
+      )
+    }
+
+    render() {
+      const sections = this.trackedSections()
+      if (sections.length === 0) return
+      const order = []
+      const byTrack = new Map()
+      for (const section of sections) {
+        const track = section.getAttribute('data-redline-track') || ''
+        if (!track) continue
+        if (!byTrack.has(track)) {
+          byTrack.set(track, [])
+          order.push(track)
+        }
+        byTrack.get(track).push(section)
+      }
+      if (order.length === 0) return
+
+      const strip = document.createElement('div')
+      strip.className = 'redline-tracks-strip'
+      strip.setAttribute('role', 'tablist')
+      strip.setAttribute('aria-label', this.getAttribute('label') || 'Discussion tracks')
+
+      this._tabs = order.map((track) => {
+        const tab = document.createElement('button')
+        tab.type = 'button'
+        tab.className = 'redline-track-tab'
+        tab.setAttribute('role', 'tab')
+        tab.dataset.redlineTrack = track
+        const name = document.createElement('span')
+        name.textContent = this.trackLabel(track, byTrack.get(track))
+        tab.append(name)
+        const open = byTrack.get(track).filter(
+          (section) => section.getAttribute('data-redline-status') === 'open',
+        ).length
+        if (open > 0) {
+          const count = document.createElement('span')
+          count.className = 'redline-track-count'
+          count.textContent = String(open)
+          tab.append(count)
+        }
+        tab.addEventListener('click', () => this.activate(track))
+        strip.append(tab)
+        return tab
+      })
+
+      this.replaceChildren(strip)
+      const requested = this.getAttribute('default')
+      this.activate(order.includes(requested) ? requested : order[0])
+    }
+
+    /** A track's display name: an explicit label on any of its sections, else the raw key. */
+    trackLabel(track, sections) {
+      for (const section of sections) {
+        const label = section.getAttribute('data-redline-track-label')
+        if (label) return label
+      }
+      return track
+    }
+
+    activate(track) {
+      this._active = track
+      for (const section of this.trackedSections()) {
+        // Sections marked -track-all (the decision log) stay visible everywhere.
+        const shown = section.hasAttribute('data-redline-track-all') ||
+          section.getAttribute('data-redline-track') === track
+        section.toggleAttribute('data-redline-track-hidden', !shown)
+      }
+      for (const tab of this._tabs || []) {
+        const selected = tab.dataset.redlineTrack === track
+        tab.setAttribute('aria-selected', selected ? 'true' : 'false')
+        if (selected) tab.dataset.redlineActive = '1'
+        else delete tab.dataset.redlineActive
+      }
+      this.dispatchEvent(new CustomEvent('redline-track-change', { bubbles: true, detail: { track } }))
+    }
+  }
+
   // Guard against redefinition: the registry throws if this script ends up on
   // a page twice (or is re-evaluated, as tests do), and the tag names are the
   // only externally-visible contract — same name, same behavior, no reason to fail.
@@ -1115,4 +1448,5 @@
   defineOnce('redline-question', RedlineQuestion)
   defineOnce('redline-lightbox', RedlineLightbox)
   defineOnce('redline-nav', RedlineNav)
+  defineOnce('redline-tracks', RedlineTracks)
 })()
