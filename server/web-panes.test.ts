@@ -1,9 +1,14 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { MAX_WEB_PANES } from '../shared/protocol.js'
-import { WebPaneError, WebPaneService, classifyWebPaneUrl } from './web-panes.js'
+import { dirname, join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MAX_WEB_PANES, type WebPane } from '../shared/protocol.js'
+import {
+  WebPaneError,
+  WebPaneService,
+  classifyWebPaneUrl,
+  defaultWebPaneStatePath,
+} from './web-panes.js'
 
 const temporaryDirectories: string[] = []
 const services: WebPaneService[] = []
@@ -20,6 +25,7 @@ function track(service: WebPaneService): WebPaneService {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   // Persistence is queued asynchronously; settle it before deleting the
   // directories or an in-flight temp file races the rm.
   await Promise.all(services.splice(0).map((service) => service.flush()))
@@ -73,6 +79,18 @@ describe('classifyWebPaneUrl', () => {
 })
 
 describe('WebPaneService', () => {
+  it('scopes the default state path by tmux socket unless explicitly overridden', () => {
+    const homeDirectory = '/tmp/commando-home'
+    const legacy = defaultWebPaneStatePath({}, homeDirectory)
+    const first = defaultWebPaneStatePath({ COMMANDO_TMUX_SOCKET_NAME: 'first' }, homeDirectory)
+    const second = defaultWebPaneStatePath({ COMMANDO_TMUX_SOCKET_NAME: 'second' }, homeDirectory)
+    const byPath = defaultWebPaneStatePath({ COMMANDO_TMUX_SOCKET_PATH: '/tmp/tmux.sock' }, homeDirectory)
+
+    expect(new Set([legacy, first, second, byPath]).size).toBe(4)
+    expect(defaultWebPaneStatePath({ COMMANDO_WEB_PANES_PATH: '/tmp/custom.json' }, homeDirectory))
+      .toBe('/tmp/custom.json')
+  })
+
   it('opens localhost tiles immediately and external tiles as pending', async () => {
     const service = track(new WebPaneService(await temporaryStatePath(), () => 1_000))
     const local = service.open({ ...anchor, url: 'http://127.0.0.1:41300/plan' })
@@ -110,6 +128,40 @@ describe('WebPaneService', () => {
     await restored.load()
     expect(restored.list()).toHaveLength(2)
     expect(restored.open({ ...anchor, url: 'https://reactnative.dev/blog' }).status).toBe('open')
+  })
+
+  it('copies legacy state into an isolated registry without removing the source', async () => {
+    const legacyPath = await temporaryStatePath()
+    const isolatedPath = join(dirname(legacyPath), 'web-panes-isolated.json')
+    const pane: WebPane = {
+      id: 'w-0badcafe',
+      ...anchor,
+      url: 'http://localhost:5173/',
+      placement: 'right',
+      engine: 'chromium',
+      status: 'open',
+      createdAt: 42,
+    }
+    await writeFile(legacyPath, `${JSON.stringify({
+      version: 1,
+      allowedOrigins: [],
+      panes: [pane],
+    })}\n`)
+
+    const isolated = track(new WebPaneService(
+      isolatedPath,
+      Date.now,
+      legacyPath,
+      'name:isolated',
+    ))
+    await isolated.load()
+    await isolated.flush()
+
+    expect(isolated.get(pane.id)).toEqual(pane)
+    const copied = JSON.parse(await readFile(isolatedPath, 'utf8')) as { panes: WebPane[] }
+    const source = JSON.parse(await readFile(legacyPath, 'utf8')) as { panes: WebPane[] }
+    expect(copied.panes).toEqual([pane])
+    expect(source.panes).toEqual([pane])
   })
 
   it('rejects invalid urls, anchors, and enforces the pane cap', async () => {
@@ -178,19 +230,144 @@ describe('WebPaneService', () => {
     expect(() => service.confirm('w-00000000', true)).toThrow(WebPaneError)
   })
 
-  it('prunes tiles for dead windows and re-anchors when the anchor pane dies', async () => {
+  it('does not prune anything when every discovered window has no panes', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
-    const kept = service.open({ ...anchor, url: 'http://localhost:5173/' })
-    const dead = service.open({ ...anchor, windowId: '@9', url: 'http://localhost:5174/' })
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const windows = Array.from({ length: 23 }, (_, index) => ({
+      id: `@${index}`,
+      sessionId: '$1',
+      paneIds: [] as string[],
+    }))
 
-    const changed = service.prune([
-      { id: '@3', paneIds: ['%40', '%41'] },
-    ])
-    expect(changed).toBe(true)
-    const remaining = service.list()
-    expect(remaining).toHaveLength(1)
-    expect(remaining[0]).toMatchObject({ id: kept.id, anchorPaneId: '%40' })
-    expect(service.get(dead.id)).toBeUndefined()
+    expect(service.prune(windows)).toBe(false)
+    expect(service.get(pane.id)).toEqual(pane)
+    expect(warn).toHaveBeenCalledWith(
+      'web panes: skipped prune for degraded tmux snapshot (windows=23, panes=0)',
+    )
+  })
+
+  it('preserves panes in an empty window inside an otherwise healthy snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    expect(service.prune([
+      { id: '@3', sessionId: '$1', paneIds: [] },
+      { id: '@4', sessionId: '$1', paneIds: ['%40'] },
+    ])).toBe(false)
+    expect(service.get(pane.id)).toEqual(pane)
+  })
+
+  it('prunes a pane whose window is absent from a healthy snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, windowId: '@9', url: 'http://localhost:5174/' })
+
+    expect(service.prune([
+      { id: '@3', sessionId: '$1', paneIds: ['%40'] },
+    ])).toBe(true)
+    expect(service.get(pane.id)).toBeUndefined()
+  })
+
+  it('re-anchors a pane when its anchor dies but its window has surviving panes', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    expect(service.prune([
+      { id: '@3', sessionId: '$1', paneIds: ['%40', '%41'] },
+    ])).toBe(true)
+    expect(service.get(pane.id)).toMatchObject({ id: pane.id, anchorPaneId: '%40' })
+  })
+
+  it('prunes an owned pane when its whole session disappears', async () => {
+    const statePath = await temporaryStatePath()
+    const owner = track(new WebPaneService(
+      statePath,
+      Date.now,
+      undefined,
+      'name:first',
+    ))
+    const pane = owner.open({
+      ...anchor,
+      sessionId: '$18',
+      windowId: '@18',
+      url: 'http://localhost:5173/',
+      engine: 'chromium',
+    })
+    await owner.flush()
+    const restored = track(new WebPaneService(statePath, Date.now, undefined, 'name:first'))
+    await restored.load()
+    const remainingWindows = [
+      { id: '@1', sessionId: '$2', paneIds: ['%1'] },
+    ]
+
+    expect(restored.prune(remainingWindows)).toBe(true)
+    expect(restored.get(pane.id)).toBeUndefined()
+  })
+
+  it('does not prune a pane owned by another tmux socket', async () => {
+    const statePath = await temporaryStatePath()
+    const owner = track(new WebPaneService(statePath, Date.now, undefined, 'name:first'))
+    const pane = owner.open({
+      ...anchor,
+      sessionId: '$18',
+      windowId: '@18',
+      url: 'http://localhost:5173/',
+      engine: 'chromium',
+    })
+    await owner.flush()
+
+    const foreign = track(new WebPaneService(statePath, Date.now, undefined, 'name:second'))
+    await foreign.load()
+    expect(foreign.prune([{ id: '@1', sessionId: '$18', paneIds: ['%1'] }])).toBe(false)
+    expect(foreign.get(pane.id)).toEqual(pane)
+  })
+
+  it('does not prune an unstamped legacy pane when its session is absent', async () => {
+    const statePath = await temporaryStatePath()
+    await writeFile(statePath, `${JSON.stringify({
+      version: 1,
+      allowedOrigins: [],
+      panes: [{
+        id: 'w-0badcafe',
+        ...anchor,
+        sessionId: '$18',
+        windowId: '@18',
+        url: 'http://localhost:5173/',
+        placement: 'right',
+        engine: 'chromium',
+        status: 'open',
+        createdAt: 42,
+      }],
+    })}\n`)
+    const service = track(new WebPaneService(statePath, Date.now, undefined, 'name:first'))
+    await service.load()
+
+    expect(service.prune([{ id: '@1', sessionId: '$2', paneIds: ['%1'] }])).toBe(false)
+    expect(service.get('w-0badcafe')).toBeDefined()
+  })
+
+  it('keeps services with different state paths isolated', async () => {
+    const firstPath = await temporaryStatePath()
+    const secondPath = await temporaryStatePath()
+    const first = track(new WebPaneService(firstPath))
+    const second = track(new WebPaneService(secondPath))
+    const firstPane = first.open({ ...anchor, url: 'http://localhost:5173/' })
+    const secondPane = second.open({
+      ...anchor,
+      sessionId: '$2',
+      windowId: '@4',
+      url: 'http://localhost:5174/',
+    })
+    await Promise.all([first.flush(), second.flush()])
+
+    second.prune([{ id: '@4', sessionId: '$2', paneIds: ['%40'] }])
+    await second.flush()
+
+    const restoredFirst = track(new WebPaneService(firstPath))
+    const restoredSecond = track(new WebPaneService(secondPath))
+    await Promise.all([restoredFirst.load(), restoredSecond.load()])
+    expect(restoredFirst.list().map((pane) => pane.id)).toEqual([firstPane.id])
+    expect(restoredSecond.list().map((pane) => pane.id)).toEqual([secondPane.id])
   })
 
   it('resolves auto placement from the anchor size at open', async () => {
@@ -287,8 +464,12 @@ describe('WebPaneService', () => {
   it('does not prune anything from an empty snapshot', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
     service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     expect(service.prune([])).toBe(false)
     expect(service.list()).toHaveLength(1)
+    expect(warn).toHaveBeenCalledWith(
+      'web panes: skipped prune for degraded tmux snapshot (windows=0, panes=0)',
+    )
   })
 
   it('ignores a corrupt allowlist entry instead of failing the whole load', async () => {
