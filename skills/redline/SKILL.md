@@ -143,6 +143,32 @@ comes from `data-redline-label`, then the section heading, then its id. Keep
 labels short and ordered exactly like the document. The first/current visible
 section receives `aria-current="location"` automatically.
 
+## Discussion tracks
+
+When one artifact holds several distinct conversations — requirements plus
+deep dives like backend architecture and UI — give each topic a
+`data-redline-track` and drop in the strip:
+
+```html
+<redline-tracks default="requirements" label="Discussions"></redline-tracks>
+
+<section id="auth" data-redline-section data-redline-track="backend"
+         data-redline-track-label="Backend" data-redline-status="open"> … </section>
+<section id="log" data-redline-section data-redline-track="requirements"
+         data-redline-track-all> … </section>
+```
+
+The strip renders one tab per track in document order, badged with that
+track's open-question count, and switches which sections show. A section
+marked `data-redline-track-all` (the decision log) stays visible on every
+tab, and `<redline-nav>` follows the active track so it never links to a
+section the user cannot see. Hidden tracks stay in the DOM, so a review note
+captured on one tab still resolves by selector after the user switches.
+
+`data-redline-track-label` on any section names its track; without one the
+raw track key is shown. Read `playbooks/iteration.md` for when to split a
+discussion into tracks at all.
+
 ## Image lightboxes
 
 Wrap review screenshots in `<redline-lightbox>` so they can be focused without

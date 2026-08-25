@@ -101,9 +101,19 @@ across every track, so there is still one place that answers "what have we
 settled?".
 
 ```html
+<redline-tracks default="requirements" label="Discussions"></redline-tracks>
+
 <section id="auth-shape" data-redline-section data-redline-track="backend"
-         data-redline-status="open" data-redline-round="3">
+         data-redline-track-label="Backend" data-redline-status="open"
+         data-redline-round="3"> … </section>
+
+<section id="log" data-redline-section data-redline-track="requirements"
+         data-redline-track-all class="redline-log"> … </section>
 ```
+
+`<redline-tracks>` builds the strip from those attributes, counts each
+track's open questions, and keeps `data-redline-track-all` sections — the
+decision log — visible on every tab.
 
 Organise for the reader's cognitive load, not for tidiness. A hundred-screen
 scroll is hard to reason about, and so is a strip of twenty tabs — judge from

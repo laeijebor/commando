@@ -354,6 +354,39 @@
 :where(.redline-nav-counts) {
   margin: .35rem 0 0; font-size: .78rem; opacity: .7;
 }
+:where(redline-tracks) {
+  display: block; margin: 1.25rem 0;
+}
+:where(.redline-tracks-strip) {
+  display: flex; flex-wrap: wrap; gap: .35rem;
+}
+:where(button.redline-track-tab) {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .45rem .9rem; cursor: pointer;
+  border: 1px solid color-mix(in oklab, currentColor 16%, transparent);
+  border-radius: 10px; background: color-mix(in oklab, currentColor 5%, transparent);
+  color: inherit; font: inherit; font-size: .88rem;
+  transition: background .14s ease, border-color .14s ease;
+}
+:where(button.redline-track-tab:hover) {
+  background: color-mix(in oklab, currentColor 10%, transparent);
+}
+:where(button.redline-track-tab[data-redline-active]) {
+  border-color: color-mix(in oklab, var(--redline-accent, #7c6cf6) 55%, transparent);
+  background: color-mix(in oklab, var(--redline-accent, #7c6cf6) 16%, transparent);
+  font-weight: 650;
+}
+:where(.redline-track-count) {
+  padding: 0 .4rem; border-radius: 999px;
+  background: color-mix(in oklab, var(--redline-accent, #7c6cf6) 30%, transparent);
+  font-size: .72rem; font-weight: 700;
+}
+:where([data-redline-track-hidden]) {
+  display: none !important;
+}
+:where(.redline-nav-links a[data-redline-track-hidden]) {
+  display: none;
+}
 :where(redline-lightbox) {
   display: block;
 }
@@ -1167,6 +1200,10 @@
     disconnectedCallback() {
       this._observer?.disconnect()
       this._observer = null
+      if (this._onTrackChange) {
+        document.removeEventListener('redline-track-change', this._onTrackChange)
+        this._onTrackChange = null
+      }
     }
 
     render() {
@@ -1249,6 +1286,30 @@
 
       this.replaceChildren(brand, navigation)
       if (links.length === 0) return
+
+      // A link to a section on a hidden track scrolls nowhere — follow the
+      // track strip so the nav only offers what is actually reachable.
+      const followTracks = () => {
+        let anyHidden = false
+        links.forEach((link, index) => {
+          const hidden = sections[index]?.hasAttribute('data-redline-track-hidden')
+          link.toggleAttribute('data-redline-track-hidden', Boolean(hidden))
+          if (hidden) anyHidden = true
+        })
+        if (!anyHidden) return
+        const tally = this.querySelector('.redline-nav-counts')
+        if (!tally) return
+        const visible = sections.filter((section) => !section.hasAttribute('data-redline-track-hidden'))
+        const open = visible.filter((s) => s.getAttribute('data-redline-status') === 'open').length
+        const decided = visible.filter((s) => s.getAttribute('data-redline-status') === 'decided').length
+        const parts = []
+        if (open > 0) parts.push(`${open} open`)
+        if (decided > 0) parts.push(`${decided} decided`)
+        tally.textContent = parts.join(' \u00b7 ')
+      }
+      followTracks()
+      this._onTrackChange = () => followTracks()
+      document.addEventListener('redline-track-change', this._onTrackChange)
       const activate = (id) => {
         for (const link of links) {
           if (decodeURIComponent(link.hash.slice(1)) === id) link.setAttribute('aria-current', 'location')
@@ -1270,6 +1331,110 @@
     }
   }
 
+  /**
+   * Tab strip over topics that declare data-redline-track, so a review holding
+   * several distinct discussions (requirements plus deep dives) reads as
+   * separate conversations without splitting into separate artifacts.
+   *
+   * Hidden tracks stay in the DOM: a review note captured on one tab must
+   * still resolve by selector after the user switches to another, and the
+   * decision log stays visible across every track via data-redline-track-all.
+   */
+  class RedlineTracks extends HTMLElement {
+    connectedCallback() {
+      if (this.dataset.redlineReady) return
+      this.dataset.redlineReady = '1'
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+      } else {
+        this.render()
+      }
+    }
+
+    trackedSections() {
+      // The strip's own tabs carry data-redline-track too — exclude anything
+      // inside this element, or switching tracks hides the other tabs.
+      return [...document.querySelectorAll('[data-redline-track]')].filter(
+        (section) => !this.contains(section),
+      )
+    }
+
+    render() {
+      const sections = this.trackedSections()
+      if (sections.length === 0) return
+      const order = []
+      const byTrack = new Map()
+      for (const section of sections) {
+        const track = section.getAttribute('data-redline-track') || ''
+        if (!track) continue
+        if (!byTrack.has(track)) {
+          byTrack.set(track, [])
+          order.push(track)
+        }
+        byTrack.get(track).push(section)
+      }
+      if (order.length === 0) return
+
+      const strip = document.createElement('div')
+      strip.className = 'redline-tracks-strip'
+      strip.setAttribute('role', 'tablist')
+      strip.setAttribute('aria-label', this.getAttribute('label') || 'Discussion tracks')
+
+      this._tabs = order.map((track) => {
+        const tab = document.createElement('button')
+        tab.type = 'button'
+        tab.className = 'redline-track-tab'
+        tab.setAttribute('role', 'tab')
+        tab.dataset.redlineTrack = track
+        const name = document.createElement('span')
+        name.textContent = this.trackLabel(track, byTrack.get(track))
+        tab.append(name)
+        const open = byTrack.get(track).filter(
+          (section) => section.getAttribute('data-redline-status') === 'open',
+        ).length
+        if (open > 0) {
+          const count = document.createElement('span')
+          count.className = 'redline-track-count'
+          count.textContent = String(open)
+          tab.append(count)
+        }
+        tab.addEventListener('click', () => this.activate(track))
+        strip.append(tab)
+        return tab
+      })
+
+      this.replaceChildren(strip)
+      const requested = this.getAttribute('default')
+      this.activate(order.includes(requested) ? requested : order[0])
+    }
+
+    /** A track's display name: an explicit label on any of its sections, else the raw key. */
+    trackLabel(track, sections) {
+      for (const section of sections) {
+        const label = section.getAttribute('data-redline-track-label')
+        if (label) return label
+      }
+      return track
+    }
+
+    activate(track) {
+      this._active = track
+      for (const section of this.trackedSections()) {
+        // Sections marked -track-all (the decision log) stay visible everywhere.
+        const shown = section.hasAttribute('data-redline-track-all') ||
+          section.getAttribute('data-redline-track') === track
+        section.toggleAttribute('data-redline-track-hidden', !shown)
+      }
+      for (const tab of this._tabs || []) {
+        const selected = tab.dataset.redlineTrack === track
+        tab.setAttribute('aria-selected', selected ? 'true' : 'false')
+        if (selected) tab.dataset.redlineActive = '1'
+        else delete tab.dataset.redlineActive
+      }
+      this.dispatchEvent(new CustomEvent('redline-track-change', { bubbles: true, detail: { track } }))
+    }
+  }
+
   // Guard against redefinition: the registry throws if this script ends up on
   // a page twice (or is re-evaluated, as tests do), and the tag names are the
   // only externally-visible contract — same name, same behavior, no reason to fail.
@@ -1283,4 +1448,5 @@
   defineOnce('redline-question', RedlineQuestion)
   defineOnce('redline-lightbox', RedlineLightbox)
   defineOnce('redline-nav', RedlineNav)
+  defineOnce('redline-tracks', RedlineTracks)
 })()
