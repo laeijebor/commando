@@ -16,11 +16,120 @@ enum WebViewTileProtocol {
     static let handlerName = "commandoNativeWebView"
     static let version = 1
     static let maxTiles = 8
-    static let capabilities = ["webview.embed.v1"]
+    static let capabilities = [
+        "webview.embed.v1",
+        "webview.inspectAtPoint.v1",
+        "webview.resolveSelectors.v1",
+    ]
     static let maxURLLength = 2_048
+    static let maxRequestIdLength = 64
+    static let maxInspectionCoordinate = 100_000.0
+    static let maxSelectorLength = 1_024
+    static let maxInspectTagLength = 32
+    static let maxInspectTextLength = 512
+    static let maxInspectSnippetLength = 2_048
+    static let maxInspectErrorLength = 256
+    static let maxSelectorResolveItems = 50
+    static let maxSelectorResolveBytes = 12 * 1_024
+    static let maxPendingInspectionRequests = 32
     /// Tile host views sort above the terminal surfaces in the shared overlay.
     static let hostOrderBase = 1_000
+
+    // These bodies are fixed host code. Page-derived values enter only through
+    // callAsyncJavaScript argument binding, never through string interpolation.
+    static let inspectAtPointScript = """
+    const target = document.elementFromPoint(inspectX, inspectY);
+    if (!target) return { ok: false, error: "No element at this point" };
+    const escapeCss = (value) =>
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+            ? CSS.escape(value)
+            : value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\${char}`);
+    const nthStep = (element) => {
+        const tag = element.tagName.toLowerCase();
+        const parent = element.parentElement;
+        if (!parent) return tag;
+        const siblings = Array.prototype.filter.call(
+            parent.children,
+            (child) => child.tagName === element.tagName
+        );
+        return siblings.length === 1
+            ? tag
+            : `${tag}:nth-of-type(${siblings.indexOf(element) + 1})`;
+    };
+    const parts = [];
+    let element = target;
+    while (element && element.tagName.toLowerCase() !== "html") {
+        if (element.id) {
+            parts.unshift(`#${escapeCss(element.id)}`);
+            break;
+        }
+        const testId = element.getAttribute("data-testid");
+        if (testId) {
+            parts.unshift(`${element.tagName.toLowerCase()}[data-testid="${escapeCss(testId)}"]`);
+            break;
+        }
+        parts.unshift(nthStep(element));
+        element = element.parentElement;
+    }
+    const rect = target.getBoundingClientRect();
+    const result = {
+        ok: true,
+        selector: parts.join(" > ").slice(0, 1024),
+        tag: target.tagName.toLowerCase().slice(0, 32),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+    if (inspectGrade === "click") {
+        const text = (target.textContent || "").trim();
+        if (text) result.text = text.slice(0, 512);
+        result.snippet = target.outerHTML.slice(0, 2048);
+    }
+    return result;
+    """
+
+    static let resolveSelectorsScript = """
+    const anchors = [];
+    for (const item of selectorItems) {
+        if (anchors.length >= 50 || item.selector.startsWith("redline:")) continue;
+        let element = null;
+        try {
+            element = document.querySelector(item.selector);
+        } catch {
+            continue;
+        }
+        if (!element || !element.isConnected) continue;
+        const rect = element.getBoundingClientRect();
+        if (
+            !Number.isFinite(rect.x) || !Number.isFinite(rect.y) ||
+            !Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+            rect.width <= 0 || rect.height <= 0
+        ) continue;
+        const viewportWidth = document.documentElement.clientWidth;
+        const viewportHeight = document.documentElement.clientHeight;
+        const x = viewportWidth > 0 ? Math.max(0, rect.x) : rect.x;
+        const y = viewportHeight > 0 ? Math.max(0, rect.y) : rect.y;
+        const right = viewportWidth > 0
+            ? Math.min(viewportWidth, rect.x + rect.width)
+            : rect.x + rect.width;
+        const bottom = viewportHeight > 0
+            ? Math.min(viewportHeight, rect.y + rect.height)
+            : rect.y + rect.height;
+        if (right <= x || bottom <= y) continue;
+        anchors.push({
+            noteId: item.noteId,
+            rect: { x, y, width: right - x, height: bottom - y },
+        });
+    }
+    return anchors;
+    """
 }
+
+typealias WebViewTileScriptCompletion = @MainActor @Sendable (Result<Any, any Error>) -> Void
+typealias WebViewTileScriptEvaluator = @MainActor (
+    WKWebView,
+    String,
+    [String: Any],
+    @escaping WebViewTileScriptCompletion
+) -> Void
 
 @MainActor
 final class WebViewTileScriptMessageHandler: NSObject, WKScriptMessageHandler {
@@ -76,16 +185,21 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     private(set) var latestFrame: PaneFramePayload?
     private let externalURLHandler: any ExternalURLHandling
     private let eventSink: (PaneIdentity, WebViewTileEvent) -> Void
+    private let scriptEvaluator: WebViewTileScriptEvaluator
     private let mask = CAShapeLayer()
+    private(set) var documentRevision = 0
+    private(set) var isDocumentReady = false
 
     init(
         identity: PaneIdentity,
         url: URL,
         externalURLHandler: any ExternalURLHandling,
+        scriptEvaluator: @escaping WebViewTileScriptEvaluator,
         eventSink: @escaping (PaneIdentity, WebViewTileEvent) -> Void
     ) {
         self.identity = identity
         self.externalURLHandler = externalURLHandler
+        self.scriptEvaluator = scriptEvaluator
         self.eventSink = eventSink
         webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         super.init()
@@ -121,6 +235,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func destroy() {
+        invalidateDocument()
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -128,10 +243,36 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         hostView.removeFromSuperview()
     }
 
+    func evaluateInspection(
+        script: String,
+        arguments: [String: Any],
+        completion: @escaping WebViewTileScriptCompletion
+    ) {
+        scriptEvaluator(webView, script, arguments, completion)
+    }
+
+    private func invalidateDocument() {
+        documentRevision += 1
+        isDocumentReady = false
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didStartProvisionalNavigation navigation: WKNavigation!
+    ) {
+        invalidateDocument()
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        invalidateDocument()
+    }
+
     func webView(
         _ webView: WKWebView,
         didFinish navigation: WKNavigation!
     ) {
+        documentRevision += 1
+        isDocumentReady = true
         eventSink(identity, .loaded)
     }
 
@@ -173,37 +314,67 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: any Error
     ) {
+        invalidateDocument()
+        if (error as NSError).code != NSURLErrorCancelled {
+            eventSink(identity, .failed(code: "load_failed"))
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFail navigation: WKNavigation!,
+        withError error: any Error
+    ) {
+        invalidateDocument()
         if (error as NSError).code != NSURLErrorCancelled {
             eventSink(identity, .failed(code: "load_failed"))
         }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        invalidateDocument()
         eventSink(identity, .failed(code: "content_process_terminated"))
     }
 }
 
 @MainActor
 final class WebViewTileBridge: NSObject {
+    private struct InspectionRequestKey: Hashable {
+        let attachmentId: String
+        let requestId: String
+    }
+
     private weak var hostWebView: WKWebView?
     private let overlay: TerminalOverlayView
     private let externalURLHandler: any ExternalURLHandling
     private let eventObserver: (([String: Any]) -> Void)?
+    private let scriptEvaluator: WebViewTileScriptEvaluator
     private var pageId: String?
     private var lastSequence = 0
     private var eventSequence = 0
     private var tiles: [String: WebViewTile] = [:]
+    private var pendingInspectionRequests: Set<InspectionRequestKey> = []
     private(set) var zoomScale: CGFloat = 1
 
     init(
         webView: WKWebView?,
         overlay: TerminalOverlayView,
         externalURLHandler: (any ExternalURLHandling)? = nil,
+        scriptEvaluator: @escaping WebViewTileScriptEvaluator = { webView, script, arguments, completion in
+            webView.callAsyncJavaScript(
+                script,
+                arguments: arguments,
+                in: nil,
+                in: .page,
+                completionHandler: completion
+            )
+        },
         eventObserver: (([String: Any]) -> Void)? = nil
     ) {
         hostWebView = webView
         self.overlay = overlay
         self.externalURLHandler = externalURLHandler ?? SafeExternalURLHandler()
+        self.scriptEvaluator = scriptEvaluator
         self.eventObserver = eventObserver
     }
 
@@ -244,6 +415,10 @@ final class WebViewTileBridge: NSObject {
             applyFrame(payload)
         case "webview.reload":
             tile(for: payload)?.reload()
+        case "webview.inspectAtPoint":
+            inspectAtPoint(payload)
+        case "webview.resolveSelectors":
+            resolveSelectors(payload)
         case "webview.detach":
             detach(payload)
         default:
@@ -320,7 +495,8 @@ final class WebViewTileBridge: NSObject {
         let tile = WebViewTile(
             identity: identity,
             url: url,
-            externalURLHandler: externalURLHandler
+            externalURLHandler: externalURLHandler,
+            scriptEvaluator: scriptEvaluator
         ) { [weak self] identity, event in
             switch event {
             case .loaded:
@@ -354,16 +530,337 @@ final class WebViewTileBridge: NSObject {
         sortOverlaySubviews()
     }
 
+    private func inspectAtPoint(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload),
+              let requestId = requestId(from: payload),
+              let x = boundedInspectionCoordinate(payload["x"]),
+              let y = boundedInspectionCoordinate(payload["y"]),
+              let grade = payload["grade"] as? String,
+              grade == "hover" || grade == "click"
+        else {
+            return
+        }
+        let key = InspectionRequestKey(
+            attachmentId: tile.identity.attachmentId,
+            requestId: requestId
+        )
+        guard !pendingInspectionRequests.contains(key) else { return }
+        guard pendingInspectionRequests.count < WebViewTileProtocol.maxPendingInspectionRequests else {
+            emitInspectResult(
+                tile.identity,
+                requestId: requestId,
+                result: ["ok": false, "error": "Too many pending inspections"]
+            )
+            return
+        }
+        guard pendingInspectionRequests.insert(key).inserted else { return }
+        guard tile.isDocumentReady, let requestPageId = pageId else {
+            pendingInspectionRequests.remove(key)
+            emitInspectResult(
+                tile.identity,
+                requestId: requestId,
+                result: ["ok": false, "error": "Document is not ready"]
+            )
+            return
+        }
+        let revision = tile.documentRevision
+        tile.evaluateInspection(
+            script: WebViewTileProtocol.inspectAtPointScript,
+            arguments: ["inspectX": x, "inspectY": y, "inspectGrade": grade]
+        ) { [weak self, weak tile] result in
+            guard let self else { return }
+            guard self.pendingInspectionRequests.remove(key) != nil,
+                  self.pageId == requestPageId,
+                  let tile,
+                  self.tiles[tile.identity.attachmentId] === tile,
+                  tile.documentRevision == revision,
+                  tile.isDocumentReady
+            else {
+                return
+            }
+            let parsed: [String: Any]
+            switch result {
+            case let .success(value):
+                parsed = self.inspectResult(from: value)
+                    ?? ["ok": false, "error": "Page returned an invalid inspect result"]
+            case .failure:
+                parsed = ["ok": false, "error": "Inspect failed"]
+            }
+            self.emitInspectResult(tile.identity, requestId: requestId, result: parsed)
+        }
+    }
+
+    private func resolveSelectors(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload),
+              let requestId = requestId(from: payload),
+              let items = selectorItems(from: payload["items"])
+        else {
+            return
+        }
+        let key = InspectionRequestKey(
+            attachmentId: tile.identity.attachmentId,
+            requestId: requestId
+        )
+        guard !pendingInspectionRequests.contains(key) else { return }
+        guard pendingInspectionRequests.count < WebViewTileProtocol.maxPendingInspectionRequests else {
+            emitSelectorResult(
+                tile.identity,
+                requestId: requestId,
+                error: "Too many pending inspections"
+            )
+            return
+        }
+        guard pendingInspectionRequests.insert(key).inserted else { return }
+        guard tile.isDocumentReady, let requestPageId = pageId else {
+            pendingInspectionRequests.remove(key)
+            emitSelectorResult(
+                tile.identity,
+                requestId: requestId,
+                error: "Document is not ready"
+            )
+            return
+        }
+        let revision = tile.documentRevision
+        let requestedNoteIds = Set(items.compactMap { ($0["noteId"] as? NSNumber)?.intValue })
+        tile.evaluateInspection(
+            script: WebViewTileProtocol.resolveSelectorsScript,
+            arguments: ["selectorItems": items]
+        ) { [weak self, weak tile] result in
+            guard let self else { return }
+            guard self.pendingInspectionRequests.remove(key) != nil,
+                  self.pageId == requestPageId,
+                  let tile,
+                  self.tiles[tile.identity.attachmentId] === tile,
+                  tile.documentRevision == revision,
+                  tile.isDocumentReady
+            else {
+                return
+            }
+            switch result {
+            case let .success(value):
+                guard let anchors = self.selectorAnchors(
+                    from: value,
+                    requestedNoteIds: requestedNoteIds
+                ) else {
+                    self.emitSelectorResult(
+                        tile.identity,
+                        requestId: requestId,
+                        error: "Page returned invalid selector anchors"
+                    )
+                    return
+                }
+                self.emit(type: "webview.resolveSelectors.result", payload: [
+                    "webPaneId": tile.identity.paneId,
+                    "attachmentId": tile.identity.attachmentId,
+                    "requestId": requestId,
+                    "ok": true,
+                    "anchors": anchors,
+                ])
+            case .failure:
+                self.emitSelectorResult(
+                    tile.identity,
+                    requestId: requestId,
+                    error: "Selector resolution failed"
+                )
+            }
+        }
+    }
+
     private func detach(_ payload: [String: Any]) {
         guard let identity = identity(from: payload),
               let tile = tiles.removeValue(forKey: identity.attachmentId)
         else {
             return
         }
+        pendingInspectionRequests = pendingInspectionRequests.filter {
+            $0.attachmentId != identity.attachmentId
+        }
         tile.destroy()
         emit(type: "webview.detached", payload: [
             "webPaneId": identity.paneId,
             "attachmentId": identity.attachmentId,
+        ])
+    }
+
+    private func requestId(from payload: [String: Any]) -> String? {
+        guard let requestId = payload["requestId"] as? String,
+              !requestId.isEmpty,
+              requestId.utf16.count <= WebViewTileProtocol.maxRequestIdLength,
+              requestId.range(
+                  of: "^[a-zA-Z0-9_-]+$",
+                  options: .regularExpression
+              ) != nil
+        else {
+            return nil
+        }
+        return requestId
+    }
+
+    private func boundedInspectionCoordinate(_ value: Any?) -> Double? {
+        guard !(value is Bool),
+              let number = value as? NSNumber,
+              number.doubleValue.isFinite,
+              (0...WebViewTileProtocol.maxInspectionCoordinate).contains(number.doubleValue)
+        else {
+            return nil
+        }
+        return number.doubleValue
+    }
+
+    private func selectorItems(from value: Any?) -> [[String: Any]]? {
+        guard let rawItems = value as? [[String: Any]],
+              !rawItems.isEmpty,
+              rawItems.count <= WebViewTileProtocol.maxSelectorResolveItems
+        else {
+            return nil
+        }
+        var items: [[String: Any]] = []
+        var noteIds: Set<Int> = []
+        for rawItem in rawItems {
+            guard !(rawItem["noteId"] is Bool),
+                  let noteNumber = rawItem["noteId"] as? NSNumber,
+                  noteNumber.doubleValue.isFinite,
+                  noteNumber.doubleValue.rounded() == noteNumber.doubleValue,
+                  noteNumber.doubleValue > 0,
+                  noteNumber.doubleValue <= 9_007_199_254_740_991,
+                  let noteId = Int(exactly: noteNumber.int64Value),
+                  noteIds.insert(noteId).inserted,
+                  let selector = rawItem["selector"] as? String,
+                  !selector.isEmpty,
+                  selector.utf16.count <= WebViewTileProtocol.maxSelectorLength
+            else {
+                return nil
+            }
+            items.append(["noteId": noteId, "selector": selector])
+        }
+        guard let encoded = try? JSONSerialization.data(withJSONObject: items),
+              encoded.count <= WebViewTileProtocol.maxSelectorResolveBytes
+        else {
+            return nil
+        }
+        return items
+    }
+
+    private func inspectResult(from value: Any?) -> [String: Any]? {
+        guard let result = value as? [String: Any], let ok = result["ok"] as? Bool else {
+            return nil
+        }
+        if !ok {
+            guard let error = result["error"] as? String else { return nil }
+            return [
+                "ok": false,
+                "error": clipped(error, length: WebViewTileProtocol.maxInspectErrorLength),
+            ]
+        }
+        guard let selector = result["selector"] as? String,
+              !selector.isEmpty,
+              let tag = result["tag"] as? String,
+              !tag.isEmpty,
+              let rect = inspectionRect(from: result["rect"]),
+              result["text"] == nil || result["text"] is String,
+              result["snippet"] == nil || result["snippet"] is String
+        else {
+            return nil
+        }
+        var parsed: [String: Any] = [
+            "ok": true,
+            "selector": clipped(selector, length: WebViewTileProtocol.maxSelectorLength),
+            "tag": clipped(tag, length: WebViewTileProtocol.maxInspectTagLength),
+            "rect": rect,
+        ]
+        if let text = result["text"] as? String {
+            parsed["text"] = clipped(text, length: WebViewTileProtocol.maxInspectTextLength)
+        }
+        if let snippet = result["snippet"] as? String {
+            parsed["snippet"] = clipped(
+                snippet,
+                length: WebViewTileProtocol.maxInspectSnippetLength
+            )
+        }
+        return parsed
+    }
+
+    private func selectorAnchors(
+        from value: Any?,
+        requestedNoteIds: Set<Int>
+    ) -> [[String: Any]]? {
+        guard let rawAnchors = value as? [[String: Any]],
+              rawAnchors.count <= WebViewTileProtocol.maxSelectorResolveItems
+        else {
+            return nil
+        }
+        var anchors: [[String: Any]] = []
+        var seen: Set<Int> = []
+        for rawAnchor in rawAnchors {
+            guard !(rawAnchor["noteId"] is Bool),
+                  let noteNumber = rawAnchor["noteId"] as? NSNumber,
+                  noteNumber.doubleValue.rounded() == noteNumber.doubleValue,
+                  let noteId = Int(exactly: noteNumber.int64Value),
+                  noteId > 0,
+                  requestedNoteIds.contains(noteId),
+                  seen.insert(noteId).inserted,
+                  let rect = inspectionRect(from: rawAnchor["rect"]),
+                  let width = rect["width"] as? Double,
+                  let height = rect["height"] as? Double,
+                  width > 0,
+                  height > 0
+            else {
+                return nil
+            }
+            anchors.append(["noteId": noteId, "rect": rect])
+        }
+        return anchors
+    }
+
+    private func inspectionRect(from value: Any?) -> [String: Any]? {
+        guard let rect = value as? [String: Any],
+              let x = finiteDouble(rect["x"]),
+              let y = finiteDouble(rect["y"]),
+              let width = finiteDouble(rect["width"]),
+              let height = finiteDouble(rect["height"])
+        else {
+            return nil
+        }
+        return ["x": x, "y": y, "width": width, "height": height]
+    }
+
+    private func finiteDouble(_ value: Any?) -> Double? {
+        guard !(value is Bool), let number = value as? NSNumber, number.doubleValue.isFinite else {
+            return nil
+        }
+        return number.doubleValue
+    }
+
+    private func clipped(_ value: String, length: Int) -> String {
+        let string = value as NSString
+        return string.substring(to: min(string.length, length))
+    }
+
+    private func emitInspectResult(
+        _ identity: PaneIdentity,
+        requestId: String,
+        result: [String: Any]
+    ) {
+        emit(type: "webview.inspectAtPoint.result", payload: [
+            "webPaneId": identity.paneId,
+            "attachmentId": identity.attachmentId,
+            "requestId": requestId,
+            "result": result,
+        ])
+    }
+
+    private func emitSelectorResult(
+        _ identity: PaneIdentity,
+        requestId: String,
+        error: String
+    ) {
+        emit(type: "webview.resolveSelectors.result", payload: [
+            "webPaneId": identity.paneId,
+            "attachmentId": identity.attachmentId,
+            "requestId": requestId,
+            "ok": false,
+            "error": clipped(error, length: WebViewTileProtocol.maxInspectErrorLength),
+            "anchors": [],
         ])
     }
 
@@ -430,6 +927,7 @@ final class WebViewTileBridge: NSObject {
     }
 
     private func destroyAllTiles() {
+        pendingInspectionRequests.removeAll()
         for tile in tiles.values {
             tile.destroy()
         }

@@ -3,7 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  NATIVE_WEBVIEW_INSPECT_CAPABILITY,
   NATIVE_WEBVIEW_PROTOCOL,
+  NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
   NativeWebViewBridge,
   resetNativeWebViewBridge,
   getNativeWebViewBridge,
@@ -35,10 +37,13 @@ function receive(bridge: NativeWebViewBridge, eventSequence: number, type: strin
   })
 }
 
-async function connect(bridge: NativeWebViewBridge) {
+async function connect(
+  bridge: NativeWebViewBridge,
+  capabilities = ['webview.embed.v1'],
+) {
   const pending = bridge.connect()
   receive(bridge, 1, 'bridge.connected', {
-    capabilities: ['webview.embed.v1'],
+    capabilities,
     maxWebViews: 4,
   })
   await expect(pending).resolves.toMatchObject({ available: true, maxWebViews: 4 })
@@ -98,6 +103,17 @@ describe('NativeWebViewBridge', () => {
       available: false,
       reason: 'missing-capabilities',
     })
+  })
+
+  it('keeps inspection capabilities optional during negotiation', async () => {
+    installHandler([])
+    const bridge = new NativeWebViewBridge()
+    const pending = bridge.connect()
+    receive(bridge, 1, 'bridge.connected', {
+      capabilities: ['webview.embed.v1'],
+      maxWebViews: 1,
+    })
+    await expect(pending).resolves.toMatchObject({ available: true })
   })
 
   it('attaches, frames, reloads, and detaches a tile', async () => {
@@ -211,5 +227,134 @@ describe('NativeWebViewBridge', () => {
       resizeOwner: false,
       order: 0,
     })).toBe(false)
+  })
+
+  it('correlates and parses inspect and selector-resolution results', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge, [
+      'webview.embed.v1',
+      NATIVE_WEBVIEW_INSPECT_CAPABILITY,
+      NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
+    ])
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+
+    const inspect = attachment.inspectAtPoint(12, 34, 'click')
+    const inspectMessage = messages.at(-1)!
+    expect(inspectMessage).toMatchObject({
+      type: 'webview.inspectAtPoint',
+      payload: { x: 12, y: 34, grade: 'click' },
+    })
+    const inspectRequestId = (inspectMessage.payload as Record<string, unknown>).requestId
+    receive(bridge, 2, 'webview.inspectAtPoint.result', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      requestId: inspectRequestId,
+      result: {
+        ok: true,
+        selector: '#target',
+        tag: 'button',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+        text: 'Target',
+      },
+    })
+    await expect(inspect).resolves.toEqual({
+      ok: true,
+      selector: '#target',
+      tag: 'button',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+      text: 'Target',
+    })
+
+    const resolved = attachment.resolveSelectors([{ noteId: 7, selector: '#target' }])
+    const resolveMessage = messages.at(-1)!
+    expect(resolveMessage).toMatchObject({
+      type: 'webview.resolveSelectors',
+      payload: { items: [{ noteId: 7, selector: '#target' }] },
+    })
+    const resolveRequestId = (resolveMessage.payload as Record<string, unknown>).requestId
+    receive(bridge, 3, 'webview.resolveSelectors.result', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      requestId: resolveRequestId,
+      ok: true,
+      anchors: [{ noteId: 7, rect: { x: 5, y: 6, width: 7, height: 8 } }],
+    })
+    await expect(resolved).resolves.toEqual([
+      { noteId: 7, rect: { x: 5, y: 6, width: 7, height: 8 } },
+    ])
+  })
+
+  it('rejects unsupported and malformed inspection requests before posting', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge)
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+    const count = messages.length
+
+    await expect(attachment.inspectAtPoint(1, 2, 'hover')).rejects.toThrow('not supported')
+    await expect(attachment.resolveSelectors([{ noteId: 1, selector: '#target' }]))
+      .rejects.toThrow('not supported')
+    expect(messages).toHaveLength(count)
+  })
+
+  it('bounds selector batches and rejects pending work when detached', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge, [
+      'webview.embed.v1',
+      NATIVE_WEBVIEW_INSPECT_CAPABILITY,
+      NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
+    ])
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+
+    await expect(attachment.inspectAtPoint(-1, 2, 'hover')).rejects.toThrow('Invalid')
+    await expect(attachment.resolveSelectors([
+      { noteId: 1, selector: '#one' },
+      { noteId: 1, selector: '#duplicate' },
+    ])).rejects.toThrow('Invalid')
+    await expect(attachment.resolveSelectors([
+      { noteId: 2, selector: 'x'.repeat(1_025) },
+    ])).rejects.toThrow('Invalid')
+
+    const pending = attachment.inspectAtPoint(1, 2, 'hover')
+    attachment.detach()
+    await expect(pending).rejects.toThrow('detached')
+  })
+
+  it('rejects invalid or unrequested correlated results', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge, [
+      'webview.embed.v1',
+      NATIVE_WEBVIEW_INSPECT_CAPABILITY,
+      NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
+    ])
+    const attachment = bridge.attach('w-abcd1234', 'https://example.com/', () => undefined)
+
+    const inspect = attachment.inspectAtPoint(1, 2, 'hover')
+    const inspectRequestId = (messages.at(-1)!.payload as Record<string, unknown>).requestId
+    receive(bridge, 2, 'webview.inspectAtPoint.result', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      requestId: inspectRequestId,
+      result: { ok: true },
+    })
+    await expect(inspect).rejects.toThrow('invalid inspection result')
+
+    const resolved = attachment.resolveSelectors([{ noteId: 4, selector: '#target' }])
+    const resolveRequestId = (messages.at(-1)!.payload as Record<string, unknown>).requestId
+    receive(bridge, 3, 'webview.resolveSelectors.result', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      requestId: resolveRequestId,
+      ok: true,
+      anchors: [{ noteId: 99, rect: { x: 1, y: 2, width: 3, height: 4 } }],
+    })
+    await expect(resolved).rejects.toThrow('invalid selector anchors')
   })
 })

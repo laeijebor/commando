@@ -1,5 +1,16 @@
 import type { NativeTerminalFramePayload } from './nativeTerminalBridge'
 import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
+import {
+  MAX_INSPECT_SELECTOR,
+  MAX_SELECTOR_RESOLVE_BYTES,
+  MAX_SELECTOR_RESOLVE_ITEMS,
+  parseTileInspectResult,
+  parseTileSelectorAnchors,
+  type TileInspectGrade,
+  type TileInspectResult,
+  type TileSelectorAnchor,
+  type TileSelectorResolveItem,
+} from '../shared/tile-inspect'
 
 /**
  * Bridge to the desktop shell's native web-view tier. WebKit panes use it for
@@ -10,6 +21,8 @@ import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
 export const NATIVE_WEBVIEW_PROTOCOL = 'commando.native-webview' as const
 export const NATIVE_WEBVIEW_VERSION = 1 as const
 export const REQUIRED_NATIVE_WEBVIEW_CAPABILITIES = ['webview.embed.v1'] as const
+export const NATIVE_WEBVIEW_INSPECT_CAPABILITY = 'webview.inspectAtPoint.v1' as const
+export const NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY = 'webview.resolveSelectors.v1' as const
 
 type NativeMessageHandler = {
   postMessage: (message: Record<string, unknown>) => void
@@ -32,6 +45,8 @@ export type NativeWebViewTileEvent =
 
 export type NativeWebViewAttachment = {
   attachmentId: string
+  inspectAtPoint: (x: number, y: number, grade: TileInspectGrade) => Promise<TileInspectResult>
+  resolveSelectors: (items: readonly TileSelectorResolveItem[]) => Promise<TileSelectorAnchor[]>
   detach: () => void
 }
 
@@ -42,6 +57,24 @@ type AttachmentRecord = {
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1_000
+const INSPECTION_TIMEOUT_MS = 5_000
+const MAX_INSPECTION_COORDINATE = 100_000
+const MAX_PENDING_INSPECTIONS = 32
+
+type PendingInspect = {
+  attachmentId: string
+  resolve: (result: TileInspectResult) => void
+  reject: (error: Error) => void
+  timer: number
+}
+
+type PendingResolve = {
+  attachmentId: string
+  requestedNoteIds: ReadonlySet<number>
+  resolve: (anchors: TileSelectorAnchor[]) => void
+  reject: (error: Error) => void
+  timer: number
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -83,7 +116,11 @@ export class NativeWebViewBridge {
   private handshakeTimer?: number
   private connected = false
   private maxWebViews = 0
+  private capabilities = new Set<string>()
   private readonly attachments = new Map<string, AttachmentRecord>()
+  private requestSequence = 0
+  private readonly pendingInspects = new Map<string, PendingInspect>()
+  private readonly pendingResolves = new Map<string, PendingResolve>()
   private readonly previousReceiver = window.__commandoNativeWebViewReceive
   private readonly receiver = (value: unknown) => this.receive(value)
 
@@ -126,8 +163,11 @@ export class NativeWebViewBridge {
     }
     return {
       attachmentId,
+      inspectAtPoint: (x, y, grade) => this.inspectAtPoint(attachmentId, x, y, grade),
+      resolveSelectors: (items) => this.resolveSelectors(attachmentId, items),
       detach: () => {
         if (this.attachments.delete(attachmentId)) {
+          this.rejectPendingForAttachment(attachmentId, 'Native web view attachment detached')
           this.post('webview.detach', { webPaneId, attachmentId })
         }
       },
@@ -145,6 +185,7 @@ export class NativeWebViewBridge {
 
   dispose(): void {
     if (this.handshakeTimer !== undefined) window.clearTimeout(this.handshakeTimer)
+    this.rejectAllPending('Native web view bridge disposed')
     for (const record of [...this.attachments.values()]) {
       this.attachments.delete(record.attachmentId)
       this.post('webview.detach', {
@@ -186,6 +227,131 @@ export class NativeWebViewBridge {
     return this.post(type, { webPaneId: record.webPaneId, attachmentId, ...payload })
   }
 
+  private inspectAtPoint(
+    attachmentId: string,
+    x: number,
+    y: number,
+    grade: TileInspectGrade,
+  ): Promise<TileInspectResult> {
+    if (!this.capabilities.has(NATIVE_WEBVIEW_INSPECT_CAPABILITY)) {
+      return Promise.reject(new Error('Native web view inspection is not supported'))
+    }
+    if (
+      !Number.isFinite(x) || x < 0 || x > MAX_INSPECTION_COORDINATE ||
+      !Number.isFinite(y) || y < 0 || y > MAX_INSPECTION_COORDINATE ||
+      (grade !== 'hover' && grade !== 'click')
+    ) {
+      return Promise.reject(new Error('Invalid native web view inspection request'))
+    }
+    if (!this.attachments.has(attachmentId)) {
+      return Promise.reject(new Error('Native web view attachment is not active'))
+    }
+    if (this.pendingInspects.size + this.pendingResolves.size >= MAX_PENDING_INSPECTIONS) {
+      return Promise.reject(new Error('Too many pending native web view inspections'))
+    }
+    const requestId = this.nextRequestId()
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.pendingInspects.delete(requestId)
+        reject(new Error('Native web view inspection timed out'))
+      }, INSPECTION_TIMEOUT_MS)
+      this.pendingInspects.set(requestId, { attachmentId, resolve, reject, timer })
+      if (!this.postForAttachment('webview.inspectAtPoint', attachmentId, { requestId, x, y, grade })) {
+        window.clearTimeout(timer)
+        this.pendingInspects.delete(requestId)
+        reject(new Error('Native web view handler became unavailable'))
+      }
+    })
+  }
+
+  private resolveSelectors(
+    attachmentId: string,
+    value: readonly TileSelectorResolveItem[],
+  ): Promise<TileSelectorAnchor[]> {
+    if (!this.capabilities.has(NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY)) {
+      return Promise.reject(new Error('Native web view selector resolution is not supported'))
+    }
+    if (!this.attachments.has(attachmentId)) {
+      return Promise.reject(new Error('Native web view attachment is not active'))
+    }
+    if (!Array.isArray(value) || value.length > MAX_SELECTOR_RESOLVE_ITEMS) {
+      return Promise.reject(new Error('Invalid native web view selector request'))
+    }
+    if (value.length === 0) return Promise.resolve([])
+    const items: TileSelectorResolveItem[] = []
+    const noteIds = new Set<number>()
+    for (const item of value) {
+      if (
+        typeof item !== 'object' || item === null ||
+        !Number.isSafeInteger(item.noteId) || item.noteId < 1 || noteIds.has(item.noteId) ||
+        typeof item.selector !== 'string' || item.selector.length < 1 ||
+        item.selector.length > MAX_INSPECT_SELECTOR
+      ) {
+        return Promise.reject(new Error('Invalid native web view selector request'))
+      }
+      noteIds.add(item.noteId)
+      items.push({ noteId: item.noteId, selector: item.selector })
+    }
+    if (new TextEncoder().encode(JSON.stringify(items)).byteLength > MAX_SELECTOR_RESOLVE_BYTES) {
+      return Promise.reject(new Error('Native web view selector request is too large'))
+    }
+    if (this.pendingInspects.size + this.pendingResolves.size >= MAX_PENDING_INSPECTIONS) {
+      return Promise.reject(new Error('Too many pending native web view inspections'))
+    }
+    const requestId = this.nextRequestId()
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.pendingResolves.delete(requestId)
+        reject(new Error('Native web view selector resolution timed out'))
+      }, INSPECTION_TIMEOUT_MS)
+      this.pendingResolves.set(requestId, {
+        attachmentId,
+        requestedNoteIds: noteIds,
+        resolve,
+        reject,
+        timer,
+      })
+      if (!this.postForAttachment('webview.resolveSelectors', attachmentId, { requestId, items })) {
+        window.clearTimeout(timer)
+        this.pendingResolves.delete(requestId)
+        reject(new Error('Native web view handler became unavailable'))
+      }
+    })
+  }
+
+  private nextRequestId(): string {
+    this.requestSequence += 1
+    return `r${this.requestSequence}`
+  }
+
+  private rejectPendingForAttachment(attachmentId: string, reason: string): void {
+    for (const [requestId, pending] of this.pendingInspects) {
+      if (pending.attachmentId !== attachmentId) continue
+      window.clearTimeout(pending.timer)
+      this.pendingInspects.delete(requestId)
+      pending.reject(new Error(reason))
+    }
+    for (const [requestId, pending] of this.pendingResolves) {
+      if (pending.attachmentId !== attachmentId) continue
+      window.clearTimeout(pending.timer)
+      this.pendingResolves.delete(requestId)
+      pending.reject(new Error(reason))
+    }
+  }
+
+  private rejectAllPending(reason: string): void {
+    for (const pending of this.pendingInspects.values()) {
+      window.clearTimeout(pending.timer)
+      pending.reject(new Error(reason))
+    }
+    for (const pending of this.pendingResolves.values()) {
+      window.clearTimeout(pending.timer)
+      pending.reject(new Error(reason))
+    }
+    this.pendingInspects.clear()
+    this.pendingResolves.clear()
+  }
+
   private completeNegotiation(result: NativeWebViewNegotiation): void {
     if (!this.finishNegotiation) return
     if (this.handshakeTimer !== undefined) window.clearTimeout(this.handshakeTimer)
@@ -194,6 +360,7 @@ export class NativeWebViewBridge {
     this.finishNegotiation = undefined
     this.connected = result.available
     this.maxWebViews = result.available ? result.maxWebViews : 0
+    this.capabilities = new Set(result.available ? result.capabilities : [])
     finish(result)
   }
 
@@ -242,6 +409,42 @@ export class NativeWebViewBridge {
     const record = this.attachments.get(attachmentId)
     if (!record || payload.webPaneId !== record.webPaneId) return
 
+    if (type === 'webview.inspectAtPoint.result') {
+      const requestId = payload.requestId
+      if (typeof requestId !== 'string') return
+      const pending = this.pendingInspects.get(requestId)
+      if (!pending || pending.attachmentId !== attachmentId) return
+      const result = parseTileInspectResult(payload.result)
+      window.clearTimeout(pending.timer)
+      this.pendingInspects.delete(requestId)
+      if (result) pending.resolve(result)
+      else pending.reject(new Error('Native web view returned an invalid inspection result'))
+      return
+    }
+    if (type === 'webview.resolveSelectors.result') {
+      const requestId = payload.requestId
+      if (typeof requestId !== 'string') return
+      const pending = this.pendingResolves.get(requestId)
+      if (!pending || pending.attachmentId !== attachmentId) return
+      window.clearTimeout(pending.timer)
+      this.pendingResolves.delete(requestId)
+      if (payload.ok !== true) {
+        pending.reject(new Error(
+          typeof payload.error === 'string'
+            ? payload.error.slice(0, 256)
+            : 'Selector resolution failed',
+        ))
+        return
+      }
+      const anchors = parseTileSelectorAnchors(payload.anchors)
+      if (!anchors || anchors.some((anchor) => !pending.requestedNoteIds.has(anchor.noteId))) {
+        pending.reject(new Error('Native web view returned invalid selector anchors'))
+        return
+      }
+      pending.resolve(anchors)
+      return
+    }
+
     if (type === 'webview.attached') {
       record.listener({ type: 'webview.attached' })
     } else if (type === 'webview.loaded') {
@@ -252,6 +455,7 @@ export class NativeWebViewBridge {
         code: typeof payload.code === 'string' ? payload.code : 'unknown',
       })
     } else if (type === 'webview.detached') {
+      this.rejectPendingForAttachment(attachmentId, 'Native web view attachment detached')
       this.attachments.delete(attachmentId)
     }
   }
