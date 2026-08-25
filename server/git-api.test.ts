@@ -41,7 +41,7 @@ function repoExecutor(options: RepoExecutorOptions = {}): GitProcessExecutor {
       return { stdout: `/repo\n${options.branch ?? 'feature'}\n`, stderr: '' }
     }
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
-      if (args[3] === 'main^{commit}') return { stdout: 'sha\n', stderr: '' }
+      if (args[3] === 'main^{commit}' || args[3] === 'head^{commit}') return { stdout: 'sha\n', stderr: '' }
       throw new GitCommandFailure('git failed', '', false)
     }
     if (args[0] === 'merge-base') return { stdout: 'base\n', stderr: '' }
@@ -214,6 +214,19 @@ describe('GitDiffApi', () => {
 
     expect(response.status).toBe(200)
     expect(evidence).not.toHaveBeenCalled()
+  })
+
+  it('accepts an explicit base and head comparison', async () => {
+    const base = await startApi()
+
+    const response = await fetch(`${base}/api/git/summary?paneId=%251&target=main&head=head`)
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      target: 'main…head',
+      targetMode: 'ref',
+      baseCommit: 'base',
+    })
   })
 
   it('rejects invalid pane ids', async () => {

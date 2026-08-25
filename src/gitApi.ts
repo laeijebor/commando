@@ -66,15 +66,16 @@ export type DiffDisplay = 'side-by-side' | 'inline'
 
 export type GitFileDiffOptions = {
   target?: string
+  head?: string
   width?: number
   engine?: DiffEngine
   display?: DiffDisplay
 }
 
 export interface GitDiffApiClient {
-  summary(paneId: string, target?: string): Promise<GitDiffSummary>
+  summary(paneId: string, target?: string, head?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
-  search(paneId: string, query: string, target?: string): Promise<GitDiffSearchResult>
+  search(paneId: string, query: string, target?: string, head?: string): Promise<GitDiffSearchResult>
   branches(paneId: string): Promise<GitBranches>
 }
 
@@ -107,17 +108,18 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
   }
 
   return {
-    summary: (paneId, target) => request<GitDiffSummary>('summary', { paneId, target }),
+    summary: (paneId, target, head) => request<GitDiffSummary>('summary', { paneId, target, head }),
     fileDiff: (paneId, file, options = {}) =>
       request<GitFileDiff>('file-diff', {
         paneId,
         file,
         target: options.target,
+        head: options.head,
         width: options.width === undefined ? undefined : String(options.width),
         engine: options.engine,
         display: options.display,
       }),
-    search: (paneId, query, target) => request<GitDiffSearchResult>('search', { paneId, query, target }),
+    search: (paneId, query, target, head) => request<GitDiffSearchResult>('search', { paneId, query, target, head }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
   }
 }

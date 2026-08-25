@@ -378,6 +378,25 @@ describe('GitDiffInspector.summary', () => {
     expect(numstatCall?.args).toContain(BASE)
   })
 
+  it('compares an explicit base and head without including working-tree files', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'], untracked: ['notes.md'] })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    const summary = await inspector.summary('/repo', 'base-tip', 'head-tip')
+
+    expect(summary).toMatchObject({
+      target: 'base-tip…head-tip',
+      targetMode: 'ref',
+      baseCommit: BASE,
+    })
+    expect(repo.calls).toContainEqual(expect.objectContaining({
+      file: 'git',
+      args: ['merge-base', 'base-tip', 'head-tip'],
+    }))
+    expect(repo.calls.find((call) => call.args.includes('--numstat'))?.args).toContain('head-tip')
+    expect(repo.calls.some((call) => call.args[0] === 'ls-files')).toBe(false)
+  })
+
   it('excludes this branch and its remote copies from branch-point detection', async () => {
     const repo = fakeRepo({
       refTips: [
@@ -464,6 +483,17 @@ describe('GitDiffInspector.fileDiff', () => {
     })
   })
 
+  it('runs difftastic against an explicit head commit for PR comparisons', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'], diffOutput: 'STRUCTURAL' })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await inspector.fileDiff('/repo', 'src/app.ts', 'base-tip', 120, 'difftastic', 'side-by-side', 'head-tip')
+
+    expect(repo.calls.find((call) => call.args[1] === '--ext-diff')?.args).toEqual([
+      'diff', '--ext-diff', BASE, 'head-tip', '--', 'src/app.ts',
+    ])
+  })
+
   it('diffs untracked files against /dev/null with difft directly', async () => {
     const repo = fakeRepo({ untracked: ['notes.md'], diffOutput: 'NEWFILE' })
     const inspector = new GitDiffInspector(repo.execute, {})
@@ -503,6 +533,17 @@ describe('GitDiffInspector.fileDiff', () => {
     expect(deltaCall?.args).toContain('--width')
     expect(deltaCall?.options.input).toBe('PATCH')
     expect(deltaCall?.options.allowExitCodes).toContain(1)
+  })
+
+  it('pipes the explicit PR comparison range through delta', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'] })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await inspector.fileDiff('/repo', 'src/app.ts', 'base-tip', 120, 'delta', 'inline', 'head-tip')
+
+    expect(repo.calls.find((call) => call.file === 'git' && call.args[0] === 'diff')?.args).toEqual([
+      'diff', BASE, 'head-tip', '--', 'src/app.ts',
+    ])
   })
 
   it('omits the side-by-side flag for inline delta diffs', async () => {
@@ -561,6 +602,18 @@ describe('GitDiffInspector.search', () => {
     expect(repo.calls).toContainEqual(expect.objectContaining({
       file: 'git',
       args: ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', BASE, '--'],
+    }))
+  })
+
+  it('searches the explicit PR comparison range', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'] })
+    const inspector = new GitDiffInspector(repo.execute, {})
+
+    await inspector.search('/repo', 'needle', 'base-tip', 'head-tip')
+
+    expect(repo.calls).toContainEqual(expect.objectContaining({
+      file: 'git',
+      args: ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', BASE, 'head-tip', '--'],
     }))
   })
 

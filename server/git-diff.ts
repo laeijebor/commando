@@ -106,6 +106,7 @@ export type GitDiffSummary = {
 
 type ResolvedBase = {
   base: string
+  head?: string
   label: string
   mode: 'auto' | 'ref'
   commit?: string
@@ -377,11 +378,11 @@ export class GitDiffInspector {
     private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
   ) {}
 
-  async summary(cwd: string, target?: string): Promise<GitDiffSummary> {
-    const key = `${cwd}${NUL}${target ?? ''}`
+  async summary(cwd: string, target?: string, head?: string): Promise<GitDiffSummary> {
+    const key = `${cwd}${NUL}${target ?? ''}${NUL}${head ?? ''}`
     const cached = this.summaryCache.get(key)
     if (cached && this.now() - cached.at < SUMMARY_CACHE_TTL_MS) return cached.result
-    const result = this.computeSummary(cwd, target)
+    const result = this.computeSummary(cwd, target, head)
     this.summaryCache.set(key, { at: this.now(), result })
     result.catch(() => this.summaryCache.delete(key))
     return result
@@ -447,36 +448,37 @@ export class GitDiffInspector {
     width: number,
     engine: DiffEngine = 'difftastic',
     display: DiffDisplay = 'side-by-side',
+    head?: string,
   ): Promise<string> {
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
     const relative = validateRepoRelativePath(repo.root, file)
-    const { base } = await this.resolveBase(repo.root, repo.branch, target)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
 
     try {
-      const untracked = await this.isUntracked(repo.root, relative)
+      const untracked = resolved.head === undefined && await this.isUntracked(repo.root, relative)
       return engine === 'delta'
-        ? await this.deltaDiff(repo.root, relative, base, width, display, untracked)
-        : await this.difftasticDiff(repo.root, relative, base, width, display, untracked)
+        ? await this.deltaDiff(repo.root, relative, resolved.base, resolved.head, width, display, untracked)
+        : await this.difftasticDiff(repo.root, relative, resolved.base, resolved.head, width, display, untracked)
     } catch (error) {
       throw this.asDiffError(error, engine)
     }
   }
 
-  async search(cwd: string, value: unknown, target?: string): Promise<GitDiffSearchResult> {
+  async search(cwd: string, value: unknown, target?: string, head?: string): Promise<GitDiffSearchResult> {
     const query = validateDiffSearchQuery(value)
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
-    const { base } = await this.resolveBase(repo.root, repo.branch, target)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
 
     try {
       const [{ stdout }, summary] = await Promise.all([
         this.execute(
           'git',
-          ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', base, '--'],
+          ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', resolved.base, ...(resolved.head ? [resolved.head] : []), '--'],
           this.options(repo.root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
         ),
-        this.summary(cwd, target),
+        this.summary(cwd, target, head),
       ])
       const result = searchPatch(stdout, query)
       const matchingFiles = new Map(result.files.map((file) => [file.file, file.matches]))
@@ -528,6 +530,7 @@ export class GitDiffInspector {
     root: string,
     relative: string,
     base: string,
+    head: string | undefined,
     width: number,
     display: DiffDisplay,
     untracked: boolean,
@@ -556,7 +559,7 @@ export class GitDiffInspector {
     }
     const { stdout } = await this.execute(
       'git',
-      ['diff', '--ext-diff', base, '--', relative],
+      ['diff', '--ext-diff', base, ...(head ? [head] : []), '--', relative],
       this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES, { ...difftEnv, GIT_EXTERNAL_DIFF: 'difft' }),
     )
     return stdout
@@ -566,6 +569,7 @@ export class GitDiffInspector {
     root: string,
     relative: string,
     base: string,
+    head: string | undefined,
     width: number,
     display: DiffDisplay,
     untracked: boolean,
@@ -587,7 +591,7 @@ export class GitDiffInspector {
     }
     const { stdout: patch } = await this.execute(
       'git',
-      ['diff', base, '--', relative],
+      ['diff', base, ...(head ? [head] : []), '--', relative],
       this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
     )
     if (patch === '') return ''
@@ -618,17 +622,20 @@ export class GitDiffInspector {
     return new GitDiffError('exec', error instanceof Error ? error.message : 'git diff failed')
   }
 
-  private async computeSummary(cwd: string, target?: string): Promise<GitDiffSummary> {
+  private async computeSummary(cwd: string, target?: string, head?: string): Promise<GitDiffSummary> {
     const repo = await this.repoContext(cwd)
     if (!repo) return { isRepo: false }
-    const resolved = await this.resolveBase(repo.root, repo.branch, target)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
     const base = resolved.base
+    const comparisonHead = resolved.head ? [resolved.head] : []
 
     const [numstat, nameStatus, untracked, pullRequest] = await Promise.all([
-      this.git(repo.root, ['diff', '--numstat', '--no-renames', '-z', base]),
-      this.git(repo.root, ['diff', '--name-status', '--no-renames', '-z', base]),
-      this.git(repo.root, ['ls-files', '--others', '--exclude-standard', '-z']),
-      target === undefined ? this.currentPullRequest(repo.root, repo.branch) : undefined,
+      this.git(repo.root, ['diff', '--numstat', '--no-renames', '-z', base, ...comparisonHead]),
+      this.git(repo.root, ['diff', '--name-status', '--no-renames', '-z', base, ...comparisonHead]),
+      resolved.head === undefined
+        ? this.git(repo.root, ['ls-files', '--others', '--exclude-standard', '-z'])
+        : Promise.resolve({ stdout: '', stderr: '' }),
+      target === undefined && head === undefined ? this.currentPullRequest(repo.root, repo.branch) : undefined,
     ])
 
     const statuses = new Map<string, string>()
@@ -691,11 +698,28 @@ export class GitDiffInspector {
     }
   }
 
-  private async resolveBase(root: string, branch: string, target?: string): Promise<ResolvedBase> {
+  private async resolveBase(root: string, branch: string, target?: string, head?: string): Promise<ResolvedBase> {
+    if (head !== undefined && target === undefined) {
+      throw new GitDiffError('bad-target', 'A base target is required when a head ref is provided')
+    }
     if (target !== undefined) {
       const validated = validateGitTarget(target)
       if (!(await this.refExists(root, validated))) {
         throw new GitDiffError('bad-target', `Unknown git ref: ${validated}`)
+      }
+      if (head !== undefined) {
+        const validatedHead = validateGitTarget(head)
+        if (!(await this.refExists(root, validatedHead))) {
+          throw new GitDiffError('bad-target', `Unknown git ref: ${validatedHead}`)
+        }
+        const base = await this.mergeBase(root, validated, validatedHead)
+        return {
+          base,
+          head: validatedHead,
+          label: `${validated}…${validatedHead}`,
+          mode: 'ref',
+          commit: base,
+        }
       }
       const base = await this.mergeBase(root, validated)
       return { base, label: validated, mode: 'ref', commit: base }
@@ -769,9 +793,9 @@ export class GitDiffInspector {
     }
   }
 
-  private async mergeBase(root: string, target: string): Promise<string> {
+  private async mergeBase(root: string, target: string, head = 'HEAD'): Promise<string> {
     try {
-      const { stdout } = await this.git(root, ['merge-base', target, 'HEAD'])
+      const { stdout } = await this.git(root, ['merge-base', target, head])
       const base = stdout.trim()
       return base || target
     } catch {
