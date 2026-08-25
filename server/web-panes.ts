@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
@@ -15,14 +15,17 @@ const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
 const PANE_ID = /^%\d+$/
 const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
+const TMUX_SOCKET_HASH = /^[0-9a-f]{64}$/
 const MAX_ALLOWED_ORIGINS = 64
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 
+type PersistedWebPane = WebPane & { tmuxSocketHash?: string }
+
 type StateFile = {
   version: 1
   allowedOrigins: string[]
-  panes: WebPane[]
+  panes: PersistedWebPane[]
 }
 
 export type WebPaneUrlDecision =
@@ -84,11 +87,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): WebPane | null {
+function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): PersistedWebPane | null {
   if (!isRecord(value)) return null
   const {
     id, url, sessionId, windowId, anchorPaneId, placement, engine, openedBy, openerLabel,
-    status, createdAt,
+    status, createdAt, tmuxSocketHash,
   } = value
   if (
     typeof id !== 'string' || !WEB_PANE_ID.test(id) ||
@@ -120,6 +123,9 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): WebP
     ...(openerLabel !== undefined ? { openerLabel } : {}),
     status,
     createdAt,
+    ...(typeof tmuxSocketHash === 'string' && TMUX_SOCKET_HASH.test(tmuxSocketHash)
+      ? { tmuxSocketHash }
+      : {}),
   }
 }
 
@@ -139,7 +145,7 @@ function parseState(value: unknown): StateFile {
     }
   }
   const originSet = new Set(allowedOrigins)
-  const panes: WebPane[] = []
+  const panes: PersistedWebPane[] = []
   if (Array.isArray(value.panes)) {
     for (const candidate of value.panes) {
       const pane = parseWebPane(candidate, originSet)
@@ -151,8 +157,50 @@ function parseState(value: unknown): StateFile {
   return { version: 1, allowedOrigins, panes }
 }
 
-export function defaultWebPaneStatePath(): string {
-  return process.env.COMMANDO_WEB_PANES_PATH ?? join(homedir(), '.commando', 'web-panes.json')
+type WebPaneEnvironment = Record<string, string | undefined>
+
+function legacyWebPaneStatePath(homeDirectory = homedir()): string {
+  return join(homeDirectory, '.commando', 'web-panes.json')
+}
+
+function tmuxSocketIdentity(environment: WebPaneEnvironment): string {
+  const socketPath = environment.COMMANDO_TMUX_SOCKET_PATH
+  const socketName = environment.COMMANDO_TMUX_SOCKET_NAME
+  if (socketPath && socketName) {
+    throw new Error('Set only one of COMMANDO_TMUX_SOCKET_PATH or COMMANDO_TMUX_SOCKET_NAME')
+  }
+  if (socketPath) return `path:${socketPath}`
+  if (socketName) return `name:${socketName}`
+  return 'default'
+}
+
+function tmuxSocketHash(identity: string): string {
+  return createHash('sha256').update(identity).digest('hex')
+}
+
+export function defaultWebPaneStatePath(
+  environment: WebPaneEnvironment = process.env,
+  homeDirectory = homedir(),
+): string {
+  if (environment.COMMANDO_WEB_PANES_PATH !== undefined) {
+    return environment.COMMANDO_WEB_PANES_PATH
+  }
+  const legacyPath = legacyWebPaneStatePath(homeDirectory)
+  const socketIdentity = tmuxSocketIdentity(environment)
+  if (socketIdentity === 'default') return legacyPath
+  const suffix = tmuxSocketHash(socketIdentity).slice(0, 12)
+  return join(homeDirectory, '.commando', `web-panes-${suffix}.json`)
+}
+
+function defaultMigrationStatePath(
+  environment: WebPaneEnvironment = process.env,
+  homeDirectory = homedir(),
+): string | undefined {
+  if (
+    environment.COMMANDO_WEB_PANES_PATH !== undefined ||
+    tmuxSocketIdentity(environment) === 'default'
+  ) return undefined
+  return legacyWebPaneStatePath(homeDirectory)
 }
 
 export type OpenWebPaneInput = {
@@ -175,37 +223,63 @@ export type MoveWebPaneTarget = {
   windowId: string
 }
 
-type PruneWindow = { id: string; paneIds: readonly string[] }
+type PruneWindow = { id: string; sessionId: string; paneIds: readonly string[] }
 
 /**
  * Daemon-owned registry of web panes plus the per-origin allowlist, persisted
- * to ~/.commando/web-panes.json with atomic write-then-rename.
+ * per tmux socket with atomic write-then-rename.
  */
 export class WebPaneService {
   readonly statePath: string
   private readonly panes = new Map<string, WebPane>()
+  private readonly paneSocketHashes = new Map<string, string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
   private readonly now: () => number
+  private readonly migrationStatePath: string | undefined
+  private readonly socketHash: string
 
-  constructor(statePath = defaultWebPaneStatePath(), now: () => number = Date.now) {
-    this.statePath = statePath
+  constructor(
+    statePath?: string,
+    now: () => number = Date.now,
+    migrationStatePath = statePath === undefined ? defaultMigrationStatePath() : undefined,
+    socketIdentity = tmuxSocketIdentity(process.env),
+  ) {
+    this.statePath = statePath ?? defaultWebPaneStatePath()
     this.now = now
+    this.migrationStatePath = migrationStatePath
+    this.socketHash = tmuxSocketHash(socketIdentity)
   }
 
   async load(): Promise<void> {
     let content: string
+    let migrated = false
     try {
       content = await readFile(this.statePath, 'utf8')
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-      throw error
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if (!this.migrationStatePath) return
+      try {
+        content = await readFile(this.migrationStatePath, 'utf8')
+        migrated = true
+      } catch (migrationError) {
+        if ((migrationError as NodeJS.ErrnoException).code === 'ENOENT') return
+        throw migrationError
+      }
     }
     const state = parseState(JSON.parse(content) as unknown)
     this.allowedOrigins.clear()
     for (const origin of state.allowedOrigins) this.allowedOrigins.add(origin)
     this.panes.clear()
-    for (const pane of state.panes) this.panes.set(pane.id, pane)
+    this.paneSocketHashes.clear()
+    for (const persistedPane of state.panes) {
+      const { tmuxSocketHash: persistedSocketHash, ...pane } = persistedPane
+      this.panes.set(pane.id, pane)
+      if (persistedSocketHash) this.paneSocketHashes.set(pane.id, persistedSocketHash)
+    }
+    // Copy rather than move so an isolated daemon cannot take ownership of
+    // legacy panes that actually belong to another tmux socket.
+    if (migrated) this.persist()
   }
 
   list(): WebPane[] {
@@ -250,6 +324,7 @@ export class WebPaneService {
       createdAt: this.now(),
     }
     this.panes.set(pane.id, pane)
+    this.paneSocketHashes.set(pane.id, this.socketHash)
     this.persist()
     return pane
   }
@@ -294,6 +369,7 @@ export class WebPaneService {
 
   close(id: string): boolean {
     if (!this.panes.delete(id)) return false
+    this.paneSocketHashes.delete(id)
     this.persist()
     return true
   }
@@ -381,18 +457,34 @@ export class WebPaneService {
 
   /**
    * Drops panes whose window disappeared and re-anchors panes whose anchor
-   * pane died to the window's first surviving pane. Skips entirely-empty
-   * snapshots so a daemon started before tmux is reachable does not wipe
-   * persisted panes. Returns true when anything changed.
+   * pane died to the window's first surviving pane. Foreign-owned panes are
+   * outside this daemon's authority; unstamped legacy panes stay conservative
+   * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
     if (this.panes.size === 0 || currentWindows.length === 0) return false
-    const windows = new Map(currentWindows.map((window) => [window.id, window]))
+    const windowsBySession = new Map<string, Map<string, PruneWindow>>()
+    for (const window of currentWindows) {
+      const windows = windowsBySession.get(window.sessionId) ?? new Map<string, PruneWindow>()
+      windows.set(window.id, window)
+      windowsBySession.set(window.sessionId, windows)
+    }
     let changed = false
     for (const [id, pane] of this.panes) {
-      const window = windows.get(pane.windowId)
+      const paneSocketHash = this.paneSocketHashes.get(id)
+      if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) continue
+      const sessionWindows = windowsBySession.get(pane.sessionId)
+      if (!sessionWindows) {
+        if (paneSocketHash === undefined) continue
+        this.panes.delete(id)
+        this.paneSocketHashes.delete(id)
+        changed = true
+        continue
+      }
+      const window = sessionWindows.get(pane.windowId)
       if (!window || window.paneIds.length === 0) {
         this.panes.delete(id)
+        this.paneSocketHashes.delete(id)
         changed = true
         continue
       }
@@ -409,7 +501,10 @@ export class WebPaneService {
     const state: StateFile = {
       version: 1,
       allowedOrigins: [...this.allowedOrigins],
-      panes: this.list(),
+      panes: this.list().map((pane) => {
+        const socketHash = this.paneSocketHashes.get(pane.id)
+        return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}) }
+      }),
     }
     this.writes = this.writes
       .then(() => this.writeState(state))
