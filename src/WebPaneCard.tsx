@@ -3,8 +3,9 @@ import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureIn
 import type { WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
-import { ChromiumTileCard, type PendingQueueApi } from './ChromiumTileCard'
+import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
+import type { PendingQueueApi } from './pendingQueueApi'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000

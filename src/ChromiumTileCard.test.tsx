@@ -514,6 +514,34 @@ describe('ChromiumTileCard queued selector highlights', () => {
     return socket
   }
 
+  it('adapts canvas inspect results without intercepting its wheel relay', async () => {
+    renderTile({}, false, true, true)
+    const socket = await startReviewStream()
+    const canvas = screen.getByLabelText(`Chromium tile: ${webPane.url}`)
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 15, clientY: 18 })
+    const inspect = socket.sent.find((message) => (
+      message as { type?: string }
+    ).type === 'inspect') as { id: string }
+    expect(inspect.id).toMatch(/^c-/)
+
+    act(() => socket.message({
+      type: 'inspect_result',
+      id: inspect.id,
+      ok: true,
+      selector: '#review-me',
+      tag: 'button',
+      rect: { x: 10, y: 12, width: 80, height: 24 },
+    }))
+    expect(screen.getByRole('textbox', { name: 'Note about #review-me' })).toBeInTheDocument()
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 24, cancelable: true, bubbles: true }))
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      type: 'input',
+      event: expect.objectContaining({ kind: 'wheel', deltaY: 24 }),
+    }))
+  })
+
   it('tracks the current selector rectangle and edits the queued response in a popover', async () => {
     const initial = {
       ...responseNote(1),
