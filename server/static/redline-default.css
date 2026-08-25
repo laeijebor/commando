@@ -581,21 +581,21 @@
   }
 
   /* --- iteration state: open vs settled topics, folded history, decision log --- */
-  :where(html[data-redline-theme="commando"]) [data-redline-status="open"] {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status="open"] {
     border-color: color-mix(in srgb, var(--redline-page-violet) 50%, var(--redline-page-border));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--redline-page-violet) 14%, transparent);
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"] {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status="decided"] {
     background: color-mix(in srgb, var(--redline-page-surface) 55%, transparent);
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"] :is(h2, h3) {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status="decided"] :is(h2, h3) {
     color: var(--redline-page-text-soft);
     font-weight: 600;
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-status]::before {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status]::before {
     content: attr(data-redline-status);
     display: inline-block;
     margin-bottom: 8px;
@@ -609,31 +609,40 @@
     text-transform: uppercase;
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-status="open"]::before {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status="open"]::before {
     border-color: color-mix(in srgb, var(--redline-page-violet) 55%, transparent);
     background: color-mix(in srgb, var(--redline-page-violet) 12%, transparent);
     color: var(--redline-page-violet);
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-status="decided"]::before {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status="decided"]::before {
     border-color: color-mix(in srgb, var(--redline-page-green) 45%, transparent);
     background: color-mix(in srgb, var(--redline-page-green) 10%, transparent);
     color: var(--redline-page-green);
   }
 
-  :where(html[data-redline-theme="commando"]) [data-redline-changed]::after {
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-status][data-redline-changed]::before {
+    content: attr(data-redline-status) " \00b7 new";
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-changed]:not([data-redline-status])::before {
     content: "new this round";
     display: inline-block;
-    margin-left: 8px;
+    margin-bottom: 8px;
     padding: 2px 8px;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--redline-page-cyan) 45%, transparent);
-    background: color-mix(in srgb, var(--redline-page-cyan) 10%, transparent);
-    color: var(--redline-page-cyan);
+    font-family: var(--redline-page-mono, ui-monospace, monospace);
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+    border: 1px solid color-mix(in srgb, var(--redline-page-cyan) 45%, transparent);
+    background: color-mix(in srgb, var(--redline-page-cyan) 10%, transparent);
+    color: var(--redline-page-cyan);
+  }
+
+  :where(html[data-redline-theme="commando"]) [data-redline-section][data-redline-changed] {
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--redline-page-cyan) 60%, transparent);
   }
 
   :where(html[data-redline-theme="commando"]) details.redline-thread {

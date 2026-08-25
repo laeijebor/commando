@@ -344,8 +344,8 @@
   to { opacity: 1; transform: none; }
 }
 :where(.redline-nav-links a[data-redline-status="open"])::after {
-  content: ""; display: inline-block; width: 5px; height: 5px; margin-left: .5rem;
-  border-radius: 50%; vertical-align: middle;
+  content: ""; flex: none; display: inline-block; width: 5px; height: 5px;
+  margin-left: .5rem; border-radius: 50%; vertical-align: middle;
   background: var(--redline-accent, #7c6cf6);
 }
 :where(.redline-nav-links a[data-redline-status="decided"]) {
