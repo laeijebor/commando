@@ -462,7 +462,17 @@ export class WebPaneService {
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0 || currentWindows.length === 0) return false
+    if (this.panes.size === 0) return false
+    const totalPaneCount = currentWindows.reduce(
+      (count, window) => count + window.paneIds.length,
+      0,
+    )
+    if (totalPaneCount === 0) {
+      console.warn(
+        `web panes: skipped prune for degraded tmux snapshot (windows=${currentWindows.length}, panes=${totalPaneCount})`,
+      )
+      return false
+    }
     const windowsBySession = new Map<string, Map<string, PruneWindow>>()
     for (const window of currentWindows) {
       const windows = windowsBySession.get(window.sessionId) ?? new Map<string, PruneWindow>()
@@ -482,12 +492,16 @@ export class WebPaneService {
         continue
       }
       const window = sessionWindows.get(pane.windowId)
-      if (!window || window.paneIds.length === 0) {
+      if (!window) {
         this.panes.delete(id)
         this.paneSocketHashes.delete(id)
         changed = true
         continue
       }
+      // A real tmux window always owns at least one pane. An empty list means
+      // pane discovery was incomplete, so it cannot prove either the window or
+      // the web pane's anchor disappeared.
+      if (window.paneIds.length === 0) continue
       if (!window.paneIds.includes(pane.anchorPaneId)) {
         this.panes.set(id, { ...pane, anchorPaneId: window.paneIds[0] })
         changed = true

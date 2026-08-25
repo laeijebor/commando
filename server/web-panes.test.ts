@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_WEB_PANES, type WebPane } from '../shared/protocol.js'
 import {
   WebPaneError,
@@ -25,6 +25,7 @@ function track(service: WebPaneService): WebPaneService {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   // Persistence is queued asynchronously; settle it before deleting the
   // directories or an in-flight temp file races the rm.
   await Promise.all(services.splice(0).map((service) => service.flush()))
@@ -229,19 +230,52 @@ describe('WebPaneService', () => {
     expect(() => service.confirm('w-00000000', true)).toThrow(WebPaneError)
   })
 
-  it('prunes tiles for dead windows and re-anchors when the anchor pane dies', async () => {
+  it('does not prune anything when every discovered window has no panes', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
-    const kept = service.open({ ...anchor, url: 'http://localhost:5173/' })
-    const dead = service.open({ ...anchor, windowId: '@9', url: 'http://localhost:5174/' })
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const windows = Array.from({ length: 23 }, (_, index) => ({
+      id: `@${index}`,
+      sessionId: '$1',
+      paneIds: [] as string[],
+    }))
 
-    const changed = service.prune([
+    expect(service.prune(windows)).toBe(false)
+    expect(service.get(pane.id)).toEqual(pane)
+    expect(warn).toHaveBeenCalledWith(
+      'web panes: skipped prune for degraded tmux snapshot (windows=23, panes=0)',
+    )
+  })
+
+  it('preserves panes in an empty window inside an otherwise healthy snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    expect(service.prune([
+      { id: '@3', sessionId: '$1', paneIds: [] },
+      { id: '@4', sessionId: '$1', paneIds: ['%40'] },
+    ])).toBe(false)
+    expect(service.get(pane.id)).toEqual(pane)
+  })
+
+  it('prunes a pane whose window is absent from a healthy snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, windowId: '@9', url: 'http://localhost:5174/' })
+
+    expect(service.prune([
+      { id: '@3', sessionId: '$1', paneIds: ['%40'] },
+    ])).toBe(true)
+    expect(service.get(pane.id)).toBeUndefined()
+  })
+
+  it('re-anchors a pane when its anchor dies but its window has surviving panes', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+
+    expect(service.prune([
       { id: '@3', sessionId: '$1', paneIds: ['%40', '%41'] },
-    ])
-    expect(changed).toBe(true)
-    const remaining = service.list()
-    expect(remaining).toHaveLength(1)
-    expect(remaining[0]).toMatchObject({ id: kept.id, anchorPaneId: '%40' })
-    expect(service.get(dead.id)).toBeUndefined()
+    ])).toBe(true)
+    expect(service.get(pane.id)).toMatchObject({ id: pane.id, anchorPaneId: '%40' })
   })
 
   it('prunes an owned pane when its whole session disappears', async () => {
@@ -430,8 +464,12 @@ describe('WebPaneService', () => {
   it('does not prune anything from an empty snapshot', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
     service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     expect(service.prune([])).toBe(false)
     expect(service.list()).toHaveLength(1)
+    expect(warn).toHaveBeenCalledWith(
+      'web panes: skipped prune for degraded tmux snapshot (windows=0, panes=0)',
+    )
   })
 
   it('ignores a corrupt allowlist entry instead of failing the whole load', async () => {
