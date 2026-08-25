@@ -113,6 +113,15 @@
   color: var(--accent);
 }
 
+.git-diff-fixed-ref {
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .git-diff-target-combo {
   position: relative;
 }

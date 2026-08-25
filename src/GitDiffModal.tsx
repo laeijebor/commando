@@ -38,7 +38,15 @@ type Props = {
   panePath: string
   api: GitDiffApiClient
   initialSummary: GitDiffSummary | null
+  comparison?: GitDiffComparison
   onClose(): void
+}
+
+export type GitDiffComparison = {
+  base: string
+  head: string
+  baseLabel: string
+  headLabel: string
 }
 
 const APPROXIMATE_CHARACTER_WIDTH = 7.25
@@ -217,12 +225,12 @@ function statusLabel(file: GitChangedFile): { letter: string; className: string;
   }
 }
 
-export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }: Props) {
+export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison, onClose }: Props) {
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [targetDraft, setTargetDraft] = useState('')
-  const [appliedTarget, setAppliedTarget] = useState<string | undefined>(undefined)
+  const [appliedTarget, setAppliedTarget] = useState<string | undefined>(comparison?.base)
   const [branchList, setBranchList] = useState<string[]>([])
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [filtering, setFiltering] = useState(false)
@@ -347,20 +355,23 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
   }, [])
 
   useEffect(() => {
+    if (comparison) return
     let cancelled = false
     apiRef.current
       .branches(paneId)
       .then((next) => { if (!cancelled) setBranchList(next.branches ?? []) })
       .catch(() => { /* type-ahead is best-effort; free typing still works */ })
     return () => { cancelled = true }
-  }, [paneId])
+  }, [comparison, paneId])
 
   useEffect(() => {
     const request = ++generation.current
     setSummaryLoading(true)
     setSummaryError('')
-    apiRef.current
-      .summary(paneId, appliedTarget)
+    const summaryRequest = comparison
+      ? apiRef.current.summary(paneId, appliedTarget, comparison.head)
+      : apiRef.current.summary(paneId, appliedTarget)
+    summaryRequest
       .then((next) => {
         if (request !== generation.current) return
         setSummary(next)
@@ -372,7 +383,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       .finally(() => {
         if (request === generation.current) setSummaryLoading(false)
       })
-  }, [paneId, appliedTarget])
+  }, [paneId, appliedTarget, comparison?.head])
 
   const files = summary?.files ?? []
   const deferredFileFilter = useDeferredValue(fileFilter)
@@ -422,7 +433,13 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       ? Math.min(400, Math.max(80, Math.floor(measured / APPROXIMATE_CHARACTER_WIDTH)))
       : 180
     apiRef.current
-      .fileDiff(paneId, selectedFile, { target: appliedTarget, width, engine, display })
+      .fileDiff(paneId, selectedFile, {
+        target: appliedTarget,
+        ...(comparison ? { head: comparison.head } : {}),
+        width,
+        engine,
+        display,
+      })
       .then((next) => {
         if (request !== diffGeneration.current) return
         setDiff(next.diff)
@@ -435,7 +452,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       .finally(() => {
         if (request === diffGeneration.current) setDiffLoading(false)
       })
-  }, [paneId, appliedTarget, selectedFile, engine, display, diffViewportVersion])
+  }, [paneId, appliedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
 
   useEffect(() => {
     const query = diffSearch.trim()
@@ -451,8 +468,10 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
     setAllSearchLoading(true)
     setAllSearchError('')
     const timeout = window.setTimeout(() => {
-      apiRef.current
-        .search(paneId, query, appliedTarget)
+      const searchRequest = comparison
+        ? apiRef.current.search(paneId, query, appliedTarget, comparison.head)
+        : apiRef.current.search(paneId, query, appliedTarget)
+      searchRequest
         .then((next) => {
           if (request !== searchGeneration.current) return
           setAllSearchResult(next)
@@ -474,7 +493,7 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
       window.clearTimeout(timeout)
       if (searchGeneration.current === request) searchGeneration.current += 1
     }
-  }, [paneId, appliedTarget, diffSearch, searchScope])
+  }, [paneId, appliedTarget, comparison?.head, diffSearch, searchScope])
 
   useEffect(() => {
     setActiveDiffMatch(0)
@@ -670,65 +689,75 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, onClose }:
             <strong id="git-diff-title" title={summary?.root ?? panePath}>{summary?.root ?? panePath}</strong>
           </div>
           <div className="git-diff-target">
-            <span className="git-diff-branch" title="Current branch">{summary?.branch || 'HEAD'}</span>
-            <span aria-hidden="true">vs</span>
-            <div className="git-diff-target-combo">
-              <input
-                value={targetDraft}
-                onChange={(event) => {
-                  setTargetDraft(event.target.value)
-                  setDropdownOpen(true)
-                  setFiltering(true)
-                  setHighlight(0)
-                }}
-                onKeyDown={onTargetKeyDown}
-                onFocus={() => {
-                  setDropdownOpen(true)
-                  setFiltering(false)
-                  setHighlight(0)
-                }}
-                onClick={() => {
-                  setDropdownOpen(true)
-                  setFiltering(false)
-                  setHighlight(0)
-                }}
-                onBlur={(event) => {
-                  setDropdownOpen(false)
-                  applyTarget(event.currentTarget.value)
-                }}
-                placeholder={summary?.targetMode === 'auto' && summary.target
-                  ? `auto - ${summary.target}`
-                  : 'auto'}
-                role="combobox"
-                aria-expanded={dropdownOpen && suggestions.length > 0}
-                aria-autocomplete="list"
-                aria-controls="git-diff-branch-listbox"
-                aria-label="Diff target branch"
-                spellCheck={false}
-              />
-              {dropdownOpen && suggestions.length > 0 ? (
-                <ul className="git-diff-branch-list" id="git-diff-branch-listbox" role="listbox" aria-label="Branches">
-                  {suggestions.map((branch, index) => (
-                    <li key={branch} role="option" aria-selected={branch === (appliedTarget ?? summary?.target)}>
-                      <button
-                        type="button"
-                        tabIndex={-1}
-                        className={index === activeHighlight ? 'highlighted' : undefined}
-                        onMouseDown={(event) => {
-                          event.preventDefault()
-                          chooseBranch(branch)
-                        }}
-                        onMouseEnter={() => setHighlight(index)}
-                      >
-                        {branch === AUTO_TARGET
-                          ? <em className="git-diff-auto-option">auto - branch point</em>
-                          : branch}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
+            {comparison ? (
+              <>
+                <span className="git-diff-branch" title={comparison.head}>{comparison.headLabel}</span>
+                <span aria-hidden="true">vs</span>
+                <span className="git-diff-fixed-ref" title={comparison.base}>{comparison.baseLabel}</span>
+              </>
+            ) : (
+              <>
+                <span className="git-diff-branch" title="Current branch">{summary?.branch || 'HEAD'}</span>
+                <span aria-hidden="true">vs</span>
+                <div className="git-diff-target-combo">
+                  <input
+                    value={targetDraft}
+                    onChange={(event) => {
+                      setTargetDraft(event.target.value)
+                      setDropdownOpen(true)
+                      setFiltering(true)
+                      setHighlight(0)
+                    }}
+                    onKeyDown={onTargetKeyDown}
+                    onFocus={() => {
+                      setDropdownOpen(true)
+                      setFiltering(false)
+                      setHighlight(0)
+                    }}
+                    onClick={() => {
+                      setDropdownOpen(true)
+                      setFiltering(false)
+                      setHighlight(0)
+                    }}
+                    onBlur={(event) => {
+                      setDropdownOpen(false)
+                      applyTarget(event.currentTarget.value)
+                    }}
+                    placeholder={summary?.targetMode === 'auto' && summary.target
+                      ? `auto - ${summary.target}`
+                      : 'auto'}
+                    role="combobox"
+                    aria-expanded={dropdownOpen && suggestions.length > 0}
+                    aria-autocomplete="list"
+                    aria-controls="git-diff-branch-listbox"
+                    aria-label="Diff target branch"
+                    spellCheck={false}
+                  />
+                  {dropdownOpen && suggestions.length > 0 ? (
+                    <ul className="git-diff-branch-list" id="git-diff-branch-listbox" role="listbox" aria-label="Branches">
+                      {suggestions.map((branch, index) => (
+                        <li key={branch} role="option" aria-selected={branch === (appliedTarget ?? summary?.target)}>
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            className={index === activeHighlight ? 'highlighted' : undefined}
+                            onMouseDown={(event) => {
+                              event.preventDefault()
+                              chooseBranch(branch)
+                            }}
+                            onMouseEnter={() => setHighlight(index)}
+                          >
+                            {branch === AUTO_TARGET
+                              ? <em className="git-diff-auto-option">auto - branch point</em>
+                              : branch}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
           <button type="button" onClick={onClose} aria-label="Close diff view"><X /></button>
         </header>

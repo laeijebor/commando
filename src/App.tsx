@@ -87,6 +87,7 @@ import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
+import { GitDiffModal, type GitDiffComparison } from './GitDiffModal'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { createTmuxHttpApi } from './tmuxCreateApi'
@@ -98,7 +99,7 @@ import { WebPaneCard } from './WebPaneCard'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
-import { createPrsApi, type PrsApiClient } from './prsApi'
+import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -852,6 +853,10 @@ export function App() {
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
+  const [prDiff, setPrDiff] = useState<{
+    pane: TmuxPane
+    comparison: GitDiffComparison
+  } | null>(null)
   const switchHudTab = useCallback((tab: HudTab) => {
     setHudTab(tab)
     storeHudTab(tab)
@@ -1436,6 +1441,22 @@ export function App() {
     const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
     if (matches.length !== 1) return
     jumpToPane(matches[0].id, targetId)
+  }
+
+  const openPrDiff = (pr: PrSummary) => {
+    const targetId = pr.commandoMarker?.targetId
+    if (!targetId) return
+    const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
+    if (matches.length !== 1) return
+    setPrDiff({
+      pane: matches[0],
+      comparison: {
+        base: pr.baseRefOid,
+        head: pr.headRefOid,
+        baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7),
+        headLabel: pr.headRefName || pr.headRefOid.slice(0, 7),
+      },
+    })
   }
 
   const openPaneMaximized = (paneId: string) => {
@@ -2844,6 +2865,7 @@ export function App() {
               onAttentionChange={setPrsAttention}
               liveTargetIds={livePaneTargetIds}
               onJumpToTarget={jumpToPaneTarget}
+              onOpenDiff={openPrDiff}
             />
           </div>
           <button type="button" className="quick-jump" onClick={() => setPaletteOpen(true)}>
@@ -2860,6 +2882,18 @@ export function App() {
 
       {paneActionError ? (
         <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
+      ) : null}
+
+      {prDiff ? (
+        <GitDiffModal
+          key={`${prDiff.pane.id}:${prDiff.comparison.head}`}
+          paneId={prDiff.pane.id}
+          panePath={prDiff.pane.path}
+          api={gitDiffApi}
+          initialSummary={null}
+          comparison={prDiff.comparison}
+          onClose={() => setPrDiff(null)}
+        />
       ) : null}
 
       {paneMenu && contextPane ? (

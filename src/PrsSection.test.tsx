@@ -166,6 +166,37 @@ describe('PrsSection', () => {
     expect(screen.queryByRole('button', { name: /Jump to producing pane/ })).not.toBeInTheDocument()
   })
 
+  it('opens the marked PR diff from its LOC counts', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    const selected = pr({ commandoMarker: { version: 1, targetId, relation: 'created' } })
+    const onOpenDiff = vi.fn()
+    stubFetch({ list: () => jsonResponse({ list: listWith([selected]) }) })
+
+    render(
+      <PrsSection
+        token="t"
+        liveTargetIds={new Set([targetId])}
+        onOpenDiff={onOpenDiff}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +100 -25' }))
+
+    expect(onOpenDiff).toHaveBeenCalledWith(selected)
+  })
+
+  it('keeps LOC counts non-interactive when the marked pane is no longer live', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    stubFetch({
+      list: () => jsonResponse({
+        list: listWith([pr({ commandoMarker: { version: 1, targetId, relation: 'created' } })]),
+      }),
+    })
+
+    render(<PrsSection token="t" liveTargetIds={new Set()} onOpenDiff={vi.fn()} />)
+    expect(await screen.findByText('+100')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open diff for PR/ })).not.toBeInTheDocument()
+  })
+
   it('opens a hover popover with details after a delay and lazily loads thread excerpts', async () => {
     stubFetch({
       list: () => jsonResponse({

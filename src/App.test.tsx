@@ -491,6 +491,55 @@ describe('HUD tabs', () => {
       expect(screen.getByTestId('renderer-%13').closest('.terminal-pane')).toHaveClass('is-focused')
     })
   })
+
+  it('opens the marked pane diff at the PR base and head OIDs', async () => {
+    const targetId = adjacentPane.targetId
+    const baseRefOid = '1111111111111111111111111111111111111111'
+    const headRefOid = '2222222222222222222222222222222222222222'
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const json = (value: unknown) => new Response(JSON.stringify(value), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (url.includes('/api/prs/prefs')) {
+        return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+      }
+      if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
+      if (url.includes('/api/prs/repo')) return json({ repo: null })
+      if (url.includes('/api/prs')) {
+        return json({ list: {
+          repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false,
+          mineTruncated: false, fetchedAt: 0,
+          pullRequests: [{
+            number: 12, title: 'feat: pane diff', url: 'https://github.com/acme/widgets/pull/12',
+            state: 'open', isDraft: false, author: 'leo', bodyExcerpt: '', additions: 379, deletions: 46,
+            changedFiles: 1, commitCount: 1, unresolvedThreads: 0, threadsTruncated: false,
+            reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false, checks: null,
+            createdAt: '', updatedAt: new Date().toISOString(), headRefName: 'feat/pane-diff',
+            baseRefName: 'main', headRefOid, baseRefOid, viewerIsAuthor: true, viewerReviewRequested: false,
+            commandoMarker: { version: 1, targetId, relation: 'created' },
+          }],
+        } })
+      }
+      if (url.includes('/api/git/summary')) {
+        return json({ isRepo: true, root: adjacentPane.path, branch: 'feat/pane-diff', files: [] })
+      }
+      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+    })
+
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByTitle(headRefOid)).toHaveTextContent('feat/pane-diff')
+    expect(screen.getByTitle(baseRefOid)).toHaveTextContent('main')
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      `/api/git/summary?paneId=%2513&target=${baseRefOid}&head=${headRefOid}`,
+      expect.any(Object),
+    ))
+  })
 })
 
 const openWebPane = {

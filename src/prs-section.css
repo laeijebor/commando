@@ -260,6 +260,16 @@
 .pr-diffstat .plus { color: var(--green); }
 .pr-diffstat .minus { color: var(--red); }
 
+.pr-diff-link {
+  cursor: pointer;
+}
+
+.pr-diff-link:hover,
+.pr-diff-link:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  outline: none;
+}
+
 .pr-pop {
   position: fixed;
   z-index: 60;

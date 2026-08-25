@@ -71,6 +71,46 @@ describe('GitDiffModal engine and layout toggles', () => {
     expect(window.localStorage.getItem('commando-diff-engine')).toBe('delta')
     expect(window.localStorage.getItem('commando-diff-display')).toBe('inline')
   })
+
+  it('keeps an explicit PR comparison fixed across summary and file requests', async () => {
+    const api = fakeApi()
+    render(
+      <GitDiffModal
+        paneId="%1"
+        panePath="/repo"
+        api={api}
+        initialSummary={summary}
+        comparison={{
+          base: 'base-oid',
+          head: 'head-oid',
+          baseLabel: 'main',
+          headLabel: 'feature/pr-diff',
+        }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => expect(api.summary).toHaveBeenCalledWith('%1', 'base-oid', 'head-oid'))
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalledWith(
+      '%1',
+      'a.ts',
+      expect.objectContaining({ target: 'base-oid', head: 'head-oid' }),
+    ))
+    expect(screen.getByTitle('head-oid')).toHaveTextContent('feature/pr-diff')
+    expect(screen.getByTitle('base-oid')).toHaveTextContent('main')
+    expect(screen.queryByRole('combobox', { name: 'Diff target branch' })).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), {
+      target: { value: 'needle' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+    await waitFor(() => expect(api.search).toHaveBeenCalledWith(
+      '%1',
+      'needle',
+      'base-oid',
+      'head-oid',
+    ))
+  })
 })
 
 describe('GitDiffModal changed file navigation', () => {
