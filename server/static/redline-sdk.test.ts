@@ -207,6 +207,66 @@ describe('redline-choice', () => {
   })
 })
 
+describe('resolved controls', () => {
+  it('renders the recorded answer instead of a live question', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro" resolved answer="Pro" answered-in="Round 2" note="cheaper"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.dataset.redlineResolved).toBe('1')
+    expect(host.querySelector('.redline-prompt')?.textContent).toBe('Which plan?')
+    expect(host.querySelector('.redline-resolved-answer')?.textContent).toBe('\u2713 Pro')
+    expect(host.querySelector('.redline-resolved-note')?.textContent).toBe('cheaper')
+    expect(host.querySelector('.redline-resolved-when')?.textContent).toBe('Round 2')
+    expect(host.querySelector('button.redline-queue')).toBeNull()
+    expect(host.querySelector('input')).toBeNull()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('renders one chip per answer for a multi-select', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="f" prompt="Keep which?" options="A,B,C" multiple resolved answer="A, C"></redline-choice>'
+    const chips = [...document.querySelectorAll('.redline-resolved-answer')].map((c) => c.textContent)
+    expect(chips).toEqual(['\u2713 A', '\u2713 C'])
+  })
+
+  it('reopens into a live control pre-filled with the recorded answer', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro" resolved answer="Pro" note="cheaper"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    ;(host.querySelector('button.redline-reopen') as HTMLButtonElement).click()
+    expect(host.hasAttribute('resolved')).toBe(false)
+    expect(host.dataset.redlineResolved).toBeUndefined()
+    const checked = host.querySelector('input:checked') as HTMLInputElement
+    expect(checked?.value).toBe('Pro')
+    expect((host.querySelector('.redline-comment') as HTMLTextAreaElement).value).toBe('cheaper')
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ answer: 'Pro', note: 'cheaper', queueKey: 'plan' })
+  })
+
+  it('restores a question\'s author fields on reopen', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-question key="cfg" prompt="Tune it" resolved answer="poll=30"><label>Poll <input name="poll" value="30"></label></redline-question>'
+    const host = document.querySelector('redline-question') as HTMLElement
+    expect(host.querySelector('input[name="poll"]')).toBeNull()
+    ;(host.querySelector('button.redline-reopen') as HTMLButtonElement).click()
+    expect((host.querySelector('input[name="poll"]') as HTMLInputElement)?.value).toBe('30')
+    expect(host.querySelector('button.redline-queue')).not.toBeNull()
+  })
+
+  it('omits the reopen button when locked', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-approve key="x" prompt="ok?" resolved answer="approve" locked></redline-approve>'
+    expect(document.querySelector('button.redline-reopen')).toBeNull()
+    expect(document.querySelector('.redline-resolved-when')?.textContent).toBe('Answered earlier')
+  })
+})
+
 describe('redline-approve', () => {
   it('queues verdict and optional note separately', () => {
     const calls = loadSdk()

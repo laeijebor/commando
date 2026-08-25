@@ -296,6 +296,49 @@
   background: color-mix(in oklab, #d99124 14%, transparent);
   border-color: color-mix(in oklab, #d99124 40%, transparent);
 }
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] {
+  background: color-mix(in oklab, #2fbf71 6%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::before {
+  background: linear-gradient(135deg, color-mix(in oklab, #2fbf71 40%, transparent),
+              transparent 45%, color-mix(in oklab, #2fbf71 22%, transparent));
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::after {
+  background: radial-gradient(closest-side, color-mix(in oklab, #2fbf71 12%, transparent), transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] :where(.redline-prompt) {
+  opacity: .85; font-weight: 600;
+}
+:where(.redline-resolved-answers) {
+  display: flex; flex-wrap: wrap; gap: .4rem;
+}
+:where(.redline-resolved-answer) {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .4rem .85rem; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
+  background: color-mix(in oklab, #2fbf71 14%, transparent);
+  color: #2fbf71; font-weight: 650; font-size: .9rem;
+}
+:where(.redline-resolved-note) {
+  margin: .6rem 0 0; padding: .5rem .7rem; border-radius: 9px;
+  border: 1px solid color-mix(in oklab, currentColor 14%, transparent);
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  font-size: .85rem; opacity: .85;
+}
+:where(.redline-resolved-meta) {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
+  margin-top: .7rem; font-size: .78rem; opacity: .7;
+}
+:where(button.redline-reopen) {
+  padding: .3rem .7rem; cursor: pointer;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  border-radius: 8px; background: transparent; color: inherit;
+  font: inherit; font-size: .78rem;
+  transition: background .14s ease;
+}
+:where(button.redline-reopen:hover) {
+  background: color-mix(in oklab, currentColor 10%, transparent);
+}
 @keyframes redline-badge-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
@@ -517,10 +560,11 @@
       // the document is no longer 'loading' (or in tests, where innerHTML
       // parses the whole subtree upfront) children are already present and
       // render() runs immediately as before.
+      const start = () => this.renderForState()
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => this.render(), { once: true })
+        document.addEventListener('DOMContentLoaded', start, { once: true })
       } else {
-        this.render()
+        start()
       }
     }
     disconnectedCallback() {
@@ -592,6 +636,93 @@
     hydrate() {}
     draft() { return null }
     render() {}
+    /**
+     * A control the agent has marked settled renders its recorded answer
+     * instead of a live question, so a decision the user already sent stays
+     * visible in the box that asked it. The answer lives in the attributes
+     * the agent rewrites, so it survives reloads with no daemon retention.
+     */
+    renderForState() {
+      if (this.hasAttribute('resolved')) this.renderResolved()
+      else this.render()
+    }
+    resolvedAnswers() {
+      const answer = this.getAttribute('answer') || ''
+      // Multi-select queues its answer as `a, b` — split it back into chips.
+      return answer ? answer.split(', ').map((value) => value.trim()).filter(Boolean) : []
+    }
+    renderResolved() {
+      // Author children (a redline-question's own fields) are detached rather
+      // than dropped so Reopen can rebuild the live control exactly.
+      const stash = document.createDocumentFragment()
+      while (this.firstChild) stash.append(this.firstChild)
+      this._resolvedStash = stash
+      this.dataset.redlineResolved = '1'
+
+      const heading = promptHeading(this)
+      this.append(heading)
+
+      const answers = this.resolvedAnswers()
+      if (answers.length > 0) {
+        const list = document.createElement('div')
+        list.className = 'redline-resolved-answers'
+        for (const answer of answers) {
+          const chip = document.createElement('span')
+          chip.className = 'redline-resolved-answer'
+          chip.textContent = `\u2713 ${answer}`
+          list.append(chip)
+        }
+        this.append(list)
+      }
+
+      const noteText = this.getAttribute('note')
+      if (noteText) {
+        const note = document.createElement('p')
+        note.className = 'redline-resolved-note'
+        note.textContent = noteText
+        this.append(note)
+      }
+
+      const meta = document.createElement('div')
+      meta.className = 'redline-resolved-meta'
+      const when = document.createElement('span')
+      when.className = 'redline-resolved-when'
+      when.textContent = this.getAttribute('answered-in') || 'Answered earlier'
+      meta.append(when)
+      if (!this.hasAttribute('locked')) {
+        const reopen = document.createElement('button')
+        reopen.type = 'button'
+        reopen.className = 'redline-reopen'
+        reopen.textContent = this.getAttribute('reopen-label') || 'Reopen'
+        reopen.addEventListener('click', () => this.reopen())
+        meta.append(reopen)
+      }
+      this.append(meta)
+    }
+    /** Restores the live control, pre-filled with the recorded answer. */
+    reopen() {
+      this.removeAttribute('resolved')
+      delete this.dataset.redlineResolved
+      this.replaceChildren()
+      if (this._resolvedStash) {
+        this.append(this._resolvedStash)
+        this._resolvedStash = null
+      }
+      const answer = this.getAttribute('answer') || ''
+      const note = this.getAttribute('note') || ''
+      this.render()
+      if (answer) {
+        try {
+          this.hydrate({ question: this.prompt(), answer, note })
+        } catch (error) {
+          console.warn('redline: could not restore the recorded answer', error)
+        }
+      }
+      if (this._noteInput) this._noteInput.value = note
+      this._localBaseline = this.currentBaseline()
+      renderPendingState(this)
+      this.dispatchEvent(new CustomEvent('redline-reopen', { bubbles: true }))
+    }
   }
 
   class RedlineChoice extends RedlineElement {
