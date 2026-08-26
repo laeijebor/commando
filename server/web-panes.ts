@@ -5,6 +5,8 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import {
   MAX_WEB_PANES,
   MAX_WEB_PANE_URL_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
   type WebPane,
   type WebPaneEngine,
   type WebPanePlacement,
@@ -19,6 +21,7 @@ const TMUX_SOCKET_HASH = /^[0-9a-f]{64}$/
 const MAX_ALLOWED_ORIGINS = 64
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
+const LAYOUT_STATES = ['pending', 'settled'] as const
 
 type PersistedWebPane = WebPane & { tmuxSocketHash?: string }
 
@@ -87,12 +90,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function parseAnchorSize(value: unknown): { cols: number; rows: number } | undefined | null {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return null
+  const { cols, rows } = value
+  if (
+    !Number.isSafeInteger(cols) || (cols as number) < 1 || (cols as number) > MAX_TERMINAL_COLS ||
+    !Number.isSafeInteger(rows) || (rows as number) < 1 || (rows as number) > MAX_TERMINAL_ROWS
+  ) return null
+  return { cols: cols as number, rows: rows as number }
+}
+
+function layoutSplitApplied(
+  current: { cols: number; rows: number },
+  original: { cols: number; rows: number },
+  placement: 'right' | 'below',
+): boolean {
+  const currentExtent = placement === 'right' ? current.cols : current.rows
+  const originalExtent = placement === 'right' ? original.cols : original.rows
+  return currentExtent <= Math.max(1, Math.floor(originalExtent * 0.75))
+}
+
 function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): PersistedWebPane | null {
   if (!isRecord(value)) return null
   const {
-    id, url, sessionId, windowId, anchorPaneId, placement, engine, openedBy, openerLabel,
+    id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
+    engine, openedBy, openerLabel,
     status, createdAt, tmuxSocketHash,
   } = value
+  const parsedAnchorSize = parseAnchorSize(anchorSize)
   if (
     typeof id !== 'string' || !WEB_PANE_ID.test(id) ||
     typeof url !== 'string' ||
@@ -100,6 +126,8 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     typeof windowId !== 'string' || !WINDOW_ID.test(windowId) ||
     typeof anchorPaneId !== 'string' || !PANE_ID.test(anchorPaneId) ||
     typeof placement !== 'string' || !PLACEMENTS.includes(placement as WebPanePlacement) ||
+    (layoutState !== undefined && !LAYOUT_STATES.includes(layoutState as typeof LAYOUT_STATES[number])) ||
+    parsedAnchorSize === null ||
     // Records persisted before the engine field existed default to webkit.
     (engine !== undefined && !ENGINES.includes(engine as WebPaneEngine)) ||
     (openedBy !== 'agent' && openedBy !== 'user') ||
@@ -118,6 +146,10 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     windowId,
     anchorPaneId,
     placement: placement as WebPanePlacement,
+    ...(layoutState !== undefined
+      ? { layoutState: layoutState as typeof LAYOUT_STATES[number] }
+      : {}),
+    ...(parsedAnchorSize !== undefined ? { anchorSize: parsedAnchorSize } : {}),
     engine: (engine as WebPaneEngine | undefined) ?? 'webkit',
     openedBy,
     ...(openerLabel !== undefined ? { openerLabel } : {}),
@@ -221,6 +253,7 @@ export type MoveWebPaneTarget = {
   placement: 'right' | 'below'
   sessionId: string
   windowId: string
+  anchorSize?: { cols: number; rows: number }
 }
 
 type PruneWindow = { id: string; sessionId: string; paneIds: readonly string[] }
@@ -317,6 +350,9 @@ export class WebPaneService {
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
       placement,
+      ...(input.anchorSize
+        ? { layoutState: 'pending' as const, anchorSize: input.anchorSize }
+        : {}),
       engine,
       openedBy: input.openedBy,
       ...(input.openerLabel !== undefined ? { openerLabel: input.openerLabel } : {}),
@@ -396,6 +432,12 @@ export class WebPaneService {
       sessionId: target.sessionId,
       windowId: target.windowId,
     }
+    delete moved.layoutState
+    delete moved.anchorSize
+    if (target.anchorSize) {
+      moved.layoutState = 'pending'
+      moved.anchorSize = target.anchorSize
+    }
     this.panes.set(id, moved)
     this.persist()
     return moved
@@ -435,20 +477,40 @@ export class WebPaneService {
     return navigated
   }
 
-  /**
-   * Rewrites any persisted 'auto' placement (from before placements were
-   * resolved at open) to a concrete direction once the anchor pane's
-   * geometry is available. Returns true when anything changed.
-   */
-  resolveAutoPlacements(
+  /** Fills placement and first-render sizing metadata on legacy records. */
+  resolveLayoutMetadata(
     paneSizeFor: (paneId: string) => { cols: number; rows: number } | undefined,
   ): boolean {
     let changed = false
     for (const [id, pane] of this.panes) {
-      if (pane.placement !== 'auto') continue
       const size = paneSizeFor(pane.anchorPaneId)
       if (!size) continue
-      this.panes.set(id, { ...pane, placement: resolveAutoPlacement(size) })
+      const placement = pane.placement === 'auto'
+        ? resolveAutoPlacement(size)
+        : pane.placement
+      const next: WebPane = {
+        ...pane,
+        placement,
+        layoutState: pane.layoutState ?? 'pending',
+      }
+      if (next.layoutState === 'pending') next.anchorSize ??= size
+      else delete next.anchorSize
+      if (
+        next.layoutState === 'pending' &&
+        pane.layoutState === 'pending' &&
+        next.anchorSize &&
+        layoutSplitApplied(size, next.anchorSize, placement)
+      ) {
+        next.layoutState = 'settled'
+        delete next.anchorSize
+      }
+      if (
+        next.placement === pane.placement &&
+        next.layoutState === pane.layoutState &&
+        next.anchorSize?.cols === pane.anchorSize?.cols &&
+        next.anchorSize?.rows === pane.anchorSize?.rows
+      ) continue
+      this.panes.set(id, next)
       changed = true
     }
     if (changed) this.persist()
@@ -503,7 +565,10 @@ export class WebPaneService {
       // the web pane's anchor disappeared.
       if (window.paneIds.length === 0) continue
       if (!window.paneIds.includes(pane.anchorPaneId)) {
-        this.panes.set(id, { ...pane, anchorPaneId: window.paneIds[0] })
+        const reanchored: WebPane = { ...pane, anchorPaneId: window.paneIds[0] }
+        delete reanchored.layoutState
+        delete reanchored.anchorSize
+        this.panes.set(id, reanchored)
         changed = true
       }
     }

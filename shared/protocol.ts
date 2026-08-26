@@ -319,6 +319,14 @@ export type WebPane = {
   windowId: string
   anchorPaneId: string
   placement: WebPanePlacement
+  /**
+   * A newly inserted tile first shares the anchor's current branch footprint.
+   * Once tmux has applied the anchor's measured half-size grid, the settled
+   * client reconstructs that footprint from the live anchor size.
+   */
+  layoutState?: 'pending' | 'settled'
+  /** Pre-split anchor size retained only while layoutState is pending. */
+  anchorSize?: { cols: number; rows: number }
   engine: WebPaneEngine
   openedBy: 'agent' | 'user'
   openerLabel?: string

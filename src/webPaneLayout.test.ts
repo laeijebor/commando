@@ -4,11 +4,11 @@ import { layoutTreePanes, parseWindowLayout } from '../shared/window-layout'
 import {
   insertWebPaneLeaves,
   isWebPaneLeafId,
-  restoreWebPaneAnchorSizes,
 } from './webPaneLayout'
 
 const TWO_PANE_LAYOUT = 'bb62,208x50,0,0{104x50,0,0,12,103x50,105,0,13}'
 const TWO_STACKED_PANE_LAYOUT = 'bb62,104x101,0,0[104x50,0,0,12,104x50,0,51,13]'
+const NESTED_SETTLED_LAYOUT = 'bb62,156x101,0,0{52x101,0,0[52x50,0,0,12,52x50,0,51,14],103x101,53,0,13}'
 
 function webPane(overrides: Partial<WebPane> = {}): WebPane {
   return {
@@ -56,8 +56,9 @@ describe('insertWebPaneLeaves', () => {
     expect(rightAnchorSplit).toMatchObject({ kind: 'split', direction: 'row' })
 
     const below = insertWebPaneLeaves(tree, [webPane({ placement: 'below' })])
-    const belowAnchorSplit = below.kind === 'split' ? below.children[0] : below
-    expect(belowAnchorSplit).toMatchObject({ kind: 'split', direction: 'column' })
+    expect(below).toMatchObject({ kind: 'split', direction: 'column' })
+    if (below.kind !== 'split') throw new Error('expected promoted below split')
+    expect(below.children[0]).toMatchObject({ kind: 'split', direction: 'row' })
   })
 
   it('auto placement splits wide panes to the right and tall panes below', () => {
@@ -90,17 +91,40 @@ describe('insertWebPaneLeaves', () => {
     expect(stackedResult.children[1]).toMatchObject({ kind: 'pane', paneId: '%13', rows: 50 })
   })
 
-  it('restores the anchor footprint before measured sizes are written back to tmux', () => {
-    const tree = parseWindowLayout(TWO_PANE_LAYOUT)!
-    const measured = new Map([
-      ['%12', { cols: 52, rows: 50 }],
-      ['%13', { cols: 103, rows: 50 }],
-    ])
+  it('reconstructs a settled tile footprint without inflating the tmux anchor grid', () => {
+    const settledTree = parseWindowLayout('bb62,156x50,0,0{52x50,0,0,12,103x50,53,0,13}')!
+    const result = insertWebPaneLeaves(settledTree, [webPane({
+      placement: 'right',
+      layoutState: 'settled',
+    })])
 
-    expect(restoreWebPaneAnchorSizes(tree, [webPane({ placement: 'right' })], measured)).toEqual(new Map([
-      ['%12', { cols: 104, rows: 50 }],
-      ['%13', { cols: 103, rows: 50 }],
-    ]))
+    expect(result).toMatchObject({ kind: 'split', direction: 'row', cols: 156 })
+    if (result.kind !== 'split') throw new Error('expected root split')
+    expect(result.children[0]).toMatchObject({ kind: 'split', direction: 'row', cols: 104 })
+    if (result.children[0]?.kind !== 'split') throw new Error('expected anchor split')
+    expect(result.children[0].children).toEqual([
+      expect.objectContaining({ paneId: '%12', cols: 52 }),
+      expect.objectContaining({ paneId: 'w-abcd1234', cols: 52 }),
+    ])
+    expect(result.children[1]).toMatchObject({ paneId: '%13', cols: 103 })
+  })
+
+  it('promotes a tile split to the aligned tmux subtree so every terminal grid can fit', () => {
+    const tree = parseWindowLayout(NESTED_SETTLED_LAYOUT)!
+    const result = insertWebPaneLeaves(tree, [webPane({
+      placement: 'right',
+      layoutState: 'settled',
+    })])
+
+    expect(result).toMatchObject({ kind: 'split', direction: 'row', cols: 156 })
+    if (result.kind !== 'split') throw new Error('expected root split')
+    const wrapper = result.children[0]
+    expect(wrapper).toMatchObject({ kind: 'split', direction: 'row', cols: 104 })
+    if (wrapper?.kind !== 'split') throw new Error('expected promoted tile split')
+    expect(wrapper.children[0]).toMatchObject({ kind: 'split', direction: 'column', cols: 52 })
+    expect(layoutTreePanes(wrapper.children[0]).map((pane) => pane.paneId)).toEqual(['%12', '%14'])
+    expect(wrapper.children[1]).toMatchObject({ paneId: 'w-abcd1234', cols: 52 })
+    expect(result.children[1]).toMatchObject({ paneId: '%13', cols: 103 })
   })
 
   it('docks to the right edge when the anchor pane is not in the tree', () => {

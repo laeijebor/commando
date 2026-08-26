@@ -1161,13 +1161,13 @@ async function main(): Promise<void> {
           companion?.publish()
         }
         const webPanesPruned = webPanes.prune(snapshot.windows)
-        // Placements persisted as 'auto' by older daemons resolve to a
-        // concrete direction on the first snapshot that shows their anchor.
-        const webPanePlacementsResolved = webPanes.resolveAutoPlacements((paneId) => {
+        // Legacy tiles and pending first-render splits resolve from the first
+        // healthy snapshot that shows their anchor geometry.
+        const webPaneLayoutMetadataResolved = webPanes.resolveLayoutMetadata((paneId) => {
           const pane = paneForId(paneId)
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
-        if (webPanesPruned || webPanePlacementsResolved) {
+        if (webPanesPruned || webPaneLayoutMetadataResolved) {
           publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)

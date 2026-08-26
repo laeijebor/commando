@@ -564,6 +564,7 @@ export class WebPanesApi {
           placement,
           sessionId: anchorPane.sessionId,
           windowId: anchorPane.windowId,
+          anchorSize: { cols: anchorPane.width, rows: anchorPane.height },
         })
         this.dependencies.onChange()
         writeJson(response, 200, {

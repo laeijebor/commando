@@ -1,7 +1,6 @@
 import type { WebPane, WebPanePlacement } from '../shared/protocol'
 import { resolveAutoPlacement } from '../shared/web-pane-placement'
 import {
-  layoutTreePanes,
   type WindowLayoutNode,
   type WindowLayoutPane,
 } from '../shared/window-layout'
@@ -47,90 +46,113 @@ function splitExtent(extent: number): [anchor: number, web: number] {
   return [anchor, Math.max(1, extent - anchor)]
 }
 
-function splitAnchor(anchor: WindowLayoutPane, webPane: WebPane): WindowLayoutNode {
-  const placement = resolvePlacement(webPane.placement, anchor)
+function splitApplied(
+  webPane: WebPane,
+  anchor: { cols: number; rows: number },
+  placement: 'right' | 'below',
+): boolean {
+  if (webPane.layoutState === 'settled') return true
+  if (webPane.layoutState !== 'pending' || !webPane.anchorSize) return false
+  const current = placement === 'right' ? anchor.cols : anchor.rows
+  const original = placement === 'right' ? webPane.anchorSize.cols : webPane.anchorSize.rows
+  return current <= Math.max(1, Math.floor(original * 0.75))
+}
+
+function splitTarget(
+  target: WindowLayoutNode,
+  webPane: WebPane,
+  placement: 'right' | 'below',
+): WindowLayoutNode {
   if (placement === 'right') {
-    const [anchorCols, webCols] = splitExtent(anchor.cols)
+    const applied = splitApplied(webPane, target, placement)
+    const [anchorCols, webCols] = applied
+      ? [target.cols, target.cols]
+      : splitExtent(target.cols)
     return {
       kind: 'split',
       direction: 'row',
-      cols: anchor.cols,
-      rows: anchor.rows,
-      left: anchor.left,
-      top: anchor.top,
+      cols: anchorCols + webCols,
+      rows: target.rows,
+      left: target.left,
+      top: target.top,
       children: [
-        { ...anchor, cols: anchorCols },
-        webLeaf(webPane, webCols, anchor.rows, anchor.left + anchorCols, anchor.top),
+        { ...target, cols: anchorCols },
+        webLeaf(webPane, webCols, target.rows, target.left + anchorCols, target.top),
       ],
     }
   }
-  const [anchorRows, webRows] = splitExtent(anchor.rows)
+  const applied = splitApplied(webPane, target, placement)
+  const [anchorRows, webRows] = applied
+    ? [target.rows, target.rows]
+    : splitExtent(target.rows)
   return {
     kind: 'split',
     direction: 'column',
-    cols: anchor.cols,
-    rows: anchor.rows,
-    left: anchor.left,
-    top: anchor.top,
+    cols: target.cols,
+    rows: anchorRows + webRows,
+    left: target.left,
+    top: target.top,
     children: [
-      { ...anchor, rows: anchorRows },
-      webLeaf(webPane, anchor.cols, webRows, anchor.left, anchor.top + anchorRows),
+      { ...target, rows: anchorRows },
+      webLeaf(webPane, target.cols, webRows, target.left, target.top + anchorRows),
     ],
   }
 }
 
-/**
- * A tile shares its anchor's rendered footprint, so the terminal reports only
- * its share of that space. Restore the full footprint before writing measured
- * terminal capacities back to tmux; otherwise each measurement cycle would
- * halve the anchor again.
- */
-export function restoreWebPaneAnchorSizes(
-  tree: WindowLayoutNode,
-  webPanes: readonly WebPane[],
-  sizes: ReadonlyMap<string, { cols: number; rows: number }>,
-): Map<string, { cols: number; rows: number }> {
-  const anchors = new Map(layoutTreePanes(tree).map((pane) => [pane.paneId, pane]))
-  const restored = new Map(
-    [...sizes].map(([paneId, size]) => [paneId, { ...size }]),
-  )
+type PanePath = {
+  nodes: WindowLayoutNode[]
+  childIndexes: number[]
+}
 
-  for (const webPane of webPanes) {
-    const anchor = anchors.get(webPane.anchorPaneId)
-    const size = restored.get(webPane.anchorPaneId)
-    if (!anchor || !size) continue
-    const placement = resolvePlacement(webPane.placement, anchor)
-    if (placement === 'right') {
-      const [anchorCols] = splitExtent(anchor.cols)
-      size.cols = Math.max(1, Math.round(size.cols * anchor.cols / anchorCols))
-      anchors.set(anchor.paneId, { ...anchor, cols: anchorCols })
-    } else {
-      const [anchorRows] = splitExtent(anchor.rows)
-      size.rows = Math.max(1, Math.round(size.rows * anchor.rows / anchorRows))
-      anchors.set(anchor.paneId, { ...anchor, rows: anchorRows })
+function pathToPane(node: WindowLayoutNode, paneId: string): PanePath | null {
+  if (node.kind === 'pane') {
+    return node.paneId === paneId ? { nodes: [node], childIndexes: [] } : null
+  }
+  for (let index = 0; index < node.children.length; index += 1) {
+    const childPath = pathToPane(node.children[index], paneId)
+    if (childPath) return {
+      nodes: [node, ...childPath.nodes],
+      childIndexes: [index, ...childPath.childIndexes],
     }
   }
+  return null
+}
 
-  return restored
+function replaceAtPath(
+  node: WindowLayoutNode,
+  childIndexes: readonly number[],
+  replacement: WindowLayoutNode,
+): WindowLayoutNode {
+  if (childIndexes.length === 0 || node.kind === 'pane') return replacement
+  const [index, ...rest] = childIndexes
+  const children = [...node.children]
+  children[index] = replaceAtPath(children[index], rest, replacement)
+  return { ...node, children }
 }
 
 function insertOne(
   node: WindowLayoutNode,
   webPane: WebPane,
 ): { node: WindowLayoutNode; inserted: boolean } {
-  if (node.kind === 'pane') {
-    if (node.paneId !== webPane.anchorPaneId) return { node, inserted: false }
-    return { node: splitAnchor(node, webPane), inserted: true }
+  const path = pathToPane(node, webPane.anchorPaneId)
+  if (!path) return { node, inserted: false }
+  const anchor = path.nodes[path.nodes.length - 1]
+  if (anchor.kind !== 'pane') return { node, inserted: false }
+  const placement = resolvePlacement(webPane.placement, anchor)
+  const splitDirection = placement === 'right' ? 'row' : 'column'
+  let targetDepth = path.nodes.length - 1
+  // A perpendicular tmux ancestor constrains every leaf in its subtree to the
+  // same cross-axis extent, so the synthetic split must wrap that subtree.
+  while (targetDepth > 0) {
+    const parent = path.nodes[targetDepth - 1]
+    if (parent.kind === 'pane' || parent.direction === splitDirection) break
+    targetDepth -= 1
   }
-  for (let index = 0; index < node.children.length; index += 1) {
-    const attempt = insertOne(node.children[index], webPane)
-    if (attempt.inserted) {
-      const children = [...node.children]
-      children[index] = attempt.node
-      return { node: { ...node, children }, inserted: true }
-    }
+  const replacement = splitTarget(path.nodes[targetDepth], webPane, placement)
+  return {
+    node: replaceAtPath(node, path.childIndexes.slice(0, targetDepth), replacement),
+    inserted: true,
   }
-  return { node, inserted: false }
 }
 
 /** When the anchor is not in the visible tree, dock the tile to the right edge. */

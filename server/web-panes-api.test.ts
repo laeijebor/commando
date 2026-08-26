@@ -166,6 +166,8 @@ describe('web panes API', () => {
       openedBy: 'agent',
       openerLabel: 'claude · gizmo',
       placement: 'right',
+      layoutState: 'pending',
+      anchorSize: { cols: 190, rows: 55 },
     })
   })
 

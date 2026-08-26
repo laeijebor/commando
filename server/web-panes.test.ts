@@ -378,6 +378,10 @@ describe('WebPaneService', () => {
       anchorSize: { cols: 200, rows: 50 },
     })
     expect(wide.placement).toBe('right')
+    expect(wide).toMatchObject({
+      layoutState: 'pending',
+      anchorSize: { cols: 200, rows: 50 },
+    })
 
     const tall = service.open({
       ...anchor,
@@ -404,7 +408,7 @@ describe('WebPaneService', () => {
     expect(pane.placement).toBe('below')
   })
 
-  it('resolves persisted auto placements once pane geometry is known', async () => {
+  it('resolves persisted layout metadata once pane geometry is known', async () => {
     const statePath = await temporaryStatePath()
     await writeFile(statePath, `${JSON.stringify({
       version: 1,
@@ -424,17 +428,25 @@ describe('WebPaneService', () => {
     const service = track(new WebPaneService(statePath))
     await service.load()
 
-    const changed = service.resolveAutoPlacements(
+    const changed = service.resolveLayoutMetadata(
       (paneId) => (paneId === '%12' ? { cols: 80, rows: 60 } : undefined),
     )
     expect(changed).toBe(true)
-    expect(service.get('w-0badcafe')?.placement).toBe('below')
+    expect(service.get('w-0badcafe')).toMatchObject({
+      placement: 'below',
+      layoutState: 'pending',
+      anchorSize: { cols: 80, rows: 60 },
+    })
 
     await service.flush()
-    const stored = JSON.parse(await readFile(statePath, 'utf8')) as { panes: Array<{ placement: string }> }
-    expect(stored.panes[0].placement).toBe('below')
+    const stored = JSON.parse(await readFile(statePath, 'utf8')) as { panes: Array<Record<string, unknown>> }
+    expect(stored.panes[0]).toMatchObject({
+      placement: 'below',
+      layoutState: 'pending',
+      anchorSize: { cols: 80, rows: 60 },
+    })
 
-    expect(service.resolveAutoPlacements(() => ({ cols: 80, rows: 60 }))).toBe(false)
+    expect(service.resolveLayoutMetadata(() => ({ cols: 80, rows: 60 }))).toBe(false)
   })
 
   it('leaves an auto placement pending until its anchor geometry appears', async () => {
@@ -457,8 +469,29 @@ describe('WebPaneService', () => {
     const service = track(new WebPaneService(statePath))
     await service.load()
 
-    expect(service.resolveAutoPlacements(() => undefined)).toBe(false)
+    expect(service.resolveLayoutMetadata(() => undefined)).toBe(false)
     expect(service.get('w-0badcafe')?.placement).toBe('auto')
+  })
+
+  it('settles pending tile layouts once the anchor snapshot reflects the split grid', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({
+      ...anchor,
+      url: 'http://localhost:5173/',
+      anchorSize: { cols: 104, rows: 50 },
+    })
+
+    expect(service.resolveLayoutMetadata(() => ({ cols: 52, rows: 50 }))).toBe(true)
+    expect(service.get(pane.id)).toMatchObject({ layoutState: 'settled' })
+    expect(service.get(pane.id)?.anchorSize).toBeUndefined()
+    expect(service.resolveLayoutMetadata(() => ({ cols: 52, rows: 50 }))).toBe(false)
+
+    await service.flush()
+    const restored = track(new WebPaneService(statePath))
+    await restored.load()
+    expect(restored.get(pane.id)).toMatchObject({ layoutState: 'settled' })
+    expect(restored.get(pane.id)?.anchorSize).toBeUndefined()
   })
 
   it('does not prune anything from an empty snapshot', async () => {
@@ -499,15 +532,32 @@ describe('WebPaneService', () => {
       placement: 'below',
       sessionId: '$1',
       windowId: '@3',
+      anchorSize: { cols: 80, rows: 60 },
     })
-    expect(moved).toMatchObject({ id: pane.id, anchorPaneId: '%40', placement: 'below' })
-    expect(service.get(pane.id)).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+    expect(moved).toMatchObject({
+      id: pane.id,
+      anchorPaneId: '%40',
+      placement: 'below',
+      layoutState: 'pending',
+      anchorSize: { cols: 80, rows: 60 },
+    })
+    expect(service.get(pane.id)).toMatchObject({
+      anchorPaneId: '%40',
+      placement: 'below',
+      layoutState: 'pending',
+      anchorSize: { cols: 80, rows: 60 },
+    })
 
     await service.flush()
     const stored = JSON.parse(await readFile(statePath, 'utf8')) as {
-      panes: Array<{ anchorPaneId: string; placement: string }>
+      panes: Array<Record<string, unknown>>
     }
-    expect(stored.panes[0]).toMatchObject({ anchorPaneId: '%40', placement: 'below' })
+    expect(stored.panes[0]).toMatchObject({
+      anchorPaneId: '%40',
+      placement: 'below',
+      layoutState: 'pending',
+      anchorSize: { cols: 80, rows: 60 },
+    })
   })
 
   it('move rejects unknown tiles, bad anchor ids, and non-concrete placements', async () => {

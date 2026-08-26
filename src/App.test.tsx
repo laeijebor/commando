@@ -966,7 +966,7 @@ describe('desktop resize authority', () => {
     expect(renderer.getAttribute('data-measurement-key')).not.toContain('retry')
   })
 
-  it('restores a tile anchor footprint before applying measured tmux geometry', async () => {
+  it('applies the tile anchor actual measured grid size to tmux', async () => {
     await renderAppWithSnapshot()
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
 
@@ -979,7 +979,7 @@ describe('desktop resize authority', () => {
         kind: 'split',
         direction: 'row',
         children: [
-          { kind: 'pane', paneId: pane.id, cols: 300, rows: 40 },
+          { kind: 'pane', paneId: pane.id, cols: 150, rows: 40 },
           { kind: 'pane', paneId: adjacentPane.id, cols: 150, rows: 40 },
         ],
       },
