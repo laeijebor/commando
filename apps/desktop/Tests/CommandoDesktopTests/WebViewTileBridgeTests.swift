@@ -252,7 +252,10 @@ final class WebViewTileBridgeTests: XCTestCase {
             "height": 300,
             "scale": 1,
             "visible": true,
-            "visibleRegions": [["x": 100, "y": 50, "width": 400, "height": 300]],
+            "visibleRegions": [
+                ["x": 100, "y": 50, "width": 100, "height": 300],
+                ["x": 400, "y": 50, "width": 100, "height": 300],
+            ],
             "resizeOwner": false,
             "order": 0,
         ]))
@@ -260,7 +263,17 @@ final class WebViewTileBridgeTests: XCTestCase {
         let hostView = overlay.subviews.compactMap { $0 as? WebViewTileHostView }.first
         XCTAssertNotNil(hostView)
         XCTAssertEqual(hostView?.isHidden, false)
-        XCTAssertEqual(hostView?.visibleRegions.count, 1)
+        XCTAssertEqual(hostView?.visibleRegions.count, 2)
+        let webView = hostView?.subviews.compactMap { $0 as? WKWebView }.first
+        let reviewOverlay = hostView?.subviews.compactMap { $0 as? WebViewTileReviewOverlayView }.first
+        let mask = hostView?.layer?.mask as? CAShapeLayer
+        XCTAssertNotNil(mask)
+        XCTAssertNil(webView?.layer?.mask)
+        XCTAssertNil(reviewOverlay?.layer?.mask)
+        XCTAssertEqual(mask?.frame, hostView?.bounds)
+        XCTAssertEqual(mask?.path?.contains(CGPoint(x: 150, y: 500)), true)
+        XCTAssertEqual(mask?.path?.contains(CGPoint(x: 300, y: 500)), false)
+        XCTAssertEqual(mask?.path?.contains(CGPoint(x: 450, y: 500)), true)
 
         // A frame reporting no visible regions hides the tile.
         bridge.receive(body: envelope(sequence: 4, type: "webview.frame", payload: [

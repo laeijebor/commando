@@ -532,6 +532,88 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(colorDistance(rightColor, holeColor), 0.2)
     }
 
+    func testWebViewTileHostMaskRevealsUnderlyingReviewUI() async throws {
+        let harness = NativeAppKitHarness()
+        try await harness.loadPage(extraBody: """
+            <div id="review-card"></div>
+            <style>
+              #review-card {
+                position: fixed;
+                left: 100px;
+                top: 40px;
+                width: 120px;
+                height: 120px;
+                background: rgb(24, 190, 90);
+              }
+            </style>
+            """)
+        let externalURLHandler = SafeExternalURLHandler(
+            privilegedOrigin: WebOrigin(url: NativeAppKitHarness.origin),
+            opener: harness.opener,
+            failureReporter: IntegrationURLFailureReporter()
+        )
+        let loaded = expectation(description: "native web tile loaded")
+        let tile = WebViewTile(
+            identity: PaneIdentity(paneId: "w-integration", attachmentId: "integration-web-1"),
+            url: NativeAppKitHarness.origin,
+            externalURLHandler: externalURLHandler,
+            scriptEvaluator: { _, _, _, _, completion in
+                completion(.failure(NSError(domain: "unused", code: 1)))
+            },
+            eventSink: { _, event in
+                if case .loaded = event { loaded.fulfill() }
+            }
+        )
+        defer { tile.destroy() }
+        tile.hostView.frame = harness.overlay.bounds
+        harness.overlay.addSubview(tile.hostView)
+        tile.apply(
+            placement: TerminalPlacement(
+                frame: CGRect(x: 40, y: 80, width: 240, height: 120),
+                visibleFrames: [
+                    CGRect(x: 40, y: 80, width: 60, height: 120),
+                    CGRect(x: 220, y: 80, width: 60, height: 120),
+                ],
+                isHidden: false
+            ),
+            frame: PaneFramePayload(
+                identity: tile.identity,
+                x: 40,
+                y: 40,
+                width: 240,
+                height: 120,
+                scale: Double(harness.window.backingScaleFactor),
+                visible: true,
+                visibleRegions: [
+                    .init(x: 40, y: 40, width: 60, height: 120),
+                    .init(x: 220, y: 40, width: 60, height: 120),
+                ],
+                resizeOwner: false,
+                order: 0
+            )
+        )
+        tile.webView.loadHTMLString(
+            "<style>html,body{margin:0;width:100%;height:100%;background:rgb(190,35,35)}</style>",
+            baseURL: NativeAppKitHarness.origin
+        )
+        await fulfillment(of: [loaded], timeout: 2)
+
+        harness.rootView.wantsLayer = true
+        harness.webView.wantsLayer = true
+        harness.overlay.wantsLayer = true
+        harness.rootView.layoutSubtreeIfNeeded()
+        harness.rootView.displayIfNeeded()
+        CATransaction.flush()
+        let image = try offscreenBitmap(of: harness.rootView)
+        let leftColor = try XCTUnwrap(image.colorAt(x: 70, y: 140)?.usingColorSpace(.deviceRGB))
+        let holeColor = try XCTUnwrap(image.colorAt(x: 160, y: 140)?.usingColorSpace(.deviceRGB))
+        let rightColor = try XCTUnwrap(image.colorAt(x: 250, y: 140)?.usingColorSpace(.deviceRGB))
+
+        XCTAssertGreaterThan(holeColor.greenComponent, holeColor.redComponent)
+        XCTAssertGreaterThan(colorDistance(leftColor, holeColor), 0.2)
+        XCTAssertGreaterThan(colorDistance(rightColor, holeColor), 0.2)
+    }
+
     private func offscreenBitmap(of view: NSView) throws -> NSBitmapImageRep {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,
