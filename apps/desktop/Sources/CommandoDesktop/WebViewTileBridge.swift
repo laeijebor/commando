@@ -239,7 +239,6 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let eventSink: (PaneIdentity, WebViewTileEvent) -> Void
     private let scriptEvaluator: WebViewTileScriptEvaluator
     private let mask = CAShapeLayer()
-    private let reviewMask = CAShapeLayer()
     private var reviewHighlights: [WebViewTileReviewHighlight] = []
     private(set) var documentRevision = 0
     private(set) var isDocumentReady = false
@@ -279,14 +278,11 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         reviewOverlay.frame = placement.frame
         let path = CGMutablePath()
         for region in placement.visibleFrames {
-            path.addRect(region.offsetBy(dx: -placement.frame.minX, dy: -placement.frame.minY))
+            path.addRect(region)
         }
-        mask.frame = webView.bounds
+        mask.frame = hostView.bounds
         mask.path = path
-        webView.layer?.mask = mask
-        reviewMask.frame = reviewOverlay.bounds
-        reviewMask.path = path
-        reviewOverlay.layer?.mask = reviewMask
+        hostView.layer?.mask = mask
     }
 
     func reload() {
