@@ -808,6 +808,7 @@
 }
 
 .tile-review-drawer-head {
+  grid-row: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -869,6 +870,10 @@
   font-size: 10px;
 }
 
+.tile-review-drawer-warning {
+  grid-row: 2;
+}
+
 .tile-review-drawer-warning button,
 .tile-review-conflict button {
   flex: none;
@@ -881,6 +886,7 @@
 }
 
 .tile-review-drawer-body {
+  grid-row: 3;
   display: grid;
   grid-template-columns: minmax(170px, 0.72fr) minmax(250px, 1.4fr);
   min-height: 0;
@@ -969,6 +975,10 @@
   min-height: 0;
   overflow: auto;
   padding: 12px;
+}
+
+.tile-review-drawer-error {
+  grid-row: 4;
 }
 
 .tile-review-detail-heading {
