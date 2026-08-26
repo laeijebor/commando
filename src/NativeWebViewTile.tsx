@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { WebPane } from '../shared/protocol'
+import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
+import { redlinePendingSnapshotForPage } from '../shared/redline-response'
 import type { NativeWebViewAttachment, NativeWebViewBridge } from './nativeWebViewBridge'
 import {
   clippingRect,
@@ -45,8 +46,12 @@ export function NativeWebViewTile({
   const slotRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLDivElement>(null)
   const attachmentIdRef = useRef<string | null>(null)
+  const attachmentRef = useRef<NativeWebViewAttachment | null>(null)
+  const pendingQueueRef = useRef(pendingQueue)
   const [attachment, setAttachment] = useState<NativeWebViewAttachment | null>(null)
   const [pageUrl, setPageUrl] = useState(webPane.url)
+  const pageUrlRef = useRef(pageUrl)
+  const latestPendingRevisionRef = useRef<number | undefined>(undefined)
   const loadedRef = useRef(onLoaded)
   const fallbackRef = useRef(onFallback)
   const reviewFallbackRef = useRef(onReviewFallback)
@@ -56,6 +61,22 @@ export function NativeWebViewTile({
   fallbackRef.current = onFallback
   reviewFallbackRef.current = onReviewFallback
   reviewModeRef.current = reviewMode
+  pendingQueueRef.current = pendingQueue
+  pageUrlRef.current = pageUrl
+  const presentPendingSnapshot = useCallback((
+    target: NativeWebViewAttachment,
+    snapshot: WebPanePendingSnapshot,
+    targetUrl: string,
+  ) => {
+    const latestRevision = latestPendingRevisionRef.current
+    if (
+      snapshot.revision !== undefined &&
+      latestRevision !== undefined &&
+      snapshot.revision < latestRevision
+    ) return
+    if (snapshot.revision !== undefined) latestPendingRevisionRef.current = snapshot.revision
+    target.presentPendingSnapshot(targetUrl, redlinePendingSnapshotForPage(snapshot, targetUrl))
+  }, [])
   const requestReviewFallback = useCallback(() => {
     if (reviewFallbackSentRef.current) return
     reviewFallbackSentRef.current = true
@@ -73,21 +94,50 @@ export function NativeWebViewTile({
           if (event.url) setPageUrl(event.url)
           loadedRef.current?.()
         }
+        if (event.type === 'webview.pageResponse') {
+          const queue = pendingQueueRef.current
+          if (!queue?.addResponse) return
+          void queue.addResponse(event.url, event.response).then((snapshot) => {
+            const current = attachmentRef.current
+            if (current?.supportsPageResponses) {
+              presentPendingSnapshot(current, snapshot, pageUrlRef.current)
+            }
+          }).catch(() => undefined)
+        }
         if (event.type === 'webview.failed') fallbackRef.current()
-      })
+      }, { pageResponses: typeof pendingQueueRef.current?.addResponse === 'function' })
     } catch {
       fallbackRef.current()
       return
     }
     attachmentIdRef.current = attachment.attachmentId
+    attachmentRef.current = attachment
     setAttachment(attachment)
     return () => {
       active = false
       if (attachmentIdRef.current === attachment.attachmentId) attachmentIdRef.current = null
+      if (attachmentRef.current === attachment) attachmentRef.current = null
       setAttachment((current) => current === attachment ? null : current)
       attachment.detach()
     }
-  }, [bridge, webPane.id, webPane.url])
+  }, [bridge, presentPendingSnapshot, webPane.id, webPane.url])
+
+  useEffect(() => {
+    latestPendingRevisionRef.current = undefined
+  }, [webPane.id])
+
+  useEffect(() => {
+    if (!attachment?.supportsPageResponses) return
+    let cancelled = false
+    void pendingQueueRef.current?.list().then((snapshot) => {
+      if (!cancelled) {
+        presentPendingSnapshot(attachment, snapshot, pageUrl)
+      }
+    }).catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [attachment, pageUrl, presentPendingSnapshot])
 
   useEffect(() => {
     const attachmentId = attachmentIdRef.current
@@ -132,9 +182,14 @@ export function NativeWebViewTile({
       }
       void attachment.resolveSelectors(items).then(receive, reject)
     },
-    subscribePending: (listener) => (
-      connected ? subscribeWebTilePending(webPane.id, wsToken, listener) : () => undefined
-    ),
+    subscribePending: (listener) => connected
+      ? subscribeWebTilePending(webPane.id, wsToken, (snapshot) => {
+          if (attachment?.supportsPageResponses) {
+            presentPendingSnapshot(attachment, snapshot, pageUrlRef.current)
+          }
+          listener(snapshot)
+        })
+      : () => undefined,
     presentHighlights: ({ hover, queued }) => {
       if (!attachment) return
       const ok = attachment.presentReviewHighlights([
@@ -143,7 +198,7 @@ export function NativeWebViewTile({
       ])
       if (!ok && attachment.supportsReview && reviewModeRef.current) requestReviewFallback()
     },
-  }), [attachment, connected, requestReviewFallback, webPane.id, wsToken])
+  }), [attachment, connected, presentPendingSnapshot, requestReviewFallback, webPane.id, wsToken])
 
   useEffect(() => {
     const slot = slotRef.current

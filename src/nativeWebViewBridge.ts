@@ -1,6 +1,12 @@
 import type { NativeTerminalFramePayload } from './nativeTerminalBridge'
 import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
 import {
+  MAX_RESPONSE_PAYLOAD_BYTES,
+  parseRedlinePageResponse,
+  type RedlinePagePendingSnapshot,
+  type RedlinePageResponse,
+} from '../shared/redline-response'
+import {
   MAX_INSPECT_SELECTOR,
   MAX_SELECTOR_RESOLVE_BYTES,
   MAX_SELECTOR_RESOLVE_ITEMS,
@@ -26,6 +32,7 @@ export const NATIVE_WEBVIEW_INSPECT_CAPABILITY = 'webview.inspectAtPoint.v1' as 
 export const NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY = 'webview.resolveSelectors.v1' as const
 export const NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY = 'webview.reviewInput.v1' as const
 export const NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY = 'webview.reviewHighlights.v1' as const
+export const NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY = 'webview.pageResponses.v1' as const
 
 type NativeMessageHandler = {
   postMessage: (message: Record<string, unknown>) => void
@@ -44,15 +51,22 @@ export type NativeWebViewNegotiation =
 export type NativeWebViewTileEvent =
   | { type: 'webview.attached' }
   | { type: 'webview.loaded'; url?: string }
+  | { type: 'webview.pageResponse'; url: string; response: RedlinePageResponse }
   | { type: 'webview.failed'; code: string }
+
+export type NativeWebViewAttachOptions = {
+  pageResponses?: boolean
+}
 
 export type NativeWebViewAttachment = {
   attachmentId: string
   supportsReview: boolean
+  supportsPageResponses: boolean
   inspectAtPoint: (x: number, y: number, grade: TileInspectGrade) => Promise<TileInspectResult>
   resolveSelectors: (items: readonly TileSelectorResolveItem[]) => Promise<TileSelectorAnchor[]>
   setReviewInput: (enabled: boolean) => boolean
   presentReviewHighlights: (highlights: readonly NativeWebViewReviewHighlight[]) => boolean
+  presentPendingSnapshot: (pageUrl: string, snapshot: RedlinePagePendingSnapshot) => boolean
   detach: () => void
 }
 
@@ -73,6 +87,7 @@ const INSPECTION_TIMEOUT_MS = 5_000
 const MAX_INSPECTION_COORDINATE = 100_000
 const MAX_PENDING_INSPECTIONS = 32
 const MAX_REVIEW_HIGHLIGHTS = MAX_SELECTOR_RESOLVE_ITEMS + 1
+const MAX_PENDING_SNAPSHOT_BYTES = 512 * 1_024
 
 type PendingInspect = {
   attachmentId: string
@@ -178,24 +193,36 @@ export class NativeWebViewBridge {
     webPaneId: string,
     url: string,
     listener: (event: NativeWebViewTileEvent) => void,
+    options: NativeWebViewAttachOptions = {},
   ): NativeWebViewAttachment {
     if (!this.connected) throw new Error('Native web view bridge is not connected')
     if (this.attachments.size >= this.maxWebViews) throw new Error('Native web view limit reached')
     attachmentSequence += 1
     const attachmentId = `${this.pageId}:${attachmentSequence}`
     const record: AttachmentRecord = { webPaneId, attachmentId, listener }
+    const pageResponses = options.pageResponses === true &&
+      this.capabilities.has(NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY)
     this.attachments.set(attachmentId, record)
-    if (!this.post('webview.attach', { webPaneId, attachmentId, url })) {
+    if (!this.post('webview.attach', {
+      webPaneId,
+      attachmentId,
+      url,
+      ...(pageResponses ? { pageResponses: true } : {}),
+    })) {
       this.attachments.delete(attachmentId)
       throw new Error('Native web view handler became unavailable')
     }
     return {
       attachmentId,
       supportsReview: this.supportsReview(),
+      supportsPageResponses: pageResponses,
       inspectAtPoint: (x, y, grade) => this.inspectAtPoint(attachmentId, x, y, grade),
       resolveSelectors: (items) => this.resolveSelectors(attachmentId, items),
       setReviewInput: (enabled) => this.setReviewInput(attachmentId, enabled),
       presentReviewHighlights: (highlights) => this.presentReviewHighlights(attachmentId, highlights),
+      presentPendingSnapshot: (pageUrl, snapshot) => (
+        this.presentPendingSnapshot(attachmentId, pageUrl, snapshot)
+      ),
       detach: () => {
         if (this.attachments.delete(attachmentId)) {
           this.rejectPendingForAttachment(attachmentId, 'Native web view attachment detached')
@@ -249,6 +276,31 @@ export class NativeWebViewBridge {
       highlights.push({ rect: { ...rect }, kind, ...(selected !== undefined ? { selected } : {}) })
     }
     return this.postForAttachment('webview.presentReviewHighlights', attachmentId, { highlights })
+  }
+
+  private presentPendingSnapshot(
+    attachmentId: string,
+    pageUrl: string,
+    snapshot: RedlinePagePendingSnapshot,
+  ): boolean {
+    if (!this.capabilities.has(NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY)) return false
+    const boundedPageUrl = boundedHttpUrl(pageUrl)
+    let bytes: number
+    try {
+      bytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength
+    } catch {
+      return false
+    }
+    if (
+      !boundedPageUrl ||
+      snapshot.version !== 1 ||
+      !Array.isArray(snapshot.controls) ||
+      bytes > MAX_PENDING_SNAPSHOT_BYTES
+    ) return false
+    return this.postForAttachment('webview.presentPendingSnapshot', attachmentId, {
+      pageUrl: boundedPageUrl,
+      snapshot,
+    })
   }
 
   dispose(): void {
@@ -510,6 +562,24 @@ export class NativeWebViewBridge {
         return
       }
       pending.resolve(anchors)
+      return
+    }
+    if (type === 'webview.pageResponse') {
+      const responsePayload = payload.responsePayload
+      const url = boundedHttpUrl(payload.url)
+      if (
+        typeof responsePayload !== 'string' ||
+        new TextEncoder().encode(responsePayload).byteLength > MAX_RESPONSE_PAYLOAD_BYTES ||
+        !url
+      ) return
+      let value: unknown
+      try {
+        value = JSON.parse(responsePayload) as unknown
+      } catch {
+        return
+      }
+      const response = parseRedlinePageResponse(value)
+      if (response) record.listener({ type: 'webview.pageResponse', url, response })
       return
     }
 

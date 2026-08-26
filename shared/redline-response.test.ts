@@ -7,6 +7,7 @@ import {
   MAX_RESPONSE_QUEUE_KEY,
   REDLINE_BINDING_NAME,
   parseRedlinePageResponse,
+  redlinePendingSnapshotForPage,
 } from './redline-response.js'
 
 describe('parseRedlinePageResponse', () => {
@@ -64,5 +65,67 @@ describe('parseRedlinePageResponse', () => {
 
   it('exports the binding name', () => {
     expect(REDLINE_BINDING_NAME).toBe('__commandoRedlineQueue')
+  })
+})
+
+describe('redlinePendingSnapshotForPage', () => {
+  it('exposes only sanitized responses for the exact current page', () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    expect(redlinePendingSnapshotForPage({
+      notes: [
+        {
+          id: 1,
+          selector: '#plan',
+          tag: 'redline-choice',
+          rect: { x: 1, y: 2, width: 3, height: 4 },
+          comment: 'Which plan?: Pro',
+          pageUrl: 'https://example.com/review',
+          queueKey: 'plan',
+          response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } },
+        },
+        {
+          id: 2,
+          selector: '#manual',
+          tag: 'button',
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+          comment: 'Manual annotation stays private',
+          pageUrl: 'https://example.com/review',
+        },
+        {
+          id: 3,
+          selector: '#other',
+          tag: 'redline-choice',
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+          comment: 'Other page',
+          pageUrl: 'https://example.com/other',
+          response: { question: 'Other?', answer: 'No' },
+        },
+        {
+          id: 4,
+          selector: '#circular',
+          tag: 'redline-choice',
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+          comment: 'Circular data',
+          pageUrl: 'https://example.com/review',
+          response: { question: 'Keep answer?', answer: 'Yes', data: circular },
+        },
+      ],
+      knownUpTo: 4,
+      dropped: 0,
+    }, 'https://example.com/review')).toEqual({
+      version: 1,
+      controls: [
+        {
+          queueKey: 'plan',
+          selector: '#plan',
+          response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } },
+        },
+        {
+          selector: '#circular',
+          response: { question: 'Keep answer?', answer: 'Yes' },
+        },
+      ],
+    })
   })
 })

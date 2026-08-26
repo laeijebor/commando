@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   NATIVE_WEBVIEW_INSPECT_CAPABILITY,
+  NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY,
   NATIVE_WEBVIEW_PROTOCOL,
   NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY,
   NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
@@ -216,6 +217,78 @@ describe('NativeWebViewBridge', () => {
       { type: 'webview.loaded', url: 'https://example.com/after-navigation' },
       { type: 'webview.loaded' },
     ])
+  })
+
+  it('opts capable attachments into page responses and routes validated answers', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge, ['webview.embed.v1', NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY])
+    const events: NativeWebViewTileEvent[] = []
+    const attachment = bridge.attach(
+      'w-abcd1234',
+      'https://example.com/review',
+      (event) => events.push(event),
+      { pageResponses: true },
+    )
+
+    expect(attachment.supportsPageResponses).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'webview.attach',
+      payload: { pageResponses: true },
+    })
+    expect(attachment.presentPendingSnapshot('https://example.com/review', {
+      version: 1,
+      controls: [{
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro' },
+      }],
+    })).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'webview.presentPendingSnapshot',
+      payload: { pageUrl: 'https://example.com/review', snapshot: { version: 1 } },
+    })
+
+    receive(bridge, 2, 'webview.pageResponse', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      url: 'https://example.com/review',
+      responsePayload: JSON.stringify({
+        question: 'Which plan?',
+        answer: 'Team',
+        queueKey: 'plan',
+      }),
+    })
+    expect(events).toEqual([{
+      type: 'webview.pageResponse',
+      url: 'https://example.com/review',
+      response: { question: 'Which plan?', answer: 'Team', queueKey: 'plan' },
+    }])
+
+    receive(bridge, 3, 'webview.pageResponse', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      url: 'file:///etc/passwd',
+      responsePayload: JSON.stringify({ question: 'Ignored?', answer: 'Yes' }),
+    })
+    expect(events).toHaveLength(1)
+  })
+
+  it('does not expose page responses without explicit opt-in and capability', async () => {
+    const messages: PostedMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeWebViewBridge()
+    await connect(bridge)
+    const attachment = bridge.attach(
+      'w-abcd1234',
+      'https://example.com/',
+      () => undefined,
+      { pageResponses: true },
+    )
+
+    expect(attachment.supportsPageResponses).toBe(false)
+    expect(messages.at(-1)?.payload).not.toHaveProperty('pageResponses')
+    expect(attachment.presentPendingSnapshot('https://example.com/', { version: 1, controls: [] })).toBe(false)
   })
 
   it('ignores stale and mismatched events', async () => {

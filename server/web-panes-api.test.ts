@@ -723,6 +723,49 @@ function pendingNoteBody(comment = 'align this') {
 }
 
 describe('pending note routes', () => {
+  it('queues native page responses with replacement semantics for owners only', async () => {
+    const service = await createService()
+    const { baseUrl, onPendingChanged } = await startApi(service)
+    const id = await openChromiumPane(service)
+    const route = `/api/web-panes/${id}/pending/response`
+    const pageUrl = 'https://example.com/review?tab=answers'
+
+    expect((await post(baseUrl, route, {
+      pageUrl,
+      response: { question: 'Which plan?', answer: 'Starter', queueKey: 'plan' },
+    }, agentAuth)).status).toBe(403)
+
+    const first = await post(baseUrl, route, {
+      pageUrl,
+      response: { question: 'Which plan?', answer: 'Starter', queueKey: 'plan' },
+    }, ownerAuth)
+    expect(first.status).toBe(200)
+    const replaced = await post(baseUrl, route, {
+      pageUrl,
+      response: { question: 'Which plan?', answer: 'Pro', queueKey: 'plan' },
+    }, ownerAuth)
+    const body = await replaced.json() as {
+      notes: Array<{ id: number; revision?: number; pageUrl?: string; response?: { answer: string } }>
+    }
+    expect(body.notes).toHaveLength(1)
+    expect(body.notes[0]).toMatchObject({
+      id: 1,
+      revision: 2,
+      pageUrl,
+      response: { answer: 'Pro' },
+    })
+    expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ notes: body.notes }))
+
+    expect((await post(baseUrl, route, {
+      pageUrl: 'file:///etc/passwd',
+      response: { question: 'Which plan?', answer: 'Pro' },
+    }, ownerAuth)).status).toBe(400)
+    expect((await post(baseUrl, route, {
+      pageUrl,
+      response: { question: '', answer: 'Pro' },
+    }, ownerAuth)).status).toBe(400)
+  })
+
   it('owner queues, lists, and removes pending notes; broadcasts fire', async () => {
     const service = await createService()
     const { baseUrl, onPendingChanged } = await startApi(service)

@@ -614,6 +614,139 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(colorDistance(rightColor, holeColor), 0.2)
     }
 
+    func testWebViewTilePageResponseBindingAndPendingSnapshot() async throws {
+        let harness = NativeAppKitHarness()
+        let externalURLHandler = SafeExternalURLHandler(
+            privilegedOrigin: WebOrigin(url: NativeAppKitHarness.origin),
+            opener: harness.opener,
+            failureReporter: IntegrationURLFailureReporter()
+        )
+        let loaded = expectation(description: "native response page loaded")
+        let sameDocumentLoaded = expectation(description: "same-document URL published")
+        let responseReceived = expectation(description: "native page response received")
+        let sameDocumentResponseReceived = expectation(description: "same-document response received")
+        var didLoad = false
+        var waitingForSameDocument = false
+        var responseCount = 0
+        var latestLoadedURL: String?
+        var receivedPayload: String?
+        var receivedURL: String?
+        let tile = WebViewTile(
+            identity: PaneIdentity(paneId: "w-integration", attachmentId: "integration-web-response"),
+            url: NativeAppKitHarness.origin,
+            externalURLHandler: externalURLHandler,
+            scriptEvaluator: { webView, script, arguments, contentWorld, completion in
+                webView.callAsyncJavaScript(
+                    script,
+                    arguments: arguments,
+                    in: nil,
+                    in: contentWorld,
+                    completionHandler: completion
+                )
+            },
+            pageResponsesEnabled: true,
+            eventSink: { _, event in
+                switch event {
+                case let .loaded(url):
+                    latestLoadedURL = url
+                    if waitingForSameDocument {
+                        waitingForSameDocument = false
+                        sameDocumentLoaded.fulfill()
+                    } else if !didLoad {
+                        didLoad = true
+                        loaded.fulfill()
+                    }
+                case let .pageResponse(payload, url):
+                    responseCount += 1
+                    receivedPayload = payload
+                    receivedURL = url
+                    if responseCount == 1 {
+                        responseReceived.fulfill()
+                    } else if responseCount == 2 {
+                        sameDocumentResponseReceived.fulfill()
+                    }
+                case .failed:
+                    break
+                }
+            }
+        )
+        defer { tile.destroy() }
+        tile.presentPendingSnapshot(pageUrl: "http://127.0.0.1:5173/", snapshot: [
+            "version": 1,
+            "controls": [[
+                "queueKey": "plan",
+                "response": ["question": "Which plan?", "answer": "Pro"],
+            ]],
+        ])
+        tile.webView.loadHTMLString(
+            "<html><body>Native response fixture</body></html>",
+            baseURL: NativeAppKitHarness.origin
+        )
+        await fulfillment(of: [loaded], timeout: 2)
+
+        let bindingType = try await tile.webView.evaluateJavaScript(
+            "typeof window.__commandoRedlineQueue"
+        ) as? String
+        XCTAssertEqual(bindingType, "function")
+        _ = try await tile.webView.evaluateJavaScript(
+            "window.__commandoRedlineQueue(JSON.stringify({question:'Which plan?',answer:'Pro',queueKey:'plan'})); true"
+        )
+        await fulfillment(of: [responseReceived], timeout: 2)
+        XCTAssertEqual(receivedURL, "http://127.0.0.1:5173/")
+        XCTAssertEqual(
+            receivedPayload,
+            "{\"question\":\"Which plan?\",\"answer\":\"Pro\",\"queueKey\":\"plan\"}"
+        )
+
+        var queuedAnswer: String?
+        for _ in 0..<20 {
+            queuedAnswer = try await tile.webView.evaluateJavaScript(
+                "window.__commandoRedlinePendingSnapshot?.controls?.[0]?.response?.answer"
+            ) as? String
+            if queuedAnswer != nil { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(queuedAnswer, "Pro")
+
+        waitingForSameDocument = true
+        _ = try await tile.webView.evaluateJavaScript(
+            "history.pushState({}, '', '/after'); true"
+        )
+        await fulfillment(of: [sameDocumentLoaded], timeout: 2)
+        XCTAssertEqual(latestLoadedURL, "http://127.0.0.1:5173/after")
+        var clearedCount: Int?
+        for _ in 0..<20 {
+            clearedCount = try await tile.webView.evaluateJavaScript(
+                "window.__commandoRedlinePendingSnapshot?.controls?.length"
+            ) as? Int
+            if clearedCount == 0 { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(clearedCount, 0)
+        tile.presentPendingSnapshot(pageUrl: "http://127.0.0.1:5173/after", snapshot: [
+            "version": 1,
+            "controls": [[
+                "queueKey": "plan",
+                "response": ["question": "Which plan?", "answer": "Team"],
+            ]],
+        ])
+        var sameDocumentAnswer: String?
+        for _ in 0..<20 {
+            sameDocumentAnswer = try await tile.webView.evaluateJavaScript(
+                "window.__commandoRedlinePendingSnapshot?.controls?.[0]?.response?.answer"
+            ) as? String
+            if sameDocumentAnswer == "Team" { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(sameDocumentAnswer, "Team")
+        _ = try await tile.webView.evaluateJavaScript(
+            "window.__commandoRedlineQueue(JSON.stringify({question:'After?',answer:'Yes'})); true"
+        )
+        await fulfillment(of: [sameDocumentResponseReceived], timeout: 2)
+        XCTAssertEqual(receivedURL, "http://127.0.0.1:5173/after")
+        XCTAssertEqual(responseCount, 2)
+    }
+
     private func offscreenBitmap(of view: NSView) throws -> NSBitmapImageRep {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,

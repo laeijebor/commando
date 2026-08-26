@@ -71,11 +71,12 @@ const pendingQueue: PendingQueueApi = {
   dismissDropped: async () => emptySnapshot,
 }
 
-function nativeHarness(supportsReview = true) {
+function nativeHarness(supportsReview = true, supportsPageResponses = true) {
   let listener: ((event: NativeWebViewTileEvent) => void) | undefined
   const attachment: NativeWebViewAttachment = {
     attachmentId: 'page:1',
     supportsReview,
+    supportsPageResponses,
     inspectAtPoint: vi.fn(async () => ({
       ok: true as const,
       selector: '#target',
@@ -88,6 +89,7 @@ function nativeHarness(supportsReview = true) {
     }]),
     setReviewInput: vi.fn(() => supportsReview),
     presentReviewHighlights: vi.fn(() => supportsReview),
+    presentPendingSnapshot: vi.fn(() => supportsPageResponses),
     detach: vi.fn(),
   }
   const bridge = {
@@ -102,6 +104,9 @@ function nativeHarness(supportsReview = true) {
     attachment,
     bridge,
     loaded: (url?: string) => listener?.({ type: 'webview.loaded', ...(url ? { url } : {}) }),
+    pageResponse: (url: string, response: { question: string; answer: string; queueKey?: string }) => {
+      listener?.({ type: 'webview.pageResponse', url, response })
+    },
   }
 }
 
@@ -220,5 +225,145 @@ describe('NativeWebViewTile review integration', () => {
       pageUrl: 'https://example.com/after-navigation',
     })))
     expect(bridge.attach).toHaveBeenCalledOnce()
+  })
+
+  it('opts into native page responses, queues them through the daemon API, and refreshes page state', async () => {
+    const { attachment, bridge, loaded, pageResponse } = nativeHarness()
+    const queuedSnapshot: WebPanePendingSnapshot = {
+      revision: 1,
+      notes: [{
+        id: 1,
+        revision: 1,
+        selector: '#plan',
+        tag: 'redline-choice',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+        comment: 'Which plan?: Pro',
+        pageUrl: 'https://example.com/review',
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro' },
+        attachments: [],
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }
+    const addResponse = vi.fn(async () => queuedSnapshot)
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        pendingQueue={{ ...pendingQueue, addResponse }}
+        onFallback={() => undefined}
+      />,
+    )
+
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalledWith(
+      webPane.id,
+      webPane.url,
+      expect.any(Function),
+      { pageResponses: true },
+    ))
+    act(() => loaded('https://example.com/review'))
+    act(() => pageResponse('https://example.com/review', {
+      question: 'Which plan?',
+      answer: 'Pro',
+      queueKey: 'plan',
+    }))
+    await waitFor(() => expect(addResponse).toHaveBeenCalledWith(
+      'https://example.com/review',
+      { question: 'Which plan?', answer: 'Pro', queueKey: 'plan' },
+    ))
+    await waitFor(() => expect(attachment.presentPendingSnapshot).toHaveBeenCalledWith(
+      'https://example.com/review',
+      {
+        version: 1,
+        controls: [{
+          queueKey: 'plan',
+          selector: '#plan',
+          response: { question: 'Which plan?', answer: 'Pro' },
+        }],
+      },
+    ))
+  })
+
+  it('filters delayed responses for the current document and ignores stale pending revisions', async () => {
+    const { attachment, bridge, loaded, pageResponse } = nativeHarness()
+    let resolveResponse!: (snapshot: WebPanePendingSnapshot) => void
+    const addResponse = vi.fn(() => new Promise<WebPanePendingSnapshot>((resolve) => {
+      resolveResponse = resolve
+    }))
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        pendingQueue={{ ...pendingQueue, addResponse }}
+        onFallback={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(attachment.presentPendingSnapshot).toHaveBeenCalled())
+    vi.mocked(attachment.presentPendingSnapshot).mockClear()
+
+    act(() => pageResponse('https://example.com/review', {
+      question: 'Which plan?',
+      answer: 'Pro',
+      queueKey: 'plan',
+    }))
+    act(() => loaded('https://example.com/other'))
+    await act(async () => resolveResponse({
+      revision: 2,
+      notes: [{
+        id: 1,
+        selector: '#plan',
+        tag: 'redline-choice',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+        comment: 'Which plan?: Pro',
+        pageUrl: 'https://example.com/review',
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro' },
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }))
+    await waitFor(() => expect(attachment.presentPendingSnapshot).toHaveBeenCalledWith(
+      'https://example.com/other',
+      { version: 1, controls: [] },
+    ))
+
+    vi.mocked(attachment.presentPendingSnapshot).mockClear()
+    const currentNote = {
+      id: 2,
+      selector: '#current',
+      tag: 'redline-choice',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+      comment: 'Current?: Yes',
+      pageUrl: 'https://example.com/other',
+      response: { question: 'Current?', answer: 'Yes' },
+    }
+    act(() => FakeWebSocket.instances[0].message({
+      type: 'pending',
+      revision: 4,
+      notes: [currentNote],
+      knownUpTo: 2,
+      dropped: 0,
+    }))
+    act(() => FakeWebSocket.instances[0].message({
+      type: 'pending',
+      revision: 3,
+      notes: [{ ...currentNote, response: { question: 'Current?', answer: 'Stale' } }],
+      knownUpTo: 2,
+      dropped: 0,
+    }))
+    expect(attachment.presentPendingSnapshot).toHaveBeenCalledOnce()
+    expect(attachment.presentPendingSnapshot).toHaveBeenCalledWith(
+      'https://example.com/other',
+      {
+        version: 1,
+        controls: [{
+          selector: '#current',
+          response: { question: 'Current?', answer: 'Yes' },
+        }],
+      },
+    )
   })
 })

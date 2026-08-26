@@ -14,6 +14,7 @@ import WebKit
 enum WebViewTileProtocol {
     static let protocolName = "commando.native-webview"
     static let handlerName = "commandoNativeWebView"
+    static let pageResponseHandlerName = "commandoRedlineQueue"
     static let version = 1
     static let maxTiles = 8
     static let capabilities = [
@@ -22,6 +23,7 @@ enum WebViewTileProtocol {
         "webview.resolveSelectors.v1",
         "webview.reviewInput.v1",
         "webview.reviewHighlights.v1",
+        "webview.pageResponses.v1",
     ]
     static let maxURLLength = 2_048
     static let maxRequestIdLength = 64
@@ -36,6 +38,9 @@ enum WebViewTileProtocol {
     static let maxPendingInspectionRequests = 32
     static let inspectionTimeout: Duration = .seconds(5)
     static let maxReviewHighlights = maxSelectorResolveItems + 1
+    static let maxPageResponseBytes = 16 * 1_024
+    static let maxPendingSnapshotBytes = 512 * 1_024
+    static let maxPendingControls = 50
     /// Tile host views sort above the terminal surfaces in the shared overlay.
     static let hostOrderBase = 1_000
 
@@ -125,6 +130,18 @@ enum WebViewTileProtocol {
     }
     return anchors;
     """
+
+    static let pageResponseBindingScript = """
+    Object.defineProperty(window, "__commandoRedlineQueue", {
+        configurable: true,
+        value: (payload) => window.webkit.messageHandlers.commandoRedlineQueue.postMessage(payload),
+    });
+    """
+
+    static let presentPendingSnapshotScript = """
+    window.__commandoRedlinePendingSnapshot = pendingSnapshot;
+    window.dispatchEvent(new CustomEvent("commando:redline-pending", { detail: pendingSnapshot }));
+    """
 }
 
 typealias WebViewTileScriptCompletion = @MainActor @Sendable (Result<Any, any Error>) -> Void
@@ -160,6 +177,33 @@ final class WebViewTileScriptMessageHandler: NSObject, WKScriptMessageHandler {
             return
         }
         bridge?.receive(body: message.body)
+    }
+}
+
+@MainActor
+final class WebViewTilePageResponseHandler: NSObject, WKScriptMessageHandler {
+    weak var tile: WebViewTile?
+    private let admission: WebContentAdmission
+
+    init(admission: WebContentAdmission) {
+        self.admission = admission
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        let origin = message.frameInfo.securityOrigin
+        guard admission.allowsBridgeMessage(
+            isMainFrame: message.frameInfo.isMainFrame,
+            scheme: origin.protocol,
+            host: origin.host,
+            port: origin.port
+        ), let url = message.frameInfo.request.url
+        else {
+            return
+        }
+        tile?.receivePageResponse(body: message.body, url: url)
     }
 }
 
@@ -225,6 +269,7 @@ final class WebViewTileReviewOverlayView: NSView {
 
 enum WebViewTileEvent {
     case loaded(url: String?)
+    case pageResponse(payload: String, url: String)
     case failed(code: String)
 }
 
@@ -238,8 +283,13 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     private let externalURLHandler: any ExternalURLHandling
     private let eventSink: (PaneIdentity, WebViewTileEvent) -> Void
     private let scriptEvaluator: WebViewTileScriptEvaluator
+    private let pageResponseHandler: WebViewTilePageResponseHandler?
+    private let pageResponseAdmission: WebContentAdmission?
     private let mask = CAShapeLayer()
     private var reviewHighlights: [WebViewTileReviewHighlight] = []
+    private var pendingSnapshot: (url: String, snapshot: [String: Any])?
+    private var urlObservation: NSKeyValueObservation?
+    private var loadedDocumentURL: String?
     private(set) var documentRevision = 0
     private(set) var isDocumentReady = false
 
@@ -248,16 +298,37 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         url: URL,
         externalURLHandler: any ExternalURLHandling,
         scriptEvaluator: @escaping WebViewTileScriptEvaluator,
+        pageResponsesEnabled: Bool = false,
         eventSink: @escaping (PaneIdentity, WebViewTileEvent) -> Void
     ) {
         self.identity = identity
         self.externalURLHandler = externalURLHandler
         self.scriptEvaluator = scriptEvaluator
         self.eventSink = eventSink
-        webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let configuration = WKWebViewConfiguration()
+        if pageResponsesEnabled, let origin = WebOrigin(url: url) {
+            let admission = WebContentAdmission(origin: origin)
+            pageResponseAdmission = admission
+            let handler = WebViewTilePageResponseHandler(admission: admission)
+            pageResponseHandler = handler
+            configuration.userContentController.add(
+                handler,
+                name: WebViewTileProtocol.pageResponseHandlerName
+            )
+        } else {
+            pageResponseAdmission = nil
+            pageResponseHandler = nil
+        }
+        webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        pageResponseHandler?.tile = self
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.sameDocumentURLDidChange()
+            }
+        }
         hostView.wantsLayer = true
         webView.wantsLayer = true
         reviewOverlay.wantsLayer = true
@@ -300,6 +371,44 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         renderReviewHighlights()
     }
 
+    func presentPendingSnapshot(pageUrl: String, snapshot: [String: Any]) {
+        guard pageResponseHandler != nil else { return }
+        pendingSnapshot = (url: pageUrl, snapshot: snapshot)
+        applyPendingSnapshot()
+    }
+
+    private func applyPendingSnapshot() {
+        guard isDocumentReady,
+              let pendingSnapshot,
+              let currentURL = webView.url,
+              pageResponseAdmission?.allowsNavigation(to: currentURL) == true,
+              boundedCurrentURL() == pendingSnapshot.url
+        else {
+            return
+        }
+        scriptEvaluator(
+            webView,
+            WebViewTileProtocol.presentPendingSnapshotScript,
+            ["pendingSnapshot": pendingSnapshot.snapshot],
+            .page
+        ) { _ in }
+    }
+
+    private func installPageResponseBinding() {
+        guard let admission = pageResponseAdmission,
+              let currentURL = webView.url,
+              admission.allowsNavigation(to: currentURL)
+        else {
+            return
+        }
+        scriptEvaluator(
+            webView,
+            WebViewTileProtocol.pageResponseBindingScript,
+            [:],
+            .page
+        ) { _ in }
+    }
+
     func setZoomScale(_ scale: CGFloat) {
         webView.pageZoom = scale
         renderReviewHighlights()
@@ -310,8 +419,13 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         setReviewInput(false)
         presentReviewHighlights([])
         webView.stopLoading()
+        urlObservation?.invalidate()
+        urlObservation = nil
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: WebViewTileProtocol.pageResponseHandlerName
+        )
         webView.removeFromSuperview()
         hostView.removeFromSuperview()
     }
@@ -324,9 +438,23 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         scriptEvaluator(webView, script, arguments, .defaultClient, completion)
     }
 
+    func receivePageResponse(body: Any, url: URL) {
+        guard let admission = pageResponseAdmission,
+              admission.allowsNavigation(to: url),
+              boundedCurrentURL() == url.absoluteString,
+              let payload = body as? String,
+              payload.utf8.count <= WebViewTileProtocol.maxPageResponseBytes,
+              url.absoluteString.utf16.count <= WebViewTileProtocol.maxURLLength
+        else {
+            return
+        }
+        eventSink(identity, .pageResponse(payload: payload, url: url.absoluteString))
+    }
+
     private func invalidateDocument() {
         documentRevision += 1
         isDocumentReady = false
+        loadedDocumentURL = nil
         presentReviewHighlights([])
     }
 
@@ -363,19 +491,46 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     ) {
         documentRevision += 1
         isDocumentReady = true
-        let boundedURL = webView.url.flatMap { url -> String? in
-            guard let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https",
-                  url.absoluteString.utf16.count <= WebViewTileProtocol.maxURLLength
-            else {
-                return nil
-            }
-            return url.absoluteString
-        }
+        let boundedURL = boundedCurrentURL()
+        loadedDocumentURL = boundedURL
+        installPageResponseBinding()
+        applyPendingSnapshot()
         eventSink(
             identity,
             .loaded(url: boundedURL)
         )
+    }
+
+    private func boundedCurrentURL() -> String? {
+        guard let url = webView.url,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.absoluteString.utf16.count <= WebViewTileProtocol.maxURLLength
+        else {
+            return nil
+        }
+        return url.absoluteString
+    }
+
+    private func sameDocumentURLDidChange() {
+        guard isDocumentReady,
+              let url = boundedCurrentURL(),
+              url != loadedDocumentURL
+        else {
+            return
+        }
+        loadedDocumentURL = url
+        if let currentURL = webView.url,
+           pageResponseAdmission?.allowsNavigation(to: currentURL) == true {
+            scriptEvaluator(
+                webView,
+                WebViewTileProtocol.presentPendingSnapshotScript,
+                ["pendingSnapshot": ["version": 1, "controls": []]],
+                .page
+            ) { _ in }
+        }
+        applyPendingSnapshot()
+        eventSink(identity, .loaded(url: url))
     }
 
     func webView(
@@ -528,6 +683,8 @@ final class WebViewTileBridge: NSObject {
             setReviewInput(payload)
         case "webview.presentReviewHighlights":
             presentReviewHighlights(payload)
+        case "webview.presentPendingSnapshot":
+            presentPendingSnapshot(payload)
         case "webview.detach":
             detach(payload)
         default:
@@ -608,7 +765,8 @@ final class WebViewTileBridge: NSObject {
             identity: identity,
             url: url,
             externalURLHandler: externalURLHandler,
-            scriptEvaluator: scriptEvaluator
+            scriptEvaluator: scriptEvaluator,
+            pageResponsesEnabled: payload["pageResponses"] as? Bool == true
         ) { [weak self] identity, event in
             switch event {
             case let .loaded(url):
@@ -618,6 +776,13 @@ final class WebViewTileBridge: NSObject {
                 ]
                 if let url { payload["url"] = url }
                 self?.emit(type: "webview.loaded", payload: payload)
+            case let .pageResponse(responsePayload, url):
+                self?.emit(type: "webview.pageResponse", payload: [
+                    "webPaneId": identity.paneId,
+                    "attachmentId": identity.attachmentId,
+                    "responsePayload": responsePayload,
+                    "url": url,
+                ])
             case let .failed(code):
                 self?.emitFailure(identity, code: code)
             }
@@ -833,6 +998,16 @@ final class WebViewTileBridge: NSObject {
         tile.presentReviewHighlights(highlights)
     }
 
+    private func presentPendingSnapshot(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload),
+              let pageUrl = boundedHTTPURL(from: payload["pageUrl"]),
+              let snapshot = pendingSnapshot(from: payload["snapshot"])
+        else {
+            return
+        }
+        tile.presentPendingSnapshot(pageUrl: pageUrl, snapshot: snapshot)
+    }
+
     private func detach(_ payload: [String: Any]) {
         guard let identity = identity(from: payload),
               let tile = tiles.removeValue(forKey: identity.attachmentId)
@@ -928,6 +1103,32 @@ final class WebViewTileBridge: NSObject {
             ))
         }
         return highlights
+    }
+
+    private func pendingSnapshot(from value: Any?) -> [String: Any]? {
+        guard let snapshot = value as? [String: Any],
+              (snapshot["version"] as? NSNumber)?.intValue == 1,
+              let controls = snapshot["controls"] as? [[String: Any]],
+              controls.count <= WebViewTileProtocol.maxPendingControls,
+              JSONSerialization.isValidJSONObject(snapshot),
+              let data = try? JSONSerialization.data(withJSONObject: snapshot),
+              data.count <= WebViewTileProtocol.maxPendingSnapshotBytes
+        else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func boundedHTTPURL(from value: Any?) -> String? {
+        guard let value = value as? String,
+              value.utf16.count <= WebViewTileProtocol.maxURLLength,
+              let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            return nil
+        }
+        return url.absoluteString
     }
 
     private func reviewHighlightRect(from value: Any?) -> CGRect? {

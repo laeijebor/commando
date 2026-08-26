@@ -2661,6 +2661,11 @@ export function App() {
                           pendingQueue={{
                             list: () => webPanesApi.pendingNotes(webPane.id),
                             add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+                            addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
+                              webPane.id,
+                              pageUrl,
+                              response,
+                            ),
                             update: (noteId, revision, change) => webPanesApi.updatePendingNote(
                               webPane.id,
                               noteId,

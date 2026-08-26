@@ -1,4 +1,5 @@
 import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
+import type { RedlinePageResponse } from '../shared/redline-response'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
@@ -17,6 +18,11 @@ export interface WebPanesApiClient {
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
   pendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
   addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingSnapshot>
+  addPendingResponse(
+    webPaneId: string,
+    pageUrl: string,
+    response: RedlinePageResponse,
+  ): Promise<WebPanePendingSnapshot>
   updatePendingNote(
     webPaneId: string,
     noteId: number,
@@ -148,6 +154,12 @@ export function createWebPanesApi(
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, {
         method: 'POST',
         body: JSON.stringify({ note }),
+      }))
+    },
+    addPendingResponse: async (webPaneId, pageUrl, response) => {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/response`, {
+        method: 'POST',
+        body: JSON.stringify({ pageUrl, response }),
       }))
     },
     updatePendingNote: async (webPaneId, noteId, expectedRevision, change) => {

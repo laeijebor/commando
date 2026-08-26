@@ -1,4 +1,9 @@
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from './tile-inspect.js'
+import {
+  MAX_PENDING_NOTES,
+  MAX_WEB_PANE_URL_LENGTH,
+  type WebPanePendingSnapshot,
+} from './protocol.js'
 
 /** Name of the CDP binding the chromium engine installs in every tile page. */
 export const REDLINE_BINDING_NAME = '__commandoRedlineQueue'
@@ -26,6 +31,15 @@ export type RedlinePageResponse = {
   tag?: string
   text?: string
   rect?: { x: number; y: number; width: number; height: number }
+}
+
+export type RedlinePagePendingSnapshot = {
+  version: 1
+  controls: Array<{
+    queueKey?: string
+    selector?: string
+    response: { question: string; answer: string; note?: string; data?: unknown }
+  }>
 }
 
 function boundedString(value: unknown, max: number): value is string {
@@ -78,4 +92,43 @@ export function parseRedlinePageResponse(value: unknown): RedlinePageResponse | 
     response.rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
   }
   return response
+}
+
+/** Builds the sanitized pending state visible to one exact page document. */
+export function redlinePendingSnapshotForPage(
+  snapshot: WebPanePendingSnapshot,
+  pageUrl: string,
+): RedlinePagePendingSnapshot {
+  const controls: RedlinePagePendingSnapshot['controls'] = []
+  for (const note of snapshot.notes) {
+    if (controls.length >= MAX_PENDING_NOTES || note.pageUrl !== pageUrl) continue
+    const response = note.response
+    if (
+      !response ||
+      !boundedString(response.question, MAX_RESPONSE_QUESTION) ||
+      !boundedString(response.answer, MAX_RESPONSE_ANSWER) ||
+      !boundedString(note.pageUrl, MAX_WEB_PANE_URL_LENGTH)
+    ) continue
+    const pageResponse: RedlinePagePendingSnapshot['controls'][number]['response'] = {
+      question: response.question,
+      answer: response.answer,
+    }
+    if (boundedString(response.note, MAX_RESPONSE_NOTE)) pageResponse.note = response.note
+    if (response.data !== undefined) {
+      try {
+        const json = JSON.stringify(response.data)
+        if (json !== undefined && json.length <= MAX_RESPONSE_DATA_JSON) {
+          pageResponse.data = JSON.parse(json) as unknown
+        }
+      } catch {
+        // Data is best-effort and must never expose live objects to the page.
+      }
+    }
+    controls.push({
+      ...(boundedString(note.queueKey, MAX_RESPONSE_QUEUE_KEY) ? { queueKey: note.queueKey } : {}),
+      ...(boundedString(note.selector, MAX_INSPECT_SELECTOR) ? { selector: note.selector } : {}),
+      response: pageResponse,
+    })
+  }
+  return { version: 1, controls }
 }

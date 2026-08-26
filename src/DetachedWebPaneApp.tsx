@@ -129,7 +129,8 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
         )}
         pendingQueue={{
           list: () => api.pendingNotes(webPaneId),
-          add: (note) => api.addPendingNote(webPaneId, note),
+           add: (note) => api.addPendingNote(webPaneId, note),
+          addResponse: (pageUrl, response) => api.addPendingResponse(webPaneId, pageUrl, response),
           update: (noteId, revision, change) => api.updatePendingNote(
             webPaneId,
             noteId,

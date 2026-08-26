@@ -1,7 +1,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
-import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_NOTE, MAX_RESPONSE_QUESTION, MAX_RESPONSE_QUEUE_KEY } from '../shared/redline-response.js'
+import {
+  MAX_RESPONSE_ANSWER,
+  MAX_RESPONSE_DATA_JSON,
+  MAX_RESPONSE_NOTE,
+  MAX_RESPONSE_QUESTION,
+  MAX_RESPONSE_QUEUE_KEY,
+  parseRedlinePageResponse,
+  type RedlinePageResponse,
+} from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
@@ -282,6 +290,18 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
   }
 }
 
+function parsePendingResponseInput(body: Record<string, unknown>): {
+  pageUrl: string
+  response: RedlinePageResponse
+} {
+  if (typeof body.pageUrl !== 'string') throw new HttpError(400, 'pageUrl must be an http or https URL')
+  const decision = classifyWebPaneUrl(body.pageUrl, new Set())
+  if (decision.kind === 'invalid') throw new HttpError(400, `pageUrl ${decision.reason}`)
+  const response = parseRedlinePageResponse(body.response)
+  if (!response) throw new HttpError(400, 'response is malformed')
+  return { pageUrl: decision.url, response }
+}
+
 function digest(value: string): Buffer {
   return createHash('sha256').update(value).digest()
 }
@@ -441,6 +461,15 @@ export class WebPanesApi {
         const pane = this.dependencies.service.get(route.id)
         if (!pane) throw new HttpError(404, 'Web pane does not exist')
         const pending = this.dependencies.pending
+
+        if (route.response === true) {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const input = parsePendingResponseInput(await readJson(request))
+          const snapshot = pending.addResponse(route.id, input.pageUrl, input.response)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
+          return true
+        }
 
         if (route.send === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -622,7 +651,9 @@ export class WebPanesApi {
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
               : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
-              : url.pathname.endsWith('/pending/send') || url.pathname.endsWith('/pending/dropped') ? 'POST'
+              : url.pathname.endsWith('/pending/send') ||
+                   url.pathname.endsWith('/pending/dropped') ||
+                   url.pathname.endsWith('/pending/response') ? 'POST'
               : /\/pending\/\d+\/attachments$/.test(url.pathname) ? 'POST'
               : /\/pending\/\d+\/attachments\/[^/]+$/.test(url.pathname) ? 'DELETE'
               : /\/pending\/\d+$/.test(url.pathname) ? 'PATCH, DELETE'
@@ -665,7 +696,7 @@ export class WebPanesApi {
     | { kind: 'collection' }
     | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
-    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; dismissDropped?: boolean } {
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; dismissDropped?: boolean; response?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
     const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
     if (attachment) {
@@ -685,11 +716,12 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|dropped|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|dropped|response|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
       if (match[3] === 'dropped') return { kind: 'pane', id: match[1], action: 'pending', dismissDropped: true }
+      if (match[3] === 'response') return { kind: 'pane', id: match[1], action: 'pending', response: true }
       if (match[3] !== undefined) return { kind: 'pane', id: match[1], action: 'pending', noteId: Number(match[3]) }
       return { kind: 'pane', id: match[1], action: 'pending' }
     }

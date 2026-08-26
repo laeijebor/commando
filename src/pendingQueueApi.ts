@@ -1,10 +1,12 @@
 import type { WebPanePendingSnapshot } from '../shared/protocol'
+import type { RedlinePageResponse } from '../shared/redline-response'
 import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
 
 /** Daemon-side pending review queue for one tile. */
 export type PendingQueueApi = {
   list: () => Promise<WebPanePendingSnapshot>
   add: (note: PendingNoteDraft) => Promise<WebPanePendingSnapshot>
+  addResponse?: (pageUrl: string, response: RedlinePageResponse) => Promise<WebPanePendingSnapshot>
   update: (
     noteId: number,
     expectedRevision: number,

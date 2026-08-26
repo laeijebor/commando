@@ -39,6 +39,11 @@ describe('pending note routes', () => {
     const snapshot = { notes, knownUpTo: 1, dropped: 0 }
     expect(await api.pendingNotes('w-11111111')).toEqual(snapshot)
     expect(await api.addPendingNote('w-11111111', { selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' })).toEqual(snapshot)
+    expect(await api.addPendingResponse('w-11111111', 'https://example.com/review', {
+      question: 'Which plan?',
+      answer: 'Pro',
+      queueKey: 'plan',
+    })).toEqual(snapshot)
     expect(await api.removePendingNote('w-11111111', 1)).toEqual(snapshot)
     expect(await api.sendPendingNotes('w-11111111')).toEqual(snapshot)
 
@@ -46,13 +51,18 @@ describe('pending note routes', () => {
     expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
       'GET /api/web-panes/w-11111111/pending',
       'POST /api/web-panes/w-11111111/pending',
+      'POST /api/web-panes/w-11111111/pending/response',
       'DELETE /api/web-panes/w-11111111/pending/1',
       'POST /api/web-panes/w-11111111/pending/send',
     ])
     expect(JSON.parse(String(calls[1][1].body))).toEqual({
       note: { selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'c' },
     })
-    expect(JSON.parse(String(calls[3][1].body))).toEqual({})
+    expect(JSON.parse(String(calls[2][1].body))).toEqual({
+      pageUrl: 'https://example.com/review',
+      response: { question: 'Which plan?', answer: 'Pro', queueKey: 'plan' },
+    })
+    expect(JSON.parse(String(calls[4][1].body))).toEqual({})
   })
 
   it('updates an answer and note using the expected revision', async () => {
