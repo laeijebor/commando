@@ -184,12 +184,142 @@ describe('redline-choice', () => {
     expect(button.textContent).toBe('Queue answer') // the daemon snapshot is authoritative
   })
 
-  it('does nothing when no option is selected', () => {
+  it('blocks queueing with a visible reason when there is nothing to send', () => {
     const calls = loadSdk()
     document.body.innerHTML =
       '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
-    ;(document.querySelector('redline-choice button') as HTMLButtonElement).click()
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(host.querySelector('.redline-queue-hint')?.textContent).toContain('Pick an option')
+    button.click()
     expect(calls).toHaveLength(0)
+  })
+
+  it('lets a note stand alone as the answer when nothing is selected', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    note.value = 'None of these — keep the toggle visible'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toBe('Queue comment')
+    expect(host.querySelector('.redline-queue-hint')?.textContent).toBe('')
+    button.click()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      question: 'Which plan?',
+      answer: '(none — see note)',
+      note: 'None of these — keep the toggle visible',
+      queueKey: 'plan',
+    })
+    expect(calls[0].data).toEqual({ choice: null, options: ['A', 'B'], multiple: false })
+  })
+
+  it('reverts to a plain answer once an option is picked', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    note.value = 'A thought'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(button.textContent).toBe('Queue comment')
+    ;(host.querySelectorAll('input[type="radio"]')[0] as HTMLInputElement).click()
+    expect(button.textContent).toBe('Queue answer')
+  })
+
+  it('clears a radio when the selected option is clicked again', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    const label = host.querySelectorAll('.redline-options label')[1] as HTMLElement
+    const radio = label.querySelector('input') as HTMLInputElement
+
+    label.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    radio.click()
+    expect(radio.checked).toBe(true)
+    expect(button.disabled).toBe(false)
+
+    label.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    radio.click()
+    expect(radio.checked).toBe(false) // back to "nothing chosen", so a comment can stand alone
+    expect(button.disabled).toBe(true)
+  })
+
+  it('leaves keyboard selection alone', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const label = host.querySelectorAll('.redline-options label')[1] as HTMLElement
+    const radio = label.querySelector('input') as HTMLInputElement
+    label.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    radio.click()
+    label.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ' }))
+    radio.click() // keyboard activation must not toggle the selection off
+    expect(radio.checked).toBe(true)
+  })
+
+  it('skips a question without inventing an answer', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const skip = host.querySelector('button.redline-queue-skip') as HTMLButtonElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    expect(skip.disabled).toBe(false)
+    skip.click()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: '(skipped)', queueKey: 'plan' })
+    expect(calls[0].data).toEqual({ skipped: true })
+    expect(calls[0].note).toBeUndefined()
+    expect(skip.textContent).toBe('Skipped ✓')
+    expect(skip.disabled).toBe(true)
+    expect(button.disabled).toBe(true)
+    skip.click()
+    expect(calls).toHaveLength(1) // pressing it again must not queue a duplicate
+  })
+
+  it('disables skip once the user has something to say, and re-answering clears a skip', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const skip = host.querySelector('button.redline-queue-skip') as HTMLButtonElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+
+    note.value = 'Actually, here is a thought'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(skip.disabled).toBe(true) // a note is an answer; skip is for having none
+
+    note.value = ''
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(skip.disabled).toBe(false)
+
+    skip.click()
+    expect(skip.textContent).toBe('Skipped ✓')
+    ;(host.querySelectorAll('input[type="radio"]')[0] as HTMLInputElement).click()
+    expect(skip.textContent).toBe('Skip') // changed their mind: no longer a skip
+    expect((host.querySelector('button.redline-queue') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('omits skip when the author marks the question required', () => {
+    loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="A,B" required></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.querySelector('button.redline-queue-skip')).toBeNull()
+    expect(host.querySelector('.redline-queue-hint')?.textContent).toBe('Pick an option or write a note')
   })
 
   it('supports multiple selection', () => {
@@ -302,7 +432,9 @@ describe('redline-ask', () => {
     const calls = loadSdk()
     document.body.innerHTML = '<redline-ask key="name" prompt="What should we call it?"></redline-ask>'
     const host = document.querySelector('redline-ask') as HTMLElement
-    ;(host.querySelector('textarea') as HTMLTextAreaElement).value = 'Redline'
+    const answer = host.querySelector('textarea') as HTMLTextAreaElement
+    answer.value = 'Redline'
+    answer.dispatchEvent(new Event('input', { bubbles: true }))
     ;(host.querySelector('button') as HTMLButtonElement).click()
     expect(calls[0]).toMatchObject({ question: 'What should we call it?', answer: 'Redline', queueKey: 'name' })
   })
@@ -326,7 +458,7 @@ describe('redline-question', () => {
     expect((calls[0].data as Record<string, unknown>).note).toBeUndefined()
   })
 
-  it('renders in document order: prompt first, author children in the middle, button last', () => {
+  it('renders in document order: prompt first, author children in the middle, controls last', () => {
     // Pins the contract that connectedCallback's DOMContentLoaded deferral
     // (for the <head>-script case where children parse after the opening
     // tag) is meant to produce. The innerHTML path here has the full subtree
@@ -340,8 +472,11 @@ describe('redline-question', () => {
     const host = document.querySelector('redline-question') as HTMLElement
     const children = [...host.children]
     expect(children[0].className).toBe('redline-prompt')
-    expect(children[children.length - 1].tagName).toBe('BUTTON')
-    expect(children.slice(1, -1).some((el) => el.tagName === 'LABEL')).toBe(true)
+    const authored = children.findIndex((el) => el.tagName === 'LABEL')
+    const queue = children.findIndex((el) => el.classList.contains('redline-queue'))
+    expect(authored).toBeGreaterThan(0)
+    expect(queue).toBeGreaterThan(authored) // agent-added controls follow author content
+    expect(children[children.length - 1].classList.contains('redline-queue-hint')).toBe(true)
   })
 
   it('keeps the SDK note separate from authored field data', () => {
@@ -489,7 +624,9 @@ describe('daemon pending snapshot state', () => {
 
     expect(answer.value).toBe('')
     expect(note.value).toBe('Local note before answering')
-    expect(host.querySelector('button')?.textContent).toBe('Update queued answer')
+    // The local draft is note-only, so the button offers to update the queued
+    // entry as a comment rather than claiming an answer was typed.
+    expect(host.querySelector('button')?.textContent).toBe('Update queued comment')
   })
 
   it('uses queueKey before selector and selector fallback only for unkeyed controls', () => {
@@ -555,6 +692,7 @@ describe('daemon pending snapshot state', () => {
     const answer = host.querySelector('textarea:not([data-redline-note])') as HTMLTextAreaElement
     const button = host.querySelector('button') as HTMLButtonElement
     answer.value = 'Redline'
+    answer.dispatchEvent(new Event('input', { bubbles: true }))
     button.click()
     expect(calls).toHaveLength(1)
     expect(button.textContent).toBe('Queue answer')
@@ -914,8 +1052,11 @@ describe('binding arrives after first paint', () => {
     }
     vi.advanceTimersByTime(250)
 
-    expect(button.disabled).toBe(false)
+    // The no-tile block is lifted (no title), but an empty control is still
+    // not sendable — it is now blocked for the honest reason instead.
     expect(button.title).toBe('')
+    expect(button.disabled).toBe(true)
+    expect(host.querySelector('.redline-queue-hint')?.textContent).toContain('Pick an option')
 
     const radios = host.querySelectorAll('input[type="radio"]')
     ;(radios[1] as HTMLInputElement).click()

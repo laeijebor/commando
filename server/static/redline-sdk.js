@@ -23,6 +23,12 @@
   // payload fits under MAX_RESPONSE_PAYLOAD_BYTES.
   const OPTIONAL_FIELD_DROP_ORDER = ['data', 'text', 'selector', 'rect']
 
+  // The daemon requires a non-empty answer (server/web-panes-api.ts), so the
+  // two "I am not picking one of your options" replies carry a stand-in
+  // string. Agents should read response.note / response.data, not match these.
+  const NOTE_ONLY_ANSWER = '(none — see note)'
+  const SKIPPED_ANSWER = '(skipped)'
+
   const bindingAvailable = () => typeof window[BINDING] === 'function'
 
   // The engine starts the page navigating the moment it creates the target,
@@ -54,6 +60,9 @@
         }
         pendingButtons.clear()
         stopBindingPoll()
+        // Re-derive each control's real state: "binding is here" only lifts the
+        // no-tile block, it does not mean an empty control may be queued.
+        for (const control of pendingControls) renderPendingState(control)
         return
       }
       bindingPollElapsedMs += BINDING_POLL_INTERVAL_MS
@@ -284,6 +293,31 @@
   background: linear-gradient(135deg, #d99124, #b86d18);
   box-shadow: 0 0 16px rgb(217 145 36 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
 }
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip) {
+  margin: .85rem 0 0 .5rem; padding: .5rem .95rem; cursor: pointer;
+  border-radius: 10px; font: inherit; font-size: .88rem; font-weight: 550;
+  color: inherit; opacity: .7; background: transparent;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  transition: opacity .12s ease, border-color .12s ease, background .12s ease;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip:hover:not(:disabled)) {
+  opacity: 1; background: color-mix(in oklab, currentColor 7%, transparent);
+  border-color: color-mix(in oklab, currentColor 38%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip:disabled) {
+  cursor: not-allowed; opacity: .3;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip[data-queued]) {
+  cursor: default; opacity: 1; color: #2fbf71;
+  border-color: color-mix(in oklab, #2fbf71 45%, transparent);
+  background: color-mix(in oklab, #2fbf71 12%, transparent);
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queue-hint) {
+  margin: .5rem 0 0; font-size: .8rem; opacity: .6;
+}
+:where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queue-hint:empty) {
+  display: none;
+}
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge) {
   display: inline-block; margin-left: .6rem; padding: .22rem .6rem; border-radius: 999px;
   font-size: .75rem; font-weight: 600; color: #2fbf71;
@@ -507,7 +541,7 @@
     const note = document.createElement('textarea')
     note.className = 'redline-comment redline-note'
     note.dataset.redlineNote = '1'
-    note.placeholder = 'Optional note'
+    note.placeholder = 'Optional note — or answer in your own words'
     note.maxLength = 1024
     return note
   }
@@ -541,28 +575,62 @@
   const renderPendingState = (host) => {
     const button = host._queueButton
     if (!button) return
+    const draft = host.effectiveDraft()
+    const skipped = Boolean(draft?.skipped)
+    const armed = bindingAvailable()
+    // The old build silently dropped a click on an empty control. Say so
+    // instead: the button is visibly unavailable and the hint says why.
+    if (armed) {
+      button.disabled = !draft || skipped
+      button.title = ''
+    }
+    const skip = host._skipButton
+    if (skip) {
+      skip.disabled = !armed || Boolean(draft)
+      skip.textContent = skipped
+        ? (host.getAttribute('skipped-label') || 'Skipped ✓')
+        : (host.getAttribute('skip-label') || 'Skip')
+      if (skipped) skip.dataset.queued = '1'
+      else delete skip.dataset.queued
+    }
+    if (host._queueHint) {
+      host._queueHint.textContent = armed && !draft
+        ? (host.getAttribute('empty-hint') || (skip ? 'Pick an option or write a note — or skip it' : 'Pick an option or write a note'))
+        : ''
+    }
     let badge = host.querySelector('.redline-queued-badge')
     if (host._queuedBaseline === null) {
-      button.textContent = button.dataset.defaultLabel
+      button.textContent = draft?.noteOnly
+        ? (host.getAttribute('comment-label') || 'Queue comment')
+        : button.dataset.defaultLabel
       delete button.dataset.queued
       delete button.dataset.changed
       badge?.remove()
       return
     }
-    const draft = host.draft()
     const matches = draft && pendingBaseline(draft) === host._queuedBaseline
-    button.textContent = matches ? 'Queued ✓' : 'Update queued answer'
-    if (matches) {
-      button.dataset.queued = '1'
+    // A queued skip is shown on the skip button itself, so the primary button
+    // stays a plain, disabled "Queue answer" rather than claiming an answer.
+    if (matches && skipped) {
+      button.textContent = button.dataset.defaultLabel
+      delete button.dataset.queued
       delete button.dataset.changed
     } else {
-      button.dataset.changed = '1'
-      delete button.dataset.queued
+      button.textContent = matches
+        ? 'Queued ✓'
+        : (draft?.noteOnly ? 'Update queued comment' : 'Update queued answer')
+      if (matches) {
+        button.dataset.queued = '1'
+        delete button.dataset.changed
+      } else {
+        button.dataset.changed = '1'
+        delete button.dataset.queued
+      }
     }
     if (!badge) {
       badge = document.createElement('span')
       badge.className = 'redline-queued-badge'
-      button.after(badge)
+      ;(host._skipButton || button).after(badge)
     }
     badge.textContent = matches ? 'queued — see tile footer' : 'Changed since queued'
     if (matches) delete badge.dataset.changed
@@ -579,6 +647,28 @@
     const snapshot = validPendingSnapshot(event.detail) ? event.detail : window[PENDING_SNAPSHOT]
     applyPendingSnapshot(snapshot)
   })
+
+  /**
+   * A radio group cannot normally return to "nothing chosen", which would
+   * strand anyone who clicked before deciding to comment instead. Re-clicking
+   * the selected option clears it. Guarded on a real pointer press so
+   * keyboard selection (which fires click with no pointerdown) is unaffected.
+   */
+  const enableRadioDeselect = (list) => {
+    for (const label of list.querySelectorAll('label')) {
+      const input = label.querySelector('input[type="radio"]')
+      if (!input) continue
+      label.addEventListener('pointerdown', () => { input.dataset.wasChecked = input.checked ? '1' : '' })
+      label.addEventListener('keydown', () => { delete input.dataset.wasChecked })
+      input.addEventListener('click', () => {
+        const wasChecked = input.dataset.wasChecked === '1'
+        delete input.dataset.wasChecked
+        if (!wasChecked) return
+        input.checked = false
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+  }
 
   const promptHeading = (host) => {
     const heading = document.createElement('p')
@@ -620,6 +710,35 @@
     prompt() {
       return this.getAttribute('prompt') || this.getAttribute('key') || 'Question'
     }
+    noteText() {
+      return this._noteInput?.value.trim() || ''
+    }
+    /**
+     * What the control would send right now. Falls back past the primary
+     * answer so a note on its own, or a deliberate skip, is still sendable —
+     * the user should never have to invent a selection to be heard.
+     */
+    effectiveDraft() {
+      const draft = this.draft()
+      if (draft) return draft
+      const note = this.noteText()
+      if (note) return { answer: NOTE_ONLY_ANSWER, note, noteOnly: true }
+      if (this._skipped) return { answer: SKIPPED_ANSWER, note: '', skipped: true }
+      return null
+    }
+    queueNoteOnly(data) {
+      if (!this.noteText()) return false
+      return this.queue(NOTE_ONLY_ANSWER, data)
+    }
+    /** Settles a question the user has no opinion on, without inventing one. */
+    skip() {
+      if (this._skipped) return false
+      this._skipped = true
+      const queued = this.queue(SKIPPED_ANSWER, { skipped: true })
+      if (!queued) this._skipped = false
+      renderPendingState(this)
+      return queued
+    }
     queue(answer, data) {
       return queueResponse({
         question: this.prompt(),
@@ -634,10 +753,31 @@
       this._queueButton = button
       this._noteInput = note
       this._queuedBaseline = null
+      this._skipped = false
+      if (!this.hasAttribute('required')) {
+        const skip = document.createElement('button')
+        skip.type = 'button'
+        skip.className = 'redline-queue-skip'
+        skip.textContent = this.getAttribute('skip-label') || 'Skip'
+        skip.title = 'Queue "no answer" so this question is settled without inventing one'
+        skip.addEventListener('click', () => this.skip())
+        button.after(skip)
+        this._skipButton = skip
+      }
+      const hint = document.createElement('p')
+      hint.className = 'redline-queue-hint'
+      this.append(hint)
+      this._queueHint = hint
       this._localBaseline = this.currentBaseline()
-      this.addEventListener('input', () => renderPendingState(this))
-      this.addEventListener('change', () => renderPendingState(this))
+      this.addEventListener('input', () => this.onDraftChanged())
+      this.addEventListener('change', () => this.onDraftChanged())
       this.registerPendingControl()
+      renderPendingState(this)
+    }
+    /** Touching the control after skipping means the user does have an answer. */
+    onDraftChanged() {
+      if (this._skipped && (this.draft() || this.noteText())) this._skipped = false
+      renderPendingState(this)
     }
     registerPendingControl() {
       if (!this._queueButton || !this.isConnected) return
@@ -658,7 +798,7 @@
         return
       }
       if (wasClean) {
-        this.hydrate(control.response)
+        this.hydrateResponse(control.response)
         const restoredNote = typeof control.response.note === 'string'
           ? control.response.note
           : this.legacyNote(control.response)
@@ -668,7 +808,17 @@
       renderPendingState(this)
     }
     currentBaseline() {
-      return pendingBaseline(this.draft() || { answer: '', note: this._noteInput?.value || '' })
+      return pendingBaseline(this.effectiveDraft() || { answer: '', note: this._noteInput?.value || '' })
+    }
+    /**
+     * Sentinel answers describe the absence of a selection, so they must not
+     * be pushed through a subclass hydrate that would try to match them
+     * against real options.
+     */
+    hydrateResponse(response) {
+      this._skipped = response.answer === SKIPPED_ANSWER
+      if (this._skipped || response.answer === NOTE_ONLY_ANSWER) return
+      this.hydrate(response)
     }
     baseline(response) {
       return {
@@ -757,7 +907,7 @@
       this.render()
       if (answer) {
         try {
-          this.hydrate({ question: this.prompt(), answer, note })
+          this.hydrateResponse({ question: this.prompt(), answer, note })
         } catch (error) {
           console.warn('redline: could not restore the recorded answer', error)
         }
@@ -793,7 +943,7 @@
       const note = noteInput()
       button.addEventListener('click', () => {
         const chosen = [...this.querySelectorAll('input:checked')].map((input) => input.value)
-        if (chosen.length === 0) return
+        if (chosen.length === 0) return this.queueNoteOnly({ choice: null, options, multiple })
         this.queue(chosen.join(', '), {
           choice: multiple ? chosen : chosen[0],
           options,
@@ -802,6 +952,7 @@
       })
       this.append(list, note, button)
       this._multiple = multiple
+      if (!multiple) enableRadioDeselect(list)
       this.finishRender(button, note)
     }
     hydrate(response) {
@@ -843,10 +994,11 @@
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return
+        if (!selected) return this.queueNoteOnly({ verdict: null })
         this.queue(selected.value, { verdict: selected.value })
       })
       this.append(list, note, button)
+      enableRadioDeselect(list)
       this.finishRender(button, note)
     }
     legacyNote(response) {
@@ -893,11 +1045,12 @@
       const note = noteInput()
       button.addEventListener('click', () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return
+        if (!selected) return this.queueNoteOnly({ rating: null, max })
         this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max })
       })
       this.append(list, note, button)
       this._max = max
+      enableRadioDeselect(list)
       this.finishRender(button, note)
     }
     hydrate(response) {
@@ -920,7 +1073,7 @@
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
         const answer = input.value.trim()
-        if (!answer) return
+        if (!answer) return this.queueNoteOnly()
         this.queue(answer)
       })
       this.append(input, note, button)
@@ -944,7 +1097,7 @@
       const button = queueButton(this.getAttribute('button-label'))
       button.addEventListener('click', () => {
         const draft = this.structuredDraft()
-        if (!draft) return
+        if (!draft) return this.queueNoteOnly()
         this.queue(draft.answer, draft.data)
       })
       this.append(note, button)
