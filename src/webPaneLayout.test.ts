@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
 import { layoutTreePanes, parseWindowLayout } from '../shared/window-layout'
-import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
+import {
+  insertWebPaneLeaves,
+  isWebPaneLeafId,
+  restoreWebPaneAnchorSizes,
+} from './webPaneLayout'
 
 const TWO_PANE_LAYOUT = 'bb62,208x50,0,0{104x50,0,0,12,103x50,105,0,13}'
+const TWO_STACKED_PANE_LAYOUT = 'bb62,104x101,0,0[104x50,0,0,12,104x50,0,51,13]'
 
 function webPane(overrides: Partial<WebPane> = {}): WebPane {
   return {
@@ -65,23 +70,37 @@ describe('insertWebPaneLeaves', () => {
     expect(tallResult).toMatchObject({ kind: 'split', direction: 'column' })
   })
 
-  it('sizes the wrapper as the sum of anchor + tile so measured layouts stay stable', () => {
-    // Regression: if the wrapper keeps the anchor's own extent, the measured
-    // layout writes the halved anchor back to tmux and the next render halves
-    // it again — a runaway shrink to the minimum pane size.
-    const wide = parseWindowLayout('bb62,208x50,0,0,12')!
-    const right = insertWebPaneLeaves(wide, [webPane({ placement: 'right' })])
-    expect(right).toMatchObject({ kind: 'split', direction: 'row', cols: 416 })
-    if (right.kind !== 'split') throw new Error('expected split')
-    expect(right.children[0]).toMatchObject({ kind: 'pane', paneId: '%12', cols: 208 })
-    expect(right.children[1]).toMatchObject({ kind: 'pane', paneId: 'w-abcd1234', cols: 208 })
+  it('keeps the tile inside its anchor footprint so sibling pane weights do not change', () => {
+    const tree = parseWindowLayout(TWO_PANE_LAYOUT)!
+    const result = insertWebPaneLeaves(tree, [webPane({ placement: 'right' })])
 
-    const tall = parseWindowLayout('bb62,80x50,0,0,12')!
-    const below = insertWebPaneLeaves(tall, [webPane({ placement: 'below' })])
-    expect(below).toMatchObject({ kind: 'split', direction: 'column', rows: 100 })
-    if (below.kind !== 'split') throw new Error('expected split')
-    expect(below.children[0]).toMatchObject({ kind: 'pane', paneId: '%12', rows: 50 })
-    expect(below.children[1]).toMatchObject({ kind: 'pane', paneId: 'w-abcd1234', rows: 50 })
+    expect(result).toMatchObject({ kind: 'split', direction: 'row', cols: 208 })
+    if (result.kind !== 'split') throw new Error('expected root split')
+    expect(result.children[0]).toMatchObject({ kind: 'split', direction: 'row', cols: 104 })
+    expect(result.children[1]).toMatchObject({ kind: 'pane', paneId: '%13', cols: 103 })
+    if (result.children[0]?.kind !== 'split') throw new Error('expected anchor split')
+    expect(result.children[0].children[0]).toMatchObject({ paneId: '%12', cols: 52 })
+    expect(result.children[0].children[1]).toMatchObject({ paneId: 'w-abcd1234', cols: 52 })
+
+    const stackedTree = parseWindowLayout(TWO_STACKED_PANE_LAYOUT)!
+    const stackedResult = insertWebPaneLeaves(stackedTree, [webPane({ placement: 'below' })])
+    expect(stackedResult).toMatchObject({ kind: 'split', direction: 'column', rows: 101 })
+    if (stackedResult.kind !== 'split') throw new Error('expected stacked root split')
+    expect(stackedResult.children[0]).toMatchObject({ kind: 'split', direction: 'column', rows: 50 })
+    expect(stackedResult.children[1]).toMatchObject({ kind: 'pane', paneId: '%13', rows: 50 })
+  })
+
+  it('restores the anchor footprint before measured sizes are written back to tmux', () => {
+    const tree = parseWindowLayout(TWO_PANE_LAYOUT)!
+    const measured = new Map([
+      ['%12', { cols: 52, rows: 50 }],
+      ['%13', { cols: 103, rows: 50 }],
+    ])
+
+    expect(restoreWebPaneAnchorSizes(tree, [webPane({ placement: 'right' })], measured)).toEqual(new Map([
+      ['%12', { cols: 104, rows: 50 }],
+      ['%13', { cols: 103, rows: 50 }],
+    ]))
   })
 
   it('docks to the right edge when the anchor pane is not in the tree', () => {

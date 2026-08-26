@@ -97,7 +97,11 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
-import { insertWebPaneLeaves, isWebPaneLeafId } from './webPaneLayout'
+import {
+  insertWebPaneLeaves,
+  isWebPaneLeafId,
+  restoreWebPaneAnchorSizes,
+} from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import { PaneGitStats } from './PaneGitStats'
@@ -1607,11 +1611,16 @@ export function App() {
     if (
       capacities.some((capacity) => !capacity || capacity.key !== measurementKey)
     ) return
-    const sizes = new Map(
+    const measuredSizes = new Map(
       (capacities as Array<PaneLayoutCapacity & { key: string }>).map((capacity) => [
         capacity.paneId,
         { cols: capacity.cols, rows: capacity.rows },
       ]),
+    )
+    const sizes = restoreWebPaneAnchorSizes(
+      tree,
+      webPanes.filter((webPane) => webPane.windowId === windowId),
+      measuredSizes,
     )
     const stacked = window.matchMedia('(max-width: 680px)').matches && leaves.length > 1
     const spec: LayoutSpec = stacked
@@ -1687,7 +1696,17 @@ export function App() {
         rows: Math.min(200, Math.max(1, Math.round(bounds.height / 10))),
       })
     }
-    sendWindowLayout(windowId, layoutSpecFromTree(tree, sizes))
+    sendWindowLayout(
+      windowId,
+      layoutSpecFromTree(
+        tree,
+        restoreWebPaneAnchorSizes(
+          tree,
+          webPanes.filter((webPane) => webPane.windowId === windowId),
+          sizes,
+        ),
+      ),
+    )
   }
 
   // On a busy-lease retry, replay what was already measured. Fresh pane

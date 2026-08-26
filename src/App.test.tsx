@@ -966,6 +966,26 @@ describe('desktop resize authority', () => {
     expect(renderer.getAttribute('data-measurement-key')).not.toContain('retry')
   })
 
+  it('restores a tile anchor footprint before applying measured tmux geometry', async () => {
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+
+    fireEvent.click(screen.getByText(`Simulate measured resize ${pane.id}`))
+    fireEvent.click(screen.getByText(`Simulate measured resize ${adjacentPane.id}`))
+
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'apply_window_layout',
+      spec: {
+        kind: 'split',
+        direction: 'row',
+        children: [
+          { kind: 'pane', paneId: pane.id, cols: 300, rows: 40 },
+          { kind: 'pane', paneId: adjacentPane.id, cols: 150, rows: 40 },
+        ],
+      },
+    })))
+  })
+
   it('does not retry a busy lease after the desktop window resigns key', async () => {
     await renderAppWithSnapshot()
     const renderer = screen.getByTestId(`renderer-${pane.id}`)
