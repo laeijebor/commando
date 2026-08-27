@@ -939,6 +939,20 @@ describe('desktop resize authority', () => {
     expect(initialMeasurementKey).toContain('active-window')
   })
 
+  it('keeps resize authority when focus moves from the web view to a native terminal', async () => {
+    await renderAppWithSnapshot()
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    expect(renderer).toHaveAttribute('data-resize-owner', 'true')
+    appMocks.send.mockClear()
+
+    act(() => window.dispatchEvent(new Event('blur')))
+
+    expect(renderer).toHaveAttribute('data-resize-owner', 'true')
+    expect(appMocks.send).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'release_all_resizes',
+    }))
+  })
+
   it('replays cached measurements when a busy lease retry fires', async () => {
     await renderAppWithSnapshot()
     const renderer = screen.getByTestId(`renderer-${pane.id}`)

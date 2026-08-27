@@ -29,14 +29,30 @@ describe('desktop window activity', () => {
     expect(view.result.current).toBe(false)
   })
 
-  it('releases activity immediately on blur and retries on focus', () => {
+  it('stays active when focus moves from the web view to a native terminal', () => {
     window.__commandoDesktopWindowActive = true
     const view = renderHook(() => useDesktopWindowActivity())
     expect(view.result.current).toBe(true)
 
     act(() => window.dispatchEvent(new Event('blur')))
+    expect(view.result.current).toBe(true)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_WINDOW_ACTIVITY_EVENT, { detail: false }))
+    })
+    expect(view.result.current).toBe(false)
+  })
+
+  it('uses DOM focus when no native key-window state is available', () => {
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const view = renderHook(() => useDesktopWindowActivity())
+    expect(view.result.current).toBe(true)
+
+    hasFocus.mockReturnValue(false)
+    act(() => window.dispatchEvent(new Event('blur')))
     expect(view.result.current).toBe(false)
 
+    hasFocus.mockReturnValue(true)
     act(() => window.dispatchEvent(new Event('focus')))
     expect(view.result.current).toBe(true)
   })

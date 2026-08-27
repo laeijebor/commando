@@ -31,7 +31,7 @@ export function useDesktopWindowActivity(): boolean {
       setActive(value && pageIsVisible())
     }
     const handleFocus = () => setActive(currentActivity())
-    const handleBlur = () => setActive(false)
+    const handleBlur = () => setActive(currentActivity())
     const handleVisibility = () => setActive(currentActivity())
 
     window.addEventListener(DESKTOP_WINDOW_ACTIVITY_EVENT, handleNativeActivity)
