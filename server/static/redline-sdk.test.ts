@@ -184,6 +184,34 @@ describe('redline-choice', () => {
     expect(button.textContent).toBe('Queue answer') // the daemon snapshot is authoritative
   })
 
+  it('accepts JSON options so a label can contain commas', () => {
+    const calls = loadSdk()
+    document.body.innerHTML = `
+      <redline-choice
+        key="set"
+        prompt="Which set?"
+        options='["Ten — Pulse, Crest, Kiln, Ridge (recommended)","Twelve — all six"]'
+      ></redline-choice>`
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const radios = host.querySelectorAll('input[type="radio"]')
+
+    expect([...radios].map((radio) => (radio as HTMLInputElement).value)).toEqual([
+      'Ten — Pulse, Crest, Kiln, Ridge (recommended)',
+      'Twelve — all six',
+    ])
+
+    ;(radios[0] as HTMLInputElement).click()
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls[0]).toMatchObject({
+      answer: 'Ten — Pulse, Crest, Kiln, Ridge (recommended)',
+      data: {
+        choice: 'Ten — Pulse, Crest, Kiln, Ridge (recommended)',
+        options: ['Ten — Pulse, Crest, Kiln, Ridge (recommended)', 'Twelve — all six'],
+        multiple: false,
+      },
+    })
+  })
+
   it('blocks queueing with a visible reason when there is nothing to send', () => {
     const calls = loadSdk()
     document.body.innerHTML =
@@ -359,6 +387,20 @@ describe('resolved controls', () => {
       '<redline-choice key="f" prompt="Keep which?" options="A,B,C" multiple resolved answer="A, C"></redline-choice>'
     const chips = [...document.querySelectorAll('.redline-resolved-answer')].map((c) => c.textContent)
     expect(chips).toEqual(['\u2713 A', '\u2713 C'])
+  })
+
+  it('keeps a comma-bearing single choice in one resolved chip', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-choice
+        key="set"
+        prompt="Which set?"
+        options='["Ten — Pulse, Crest, Kiln, Ridge (recommended)","Twelve — all six"]'
+        resolved
+        answer="Ten — Pulse, Crest, Kiln, Ridge (recommended)"
+      ></redline-choice>`
+    const chips = [...document.querySelectorAll('.redline-resolved-answer')].map((chip) => chip.textContent)
+    expect(chips).toEqual(['\u2713 Ten — Pulse, Crest, Kiln, Ridge (recommended)'])
   })
 
   it('reopens into a live control pre-filled with the recorded answer', () => {

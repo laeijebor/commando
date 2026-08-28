@@ -670,6 +670,21 @@
     }
   }
 
+  const choiceOptions = (value) => {
+    const source = value.trim()
+    if (source.startsWith('[') && source.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(source)
+        if (Array.isArray(parsed) && parsed.every((option) => typeof option === 'string')) {
+          return parsed.map((option) => option.trim()).filter(Boolean)
+        }
+      } catch {
+        // Fall through to the original comma-separated shorthand.
+      }
+    }
+    return source.split(',').map((option) => option.trim()).filter(Boolean)
+  }
+
   const promptHeading = (host) => {
     const heading = document.createElement('p')
     heading.className = 'redline-prompt'
@@ -842,6 +857,7 @@
     }
     resolvedAnswers() {
       const answer = this.getAttribute('answer') || ''
+      if (!this.hasAttribute('multiple')) return answer ? [answer] : []
       // Multi-select queues its answer as `a, b` — split it back into chips.
       return answer ? answer.split(', ').map((value) => value.trim()).filter(Boolean) : []
     }
@@ -923,10 +939,7 @@
     render() {
       const multiple = this.hasAttribute('multiple')
       const name = nextName()
-      const options = (this.getAttribute('options') || '')
-        .split(',')
-        .map((option) => option.trim())
-        .filter(Boolean)
+      const options = choiceOptions(this.getAttribute('options') || '')
       this.append(promptHeading(this))
       const list = document.createElement('div')
       list.className = `redline-options redline-options-${multiple ? 'multiple' : 'single'}`

@@ -30,6 +30,13 @@ for.
 | `<redline-ask>` | open-ended text the options list can't capture |
 | `<redline-question>` | a composite form — wrap your own `<input>`/`<select>`/`<textarea>` fields inside it |
 
+`<redline-choice>` accepts the compact comma-separated form for simple labels,
+for example `options="Starter,Pro"`. When any option label contains a comma,
+use a JSON array inside a single-quoted attribute instead:
+`options='["Ten — Pulse, Crest, Kiln, Ridge","Twelve — all six"]'`. Never put a
+comma-bearing label in the compact form because each comma becomes a separate
+option.
+
 ## Keys
 
 Give every question a unique `key` — it's how a re-answer replaces the

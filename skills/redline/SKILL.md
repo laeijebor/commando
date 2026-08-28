@@ -212,6 +212,15 @@ one line each:
 </redline-question>
 ```
 
+The compact `options="Starter,Pro,Enterprise"` form is only for labels that do
+not contain commas. If any label contains a comma, pass the entire option list
+as a JSON array and wrap the HTML attribute in single quotes so each label stays
+intact:
+
+```html
+<redline-choice key="set" prompt="Which set?" options='["Ten — Pulse, Crest, Kiln, Ridge (recommended)","Twelve — all six"]'></redline-choice>
+```
+
 Discipline the agent must know:
 - Interacting with a control (checking a box, typing) only updates local
   state — nothing sends yet.
