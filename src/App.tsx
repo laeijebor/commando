@@ -243,6 +243,7 @@ type TerminalPaneProps = {
   mark?: PaneMark
   index: number
   count: number
+  solo: boolean
   maximized: boolean
   focused: boolean
   resizeOwner: boolean
@@ -285,6 +286,7 @@ export function TerminalPaneCard({
   mark,
   index,
   count,
+  solo,
   maximized,
   focused,
   resizeOwner,
@@ -403,7 +405,7 @@ export function TerminalPaneCard({
 
   return (
     <article
-      className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${count === 1 ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
+      className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -2495,6 +2497,7 @@ export function App() {
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
+              const displayLeafCount = displayTree ? layoutTreePanes(displayTree).length : 0
               const measurementKey = windowTree
                 ? measurementKeyFor(group.id, windowTree)
                 : ''
@@ -2547,6 +2550,7 @@ export function App() {
                             mark={paneMarks[pane.targetId]}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
+                            solo={displayLeafCount === 1}
                             maximized={maximizedPaneId === pane.id}
                             focused={focusedPaneId === pane.id}
                             resizeOwner={

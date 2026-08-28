@@ -560,6 +560,20 @@ const openWebPane = {
 } as const
 
 describe('web pane tiles', () => {
+  it('does not treat a terminal sharing its layout with a web tile as solo', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const terminal = document.querySelector('[data-pane-id="%12"]')
+    expect(terminal).toHaveClass('is-solo')
+
+    act(() => daemonMessage?.({
+      type: 'web_panes',
+      webPanes: [{ ...openWebPane, placement: 'below' }],
+    }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    expect(terminal).not.toHaveClass('is-solo')
+  })
+
   it('renders a tile from a web_panes broadcast beside the tmux panes', async () => {
     await renderAppWithSnapshot()
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
@@ -1110,6 +1124,7 @@ const paneProps = {
   pane,
   index: 0,
   count: 1,
+  solo: true,
   preset: 'equal-grid' as const,
   maximized: false,
   focused: false,
