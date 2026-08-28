@@ -326,7 +326,7 @@ describe('pull request listing', () => {
     })
   })
 
-  it('merges authored and review-requested search results the repo page missed, deduped and sorted by update time', async () => {
+  it('merges authored and review-requested search results the repo page missed, deduped and sorted by PR number descending', async () => {
     const { service, runner } = serviceWith(graphqlPayload(
       [pullRequestNode({ number: 12, author: { login: 'someone-else' }, updatedAt: '2026-08-06T09:00:00Z' })],
       394,
@@ -352,8 +352,8 @@ describe('pull request listing', () => {
     expect(args).toContain('author:@me')
     expect(args).toContain('review-requested:@me')
     expect(args).toContain('repo:acme/widgets')
-    expect(list.pullRequests.map((pr) => pr.number)).toEqual([12, 41, 77])
-    expect(list.pullRequests[2].viewerIsAuthor).toBe(true)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([77, 41, 12])
+    expect(list.pullRequests[0].viewerIsAuthor).toBe(true)
     expect(list.pullRequests[1].viewerReviewRequested).toBe(true)
     expect(list.mineTruncated).toBe(false)
   })

@@ -827,7 +827,7 @@ export class PrService {
       const pullRequest = parsePullRequest(node, viewer)
       if (!byNumber.has(pullRequest.number)) byNumber.set(pullRequest.number, pullRequest)
     }
-    const pullRequests = [...byNumber.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    const pullRequests = [...byNumber.values()].sort((a, b) => b.number - a.number)
     return {
       repo,
       filter,
