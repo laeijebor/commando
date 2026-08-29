@@ -1366,9 +1366,57 @@
     disconnectedCallback() {
       this._observer?.disconnect()
       this._observer = null
+      this._strip?.disconnect()
+      this._strip = null
       if (this._onTrackChange) {
         document.removeEventListener('redline-track-change', this._onTrackChange)
         this._onTrackChange = null
+      }
+      document.documentElement.style.removeProperty('--redline-nav-strip')
+    }
+
+    /**
+     * On a narrow tile the links pin to the top of the page, so an anchored
+     * section would otherwise land underneath them. Publish the pinned height
+     * (0 when the strip scrolls with the page) for `scroll-margin-top`.
+     */
+    trackStripHeight(navigation) {
+      if (typeof ResizeObserver !== 'function') return
+      const publish = () => {
+        const pinned = getComputedStyle(navigation).position === 'sticky'
+        const height = pinned ? Math.round(navigation.getBoundingClientRect().height) : 0
+        document.documentElement.style.setProperty('--redline-nav-strip', `${height}px`)
+      }
+      this._strip = new ResizeObserver(publish)
+      this._strip.observe(navigation)
+      publish()
+    }
+
+    /**
+     * Keep the current section's link on screen: the strip scrolls sideways on
+     * a narrow tile and the rail scrolls down on a wide one, so a long
+     * document would otherwise leave the active link out of view.
+     */
+    revealLink(navigation, link, behavior) {
+      const margin = 24
+      for (const container of [navigation, this]) {
+        if (typeof container.scrollBy !== 'function') continue
+        const box = container.getBoundingClientRect()
+        const rect = link.getBoundingClientRect()
+        const scroll = {}
+        if (container.scrollWidth - container.clientWidth > 1) {
+          const before = rect.left - (box.left + margin)
+          const after = rect.right - (box.right - margin)
+          if (before < 0) scroll.left = before
+          else if (after > 0) scroll.left = after
+        }
+        if (container.scrollHeight - container.clientHeight > 1) {
+          const before = rect.top - (box.top + margin)
+          const after = rect.bottom - (box.bottom - margin)
+          if (before < 0) scroll.top = before
+          else if (after > 0) scroll.top = after
+        }
+        if (scroll.left || scroll.top) container.scrollBy({ ...scroll, behavior })
       }
     }
 
@@ -1476,13 +1524,20 @@
       followTracks()
       this._onTrackChange = () => followTracks()
       document.addEventListener('redline-track-change', this._onTrackChange)
-      const activate = (id) => {
+      const smooth = !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+      const activate = (id, behavior) => {
         for (const link of links) {
-          if (decodeURIComponent(link.hash.slice(1)) === id) link.setAttribute('aria-current', 'location')
-          else link.removeAttribute('aria-current')
+          if (decodeURIComponent(link.hash.slice(1)) !== id) {
+            link.removeAttribute('aria-current')
+            continue
+          }
+          const already = link.getAttribute('aria-current') === 'location'
+          link.setAttribute('aria-current', 'location')
+          if (!already) this.revealLink(navigation, link, behavior)
         }
       }
-      activate(sections[0].id)
+      this.trackStripHeight(navigation)
+      activate(sections[0].id, 'auto')
 
       if (typeof IntersectionObserver !== 'function') return
       const visible = new Map()
@@ -1491,7 +1546,7 @@
         const current = [...visible.values()]
           .filter((entry) => entry.isIntersecting)
           .sort((left, right) => Math.abs(left.boundingClientRect.top) - Math.abs(right.boundingClientRect.top))[0]
-        if (current) activate(current.target.id)
+        if (current) activate(current.target.id, smooth ? 'smooth' : 'auto')
       }, { rootMargin: '-10% 0px -70% 0px', threshold: [0, 0.1, 0.5] })
       for (const section of sections) this._observer.observe(section)
     }

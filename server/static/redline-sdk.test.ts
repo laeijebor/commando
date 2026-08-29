@@ -91,6 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 describe('window.redline.queueResponse', () => {
@@ -923,6 +924,80 @@ describe('redline-nav', () => {
     ])
     expect(links[0]?.dataset.redlineChanged).toBe('1')
     expect(nav.querySelector('.redline-nav-counts')?.textContent).toBe('1 open \u00b7 2 decided \u00b7 1 new')
+  })
+
+  it('scrolls the active link into view as sections come into focus', async () => {
+    // jsdom has no layout, so stand in for a strip whose links overflow to the
+    // right: only the first link is inside the visible box.
+    const observers: Array<(entries: unknown[]) => void> = []
+    class FakeIntersectionObserver {
+      constructor(callback: (entries: unknown[]) => void) {
+        observers.push(callback)
+      }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Long"></redline-nav>
+        <main>
+          <section id="one" data-redline-section><h2>One</h2></section>
+          <section id="two" data-redline-section><h2>Two</h2></section>
+        </main>
+      </div>`
+    await Promise.resolve()
+
+    const strip = document.querySelector('.redline-nav-links') as HTMLElement
+    const scrollBy = vi.fn()
+    Object.assign(strip, { scrollBy })
+    Object.defineProperty(strip, 'scrollWidth', { value: 900, configurable: true })
+    Object.defineProperty(strip, 'clientWidth', { value: 300, configurable: true })
+    strip.getBoundingClientRect = () => ({ left: 0, right: 300, top: 0, bottom: 40 }) as DOMRect
+    const links = [...strip.querySelectorAll('a')] as HTMLAnchorElement[]
+    links[0].getBoundingClientRect = () => ({ left: 30, right: 120, top: 0, bottom: 40 }) as DOMRect
+    links[1].getBoundingClientRect = () => ({ left: 420, right: 540, top: 0, bottom: 40 }) as DOMRect
+
+    observers[0]([
+      { target: document.getElementById('two'), isIntersecting: true, boundingClientRect: { top: 4 } },
+    ])
+
+    expect(links[1].getAttribute('aria-current')).toBe('location')
+    // 540 (link right) - 300 (box right) + 24 (margin) = 264px of catch-up.
+    expect(scrollBy).toHaveBeenCalledWith({ left: 264, behavior: 'smooth' })
+
+    scrollBy.mockClear()
+    observers[0]([
+      { target: document.getElementById('two'), isIntersecting: true, boundingClientRect: { top: 2 } },
+    ])
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
+
+  it('publishes the pinned strip height so anchors clear it', async () => {
+    const targets: Element[] = []
+    class FakeResizeObserver {
+      observe(target: Element) {
+        targets.push(target)
+      }
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+
+    loadSdk()
+    document.body.innerHTML = `
+      <div class="redline-layout">
+        <redline-nav heading="Pinned"></redline-nav>
+        <main><section id="a" data-redline-section><h2>A</h2></section></main>
+      </div>`
+    await Promise.resolve()
+
+    const strip = document.querySelector('.redline-nav-links') as HTMLElement
+    expect(targets).toContain(strip)
+    // jsdom reports the strip as static and zero-height, so the offset stays
+    // at 0 — the property is published either way for the CSS to consume.
+    expect(document.documentElement.style.getPropertyValue('--redline-nav-strip')).toBe('0px')
   })
 
   it('omits the tally when no section declares a status', async () => {

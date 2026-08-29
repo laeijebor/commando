@@ -104,8 +104,9 @@ until the current one genuinely yields no evidence:
      logical section a stable `id`, `data-redline-section`, and a short
      `data-redline-label`; the component builds the left-hand structural links
      and highlights the current section. On narrow tiles it becomes a compact
-     horizontal top navigator. Omit the component only when matching an
-     existing project's own navigation/design system.
+     horizontal navigator that pins to the top of the tile while the header
+     scrolls away. Omit the component only when matching an existing project's
+     own navigation/design system.
 
      Tailwind and DaisyUI remain available for an authored fallback artifact
      that genuinely needs their utilities/components, but do not load them by
@@ -141,7 +142,9 @@ faithful rendering.
 `[data-redline-section][id]` elements after the document is ready; link text
 comes from `data-redline-label`, then the section heading, then its id. Keep
 labels short and ordered exactly like the document. The first/current visible
-section receives `aria-current="location"` automatically.
+section receives `aria-current="location"` automatically, and the component
+scrolls that link into view when it has drifted out of the rail or the pinned
+top strip — so a long document never leaves the reader without their place.
 
 ## Discussion tracks
 

@@ -527,15 +527,18 @@
       display: block;
     }
 
+    /*
+     * The section strip has to stay reachable while reading, but a sticky box
+     * only travels as far as its own containing block. Dropping the nav's box
+     * hands the strip the full-page layout as its container, so it pins to the
+     * top of the tile for the whole document while the brand scrolls away.
+     */
     :where(html[data-redline-theme="commando"]) redline-nav {
-      position: relative;
-      z-index: 1;
-      height: auto;
-      gap: 14px;
-      padding: 20px max(16px, env(safe-area-inset-left));
-      overflow: visible;
-      border-right: 0;
-      border-bottom: 1px solid var(--redline-page-border);
+      display: contents;
+    }
+
+    :where(html[data-redline-theme="commando"]) .redline-nav-brand {
+      padding: 20px max(16px, env(safe-area-inset-left)) 14px;
     }
 
     :where(html[data-redline-theme="commando"]) .redline-nav-summary {
@@ -548,10 +551,16 @@
     }
 
     :where(html[data-redline-theme="commando"]) .redline-nav-links {
+      position: sticky;
+      z-index: 3;
+      top: 0;
       display: flex;
       gap: 8px;
-      padding-bottom: 4px;
+      padding: 10px max(16px, env(safe-area-inset-left));
       overflow-x: auto;
+      border-bottom: 1px solid var(--redline-page-border);
+      background: rgb(8 6 16 / 0.86);
+      backdrop-filter: blur(18px);
       overscroll-behavior-inline: contain;
       scrollbar-width: thin;
     }
@@ -561,8 +570,12 @@
       max-width: 220px;
     }
 
+    /*
+     * Anchored sections must clear the pinned strip; the SDK measures it and
+     * publishes the height, so the offset tracks a strip that wraps or grows.
+     */
     :where(html[data-redline-theme="commando"]) [data-redline-section] {
-      scroll-margin-top: 16px;
+      scroll-margin-top: calc(var(--redline-nav-strip, 0px) + 16px);
     }
   }
 
