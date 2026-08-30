@@ -1204,6 +1204,25 @@ kbd {
   transition: opacity 150ms ease;
 }
 
+.terminal-pane.is-jump-highlighted::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 65%, transparent),
+    inset 0 0 28px color-mix(in srgb, var(--accent) 26%, transparent),
+    0 0 20px color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: pane-jump-highlight 1600ms ease-out both;
+}
+
+@keyframes pane-jump-highlight {
+  0%, 32% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 .terminal-pane.has-pane-mark {
   --pane-mark-color: var(--muted-dim);
   border-inline-start: 5px solid var(--pane-mark-color);

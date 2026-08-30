@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPane } from '../shared/protocol'
-import { App, AuthGate, PaneActionErrorFeedback, TerminalPaneCard } from './App'
+import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
 import { DESKTOP_WINDOW_ACTIVITY_EVENT } from './desktopWindowActivity'
@@ -160,6 +160,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   window.sessionStorage.clear()
   window.localStorage.clear()
@@ -244,6 +245,17 @@ const adjacentPane = {
   title: 'worker',
 } as TmuxPane
 
+const remotePane = {
+  ...pane,
+  id: '%21',
+  targetId: '550e8400-e29b-41d4-a716-446655440021',
+  processId: 2_100,
+  index: 1,
+  windowId: '@5',
+  sessionId: '$6',
+  title: 'review-agent',
+} as TmuxPane
+
 function snapshotWith(panes: TmuxPane[]): CommandoSnapshot {
   return {
     revision: 1,
@@ -267,6 +279,51 @@ function snapshotWith(panes: TmuxPane[]): CommandoSnapshot {
       paneIds: panes.map((candidate) => candidate.id),
     }],
     panes,
+    ports: [],
+  }
+}
+
+function snapshotAcrossSessions(): CommandoSnapshot {
+  return {
+    revision: 1,
+    capturedAt: 1,
+    sessions: [
+      {
+        id: '$3',
+        name: 'work',
+        attached: true,
+        activeWindowId: '@2',
+        windowIds: ['@2'],
+      },
+      {
+        id: '$6',
+        name: 'review',
+        attached: false,
+        activeWindowId: '@5',
+        windowIds: ['@5'],
+      },
+    ],
+    windows: [
+      {
+        id: '@2',
+        index: 0,
+        sessionId: '$3',
+        name: 'editor',
+        active: true,
+        layout: 'dbde,80x24,0,0,12',
+        paneIds: [pane.id],
+      },
+      {
+        id: '@5',
+        index: 0,
+        sessionId: '$6',
+        name: 'agent',
+        active: true,
+        layout: 'dbde,80x24,0,0,21',
+        paneIds: [remotePane.id],
+      },
+    ],
+    panes: [pane, remotePane],
     ports: [],
   }
 }
@@ -447,8 +504,8 @@ describe('HUD tabs', () => {
     ))
   })
 
-  it('jumps from a marked PR to its producing pane', async () => {
-    const targetId = adjacentPane.targetId
+  it('focuses and briefly highlights the exact producing pane across sessions', async () => {
+    const targetId = remotePane.targetId
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
       value: vi.fn(),
@@ -483,13 +540,21 @@ describe('HUD tabs', () => {
       return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
     })
 
-    await renderAppWithSnapshot()
+    await renderAppWithSnapshot(snapshotAcrossSessions())
     fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' }))
+    const jumpButton = await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' })
 
-    await waitFor(() => {
-      expect(screen.getByTestId('renderer-%13').closest('.terminal-pane')).toHaveClass('is-focused')
-    })
+    vi.useFakeTimers()
+    fireEvent.click(jumpButton)
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+
+    const targetPane = screen.getByTestId('renderer-%21').closest('.terminal-pane')
+    expect(targetPane).toHaveClass('is-focused', 'is-jump-highlighted')
+    expect(screen.queryByTestId('renderer-%12')).not.toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(PANE_JUMP_HIGHLIGHT_MS) })
+    expect(targetPane).toHaveClass('is-focused')
+    expect(targetPane).not.toHaveClass('is-jump-highlighted')
   })
 
   it('opens the marked pane diff at the PR base and head OIDs', async () => {
@@ -1128,6 +1193,7 @@ const paneProps = {
   preset: 'equal-grid' as const,
   maximized: false,
   focused: false,
+  jumpHighlighted: false,
   resizeOwner: false,
   measurementKey: 'layout',
   fillIncompleteRows: false,

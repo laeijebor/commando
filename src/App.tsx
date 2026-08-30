@@ -138,6 +138,7 @@ import {
 } from './authClient'
 
 const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
+export const PANE_JUMP_HIGHLIGHT_MS = 1600
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 
@@ -246,6 +247,7 @@ type TerminalPaneProps = {
   solo: boolean
   maximized: boolean
   focused: boolean
+  jumpHighlighted: boolean
   resizeOwner: boolean
   measurementKey: string
   connected: boolean
@@ -289,6 +291,7 @@ export function TerminalPaneCard({
   solo,
   maximized,
   focused,
+  jumpHighlighted,
   resizeOwner,
   measurementKey,
   connected,
@@ -405,7 +408,7 @@ export function TerminalPaneCard({
 
   return (
     <article
-      className={`terminal-pane${focused ? ' is-focused' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
+      className={`terminal-pane${focused ? ' is-focused' : ''}${jumpHighlighted ? ' is-jump-highlighted' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -842,6 +845,7 @@ export function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
+  const [jumpHighlightedPaneId, setJumpHighlightedPaneId] = useState<string | null>(null)
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null)
   const [webLayoutAuthoritative, setWebLayoutAuthoritative] = useState(true)
   const [webLayoutError, setWebLayoutError] = useState('')
@@ -869,6 +873,7 @@ export function App() {
   const [pendingPaneFocus, setPendingPaneFocus] = useState<{
     paneId: string
     expectedTargetId?: string
+    highlight?: boolean
   } | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
@@ -889,6 +894,7 @@ export function App() {
   const previousResizeSessionId = useRef<string | null>(null)
   const resizeRetryAttempts = useRef(0)
   const resizeRetryTimer = useRef<number | null>(null)
+  const paneJumpHighlightTimer = useRef<number | null>(null)
   const responsiveDrawersOpen = leftPanelOpen || rightPanelOpen
   const drawerOcclusionActive = responsiveDrawersOpen || drawerTransitionOcclusion
 
@@ -1396,10 +1402,26 @@ export function App() {
       node.scrollIntoView({ behavior: 'smooth', block: 'center' })
       node.focus({ preventScroll: true })
       setFocusedPaneId(pendingPaneFocus.paneId)
+      if (pendingPaneFocus.highlight) {
+        if (paneJumpHighlightTimer.current !== null) {
+          window.clearTimeout(paneJumpHighlightTimer.current)
+        }
+        setJumpHighlightedPaneId(pendingPaneFocus.paneId)
+        paneJumpHighlightTimer.current = window.setTimeout(() => {
+          setJumpHighlightedPaneId(null)
+          paneJumpHighlightTimer.current = null
+        }, PANE_JUMP_HIGHLIGHT_MS)
+      }
       setPendingPaneFocus(null)
     })
     return () => window.cancelAnimationFrame(frame)
   })
+
+  useEffect(() => () => {
+    if (paneJumpHighlightTimer.current !== null) {
+      window.clearTimeout(paneJumpHighlightTimer.current)
+    }
+  }, [])
 
   useEffect(() => {
     const handleGlobalKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -1437,13 +1459,13 @@ export function App() {
     setLeftPanelOpen(false)
   }
 
-  const jumpToPane = (paneId: string, expectedTargetId?: string) => {
+  const jumpToPane = (paneId: string, expectedTargetId?: string, highlight = false) => {
     const pane = paneMap.get(paneId)
     if (!pane) return
     setArea('workspace')
     setMaximizedPaneId(null)
     setSelectedSessionId(pane.sessionId)
-    setPendingPaneFocus({ paneId, expectedTargetId })
+    setPendingPaneFocus({ paneId, expectedTargetId, highlight })
     setPaletteOpen(false)
     setLeftPanelOpen(false)
     setRightPanelOpen(false)
@@ -1452,7 +1474,7 @@ export function App() {
   const jumpToPaneTarget = (targetId: string) => {
     const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
     if (matches.length !== 1) return
-    jumpToPane(matches[0].id, targetId)
+    jumpToPane(matches[0].id, targetId, true)
   }
 
   const openPrDiff = (pr: PrSummary) => {
@@ -2553,6 +2575,7 @@ export function App() {
                             solo={displayLeafCount === 1}
                             maximized={maximizedPaneId === pane.id}
                             focused={focusedPaneId === pane.id}
+                            jumpHighlighted={jumpHighlightedPaneId === pane.id}
                             resizeOwner={
                               resizeAuthorityActive && (
                                 activeResizePaneId === pane.id ||
