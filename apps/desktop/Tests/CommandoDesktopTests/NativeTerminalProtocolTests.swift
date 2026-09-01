@@ -81,6 +81,28 @@ final class NativeTerminalProtocolTests: XCTestCase {
             ))
         )
 
+        let hitRegionFrame = try decode("pane.frame", payload: identityPayload(identity).merging([
+            "x": 0,
+            "y": 0,
+            "width": 800,
+            "height": 400,
+            "scale": 2,
+            "visible": true,
+            "visibleRegions": [["x": 10, "y": 20, "width": 800, "height": 400]],
+            "hitRegions": [["x": 10, "y": 20, "width": 100, "height": 50]],
+            "resizeOwner": false,
+            "order": 3,
+        ]) { _, new in new })
+        guard case let .frame(hitRegionPayload) = hitRegionFrame.command else {
+            return XCTFail("Expected a frame command")
+        }
+        XCTAssertEqual(hitRegionPayload.visibleRegions, [.init(x: 10, y: 20, width: 800, height: 400)])
+        XCTAssertEqual(hitRegionPayload.hitRegions, [.init(x: 10, y: 20, width: 100, height: 50)])
+        guard case let .frame(defaultedPayload) = frame.command else {
+            return XCTFail("Expected a frame command")
+        }
+        XCTAssertEqual(defaultedPayload.hitRegions, defaultedPayload.visibleRegions)
+
         let bytes = Data([0, 0xff, 0x41])
         XCTAssertEqual(
             try decode("pane.reset", payload: identityPayload(identity).merging([
@@ -270,6 +292,29 @@ final class NativeTerminalProtocolTests: XCTestCase {
                     "scale": 1,
                     "visible": true,
                     "visibleRegions": visibleRegions,
+                    "resizeOwner": true,
+                    "order": 0,
+                ]) { _, new in new }),
+                code: code
+            )
+        }
+
+        for (hitRegions, code): (Any, String) in [
+            ([["x": 0, "y": 0, "width": 0, "height": 1]], "invalid_geometry"),
+            ("not-an-array", "invalid_payload"),
+            (Array(repeating: ["x": 0, "y": 0, "width": 1, "height": 1],
+                   count: NativeTerminalProtocol.maxVisibleRegions + 1), "invalid_payload"),
+        ] {
+            assertError(
+                envelope("pane.frame", payload: identity.merging([
+                    "x": 0,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100,
+                    "scale": 1,
+                    "visible": true,
+                    "visibleRegions": [["x": 0, "y": 0, "width": 1, "height": 1]],
+                    "hitRegions": hitRegions,
                     "resizeOwner": true,
                     "order": 0,
                 ]) { _, new in new }),
