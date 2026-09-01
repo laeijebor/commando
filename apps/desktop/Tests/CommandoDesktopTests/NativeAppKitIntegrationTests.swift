@@ -372,7 +372,11 @@ final class NativeAppKitIntegrationTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(payload["y"] as? NSNumber).doubleValue, 100, accuracy: 0.001)
         let menu: [String: Any] = try await harness.evaluate("window.lastMenu")
         XCTAssertEqual(menu["paneId"] as? String, "%1")
-        XCTAssertTrue(harness.window.firstResponder === terminal)
+        // The context menu is DOM content, so the web view (not the terminal)
+        // must own keyboard focus while it is open.
+        XCTAssertFalse(harness.window.firstResponder === terminal)
+        let responderView = try XCTUnwrap(harness.window.firstResponder as? NSView)
+        XCTAssertTrue(responderView === harness.webView || responderView.isDescendant(of: harness.webView))
     }
 
     func testScriptClickFailsTrustGateAndIsolatedTrustedDispatchReachesOpener() async throws {

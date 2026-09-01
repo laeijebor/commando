@@ -118,6 +118,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             "webview.reviewInput.v1",
             "webview.reviewHighlights.v1",
             "webview.pageResponses.v1",
+            "webview.hitRegions.v1",
         ])
         XCTAssertEqual(payload?["maxWebViews"] as? Int, WebViewTileProtocol.maxTiles)
     }

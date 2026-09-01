@@ -13,6 +13,7 @@ import {
 } from './NativeTerminalPane'
 import {
   NativeTerminalBridge,
+  NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY,
   REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
   resetNativeTerminalBridge,
   type NativeTerminalMessage,
@@ -114,10 +115,14 @@ function receiver(bridge: NativeTerminalBridge) {
   }
 }
 
-async function connectBridge(bridge: NativeTerminalBridge, receive: ReturnType<typeof receiver>) {
+async function connectBridge(
+  bridge: NativeTerminalBridge,
+  receive: ReturnType<typeof receiver>,
+  extraCapabilities: string[] = [],
+) {
   const pending = bridge.connect()
   receive('bridge.connected', {
-    capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES],
+    capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES, ...extraCapabilities],
     maxPanes: 8,
   })
   await pending
@@ -205,6 +210,7 @@ beforeEach(() => {
     if (this.dataset.occluderPosition === 'far') return rect(0, 0, 5, 5)
     if (this.dataset.occluderPosition === 'full') return placeholderBounds
     if (this.hasAttribute('data-native-terminal-occluder')) return rect(20, 20, 40, 40)
+    if (this.hasAttribute('data-native-terminal-hit-blocker')) return rect(20, 20, 40, 40)
     if (this.dataset.clippingAncestor === 'fractional') return rect(0, 0, 100, 90)
     if (this.hasAttribute('data-clipping-ancestor')) return rect(0, 0, 60, 90)
     if (this.hasAttribute('data-native-terminal-pane')) return placeholderBounds
@@ -226,6 +232,7 @@ afterEach(() => {
   delete window.__commandoNativeTerminalReceive
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver
   document.querySelectorAll('[data-native-terminal-occluder]').forEach((node) => node.remove())
+  document.querySelectorAll('[data-native-terminal-hit-blocker]').forEach((node) => node.remove())
 })
 
 describe('NativeTerminalPane', () => {
@@ -437,6 +444,71 @@ describe('NativeTerminalPane', () => {
           { x: 40, y: 20, width: 50, height: 20 },
         ],
       })
+    })
+    bridge.dispose()
+  })
+
+  it('subtracts hit blockers from hitRegions while keeping visibleRegions intact', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive, [NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY])
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+
+    const backdrop = document.createElement('div')
+    backdrop.className = 'pane-context-menu-backdrop'
+    backdrop.dataset.occluderPosition = 'full'
+    backdrop.setAttribute('data-native-terminal-hit-blocker', '')
+    document.body.append(backdrop)
+    fireEvent.scroll(window)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({
+        visible: true,
+        visibleRegions: [{ x: 10, y: 10, width: 80, height: 70 }],
+        hitRegions: [],
+      })
+    })
+
+    backdrop.remove()
+    fireEvent.scroll(window)
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload).toMatchObject({
+        visible: true,
+        hitRegions: [{ x: 10, y: 10, width: 80, height: 70 }],
+      })
+    })
+    bridge.dispose()
+  })
+
+  it('omits hitRegions when the host lacks the hit-regions capability', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props } = nativeProps(bridge)
+    render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    act(() => receive('pane.attached', {
+      paneId: '%1',
+      attachmentId: attach.payload.attachmentId,
+    }))
+    fireEvent.scroll(window)
+
+    await waitFor(() => {
+      const frame = messages.filter((message) => message.type === 'pane.frame').at(-1)
+      expect(frame?.payload.visible).toBe(true)
+      expect('hitRegions' in frame!.payload).toBe(false)
     })
     bridge.dispose()
   })

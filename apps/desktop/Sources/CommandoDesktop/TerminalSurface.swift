@@ -194,13 +194,17 @@ final class HostedTerminalView: TerminalView {
             : 0
     }
 
-    func setVisibleRegions(_ regions: [CGRect]) {
-        visibleHitRegions = regions.compactMap { region in
-            let clipped = region.intersection(bounds)
-            return clipped.isNull || clipped.width <= 0 || clipped.height <= 0 ? nil : clipped
+    func setVisibleRegions(_ regions: [CGRect], hitRegions: [CGRect]? = nil) {
+        let clip = { (candidates: [CGRect]) -> [CGRect] in
+            candidates.compactMap { region in
+                let clipped = region.intersection(self.bounds)
+                return clipped.isNull || clipped.width <= 0 || clipped.height <= 0 ? nil : clipped
+            }
         }
+        let visibleRegions = clip(regions)
+        visibleHitRegions = hitRegions.map(clip) ?? visibleRegions
         let path = CGMutablePath()
-        visibleHitRegions.forEach { path.addRect($0) }
+        visibleRegions.forEach { path.addRect($0) }
         visibleMask.frame = bounds
         visibleMask.path = path
         layer?.mask = visibleMask
@@ -317,7 +321,8 @@ final class HostedTerminalView: TerminalView {
         }
         window?.makeKeyAndOrderFront(nil)
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
-        window?.makeFirstResponder(self)
+        // Do not steal first responder here: moving focus into the terminal view
+        // blurs the web page, which would dismiss the DOM context menu as it opens.
         let point = convert(event.locationInWindow, from: nil)
         contextMenuWasRequested?(CGPoint(
             x: min(1, max(0, (point.x - viewport.minX) / viewport.width)),
@@ -579,7 +584,10 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
             view.setContextMenuViewport(nil)
         } else {
             layoutView(for: placement)
-            view.setVisibleRegions(localVisibleRegions(for: placement))
+            view.setVisibleRegions(
+                localVisibleRegions(for: placement),
+                hitRegions: localHitRegions(for: placement)
+            )
         }
 
         switch rendererAction {
@@ -818,13 +826,22 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         )
         layoutView(for: latestPlacement)
         guard sourceScrollOffset != previous else { return false }
-        view.setVisibleRegions(localVisibleRegions(for: latestPlacement))
+        view.setVisibleRegions(
+            localVisibleRegions(for: latestPlacement),
+            hitRegions: localHitRegions(for: latestPlacement)
+        )
         view.needsDisplay = true
         return true
     }
 
     private func localVisibleRegions(for placement: TerminalPlacement) -> [CGRect] {
         placement.visibleFrames.map {
+            $0.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
+        }
+    }
+
+    private func localHitRegions(for placement: TerminalPlacement) -> [CGRect] {
+        placement.hitFrames.map {
             $0.offsetBy(dx: -view.frame.minX, dy: -view.frame.minY)
         }
     }

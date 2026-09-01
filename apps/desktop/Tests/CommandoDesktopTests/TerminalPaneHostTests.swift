@@ -984,7 +984,10 @@ final class TerminalPaneHostTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        window.contentView = view
+        let sibling = NSTextView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        window.contentView?.addSubview(view)
+        window.contentView?.addSubview(sibling)
+        XCTAssertTrue(window.makeFirstResponder(sibling))
         var points: [CGPoint] = []
         var responderAtRequest: NSResponder?
         view.contextMenuWasRequested = {
@@ -1003,7 +1006,9 @@ final class TerminalPaneHostTests: XCTestCase {
             modifiers: .option
         )))
         XCTAssertEqual(points, [CGPoint(x: 0.25, y: 0.75)])
-        XCTAssertTrue(responderAtRequest === view)
+        // Opening the DOM context menu must not move first responder into the
+        // terminal view, or the page blurs and dismisses the menu as it opens.
+        XCTAssertTrue(responderAtRequest === sibling)
         window.contentView = nil
         window.orderOut(nil)
     }
@@ -1032,6 +1037,26 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertNil(view.hitTest(NSPoint(x: 100, y: 50)))
         XCTAssertNotNil(view.hitTest(NSPoint(x: 175, y: 50)))
         XCTAssertEqual(view.layer?.mask?.frame, view.bounds)
+    }
+
+    func testSeparateHitRegionsKeepRenderingWhileBlockingPointerInput() {
+        let view = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        view.setVisibleRegions(
+            [NSRect(x: 0, y: 0, width: 200, height: 100)],
+            hitRegions: []
+        )
+
+        // The full surface still renders, but no point accepts input.
+        XCTAssertEqual(view.layer?.mask?.frame, view.bounds)
+        XCTAssertTrue(view.visibleHitRegions.isEmpty)
+        XCTAssertNil(view.hitTest(NSPoint(x: 100, y: 50)))
+
+        view.setVisibleRegions(
+            [NSRect(x: 0, y: 0, width: 200, height: 100)],
+            hitRegions: [NSRect(x: 0, y: 0, width: 50, height: 100)]
+        )
+        XCTAssertNotNil(view.hitTest(NSPoint(x: 25, y: 50)))
+        XCTAssertNil(view.hitTest(NSPoint(x: 100, y: 50)))
     }
 
     func testTerminalMaskSurvivesMetalRendererToggleWhenAvailable() throws {

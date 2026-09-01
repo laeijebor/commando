@@ -33,6 +33,7 @@ enum NativeTerminalProtocol {
         "terminal.selectionCopy.v1",
         "terminal.contextMenu.v1",
         "terminal.accessibilityValue.v1",
+        "terminal.hitRegions.v1",
         "terminal.coreGraphics",
     ]
 
@@ -106,8 +107,38 @@ struct PaneFramePayload: Equatable, Sendable {
     let scale: Double
     let visible: Bool
     let visibleRegions: [PaneVisibleRegion]
+    /// Regions that accept pointer input; defaults to `visibleRegions` when the
+    /// web app does not send a separate hit list. May be empty while the pane is
+    /// visible, which renders the terminal but lets clicks fall through to the page.
+    let hitRegions: [PaneVisibleRegion]
     let resizeOwner: Bool
     let order: Int
+
+    init(
+        identity: PaneIdentity,
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        scale: Double,
+        visible: Bool,
+        visibleRegions: [PaneVisibleRegion],
+        hitRegions: [PaneVisibleRegion]? = nil,
+        resizeOwner: Bool,
+        order: Int
+    ) {
+        self.identity = identity
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.scale = scale
+        self.visible = visible
+        self.visibleRegions = visibleRegions
+        self.hitRegions = hitRegions ?? visibleRegions
+        self.resizeOwner = resizeOwner
+        self.order = order
+    }
 }
 
 struct PaneVisibleRegion: Equatable, Sendable {
@@ -254,7 +285,7 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
             try payload.require(keys: [
                 "paneId", "attachmentId", "x", "y", "width", "height", "scale",
                 "visible", "visibleRegions", "resizeOwner", "order",
-            ])
+            ], optionalKeys: ["hitRegions"])
             let identity = try decodeIdentity(payload)
             let x = try payload.finiteDouble("x")
             let y = try payload.finiteDouble("y")
@@ -272,32 +303,10 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                     message: "Frame geometry is outside supported bounds."
                 )
             }
-            let visibleRegions = try payload.objectArray(
-                "visibleRegions",
-                maximumCount: NativeTerminalProtocol.maxVisibleRegions
-            ).map { region in
-                try region.require(keys: ["x", "y", "width", "height"])
-                let width = try region.finiteDouble("width")
-                let height = try region.finiteDouble("height")
-                let x = try region.finiteDouble("x")
-                let y = try region.finiteDouble("y")
-                guard NativeTerminalProtocol.isValidFrameCoordinate(x),
-                      NativeTerminalProtocol.isValidFrameCoordinate(y),
-                      NativeTerminalProtocol.isValidFrameDimension(width, allowsZero: false),
-                      NativeTerminalProtocol.isValidFrameDimension(height, allowsZero: false)
-                else {
-                    throw ProtocolValidationError(
-                        code: "invalid_geometry",
-                        message: "Visible region geometry is outside supported bounds."
-                    )
-                }
-                return PaneVisibleRegion(
-                    x: x,
-                    y: y,
-                    width: width,
-                    height: height
-                )
-            }
+            let visibleRegions = try decodeRegions(payload, key: "visibleRegions")
+            let hitRegions = payload.contains("hitRegions")
+                ? try decodeRegions(payload, key: "hitRegions")
+                : visibleRegions
             return .frame(.init(
                 identity: identity,
                 x: x,
@@ -307,6 +316,7 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                 scale: scale,
                 visible: try payload.boolean("visible"),
                 visibleRegions: visibleRegions,
+                hitRegions: hitRegions,
                 resizeOwner: try payload.boolean("resizeOwner"),
                 order: try payload.javascriptSafeInteger("order")
             ))
@@ -348,6 +358,35 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
             throw ProtocolValidationError(
                 code: "unsupported_command",
                 message: "Unsupported native terminal command."
+            )
+        }
+    }
+
+    private static func decodeRegions(_ payload: StrictObject, key: String) throws -> [PaneVisibleRegion] {
+        try payload.objectArray(
+            key,
+            maximumCount: NativeTerminalProtocol.maxVisibleRegions
+        ).map { region in
+            try region.require(keys: ["x", "y", "width", "height"])
+            let width = try region.finiteDouble("width")
+            let height = try region.finiteDouble("height")
+            let x = try region.finiteDouble("x")
+            let y = try region.finiteDouble("y")
+            guard NativeTerminalProtocol.isValidFrameCoordinate(x),
+                  NativeTerminalProtocol.isValidFrameCoordinate(y),
+                  NativeTerminalProtocol.isValidFrameDimension(width, allowsZero: false),
+                  NativeTerminalProtocol.isValidFrameDimension(height, allowsZero: false)
+            else {
+                throw ProtocolValidationError(
+                    code: "invalid_geometry",
+                    message: "Visible region geometry is outside supported bounds."
+                )
+            }
+            return PaneVisibleRegion(
+                x: x,
+                y: y,
+                width: width,
+                height: height
             )
         }
     }
@@ -437,13 +476,20 @@ private struct StrictObject {
         self.context = context
     }
 
-    func require(keys: Set<String>) throws {
-        guard Set(storage.keys) == keys else {
+    func require(keys: Set<String>, optionalKeys: Set<String> = []) throws {
+        let present = Set(storage.keys)
+        guard present.isSuperset(of: keys),
+              present.subtracting(keys).isSubset(of: optionalKeys)
+        else {
             throw ProtocolValidationError(
                 code: "invalid_payload",
                 message: "\(context) has missing or unexpected fields."
             )
         }
+    }
+
+    func contains(_ key: String) -> Bool {
+        storage[key] != nil
     }
 
     func string(_ key: String) throws -> String {

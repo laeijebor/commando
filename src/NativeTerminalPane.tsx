@@ -43,7 +43,11 @@ export function isVisibleElement(element: Element): boolean {
   if (!(element instanceof HTMLElement) || element.hidden || !element.isConnected) return false
   const style = window.getComputedStyle(element)
   if (style.display === 'none' || style.visibility === 'hidden') return false
-  if (style.opacity === '0' && !element.hasAttribute('data-native-terminal-occluder')) return false
+  if (
+    style.opacity === '0' &&
+    !element.hasAttribute('data-native-terminal-occluder') &&
+    !element.hasAttribute('data-native-terminal-hit-blocker')
+  ) return false
   const bounds = element.getBoundingClientRect()
   return bounds.width > 0 && bounds.height > 0
 }
@@ -345,9 +349,16 @@ export function NativeTerminalPane({
       const occluders = [...document.querySelectorAll('[data-native-terminal-occluder]')]
         .filter(isVisibleElement)
         .map((element) => element.getBoundingClientRect())
-      const visibleRegions = isVisibleElement(placeholder)
+      const hitBlockers = [...document.querySelectorAll('[data-native-terminal-hit-blocker]')]
+        .filter(isVisibleElement)
+        .map((element) => element.getBoundingClientRect())
+      const placeholderVisible = isVisibleElement(placeholder)
+      const visibleRegions = placeholderVisible
         ? computeNativeTerminalVisibleRegions(bounds, clip, occluders)
         : []
+      const hitRegions = placeholderVisible && hitBlockers.length > 0
+        ? computeNativeTerminalVisibleRegions(bounds, clip, [...occluders, ...hitBlockers])
+        : visibleRegions
       const payload = {
         x: bounds.left,
         y: bounds.top,
@@ -356,6 +367,7 @@ export function NativeTerminalPane({
         scale: Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1,
         visible: visibleRegions.length > 0,
         visibleRegions,
+        hitRegions,
         resizeOwner,
         order,
       }
@@ -376,7 +388,7 @@ export function NativeTerminalPane({
     const mutationObserver = new MutationObserver(schedule)
     mutationObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'data-native-terminal-occluder'],
+      attributeFilter: ['class', 'style', 'hidden', 'data-native-terminal-occluder', 'data-native-terminal-hit-blocker'],
       childList: true,
       subtree: true,
     })

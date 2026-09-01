@@ -219,9 +219,16 @@ export function NativeWebViewTile({
       const occluders = [...document.querySelectorAll('[data-native-terminal-occluder]')]
         .filter(isVisibleElement)
         .map((element) => element.getBoundingClientRect())
-      const visibleRegions = isVisibleElement(slot)
+      const hitBlockers = [...document.querySelectorAll('[data-native-terminal-hit-blocker]')]
+        .filter(isVisibleElement)
+        .map((element) => element.getBoundingClientRect())
+      const slotVisible = isVisibleElement(slot)
+      const visibleRegions = slotVisible
         ? computeNativeTerminalVisibleRegions(bounds, clip, occluders)
         : []
+      const hitRegions = slotVisible && hitBlockers.length > 0
+        ? computeNativeTerminalVisibleRegions(bounds, clip, [...occluders, ...hitBlockers])
+        : visibleRegions
       const payload = {
         x: bounds.left,
         y: bounds.top,
@@ -232,6 +239,7 @@ export function NativeWebViewTile({
           : 1,
         visible: visibleRegions.length > 0,
         visibleRegions,
+        hitRegions,
         resizeOwner: false,
         order: 0,
       }
@@ -252,7 +260,7 @@ export function NativeWebViewTile({
     const mutationObserver = new MutationObserver(schedule)
     mutationObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'data-native-terminal-occluder'],
+      attributeFilter: ['class', 'style', 'hidden', 'data-native-terminal-occluder', 'data-native-terminal-hit-blocker'],
       childList: true,
       subtree: true,
     })

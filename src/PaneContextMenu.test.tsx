@@ -67,7 +67,8 @@ describe('PaneContextMenu', () => {
     expect(onClose).not.toHaveBeenCalled()
 
     const backdrop = container.querySelector('.pane-context-menu-backdrop')
-    expect(backdrop).toHaveAttribute('data-native-terminal-occluder', '')
+    expect(backdrop).toHaveAttribute('data-native-terminal-hit-blocker', '')
+    expect(backdrop).not.toHaveAttribute('data-native-terminal-occluder')
     fireEvent.pointerDown(backdrop!)
     expect(onClose).toHaveBeenCalledOnce()
   })

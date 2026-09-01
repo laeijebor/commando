@@ -48,9 +48,12 @@ export type NativeTerminalFramePayload = {
   scale: number
   visible: boolean
   visibleRegions: NativeTerminalVisibleRegion[]
+  hitRegions?: NativeTerminalVisibleRegion[]
   resizeOwner: boolean
   order: number
 }
+
+export const NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY = 'terminal.hitRegions.v1'
 
 type NativeMessageHandler = {
   postMessage: (message: NativeTerminalMessage) => void
@@ -190,6 +193,17 @@ function isFrameDimension(value: unknown, allowsZero: boolean): value is number 
     value <= NATIVE_TERMINAL_FRAME_LIMITS.maxDimension
 }
 
+function isFrameRegionList(value: unknown): value is NativeTerminalVisibleRegion[] {
+  return Array.isArray(value) &&
+    value.length <= NATIVE_TERMINAL_FRAME_LIMITS.maxVisibleRegions &&
+    value.every((region) => (
+      isFrameCoordinate(region.x) &&
+      isFrameCoordinate(region.y) &&
+      isFrameDimension(region.width, false) &&
+      isFrameDimension(region.height, false)
+    ))
+}
+
 export function isNativeTerminalFramePayload(value: NativeTerminalFramePayload): boolean {
   return isFrameCoordinate(value.x) &&
     isFrameCoordinate(value.y) &&
@@ -199,14 +213,8 @@ export function isNativeTerminalFramePayload(value: NativeTerminalFramePayload):
     value.scale >= NATIVE_TERMINAL_FRAME_LIMITS.minScale &&
     value.scale <= NATIVE_TERMINAL_FRAME_LIMITS.maxScale &&
     typeof value.visible === 'boolean' &&
-    Array.isArray(value.visibleRegions) &&
-    value.visibleRegions.length <= NATIVE_TERMINAL_FRAME_LIMITS.maxVisibleRegions &&
-    value.visibleRegions.every((region) => (
-      isFrameCoordinate(region.x) &&
-      isFrameCoordinate(region.y) &&
-      isFrameDimension(region.width, false) &&
-      isFrameDimension(region.height, false)
-    )) &&
+    isFrameRegionList(value.visibleRegions) &&
+    (value.hitRegions === undefined || isFrameRegionList(value.hitRegions)) &&
     typeof value.resizeOwner === 'boolean' &&
     Number.isSafeInteger(value.order)
 }
@@ -342,6 +350,7 @@ export class NativeTerminalBridge {
   private handshakeTimer?: number
   private connected = false
   private maxPanes = 0
+  private hitRegionsSupported = false
   private readonly attachments = new Map<string, AttachmentRecord>()
   private readonly shortcutListeners = new Set<(key: 'k' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
   private readonly previousReceiver = window.__commandoNativeTerminalReceive
@@ -423,6 +432,10 @@ export class NativeTerminalBridge {
 
   frame(attachmentId: string, payload: NativeTerminalFramePayload): boolean {
     if (!isNativeTerminalFramePayload(payload)) return false
+    if (!this.hitRegionsSupported || payload.hitRegions === undefined) {
+      const { hitRegions: _hitRegions, ...supported } = payload
+      return this.postForAttachment('pane.frame', attachmentId, supported)
+    }
     return this.postForAttachment('pane.frame', attachmentId, payload)
   }
 
@@ -506,6 +519,8 @@ export class NativeTerminalBridge {
     this.finishNegotiation = undefined
     this.connected = result.available
     this.maxPanes = result.available ? result.maxPanes : 0
+    this.hitRegionsSupported = result.available &&
+      result.capabilities.includes(NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY)
     finish(result)
   }
 
