@@ -153,6 +153,15 @@ enum DesktopMainMenu {
             keyEquivalent: "0"
         )
         actualSizeItem.target = actionTarget
+        viewMenu.addItem(.separator())
+        // Nil target routes through the responder chain to the key window;
+        // AppKit swaps the title to "Exit Full Screen" while in full screen.
+        let fullScreenItem = viewMenu.addItem(
+            withTitle: "Enter Full Screen",
+            action: #selector(NSWindow.toggleFullScreen(_:)),
+            keyEquivalent: "f"
+        )
+        fullScreenItem.keyEquivalentModifierMask = [.command, .control]
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 

@@ -114,8 +114,11 @@ describe('PaneContextMenu', () => {
     expect(onRename).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Kill pane' }))
     expect(onKill).toHaveBeenCalledOnce()
-    fireEvent.keyDown(window, { key: 'Escape' })
+    const escapeConsumed = !fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(3)
+    // preventDefault must fire so the key never reaches the AppKit window,
+    // where an unhandled Escape exits full screen.
+    expect(escapeConsumed).toBe(true)
   })
 
   it('switches renderer locally even when daemon-backed actions are busy', () => {

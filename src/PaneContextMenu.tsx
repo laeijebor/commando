@@ -56,7 +56,12 @@ export function PaneContextMenu({
 
   useEffect(() => {
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape') return
+      // Consume the key: an unhandled Escape bubbles back to the AppKit
+      // window, which exits full screen instead of just closing the menu.
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
     }
     window.addEventListener('pointerdown', onClose)
     window.addEventListener('keydown', closeOnEscape)

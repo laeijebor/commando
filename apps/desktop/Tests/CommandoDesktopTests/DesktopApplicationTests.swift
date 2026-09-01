@@ -126,12 +126,20 @@ final class DesktopApplicationTests: XCTestCase {
 
         let viewMenu = try XCTUnwrap(menu.items[3].submenu)
         let viewActions = viewMenu.items.filter { !$0.isSeparatorItem }
-        XCTAssertEqual(viewActions.map(\.title), ["Reload", "Zoom Out", "Zoom In", "Actual Size"])
-        XCTAssertEqual(viewActions.map(\.keyEquivalent), ["r", "-", "=", "0"])
+        XCTAssertEqual(
+            viewActions.map(\.title),
+            ["Reload", "Zoom Out", "Zoom In", "Actual Size", "Enter Full Screen"]
+        )
+        XCTAssertEqual(viewActions.map(\.keyEquivalent), ["r", "-", "=", "0", "f"])
         XCTAssertEqual(viewActions[3].action, #selector(DesktopAppDelegate.actualSize(_:)))
-        XCTAssertTrue(viewActions.allSatisfy { $0.keyEquivalentModifierMask == .command })
-        XCTAssertTrue(viewActions.allSatisfy { $0.target === actionTarget })
+        let zoomActions = viewActions.prefix(4)
+        XCTAssertTrue(zoomActions.allSatisfy { $0.keyEquivalentModifierMask == .command })
+        XCTAssertTrue(zoomActions.allSatisfy { $0.target === actionTarget })
         XCTAssertEqual(viewActions[0].action, #selector(DesktopAppDelegate.reload(_:)))
+        let fullScreen = try XCTUnwrap(viewMenu.item(withTitle: "Enter Full Screen"))
+        XCTAssertEqual(fullScreen.action, #selector(NSWindow.toggleFullScreen(_:)))
+        XCTAssertEqual(fullScreen.keyEquivalentModifierMask, [.command, .control])
+        XCTAssertNil(fullScreen.target)
 
         let windowMenu = try XCTUnwrap(menu.items[4].submenu)
         XCTAssertEqual(
