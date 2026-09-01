@@ -24,6 +24,7 @@ enum WebViewTileProtocol {
         "webview.reviewInput.v1",
         "webview.reviewHighlights.v1",
         "webview.pageResponses.v1",
+        "webview.hitRegions.v1",
     ]
     static let maxURLLength = 2_048
     static let maxRequestIdLength = 64
@@ -341,7 +342,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     func apply(placement: TerminalPlacement, frame payload: PaneFramePayload) {
         latestFrame = payload
         hostView.isHidden = placement.isHidden
-        hostView.visibleRegions = placement.visibleFrames
+        hostView.visibleRegions = placement.hitFrames
         hostView.hostOrderRank = payload.order
         hostView.layer?.zPosition = CGFloat(WebViewTileProtocol.hostOrderBase + payload.order)
         guard !placement.isHidden else { return }
@@ -1295,6 +1296,35 @@ final class WebViewTileBridge: NSObject {
         else {
             return nil
         }
+        guard let regions = frameRegions(rawRegions) else { return nil }
+        let hitRegions: [PaneVisibleRegion]
+        if let rawHitRegions = payload["hitRegions"] {
+            guard let rawHitRegions = rawHitRegions as? [[String: Any]],
+                  let parsed = frameRegions(rawHitRegions)
+            else {
+                return nil
+            }
+            hitRegions = parsed
+        } else {
+            hitRegions = regions
+        }
+        return PaneFramePayload(
+            identity: identity,
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            scale: scale,
+            visible: visible,
+            visibleRegions: regions,
+            hitRegions: hitRegions,
+            resizeOwner: false,
+            order: order
+        )
+    }
+
+    private func frameRegions(_ rawRegions: [[String: Any]]) -> [PaneVisibleRegion]? {
+        guard rawRegions.count <= NativeTerminalProtocol.maxVisibleRegions else { return nil }
         var regions: [PaneVisibleRegion] = []
         for rawRegion in rawRegions {
             guard let regionX = (rawRegion["x"] as? NSNumber)?.doubleValue,
@@ -1315,18 +1345,7 @@ final class WebViewTileBridge: NSObject {
                 height: regionHeight
             ))
         }
-        return PaneFramePayload(
-            identity: identity,
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            scale: scale,
-            visible: visible,
-            visibleRegions: regions,
-            resizeOwner: false,
-            order: order
-        )
+        return regions
     }
 
     private func placement(for frame: PaneFramePayload) -> TerminalPlacement {

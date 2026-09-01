@@ -229,6 +229,12 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
                 payload: NativeTerminalEventBuilder.paneIdentity(identity)
             )
         case let .contextMenu(point):
+            // The context menu is DOM content: give the web view first responder
+            // before the event lands so the menu is keyboard-operable and a later
+            // focus change cannot blur the page and dismiss the menu as it opens.
+            if let webView, webView.window?.firstResponder !== webView {
+                webView.window?.makeFirstResponder(webView)
+            }
             emit(
                 type: "pane.context_menu",
                 payload: NativeTerminalEventBuilder.paneContextMenu(identity, point: point)

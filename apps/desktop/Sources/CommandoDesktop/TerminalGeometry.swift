@@ -4,7 +4,17 @@ import Foundation
 struct TerminalPlacement: Equatable, Sendable {
     let frame: CGRect
     let visibleFrames: [CGRect]
+    /// Frames that accept pointer input. May be empty while `visibleFrames` is not,
+    /// which renders the terminal but lets clicks fall through to the web page.
+    let hitFrames: [CGRect]
     let isHidden: Bool
+
+    init(frame: CGRect, visibleFrames: [CGRect], hitFrames: [CGRect]? = nil, isHidden: Bool) {
+        self.frame = frame
+        self.visibleFrames = visibleFrames
+        self.hitFrames = hitFrames ?? visibleFrames
+        self.isHidden = isHidden
+    }
 }
 
 enum TerminalGeometry {
@@ -65,7 +75,7 @@ enum TerminalGeometry {
                NativeTerminalProtocol.isValidFrameDimension(payload.width, allowsZero: true),
                NativeTerminalProtocol.isValidFrameDimension(payload.height, allowsZero: true),
                NativeTerminalProtocol.isValidFrameScale(payload.scale),
-               payload.visibleRegions.allSatisfy({ region in
+               (payload.visibleRegions + payload.hitRegions).allSatisfy({ region in
                    NativeTerminalProtocol.isValidFrameCoordinate(region.x) &&
                        NativeTerminalProtocol.isValidFrameCoordinate(region.y) &&
                        NativeTerminalProtocol.isValidFrameDimension(region.width, allowsZero: false) &&
@@ -96,25 +106,31 @@ enum TerminalGeometry {
             return hiddenPlacement
         }
 
-        let visibleFrames = payload.visibleRegions.compactMap { region -> CGRect? in
-            guard let topLeftRegion = scaledRect(
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-                scale: pointsPerCSSPixel
-            ) else {
-                return nil
+        let convertRegions = { (regions: [PaneVisibleRegion]) -> [CGRect] in
+            regions.compactMap { region -> CGRect? in
+                guard let topLeftRegion = scaledRect(
+                    x: region.x,
+                    y: region.y,
+                    width: region.width,
+                    height: region.height,
+                    scale: pointsPerCSSPixel
+                ) else {
+                    return nil
+                }
+                let clipped = topLeftRegion.intersection(topLeftFrame).intersection(topLeftViewport)
+                guard !clipped.isNull, clipped.width > 0, clipped.height > 0 else { return nil }
+                return appKitFrame(fromTopLeft: clipped, viewportHeight: viewportSize.height)
             }
-            let clipped = topLeftRegion.intersection(topLeftFrame).intersection(topLeftViewport)
-            guard !clipped.isNull, clipped.width > 0, clipped.height > 0 else { return nil }
-            return appKitFrame(fromTopLeft: clipped, viewportHeight: viewportSize.height)
         }
+        let visibleFrames = convertRegions(payload.visibleRegions)
         guard !visibleFrames.isEmpty else { return hiddenPlacement }
 
         return TerminalPlacement(
             frame: appKitFrame(fromTopLeft: topLeftFrame, viewportHeight: viewportSize.height),
             visibleFrames: visibleFrames,
+            hitFrames: payload.hitRegions == payload.visibleRegions
+                ? visibleFrames
+                : convertRegions(payload.hitRegions),
             isHidden: false
         )
     }
@@ -157,6 +173,7 @@ enum TerminalGeometry {
     private static let hiddenPlacement = TerminalPlacement(
         frame: .zero,
         visibleFrames: [],
+        hitFrames: [],
         isHidden: true
     )
 }

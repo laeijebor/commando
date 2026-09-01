@@ -91,7 +91,7 @@ export function PaneContextMenu({
 
   return (
     <>
-      <div className="pane-context-menu-backdrop" data-native-terminal-occluder="" aria-hidden="true" />
+      <div className="pane-context-menu-backdrop" data-native-terminal-hit-blocker="" aria-hidden="true" />
       <div
         ref={menuRef}
         className="pane-context-menu"

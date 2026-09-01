@@ -33,6 +33,7 @@ export const NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY = 'webview.resolveSelec
 export const NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY = 'webview.reviewInput.v1' as const
 export const NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY = 'webview.reviewHighlights.v1' as const
 export const NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY = 'webview.pageResponses.v1' as const
+export const NATIVE_WEBVIEW_HIT_REGIONS_CAPABILITY = 'webview.hitRegions.v1' as const
 
 type NativeMessageHandler = {
   postMessage: (message: Record<string, unknown>) => void
@@ -234,6 +235,10 @@ export class NativeWebViewBridge {
 
   frame(attachmentId: string, payload: NativeTerminalFramePayload): boolean {
     if (!isNativeTerminalFramePayload(payload)) return false
+    if (!this.capabilities.has(NATIVE_WEBVIEW_HIT_REGIONS_CAPABILITY) || payload.hitRegions === undefined) {
+      const { hitRegions: _hitRegions, ...supported } = payload
+      return this.postForAttachment('webview.frame', attachmentId, supported)
+    }
     return this.postForAttachment('webview.frame', attachmentId, payload)
   }
 
