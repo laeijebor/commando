@@ -88,6 +88,7 @@
 .managed-session-tree .session-grouping-switch button[aria-pressed='true'] { color: var(--text); background: var(--border-strong); }
 .managed-session-tree .session-grouping-switch button:hover { color: var(--text); }
 .session-grouping-switch svg { width: 10px; height: 10px; }
-.session-pref-group > header .session-repo-path { margin-left: 2px; min-width: 0; overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 7px; letter-spacing: 0; text-transform: none; text-overflow: ellipsis; white-space: nowrap; }
+.session-pref-group.kind-repository > header .session-pref-toggle strong { flex: 0 0 auto; max-width: 60%; }
+.session-pref-group > header .session-repo-path { margin-left: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 7px; letter-spacing: 0; text-transform: none; text-overflow: ellipsis; white-space: nowrap; }
 .session-branch { display: inline-flex; gap: 3px; align-items: center; margin-right: 5px; color: var(--cyan); }
 .session-branch svg { width: 9px; height: 9px; }
