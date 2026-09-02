@@ -2166,9 +2166,6 @@ export function App() {
       : agentHudFilter === 'done'
         ? 'No done agents'
         : ''
-  const activeWindow = selectedSession?.activeWindowId
-    ? windowMap.get(selectedSession.activeWindowId)
-    : undefined
   const contextPane = paneMenu ? paneMap.get(paneMenu.paneId) : undefined
   const contextPaneIdentity = contextPane ? paneRendererIdentity(contextPane) : null
   const storedContextRendererControl = paneMenu ? paneRendererControls.get(paneMenu.paneId) : undefined

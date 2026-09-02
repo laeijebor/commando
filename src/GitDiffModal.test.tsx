@@ -36,6 +36,7 @@ function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
       matchingFiles: 0,
       truncated: false,
     })),
+    repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn(async () => ({
       isRepo: true,
       current: 'feature',

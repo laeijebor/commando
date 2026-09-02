@@ -1205,6 +1205,7 @@ const paneProps = {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
+    repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
   },
   onOpenPath: vi.fn().mockResolvedValue(undefined),
