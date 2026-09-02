@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffApi } from './git-api.js'
+import type { GitRepoInfo } from '../shared/tmux-create.js'
 import { GitCommandFailure, GitDiffInspector, type GitProcessExecutor } from './git-diff.js'
 
 const NUL = String.fromCharCode(0)
@@ -69,6 +70,7 @@ type ApiOptions = {
   executor?: GitProcessExecutor
   panePath?: (paneId: string) => string | undefined
   panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
+  repoInfo?: (directory: string) => Promise<GitRepoInfo>
 }
 
 async function startApi(options: ApiOptions = {}): Promise<string> {
@@ -76,6 +78,7 @@ async function startApi(options: ApiOptions = {}): Promise<string> {
     inspector: new GitDiffInspector(options.executor ?? repoExecutor(), {}),
     panePath: options.panePath ?? ((paneId) => (paneId === '%1' ? '/repo' : undefined)),
     panePullRequestEvidence: options.panePullRequestEvidence,
+    repoInfo: options.repoInfo,
   })
   const server = createServer((request, response) => {
     void (async () => {
@@ -326,5 +329,38 @@ describe('GitDiffApi', () => {
     const base = await startApi()
     const response = await fetch(`${base}/api/other`)
     expect(response.status).toBe(404)
+  })
+})
+
+describe('GitDiffApi repo probe', () => {
+  it('describes the repository containing an absolute path', async () => {
+    const repoInfo = vi.fn(async (): Promise<GitRepoInfo> => ({
+      isRepo: true,
+      root: '/repo',
+      mainRoot: '/repo',
+      name: 'repo',
+      branch: 'main',
+      isWorktree: false,
+      defaultBranch: 'main',
+      remote: 'origin',
+    }))
+    const base = await startApi({ repoInfo })
+    const response = await fetch(`${base}/api/git/repo?path=${encodeURIComponent('/repo/apps/web')}`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ isRepo: true, mainRoot: '/repo', name: 'repo', defaultBranch: 'main' })
+    expect(repoInfo).toHaveBeenCalledWith('/repo/apps/web')
+  })
+
+  it('rejects a missing or relative path', async () => {
+    const repoInfo = vi.fn(async (): Promise<GitRepoInfo> => ({ isRepo: false }))
+    const base = await startApi({ repoInfo })
+    expect((await fetch(`${base}/api/git/repo`)).status).toBe(400)
+    expect((await fetch(`${base}/api/git/repo?path=relative/dir`)).status).toBe(400)
+    expect(repoInfo).not.toHaveBeenCalled()
+  })
+
+  it('answers 501 when no repository probe is configured', async () => {
+    const base = await startApi()
+    expect((await fetch(`${base}/api/git/repo?path=%2Frepo`)).status).toBe(501)
   })
 })

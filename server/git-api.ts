@@ -7,6 +7,7 @@ import {
   validateDiffWidth,
 } from './git-diff.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
+import type { GitRepoInfo } from '../shared/tmux-create.js'
 
 const API_ROOT = '/api/git'
 
@@ -22,7 +23,12 @@ type GitApiDependencies = {
   inspector?: GitDiffInspector
   panePath: (paneId: string) => string | undefined
   panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
+  /** Describes the repository containing an absolute directory (worktree-aware). */
+  repoInfo?: (directory: string) => Promise<GitRepoInfo>
 }
+
+const MAX_PATH_BYTES = 4_096
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -52,11 +58,17 @@ export class GitDiffApi {
     if (url.pathname !== API_ROOT && !url.pathname.startsWith(`${API_ROOT}/`)) return false
 
     try {
-      const routes = [`${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/search`, `${API_ROOT}/branches`]
+      const routes = [`${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/search`, `${API_ROOT}/branches`, `${API_ROOT}/repo`]
       if (!routes.includes(url.pathname)) {
         throw new HttpError(404, 'Not found')
       }
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+
+      if (url.pathname === `${API_ROOT}/repo`) {
+        if (!this.dependencies.repoInfo) throw new HttpError(501, 'Repository probe is not available')
+        writeJson(response, 200, await this.dependencies.repoInfo(this.resolveDirectory(url)))
+        return true
+      }
 
       const { paneId, path: panePath } = this.resolvePane(url)
       const target = url.searchParams.get('target') ?? undefined
@@ -118,6 +130,18 @@ export class GitDiffApi {
       })
       return true
     }
+  }
+
+  private resolveDirectory(url: URL): string {
+    const directory = url.searchParams.get('path') ?? ''
+    if (
+      !directory.startsWith('/') ||
+      Buffer.byteLength(directory, 'utf8') > MAX_PATH_BYTES ||
+      CONTROL_CHARACTER.test(directory)
+    ) {
+      throw new HttpError(400, 'path must be an absolute directory')
+    }
+    return directory
   }
 
   private resolvePane(url: URL): { paneId: string; path: string } {
