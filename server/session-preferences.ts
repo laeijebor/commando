@@ -9,11 +9,15 @@ export type SessionPreferenceGroup = {
   sessionIds: string[]
 }
 
+export type SessionGroupingMode = 'repository' | 'manual'
+
 export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
   sessionNamesById?: Record<string, string>
+  /** How the sidebar groups sessions; defaults to `repository` when absent. */
+  groupingMode?: SessionGroupingMode
 }
 
 export type SessionIdentity = {
@@ -110,7 +114,18 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
       sessionNamesById[sessionId] = name
     }
   }
-  return { version: 1, groups, ungroupedSessionIds, ...(sessionNamesById ? { sessionNamesById } : {}) }
+  let groupingMode: SessionGroupingMode | undefined
+  if (value.groupingMode !== undefined) {
+    if (value.groupingMode !== 'repository' && value.groupingMode !== 'manual') return null
+    groupingMode = value.groupingMode
+  }
+  return {
+    version: 1,
+    groups,
+    ungroupedSessionIds,
+    ...(sessionNamesById ? { sessionNamesById } : {}),
+    ...(groupingMode ? { groupingMode } : {}),
+  }
 }
 
 export function emptySessionTreePreferences(): SessionTreePreferences {
@@ -175,6 +190,7 @@ export function reconcileSessionTreePreferences(
     groups,
     ungroupedSessionIds,
     ...(Object.keys(sessionNamesById).length > 0 ? { sessionNamesById } : {}),
+    ...(parsed.groupingMode ? { groupingMode: parsed.groupingMode } : {}),
   }
 }
 
@@ -205,6 +221,7 @@ export function visibleSessionTreePreferences(
     ungroupedSessionIds: preferences.ungroupedSessionIds.filter((sessionId) =>
       current.has(sessionId),
     ),
+    ...(preferences.groupingMode ? { groupingMode: preferences.groupingMode } : {}),
   }
 }
 

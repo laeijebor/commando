@@ -199,6 +199,8 @@ export type TmuxPane = PaneTerminalState & {
   path: string
   active: boolean
   dead: boolean
+  /** Repository behind `path`, when the daemon could resolve one. */
+  repo?: PaneRepo
 }
 
 export type TmuxWindow = {

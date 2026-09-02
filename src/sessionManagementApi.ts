@@ -4,11 +4,15 @@ export type SessionPreferenceGroup = {
   sessionIds: string[]
 }
 
+export type SessionGroupingMode = 'repository' | 'manual'
+
 export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
   sessionNamesById?: Record<string, string>
+  /** How the sidebar groups sessions; defaults to `repository` when absent. */
+  groupingMode?: SessionGroupingMode
 }
 
 export interface SessionManagementApiClient {

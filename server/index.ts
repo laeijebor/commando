@@ -52,7 +52,9 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
-import { TmuxCreator } from './tmux-create.js'
+import { runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
+import { GitWorktreeService } from './git-worktree.js'
+import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
@@ -525,7 +527,9 @@ async function main(): Promise<void> {
   const notes = new NoteVaultManager()
   const linear = new LinearService()
   const prs = new PrService()
-  const tmuxCreator = new TmuxCreator()
+  const gitWorktrees = new GitWorktreeService()
+  const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
+  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
@@ -1079,6 +1083,11 @@ async function main(): Promise<void> {
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
+        const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
+        for (const pane of nextSnapshot.panes) {
+          const repo = repos.get(pane.path)
+          if (repo) pane.repo = repo
+        }
         const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
         const previousRenderingState = new Map(
           snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
@@ -1218,6 +1227,7 @@ async function main(): Promise<void> {
   })
   const gitDiffApi = new GitDiffApi({
     panePath: (paneId) => paneForId(paneId)?.path,
+    repoInfo: (directory) => gitWorktrees.probe(directory),
     panePullRequestEvidence: async (paneId) => {
       const status = agentStatuses.get(paneId)
       if (!status || status.provider === 'unknown') return undefined

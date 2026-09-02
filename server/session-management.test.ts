@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   parseSessionTreePreferences,
   reconcileSessionTreePreferences,
+  visibleSessionTreePreferences,
   SessionPreferenceStore,
 } from './session-preferences.js'
 import { SessionManagementApi } from './session-management-api.js'
@@ -239,5 +240,26 @@ describe('session management API', () => {
 
     expect(response.status).toBe(400)
     expect(execute).not.toHaveBeenCalled()
+  })
+})
+
+describe('session grouping mode preference', () => {
+  const base = { version: 1 as const, groups: [], ungroupedSessionIds: ['$1'] }
+
+  it('accepts repository or manual and rejects anything else', () => {
+    expect(parseSessionTreePreferences({ ...base, groupingMode: 'repository' })?.groupingMode).toBe('repository')
+    expect(parseSessionTreePreferences({ ...base, groupingMode: 'manual' })?.groupingMode).toBe('manual')
+    expect(parseSessionTreePreferences({ ...base, groupingMode: 'by-color' })).toBeNull()
+  })
+
+  it('is optional and omitted from the parsed shape when absent', () => {
+    expect(parseSessionTreePreferences(base)).toEqual(base)
+  })
+
+  it('survives reconciliation and the visible projection', () => {
+    const sessions = [{ id: '$1', name: 'work' }]
+    const reconciled = reconcileSessionTreePreferences({ ...base, groupingMode: 'manual' }, sessions)
+    expect(reconciled.groupingMode).toBe('manual')
+    expect(visibleSessionTreePreferences(reconciled, sessions).groupingMode).toBe('manual')
   })
 })
