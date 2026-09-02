@@ -1,5 +1,16 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { TmuxCreateResponse } from '../shared/tmux-create.js'
+import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
 import { TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
+
+const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
+  'bad-branch': 400,
+  'bad-path': 400,
+  'not-repo': 400,
+  'branch-checked-out': 409,
+  'path-exists': 409,
+  exec: 502,
+}
 
 const ROOT = '/api/tmux'
 const MAX_BODY_BYTES = 16 * 1024
@@ -56,24 +67,28 @@ export async function handleTmuxCreateApi(
 
   try {
     const input = await body(request)
-    let created = null
+    let result: TmuxCreateResponse | null = null
     if (url.pathname === `${ROOT}/sessions`) {
-      created = await creator.createSession(input as never)
+      result = await creator.createSession(input as never)
     } else if (url.pathname === `${ROOT}/windows`) {
-      created = await creator.createWindow(input as never)
+      result = { created: await creator.createWindow(input as never) }
     } else if (url.pathname === `${ROOT}/panes`) {
       const targetId = input.targetId
       if (typeof targetId !== 'string') throw new Error('Invalid tmux window or pane id')
-      created = await creator.createPane(input as never, () => beforePaneCreated(targetId))
+      result = { created: await creator.createPane(input as never, () => beforePaneCreated(targetId)) }
     }
-    if (!created) {
+    if (!result) {
       json(response, 404, { error: 'Not found' })
       return true
     }
     await onCreated()
-    json(response, 201, { created })
+    json(response, 201, result)
   } catch (error) {
-    const status = error instanceof TmuxCreateCommandError ? 502 : 400
+    const status = error instanceof TmuxCreateCommandError
+      ? 502
+      : error instanceof GitWorktreeError
+        ? WORKTREE_ERROR_STATUS[error.kind]
+        : 400
     json(response, status, {
       error: error instanceof Error ? error.message : 'Unable to create tmux target',
     })

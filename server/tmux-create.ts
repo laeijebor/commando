@@ -1,10 +1,14 @@
 import { execFile } from 'node:child_process'
-import type {
-  CreateTmuxPaneRequest,
-  CreateTmuxSessionRequest,
-  CreateTmuxWindowRequest,
-  TmuxCreatedTarget,
+import {
+  defaultWorktreePath,
+  type CreateTmuxPaneRequest,
+  type CreateTmuxSessionRequest,
+  type CreateTmuxWindowRequest,
+  type GitRepoInfo,
+  type TmuxCreatedTarget,
+  type TmuxCreateResponse,
 } from '../shared/tmux-create.js'
+import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
 const COMMAND_TIMEOUT_MS = 3_000
 const COMMAND_BUFFER_BYTES = 64 * 1024
@@ -26,6 +30,12 @@ const CREATE_FORMAT = [
 ].join(FIELD_SEPARATOR)
 
 export type TmuxCreateCommandRunner = (args: readonly string[]) => Promise<string>
+
+/** The slice of GitWorktreeService that session creation needs. */
+export type TmuxWorktreeProvider = {
+  probe: (directory: string) => Promise<GitRepoInfo>
+  createWorktree: (input: CreateWorktreeInput) => Promise<CreateWorktreeResult>
+}
 
 export class TmuxCreateCommandError extends Error {
   readonly code: string | number | undefined
@@ -176,12 +186,51 @@ export class TmuxCreator {
   constructor(
     private readonly run: TmuxCreateCommandRunner = runTmuxCreateCommand,
     private readonly socketArgs: readonly string[] = tmuxSocketArgsFromEnv(),
+    private readonly worktrees?: TmuxWorktreeProvider,
   ) {}
 
-  async createSession(input: CreateTmuxSessionRequest): Promise<TmuxCreatedTarget> {
+  async createSession(input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
     const name = validatedName(input.name, 'session name', true)
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
+    if (input.worktree === undefined) {
+      return { created: await this.newSession(name, windowName, cwd) }
+    }
+
+    if (!this.worktrees) throw new Error('Worktree creation is not available')
+    if (!cwd) throw new Error('A working directory is required to create a worktree')
+    const branch = validatedName(input.worktree.branch, 'branch name')
+    const worktreePath = validatedPath(input.worktree.path)
+    if (await this.sessionExists(name)) throw new Error(`Session ${name} already exists`)
+
+    const repo = await this.worktrees.probe(cwd)
+    if (!repo.isRepo || !repo.mainRoot) {
+      throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
+    }
+    const { worktree, rollback } = await this.worktrees.createWorktree({
+      mainRoot: repo.mainRoot,
+      branch,
+      path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
+      ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+    })
+    try {
+      return { created: await this.newSession(name, windowName, worktree.path), worktree }
+    } catch (error) {
+      await rollback().catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async sessionExists(name: string): Promise<boolean> {
+    try {
+      await this.run([...this.socketArgs, 'has-session', '-t', `=${name}`])
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async newSession(name: string, windowName: string | undefined, cwd: string | undefined): Promise<TmuxCreatedTarget> {
     const args = [
       ...this.socketArgs,
       'new-session',

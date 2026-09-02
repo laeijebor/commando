@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { GitRepoInfo } from '../shared/tmux-create.js'
+import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 import { TmuxCreator, tmuxSocketArgsFromEnv } from './tmux-create.js'
 
 const separator = '\u001f'
@@ -43,15 +45,17 @@ describe('TmuxCreator', () => {
         cwd: '/Users/dev/project',
       }),
     ).resolves.toEqual({
-      kind: 'session',
-      sessionId: '$4',
-      sessionName: 'work',
-      windowId: '@8',
-      windowIndex: 2,
-      windowName: 'editor',
-      paneId: '%12',
-      paneIndex: 1,
-      panePath: '/Users/dev/project',
+      created: {
+        kind: 'session',
+        sessionId: '$4',
+        sessionName: 'work',
+        windowId: '@8',
+        windowIndex: 2,
+        windowName: 'editor',
+        paneId: '%12',
+        paneIndex: 1,
+        panePath: '/Users/dev/project',
+      },
     })
     expect(run).toHaveBeenCalledOnce()
     expect(run.mock.calls[0][0]).toEqual([
@@ -298,5 +302,105 @@ describe('tmux socket arguments', () => {
     expect(() =>
       tmuxSocketArgsFromEnv({ COMMANDO_TMUX_SOCKET_NAME: 'bad;name' }),
     ).toThrow(/unsupported characters/)
+  })
+})
+
+describe('TmuxCreator worktree-backed sessions', () => {
+  const MAIN = '/Users/dev/gizmo/Save-All'
+  const target = `${MAIN}-worktrees/bot-rematch-flow`
+  const repo: GitRepoInfo = { isRepo: true, root: MAIN, mainRoot: MAIN, name: 'Save-All', branch: 'main', isWorktree: false, defaultBranch: 'main', remote: 'origin' }
+
+  function worktrees(overrides: Partial<{ probe: GitRepoInfo; fail: Error }> = {}) {
+    const rollback = vi.fn(async () => undefined)
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => {
+      if (overrides.fail) throw overrides.fail
+      return { worktree: { path: input.path, branch: input.branch, base: 'origin/main', reusedBranch: false }, rollback }
+    })
+    const probe = vi.fn(async (): Promise<GitRepoInfo> => overrides.probe ?? repo)
+    return { probe, createWorktree, rollback }
+  }
+
+  /** tmux runner: `has-session` reports the name free, everything else returns the created target. */
+  function tmuxRunner(options: { nameTaken?: boolean; createFails?: boolean } = {}) {
+    return vi.fn(async (args: readonly string[]): Promise<string> => {
+      if (args.includes('has-session')) {
+        if (options.nameTaken) return ''
+        throw new Error("can't find session")
+      }
+      if (options.createFails) throw new Error('tmux create command failed')
+      return output({ panePath: target })
+    })
+  }
+
+  it('creates the worktree first and starts the session inside it', async () => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const creator = new TmuxCreator(run, [], git)
+    const result = await creator.createSession({
+      name: 'Bot rematch flow',
+      cwd: `${MAIN}/apps`,
+      worktree: { branch: 'bot-rematch-flow', path: target },
+    })
+    expect(result.worktree).toEqual({ path: target, branch: 'bot-rematch-flow', base: 'origin/main', reusedBranch: false })
+    expect(result.created.panePath).toBe(target)
+    expect(git.probe).toHaveBeenCalledWith(`${MAIN}/apps`)
+    expect(git.createWorktree).toHaveBeenCalledWith({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target, defaultBranch: 'main', remote: 'origin' })
+    const createArgs = run.mock.calls.map((call) => call[0]).find((args) => args.includes('new-session'))
+    expect(createArgs?.slice(-2)).toEqual(['-c', target])
+    expect(git.rollback).not.toHaveBeenCalled()
+  })
+
+  it('defaults the worktree path to the sibling worktrees folder', async () => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } })
+    expect(git.createWorktree.mock.calls[0][0].path).toBe(target)
+  })
+
+  it('checks the session name is free before touching git', async () => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner({ nameTaken: true }), [], git)
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } }),
+    ).rejects.toThrow(/already exists/)
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it('refuses a worktree request for a directory that is not a repository', async () => {
+    const git = worktrees({ probe: { isRepo: false } })
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await expect(
+      creator.createSession({ name: 'flow', cwd: '/tmp/plain', worktree: { branch: 'flow' } }),
+    ).rejects.toMatchObject({ kind: 'not-repo' })
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it('rolls the worktree back when tmux fails afterwards', async () => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner({ createFails: true }), [], git)
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } }),
+    ).rejects.toThrow(/tmux create command failed/)
+    expect(git.rollback).toHaveBeenCalledOnce()
+  })
+
+  it('passes git failures through untouched', async () => {
+    const git = worktrees({ fail: new GitWorktreeError('branch-checked-out', 'Branch flow is already checked out at /elsewhere') })
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'flow' } }),
+    ).rejects.toMatchObject({ kind: 'branch-checked-out' })
+  })
+
+  it('requires a worktree service when a worktree is requested', async () => {
+    const creator = new TmuxCreator(tmuxRunner(), [])
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'flow' } }),
+    ).rejects.toThrow(/worktree/i)
+  })
+
+  it('requires a working directory when a worktree is requested', async () => {
+    const creator = new TmuxCreator(tmuxRunner(), [], worktrees())
+    await expect(creator.createSession({ name: 'flow', worktree: { branch: 'flow' } })).rejects.toThrow(/working directory/i)
   })
 })
