@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { TmuxCreatedTarget } from '../shared/tmux-create'
+import type { GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
 import { TMUX_CWD_HISTORY_STORAGE_KEY, TmuxCreateControls } from './TmuxCreateControls'
 
 const created: TmuxCreatedTarget = {
@@ -18,10 +18,12 @@ const created: TmuxCreatedTarget = {
   panePath: '/Users/dev/project',
 }
 
-const options = {
-  sessions: [{ id: '$1', name: 'work' }],
-  windows: [{ id: '@2', name: 'editor', sessionId: '$1', index: 0 }],
-  panes: [{ id: '%3', title: 'shell', windowId: '@2', sessionId: '$1', index: 0, path: '/Users/dev/project' }],
+const MAIN = '/Users/dev/gizmo/Save-All'
+const repo: GitRepoInfo = { isRepo: true, root: MAIN, mainRoot: MAIN, name: 'Save-All', branch: 'main', isWorktree: false, defaultBranch: 'main', remote: 'origin' }
+const notRepo: GitRepoInfo = { isRepo: false }
+
+function probeFor(table: Record<string, GitRepoInfo>) {
+  return vi.fn(async (directory: string): Promise<GitRepoInfo> => table[directory] ?? notRepo)
 }
 
 afterEach(() => {
@@ -31,23 +33,15 @@ afterEach(() => {
 
 describe('TmuxCreateControls', () => {
   it('submits session fields and exposes pending and success states', async () => {
-    let resolveCreate: ((value: TmuxCreatedTarget) => void) | undefined
+    let resolveCreate: ((value: TmuxCreateResponse) => void) | undefined
     const onCreateSession = vi.fn(
       () =>
-        new Promise<TmuxCreatedTarget>((resolve) => {
+        new Promise<TmuxCreateResponse>((resolve) => {
           resolveCreate = resolve
         }),
     )
     const onCreated = vi.fn()
-    render(
-      <TmuxCreateControls
-        {...options}
-        onCreateSession={onCreateSession}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
-        onCreated={onCreated}
-      />,
-    )
+    render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} />)
 
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText(/Initial window name/), {
@@ -68,28 +62,28 @@ describe('TmuxCreateControls', () => {
       true,
     )
 
-    resolveCreate?.(created)
+    resolveCreate?.({ created })
     expect(await screen.findByRole('status')).toHaveTextContent(
       'Created session %3 in work',
     )
-    expect(onCreated).toHaveBeenCalledWith(created, 'ungrouped')
+    expect(onCreated).toHaveBeenCalledWith(created, 'ungrouped', undefined)
     expect(JSON.parse(window.localStorage.getItem(TMUX_CWD_HISTORY_STORAGE_KEY) ?? 'null')).toEqual([
       '/Users/dev/project',
     ])
     expect(screen.getByLabelText(/Working directory/)).toHaveValue('/Users/dev/project')
   })
 
+  it('only offers sessions: there are no window or split modes', () => {
+    render(<TmuxCreateControls onCreateSession={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Window' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Split' })).not.toBeInTheDocument()
+    expect(screen.getByText('New session')).toBeInTheDocument()
+  })
+
   it('restores the last successfully used working directory', () => {
     window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, '/Users/dev/remembered')
 
-    render(
-      <TmuxCreateControls
-        {...options}
-        onCreateSession={vi.fn()}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
-      />,
-    )
+    render(<TmuxCreateControls onCreateSession={vi.fn()} />)
 
     expect(screen.getByLabelText(/Working directory/)).toHaveValue('/Users/dev/remembered')
   })
@@ -101,14 +95,7 @@ describe('TmuxCreateControls', () => {
       '/Users/dev/beta',
     ]))
 
-    render(
-      <TmuxCreateControls
-        {...options}
-        onCreateSession={vi.fn()}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
-      />,
-    )
+    render(<TmuxCreateControls onCreateSession={vi.fn()} />)
 
     const input = screen.getByRole('combobox', { name: /Working directory/ })
     fireEvent.focus(input)
@@ -132,14 +119,7 @@ describe('TmuxCreateControls', () => {
   it('keeps successful directories in bounded most-recently-used order', async () => {
     const existing = Array.from({ length: 10 }, (_, index) => `/Users/dev/project-${index}`)
     window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, JSON.stringify(existing))
-    render(
-      <TmuxCreateControls
-        {...options}
-        onCreateSession={vi.fn(async () => created)}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
-      />,
-    )
+    render(<TmuxCreateControls onCreateSession={vi.fn(async () => ({ created }))} />)
 
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText(/Working directory/), {
@@ -159,14 +139,7 @@ describe('TmuxCreateControls', () => {
       '/Users/dev/beta',
       '/Users/dev/charlie',
     ]))
-    render(
-      <TmuxCreateControls
-        {...options}
-        onCreateSession={vi.fn(async () => created)}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
-      />,
-    )
+    render(<TmuxCreateControls onCreateSession={vi.fn(async () => ({ created }))} />)
 
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText(/Working directory/), {
@@ -185,12 +158,9 @@ describe('TmuxCreateControls', () => {
   it('renders callback failures as an alert and restores the submit action', async () => {
     render(
       <TmuxCreateControls
-        {...options}
         onCreateSession={vi.fn(async () => {
           throw new Error('session already exists')
         })}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
       />,
     )
 
@@ -210,46 +180,18 @@ describe('TmuxCreateControls', () => {
     })
   })
 
-  it('uses stable pane targets and explicit split direction', async () => {
-    const onCreatePane = vi.fn(async () => ({ ...created, kind: 'pane' as const }))
-    render(
-      <TmuxCreateControls
-        {...options}
-        initialMode="pane"
-        defaultTargetId="%3"
-        onCreateSession={vi.fn()}
-        onCreateWindow={vi.fn()}
-        onCreatePane={onCreatePane}
-      />,
-    )
-
-    fireEvent.click(screen.getByLabelText('Stacked'))
-    fireEvent.click(screen.getByRole('button', { name: 'Create split' }))
-
-    await waitFor(() => {
-      expect(onCreatePane).toHaveBeenCalledWith({
-        targetId: '%3',
-        direction: 'vertical',
-        cwd: '',
-      })
-    })
-  })
-
   it('opens in a requested group and prioritizes that group directory', async () => {
     window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, JSON.stringify(['/Users/dev/recent']))
     const onCreated = vi.fn()
     render(
       <TmuxCreateControls
-        {...options}
         sessionCreateRequest={{
           id: 1,
           groupId: 'gizmo',
           groupName: 'GIZMO',
           suggestedDirectories: ['/Users/dev/gizmo', '/Users/dev/shared'],
         }}
-        onCreateSession={vi.fn(async () => created)}
-        onCreateWindow={vi.fn()}
-        onCreatePane={vi.fn()}
+        onCreateSession={vi.fn(async () => ({ created }))}
         onCreated={onCreated}
       />,
     )
@@ -258,10 +200,6 @@ describe('TmuxCreateControls', () => {
     expect(screen.getByText('GIZMO', { selector: '.tmux-create__destination strong' })).toBeVisible()
     expect(screen.getByLabelText('Session name')).toHaveFocus()
     const directory = screen.getByRole('combobox', { name: /Working directory/ })
-    expect(directory).toHaveValue('/Users/dev/gizmo')
-    fireEvent.click(screen.getByRole('button', { name: 'Window' }))
-    expect(directory).toHaveValue('/Users/dev/recent')
-    fireEvent.click(screen.getByRole('button', { name: 'Session' }))
     expect(directory).toHaveValue('/Users/dev/gizmo')
     fireEvent.focus(directory)
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
@@ -273,6 +211,100 @@ describe('TmuxCreateControls', () => {
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'new-gizmo-session' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
 
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created, 'gizmo'))
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created, 'gizmo', undefined))
+  })
+})
+
+describe('TmuxCreateControls worktrees', () => {
+  it('offers a worktree once the working directory resolves to a repository, with the branch following the name', async () => {
+    const probeRepo = probeFor({ [MAIN]: repo })
+    render(<TmuxCreateControls onCreateSession={vi.fn()} probeRepo={probeRepo} />)
+
+    expect(screen.queryByLabelText(/Create a worktree/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    const toggle = await screen.findByLabelText(/Create a worktree and branch/)
+    expect(toggle).toBeChecked()
+    expect(probeRepo).toHaveBeenCalledWith(MAIN)
+
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Bot rematch flow' } })
+    expect(screen.getByLabelText(/^Branch/)).toHaveValue('bot-rematch-flow')
+    expect(screen.getByText(`${MAIN}-worktrees/bot-rematch-flow`)).toBeInTheDocument()
+    expect(screen.getByText('origin/main')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/^Branch/), { target: { value: 'custom-branch' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Renamed' } })
+    expect(screen.getByLabelText(/^Branch/)).toHaveValue('custom-branch')
+  })
+
+  it('sends the worktree with the request and reports where the session opened', async () => {
+    const onCreateSession = vi.fn(async (): Promise<TmuxCreateResponse> => ({
+      created: { ...created, panePath: `${MAIN}-worktrees/bot-rematch-flow` },
+      worktree: { path: `${MAIN}-worktrees/bot-rematch-flow`, branch: 'bot-rematch-flow', base: 'origin/main', reusedBranch: false, warning: 'Could not fetch origin/main (offline); branched from the local copy of origin/main instead' },
+    }))
+    const onCreated = vi.fn()
+    render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} probeRepo={probeFor({ [MAIN]: repo })} />)
+
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    await screen.findByLabelText(/Create a worktree and branch/)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Bot rematch flow' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({
+      name: 'Bot rematch flow',
+      windowName: '',
+      cwd: MAIN,
+      worktree: { branch: 'bot-rematch-flow' },
+    }))
+    expect(await screen.findByRole('status')).toHaveTextContent(`bot-rematch-flow`)
+    expect(screen.getByRole('status')).toHaveTextContent(/Could not fetch/)
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session' }), 'ungrouped', expect.objectContaining({ branch: 'bot-rematch-flow' }))
+  })
+
+  it('sends an edited worktree path and omits the worktree when the toggle is off', async () => {
+    const onCreateSession = vi.fn(async () => ({ created }))
+    render(<TmuxCreateControls onCreateSession={onCreateSession} probeRepo={probeFor({ [MAIN]: repo })} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    const toggle = await screen.findByLabelText(/Create a worktree and branch/)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'flow' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit worktree path/ }))
+    fireEvent.change(screen.getByLabelText(/Worktree path/), { target: { value: '/Users/dev/elsewhere/flow' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith(expect.objectContaining({
+      worktree: { branch: 'flow', path: '/Users/dev/elsewhere/flow' },
+    })))
+
+    fireEvent.click(toggle)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'plain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith({ name: 'plain', windowName: '', cwd: MAIN }))
+  })
+
+  it('warns instead of offering a worktree when the directory is not a repository', async () => {
+    render(<TmuxCreateControls onCreateSession={vi.fn(async () => ({ created }))} probeRepo={probeFor({})} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/plain' } })
+    expect(await screen.findByText(/Not a git repository/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Create a worktree/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled()
+  })
+
+  it('pre-fills the main checkout and shows the repository when opened from a repository group', async () => {
+    render(
+      <TmuxCreateControls
+        sessionCreateRequest={{ id: 1, groupId: `repo:${MAIN}`, groupName: 'Save-All', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'Save-All', defaultBranch: 'main' } }}
+        onCreateSession={vi.fn()}
+        probeRepo={probeFor({ [MAIN]: repo })}
+      />,
+    )
+    expect(screen.getByText('Save-All', { selector: '.tmux-create__destination strong' })).toBeVisible()
+    expect(screen.getByText(/^Repository/)).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /Working directory/ })).toHaveValue(MAIN)
+    expect(await screen.findByLabelText(/Create a worktree and branch/)).toBeChecked()
+  })
+
+  it('renders as an always-open panel in dialog mode', () => {
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} />)
+    expect(screen.queryByText('New session', { selector: 'summary' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Session name')).toBeInTheDocument()
   })
 })

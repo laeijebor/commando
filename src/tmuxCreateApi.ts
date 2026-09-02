@@ -4,11 +4,12 @@ import {
   type CreateTmuxSessionRequest,
   type CreateTmuxWindowRequest,
   type TmuxCreatedTarget,
+  type TmuxCreatedWorktree,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
 
 export type TmuxCreateApi = {
-  createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreatedTarget>
+  createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   createWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   createPane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
 }
@@ -50,8 +51,14 @@ async function responseError(response: Response): Promise<string> {
   return `tmux create request returned ${response.status}`
 }
 
+function isCreatedWorktree(value: unknown): value is TmuxCreatedWorktree {
+  if (!value || typeof value !== 'object') return false
+  const worktree = value as Partial<TmuxCreatedWorktree>
+  return typeof worktree.path === 'string' && typeof worktree.branch === 'string' && typeof worktree.base === 'string'
+}
+
 export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch): TmuxCreateApi {
-  const post = async (route: string, input: object): Promise<TmuxCreatedTarget> => {
+  const post = async (route: string, input: object): Promise<TmuxCreateResponse> => {
     const response = await fetcher(route, {
       method: 'POST',
       credentials: 'same-origin',
@@ -67,12 +74,12 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
     if (!isCreatedTarget(body.created)) {
       throw new Error('tmux create response did not match the protocol')
     }
-    return body.created
+    return { created: body.created, ...(isCreatedWorktree(body.worktree) ? { worktree: body.worktree } : {}) }
   }
 
   return {
     createSession: (input) => post(TMUX_CREATE_ROUTES.session, input),
-    createWindow: (input) => post(TMUX_CREATE_ROUTES.window, input),
-    createPane: (input) => post(TMUX_CREATE_ROUTES.pane, input),
+    createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
+    createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
   }
 }
