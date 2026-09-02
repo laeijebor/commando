@@ -302,6 +302,29 @@ describe('TmuxCreateControls worktrees', () => {
     expect(await screen.findByLabelText(/Create a worktree and branch/)).toBeChecked()
   })
 
+  it('shows a known repository immediately while its real probe is pending', () => {
+    const probeRepo = vi.fn(() => new Promise<GitRepoInfo>(() => undefined))
+    render(
+      <TmuxCreateControls
+        sessionCreateRequest={{ id: 1, groupId: `repo:${MAIN}`, groupName: 'Save-All', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'Save-All', defaultBranch: 'main' } }}
+        onCreateSession={vi.fn()}
+        probeRepo={probeRepo}
+      />,
+    )
+
+    expect(screen.getByLabelText(/Create a worktree and branch/)).toBeChecked()
+    expect(screen.getByText('origin/main')).toBeInTheDocument()
+  })
+
+  it('disables submit and reports while the current directory is being probed', () => {
+    const probeRepo = vi.fn(() => new Promise<GitRepoInfo>(() => undefined))
+    render(<TmuxCreateControls onCreateSession={vi.fn()} probeRepo={probeRepo} />)
+
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+
+    expect(screen.getByRole('button', { name: 'Checking repository...' })).toBeDisabled()
+  })
+
   it('renders as an always-open panel in dialog mode', () => {
     render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} />)
     expect(screen.queryByText('New session', { selector: 'summary' })).not.toBeInTheDocument()

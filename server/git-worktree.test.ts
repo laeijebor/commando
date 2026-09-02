@@ -142,6 +142,23 @@ describe('GitWorktreeService.createWorktree', () => {
     expect(result.worktree.warning).toMatch(/fetch/i)
   })
 
+  it('refuses to branch from HEAD when fetching the known default branch fails and no local ref exists', async () => {
+    const git = fakeGit([
+      [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], exit(1)],
+      [['fetch', 'origin', 'main'], exit(128, 'fatal: unable to access origin')],
+      [['show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'], exit(1)],
+    ])
+    const service = new GitWorktreeService(git.execute, { pathExists: async () => false })
+
+    await expect(
+      service.createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target, defaultBranch: 'main', remote: 'origin' }),
+    ).rejects.toMatchObject({
+      kind: 'exec',
+      message: expect.stringMatching(/refs\/remotes\/origin\/main.*fatal: unable to access origin/i),
+    })
+    expect(git.calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+  })
+
   it('branches from HEAD when there is no remote default branch', async () => {
     const git = fakeGit([
       [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], exit(1)],
@@ -194,6 +211,21 @@ describe('GitWorktreeService.createWorktree', () => {
       .createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target })
     expect(result.worktree).toEqual({ path: target, branch: 'bot-rematch-flow', base: '', reusedBranch: true })
     expect(same.calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+  })
+
+  it('refuses a registered worktree that is missing on disk', async () => {
+    const git = fakeGit([
+      [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], 'abc123\n'],
+      [['worktree', 'list', '--porcelain'], `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n\n`],
+    ])
+    const service = new GitWorktreeService(git.execute, { pathExists: async () => false })
+
+    await expect(
+      service.createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target }),
+    ).rejects.toMatchObject({
+      kind: 'exec',
+      message: expect.stringMatching(/registered but missing on disk.*git worktree prune.*Save-All/i),
+    })
   })
 
   it('rejects branch names git would refuse', async () => {

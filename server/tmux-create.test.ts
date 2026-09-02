@@ -310,8 +310,10 @@ describe('TmuxCreator worktree-backed sessions', () => {
   const target = `${MAIN}-worktrees/bot-rematch-flow`
   const repo: GitRepoInfo = { isRepo: true, root: MAIN, mainRoot: MAIN, name: 'Save-All', branch: 'main', isWorktree: false, defaultBranch: 'main', remote: 'origin' }
 
-  function worktrees(overrides: Partial<{ probe: GitRepoInfo; fail: Error }> = {}) {
-    const rollback = vi.fn(async () => undefined)
+  function worktrees(overrides: Partial<{ probe: GitRepoInfo; fail: Error; rollbackFail: Error }> = {}) {
+    const rollback = vi.fn(async () => {
+      if (overrides.rollbackFail) throw overrides.rollbackFail
+    })
     const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => {
       if (overrides.fail) throw overrides.fail
       return { worktree: { path: input.path, branch: input.branch, base: 'origin/main', reusedBranch: false }, rollback }
@@ -381,6 +383,35 @@ describe('TmuxCreator worktree-backed sessions', () => {
     await expect(
       creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } }),
     ).rejects.toThrow(/tmux create command failed/)
+    expect(git.rollback).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the worktree when tmux created the session before reporting failure', async () => {
+    const git = worktrees()
+    let hasSessionCalls = 0
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => {
+      if (args.includes('has-session')) {
+        hasSessionCalls += 1
+        if (hasSessionCalls === 1) throw new Error("can't find session")
+        return ''
+      }
+      throw new Error('tmux create command failed')
+    })
+    const creator = new TmuxCreator(run, [], git)
+
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } }),
+    ).rejects.toThrow(/session flow was created but tmux did not report it.*tmux create command failed/i)
+    expect(git.rollback).not.toHaveBeenCalled()
+  })
+
+  it('includes rollback failures when tmux did not create the session', async () => {
+    const git = worktrees({ rollbackFail: new Error('git rollback failed') })
+    const creator = new TmuxCreator(tmuxRunner({ createFails: true }), [], git)
+
+    await expect(
+      creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } }),
+    ).rejects.toThrow(/tmux create command failed.*git rollback failed/i)
     expect(git.rollback).toHaveBeenCalledOnce()
   })
 

@@ -216,7 +216,16 @@ export class TmuxCreator {
     try {
       return { created: await this.newSession(name, windowName, worktree.path), worktree }
     } catch (error) {
-      await rollback().catch(() => undefined)
+      const detail = error instanceof Error ? error.message : String(error)
+      if (await this.sessionExists(name)) {
+        throw new Error(`Session ${name} was created but tmux did not report it: ${detail}`, { cause: error })
+      }
+      try {
+        await rollback()
+      } catch (rollbackError) {
+        const rollbackDetail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+        throw new Error(`${detail}; worktree rollback failed: ${rollbackDetail}`, { cause: error })
+      }
       throw error
     }
   }

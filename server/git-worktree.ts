@@ -154,6 +154,9 @@ export class GitWorktreeService {
       : []
     const attached = worktrees.find((entry) => entry.branch === branch)
     if (attached && path.normalize(attached.path) === target) {
+      if (!await this.pathExists(target)) {
+        throw new GitWorktreeError('exec', `Worktree ${target} is registered but missing on disk; run git worktree prune in ${cwd}`)
+      }
       return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
     }
     if (attached) {
@@ -184,7 +187,10 @@ export class GitWorktreeService {
           base = remoteRef
           warning = `Could not fetch ${remoteRef} (${failureDetail(error)}); branched from the local copy of ${remoteRef} instead`
         } else {
-          warning = `Could not fetch ${remoteRef} (${failureDetail(error)}); branched from HEAD instead`
+          throw new GitWorktreeError(
+            'exec',
+            `Cannot create branch ${branch}: refs/remotes/${remoteRef} does not exist locally and fetch ${remoteRef} failed: ${failureDetail(error)}`,
+          )
         }
       }
     }

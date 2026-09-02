@@ -32,11 +32,27 @@ export type TmuxCreateControlsProps = {
   sessionCreateRequest?: SessionCreateRequest | null
   onCreateSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   onCreated?: (created: TmuxCreatedTarget, sessionGroupId?: string, worktree?: TmuxCreatedWorktree) => void
+  onPendingChange?: (pending: boolean) => void
   /** Describes the repository behind a directory; without it the worktree block never appears. */
   probeRepo?: (directory: string) => Promise<GitRepoInfo>
 }
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
+
+function knownRepoProbe(request: SessionCreateRequest | null): RepoProbe {
+  const repo = request?.repo
+  if (!repo) return null
+  return {
+    directory: repo.root,
+    info: {
+      isRepo: true,
+      mainRoot: repo.root,
+      root: repo.root,
+      name: repo.name,
+      ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: 'origin' } : {}),
+    },
+  }
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unable to create the tmux target'
@@ -81,13 +97,16 @@ export function TmuxCreateControls({
   sessionCreateRequest = null,
   onCreateSession,
   onCreated,
+  onPendingChange,
   probeRepo,
 }: TmuxCreateControlsProps) {
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
   const [sessionName, setSessionName] = useState('')
   const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
-  const [workingDirectory, setWorkingDirectory] = useState(workingDirectoryHistory[0] ?? '')
+  const [workingDirectory, setWorkingDirectory] = useState(
+    sessionCreateRequest?.repo?.root ?? sessionCreateRequest?.suggestedDirectories[0] ?? workingDirectoryHistory[0] ?? '',
+  )
   const [sessionGroupId, setSessionGroupId] = useState('ungrouped')
   const [sessionGroupName, setSessionGroupName] = useState('Ungrouped')
   const [sessionRepo, setSessionRepo] = useState<SessionCreateRepo | null>(null)
@@ -95,16 +114,17 @@ export function TmuxCreateControls({
   const [directoryHistoryOpen, setDirectoryHistoryOpen] = useState(false)
   const [directoryHistoryFiltering, setDirectoryHistoryFiltering] = useState(false)
   const [directoryHistoryHighlight, setDirectoryHistoryHighlight] = useState(0)
-  const [repoProbe, setRepoProbe] = useState<RepoProbe>(null)
+  const [repoProbe, setRepoProbe] = useState<RepoProbe>(() => knownRepoProbe(sessionCreateRequest))
   const [worktreeEnabled, setWorktreeEnabled] = useState(true)
   const [branchEdited, setBranchEdited] = useState(false)
   const [branch, setBranch] = useState('')
   const [worktreePath, setWorktreePath] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [probing, setProbing] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const probeVersion = useRef(0)
-  const unavailable = disabled || pending
+  const unavailable = disabled || pending || probing
   const availableDirectories = [
     ...groupDirectorySuggestions,
     ...workingDirectoryHistory.filter((directory) => !groupDirectorySuggestions.includes(directory)),
@@ -130,6 +150,7 @@ export function TmuxCreateControls({
     setSessionGroupId(sessionCreateRequest.groupId)
     setSessionGroupName(sessionCreateRequest.groupName)
     setSessionRepo(sessionCreateRequest.repo ?? null)
+    setRepoProbe(knownRepoProbe(sessionCreateRequest))
     setGroupDirectorySuggestions(sessionCreateRequest.suggestedDirectories)
     setWorkingDirectory(sessionCreateRequest.repo?.root ?? sessionCreateRequest.suggestedDirectories[0] ?? workingDirectoryHistory[0] ?? '')
     setDirectoryHistoryFiltering(false)
@@ -151,19 +172,34 @@ export function TmuxCreateControls({
   }, [sessionCreateRequest])
 
   useEffect(() => {
-    if (!probeRepo || !workingDirectory.startsWith('/')) return
+    if (!probeRepo || !workingDirectory.startsWith('/')) {
+      probeVersion.current += 1
+      setProbing(false)
+      return
+    }
     const version = ++probeVersion.current
+    setProbing(true)
     const timer = window.setTimeout(() => {
       probeRepo(workingDirectory)
         .then((info) => {
-          if (version === probeVersion.current) setRepoProbe({ directory: workingDirectory, info })
+          if (version === probeVersion.current) {
+            setRepoProbe({ directory: workingDirectory, info })
+            setProbing(false)
+          }
         })
         .catch(() => {
-          if (version === probeVersion.current) setRepoProbe({ directory: workingDirectory, info: { isRepo: false } })
+          if (version === probeVersion.current) {
+            setRepoProbe({ directory: workingDirectory, info: { isRepo: false } })
+            setProbing(false)
+          }
         })
     }, sessionCreateRequest && workingDirectory === (sessionCreateRequest.repo?.root ?? sessionCreateRequest.suggestedDirectories[0]) ? 0 : REPO_PROBE_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [probeRepo, workingDirectory, sessionCreateRequest])
+
+  useEffect(() => {
+    onPendingChange?.(pending)
+  }, [onPendingChange, pending])
 
   const chooseWorkingDirectory = (directory: string) => {
     setWorkingDirectory(directory)
@@ -189,6 +225,7 @@ export function TmuxCreateControls({
       chooseWorkingDirectory(directorySuggestions[activeDirectoryHighlight])
     } else if (event.key === 'Escape' && directoryHistoryOpen) {
       event.preventDefault()
+      event.stopPropagation()
       setDirectoryHistoryOpen(false)
     }
   }
@@ -419,7 +456,7 @@ export function TmuxCreateControls({
         )}
 
         <button className="tmux-create__submit" type="submit" disabled={unavailable}>
-          {pending ? 'Creating...' : 'Create session'}
+          {pending ? 'Creating...' : probing ? 'Checking repository...' : 'Create session'}
         </button>
       </form>
     </div>

@@ -701,18 +701,57 @@ describe('SessionTree', () => {
       }))
     })
 
-    it('opens the session dialog for a repository with its main checkout pre-filled and closes on Escape', async () => {
+    it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
       const onCreateSession = vi.fn()
       renderTree({ creation: { onCreateSession } })
       fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
       const dialog = await screen.findByRole('dialog', { name: 'New session' })
       expect(within(dialog).getByText('Save-All')).toBeVisible()
-      expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue(SAVE_ALL.root)
+      const directory = within(dialog).getByRole('combobox', { name: /Working directory/ })
+      expect(directory).toHaveValue(SAVE_ALL.root)
       expect(within(dialog).getByLabelText('Session name')).toHaveFocus()
+      fireEvent.focus(directory)
+      expect(within(dialog).getByRole('listbox', { name: 'Suggested working directories' })).toBeInTheDocument()
+      fireEvent.keyDown(directory, { key: 'Escape' })
+      expect(screen.getByRole('dialog', { name: 'New session' })).toBeInTheDocument()
+      expect(within(dialog).queryByRole('listbox')).not.toBeInTheDocument()
       fireEvent.keyDown(dialog, { key: 'Escape' })
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
       expect(screen.getByRole('button', { name: 'Create a new session in Save-All' })).toHaveFocus()
+    })
+
+    it('keeps the dialog open while session creation is pending and closes after success', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      let resolveCreate: ((value: { created: TmuxCreatedTarget }) => void) | undefined
+      const onCreateSession = vi.fn(() => new Promise<{ created: TmuxCreatedTarget }>((resolve) => {
+        resolveCreate = resolve
+      }))
+      renderTree({ creation: { onCreateSession } })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'new-save-all-session' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+
+      expect(dialog).toHaveAttribute('aria-busy', 'true')
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBeDisabled()
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+      expect(screen.getByRole('dialog', { name: 'New session' })).toBeInTheDocument()
+
+      resolveCreate?.({
+        created: {
+          kind: 'session',
+          sessionId: '$5',
+          sessionName: 'new-save-all-session',
+          windowId: '@5',
+          windowIndex: 0,
+          windowName: 'shell',
+          paneId: '%5',
+          paneIndex: 0,
+          panePath: `${SAVE_ALL.root}-worktrees/new-save-all-session`,
+        },
+      })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
   })
 })
