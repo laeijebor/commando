@@ -176,6 +176,17 @@ export type PaneTerminalState = {
   paneTabs: number[]
 }
 
+/** Repository that contains a pane's current directory, resolved by the daemon. */
+export type PaneRepo = {
+  /** Root of the main checkout; every worktree of a repo shares this root. */
+  root: string
+  /** Folder name of the main checkout. */
+  name: string
+  branch: string
+  isWorktree: boolean
+  defaultBranch?: string
+}
+
 export type TmuxPane = PaneTerminalState & {
   id: string
   targetId: string
