@@ -1,3 +1,4 @@
+import type { GitRepoInfo } from '../shared/tmux-create'
 export type GitChangedFile = {
   path: string
   status: string
@@ -73,6 +74,8 @@ export type GitFileDiffOptions = {
 }
 
 export interface GitDiffApiClient {
+  /** Which repository (if any) contains an absolute directory; worktrees resolve to their main checkout. */
+  repo(directory: string): Promise<GitRepoInfo>
   summary(paneId: string, target?: string, head?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
   search(paneId: string, query: string, target?: string, head?: string): Promise<GitDiffSearchResult>
@@ -121,5 +124,6 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
       }),
     search: (paneId, query, target, head) => request<GitDiffSearchResult>('search', { paneId, query, target, head }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
+    repo: (directory) => request<GitRepoInfo>('repo', { path: directory }),
   }
 }

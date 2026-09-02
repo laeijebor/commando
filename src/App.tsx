@@ -2377,10 +2377,8 @@ export function App() {
               onPreferencesChanged={setSessionTreePreferences}
               creation={{
                 disabled: !connected,
-                defaultTargetId: focusedPaneId ?? activeWindow?.id ?? '',
                 onCreateSession: tmuxCreateApi.createSession,
-                onCreateWindow: tmuxCreateApi.createWindow,
-                onCreatePane: tmuxCreateApi.createPane,
+                probeRepo: (directory) => gitDiffApi.repo(directory),
                 onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
               }}
             />

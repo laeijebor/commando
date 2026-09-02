@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { SessionTree } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
@@ -24,7 +24,7 @@ afterEach(() => {
 })
 beforeEach(() => {
   vi.clearAllMocks()
-  sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+  sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
   sessionApi.deleteWindow.mockResolvedValue(undefined)
 })
@@ -81,6 +81,7 @@ describe('SessionTree', () => {
   it('opens the first nine sessions by their session-tree order', async () => {
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,
+      groupingMode: 'manual',
       groups: [
         { id: 'gizmo', name: 'GIZMO', sessionIds: ['$3', '$1', '$stale'] },
         { id: 'vivi', name: 'VIVI', sessionIds: ['$4'] },
@@ -176,6 +177,7 @@ describe('SessionTree', () => {
         { id: 'gizmo', name: 'GIZMO', sessionIds: [] },
       ],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
     render(
       <SessionTree
@@ -206,6 +208,7 @@ describe('SessionTree', () => {
         { id: 'vivi', name: 'VIVI', sessionIds: [] },
       ],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     }))
     expect(onPreferencesChanged).toHaveBeenCalledWith({
       version: 1,
@@ -214,6 +217,7 @@ describe('SessionTree', () => {
         { id: 'vivi', name: 'VIVI', sessionIds: [] },
       ],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
   })
 
@@ -222,6 +226,7 @@ describe('SessionTree', () => {
       version: 1,
       groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2', '$3'] }],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
     render(
       <SessionTree
@@ -263,12 +268,14 @@ describe('SessionTree', () => {
       version: 1,
       groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$3', '$1', '$2'] }],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
   })
 
   it('collapses and expands every session group from its title', async () => {
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,
+      groupingMode: 'manual',
       groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }],
       ungroupedSessionIds: ['$2'],
     })
@@ -316,6 +323,7 @@ describe('SessionTree', () => {
       version: 1,
       groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
     const created: TmuxCreatedTarget = {
       kind: 'session',
@@ -328,7 +336,7 @@ describe('SessionTree', () => {
       paneIndex: 0,
       panePath: '/Users/dev/gizmo',
     }
-    const onCreateSession = vi.fn(async () => created)
+    const onCreateSession = vi.fn(async () => ({ created }))
     const onCreated = vi.fn()
     render(
       <SessionTree
@@ -349,23 +357,23 @@ describe('SessionTree', () => {
         onPreferencesChanged={vi.fn()}
         creation={{
           onCreateSession,
-          onCreateWindow: vi.fn(),
-          onCreatePane: vi.fn(),
           onCreated,
         }}
       />,
     )
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in GIZMO' }))
-    expect(await screen.findByText('New session in GIZMO')).toBeVisible()
-    expect(screen.getByRole('combobox', { name: /Working directory/ })).toHaveValue('/Users/dev/gizmo')
-    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'new-gizmo-work' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New session' })
+    expect(within(dialog).getByText('GIZMO')).toBeVisible()
+    expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue('/Users/dev/gizmo')
+    fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'new-gizmo-work' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
 
     await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledWith({
       version: 1,
       groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2'] }],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     }))
     expect(onCreateSession).toHaveBeenCalledWith({
       name: 'new-gizmo-work',
@@ -383,10 +391,11 @@ describe('SessionTree', () => {
         { id: 'vivi', name: 'VIVI', sessionIds: [] },
       ],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
     let resolveCreate: ((created: TmuxCreatedTarget) => void) | undefined
-    const onCreateSession = vi.fn(() => new Promise<TmuxCreatedTarget>((resolve) => {
-      resolveCreate = resolve
+    const onCreateSession = vi.fn(() => new Promise<{ created: TmuxCreatedTarget }>((resolve) => {
+      resolveCreate = (created) => resolve({ created })
     }))
     render(
       <SessionTree
@@ -407,15 +416,14 @@ describe('SessionTree', () => {
         onPreferencesChanged={vi.fn()}
         creation={{
           onCreateSession,
-          onCreateWindow: vi.fn(),
-          onCreatePane: vi.fn(),
         }}
       />,
     )
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in GIZMO' }))
-    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'pending-session' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New session' })
+    fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'pending-session' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
     fireEvent.click(screen.getByRole('button', { name: 'Move GIZMO down' }))
     await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledTimes(1))
 
@@ -439,6 +447,7 @@ describe('SessionTree', () => {
         { id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2'] },
       ],
       ungroupedSessionIds: [],
+      groupingMode: 'manual',
     })
   })
 
@@ -622,5 +631,88 @@ describe('SessionTree', () => {
     expect(onWindowDeleting).toHaveBeenCalledWith('@1')
     expect(onSessionsChanged).toHaveBeenCalled()
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('last window'))
+  })
+
+  describe('repository grouping', () => {
+    const SAVE_ALL: PaneRepo = { root: '/Users/dev/gizmo/Save-All', name: 'Save-All', branch: 'main', isWorktree: false, defaultBranch: 'main' }
+    const COINS: PaneRepo = { ...SAVE_ALL, branch: 'referral-coins-reward', isWorktree: true }
+    const VIVIFIT: PaneRepo = { root: '/Users/dev/vivifit', name: 'vivifit', branch: 'main', isWorktree: false, defaultBranch: 'main' }
+    const sessions = [
+      { id: '$1', name: 'Team Battles', attached: false, activeWindowId: '@1', windowIds: ['@1'] },
+      { id: '$2', name: 'Coins everywhere', attached: false, activeWindowId: '@2', windowIds: ['@2'] },
+      { id: '$3', name: 'CI', attached: false, activeWindowId: '@3', windowIds: ['@3'] },
+      { id: '$4', name: 'scratch', attached: false, activeWindowId: '@4', windowIds: ['@4'] },
+    ]
+    const panes = [
+      { ...pane('%1', 0, 'shell'), sessionId: '$1', windowId: '@1', path: SAVE_ALL.root, repo: SAVE_ALL },
+      { ...pane('%2', 0, 'shell'), sessionId: '$2', windowId: '@2', path: `${SAVE_ALL.root}-worktrees/coins`, repo: COINS },
+      { ...pane('%3', 0, 'shell'), sessionId: '$3', windowId: '@3', path: VIVIFIT.root, repo: VIVIFIT },
+      { ...pane('%4', 0, 'shell'), sessionId: '$4', windowId: '@4', path: '/tmp/plain' },
+    ]
+    const renderTree = (overrides: Partial<Parameters<typeof SessionTree>[0]> = {}) => render(
+      <SessionTree
+        token="token"
+        sessions={sessions}
+        windows={[]}
+        panes={panes}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        focusedPaneId={null}
+        onSelectSession={vi.fn()}
+        onSelectWindow={vi.fn()}
+        onSelectPane={vi.fn()}
+        onOpenPaneMaximized={vi.fn()}
+        onWindowDeleting={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+        {...overrides}
+      />,
+    )
+
+    it('groups sessions by repository by default and marks sessions on a non-default branch', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }], ungroupedSessionIds: [] })
+      renderTree()
+      const headings = await screen.findAllByRole('button', { name: /^Collapse / })
+      expect(headings.map((heading) => heading.getAttribute('aria-label'))).toEqual([
+        'Collapse Save-All',
+        'Collapse vivifit',
+        'Collapse No repository',
+      ])
+      expect(screen.queryByRole('button', { name: 'Collapse GIZMO' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Move Save-All down' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Group$/ })).not.toBeInTheDocument()
+      expect(screen.getByText('referral-coins-reward')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Group sessions by repository' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('switches to manual grouping and persists the choice', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }], ungroupedSessionIds: [] })
+      renderTree()
+      await screen.findByRole('button', { name: 'Collapse Save-All' })
+      fireEvent.click(screen.getByRole('button', { name: 'Group sessions manually' }))
+      expect(await screen.findByRole('button', { name: 'Collapse GIZMO' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Group$/ })).toBeInTheDocument()
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalledWith({
+        version: 1,
+        groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1'] }],
+        ungroupedSessionIds: [],
+        groupingMode: 'manual',
+      }))
+    })
+
+    it('opens the session dialog for a repository with its main checkout pre-filled and closes on Escape', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const onCreateSession = vi.fn()
+      renderTree({ creation: { onCreateSession } })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      expect(within(dialog).getByText('Save-All')).toBeVisible()
+      expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue(SAVE_ALL.root)
+      expect(within(dialog).getByLabelText('Session name')).toHaveFocus()
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(screen.getByRole('button', { name: 'Create a new session in Save-All' })).toHaveFocus()
+    })
   })
 })

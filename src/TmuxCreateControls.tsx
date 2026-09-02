@@ -335,12 +335,12 @@ export function TmuxCreateControls({
         </label>
 
         <div className="tmux-create__field">
-          <label htmlFor="tmux-create-cwd">
+          <label htmlFor={`tmux-create-cwd-${variant}`}>
             Working directory <span>optional, absolute path</span>
           </label>
           <div className="tmux-create__cwd-combo">
             <input
-              id="tmux-create-cwd"
+              id={`tmux-create-cwd-${variant}`}
               name="cwd"
               value={workingDirectory}
               onChange={(event) => {
@@ -367,7 +367,7 @@ export function TmuxCreateControls({
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={directoryHistoryOpen && directorySuggestions.length > 0}
-              aria-controls="tmux-create-cwd-history"
+              aria-controls={`tmux-create-cwd-history-${variant}`}
               aria-activedescendant={
                 directoryHistoryOpen && directorySuggestions.length > 0
                   ? `tmux-create-cwd-option-${activeDirectoryHighlight}`
@@ -378,7 +378,7 @@ export function TmuxCreateControls({
             {directoryHistoryOpen && directorySuggestions.length > 0 ? (
               <div
                 className="tmux-create__cwd-history"
-                id="tmux-create-cwd-history"
+                id={`tmux-create-cwd-history-${variant}`}
                 role="listbox"
                 aria-label="Suggested working directories"
               >

@@ -81,3 +81,13 @@
 @keyframes session-status-pulse {
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
 }
+
+.session-tree-tools-actions { display: flex; align-items: center; gap: 8px; }
+.session-grouping-switch { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.managed-session-tree .session-grouping-switch button { display: flex; gap: 4px; align-items: center; padding: 3px 7px; border-radius: 4px; color: var(--muted); font-family: var(--mono); font-size: 8px; letter-spacing: .06em; text-transform: uppercase; }
+.managed-session-tree .session-grouping-switch button[aria-pressed='true'] { color: var(--text); background: var(--border-strong); }
+.managed-session-tree .session-grouping-switch button:hover { color: var(--text); }
+.session-grouping-switch svg { width: 10px; height: 10px; }
+.session-pref-group > header .session-repo-path { margin-left: 2px; min-width: 0; overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 7px; letter-spacing: 0; text-transform: none; text-overflow: ellipsis; white-space: nowrap; }
+.session-branch { display: inline-flex; gap: 3px; align-items: center; margin-right: 5px; color: var(--cyan); }
+.session-branch svg { width: 9px; height: 9px; }

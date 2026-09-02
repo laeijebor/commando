@@ -1,19 +1,17 @@
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderPlus, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderGit2, FolderPlus, GitBranch, ListTree, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
-import type { TmuxCreatedTarget } from '../shared/tmux-create'
-import { createSessionManagementApi, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
+import { createSessionManagementApi, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { sessionShortcutIndex } from './sessionShortcuts'
-import { EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers } from './sessionTreePreferences'
+import { DEFAULT_GROUPING_MODE, EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers, type SessionTreeContainer } from './sessionTreePreferences'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
+import { SessionCreateDialog } from './SessionCreateDialog'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-tree.css'
 
-type SessionTreeCreation = Pick<
-  TmuxCreateControlsProps,
-  'disabled' | 'defaultTargetId' | 'onCreateSession' | 'onCreateWindow' | 'onCreatePane'
-> & {
-  onCreated?: (created: TmuxCreatedTarget) => void
+type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo'> & {
+  onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
 }
 
 type Props = {
@@ -80,6 +78,11 @@ function suggestedDirectories(sessionIds: readonly string[], panes: readonly Tmu
     .map(([directory]) => directory)
 }
 
+/** `/Users/me/dev/repo` → `~/dev/repo` for the group header hint. */
+function shortenHome(path: string): string {
+  return path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/u, '~')
+}
+
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -90,12 +93,15 @@ export function SessionTree(props: Props) {
   const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null)
   const [error, setError] = useState('')
   const sessionCreateRequestId = useRef(0)
+  const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
   const windowMap = new Map(props.windows.map((window) => [window.id, window]))
   const paneMap = new Map(props.panes.map((pane) => [pane.id, pane]))
   const marks = props.marks ?? {}
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
+  const mode: SessionGroupingMode = preferences.groupingMode ?? DEFAULT_GROUPING_MODE
+  const manual = mode === 'manual'
 
   useEffect(() => {
     api.loadPreferences().then((next) => {
@@ -125,7 +131,7 @@ export function SessionTree(props: Props) {
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to save session order'))
   }
 
-  const containers = sessionTreeContainers(preferences, props.sessions)
+  const containers = sessionTreeContainers(preferences, props.sessions, { mode, panes: props.panes })
   const shortcutSessionIds = containers
     .flatMap((container) => container.sessionIds)
     .filter((sessionId) => sessionMap.has(sessionId))
@@ -152,6 +158,11 @@ export function SessionTree(props: Props) {
     }
   }, [props.onSelectSession, shortcutSessionIds])
 
+  const setGroupingMode = (groupingMode: SessionGroupingMode) => {
+    if (groupingMode === mode) return
+    save({ ...preferencesRef.current, groupingMode })
+  }
+
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
     const currentPreferences = preferencesRef.current
     const groups = currentPreferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
@@ -177,14 +188,26 @@ export function SessionTree(props: Props) {
     save({ ...preferences, groups: [...preferences.groups, group] })
   }
 
-  const createSessionInContainer = (groupId: string, groupName: string, sessionIds: readonly string[]) => {
+  const createSessionInContainer = (container: SessionTreeContainer, trigger: HTMLElement) => {
     sessionCreateRequestId.current += 1
+    sessionCreateTrigger.current = trigger
+    const directories = suggestedDirectories(container.sessionIds, props.panes)
     setSessionCreateRequest({
       id: sessionCreateRequestId.current,
-      groupId,
-      groupName,
-      suggestedDirectories: suggestedDirectories(sessionIds, props.panes),
+      groupId: container.id,
+      groupName: container.name,
+      suggestedDirectories: container.repo
+        ? [container.repo.root, ...directories.filter((directory) => directory !== container.repo?.root)]
+        : directories,
+      ...(container.repo ? { repo: container.repo } : {}),
     })
+  }
+
+  const closeSessionDialog = () => {
+    setSessionCreateRequest(null)
+    const trigger = sessionCreateTrigger.current
+    sessionCreateTrigger.current = null
+    trigger?.focus()
   }
 
   const moveGroup = (groupId: string, direction: -1 | 1) => {
@@ -223,6 +246,14 @@ export function SessionTree(props: Props) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to close window') }
   }
 
+  const finishCreated = (created: TmuxCreatedTarget, sessionGroupId: string | undefined, worktree: TmuxCreatedWorktree | undefined) => {
+    if (created.kind === 'session' && manual && sessionGroupId && sessionGroupId !== 'ungrouped') {
+      moveToContainer(created.sessionId, sessionGroupId)
+    }
+    if (worktree) props.creation?.onCreated?.(created, worktree)
+    else props.creation?.onCreated?.(created)
+  }
+
   const openMenu = (sessionId: string, x: number, y: number) => setMenu({ sessionId, x, y })
   const menuKey = (event: KeyboardEvent, sessionId: string) => {
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
@@ -234,19 +265,29 @@ export function SessionTree(props: Props) {
 
   return (
     <div className="managed-session-tree">
-      <div className="session-tree-tools"><span>{props.sessions.length} sessions</span><button type="button" onClick={createGroup}><FolderPlus /> Group</button></div>
+      <div className="session-tree-tools">
+        <span>{props.sessions.length} sessions</span>
+        <span className="session-tree-tools-actions">
+          {manual ? <button type="button" onClick={createGroup}><FolderPlus /> Group</button> : null}
+          <span className="session-grouping-switch" role="group" aria-label="Group sessions by">
+            <button type="button" aria-pressed={!manual} aria-label="Group sessions by repository" title="Group sessions by repository" onClick={() => setGroupingMode('repository')}><FolderGit2 />Repo</button>
+            <button type="button" aria-pressed={manual} aria-label="Group sessions manually" title="Group sessions manually" onClick={() => setGroupingMode('manual')}><ListTree />Manual</button>
+          </span>
+        </span>
+      </div>
       {error ? <button type="button" className="session-tree-error" onClick={() => setError('')}>{error}</button> : null}
       {containers.map((container) => {
         const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
         const collapsed = collapsedContainerIds.has(container.id)
-        const groupBodyId = `session-group-${container.id}`
+        const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
         const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
+        const droppable = manual && container.kind !== 'no-repo'
         return (
         <section
-          className="session-pref-group"
+          className={`session-pref-group kind-${container.kind}`}
           key={container.id}
-          onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }}
-          onDrop={(event) => { event.preventDefault(); if (draggedSessionId) moveToContainer(draggedSessionId, container.id); setDraggedSessionId(null) }}
+          onDragOver={droppable ? (event) => { if (draggedSessionId) event.preventDefault() } : undefined}
+          onDrop={droppable ? (event) => { event.preventDefault(); if (draggedSessionId) moveToContainer(draggedSessionId, container.id); setDraggedSessionId(null) } : undefined}
         >
           <header>
             <button
@@ -265,8 +306,9 @@ export function SessionTree(props: Props) {
               {collapsed ? <ChevronRight /> : <ChevronDown />}
               <strong>{container.name}</strong>
               <small>{sessionCount}</small>
+              {container.repo ? <span className="session-repo-path" title={container.repo.root}>{shortenHome(container.repo.root)}</span> : null}
             </button>
-            {props.creation ? <button type="button" onClick={() => createSessionInContainer(container.id, container.name, container.sessionIds)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
+            {props.creation && container.kind !== 'no-repo' ? <button type="button" onClick={(event) => createSessionInContainer(container, event.currentTarget)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div id={groupBodyId} hidden={collapsed}>
@@ -274,14 +316,15 @@ export function SessionTree(props: Props) {
               const session = sessionMap.get(sessionId)
               if (!session) return []
               const selected = session.id === props.selectedSessionId
+              const branch = container.sessionBranches?.[session.id]
               const sessionPanes = props.panes
                 .filter((pane) => pane.sessionId === session.id)
                 .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
               const statusPanes = sessionPanes.filter((pane) => props.statuses[pane.id])
               const markedPanes = sessionPanes.filter((pane) => marks[pane.targetId])
-              return [<article className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`} draggable onDragStart={() => setDraggedSessionId(session.id)} onDragEnd={() => setDraggedSessionId(null)} onDragOver={(event) => { if (draggedSessionId) event.preventDefault() }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) }} key={session.id}>
+              return [<article className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`} draggable={manual} onDragStart={manual ? () => setDraggedSessionId(session.id) : undefined} onDragEnd={manual ? () => setDraggedSessionId(null) : undefined} onDragOver={droppable ? (event) => { if (draggedSessionId) event.preventDefault() } : undefined} onDrop={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) } : undefined} key={session.id}>
                 <div className="managed-session-row">
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
+                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
                   {markedPanes.length ? <span className="session-mark-cluster">{markedPanes.map((pane) => { const mark = marks[pane.targetId]; const label = markLabel(mark, pane); return <button type="button" key={pane.targetId} className={`session-mark-dot tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</button> })}</span> : null}
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
@@ -289,26 +332,24 @@ export function SessionTree(props: Props) {
                 {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const mark = marks[pane.targetId]; const label = paneLabel(pane); const agentLabel = status ? statusLabel(status, pane) : ''; const paneMarkLabel = mark ? markLabel(mark, pane) : ''; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{mark ? <i className={`mini-pane-mark tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} role="img" aria-label={paneMarkLabel} title={paneMarkLabel}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</i> : null}{status ? <i className={`mini-status ${status.status}`} role="img" aria-label={agentLabel} title={agentLabel} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
               </article>]
             })}
-            {!container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
+            {manual && !container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
           </div>
         </section>
         )
       })}
       {props.creation ? <TmuxCreateControls
-        sessions={props.sessions}
-        windows={props.windows}
-        panes={props.panes}
         disabled={props.creation.disabled}
-        defaultSessionId={props.selectedSessionId ?? ''}
-        defaultTargetId={props.creation.defaultTargetId}
-        sessionCreateRequest={sessionCreateRequest}
         onCreateSession={props.creation.onCreateSession}
-        onCreateWindow={props.creation.onCreateWindow}
-        onCreatePane={props.creation.onCreatePane}
-        onCreated={(created, sessionGroupId) => {
-          if (created.kind === 'session' && sessionGroupId) moveToContainer(created.sessionId, sessionGroupId)
-          props.creation?.onCreated?.(created)
-        }}
+        probeRepo={props.creation.probeRepo}
+        onCreated={(created, sessionGroupId, worktree) => finishCreated(created, sessionGroupId, worktree)}
+      /> : null}
+      {props.creation && sessionCreateRequest ? <SessionCreateDialog
+        request={sessionCreateRequest}
+        disabled={props.creation.disabled}
+        onCreateSession={props.creation.onCreateSession}
+        probeRepo={props.creation.probeRepo}
+        onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
+        onClose={closeSessionDialog}
       /> : null}
       {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button></div> : null}
     </div>
