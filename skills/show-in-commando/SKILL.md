@@ -81,7 +81,7 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 Chromium tiles have a review mode: the user toggles it in the tile header,
 clicks elements on your page, and queues comments. Each note reaches you
 selector-anchored — `{selector, tag, text, rect, comment, pageUrl, capturedAt,
-response?, attachments?}` — so you can go straight from note to edit. `response?:
+reviewKey?, reviewRevision?, response?, attachments?, handoff?}` — so you can go straight from note to edit. `response?:
 {question, answer, note?, data?}` is present when the note came from an in-page
 redline component (see the redline skill) rather than an element annotation
 — prefer it over parsing `comment` when it's there.
@@ -103,11 +103,21 @@ this — including the cursor bookkeeping below; exit 4 means the review ended.)
   so a lost poll (killed task, timeout, even a daemon restart) loses nothing —
   the next poll redelivers them. Acknowledge by passing the previous
   response's `cursor` back (`…&cursor=3`). Polling without a cursor never
-  acks; you just see the same notes again — dedupe by note `id`.
+  acks; you just see the same notes again. Correlate review identity by
+  `reviewKey`, then `deliveryKey`, then note `id`; this ordering covers
+  pre-upgrade retries. Track `reviewRevision`, treating an absent value as
+  baseline revision 1: the highest revision supersedes older content
+  and attachments. A repeated key at the same revision only updates delivery
+  intent, so do not apply its review edit twice; process the new `handoff`.
 - A note can carry `attachments: [{name, contentType, size, path}]`. Fetch a
   needed image from `http://127.0.0.1:${COMMANDO_PORT:-4310}<path>` with the
   same agent hook bearer token before the next `commando-feedback` call: that
   call acknowledges the previous cursor and releases its attachment bytes.
+- `handoff: {kind: "build", instruction}` means the user intends review to be
+  complete and wants implementation to begin after the whole batch is read.
+  Use `/delegate:code` when available; otherwise follow repository or saved
+  preferred implementation instructions. Ask or continue review only when a
+  material clarification or human decision is still needed before coding.
 - Apply the feedback, verify over the tile's `/cdp` endpoint if useful, and
   reply in your own terminal — there is no chat panel in the tile.
 - A closed tile keeps serving its unacked notes; 404 means the review is over

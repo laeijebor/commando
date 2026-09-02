@@ -2713,7 +2713,11 @@ export function App() {
                               attachmentId,
                             ),
                             remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
-                            send: (ids) => webPanesApi.sendPendingNotes(webPane.id, ids),
+                            send: (ids, options) => webPanesApi.sendPendingNotes(
+                              webPane.id,
+                              ids,
+                              options,
+                            ),
                             dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
                           }}
                           onDragStart={(event) => {

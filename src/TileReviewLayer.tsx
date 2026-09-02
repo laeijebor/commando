@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { MAX_PENDING_NOTES, type WebPanePendingNote, type WebPanePendingSnapshot } from '../shared/protocol'
+import { MAX_PENDING_NOTES, type WebPanePendingNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot } from '../shared/protocol'
 import {
   MAX_SELECTOR_RESOLVE_BYTES,
   MAX_SELECTOR_RESOLVE_ITEMS,
@@ -297,7 +297,7 @@ export function TileReviewLayer({
   const [drafts, setDrafts] = useState<Record<number, PendingDraft>>({})
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
   const busyIdsRef = useRef<ReadonlySet<number>>(new Set())
-  const [sendingAll, setSendingAll] = useState(false)
+  const [sendingAllMode, setSendingAllMode] = useState<'send' | WebPanePendingSendIntent | null>(null)
   const sendingAllRef = useRef(false)
   const [queueError, setQueueError] = useState('')
   const [preview, setPreview] = useState<{ id: string; name: string } | null>(null)
@@ -676,14 +676,14 @@ export function TileReviewLayer({
     }
   }
 
-  const sendAll = async () => {
+  const sendAll = async (intent?: WebPanePendingSendIntent) => {
     if (sendingAllRef.current || busyIdsRef.current.size > 0) return
     const visible = queuedRef.current.map((note) => ({ id: note.id, revision: note.revision ?? 1 }))
     const ids = visible.map((note) => note.id)
     if (ids.length === 0) return
     const expectedRevisions = new Map(visible.map((note) => [note.id, note.revision]))
     sendingAllRef.current = true
-    setSendingAll(true)
+    setSendingAllMode(intent ?? 'send')
     setQueueError('')
     try {
       for (const noteId of ids) {
@@ -702,6 +702,10 @@ export function TileReviewLayer({
           expectedRevisions.set(noteId, saved.revision ?? 1)
         }
       }
+      if (queuedRef.current.length !== ids.length) {
+        setQueueError('The queue changed while saving. Nothing was sent.')
+        return
+      }
       const targets: PendingSendTarget[] = []
       for (const noteId of ids) {
         const note = queuedRef.current.find((candidate) => candidate.id === noteId)
@@ -716,12 +720,26 @@ export function TileReviewLayer({
         }
         targets.push({ id: note.id, revision: note.revision ?? 1 })
       }
-      applySnapshot(await pendingQueueRef.current.send(targets))
+      const expectedQueueRevision = latestSnapshotRevisionRef.current
+      let snapshot: WebPanePendingSnapshot
+      if (intent === undefined) {
+        snapshot = await pendingQueueRef.current.send(targets)
+      } else {
+        if (expectedQueueRevision === undefined) {
+          setQueueError('The daemon did not provide a queue revision. Update Commando before sending for build.')
+          return
+        }
+        snapshot = await pendingQueueRef.current.send(targets, {
+          intent,
+          expectedQueueRevision,
+        })
+      }
+      applySnapshot(snapshot)
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not send the queue')
     } finally {
       sendingAllRef.current = false
-      setSendingAll(false)
+      setSendingAllMode(null)
     }
   }
 
@@ -795,6 +813,7 @@ export function TileReviewLayer({
   const selected = selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
   const selectedDraft = selected ? drafts[selected.id] ?? draftFor(selected) : undefined
   const selectedEditor = selected ? editorFor(selected) : undefined
+  const sendingAll = sendingAllMode !== null
   const selectedBusy = selected ? sendingAll || busyIds.has(selected.id) : false
   const popoverNote = popoverId === null ? undefined : queued.find((note) => note.id === popoverId)
   const popoverDraft = popoverNote ? drafts[popoverNote.id] ?? draftFor(popoverNote) : undefined
@@ -1026,14 +1045,24 @@ export function TileReviewLayer({
                 {queued.length > 3 && <span className="tile-review-chip">+{queued.length - 3}</span>}
               </div>
               {queued.length > 0 && (
-                <button
-                  type="button"
-                  className="tile-review-send-all"
-                  disabled={sendingAll || busyIds.size > 0}
-                  onClick={() => void sendAll()}
-                >
-                  {sendingAll ? 'Saving…' : 'Send all'}
-                </button>
+                <div className="tile-review-strip-actions">
+                  <button
+                    type="button"
+                    className="tile-review-send-all"
+                    disabled={sendingAll || busyIds.size > 0}
+                    onClick={() => void sendAll()}
+                  >
+                    {sendingAllMode === 'send' ? 'Saving…' : 'Send all'}
+                  </button>
+                  <button
+                    type="button"
+                    className="tile-review-send-all is-build"
+                    disabled={sendingAll || busyIds.size > 0}
+                    onClick={() => void sendAll('build')}
+                  >
+                    {sendingAllMode === 'build' ? 'Sending for build…' : 'Send all + Build'}
+                  </button>
+                </div>
               )}
               {queueError && <span className="tile-review-error" role="alert">{queueError}</span>}
             </div>
@@ -1057,7 +1086,15 @@ export function TileReviewLayer({
                     disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
                     onClick={() => void sendAll()}
                   >
-                    {sendingAll ? 'Saving and sending…' : 'Send all'}
+                    {sendingAllMode === 'send' ? 'Saving and sending…' : 'Send all'}
+                  </button>
+                  <button
+                    type="button"
+                    className="tile-review-send-all is-build"
+                    disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
+                    onClick={() => void sendAll('build')}
+                  >
+                    {sendingAllMode === 'build' ? 'Sending for build…' : 'Send all + Build'}
                   </button>
                   <button
                     type="button"

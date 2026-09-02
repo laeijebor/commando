@@ -375,11 +375,25 @@ export type WebPaneFeedbackAttachment = WebPaneImageAttachment & {
   path: string
 }
 
+export type WebPanePendingSendIntent = 'build'
+
+export const REDLINE_BUILD_HANDOFF_INSTRUCTION =
+  'This review is intended to be complete, and the user does not expect another review round before implementation. Process every note and attachment in this handoff, then begin building. Use the `/delegate:code` skill when available; otherwise follow the preferred implementation approach in the repository\'s AGENTS.md, project memory, or equivalent instructions. Continue review or ask questions only when material clarification or human judgment is still required before coding can effectively begin.'
+
+export type WebPaneFeedbackHandoff = {
+  kind: WebPanePendingSendIntent
+  instruction: string
+}
+
 export type WebPaneFeedbackNote = {
   /** Server-assigned delivery id; present on drained notes, used for dedupe. */
   id?: number
   /** Internal stable key for retrying a pending-to-feedback transfer. */
   deliveryKey?: string
+  /** Stable pending-item identity used to merge changed delivery intents. */
+  reviewKey?: string
+  /** Pending-item revision; the highest revision is authoritative for a reviewKey. */
+  reviewRevision?: number
   selector: string
   tag: string
   text?: string
@@ -390,6 +404,8 @@ export type WebPaneFeedbackNote = {
   /** Present when the note came from an in-page component, not an annotation. */
   response?: WebPaneFeedbackResponse
   attachments?: WebPaneFeedbackAttachment[]
+  /** Owner-requested action to take after processing this feedback batch. */
+  handoff?: WebPaneFeedbackHandoff
 }
 
 /** Cap on queued-but-unsent pending notes per tile. */

@@ -1,6 +1,6 @@
 import type { WebPanePendingSnapshot } from '../shared/protocol'
 import type { RedlinePageResponse } from '../shared/redline-response'
-import type { PendingNoteDraft, PendingSendTarget } from './webPanesApi'
+import type { PendingNoteDraft, PendingSendOptions, PendingSendTarget } from './webPanesApi'
 
 /** Daemon-side pending review queue for one tile. */
 export type PendingQueueApi = {
@@ -20,6 +20,9 @@ export type PendingQueueApi = {
   ) => Promise<WebPanePendingSnapshot>
   attachmentUrl: (attachmentId: string) => string
   remove: (noteId: number) => Promise<WebPanePendingSnapshot>
-  send: (targets?: readonly number[] | readonly PendingSendTarget[]) => Promise<WebPanePendingSnapshot>
+  send: (
+    targets?: readonly number[] | readonly PendingSendTarget[],
+    options?: PendingSendOptions,
+  ) => Promise<WebPanePendingSnapshot>
   dismissDropped: () => Promise<WebPanePendingSnapshot>
 }

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_PENDING_NOTE_ATTACHMENTS,
   MAX_PENDING_NOTES,
+  REDLINE_BUILD_HANDOFF_INSTRUCTION,
   type WebPaneFeedbackNote,
   type WebPaneImageAttachment,
   type WebPanePendingNote,
@@ -391,12 +392,86 @@ describe('WebPanePendingStore', () => {
     expect(enqueued[0]).not.toHaveProperty('id')
     expect(enqueued[0]).not.toHaveProperty('queueKey')
     expect(enqueued.map((note) => note.deliveryKey)).toEqual([
+      'pending:w-11111111:1:revision:1:intent:review',
+      'pending:w-11111111:2:revision:1:intent:review',
+    ])
+    expect(enqueued.map((note) => note.reviewKey)).toEqual([
       'pending:w-11111111:1',
       'pending:w-11111111:2',
     ])
+    expect(enqueued.map((note) => note.reviewRevision)).toEqual([1, 1])
     expect(enqueued.map((note) => note.pageUrl)).toEqual([PAGE_URL, OTHER_PAGE_URL])
     expect(enqueued[0]?.capturedAt).toBe(1_234)
     expect(enqueued[0]?.response?.answer).toBe('yes')
+    expect(enqueued.every((note) => note.handoff === undefined)).toBe(true)
+  })
+
+  it('stamps every note in a build send with the durable implementation handoff', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1'))
+    store.addNote('w-11111111', PAGE_URL, manualNote('manual'))
+    let enqueued: WebPaneFeedbackNote[] = []
+
+    store.send(
+      'w-11111111',
+      PAGE_URL,
+      1_234,
+      (notes) => { enqueued = notes },
+      [{ id: 1, revision: 1 }, { id: 2, revision: 1 }],
+      'build',
+      2,
+    )
+
+    expect(enqueued.map((note) => note.handoff)).toEqual([
+      { kind: 'build', instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION },
+      { kind: 'build', instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION },
+    ])
+    expect(enqueued.map((note) => note.deliveryKey)).toEqual([
+      'pending:w-11111111:1:revision:1:intent:build',
+      'pending:w-11111111:2:revision:1:intent:build',
+    ])
+    expect(enqueued.map((note) => note.reviewKey)).toEqual([
+      'pending:w-11111111:1',
+      'pending:w-11111111:2',
+    ])
+    expect(enqueued.map((note) => note.reviewRevision)).toEqual([1, 1])
+  })
+
+  it('rejects a build send when the queue revision changed before transfer', () => {
+    const store = makeStore()
+    store.addNote('w-11111111', PAGE_URL, manualNote('first'))
+    const enqueue = vi.fn()
+
+    expect(() => store.send(
+      'w-11111111',
+      PAGE_URL,
+      1,
+      enqueue,
+      [{ id: 1, revision: 1 }],
+      'build',
+      0,
+    )).toThrow(WebPaneError)
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(store.list('w-11111111').map((note) => note.comment)).toEqual(['first'])
+  })
+
+  it('rejects a partial build send at the current queue revision', () => {
+    const store = makeStore()
+    store.addNote('w-11111111', PAGE_URL, manualNote('first'))
+    store.addNote('w-11111111', PAGE_URL, manualNote('second'))
+    const enqueue = vi.fn()
+
+    expect(() => store.send(
+      'w-11111111',
+      PAGE_URL,
+      1,
+      enqueue,
+      [{ id: 1, revision: 1 }],
+      'build',
+      2,
+    )).toThrow('Build handoff must include the entire pending queue')
+    expect(enqueue).not.toHaveBeenCalled()
+    expect(store.list('w-11111111').map((note) => note.comment)).toEqual(['first', 'second'])
   })
 
   it('send falls back to the current-page argument for a historical note without pageUrl', () => {
@@ -411,7 +486,7 @@ describe('WebPanePendingStore', () => {
     expect(enqueued[0]?.pageUrl).toBe(OTHER_PAGE_URL)
   })
 
-  it('send includes daemon attachment paths without releasing transferred ownership', () => {
+  it('send includes daemon attachment paths and checks transferred attachment references', () => {
     const release = vi.fn()
     const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }), release)
     store.addNote('w-11111111', PAGE_URL, manualNote('manual'))
@@ -422,7 +497,7 @@ describe('WebPanePendingStore', () => {
       ...attachment('image.png'),
       path: '/api/web-panes/w-11111111/attachments/image.png',
     }])
-    expect(release).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledWith('image.png')
   })
 
   it('send with ids moves only those notes', () => {
@@ -433,7 +508,7 @@ describe('WebPanePendingStore', () => {
     expect(remaining.map((note) => note.comment)).toEqual(['b'])
   })
 
-  it('reuses a delivery key for an unsent revision but gives a later item a distinct key', () => {
+  it('keeps the pending review key stable while versioning transferred deliveries', () => {
     const store = makeStore()
     const first = store.addResponse('w-11111111', PAGE_URL, response('yes', 'q1')).notes[0]
     const revised = store.addResponse('w-11111111', PAGE_URL, response('no', 'q1')).notes[0]
@@ -443,7 +518,7 @@ describe('WebPanePendingStore', () => {
 
     expect(revised?.revision).toBe(2)
     expect(revised?.deliveryKey).toBe(first?.deliveryKey)
-    expect(firstDeliveryKey).toBe(first?.deliveryKey)
+    expect(firstDeliveryKey).toBe(`${first?.deliveryKey}:revision:2:intent:review`)
     expect(later?.deliveryKey).not.toBe(first?.deliveryKey)
   })
 

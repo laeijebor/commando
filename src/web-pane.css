@@ -684,6 +684,13 @@
   cursor: pointer;
 }
 
+.tile-review-strip-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+}
+
 .tile-review-queue-toggle {
   padding: 3px 7px;
   background: transparent;
@@ -741,6 +748,11 @@
 
 .tile-review-send-all:hover:not(:disabled) {
   filter: brightness(1.12);
+}
+
+.tile-review-send-all.is-build {
+  background: var(--green, #46d58a);
+  color: var(--surface-deep, #0a0812);
 }
 
 .tile-review-send-all:disabled,
@@ -1302,5 +1314,34 @@
 
   .tile-review-drawer-detail {
     padding: 10px;
+  }
+}
+
+@container chromium-tile (max-width: 300px) {
+  .tile-review-strip {
+    display: grid;
+  }
+
+  .tile-review-strip-actions {
+    display: grid;
+    width: 100%;
+  }
+
+  .tile-review-send-all {
+    width: 100%;
+  }
+
+  .tile-review-drawer-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tile-review-drawer-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 25px;
+  }
+
+  .tile-review-drawer-actions .tile-review-send-all:first-child {
+    grid-column: 1 / -1;
   }
 }

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WebPaneFeedbackNote } from '../shared/protocol.js'
+import { REDLINE_BUILD_HANDOFF_INSTRUCTION, type WebPaneFeedbackNote } from '../shared/protocol.js'
 import { DELIVERY_DEDUPE_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { MAX_QUEUED_FEEDBACK_NOTES, WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
@@ -115,12 +115,19 @@ describe('WebPaneFeedbackStore', () => {
 
   it('survives a restart: a fresh store over the same journal re-offers the backlog', async () => {
     const { store, dir } = makeStore()
-    store.enqueue('w-11111111', [note('kept')])
+    store.enqueue('w-11111111', [{
+      ...note('kept'),
+      handoff: { kind: 'build', instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION },
+    }])
     await store.drain('w-11111111', 0)
     const { store: reborn } = makeStore({ dir })
     const result = await reborn.drain('w-11111111', 0)
     expect(result.notes.map((entry) => entry.comment)).toEqual(['kept'])
     expect(result.notes[0]?.id).toBe(1)
+    expect(result.notes[0]?.handoff).toEqual({
+      kind: 'build',
+      instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION,
+    })
   })
 
   it('deduplicates an acknowledged pending resend after restart without changing feedback ids', async () => {
@@ -129,7 +136,7 @@ describe('WebPaneFeedbackStore', () => {
     const paneId = 'w-11111111'
     const firstFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
     const firstPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
-    firstPending.addNote(paneId, 'http://127.0.0.1:5173/', {
+    const queued = firstPending.addNote(paneId, 'http://127.0.0.1:5173/', {
       selector: '#root',
       tag: 'div',
       rect: { x: 0, y: 0, width: 1, height: 1 },
@@ -138,7 +145,7 @@ describe('WebPaneFeedbackStore', () => {
     expect(() => firstPending.send(paneId, 'http://127.0.0.1:5173/', 1, (notes) => {
       firstFeedback.enqueue(paneId, notes)
       throw new Error('simulated crash before pending removal')
-    })).toThrow('simulated crash')
+    }, undefined, 'build', queued.revision)).toThrow('simulated crash')
 
     const rebornJournal = new FeedbackJournal({ dir })
     const rebornFeedback = new WebPaneFeedbackStore(rebornJournal)
@@ -146,10 +153,22 @@ describe('WebPaneFeedbackStore', () => {
     const drained = await rebornFeedback.drain(paneId, 0)
     const deliveryKey = drained.notes[0]?.deliveryKey
     await rebornFeedback.drain(paneId, 0, { cursor: drained.cursor })
-    rebornPending.send(paneId, 'http://127.0.0.1:5173/', 2, (notes) => rebornFeedback.enqueue(paneId, notes))
+    rebornPending.send(
+      paneId,
+      'http://127.0.0.1:5173/',
+      2,
+      (notes) => rebornFeedback.enqueue(paneId, notes),
+      undefined,
+      'build',
+      rebornPending.snapshot(paneId).revision,
+    )
 
     expect(drained.notes.map((entry) => ({ id: entry.id, comment: entry.comment })))
       .toEqual([{ id: 1, comment: 'survives transfer crash' }])
+    expect(drained.notes[0]?.handoff).toEqual({
+      kind: 'build',
+      instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION,
+    })
     expect(await rebornFeedback.drain(paneId, 0)).toEqual({ notes: [], cursor: 1 })
     expect(rebornJournal.load(paneId)).toMatchObject({
       notes: [],
@@ -157,6 +176,97 @@ describe('WebPaneFeedbackStore', () => {
       nextId: 2,
     })
     expect(rebornPending.list(paneId)).toEqual([])
+  })
+
+  it('delivers a changed build intent instead of suppressing it after a transfer crash', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'commando-feedback-intent-retry-'))
+    dirs.push(dir)
+    const paneId = 'w-11111111'
+    const firstFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const firstPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    const queued = firstPending.addNote(paneId, 'http://127.0.0.1:5173/', {
+      selector: '#root',
+      tag: 'div',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'retry with build intent',
+    })
+    expect(() => firstPending.send(paneId, 'http://127.0.0.1:5173/', 1, (notes) => {
+      firstFeedback.enqueue(paneId, notes)
+      throw new Error('simulated crash before pending removal')
+    })).toThrow('simulated crash')
+
+    const rebornFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const rebornPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    rebornPending.send(
+      paneId,
+      'http://127.0.0.1:5173/',
+      2,
+      (notes) => rebornFeedback.enqueue(paneId, notes),
+      undefined,
+      'build',
+      queued.revision,
+    )
+
+    const drained = await rebornFeedback.drain(paneId, 0)
+    expect(drained.notes).toHaveLength(2)
+    expect(drained.notes.map((entry) => entry.reviewKey)).toEqual([
+      'pending:w-11111111:1',
+      'pending:w-11111111:1',
+    ])
+    expect(drained.notes.map((entry) => entry.reviewRevision)).toEqual([1, 1])
+    expect(drained.notes[0]?.handoff).toBeUndefined()
+    expect(drained.notes[1]?.handoff).toEqual({
+      kind: 'build',
+      instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION,
+    })
+    expect(rebornPending.list(paneId)).toEqual([])
+  })
+
+  it('delivers newer review content and attachments after a transfer crash', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'commando-feedback-revision-retry-'))
+    dirs.push(dir)
+    const paneId = 'w-11111111'
+    const url = 'http://127.0.0.1:5173/'
+    const firstFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const firstPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    firstPending.addNote(paneId, url, {
+      selector: '#root',
+      tag: 'div',
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      comment: 'old review',
+    })
+    expect(() => firstPending.send(paneId, url, 1, (notes) => {
+      firstFeedback.enqueue(paneId, notes)
+      throw new Error('simulated crash before pending removal')
+    })).toThrow('simulated crash')
+
+    const rebornFeedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const rebornPending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    rebornPending.update(paneId, 1, 1, { answer: 'new review' })
+    rebornPending.attach(paneId, 1, 2, {
+      id: 'new.png',
+      name: 'new.png',
+      contentType: 'image/png',
+      size: 8,
+    })
+    rebornPending.send(paneId, url, 2, (notes) => rebornFeedback.enqueue(paneId, notes))
+
+    const drained = await rebornFeedback.drain(paneId, 0)
+    expect(drained.notes.map((entry) => ({
+      comment: entry.comment,
+      reviewKey: entry.reviewKey,
+      reviewRevision: entry.reviewRevision,
+    }))).toEqual([
+      { comment: 'old review', reviewKey: 'pending:w-11111111:1', reviewRevision: 1 },
+      { comment: 'new review', reviewKey: 'pending:w-11111111:1', reviewRevision: 3 },
+    ])
+    expect(drained.notes[1]?.attachments).toEqual([{
+      id: 'new.png',
+      name: 'new.png',
+      contentType: 'image/png',
+      size: 8,
+      path: `/api/web-panes/${paneId}/attachments/new.png`,
+    }])
   })
 
   it('deduplicates a crash-left pending note after it is acknowledged in one pane and adopted into another', async () => {

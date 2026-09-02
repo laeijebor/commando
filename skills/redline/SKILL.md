@@ -316,8 +316,14 @@ Send).
    is active. Do not claim to be watching for notes unless a poll is actually
    running. Delivery is at-least-once: notes are journaled daemon-side until
    acked (the script handles the response `cursor`), so re-polling recovers
-   unread notes; dedupe by note `id` if you see repeats.
-2. For each note `{selector, tag, text, rect, comment, pageUrl, attachments?}`:
+   unread notes. Correlate review identity by `reviewKey`, then `deliveryKey`,
+   then note `id`; this ordering keeps pre-upgrade retries deduplicated. Track
+   `reviewRevision`, treating an absent value as baseline revision 1. For the
+   same review identity, the highest revision is authoritative and must supersede
+   older review content or attachments. A new note with the same revision only
+   updates delivery intent: do not apply its review edit twice, but do process
+   the new `handoff`.
+2. For each note `{selector, tag, text, rect, comment, pageUrl, reviewKey?, reviewRevision?, attachments?, handoff?}`:
    edit the
    artifact section (or the real source behind the running page) that the
    selector points at.
@@ -339,7 +345,15 @@ Send).
 4. A note may be a component answer instead of an annotation — it carries a
    `response: {question, answer, note?, data?}` field. Acknowledge it in your
    terminal reply the same way you acknowledge annotation notes.
-5. Reply in your terminal with what changed per note, then re-poll.
+5. If the batch carries `handoff: {kind: "build", instruction}`, the user has
+   signaled that review is intended to be complete and implementation should
+   begin after every note and attachment is processed. Follow the handoff:
+   use `/delegate:code` when that skill is available; otherwise use the
+   preferred implementation approach in the repository's `AGENTS.md`, project
+   memory, or equivalent instructions. This is a strong signal, not permission
+   to guess: continue review or ask the user only when material clarification
+   or human judgment is still required before coding can effectively begin.
+6. Reply in your terminal with what changed per note, then re-poll.
 
 ## 4. Stop
 

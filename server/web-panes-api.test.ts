@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
-import { MAX_PENDING_NOTES } from '../shared/protocol.js'
+import { MAX_PENDING_NOTES, REDLINE_BUILD_HANDOFF_INSTRUCTION } from '../shared/protocol.js'
 import { MAX_RESPONSE_NOTE } from '../shared/redline-response.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
@@ -993,6 +993,36 @@ describe('pending note routes', () => {
     expect(attachmentStore.listIds()).toEqual([])
   })
 
+  it('releases a deduplicated crash-retry attachment after feedback was acknowledged', async () => {
+    const service = await createService()
+    const { baseUrl, attachmentStore, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody(), ownerAuth)
+    const uploaded = await uploadAttachment(baseUrl, id, 1, 1)
+    const attachmentId = ((await uploaded.json()) as {
+      notes: Array<{ attachments?: Array<{ id: string }> }>
+    }).notes[0]?.attachments?.[0]?.id
+
+    expect(() => pending.send(id, 'http://127.0.0.1:5173/', 1, (notes) => {
+      feedback.enqueue(id, notes)
+      throw new Error('simulated crash before pending removal')
+    }, [{ id: 1, revision: 2 }])).toThrow('simulated crash')
+    const delivered = await feedback.drain(id, 0)
+    await feedback.drain(id, 0, { cursor: delivered.cursor })
+    expect(attachmentStore.listIds()).toEqual([attachmentId])
+
+    pending.send(
+      id,
+      'http://127.0.0.1:5173/',
+      2,
+      (notes) => feedback.enqueue(id, notes),
+      [{ id: 1, revision: 2 }],
+    )
+
+    expect(pending.list(id)).toEqual([])
+    expect(attachmentStore.listIds()).toEqual([])
+  })
+
   it('drop removes pending references before the reference-aware attachment release', async () => {
     const service = await createService()
     const { baseUrl, attachmentStore, pending } = await startApi(service)
@@ -1055,6 +1085,62 @@ describe('pending note routes', () => {
     expect(drainedBody.notes[0]?.capturedAt).toBeGreaterThan(0)
   })
 
+  it('send with build intent delivers the implementation handoff to the agent', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('build this'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send-build`, {
+      items: [{ id: 1, revision: 1 }],
+      expectedQueueRevision: 1,
+    }, ownerAuth)
+
+    expect(sent.status).toBe(200)
+    expect((await sent.clone().json() as { intent?: string }).intent).toBe('build')
+    const drained = await fetch(`${baseUrl}/api/web-panes/${id}/feedback?wait=0`, { headers: agentAuth })
+    const drainedBody = await drained.json() as {
+      notes: Array<{ handoff?: { kind: string; instruction: string } }>
+    }
+    expect(drainedBody.notes[0]?.handoff).toEqual({
+      kind: 'build',
+      instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION,
+    })
+  })
+
+  it('rejects build intent on the legacy send endpoint before mutating pending notes', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('keep queued'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+      intent: 'build',
+      expectedQueueRevision: 1,
+    }, ownerAuth)
+
+    expect(sent.status).toBe(400)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['keep queued'])
+  })
+
+  it('rejects a partial build handoff without sending any feedback', async () => {
+    const service = await createService()
+    const { baseUrl, feedback, pending } = await startApi(service)
+    const id = await openChromiumPane(service)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('first'), ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('second'), ownerAuth)
+
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send-build`, {
+      items: [{ id: 1, revision: 1 }],
+      expectedQueueRevision: 2,
+    }, ownerAuth)
+
+    expect(sent.status).toBe(409)
+    expect(feedback.info()[id]?.queued ?? 0).toBe(0)
+    expect(pending.list(id).map((note) => note.comment)).toEqual(['first', 'second'])
+  })
+
   it('send with ids moves only those notes', async () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)
@@ -1089,8 +1175,9 @@ describe('pending note routes', () => {
     await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('old'), ownerAuth)
     pending.update(id, 1, 1, { answer: 'changed' })
 
-    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send-build`, {
       items: [{ id: 1, revision: 1 }],
+      expectedQueueRevision: 2,
     }, ownerAuth)
 
     expect(sent.status).toBe(409)
@@ -1127,10 +1214,25 @@ describe('pending note routes', () => {
       { items: [{ id: 1, revision: 1.5 }] },
       { items: [1] },
       { ids: [1], items: [{ id: 1, revision: 1 }] },
+      { intent: 'review' },
+      { intent: null },
+      { intent: 'build' },
+      { intent: 'build', expectedQueueRevision: -1 },
+      { intent: 'build', expectedQueueRevision: 1.5 },
     ]
 
     for (const body of invalidBodies) {
       expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, body, ownerAuth)).status).toBe(400)
+    }
+
+    const invalidBuildBodies = [
+      {},
+      { expectedQueueRevision: -1 },
+      { expectedQueueRevision: 1.5 },
+      { intent: 'build', expectedQueueRevision: 0 },
+    ]
+    for (const body of invalidBuildBodies) {
+      expect((await post(baseUrl, `/api/web-panes/${id}/pending/send-build`, body, ownerAuth)).status).toBe(400)
     }
 
     expect((await post(baseUrl, `/api/web-panes/${id}/pending/send`, { ids: [] }, ownerAuth)).status).toBe(200)
@@ -1146,7 +1248,9 @@ describe('pending note routes', () => {
       await post(baseUrl, `/api/web-panes/${id}/feedback`, { notes: batch }, ownerAuth)
     }
     await post(baseUrl, `/api/web-panes/${id}/pending`, pendingNoteBody('stays'), ownerAuth)
-    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)
+    const sent = await post(baseUrl, `/api/web-panes/${id}/pending/send-build`, {
+      expectedQueueRevision: 1,
+    }, ownerAuth)
     expect(sent.status).toBe(429)
     const listed = await fetch(`${baseUrl}/api/web-panes/${id}/pending`, { headers: ownerAuth })
     expect(((await listed.json()) as { notes: Array<{ comment: string }> }).notes.map((note) => note.comment)).toEqual(['stays'])
