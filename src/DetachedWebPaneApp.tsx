@@ -151,7 +151,11 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
           ),
           attachmentUrl: (attachmentId) => api.pendingAttachmentUrl(webPaneId, attachmentId),
           remove: (noteId) => api.removePendingNote(webPaneId, noteId),
-          send: (ids) => api.sendPendingNotes(webPaneId, ids),
+          send: (ids, options) => api.sendPendingNotes(
+            webPaneId,
+            ids,
+            options,
+          ),
           dismissDropped: () => api.dismissPendingDropped(webPaneId),
         }}
       />

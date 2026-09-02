@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
@@ -174,6 +174,23 @@ function parsePendingSendTargets(
     return body.ids as number[]
   }
   return undefined
+}
+
+function parsePendingSendIntent(body: Record<string, unknown>): WebPanePendingSendIntent | undefined {
+  if (body.intent === undefined) return undefined
+  if (body.intent !== 'build') throw new HttpError(400, 'intent must be build')
+  return body.intent
+}
+
+function parseExpectedQueueRevision(body: Record<string, unknown>, intent?: WebPanePendingSendIntent): number | undefined {
+  if (body.expectedQueueRevision === undefined) {
+    if (intent === 'build') throw new HttpError(400, 'expectedQueueRevision is required for build intent')
+    return undefined
+  }
+  if (!Number.isSafeInteger(body.expectedQueueRevision) || (body.expectedQueueRevision as number) < 0) {
+    throw new HttpError(400, 'expectedQueueRevision must be a non-negative safe integer')
+  }
+  return body.expectedQueueRevision as number
 }
 
 const MAX_FEEDBACK_COMMENT = 4_096
@@ -471,20 +488,37 @@ export class WebPanesApi {
           return true
         }
 
-        if (route.send === true) {
+        if (route.send === true || route.sendBuild === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
-          const targets = parsePendingSendTargets(await readJson(request))
+          const body = await readJson(request)
+          const targets = parsePendingSendTargets(body)
+          const intent = route.sendBuild === true ? 'build' : parsePendingSendIntent(body)
+          if (route.send !== true && body.intent !== undefined) {
+            throw new HttpError(400, 'send-build does not accept an intent field')
+          }
+          if (route.send === true && intent !== undefined) {
+            throw new HttpError(400, 'Use the pending/send-build endpoint for build intent')
+          }
+          const expectedQueueRevision = parseExpectedQueueRevision(body, intent)
           const snapshot = pending.send(
             route.id,
             pane.url,
             Date.now(),
             (feedbackNotes) => this.dependencies.feedback.enqueue(route.id, feedbackNotes),
             targets,
+            intent,
+            expectedQueueRevision,
           )
           this.dependencies.onChange()
           this.dependencies.onPendingChanged?.(route.id, snapshot)
           const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
-          writeJson(response, 200, { ok: true, webPaneId: route.id, queued, ...snapshot })
+          writeJson(response, 200, {
+            ok: true,
+            webPaneId: route.id,
+            queued,
+            ...snapshot,
+            ...(intent !== undefined ? { intent } : {}),
+          })
           return true
         }
 
@@ -652,7 +686,8 @@ export class WebPanesApi {
               : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
               : url.pathname.endsWith('/pending/send') ||
-                   url.pathname.endsWith('/pending/dropped') ||
+                    url.pathname.endsWith('/pending/send-build') ||
+                    url.pathname.endsWith('/pending/dropped') ||
                    url.pathname.endsWith('/pending/response') ? 'POST'
               : /\/pending\/\d+\/attachments$/.test(url.pathname) ? 'POST'
               : /\/pending\/\d+\/attachments\/[^/]+$/.test(url.pathname) ? 'DELETE'
@@ -696,7 +731,7 @@ export class WebPanesApi {
     | { kind: 'collection' }
     | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
-    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; dismissDropped?: boolean; response?: boolean } {
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
     const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
     if (attachment) {
@@ -716,10 +751,11 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|dropped|response|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|send-build|dropped|response|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
+      if (match[3] === 'send-build') return { kind: 'pane', id: match[1], action: 'pending', sendBuild: true }
       if (match[3] === 'dropped') return { kind: 'pane', id: match[1], action: 'pending', dismissDropped: true }
       if (match[3] === 'response') return { kind: 'pane', id: match[1], action: 'pending', response: true }
       if (match[3] !== undefined) return { kind: 'pane', id: match[1], action: 'pending', noteId: Number(match[3]) }

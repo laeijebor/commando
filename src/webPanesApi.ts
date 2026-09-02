@@ -1,9 +1,13 @@
-import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
+import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
 import type { RedlinePageResponse } from '../shared/redline-response'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
 export type PendingSendTarget = { id: number; revision: number }
+export type PendingSendOptions = {
+  intent: WebPanePendingSendIntent
+  expectedQueueRevision: number
+}
 
 export interface WebPanesApiClient {
   open(
@@ -45,6 +49,7 @@ export interface WebPanesApiClient {
   sendPendingNotes(
     webPaneId: string,
     targets?: readonly number[] | readonly PendingSendTarget[],
+    options?: PendingSendOptions,
   ): Promise<WebPanePendingSnapshot>
   pendingAttachmentUrl(webPaneId: string, attachmentId: string): string
   dismissPendingDropped(webPaneId: string): Promise<WebPanePendingSnapshot>
@@ -189,17 +194,25 @@ export function createWebPanesApi(
         method: 'DELETE',
       }))
     },
-    sendPendingNotes: async (webPaneId, targets) => {
-      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/send`, {
+    sendPendingNotes: async (webPaneId, targets, options) => {
+      const body: Record<string, unknown> = targets === undefined
+        ? {}
+        : targets.every((target) => typeof target === 'number')
+          ? { ids: targets }
+          : { items: targets }
+      if (options !== undefined) body.expectedQueueRevision = options.expectedQueueRevision
+      const action = options?.intent === 'build' ? 'send-build' : 'send'
+      const response = await request(`/${encodeURIComponent(webPaneId)}/pending/${action}`, {
         method: 'POST',
-        body: JSON.stringify(
-          targets === undefined
-            ? {}
-            : targets.every((target) => typeof target === 'number')
-              ? { ids: targets }
-              : { items: targets },
-        ),
-      }))
+        body: JSON.stringify(body),
+      })
+      if (
+        options?.intent === 'build' &&
+        (typeof response !== 'object' || response === null || (response as { intent?: unknown }).intent !== 'build')
+      ) {
+        throw new Error('The daemon did not acknowledge the build handoff. Update Commando before retrying.')
+      }
+      return toSnapshot(response)
     },
     pendingAttachmentUrl: (webPaneId, attachmentId) => {
       const path = `/api/web-panes/${encodeURIComponent(webPaneId)}/attachments/${encodeURIComponent(attachmentId)}`

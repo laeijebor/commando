@@ -7,7 +7,12 @@
 # (default 30, max 60) and prints the JSON body:
 # {"ok":true,"cursor":N,"notes":[...]}.
 # Each note carries id, selector, tag, text, rect, comment, pageUrl,
-# capturedAt, and optional response/attachments. Fetch any attachment `path`
+# capturedAt, and optional reviewKey/reviewRevision/response/attachments/handoff.
+# Correlate by reviewKey, then deliveryKey, then id; absent reviewRevision means
+# baseline revision 1. The highest revision is authoritative; the same revision
+# can still update the handoff without repeating the review edit.
+# A build handoff asks
+# the agent to begin implementation after processing the batch. Fetch any attachment `path`
 # with the same bearer token before running this again: the next poll acks the
 # prior cursor and releases those bytes. Exit codes: 0 success (notes may be
 # empty — just re-run), 4 tile gone (stop polling), 1 other errors.

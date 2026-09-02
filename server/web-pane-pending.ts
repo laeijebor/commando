@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import {
   MAX_PENDING_NOTE_ATTACHMENTS,
   MAX_PENDING_NOTES,
+  REDLINE_BUILD_HANDOFF_INSTRUCTION,
   type WebPaneFeedbackNote,
   type WebPaneImageAttachment,
   type WebPanePendingNote,
+  type WebPanePendingSendIntent,
   type WebPanePendingSnapshot,
 } from '../shared/protocol.js'
 import {
@@ -600,17 +602,29 @@ export class WebPanePendingStore {
     capturedAt: number,
     enqueue: (notes: WebPaneFeedbackNote[]) => void,
     targets?: readonly number[] | readonly PendingSendTarget[],
+    intent?: WebPanePendingSendIntent,
+    expectedQueueRevision?: number,
   ): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
+    if (expectedQueueRevision !== undefined && state.revision !== expectedQueueRevision) {
+      throw new WebPaneError(409, 'Pending queue revision is stale')
+    }
     const expected = targets?.filter((target): target is PendingSendTarget => typeof target !== 'number')
     for (const target of expected ?? []) {
       this.assertRevision(state.notes.find((note) => note.id === target.id), target.revision)
     }
     const ids = targets?.map((target) => typeof target === 'number' ? target : target.id)
+    if (intent === 'build' && ids !== undefined) {
+      const requested = new Set(ids)
+      if (requested.size !== state.notes.length || state.notes.some((note) => !requested.has(note.id))) {
+        throw new WebPaneError(409, 'Build handoff must include the entire pending queue')
+      }
+    }
     const wanted = ids === undefined ? state.notes : state.notes.filter((note) => ids.includes(note.id))
     if (wanted.length > 0) {
       enqueue(wanted.map(({
         id: _id,
+        deliveryKey,
         revision: _revision,
         queueKey: _queueKey,
         pageUrl: sourcePageUrl,
@@ -618,8 +632,17 @@ export class WebPanePendingStore {
         ...note
       }) => ({
         ...note,
+        reviewKey: deliveryKey ?? pendingDeliveryKey(webPaneId, _id),
+        reviewRevision: _revision ?? 1,
+        deliveryKey: `${deliveryKey ?? pendingDeliveryKey(webPaneId, _id)}:revision:${_revision ?? 1}:intent:${intent ?? 'review'}`,
         pageUrl: sourcePageUrl ?? pageUrl,
         capturedAt,
+        ...(intent === 'build' ? {
+          handoff: {
+            kind: 'build' as const,
+            instruction: REDLINE_BUILD_HANDOFF_INSTRUCTION,
+          },
+        } : {}),
         ...(attachments && attachments.length > 0 ? {
           attachments: attachments.map((attachment) => ({
             ...attachment,
@@ -633,6 +656,9 @@ export class WebPanePendingStore {
       state.revision += 1
       this.journal.appendRemovals(webPaneId, [...sent], state.revision)
       this.journal.compact(webPaneId)
+      // The feedback queue now owns accepted attachments. This reference-aware
+      // release also cleans up retries deduplicated after the feedback was acked.
+      this.release(wanted)
     }
     return this.snapshot(webPaneId)
   }

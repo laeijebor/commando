@@ -351,6 +351,47 @@ describe('ChromiumTileCard pending queue drawer', () => {
     expect(update.mock.invocationCallOrder[1]).toBeLessThan(send.mock.invocationCallOrder[0])
   })
 
+  it('saves dirty items and sends the captured queue with build intent', async () => {
+    const initial = responseNote(1)
+    const saved = {
+      ...initial,
+      revision: 2,
+      response: { ...initial.response!, answer: 'Team' },
+    }
+    const update = vi.fn(async () => pendingSnapshot([saved], 2))
+    const send = vi.fn(async () => pendingSnapshot([], 3))
+    renderTile({ list: async () => pendingSnapshot([initial]), update, send })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all + Build' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(
+      [{ id: 1, revision: 2 }],
+      { intent: 'build', expectedQueueRevision: 2 },
+    ))
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
+  })
+
+  it('does not send a build handoff when a new queue item arrives during draft saves', async () => {
+    const first = responseNote(1)
+    const second = annotationNote(2, 'Arrived during save')
+    const update = vi.fn(async () => pendingSnapshot([
+      { ...first, revision: 2, response: { ...first.response!, answer: 'Team' } },
+      second,
+    ], 2))
+    const send = vi.fn(async () => pendingSnapshot([], 3))
+    renderTile({ list: async () => pendingSnapshot([first]), update, send })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all + Build' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/nothing was sent/i))
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('sends nothing when another captured item changes during the save-all pass', async () => {
     const first = responseNote(1)
     const second = annotationNote(2, 'Original annotation')
@@ -383,12 +424,15 @@ describe('ChromiumTileCard pending queue drawer', () => {
     })
     await waitFor(() => expect(upload).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send all + Build' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse review queue' }))
     expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send all + Build' })).toBeDisabled()
 
     await act(async () => resolveUpload?.(pendingSnapshot([responseNote(1)], 2)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send all' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Send all + Build' })).toBeEnabled()
   })
 
   it('disables send all while a save is unresolved', async () => {
@@ -405,10 +449,12 @@ describe('ChromiumTileCard pending queue drawer', () => {
 
     await waitFor(() => expect(update).toHaveBeenCalled())
     expect(screen.getByRole('button', { name: 'Send all' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send all + Build' })).toBeDisabled()
 
     const saved = { ...initial, revision: 2, response: { ...initial.response!, answer: 'Team' } }
     await act(async () => resolveUpdate?.(pendingSnapshot([saved], 2)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send all' })).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Send all + Build' })).toBeEnabled()
   })
 
   it('uploads, previews, and removes an attachment using the latest item revision', async () => {

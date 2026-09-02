@@ -138,6 +138,36 @@ describe('pending note routes', () => {
     })
   })
 
+  it('adds the build intent to a revision-guarded send', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, {
+      intent: 'build', notes: [], knownUpTo: 2, dropped: 0,
+    }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await api.sendPendingNotes('w-11111111', [
+      { id: 2, revision: 3 },
+      { id: 4, revision: 7 },
+    ], { intent: 'build', expectedQueueRevision: 9 })
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/web-panes/w-11111111/pending/send-build')
+    expect(JSON.parse(String(init.body))).toEqual({
+      items: [{ id: 2, revision: 3 }, { id: 4, revision: 7 }],
+      expectedQueueRevision: 9,
+    })
+  })
+
+  it('rejects a build send an older daemon does not acknowledge', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+
+    await expect(api.sendPendingNotes(
+      'w-11111111',
+      [{ id: 1, revision: 1 }],
+      { intent: 'build', expectedQueueRevision: 1 },
+    )).rejects.toThrow(/did not acknowledge the build handoff/i)
+  })
+
   it('builds encoded same-origin attachment URLs and omits an empty token', () => {
     expect(createWebPanesApi('token/value').pendingAttachmentUrl('w/id', 'attachment/id.png')).toBe(
       '/api/web-panes/w%2Fid/attachments/attachment%2Fid.png?token=token%2Fvalue',
