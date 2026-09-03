@@ -494,12 +494,13 @@ await main()
 function generatedSessionBriefCli(tokenPath: string): string {
   return `#!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--stdin]')
+  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--screenshots dir] [--stdin]')
 }
 
 async function stdinJson() {
@@ -531,6 +532,7 @@ async function bodyFromArgs() {
     else if (flag === '--next') body.next = valueAfter(index++, flag)
     else if (flag === '--clear-next') body.next = null
     else if (flag === '--state') body.state = valueAfter(index++, flag)
+    else if (flag === '--screenshots') body.screenshots = { dir: resolve(valueAfter(index++, flag)) }
     else if (flag === '--update') {
       const kind = valueAfter(index, flag)
       const text = args[index + 2]

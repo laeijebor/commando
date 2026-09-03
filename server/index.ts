@@ -71,6 +71,12 @@ import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
 import { PaneTargetApi } from './pane-target-api.js'
 import { SessionBriefStore } from './session-briefs.js'
+import {
+  defaultPaneScreenshotStatePath,
+  handlePaneScreenshotApi,
+  handlePaneScreenshotImage,
+  PaneScreenshotRegistry,
+} from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
@@ -443,6 +449,7 @@ async function main(): Promise<void> {
   })
   const workspaces = new WorkspaceStore()
   const sessionBriefs = new SessionBriefStore()
+  const paneScreenshots = new PaneScreenshotRegistry({ statePath: defaultPaneScreenshotStatePath(port) })
   await sessionBriefs.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted session briefs', error)
   })
@@ -1242,6 +1249,7 @@ async function main(): Promise<void> {
     currentPaneIds: () => snapshot.panes.map((pane) => pane.id),
     panePath: (paneId) => paneForId(paneId)?.path,
     paneTargetId: (paneId) => paneForId(paneId)?.targetId,
+    screenshots: paneScreenshots,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),
@@ -1308,6 +1316,7 @@ async function main(): Promise<void> {
   const sessionBriefApi = new SessionBriefApi({
     token: agentHookToken,
     store: sessionBriefs,
+    screenshots: paneScreenshots,
     paneTarget: (paneId) => {
       const pane = paneForId(paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1688,6 +1697,7 @@ async function main(): Promise<void> {
       violations: 0,
     }
     clients.add(client)
+    send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
     send(client, { type: 'snapshot', snapshot })
     send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
     send(client, { type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
@@ -1774,6 +1784,7 @@ async function main(): Promise<void> {
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
+      if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {
@@ -1815,6 +1826,7 @@ async function main(): Promise<void> {
           panePath: (paneId) => paneForId(paneId)?.path,
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
+        if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return

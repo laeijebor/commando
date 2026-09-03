@@ -1,42 +1,29 @@
 import { GitMerge, GitPullRequest, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-
 import type { PanePrList, PrsApiClient } from './prsApi'
+import { usePanePrs } from './prStore'
 
-const POLL_INTERVAL_MS = 30_000
+export function usePanePullRequests(
+  paneId: string,
+  api: Pick<PrsApiClient, 'pane'>,
+  connected: boolean,
+  background = false,
+): PanePrList | null {
+  return usePanePrs(paneId, api, { background, enabled: connected })
+}
 
 export function PanePullRequests({
   paneId,
   api,
   connected,
+  list: suppliedList,
 }: {
   paneId: string
   api: Pick<PrsApiClient, 'pane'>
   connected: boolean
+  list?: PanePrList | null
 }) {
-  const [list, setList] = useState<PanePrList | null>(null)
-  const apiRef = useRef(api)
-  apiRef.current = api
-
-  useEffect(() => {
-    setList(null)
-    if (!connected) return
-    let cancelled = false
-    const refresh = () => {
-      if (document.visibilityState === 'hidden') return
-      apiRef.current.pane(paneId)
-        .then((next) => { if (!cancelled) setList(next) })
-        .catch(() => undefined)
-    }
-    refresh()
-    const timer = window.setInterval(refresh, POLL_INTERVAL_MS)
-    document.addEventListener('visibilitychange', refresh)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refresh)
-    }
-  }, [connected, paneId])
+  const internalList = usePanePullRequests(paneId, api, connected && suppliedList === undefined)
+  const list = suppliedList === undefined ? internalList : suppliedList
 
   if (!list?.pullRequests.length) return null
 

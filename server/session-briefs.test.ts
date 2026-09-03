@@ -99,6 +99,63 @@ describe('SessionBriefStore', () => {
     expect(replay.get('%1')).toEqual(updated)
   })
 
+  it('round-trips screenshot folders and emits republish events only when the preview fingerprint changes', async () => {
+    const briefs = await store()
+    const folder = {
+      id: '0123456789abcdef',
+      dir: '/tmp/project/.screenshots/review',
+      topic: 'review',
+      imageCount: 2,
+      otherCount: 1,
+      bytes: 30,
+      updatedAt: 100,
+      truncated: true as const,
+      preview: [{ name: 'one.png', size: 10, modifiedAt: 90 }],
+    }
+    const published = await briefs.applyAgentPatch('$1', 'gizmo', '%1', { publishedScreenshots: folder }, 100)
+    await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+      publishedScreenshots: { ...folder, updatedAt: 110 },
+    }, 110)
+    await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+      publishedScreenshots: {
+        ...folder,
+        updatedAt: 120,
+        preview: [{ ...folder.preview[0], modifiedAt: 115 }],
+      },
+    }, 120)
+
+    expect(published.screenshots).toEqual([folder])
+    expect(briefs.get('%1')?.updates.filter((update) => update.kind === 'screenshots')).toEqual([
+      expect.objectContaining({ screenshotFolderId: folder.id, createdAt: 120 }),
+      expect.objectContaining({ screenshotFolderId: folder.id, createdAt: 100 }),
+    ])
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.screenshots?.[0]).toMatchObject({ id: folder.id, updatedAt: 120 })
+  })
+
+  it('lets lifecycle status replace a screenshots-only synthesized headline', async () => {
+    const briefs = await store()
+    await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+      publishedScreenshots: {
+        id: '0123456789abcdef',
+        dir: '/tmp/project/.screenshots/review',
+        topic: 'review',
+        imageCount: 1,
+        otherCount: 0,
+        bytes: 10,
+        updatedAt: 100,
+        preview: [{ name: 'one.png', size: 10, modifiedAt: 90 }],
+      },
+    }, 100)
+
+    const nextStatus = status('%1', 'working', 110, 'Rendering the new headline')
+    nextStatus.details = { ...nextStatus.details!, intent: undefined, checks: [], currentActivity: { label: 'Rendering the new headline', kind: 'edit', state: 'running', updatedAt: 110 } }
+    const [refreshed] = await briefs.syncFromStatuses('$1', 'gizmo', [nextStatus], 110)
+
+    expect(refreshed).toMatchObject({ headline: 'Rendering the new headline', headlineSource: 'hook' })
+  })
+
   it('keeps the handoff but marks it stale when the last agent status disappears', async () => {
     const briefs = await store()
     await briefs.syncFromStatuses('$2', 'commando', [status('%3', 'done', 100, 'Complete')], 100)

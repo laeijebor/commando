@@ -4,6 +4,7 @@ export interface PaneManagementApiClient {
   renamePane(paneId: string, title: string): Promise<void>
   deletePane(paneId: string): Promise<void>
   openPanePath(paneId: string): Promise<void>
+  revealPaneScreenshot(paneId: string, folderId: string, file?: string): Promise<void>
   runInPanePath(paneId: string, command: string): Promise<void>
   setPaneMark(paneId: string, targetId: string, label: string, tone: PaneMarkTone): Promise<void>
   acknowledgePaneMark(paneId: string, targetId: string): Promise<void>
@@ -50,6 +51,10 @@ export function createPaneManagementApi(
     }),
     openPanePath: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/open`, {
       method: 'POST',
+    }),
+    revealPaneScreenshot: (paneId, folderId, file) => request(`/panes/${encodeURIComponent(paneId)}/reveal`, {
+      method: 'POST',
+      body: JSON.stringify({ folderId, ...(file ? { file } : {}) }),
     }),
     runInPanePath: (paneId, command) => request(`/panes/${encodeURIComponent(paneId)}/run`, {
       method: 'POST',

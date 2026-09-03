@@ -45,3 +45,21 @@ export async function openFolderInFinder(
     windowsHide: true,
   })
 }
+
+export async function revealInFinder(
+  file: string,
+  execute: FolderOpenExecutor = defaultExecutor,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== 'darwin') throw new Error('Revealing files in Finder is only available on macOS')
+  if (!isAbsolute(file) || Buffer.byteLength(file, 'utf8') > 4_096 || CONTROL_CHARACTER.test(file)) {
+    throw new Error('File path must be absolute and contain no control characters')
+  }
+  await execute('/usr/bin/open', ['-R', file], {
+    encoding: 'utf8',
+    maxBuffer: OPEN_BUFFER_BYTES,
+    shell: false,
+    timeout: OPEN_TIMEOUT_MS,
+    windowsHide: true,
+  })
+}

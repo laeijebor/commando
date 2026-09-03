@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionBrief } from '../shared/protocol'
 import { PaneWorklog } from './PaneWorklog'
@@ -123,6 +123,73 @@ describe('PaneWorklog', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Minimize worklog for Tests' }))
     expect(screen.queryByTitle('Personal note saved')).not.toBeInTheDocument()
+  })
+
+  it('shows unseen screenshots on the rail and persists screenshot collapse and seen state', async () => {
+    const screenshotBrief: SessionBrief = {
+      ...brief,
+      screenshots: [{
+        id: '0123456789abcdef',
+        dir: '/tmp/project/.screenshots/review',
+        topic: 'review',
+        imageCount: 25,
+        otherCount: 1,
+        bytes: 1_024,
+        updatedAt: Date.now(),
+        preview: [{ name: 'one.png', size: 100, modifiedAt: Date.now() }],
+      }],
+    }
+    const screenshotsApi = { list: vi.fn().mockResolvedValue({ ...screenshotBrief.screenshots![0], files: screenshotBrief.screenshots![0].preview }) }
+    render(<PaneWorklog brief={screenshotBrief} paneLabel="Tests" screenshotsApi={screenshotsApi} />)
+
+    expect(screen.getByLabelText('25 unseen screenshots')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(await screen.findByLabelText('Screenshots for pane %12')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse screenshots' }))
+    const stored = window.localStorage.getItem('commando.pane-worklog.$1:%12') ?? ''
+    expect(stored).toContain('"screenshotsCollapsed":true')
+    expect(stored).toMatch(/"screenshotsSeenAt":\d+/)
+  })
+
+  it('opens screenshot events only when their exact folder id is still present', async () => {
+    const folder = {
+      id: '0123456789abcdef', dir: '/tmp/shots', topic: 'shots', imageCount: 1,
+      otherCount: 0, bytes: 10, updatedAt: 100,
+      preview: [{ name: 'one.png', size: 10, modifiedAt: 100 }],
+    }
+    const onOpenScreenshot = vi.fn()
+    render(<PaneWorklog
+      brief={{
+        ...brief,
+        screenshots: [folder],
+        updates: [
+          { id: 'current', paneId: '%12', kind: 'screenshots', screenshotFolderId: folder.id, text: 'Published shots', source: 'agent', createdAt: 100 },
+          { id: 'evicted', paneId: '%12', kind: 'screenshots', screenshotFolderId: 'fedcba9876543210', text: 'Published old shots', source: 'agent', createdAt: 90 },
+          { id: 'legacy', paneId: '%12', kind: 'screenshots', text: 'Published shots', detail: folder.dir, source: 'agent', createdAt: 80 },
+        ],
+      }}
+      paneLabel="Tests"
+      screenshotsApi={{ list: vi.fn().mockResolvedValue({ ...folder, files: folder.preview }) }}
+      onOpenScreenshot={onOpenScreenshot}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Published shots/ }))
+    expect(onOpenScreenshot).toHaveBeenCalledWith(folder, undefined, expect.any(HTMLElement))
+    expect(screen.getByText('Published old shots').closest('article')).not.toHaveAttribute('role')
+    expect(screen.getAllByText('Published shots')[1].closest('article')).not.toHaveAttribute('role')
+  })
+
+  it('shows an open pull request indicator while minimized', async () => {
+    const prsApi = { pane: vi.fn().mockResolvedValue({
+      targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
+      pullRequests: [{
+        repo: 'acme/app', number: 1, title: 'Open PR', url: 'https://example.test/pr/1',
+        state: 'open' as const, isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02',
+      }],
+    }) }
+    render(<PaneWorklog brief={brief} paneLabel="Tests" prsApi={prsApi} />)
+    expect(await screen.findByLabelText('Open pull request')).toBeInTheDocument()
   })
 
   it('keeps personal notes isolated by pane identity', () => {

@@ -3,12 +3,14 @@ import { createPortal } from 'react-dom'
 import { GitPullRequestArrow, Pin, PinOff, Plus, RefreshCw } from 'lucide-react'
 import {
   createPrsApi,
+  type PrsApiClient,
   type PrList,
   type PrScope,
   type PrStateFilter,
   type PrSummary,
   type PrThreads,
 } from './prsApi'
+import { useRepoPrs } from './prStore'
 import './prs-section.css'
 
 export const PRS_POLL_INTERVAL_MS = 30_000
@@ -305,6 +307,8 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, onJumpToTarget, onOpenDi
 
 export function PrsSection({
   token,
+  api: suppliedApi,
+  active = true,
   currentPaneId,
   currentPanePath,
   onAttentionChange,
@@ -313,6 +317,8 @@ export function PrsSection({
   onOpenDiff,
 }: {
   token: string
+  api?: PrsApiClient
+  active?: boolean
   currentPaneId?: string | null
   currentPanePath?: string | null
   onAttentionChange?: (attention: boolean) => void
@@ -320,28 +326,25 @@ export function PrsSection({
   onJumpToTarget?: (targetId: string) => void
   onOpenDiff?: (pr: PrSummary) => void
 }) {
-  const api = useMemo(() => createPrsApi(token), [token])
-  const listCache = useRef(new Map<string, PrList>())
+  const defaultApi = useMemo(() => createPrsApi(token), [token])
+  const api = suppliedApi ?? defaultApi
   const repoRef = useRef('')
-  const filterRef = useRef<PrStateFilter>('open')
   const manualPaneContext = useRef<string | null>(null)
-  const refreshList = useRef<(() => Promise<void>) | null>(null)
   const [repos, setRepos] = useState<string[]>([])
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([])
   const [repo, setRepo] = useState('')
   const [filter, setFilter] = useState<PrStateFilter>('open')
   const [scope, setScope] = useState<PrScope>('mine')
   const [ready, setReady] = useState(false)
-  const [list, setList] = useState<PrList | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [polling, setPolling] = useState(false)
-  const [error, setError] = useState('')
-  const [errorCode, setErrorCode] = useState('')
+  const [localError, setLocalError] = useState('')
   const [addingRepo, setAddingRepo] = useState(false)
   const [repoDraft, setRepoDraft] = useState('')
   repoRef.current = repo
-  filterRef.current = filter
   const paneContext = currentPaneId && currentPanePath ? `${currentPaneId}\u0000${currentPanePath}` : ''
+  const repoState = useRepoPrs(repo, filter, api, { enabled: ready && active })
+  const { list, polling, error: listError, errorCode } = repoState
+  const loading = !ready || repoState.loading
+  const error = localError || listError
 
   useEffect(() => {
     let active = true
@@ -357,8 +360,7 @@ export function PrsSection({
         setRepo(prefs.lastRepo && names.includes(prefs.lastRepo) ? prefs.lastRepo : (prefs.lastRepo ?? names[0] ?? ''))
       } catch (cause) {
         if (!active) return
-        setError(cause instanceof Error ? cause.message : 'Unable to load PR settings')
-        setLoading(false)
+        setLocalError(cause instanceof Error ? cause.message : 'Unable to load PR settings')
       } finally {
         if (active) setReady(true)
       }
@@ -390,10 +392,7 @@ export function PrsSection({
           })
         }
         if (repoRef.current.toLowerCase() === nextKey) return
-        const cached = listCache.current.get(`${next}::${filterRef.current}`) ?? null
         repoRef.current = next
-        setList(cached)
-        setLoading(cached === null)
         setRepo(next)
       } catch {
         // Pane repository discovery is best-effort; the manual picker stays usable.
@@ -410,61 +409,6 @@ export function PrsSection({
     }
   }, [api, currentPaneId, paneContext, ready])
 
-  useEffect(() => {
-    if (!ready || !repo) {
-      if (ready) setLoading(false)
-      return
-    }
-    let active = true
-    let inFlight = false
-    const key = `${repo}::${filter}`
-    const cached = listCache.current.get(key) ?? null
-
-    const load = async (background: boolean, refresh = false) => {
-      if (inFlight || (background && !refresh && document.visibilityState !== 'visible')) return
-      inFlight = true
-      if (background) setPolling(true)
-      else setLoading(true)
-      try {
-        const next = await api.list(repo, filter, { refresh })
-        if (!active) return
-        listCache.current.set(key, next)
-        setList(next)
-        setError('')
-        setErrorCode('')
-      } catch (cause) {
-        if (!active) return
-        setError(cause instanceof Error ? cause.message : 'Unable to load pull requests')
-        setErrorCode((cause as { code?: string }).code ?? '')
-      } finally {
-        inFlight = false
-        if (active) {
-          setLoading(false)
-          setPolling(false)
-        }
-      }
-    }
-
-    const manualRefresh = () => load(true, true)
-    refreshList.current = manualRefresh
-
-    setList(cached)
-    setError('')
-    setErrorCode('')
-    void load(cached !== null)
-    const timer = window.setInterval(() => { void load(true) }, PRS_POLL_INTERVAL_MS)
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') void load(true)
-    }
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => {
-      active = false
-      if (refreshList.current === manualRefresh) refreshList.current = null
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', handleVisibility)
-    }
-  }, [api, ready, repo, filter])
-
   const attention = useMemo(() => prsNeedAttention(list), [list])
   useEffect(() => { onAttentionChange?.(attention) }, [attention, onAttentionChange])
   useEffect(() => () => { onAttentionChange?.(false) }, [onAttentionChange])
@@ -479,18 +423,13 @@ export function PrsSection({
 
   const changeRepo = (next: string) => {
     if (paneContext) manualPaneContext.current = paneContext
-    const cached = listCache.current.get(`${next}::${filter}`) ?? null
+    setLocalError('')
     repoRef.current = next
-    setList(cached)
-    setLoading(cached === null)
     setRepo(next)
     void api.updatePrefs({ lastRepo: next }).catch(() => undefined)
   }
   const changeFilter = (next: PrStateFilter) => {
-    const cached = listCache.current.get(`${repo}::${next}`) ?? null
-    setList(cached)
-    setLoading(cached === null)
-    filterRef.current = next
+    setLocalError('')
     setFilter(next)
     void api.updatePrefs({ lastFilter: next }).catch(() => undefined)
   }
@@ -509,7 +448,7 @@ export function PrsSection({
   const addRepo = () => {
     const next = repoDraft.trim()
     if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(next)) {
-      setError('Repos look like owner/name')
+      setLocalError('Repos look like owner/name')
       return
     }
     setRepoDraft('')
@@ -517,7 +456,7 @@ export function PrsSection({
     setRepos((current) => current.includes(next) ? current : [...current, next])
     const pinned = pinnedRepos.includes(next) ? pinnedRepos : [...pinnedRepos, next]
     setPinnedRepos(pinned)
-    setError('')
+    setLocalError('')
     void api.updatePrefs({ pinnedRepos: pinned, lastRepo: next }).catch(() => undefined)
     setRepo(next)
   }
@@ -656,7 +595,7 @@ export function PrsSection({
       <button
         type="button"
         className="prs-sync"
-        onClick={() => { void refreshList.current?.() }}
+        onClick={() => { void repoState.refresh() }}
         disabled={!repo || loading || polling}
         aria-label="Resync pull requests"
         title={polling ? 'Syncing pull requests' : 'Resync pull requests'}

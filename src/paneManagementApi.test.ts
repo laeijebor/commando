@@ -9,6 +9,7 @@ describe('pane management API client', () => {
     await api.renamePane('%12', 'tests')
     await api.deletePane('%12')
     await api.openPanePath('%12')
+    await api.revealPaneScreenshot('%12', '0123456789abcdef', 'shot one.png')
     await api.runInPanePath('%12', 'open .')
     await api.setPaneMark('%12', 'target-12', 'Waiting for PR', 'amber')
     await api.acknowledgePaneMark('%12', 'target-12')
@@ -27,20 +28,24 @@ describe('pane management API client', () => {
       method: 'POST',
       headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
     }))
-    expect(fetcher).toHaveBeenNthCalledWith(4, '/api/pane-management/panes/%2512/run', expect.objectContaining({
+    expect(fetcher).toHaveBeenNthCalledWith(4, '/api/pane-management/panes/%2512/reveal', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ folderId: '0123456789abcdef', file: 'shot one.png' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(5, '/api/pane-management/panes/%2512/run', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ command: 'open .' }),
       headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
     }))
-    expect(fetcher).toHaveBeenNthCalledWith(5, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
+    expect(fetcher).toHaveBeenNthCalledWith(6, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ targetId: 'target-12', label: 'Waiting for PR', tone: 'amber' }),
     }))
-    expect(fetcher).toHaveBeenNthCalledWith(6, '/api/pane-management/panes/%2512/mark/acknowledge', expect.objectContaining({
+    expect(fetcher).toHaveBeenNthCalledWith(7, '/api/pane-management/panes/%2512/mark/acknowledge', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ targetId: 'target-12' }),
     }))
-    expect(fetcher).toHaveBeenNthCalledWith(7, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
+    expect(fetcher).toHaveBeenNthCalledWith(8, '/api/pane-management/panes/%2512/mark', expect.objectContaining({
       method: 'DELETE',
       body: JSON.stringify({ targetId: 'target-12' }),
     }))

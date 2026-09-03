@@ -9,17 +9,22 @@ import {
   CircleDot,
   FileDiff,
   Lightbulb,
+  Images,
+  GitPullRequest,
   MessageSquareText,
   Minus,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import type { AgentTaskStatus, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol'
-import { PanePullRequests } from './PanePullRequests'
+import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
 import type { PrsApiClient } from './prsApi'
+import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
+import type { PaneManagementApiClient } from './paneManagementApi'
+import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -28,6 +33,8 @@ type WorklogPreferences = {
   tasksCollapsed: boolean
   visibilitySet: boolean
   note: string
+  screenshotsCollapsed: boolean
+  screenshotsSeenAt: number
 }
 
 const MAX_NOTE_LENGTH = 4_000
@@ -54,9 +61,13 @@ function storedPreferences(brief: SessionBrief): WorklogPreferences {
       tasksCollapsed: value.tasksCollapsed === true,
       visibilitySet,
       note: typeof value.note === 'string' ? value.note.slice(0, MAX_NOTE_LENGTH) : '',
+      screenshotsCollapsed: value.screenshotsCollapsed === true,
+      screenshotsSeenAt: typeof value.screenshotsSeenAt === 'number' && Number.isFinite(value.screenshotsSeenAt)
+        ? value.screenshotsSeenAt
+        : 0,
     }
   } catch {
-    return { minimized: true, tasksCollapsed: false, visibilitySet: false, note: '' }
+    return { minimized: true, tasksCollapsed: false, visibilitySet: false, note: '', screenshotsCollapsed: false, screenshotsSeenAt: 0 }
   }
 }
 
@@ -85,6 +96,7 @@ function updateIcon(kind: SessionBriefUpdateKind): ReactNode {
     case 'check': return <Check aria-hidden="true" />
     case 'blocker': return <CircleAlert aria-hidden="true" />
     case 'note': return <MessageSquareText aria-hidden="true" />
+    case 'screenshots': return <Images aria-hidden="true" />
   }
 }
 
@@ -101,11 +113,19 @@ export function PaneWorklog({
   brief,
   paneLabel,
   prsApi,
+  screenshotsApi = { list: async () => { throw new Error('Screenshot API unavailable') } },
+  paneManagementApi = { revealPaneScreenshot: async () => { throw new Error('Pane management API unavailable') } },
+  revealInFinder = true,
+  onOpenScreenshot = () => undefined,
   connected = true,
 }: {
   brief: SessionBrief
   paneLabel: string
   prsApi?: Pick<PrsApiClient, 'pane'>
+  screenshotsApi?: PaneScreenshotsApiClient
+  paneManagementApi?: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
+  revealInFinder?: boolean
+  onOpenScreenshot?: OpenPaneScreenshot
   connected?: boolean
 }) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
@@ -114,6 +134,22 @@ export function PaneWorklog({
   const [unread, setUnread] = useState(0)
   const activityRef = useRef<HTMLDivElement>(null)
   const previousUpdateCount = useRef(brief.updates.length)
+  const prList = usePanePullRequests(
+    brief.paneId,
+    prsApi ?? { pane: async () => { throw new Error('PR API unavailable') } },
+    Boolean(prsApi && connected),
+    preferences.minimized || compact,
+  )
+  const hasOpenPr = Boolean(prList?.pullRequests.some((pullRequest) => pullRequest.state === 'open'))
+  const screenshotFolders = brief.screenshots ?? []
+  const unseenScreenshots = screenshotFolders.reduce((count, folder) => (
+    count + (() => {
+      const previewCount = folder.preview.filter((file) => file.modifiedAt > preferences.screenshotsSeenAt).length
+      return previewCount === folder.preview.length && folder.imageCount > folder.preview.length
+        ? folder.imageCount
+        : previewCount
+    })()
+  ), 0)
   const tasks = brief.tasks ?? []
   const activeTasks = tasks.filter((task) => task.status !== 'cancelled')
   const completedTasks = activeTasks.filter((task) => task.status === 'completed').length
@@ -169,6 +205,9 @@ export function PaneWorklog({
       setUnread(0)
     }
   }
+  const markScreenshotsSeen = useCallback((timestamp: number) => {
+    setPreferences((current) => current.screenshotsSeenAt >= timestamp ? current : { ...current, screenshotsSeenAt: timestamp })
+  }, [])
 
   if (preferences.minimized || compact) {
     return (
@@ -186,6 +225,17 @@ export function PaneWorklog({
           {preferences.note.trim() ? (
             <span className="pane-worklog-note-indicator" title="Personal note saved" aria-label="Personal note saved">
               <MessageSquareText aria-hidden="true" />
+            </span>
+          ) : null}
+          {hasOpenPr ? (
+            <span className="pane-worklog-pr-indicator" title="Open pull request" aria-label="Open pull request">
+              <GitPullRequest aria-hidden="true" />
+            </span>
+          ) : null}
+          {screenshotFolders.length ? (
+            <span className="pane-worklog-screenshot-indicator" title={`${unseenScreenshots} unseen screenshots`} aria-label={`${unseenScreenshots} unseen screenshots`}>
+              <Images aria-hidden="true" />
+              {unseenScreenshots ? <i>{unseenScreenshots}</i> : null}
             </span>
           ) : null}
           <strong>{completedTasks}/{activeTasks.length}</strong>
@@ -261,22 +311,54 @@ export function PaneWorklog({
           </section>
         ) : null}
 
-        {prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} /> : null}
+        {prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} list={prList} /> : null}
+
+        {screenshotFolders.length ? (
+          <PaneScreenshots
+            paneId={brief.paneId}
+            folders={screenshotFolders}
+            collapsed={preferences.screenshotsCollapsed}
+            seenAt={preferences.screenshotsSeenAt}
+            screenshotsApi={screenshotsApi}
+            paneManagementApi={paneManagementApi}
+            revealInFinder={revealInFinder}
+            onCollapsedChange={(screenshotsCollapsed) => setPreferences((current) => ({ ...current, screenshotsCollapsed }))}
+            onSeen={markScreenshotsSeen}
+            onOpen={onOpenScreenshot}
+          />
+        ) : null}
 
         {brief.updates.length ? (
           <section className="pane-worklog-activity" aria-label={`Activity for ${paneLabel}`}>
             <header><strong>Activity</strong><small>{brief.updates.length}</small></header>
             <div className="pane-worklog-timeline">
-              {brief.updates.map((update) => (
-                <article className={`pane-worklog-event kind-${update.kind}${update.author === 'user' ? ' is-user' : ''}`} key={update.id}>
-                  <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
-                  <div>
-                    <strong>{update.text}</strong>
-                    {update.detail ? <p>{update.detail}</p> : null}
-                    <small>{update.author === 'user' ? 'You' : update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
-                  </div>
-                </article>
-              ))}
+              {brief.updates.map((update) => {
+                const folder = update.screenshotFolderId
+                  ? screenshotFolders.find((candidate) => candidate.id === update.screenshotFolderId)
+                  : undefined
+                return (
+                  <article
+                    className={`pane-worklog-event kind-${update.kind}${update.author === 'user' ? ' is-user' : ''}`}
+                    role={folder ? 'button' : undefined}
+                    tabIndex={folder ? 0 : undefined}
+                    onClick={folder ? (event) => onOpenScreenshot(folder, undefined, event.currentTarget) : undefined}
+                    onKeyDown={folder ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        event.currentTarget.click()
+                      }
+                    } : undefined}
+                    key={update.id}
+                  >
+                    <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
+                    <div>
+                      <strong>{update.text}</strong>
+                      {update.detail ? <p>{update.detail}</p> : null}
+                      <small>{update.author === 'user' ? 'You' : update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
+                    </div>
+                  </article>
+                )
+              })}
             </div>
           </section>
         ) : null}
