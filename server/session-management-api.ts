@@ -10,6 +10,7 @@ import {
   validateTmuxSessionName,
   validateTmuxWindowId,
 } from './tmux-session-actions.js'
+import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 
 const API_ROOT = '/api/session-management'
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -19,6 +20,7 @@ type SessionManagementDependencies = {
   actions?: TmuxSessionActions
   currentSessions: () => readonly { id: string; name: string }[]
   currentWindowIds: () => readonly string[]
+  prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<() => Promise<void>>
   afterSessionDeleted?: (sessionId: string) => void
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
@@ -150,10 +152,46 @@ export class SessionManagementApi {
         if (body.confirmSessionId !== route.sessionId) {
           throw new HttpError(400, 'Deletion requires an exact confirmSessionId')
         }
+        if (body.deleteWorktree !== undefined && typeof body.deleteWorktree !== 'boolean') {
+          throw new HttpError(400, 'deleteWorktree must be a boolean')
+        }
+        let deleteWorktree: (() => Promise<void>) | undefined
+        if (body.deleteWorktree === true) {
+          if (!this.dependencies.prepareSessionWorktreeDeletion) {
+            throw new HttpError(501, 'Worktree deletion is not available')
+          }
+          try {
+            deleteWorktree = await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId)
+          } catch (error) {
+            if (error instanceof SessionWorktreeConflictError) throw new HttpError(409, error.message)
+            throw error
+          }
+        }
         await this.actions.delete(route.sessionId)
         this.dependencies.afterSessionDeleted?.(route.sessionId)
-        await this.dependencies.onSessionsChanged?.()
-        writeJson(response, 200, { ok: true, sessionId: route.sessionId })
+        let worktreeError: unknown
+        try {
+          await deleteWorktree?.()
+        } catch (error) {
+          worktreeError = error
+        }
+        let refreshError: unknown
+        try {
+          await this.dependencies.onSessionsChanged?.()
+        } catch (error) {
+          refreshError = error
+        }
+        if (worktreeError) {
+          const detail = worktreeError instanceof Error ? worktreeError.message : 'worktree removal failed'
+          const refreshDetail = refreshError ? ' Session state refresh also failed.' : ''
+          throw new HttpError(409, `Tmux session was deleted, but its worktree was not removed: ${detail}.${refreshDetail}`)
+        }
+        if (refreshError) {
+          const detail = refreshError instanceof Error ? refreshError.message : 'session state refresh failed'
+          const subject = body.deleteWorktree === true ? 'Tmux session and worktree were deleted' : 'Tmux session was deleted'
+          throw new HttpError(502, `${subject}, but session state refresh failed: ${detail}`)
+        }
+        writeJson(response, 200, { ok: true, sessionId: route.sessionId, worktreeDeleted: body.deleteWorktree === true })
         return true
       }
 

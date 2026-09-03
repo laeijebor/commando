@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderGit2, FolderPlus, GitBranch, ListTree, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderGit2, FolderPlus, FolderX, GitBranch, ListTree, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
@@ -227,10 +227,14 @@ export function SessionTree(props: Props) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to rename session') }
   }
 
-  const deleteSession = async (sessionId: string) => {
+  const deleteSession = async (sessionId: string, deleteWorktree = false) => {
     const session = sessionMap.get(sessionId)
-    if (!window.confirm(`Delete tmux session “${session?.name ?? sessionId}” and all of its windows and panes?`)) return
-    try { await api.deleteSession(sessionId); props.onSessionsChanged() }
+    const label = session?.name ?? sessionId
+    const confirmation = deleteWorktree
+      ? `Delete tmux session “${label}” and its linked worktree?\n\nUncommitted changes in the worktree will be permanently deleted. The git branch will be kept.`
+      : `Delete tmux session “${label}” and all of its windows and panes?`
+    if (!window.confirm(confirmation)) return
+    try { await api.deleteSession(sessionId, deleteWorktree); props.onSessionsChanged() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to delete session') }
   }
 
@@ -351,7 +355,7 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button></div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
     </div>
   )
 }

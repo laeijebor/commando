@@ -11,6 +11,7 @@ import {
   SessionPreferenceStore,
 } from './session-preferences.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 import { TmuxSessionActions, type TmuxProcessExecutor } from './tmux-session-actions.js'
 
 const directories: string[] = []
@@ -191,6 +192,128 @@ describe('session management API', () => {
     expect(afterSessionDeleted).toHaveBeenCalledWith('$1')
     expect(execute.mock.invocationCallOrder[0]).toBeLessThan(afterSessionDeleted.mock.invocationCallOrder[0])
     expect(onSessionsChanged).toHaveBeenCalled()
+  })
+
+  it('prepares linked worktree deletion before closing tmux, then removes it and refreshes', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const removeWorktree = vi.fn().mockResolvedValue(undefined)
+    const prepareSessionWorktreeDeletion = vi.fn().mockResolvedValue(removeWorktree)
+    const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, { COMMANDO_TMUX_SOCKET_NAME: 'qa' }),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion,
+      onSessionsChanged,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ worktreeDeleted: true })
+    expect(prepareSessionWorktreeDeletion).toHaveBeenCalledWith('$1')
+    expect(prepareSessionWorktreeDeletion.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[0])
+    expect(execute.mock.invocationCallOrder[0]).toBeLessThan(removeWorktree.mock.invocationCallOrder[0])
+    expect(removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(onSessionsChanged.mock.invocationCallOrder[0])
+  })
+
+  it('keeps the tmux session when linked worktree preparation fails', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockRejectedValue(new SessionWorktreeConflictError('Tmux session is not tied to a git worktree')),
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+    })
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringMatching(/not tied to a git worktree/i) })
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('reports operational worktree preparation failures as upstream errors', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockRejectedValue(new Error('tmux discovery failed')),
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+    })
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toMatchObject({ error: 'tmux discovery failed' })
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('reports partial completion when worktree removal fails after tmux closes', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue(
+        vi.fn().mockRejectedValue(new Error('worktree contains locked files')),
+      ),
+      onSessionsChanged,
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+    })
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/session was deleted.*worktree was not removed.*locked files/i),
+    })
+    expect(execute).toHaveBeenCalled()
+    expect(onSessionsChanged).toHaveBeenCalled()
+  })
+
+  it('reports completed deletion when the subsequent session refresh fails', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'work' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+      onSessionsChanged: vi.fn().mockRejectedValue(new Error('snapshot unavailable')),
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+    })
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/session and worktree were deleted.*refresh failed.*snapshot unavailable/i),
+    })
+    expect(execute).toHaveBeenCalled()
   })
 
   it('releases resize ownership and closes an existing window', async () => {
