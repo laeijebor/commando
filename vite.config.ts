@@ -13,6 +13,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': daemonHttpTarget,
+      '/screenshots': daemonHttpTarget,
       '/ws': {
         target: daemonWebSocketTarget,
         ws: true,
