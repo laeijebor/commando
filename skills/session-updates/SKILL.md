@@ -33,6 +33,19 @@ Use `--recap-markdown` for short Markdown prose and `--state` for one of
 `--clear-next` when the previous next action is complete and there is no new
 one yet.
 
+## Publish screenshots
+
+Publish a screenshot round by naming its directory:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs \
+  --screenshots "$PWD/.screenshots/<topic>"
+```
+
+The daemon creates the screenshots timeline event itself. Do not also pass
+`--update` for the same publish. The flag composes with headline, recap, state,
+and next-action flags when those fields genuinely changed.
+
 For multiline Markdown or several fields, send one JSON object over stdin:
 
 ```bash
