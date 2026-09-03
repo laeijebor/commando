@@ -54,6 +54,7 @@ import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
 import { runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
 import { GitWorktreeService } from './git-worktree.js'
+import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
@@ -1195,6 +1196,11 @@ async function main(): Promise<void> {
     return snapshotRefresh
   }
 
+  const refreshSnapshotFresh = async (): Promise<CommandoSnapshot> => {
+    if (snapshotRefresh) await snapshotRefresh
+    return refreshSnapshot()
+  }
+
   const queueInput = (
     client: ClientState,
     paneId: string,
@@ -1220,6 +1226,11 @@ async function main(): Promise<void> {
   const sessionManagement = new SessionManagementApi({
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
+      currentPanes: async () => (await refreshSnapshotFresh()).panes,
+      worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
+      removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
+    }),
     afterSessionDeleted: () => {
       void resurrectSaver.save().catch((error: unknown) => {
         console.error('[commando] tmux Resurrect save failed after session deletion', error)

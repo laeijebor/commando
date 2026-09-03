@@ -19,7 +19,7 @@ export interface SessionManagementApiClient {
   loadPreferences(): Promise<SessionTreePreferences>
   savePreferences(preferences: SessionTreePreferences): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
-  deleteSession(sessionId: string): Promise<void>
+  deleteSession(sessionId: string, deleteWorktree?: boolean): Promise<void>
   deleteWindow(windowId: string): Promise<void>
 }
 
@@ -76,10 +76,10 @@ export function createSessionManagementApi(
         body: JSON.stringify({ name }),
       })
     },
-    async deleteSession(sessionId) {
+    async deleteSession(sessionId, deleteWorktree = false) {
       await request(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
         method: 'DELETE',
-        body: JSON.stringify({ confirmSessionId: sessionId }),
+        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree }),
       })
     },
     async deleteWindow(windowId) {

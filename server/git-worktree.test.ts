@@ -75,6 +75,22 @@ describe('GitWorktreeService.probe', () => {
     })
   })
 
+  it('captures a linked worktree identity without fetching remote metadata', async () => {
+    const worktree = '/Users/dev/gizmo/Save-All-worktrees/coins'
+    const git = fakeGit([
+      [['rev-parse', '--path-format=absolute'], `${worktree}\n${MAIN}/.git\nreferral-coins-reward\n`],
+      [['rev-parse', '--verify', 'HEAD'], 'abc123\n'],
+    ])
+
+    await expect(new GitWorktreeService(git.execute).worktreeForDirectory(`${worktree}/apps/web`)).resolves.toEqual({
+      root: worktree,
+      mainRoot: MAIN,
+      branch: 'referral-coins-reward',
+      head: 'abc123',
+    })
+    expect(git.calls.some((call) => call.args[0] === 'symbolic-ref')).toBe(false)
+  })
+
   it('falls back to origin/main, then origin/master, then no default branch', async () => {
     const withMaster = fakeGit([
       [['rev-parse', '--path-format=absolute'], `${MAIN}\n${MAIN}/.git\nmain\n`],
@@ -272,5 +288,61 @@ describe('GitWorktreeService.createWorktree', () => {
     const service = new GitWorktreeService(git.execute, { pathExists: async () => false, fetchTimeoutMs: 1234 })
     await service.createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target, defaultBranch: 'main', remote: 'origin' })
     expect(git.calls.find((call) => call.args[0] === 'fetch')?.timeout).toBe(1234)
+  })
+})
+
+describe('GitWorktreeService.removeWorktree', () => {
+  const target = `${MAIN}-worktrees/bot-rematch-flow`
+
+  it('force-removes a linked worktree from its main checkout', async () => {
+    const git = fakeGit([
+      [['worktree', 'list', '--porcelain'], `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n\n`],
+      [['worktree', 'remove', '--force', target], ''],
+    ])
+
+    await new GitWorktreeService(git.execute).removeWorktree({
+      root: target,
+      mainRoot: MAIN,
+      branch: 'bot-rematch-flow',
+      head: 'def',
+    })
+
+    expect(git.calls.at(-1)).toEqual({
+      args: ['worktree', 'remove', '--force', target],
+      cwd: MAIN,
+      timeout: 30_000,
+    })
+  })
+
+  it('refuses to remove the main checkout', async () => {
+    const git = fakeGit([])
+
+    await expect(new GitWorktreeService(git.execute).removeWorktree({
+      root: MAIN,
+      mainRoot: MAIN,
+      branch: 'main',
+      head: 'abc',
+    })).rejects.toMatchObject({
+      kind: 'bad-path',
+      message: expect.stringMatching(/main repository checkout/i),
+    })
+    expect(git.calls).toEqual([])
+  })
+
+  it('refuses a path whose registered branch changed', async () => {
+    const git = fakeGit([
+      [['worktree', 'list', '--porcelain'], `worktree ${target}\nHEAD def\nbranch refs/heads/replacement\n\n`],
+    ])
+
+    await expect(new GitWorktreeService(git.execute).removeWorktree({
+      root: target,
+      mainRoot: MAIN,
+      branch: 'bot-rematch-flow',
+      head: 'def',
+    })).rejects.toMatchObject({
+      kind: 'bad-path',
+      message: expect.stringMatching(/identity changed/i),
+    })
+    expect(git.calls.some((call) => call.args[1] === 'remove')).toBe(false)
   })
 })

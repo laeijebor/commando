@@ -70,7 +70,7 @@
 .managed-pane-row .managed-pane-maximize:hover { color: var(--accent); }
 .managed-pane-row .managed-pane-maximize svg { width: 11px; height: 11px; }
 .session-pref-empty { margin: 0; padding: 8px; color: var(--text-faint); font-size: 10px; }
-.session-context-menu { position: fixed; z-index: 50; width: 180px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-hover); box-shadow: 0 12px 35px #000a; }
+.session-context-menu { position: fixed; z-index: 50; width: 205px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-hover); box-shadow: 0 12px 35px #000a; }
 .session-context-menu button { width: 100%; padding: 8px; display: flex; gap: 8px; align-items: center; color: var(--text); border-radius: 4px; text-align: left; font-size: 10px; }
 .session-context-menu button:hover { background: var(--border); }
 .session-context-menu button.danger { color: #eb6f92; }

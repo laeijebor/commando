@@ -701,6 +701,25 @@ describe('SessionTree', () => {
       }))
     })
 
+    it('offers linked worktree deletion only for a worktree-backed session', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSessionsChanged = vi.fn()
+      renderTree({ onSessionsChanged })
+      await screen.findByRole('button', { name: 'Collapse Save-All' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Team Battles' }))
+      expect(screen.queryByRole('menuitem', { name: 'Delete session and worktree' })).not.toBeInTheDocument()
+      fireEvent.pointerDown(window)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Coins everywhere' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session and worktree' }))
+
+      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/Uncommitted changes.*branch will be kept/s))
+      expect(onSessionsChanged).toHaveBeenCalled()
+    })
+
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
       const onCreateSession = vi.fn()

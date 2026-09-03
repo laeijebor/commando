@@ -36,6 +36,13 @@ export type CreateWorktreeResult = {
   rollback: () => Promise<void>
 }
 
+export type GitWorktreeIdentity = {
+  root: string
+  mainRoot: string
+  branch: string
+  head: string
+}
+
 export type GitWorktreeServiceOptions = {
   pathExists?: (target: string) => Promise<boolean>
   fetchTimeoutMs?: number
@@ -82,15 +89,16 @@ export function validateBranchName(value: unknown): string {
   return value
 }
 
-function parseWorktreeList(output: string): Array<{ path: string; branch?: string }> {
+function parseWorktreeList(output: string): Array<{ path: string; branch?: string; head?: string }> {
   return output
     .split(/\n\s*\n/u)
     .map((block) => block.trim())
     .filter(Boolean)
     .map((block) => {
-      const entry: { path: string; branch?: string } = { path: '' }
+      const entry: { path: string; branch?: string; head?: string } = { path: '' }
       for (const line of block.split('\n')) {
         if (line.startsWith('worktree ')) entry.path = line.slice('worktree '.length)
+        else if (line.startsWith('HEAD ')) entry.head = line.slice('HEAD '.length)
         else if (line.startsWith('branch ')) entry.branch = line.slice('branch '.length).replace(/^refs\/heads\//u, '')
       }
       return entry
@@ -114,22 +122,9 @@ export class GitWorktreeService {
 
   /** Describe the repository containing `directory`, or `{ isRepo: false }`. */
   async probe(directory: string): Promise<GitRepoInfo> {
-    let stdout: string
-    try {
-      stdout = (await this.git(directory, [
-        'rev-parse',
-        '--path-format=absolute',
-        '--show-toplevel',
-        '--git-common-dir',
-        '--abbrev-ref',
-        'HEAD',
-      ])).stdout
-    } catch {
-      return { isRepo: false }
-    }
-    const [root, commonDir, branch] = stdout.split(/\r?\n/u)
-    if (!root || !commonDir) return { isRepo: false }
-    const mainRoot = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : root
+    const identity = await this.repositoryIdentity(directory)
+    if (!identity) return { isRepo: false }
+    const { root, mainRoot, branch } = identity
     const defaultBranch = await this.defaultBranch(mainRoot)
     return {
       isRepo: true,
@@ -139,6 +134,17 @@ export class GitWorktreeService {
       branch: branch ?? '',
       isWorktree: root !== mainRoot,
       ...(defaultBranch ? { defaultBranch, remote: REMOTE } : {}),
+    }
+  }
+
+  async worktreeForDirectory(directory: string): Promise<GitWorktreeIdentity | undefined> {
+    const identity = await this.repositoryIdentity(directory)
+    if (!identity || identity.root === identity.mainRoot) return undefined
+    try {
+      const head = (await this.git(directory, ['rev-parse', '--verify', 'HEAD'])).stdout.trim()
+      return head ? { ...identity, head } : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -201,6 +207,50 @@ export class GitWorktreeService {
         await this.remove(cwd, target)
         await this.git(cwd, ['branch', '-D', branch]).catch(() => undefined)
       },
+    }
+  }
+
+  async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
+    const root = path.normalize(worktree.root)
+    const mainRoot = path.normalize(worktree.mainRoot)
+    if (!path.isAbsolute(root) || !path.isAbsolute(mainRoot) || root === mainRoot) {
+      throw new GitWorktreeError('bad-path', 'Refusing to remove the main repository checkout')
+    }
+    try {
+      const registered = parseWorktreeList((await this.git(mainRoot, ['worktree', 'list', '--porcelain'])).stdout)
+        .find((entry) => path.normalize(entry.path) === root)
+      if (!registered) throw new GitWorktreeError('bad-path', `${root} is not a registered git worktree`)
+      const sameBranch = registered.branch === worktree.branch || (registered.branch === undefined && worktree.branch === 'HEAD')
+      if (!sameBranch || registered.head !== worktree.head) {
+        throw new GitWorktreeError('bad-path', `Worktree identity changed at ${root}; refusing to remove it`)
+      }
+      await this.git(mainRoot, ['worktree', 'remove', '--force', root], WORKTREE_TIMEOUT_MS)
+    } catch (error) {
+      if (error instanceof GitWorktreeError) throw error
+      throw new GitWorktreeError('exec', `git worktree remove failed: ${failureDetail(error)}`)
+    }
+  }
+
+  private async repositoryIdentity(directory: string): Promise<Omit<GitWorktreeIdentity, 'head'> | undefined> {
+    let stdout: string
+    try {
+      stdout = (await this.git(directory, [
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-common-dir',
+        '--abbrev-ref',
+        'HEAD',
+      ])).stdout
+    } catch {
+      return undefined
+    }
+    const [root, commonDir, branch = ''] = stdout.split(/\r?\n/u)
+    if (!root || !commonDir) return undefined
+    return {
+      root,
+      mainRoot: path.basename(commonDir) === '.git' ? path.dirname(commonDir) : root,
+      branch,
     }
   }
 
