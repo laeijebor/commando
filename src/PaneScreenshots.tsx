@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 
 import type { PaneScreenshotFolder } from '../shared/protocol'
 import type { PaneManagementApiClient } from './paneManagementApi'
-import { paneScreenshotUrl, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
+import { paneScreenshotUrl, PaneScreenshotsApiError, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
 
 export type OpenPaneScreenshot = (
   folder: PaneScreenshotFolder,
@@ -42,6 +42,7 @@ export function PaneScreenshots({
   seenAt,
   screenshotsApi,
   paneManagementApi,
+  revealInFinder = true,
   onCollapsedChange,
   onSeen,
   onOpen,
@@ -52,6 +53,7 @@ export function PaneScreenshots({
   seenAt: number
   screenshotsApi: PaneScreenshotsApiClient
   paneManagementApi: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
+  revealInFinder?: boolean
   onCollapsedChange: (collapsed: boolean) => void
   onSeen: (timestamp: number) => void
   onOpen: OpenPaneScreenshot
@@ -66,7 +68,10 @@ export function PaneScreenshots({
   screenshotsApiRef.current = screenshotsApi
   const visibleFolders = useMemo(() => folders
     .filter((folder) => !dismissed.has(folder.id))
-    .map((folder) => listings[folder.id] ?? folder), [dismissed, folders, listings])
+    .map((folder) => {
+      const listing = listings[folder.id]
+      return listing && listing.updatedAt >= folder.updatedAt ? listing : folder
+    }), [dismissed, folders, listings])
   const selected = visibleFolders.find((folder) => folder.id === selectedId) ?? visibleFolders[0]
 
   useEffect(() => {
@@ -85,13 +90,25 @@ export function PaneScreenshots({
   useEffect(() => {
     if (collapsed || !selected) return
     let cancelled = false
+    setError('')
     screenshotsApiRef.current.list(selected.id)
       .then((listing) => {
-        if (!cancelled) setListings((current) => ({ ...current, [listing.id]: listing }))
+        if (!cancelled) setListings((current) => {
+          const cached = current[listing.id]
+          return cached && cached.updatedAt > listing.updatedAt ? current : { ...current, [listing.id]: listing }
+        })
       })
-      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : 'Unable to refresh screenshots') })
+      .catch((cause) => {
+        if (cancelled) return
+        if (cause instanceof PaneScreenshotsApiError && cause.code === 'not_found') {
+          setListings((current) => ({ ...current, [selected.id]: { ...selected, missing: true, preview: [] } }))
+          setError('')
+        } else {
+          setError(cause instanceof Error ? cause.message : 'Unable to refresh screenshots')
+        }
+      })
     return () => { cancelled = true }
-  }, [collapsed, selected?.id])
+  }, [collapsed, selected?.id, selected?.updatedAt])
 
   if (!selected) return null
   const preview = selected.preview.slice(0, 5)
@@ -108,9 +125,11 @@ export function PaneScreenshots({
       <header className="pane-worklog-screenshots-header">
         <strong>Screenshots</strong>
         <span>
-          <button type="button" onClick={revealFolder} aria-label={`Reveal ${selected.topic} in Finder`} title="Reveal folder in Finder">
-            <FolderOpen aria-hidden="true" />
-          </button>
+          {revealInFinder ? (
+            <button type="button" onClick={revealFolder} aria-label={`Reveal ${selected.topic} in Finder`} title="Reveal folder in Finder">
+              <FolderOpen aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => onCollapsedChange(!collapsed)}
@@ -148,7 +167,7 @@ export function PaneScreenshots({
                     onClick={(event) => open(event, file.name)}
                     key={file.name}
                   >
-                    <img src={paneScreenshotUrl(selected.id, file.name)} alt="" loading="lazy" />
+                    <img src={paneScreenshotUrl(selected.id, file.name, file.modifiedAt)} alt="" loading="lazy" />
                   </button>
                 ))}
                 {selected.imageCount > 5 ? (

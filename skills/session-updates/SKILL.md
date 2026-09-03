@@ -46,6 +46,11 @@ The daemon creates the screenshots timeline event itself. Do not also pass
 `--update` for the same publish. The flag composes with headline, recap, state,
 and next-action flags when those fields genuinely changed.
 
+Screenshot folders are scanned non-recursively for PNG, JPG/JPEG, GIF, and
+WebP images. A publish scans at most 500 entries and omits images larger than
+50 MiB. Republishing the same directory keeps its folder id while refreshing
+its counts and previews. Published folders expire after 7 days.
+
 For multiline Markdown or several fields, send one JSON object over stdin:
 
 ```bash

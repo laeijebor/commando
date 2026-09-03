@@ -150,7 +150,7 @@ export class PaneManagementApi {
         if (!this.dependencies.screenshots?.isRegisteredForPane(route.paneId, body.folderId)) {
           throw new HttpError(404, 'Screenshot folder is not registered for this pane')
         }
-        const path = this.dependencies.screenshots.resolveForPane(route.paneId, body.folderId, body.file as string | undefined)
+        const path = await this.dependencies.screenshots.resolveForPane(route.paneId, body.folderId, body.file as string | undefined)
         if (!path) throw new HttpError(400, body.file === undefined ? 'Screenshot folder is unavailable' : 'Screenshot file is invalid')
         if (body.file === undefined) await this.openFolder(path)
         else await this.revealFile(path)

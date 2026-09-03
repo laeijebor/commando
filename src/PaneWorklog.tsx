@@ -115,6 +115,7 @@ export function PaneWorklog({
   prsApi,
   screenshotsApi = { list: async () => { throw new Error('Screenshot API unavailable') } },
   paneManagementApi = { revealPaneScreenshot: async () => { throw new Error('Pane management API unavailable') } },
+  revealInFinder = true,
   onOpenScreenshot = () => undefined,
   connected = true,
 }: {
@@ -123,6 +124,7 @@ export function PaneWorklog({
   prsApi?: Pick<PrsApiClient, 'pane'>
   screenshotsApi?: PaneScreenshotsApiClient
   paneManagementApi?: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
+  revealInFinder?: boolean
   onOpenScreenshot?: OpenPaneScreenshot
   connected?: boolean
 }) {
@@ -132,7 +134,12 @@ export function PaneWorklog({
   const [unread, setUnread] = useState(0)
   const activityRef = useRef<HTMLDivElement>(null)
   const previousUpdateCount = useRef(brief.updates.length)
-  const prList = usePanePullRequests(brief.paneId, prsApi ?? { pane: async () => { throw new Error('PR API unavailable') } }, Boolean(prsApi && connected))
+  const prList = usePanePullRequests(
+    brief.paneId,
+    prsApi ?? { pane: async () => { throw new Error('PR API unavailable') } },
+    Boolean(prsApi && connected),
+    preferences.minimized || compact,
+  )
   const hasOpenPr = Boolean(prList?.pullRequests.some((pullRequest) => pullRequest.state === 'open'))
   const screenshotFolders = brief.screenshots ?? []
   const unseenScreenshots = screenshotFolders.reduce((count, folder) => (
@@ -314,6 +321,7 @@ export function PaneWorklog({
             seenAt={preferences.screenshotsSeenAt}
             screenshotsApi={screenshotsApi}
             paneManagementApi={paneManagementApi}
+            revealInFinder={revealInFinder}
             onCollapsedChange={(screenshotsCollapsed) => setPreferences((current) => ({ ...current, screenshotsCollapsed }))}
             onSeen={markScreenshotsSeen}
             onOpen={onOpenScreenshot}
@@ -324,36 +332,33 @@ export function PaneWorklog({
           <section className="pane-worklog-activity" aria-label={`Activity for ${paneLabel}`}>
             <header><strong>Activity</strong><small>{brief.updates.length}</small></header>
             <div className="pane-worklog-timeline">
-              {brief.updates.map((update) => (
-                <article
-                  className={`pane-worklog-event kind-${update.kind}${update.author === 'user' ? ' is-user' : ''}`}
-                  role={update.kind === 'screenshots' ? 'button' : undefined}
-                  tabIndex={update.kind === 'screenshots' ? 0 : undefined}
-                  onClick={(event) => {
-                    if (update.kind !== 'screenshots') return
-                    const folder = screenshotFolders.find((candidate) => (
-                      candidate.dir === update.detail ||
-                      (update.detail?.startsWith('~/') && candidate.dir.endsWith(update.detail.slice(1))) ||
-                      update.text.startsWith(`Published ${candidate.topic} ·`)
-                    ))
-                    if (folder) onOpenScreenshot(folder, undefined, event.currentTarget)
-                  }}
-                  onKeyDown={(event) => {
-                    if (update.kind === 'screenshots' && (event.key === 'Enter' || event.key === ' ')) {
-                      event.preventDefault()
-                      event.currentTarget.click()
-                    }
-                  }}
-                  key={update.id}
-                >
-                  <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
-                  <div>
-                    <strong>{update.text}</strong>
-                    {update.detail ? <p>{update.detail}</p> : null}
-                    <small>{update.author === 'user' ? 'You' : update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
-                  </div>
-                </article>
-              ))}
+              {brief.updates.map((update) => {
+                const folder = update.screenshotFolderId
+                  ? screenshotFolders.find((candidate) => candidate.id === update.screenshotFolderId)
+                  : undefined
+                return (
+                  <article
+                    className={`pane-worklog-event kind-${update.kind}${update.author === 'user' ? ' is-user' : ''}`}
+                    role={folder ? 'button' : undefined}
+                    tabIndex={folder ? 0 : undefined}
+                    onClick={folder ? (event) => onOpenScreenshot(folder, undefined, event.currentTarget) : undefined}
+                    onKeyDown={folder ? (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        event.currentTarget.click()
+                      }
+                    } : undefined}
+                    key={update.id}
+                  >
+                    <span className="pane-worklog-event-icon">{updateIcon(update.kind)}</span>
+                    <div>
+                      <strong>{update.text}</strong>
+                      {update.detail ? <p>{update.detail}</p> : null}
+                      <small>{update.author === 'user' ? 'You' : update.source === 'agent' ? 'Agent update' : 'Lifecycle'} · {relativeAge(update.createdAt)}</small>
+                    </div>
+                  </article>
+                )
+              })}
             </div>
           </section>
         ) : null}

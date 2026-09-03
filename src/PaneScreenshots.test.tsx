@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { PaneScreenshotFolder } from '../shared/protocol'
 import { PaneScreenshotLightbox } from './PaneScreenshotLightbox'
 import { PaneScreenshots } from './PaneScreenshots'
+import { PaneScreenshotsApiError } from './paneScreenshotsApi'
 
 const folder: PaneScreenshotFolder = {
   id: '0123456789abcdef',
@@ -47,11 +48,57 @@ describe('PaneScreenshots', () => {
 
     expect(screen.getByRole('region', { name: 'Screenshots for pane %1' })).toBeInTheDocument()
     expect(screen.getByText('+1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open screenshot round-one.png' }).querySelector('img')).toHaveAttribute('src', `/screenshots/${folder.id}/round-one.png?v=200`)
     fireEvent.click(screen.getByRole('button', { name: 'Open screenshot round-one.png' }))
     expect(onOpen).toHaveBeenCalledWith(folder, 'round-one.png', expect.any(HTMLElement))
     fireEvent.click(screen.getByRole('button', { name: 'Reveal polish in Finder' }))
     expect(revealPaneScreenshot).toHaveBeenCalledWith('%1', folder.id)
     expect(onSeen).toHaveBeenCalled()
+  })
+
+  it('refetches a republished folder and lets the newer brief beat an older cached listing', async () => {
+    const list = vi.fn()
+      .mockResolvedValueOnce(listing)
+      .mockResolvedValueOnce({ ...folder, updatedAt: 300, imageCount: 1, preview: [{ name: 'fresh.png', size: 50, modifiedAt: 300 }], files: [{ name: 'fresh.png', size: 50, modifiedAt: 300 }] })
+    const props = {
+      paneId: '%1', collapsed: false, seenAt: 0, screenshotsApi: { list },
+      paneManagementApi: { revealPaneScreenshot: vi.fn().mockResolvedValue(undefined) },
+      onCollapsedChange: vi.fn(), onSeen: vi.fn(), onOpen: vi.fn(),
+    }
+    const view = render(<PaneScreenshots {...props} folders={[folder]} />)
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
+
+    view.rerender(<PaneScreenshots {...props} folders={[{ ...folder, updatedAt: 300, imageCount: 1, preview: [{ name: 'fresh.png', size: 50, modifiedAt: 300 }] }]} />)
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole('button', { name: 'Open screenshot fresh.png' })).toBeInTheDocument()
+  })
+
+  it('maps an expired registration to the dismissible missing-folder state', async () => {
+    render(
+      <PaneScreenshots
+        paneId="%1" folders={[folder]} collapsed={false} seenAt={0}
+        screenshotsApi={{ list: vi.fn().mockRejectedValue(new PaneScreenshotsApiError('not_found', 'Not found')) }}
+        paneManagementApi={{ revealPaneScreenshot: vi.fn() }}
+        onCollapsedChange={vi.fn()} onSeen={vi.fn()} onOpen={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByText('Folder not found')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByLabelText('Screenshots for pane %1')).not.toBeInTheDocument()
+  })
+
+  it('hides the section Finder action when the daemon does not support it', () => {
+    render(
+      <PaneScreenshots
+        paneId="%1" folders={[folder]} collapsed seenAt={0} revealInFinder={false}
+        screenshotsApi={{ list: vi.fn() }} paneManagementApi={{ revealPaneScreenshot: vi.fn() }}
+        onCollapsedChange={vi.fn()} onSeen={vi.fn()} onOpen={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Reveal polish in Finder' })).not.toBeInTheDocument()
   })
 })
 
@@ -80,5 +127,20 @@ describe('PaneScreenshotLightbox', () => {
     expect(onClose).toHaveBeenCalled()
     expect(trigger).toHaveFocus()
     trigger.remove()
+  })
+
+  it('shows Folder not found for an expired registration and hides Finder actions when unsupported', async () => {
+    render(
+      <PaneScreenshotLightbox
+        request={{ paneId: '%1', folder, restoreFocus: document.body }}
+        screenshotsApi={{ list: vi.fn().mockRejectedValue(new PaneScreenshotsApiError('not_found', 'Not found')) }}
+        paneManagementApi={{ revealPaneScreenshot: vi.fn() }}
+        revealInFinder={false}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByText('Folder not found')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Reveal in Finder/i })).not.toBeInTheDocument()
   })
 })

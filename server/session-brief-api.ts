@@ -187,7 +187,7 @@ export class SessionBriefApi {
       if (!target) throw new HttpError(404, 'Tmux pane does not exist')
       const parsed = parseSessionBriefPatch(await readJson(request))
       const publishedScreenshots = parsed.screenshots
-        ? this.dependencies.screenshots?.register(paneId, parsed.screenshots.dir)
+        ? await this.dependencies.screenshots?.register(paneId, parsed.screenshots.dir)
         : undefined
       if (parsed.screenshots && !publishedScreenshots) throw new Error('Screenshot registry is unavailable')
       const { screenshots: _screenshots, ...patch } = parsed

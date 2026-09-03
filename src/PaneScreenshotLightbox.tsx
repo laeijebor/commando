@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PaneScreenshotFolder } from '../shared/protocol'
 import type { PaneManagementApiClient } from './paneManagementApi'
 import { formatScreenshotBytes, screenshotRelativeAge } from './PaneScreenshots'
-import { paneScreenshotUrl, type PaneScreenshotListing, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
+import { paneScreenshotUrl, PaneScreenshotsApiError, type PaneScreenshotListing, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
 
 export type PaneScreenshotLightboxRequest = {
   paneId: string
@@ -18,10 +18,11 @@ function filenameParts(name: string): [string, string] {
   return separator > 0 ? [name.slice(0, separator + 1), name.slice(separator + 1)] : ['', name]
 }
 
-export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagementApi, onClose }: {
+export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagementApi, revealInFinder = true, onClose }: {
   request: PaneScreenshotLightboxRequest
   screenshotsApi: PaneScreenshotsApiClient
   paneManagementApi: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
+  revealInFinder?: boolean
   onClose: () => void
 }) {
   const [listing, setListing] = useState<PaneScreenshotListing | null>(null)
@@ -46,10 +47,18 @@ export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagement
         setListing(next)
         setCurrent(Math.max(0, request.file ? next.files.findIndex((file) => file.name === request.file) : 0))
       })
-      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : 'Unable to load screenshots') })
+      .catch((cause) => {
+        if (cancelled) return
+        if (cause instanceof PaneScreenshotsApiError && cause.code === 'not_found') {
+          setListing({ ...request.folder, imageCount: 0, otherCount: 0, bytes: 0, missing: true, preview: [], files: [] })
+          setError('')
+        } else {
+          setError(cause instanceof Error ? cause.message : 'Unable to load screenshots')
+        }
+      })
     closeRef.current?.focus()
     return () => { cancelled = true }
-  }, [request.file, request.folder.id])
+  }, [request.file, request.folder.id, request.folder.updatedAt])
 
   const files = listing?.files ?? []
   const file = files[current]
@@ -92,14 +101,16 @@ export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagement
               {actualSize ? <Minimize aria-hidden="true" /> : <Maximize aria-hidden="true" />}
               {actualSize ? 'Fit to window' : 'Actual size'}
             </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={!file}
-              onClick={() => file && void paneManagementApi.revealPaneScreenshot(request.paneId, request.folder.id, file.name).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to reveal file'))}
-            >
-              <FolderSearch aria-hidden="true" />Reveal in Finder
-            </button>
+            {revealInFinder ? (
+              <button
+                type="button"
+                className="primary"
+                disabled={!file}
+                onClick={() => file && void paneManagementApi.revealPaneScreenshot(request.paneId, request.folder.id, file.name).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to reveal file'))}
+              >
+                <FolderSearch aria-hidden="true" />Reveal in Finder
+              </button>
+            ) : null}
             <button ref={closeRef} type="button" aria-label="Close screenshot preview" onClick={close}><X aria-hidden="true" /></button>
           </span>
         </header>
@@ -108,7 +119,7 @@ export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagement
             <>
               <button type="button" className="pane-screenshot-lightbox-nav prev" aria-label="Previous screenshot" onClick={() => move(-1)}><ChevronLeft aria-hidden="true" /></button>
               <img
-                src={paneScreenshotUrl(request.folder.id, file.name)}
+                src={paneScreenshotUrl(request.folder.id, file.name, file.modifiedAt)}
                 alt={file.name}
                 onLoad={(event) => setDimensions(`${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`)}
               />
@@ -123,7 +134,7 @@ export function PaneScreenshotLightbox({ request, screenshotsApi, paneManagement
           <span className="pane-screenshot-lightbox-filmstrip">
             {filmstrip.map(({ candidate, index }) => (
               <button type="button" className={index === current ? 'is-current' : ''} aria-label={`View ${candidate.name}`} onClick={() => { setCurrent(index); setDimensions('') }} key={candidate.name}>
-                <img src={paneScreenshotUrl(request.folder.id, candidate.name)} alt="" loading="lazy" />
+                <img src={paneScreenshotUrl(request.folder.id, candidate.name, candidate.modifiedAt)} alt="" loading="lazy" />
               </button>
             ))}
           </span>

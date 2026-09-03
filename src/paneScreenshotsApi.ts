@@ -4,8 +4,14 @@ export type PaneScreenshotListing = PaneScreenshotFolder & { files: PaneScreensh
 
 export type PaneScreenshotsApiClient = ReturnType<typeof createPaneScreenshotsApi>
 
-export function paneScreenshotUrl(folderId: string, name: string): string {
-  return `/screenshots/${folderId}/${encodeURIComponent(name)}`
+export class PaneScreenshotsApiError extends Error {
+  constructor(readonly code: 'not_found' | 'request_failed', message: string) {
+    super(message)
+  }
+}
+
+export function paneScreenshotUrl(folderId: string, name: string, modifiedAt: number): string {
+  return `/screenshots/${folderId}/${encodeURIComponent(name)}?v=${encodeURIComponent(modifiedAt)}`
 }
 
 export function createPaneScreenshotsApi(token: string, fetcher: typeof fetch = fetch) {
@@ -19,7 +25,8 @@ export function createPaneScreenshotsApi(token: string, fetcher: typeof fetch = 
         },
       })
       const body = await response.json().catch(() => ({})) as { error?: string; folder?: PaneScreenshotListing }
-      if (!response.ok || !body.folder) throw new Error(body.error ?? `Screenshot listing failed (${response.status})`)
+      if (response.status === 404) throw new PaneScreenshotsApiError('not_found', body.error ?? 'Folder not found')
+      if (!response.ok || !body.folder) throw new PaneScreenshotsApiError('request_failed', body.error ?? `Screenshot listing failed (${response.status})`)
       return body.folder
     },
   }

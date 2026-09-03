@@ -132,6 +132,7 @@ export type PaneScreenshotFolder = {
   bytes: number
   updatedAt: number
   missing?: boolean
+  truncated?: true
   preview: PaneScreenshotFile[]
 }
 
@@ -141,6 +142,7 @@ export type SessionBriefUpdate = {
   kind: SessionBriefUpdateKind
   text: string
   detail?: string
+  screenshotFolderId?: string
   author?: 'user'
   source: 'hook' | 'agent'
   createdAt: number
@@ -498,6 +500,7 @@ export type LayoutSpec =
 
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
+  | { type: 'capabilities'; capabilities: { revealInFinder: boolean } }
   | {
       type: 'pane_reset'
       paneId: string

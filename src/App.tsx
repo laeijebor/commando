@@ -45,6 +45,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -260,6 +261,7 @@ type TerminalPaneProps = {
   prsApi?: PrsApiClient
   screenshotsApi?: PaneScreenshotsApiClient
   paneManagementApi?: PaneManagementApiClient
+  revealInFinder?: boolean
   onOpenPath: () => Promise<void>
   onOpenScreenshot?: (request: Omit<PaneScreenshotLightboxRequest, 'paneId'>) => void
   onFocus: () => void
@@ -307,6 +309,7 @@ export function TerminalPaneCard({
   prsApi,
   screenshotsApi,
   paneManagementApi,
+  revealInFinder = true,
   onOpenPath,
   onOpenScreenshot,
   onFocus,
@@ -577,6 +580,7 @@ export function TerminalPaneCard({
             connected={connected}
             screenshotsApi={screenshotsApi}
             paneManagementApi={paneManagementApi}
+            revealInFinder={revealInFinder}
             onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
           />
         ) : null}
@@ -902,6 +906,7 @@ export function App() {
   const [paneActionPending, setPaneActionPending] = useState(false)
   const [paneActionError, setPaneActionError] = useState('')
   const [screenshotLightbox, setScreenshotLightbox] = useState<PaneScreenshotLightboxRequest | null>(null)
+  const [revealInFinder, setRevealInFinder] = useState(false)
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
@@ -1036,6 +1041,9 @@ export function App() {
 
   const handleServerMessage = (message: ServerMessage) => {
     switch (message.type) {
+      case 'capabilities':
+        setRevealInFinder(message.capabilities.revealInFinder)
+        break
       case 'snapshot':
         if (
           previousSnapshotRef.current &&
@@ -1793,7 +1801,7 @@ export function App() {
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
-  const prsApi = createPrsApi(token)
+  const prsApi = useMemo(() => createPrsApi(token), [token])
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -2606,6 +2614,7 @@ export function App() {
                             prsApi={prsApi}
                             screenshotsApi={paneScreenshotsApi}
                             paneManagementApi={paneManagementApi}
+                            revealInFinder={revealInFinder}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                             onOpenScreenshot={(request) => setScreenshotLightbox({ paneId: pane.id, ...request })}
                             onFocus={() => setFocusedPaneId(pane.id)}
@@ -2924,6 +2933,8 @@ export function App() {
           <div className="hud-tab-content" hidden={hudTab !== 'prs'}>
             <PrsSection
               token={token}
+              api={prsApi}
+              active={hudTab === 'prs'}
               currentPaneId={currentPrPane?.id}
               currentPanePath={currentPrPane?.path}
               onAttentionChange={setPrsAttention}
@@ -2965,6 +2976,7 @@ export function App() {
           request={screenshotLightbox}
           screenshotsApi={paneScreenshotsApi}
           paneManagementApi={paneManagementApi}
+          revealInFinder={revealInFinder}
           onClose={() => setScreenshotLightbox(null)}
         />
       ) : null}

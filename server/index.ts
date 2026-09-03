@@ -1697,6 +1697,7 @@ async function main(): Promise<void> {
       violations: 0,
     }
     clients.add(client)
+    send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
     send(client, { type: 'snapshot', snapshot })
     send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
     send(client, { type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
@@ -1783,7 +1784,7 @@ async function main(): Promise<void> {
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
-      if (handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
+      if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {
@@ -1825,7 +1826,7 @@ async function main(): Promise<void> {
           panePath: (paneId) => paneForId(paneId)?.path,
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
-        if (handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
+        if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return

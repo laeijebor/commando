@@ -109,6 +109,7 @@ describe('SessionBriefApi', () => {
     expect(body.brief.screenshots?.[0]).toMatchObject({ dir: shots, topic: 'shots', imageCount: 1 })
     expect(body.brief.updates[0]).toMatchObject({
       kind: 'screenshots',
+      screenshotFolderId: body.brief.screenshots?.[0]?.id,
       source: 'agent',
       text: 'Published shots · 1 images',
     })

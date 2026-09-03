@@ -84,6 +84,7 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
     typeof value.paneId !== 'string' || !PANE_ID.test(value.paneId) ||
     typeof value.kind !== 'string' || !UPDATE_KINDS.has(value.kind as SessionBriefUpdateKind) ||
     text === null || detail === null ||
+    (value.screenshotFolderId !== undefined && (typeof value.screenshotFolderId !== 'string' || !/^[0-9a-f]{16}$/.test(value.screenshotFolderId))) ||
     (value.author !== undefined && value.author !== 'user') ||
     (value.source !== 'hook' && value.source !== 'agent') ||
     !safeInteger(value.createdAt)
@@ -94,6 +95,7 @@ function parseUpdate(value: unknown): SessionBriefUpdate | null {
     kind: value.kind as SessionBriefUpdateKind,
     text,
     ...(detail ? { detail } : {}),
+    ...(typeof value.screenshotFolderId === 'string' ? { screenshotFolderId: value.screenshotFolderId } : {}),
     ...(value.author === 'user' ? { author: 'user' as const } : {}),
     source: value.source,
     createdAt: value.createdAt,
@@ -140,7 +142,8 @@ function parseScreenshotFolder(value: unknown): PaneScreenshotFolder | null {
     typeof value.id !== 'string' || !/^[0-9a-f]{16}$/.test(value.id) || !dir || !isAbsolute(dir) || !topic ||
     !safeInteger(value.imageCount) || !safeInteger(value.otherCount) || !safeInteger(value.bytes) ||
     !safeInteger(value.updatedAt) || (value.missing !== undefined && value.missing !== true) ||
-    !Array.isArray(value.preview) || value.preview.length > 24
+    (value.truncated !== undefined && value.truncated !== true) ||
+    !Array.isArray(value.preview) || value.preview.length > 6
   ) return null
   const preview = value.preview.map(parseScreenshotFile)
   if (preview.some((file) => file === null)) return null
@@ -153,6 +156,7 @@ function parseScreenshotFolder(value: unknown): PaneScreenshotFolder | null {
     bytes: value.bytes,
     updatedAt: value.updatedAt,
     ...(value.missing === true ? { missing: true } : {}),
+    ...(value.truncated === true ? { truncated: true } : {}),
     preview: preview as PaneScreenshotFolder['preview'],
   }
 }
@@ -509,11 +513,17 @@ export class SessionBriefStore {
     const previousPublished = published
       ? current?.screenshots?.find((folder) => folder.id === published.id)
       : undefined
-    const screenshotUpdate: SessionBriefUpdate | null = published && previousPublished?.imageCount !== published.imageCount
+    const previewFingerprint = (folder: PaneScreenshotFolder | undefined) => folder?.preview
+      .map((file) => `${file.name}\0${file.modifiedAt}`)
+      .join('\0')
+    const screenshotUpdate: SessionBriefUpdate | null = published && (
+      !previousPublished || previewFingerprint(previousPublished) !== previewFingerprint(published)
+    )
       ? {
           id: `agent:${now}:${randomUUID()}`,
           paneId,
           kind: 'screenshots',
+          screenshotFolderId: published.id,
           text: `Published ${published.topic} · ${published.imageCount} images`,
           detail: published.dir.startsWith(`${homedir()}/`) ? `~/${published.dir.slice(homedir().length + 1)}` : published.dir,
           source: 'agent',
@@ -533,7 +543,10 @@ export class SessionBriefStore {
       sessionName: cleanSessionName,
       state: patch.state ?? current?.state ?? 'working',
       headline,
-      headlineSource: patch.headline ? 'agent' : current?.headlineSource ?? 'agent',
+      headlineSource: patch.headline
+        ? 'agent'
+        : current?.headlineSource
+          ?? (patch.update?.text ? 'agent' : screenshotUpdate?.text ? 'hook' : 'agent'),
       ...(patch.recapMarkdown === null
         ? {}
         : patch.recapMarkdown !== undefined

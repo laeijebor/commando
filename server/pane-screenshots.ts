@@ -1,15 +1,19 @@
 import { randomBytes } from 'node:crypto'
-import { readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { close as closeCallback, constants, createReadStream, fstat as fstatCallback, open as openCallback, readFileSync, realpathSync, renameSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import type { Stats } from 'node:fs'
+import { readdir, realpath, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
 import type { PaneScreenshotFile, PaneScreenshotFolder } from '../shared/protocol.js'
 
-export const PANE_SCREENSHOT_PREVIEW_LIMIT = 24
+export const PANE_SCREENSHOT_PREVIEW_LIMIT = 6
 export const PANE_SCREENSHOT_PER_PANE_LIMIT = 5
 export const PANE_SCREENSHOT_GLOBAL_LIMIT = 64
 export const PANE_SCREENSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1_000
+export const MAX_SCREENSHOT_FILES = 500
+export const MAX_SCREENSHOT_FILE_BYTES = 50 * 1024 * 1024
 
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
@@ -52,18 +56,18 @@ function isPaneId(value: unknown): value is string {
   return typeof value === 'string' && /^%\d+$/.test(value)
 }
 
-function canonicalDirectory(dir: string): string {
+async function canonicalDirectory(dir: string): Promise<string> {
   if (!isAbsolute(dir) || Buffer.byteLength(dir, 'utf8') > 4_096 || CONTROL_CHARACTER.test(dir)) {
     throw new PaneScreenshotError(400, 'dir must be an absolute path without control characters')
   }
   let real: string
   try {
-    real = realpathSync(dir)
+    real = await realpath(dir)
   } catch {
     throw new PaneScreenshotError(400, 'dir does not exist')
   }
   try {
-    if (!statSync(real).isDirectory()) throw new PaneScreenshotError(400, 'dir must be a directory')
+    if (!(await stat(real)).isDirectory()) throw new PaneScreenshotError(400, 'dir must be a directory')
   } catch (error) {
     if (error instanceof PaneScreenshotError) throw error
     throw new PaneScreenshotError(400, 'dir must be a directory')
@@ -75,32 +79,61 @@ function inside(root: string, candidate: string): boolean {
   return candidate === root || candidate.startsWith(root + sep)
 }
 
-function scanDirectory(dir: string): { files: PaneScreenshotFile[]; otherCount: number; bytes: number } {
-  if (realpathSync(dir) !== dir || !statSync(dir).isDirectory()) throw new Error('Screenshot directory identity changed')
+function openReadOnlyNoFollow(path: string): Promise<number> {
+  return new Promise((resolveOpen, rejectOpen) => {
+    openCallback(path, constants.O_RDONLY | constants.O_NOFOLLOW, (error, fd) => {
+      if (error) rejectOpen(error)
+      else resolveOpen(fd)
+    })
+  })
+}
+
+function statDescriptor(fd: number): Promise<Stats> {
+  return new Promise((resolveStat, rejectStat) => {
+    fstatCallback(fd, (error, stats) => {
+      if (error) rejectStat(error)
+      else resolveStat(stats)
+    })
+  })
+}
+
+function closeDescriptor(fd: number): Promise<void> {
+  return new Promise((resolveClose, rejectClose) => {
+    closeCallback(fd, (error) => {
+      if (error) rejectClose(error)
+      else resolveClose()
+    })
+  })
+}
+
+async function scanDirectory(dir: string): Promise<{ files: PaneScreenshotFile[]; otherCount: number; bytes: number; truncated: boolean }> {
+  if (await realpath(dir) !== dir || !(await stat(dir)).isDirectory()) throw new Error('Screenshot directory identity changed')
   const files: PaneScreenshotFile[] = []
   let otherCount = 0
   let bytes = 0
-  for (const entry of readdirSync(dir)) {
+  const entries = await readdir(dir)
+  const truncated = entries.length > MAX_SCREENSHOT_FILES
+  for (const entry of entries.slice(0, MAX_SCREENSHOT_FILES)) {
     const candidate = join(dir, entry)
     let real: string
     let stats: ReturnType<typeof statSync>
     try {
-      real = realpathSync(candidate)
+      real = await realpath(candidate)
       if (!inside(dir, real)) continue
-      stats = statSync(real)
+      stats = await stat(real)
     } catch {
       continue
     }
     if (!stats.isFile()) continue
     bytes += stats.size
-    if (isImage(entry)) {
+    if (isImage(entry) && stats.size <= MAX_SCREENSHOT_FILE_BYTES) {
       files.push({ name: entry, size: stats.size, modifiedAt: stats.mtimeMs })
     } else {
       otherCount += 1
     }
   }
   files.sort((left, right) => right.modifiedAt - left.modifiedAt || left.name.localeCompare(right.name))
-  return { files, otherCount, bytes }
+  return { files, otherCount, bytes, truncated }
 }
 
 /** Persistent, capability-id registry for pane-published screenshot folders. */
@@ -108,6 +141,7 @@ export class PaneScreenshotRegistry {
   private readonly registrations: Registration[] = []
   private readonly statePath: string | null
   private readonly now: () => number
+  private registrationUpdates: Promise<void> = Promise.resolve()
 
   constructor(options: RegistryOptions = {}) {
     this.statePath = options.statePath ?? null
@@ -115,9 +149,15 @@ export class PaneScreenshotRegistry {
     this.load()
   }
 
-  register(paneId: string, inputDir: string): PaneScreenshotFolder {
+  async register(paneId: string, inputDir: string): Promise<PaneScreenshotFolder> {
+    const operation = this.registrationUpdates.then(() => this.registerNow(paneId, inputDir))
+    this.registrationUpdates = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  private async registerNow(paneId: string, inputDir: string): Promise<PaneScreenshotFolder> {
     if (!isPaneId(paneId)) throw new PaneScreenshotError(400, 'paneId must be a tmux pane id')
-    const dir = canonicalDirectory(inputDir)
+    const dir = await canonicalDirectory(inputDir)
     const now = this.now()
     let registrations = this.activeRegistrations(now)
     const known = registrations.find((entry) => entry.dir === dir)
@@ -148,12 +188,12 @@ export class PaneScreenshotRegistry {
   }
 
   /** Resolve the registered directory or a file within it for a pane reveal action. */
-  resolveForPane(paneId: string, id: string, file?: string): string | null {
+  async resolveForPane(paneId: string, id: string, file?: string): Promise<string | null> {
     const entry = this.activeRegistrations().find((candidate) => candidate.paneId === paneId && candidate.id === id)
     if (!entry) return null
     if (file === undefined) {
       try {
-        return realpathSync(entry.dir) === entry.dir && statSync(entry.dir).isDirectory() ? entry.dir : null
+        return await realpath(entry.dir) === entry.dir && (await stat(entry.dir)).isDirectory() ? entry.dir : null
       } catch {
         return null
       }
@@ -161,16 +201,16 @@ export class PaneScreenshotRegistry {
     return this.resolveFile(entry, encodeURIComponent(file), true)
   }
 
-  resolveImage(id: string, requestPath: string): string | null {
+  async resolveImage(id: string, requestPath: string): Promise<string | null> {
     const entry = this.activeRegistrations().find((candidate) => candidate.id === id)
     return entry ? this.resolveFile(entry, requestPath, true) : null
   }
 
-  list(id: string): (PaneScreenshotFolder & { files: PaneScreenshotFile[] }) | null {
+  async list(id: string): Promise<(PaneScreenshotFolder & { files: PaneScreenshotFile[] }) | null> {
     const entry = this.activeRegistrations().find((candidate) => candidate.id === id)
     if (!entry) return null
     try {
-      const listing = scanDirectory(entry.dir)
+      const listing = await scanDirectory(entry.dir)
       return {
         id: entry.id,
         dir: entry.dir,
@@ -179,6 +219,7 @@ export class PaneScreenshotRegistry {
         otherCount: listing.otherCount,
         bytes: listing.bytes,
         updatedAt: entry.registeredAt,
+        ...(listing.truncated ? { truncated: true as const } : {}),
         preview: listing.files.slice(0, PANE_SCREENSHOT_PREVIEW_LIMIT),
         files: listing.files,
       }
@@ -198,16 +239,16 @@ export class PaneScreenshotRegistry {
     }
   }
 
-  registrationsForPane(paneId: string): PaneScreenshotFolder[] {
-    return this.activeRegistrations()
+  async registrationsForPane(paneId: string): Promise<PaneScreenshotFolder[]> {
+    return Promise.all(this.activeRegistrations()
       .filter((entry) => entry.paneId === paneId)
       .sort((left, right) => right.registeredAt - left.registeredAt)
-      .map((entry) => this.folderFor(entry, true))
+      .map((entry) => this.folderFor(entry, true)))
   }
 
-  private folderFor(entry: Registration, tolerateMissing: boolean): PaneScreenshotFolder {
+  private async folderFor(entry: Registration, tolerateMissing: boolean): Promise<PaneScreenshotFolder> {
     try {
-      const listing = scanDirectory(entry.dir)
+      const listing = await scanDirectory(entry.dir)
       return {
         id: entry.id,
         dir: entry.dir,
@@ -216,6 +257,7 @@ export class PaneScreenshotRegistry {
         otherCount: listing.otherCount,
         bytes: listing.bytes,
         updatedAt: entry.registeredAt,
+        ...(listing.truncated ? { truncated: true as const } : {}),
         preview: listing.files.slice(0, PANE_SCREENSHOT_PREVIEW_LIMIT),
       }
     } catch {
@@ -234,7 +276,7 @@ export class PaneScreenshotRegistry {
     }
   }
 
-  private resolveFile(entry: Registration, requestPath: string, imageOnly: boolean): string | null {
+  private async resolveFile(entry: Registration, requestPath: string, imageOnly: boolean): Promise<string | null> {
     let decoded: string
     try {
       decoded = decodeURIComponent(requestPath)
@@ -247,8 +289,8 @@ export class PaneScreenshotRegistry {
     const candidate = resolve(entry.dir, normalized)
     if (!inside(entry.dir, candidate) || (imageOnly && !isImage(candidate))) return null
     try {
-      const real = realpathSync(candidate)
-      return inside(entry.dir, real) && (!imageOnly || isImage(real)) && statSync(real).isFile() ? real : null
+      const real = await realpath(candidate)
+      return inside(entry.dir, real) && (!imageOnly || isImage(real)) && (await stat(real)).isFile() ? real : null
     } catch {
       return null
     }
@@ -317,12 +359,12 @@ export class PaneScreenshotRegistry {
   }
 }
 
-export function handlePaneScreenshotImage(
+export async function handlePaneScreenshotImage(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
   registry: PaneScreenshotRegistry,
-): boolean {
+): Promise<boolean> {
   const match = /^\/screenshots\/([0-9a-f]{16})\/(.+)$/.exec(url.pathname)
   if (!match) return false
   if (request.method !== 'GET') {
@@ -330,36 +372,49 @@ export function handlePaneScreenshotImage(
     response.end()
     return true
   }
-  const file = registry.resolveImage(match[1], match[2])
+  const file = await registry.resolveImage(match[1], match[2])
   if (!file) {
     response.writeHead(404, { 'Cache-Control': 'no-store' })
     response.end()
     return true
   }
-  let body: Buffer
+  let fd: number | null = null
+  let size = 0
   try {
-    body = readFileSync(file)
+    fd = await openReadOnlyNoFollow(file)
+    const stats = await statDescriptor(fd)
+    if (!stats.isFile() || stats.size > MAX_SCREENSHOT_FILE_BYTES) {
+      await closeDescriptor(fd)
+      fd = null
+      response.writeHead(404, { 'Cache-Control': 'no-store' })
+      response.end()
+      return true
+    }
+    size = stats.size
   } catch {
+    if (fd !== null) await closeDescriptor(fd).catch(() => undefined)
     response.writeHead(404, { 'Cache-Control': 'no-store' })
     response.end()
     return true
   }
   response.writeHead(200, {
     'Cache-Control': 'no-store',
-    'Content-Length': body.length,
+    'Content-Length': size,
     'Content-Type': CONTENT_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
     'X-Content-Type-Options': 'nosniff',
   })
-  response.end(body)
+  const stream = createReadStream(file, { fd, autoClose: true })
+  stream.on('error', () => response.destroy())
+  stream.pipe(response)
   return true
 }
 
-export function handlePaneScreenshotApi(
+export async function handlePaneScreenshotApi(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
   registry: PaneScreenshotRegistry,
-): boolean {
+): Promise<boolean> {
   const match = /^\/api\/screenshots\/([0-9a-f]{16})$/.exec(url.pathname)
   if (!match) return false
   if (request.method !== 'GET') {
@@ -367,7 +422,7 @@ export function handlePaneScreenshotApi(
     response.end()
     return true
   }
-  const folder = registry.list(match[1])
+  const folder = await registry.list(match[1])
   if (!folder) {
     const body = JSON.stringify({ error: 'Not found' }) + '\n'
     response.writeHead(404, { 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8' })

@@ -159,7 +159,7 @@ describe('pane management API', () => {
       await writeFile(outside, 'outside')
       await symlink(outside, join(folder, 'escaped.png'))
       const screenshots = new PaneScreenshotRegistry()
-      const registration = screenshots.register('%12', folder)
+      const registration = await screenshots.register('%12', folder)
       const openFolder = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)
       const revealFile = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)
       const api = new PaneManagementApi({
