@@ -306,7 +306,7 @@ describe('pull request listing', () => {
   })
 
   it('uses deduplicated checks when successful reruns leave the GitHub rollup failed', async () => {
-    const { service, runner } = serviceWith(graphqlPayload([
+    const { service } = serviceWith(graphqlPayload([
       pullRequestNode({
         commits: { nodes: [{ commit: { statusCheckRollup: {
           state: 'FAILURE',
