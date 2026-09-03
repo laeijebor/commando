@@ -17,6 +17,7 @@ const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
 const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
+const CHECK_CONTEXT_PAGE_SIZE = 100
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
@@ -364,7 +365,7 @@ fragment PrFields on PullRequest {
   latestReviews(first: 10) { nodes { author { login } state } }
   commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
     state
-    contexts(first: 50) {
+    contexts(first: ${CHECK_CONTEXT_PAGE_SIZE}) {
       totalCount
       nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
     }
@@ -445,15 +446,18 @@ function parseChecks(commit: JsonRecord | null): PrChecks {
   const runs = [...byName.entries()].map(([name, state]) => ({ name, state }))
   const failed = runs.filter((run) => run.state === 'fail').length
   const pending = runs.filter((run) => run.state === 'pending').length
+  const truncated = totalCount > contextNodes.length
 
   const rollupState = rollup.state
-  const state: PrCheckState =
-    rollupState === 'SUCCESS' ? 'pass'
+  const normalizedState: PrCheckState = failed > 0 ? 'fail' : pending > 0 ? 'pending' : 'pass'
+  const state: PrCheckState = !truncated
+    ? normalizedState
+    : rollupState === 'SUCCESS' ? 'pass'
     : rollupState === 'FAILURE' || rollupState === 'ERROR' ? 'fail'
-    : rollupState === 'PENDING' ? 'pending'
-    : failed > 0 ? 'fail' : pending > 0 ? 'pending' : 'pass'
+    : rollupState === 'PENDING' || rollupState === 'EXPECTED' ? 'pending'
+    : normalizedState
 
-  return { state, runs, failed, pending, total: runs.length, truncated: totalCount > contextNodes.length }
+  return { state, runs, failed, pending, total: runs.length, truncated }
 }
 
 function parseReviewDecision(value: unknown): PrSummary['reviewDecision'] {

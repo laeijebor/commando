@@ -305,6 +305,36 @@ describe('pull request listing', () => {
     expect(checks?.truncated).toBe(true)
   })
 
+  it('uses deduplicated checks when successful reruns leave the complete GitHub rollup failed', async () => {
+    const { service, runner } = serviceWith(graphqlPayload([
+      pullRequestNode({
+        commits: { nodes: [{ commit: { statusCheckRollup: {
+          state: 'FAILURE',
+          contexts: { totalCount: 4, nodes: [
+            { __typename: 'CheckRun', name: 'Validate PR title', status: 'COMPLETED', conclusion: 'CANCELLED' },
+            { __typename: 'CheckRun', name: 'Validate PR title', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { __typename: 'CheckRun', name: 'Linear ticket', status: 'COMPLETED', conclusion: 'CANCELLED' },
+            { __typename: 'CheckRun', name: 'Linear ticket', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          ] },
+        } } }] },
+      }),
+    ]))
+
+    const checks = (await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].checks
+    expect(runner.mock.calls[0][0].join(' ')).toContain('contexts(first: 100)')
+    expect(checks).toEqual({
+      state: 'pass',
+      runs: [
+        { name: 'Validate PR title', state: 'pass' },
+        { name: 'Linear ticket', state: 'pass' },
+      ],
+      failed: 0,
+      pending: 0,
+      total: 2,
+      truncated: false,
+    })
+  })
+
   it('maps review decisions, conflicts, drafts, and review requests for the viewer', async () => {
     const { service } = serviceWith(graphqlPayload([
       pullRequestNode({
