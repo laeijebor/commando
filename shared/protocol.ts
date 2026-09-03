@@ -115,7 +115,25 @@ export type AgentStatus = {
   details?: AgentDetails
 }
 
-export type SessionBriefUpdateKind = 'changed' | 'decision' | 'check' | 'blocker' | 'note'
+export type SessionBriefUpdateKind = 'changed' | 'decision' | 'check' | 'blocker' | 'note' | 'screenshots'
+
+export type PaneScreenshotFile = {
+  name: string
+  size: number
+  modifiedAt: number
+}
+
+export type PaneScreenshotFolder = {
+  id: string
+  dir: string
+  topic: string
+  imageCount: number
+  otherCount: number
+  bytes: number
+  updatedAt: number
+  missing?: boolean
+  preview: PaneScreenshotFile[]
+}
 
 export type SessionBriefUpdate = {
   id: string
@@ -137,6 +155,7 @@ export type SessionBrief = {
   headlineSource: 'hook' | 'agent'
   recapMarkdown?: string
   tasks?: AgentTask[]
+  screenshots?: PaneScreenshotFolder[]
   updates: SessionBriefUpdate[]
   next?: string
   updatedAt: number

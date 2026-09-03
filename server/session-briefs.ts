@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 import type {
   AgentStatus,
@@ -12,6 +12,7 @@ import type {
   SessionBrief,
   SessionBriefUpdate,
   SessionBriefUpdateKind,
+  PaneScreenshotFolder,
 } from '../shared/protocol.js'
 
 type StateFile = {
@@ -31,6 +32,7 @@ export type SessionBriefPatch = {
     text: string
     detail?: string
   }
+  publishedScreenshots?: PaneScreenshotFolder
 }
 
 const SESSION_ID = /^\$\d+$/
@@ -43,7 +45,7 @@ const MAX_RECAP = 2_000
 const MAX_NEXT = 240
 const MAX_UPDATE_TEXT = 240
 const MAX_UPDATE_DETAIL = 360
-const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note'])
+const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note', 'screenshots'])
 const STATUS_KINDS = new Set<AgentStatusKind>(['working', 'needs_input', 'done', 'failed', 'stale', 'unknown'])
 const TASK_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed', 'cancelled'])
 const TASK_PRIORITIES = new Set<AgentTaskPriority>(['high', 'medium', 'low'])
@@ -67,6 +69,10 @@ function cleanOptionalText(value: unknown, maximum: number): string | undefined 
 
 function safeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function safeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
 function parseUpdate(value: unknown): SessionBriefUpdate | null {
@@ -119,6 +125,38 @@ function parseTask(value: unknown, index: number): AgentTask | null {
   }
 }
 
+function parseScreenshotFile(value: unknown): PaneScreenshotFolder['preview'][number] | null {
+  if (!isRecord(value)) return null
+  const name = cleanText(value.name, 512)
+  if (!name || name.includes('/') || name.includes('\\') || !safeInteger(value.size) || !safeNumber(value.modifiedAt)) return null
+  return { name, size: value.size, modifiedAt: value.modifiedAt }
+}
+
+function parseScreenshotFolder(value: unknown): PaneScreenshotFolder | null {
+  if (!isRecord(value)) return null
+  const dir = cleanText(value.dir, 4_096)
+  const topic = cleanText(value.topic, 4_096)
+  if (
+    typeof value.id !== 'string' || !/^[0-9a-f]{16}$/.test(value.id) || !dir || !isAbsolute(dir) || !topic ||
+    !safeInteger(value.imageCount) || !safeInteger(value.otherCount) || !safeInteger(value.bytes) ||
+    !safeInteger(value.updatedAt) || (value.missing !== undefined && value.missing !== true) ||
+    !Array.isArray(value.preview) || value.preview.length > 24
+  ) return null
+  const preview = value.preview.map(parseScreenshotFile)
+  if (preview.some((file) => file === null)) return null
+  return {
+    id: value.id,
+    dir,
+    topic,
+    imageCount: value.imageCount,
+    otherCount: value.otherCount,
+    bytes: value.bytes,
+    updatedAt: value.updatedAt,
+    ...(value.missing === true ? { missing: true } : {}),
+    preview: preview as PaneScreenshotFolder['preview'],
+  }
+}
+
 function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (!isRecord(value)) return null
   const sessionName = cleanText(value.sessionName, 128)
@@ -126,12 +164,14 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   const recapMarkdown = cleanOptionalText(value.recapMarkdown, MAX_RECAP)
   const next = cleanOptionalText(value.next, MAX_NEXT)
   const taskValues = value.tasks === undefined ? [] : value.tasks
+  const screenshotValues = value.screenshots === undefined ? [] : value.screenshots
   if (
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
     (value.headlineSource !== 'hook' && value.headlineSource !== 'agent') ||
     typeof value.state !== 'string' || !STATUS_KINDS.has(value.state as AgentStatusKind) ||
     !Array.isArray(taskValues) || taskValues.length > 100 ||
+    !Array.isArray(screenshotValues) || screenshotValues.length > 5 ||
     !Array.isArray(value.updates) || value.updates.length > MAX_UPDATES ||
     !safeInteger(value.updatedAt)
   ) return null
@@ -143,6 +183,10 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (tasks.some((task) => task === null)) return null
   const validTasks = tasks as AgentTask[]
   if (new Set(validTasks.map((task) => task.id)).size !== validTasks.length) return null
+  const screenshots = screenshotValues.map(parseScreenshotFolder)
+  if (screenshots.some((folder) => folder === null)) return null
+  const validScreenshots = screenshots as PaneScreenshotFolder[]
+  if (new Set(validScreenshots.map((folder) => folder.id)).size !== validScreenshots.length) return null
   return {
     sessionId: value.sessionId,
     sessionName,
@@ -151,6 +195,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     headlineSource: value.headlineSource,
     ...(recapMarkdown ? { recapMarkdown } : {}),
     ...(validTasks.length ? { tasks: validTasks } : {}),
+    ...(validScreenshots.length ? { screenshots: validScreenshots } : {}),
     updates: validUpdates,
     ...(next ? { next } : {}),
     updatedAt: value.updatedAt,
@@ -214,6 +259,7 @@ function cloneBrief(brief: SessionBrief): SessionBrief {
   return {
     ...brief,
     ...(brief.tasks ? { tasks: brief.tasks.map((task) => ({ ...task })) } : {}),
+    ...(brief.screenshots ? { screenshots: brief.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
     updates: brief.updates.map((update) => ({ ...update })),
   }
 }
@@ -410,6 +456,7 @@ export class SessionBriefStore {
           : current?.tasks !== undefined
             ? { tasks: current.tasks.map((task) => ({ ...task })) }
             : {}),
+        ...(current?.screenshots?.length ? { screenshots: current.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
         updatedAt: Math.max(now, status.updatedAt),
@@ -458,10 +505,26 @@ export class SessionBriefStore {
       source: 'agent' as const,
       createdAt: now,
     } : null
+    const published = patch.publishedScreenshots
+    const previousPublished = published
+      ? current?.screenshots?.find((folder) => folder.id === published.id)
+      : undefined
+    const screenshotUpdate: SessionBriefUpdate | null = published && previousPublished?.imageCount !== published.imageCount
+      ? {
+          id: `agent:${now}:${randomUUID()}`,
+          paneId,
+          kind: 'screenshots',
+          text: `Published ${published.topic} · ${published.imageCount} images`,
+          detail: published.dir.startsWith(`${homedir()}/`) ? `~/${published.dir.slice(homedir().length + 1)}` : published.dir,
+          source: 'agent',
+          createdAt: now,
+        }
+      : null
     const previousUpdates = current?.updates ?? []
     const headline = patch.headline
       ?? current?.headline
       ?? patch.update?.text
+      ?? screenshotUpdate?.text
       ?? patch.next
       ?? 'Session update'
     const brief: SessionBrief = {
@@ -479,7 +542,13 @@ export class SessionBriefStore {
             ? { recapMarkdown: current.recapMarkdown }
             : {}),
       ...(current?.tasks?.length ? { tasks: current.tasks.map((task) => ({ ...task })) } : {}),
-      updates: update ? appendUpdate(previousUpdates, update) : previousUpdates,
+      ...(published
+        ? { screenshots: [published, ...(current?.screenshots ?? []).filter((folder) => folder.id !== published.id)].slice(0, 5) }
+        : current?.screenshots?.length
+          ? { screenshots: current.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) }
+          : {}),
+      updates: [screenshotUpdate, update].filter((entry): entry is SessionBriefUpdate => entry !== null)
+        .reduce(appendUpdate, previousUpdates),
       ...(patch.next === null
         ? {}
         : patch.next !== undefined

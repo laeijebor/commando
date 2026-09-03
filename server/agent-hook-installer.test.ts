@@ -223,6 +223,8 @@ describe('agent hook installer', () => {
     expect(openCodePlugin).not.toContain('output.output')
     expect(sessionBriefCli).toContain('/api/session-brief')
     expect(sessionBriefCli).toContain('X-Commando-Pane')
+    expect(sessionBriefCli).toContain("flag === '--screenshots'")
+    expect(sessionBriefCli).toContain('resolve(valueAfter(index++, flag))')
     expect(prMarkerCli).toContain('/api/pane-target-marker')
     expect(prMarkerCli).toContain('X-Commando-Pane')
     for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)

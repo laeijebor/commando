@@ -1,13 +1,16 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { realpathSync, statSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { isAbsolute } from 'node:path'
 
 import type { AgentStatusKind, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol.js'
 import type { SessionBriefPatch, SessionBriefStore } from './session-briefs.js'
+import { PaneScreenshotError, type PaneScreenshotRegistry } from './pane-screenshots.js'
 
 const API_PATH = '/api/session-brief'
 const MAX_REQUEST_BYTES = 16 * 1024
 const PANE_ID = /^%\d+$/
-const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note'])
+const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note', 'screenshots'])
 const STATUS_KINDS = new Set<AgentStatusKind>(['working', 'needs_input', 'done', 'failed', 'stale', 'unknown'])
 
 type SessionBriefApiDependencies = {
@@ -15,6 +18,7 @@ type SessionBriefApiDependencies = {
   store: SessionBriefStore
   paneTarget: (paneId: string) => { sessionId: string; sessionName: string } | null
   onChange: (brief: SessionBrief) => void
+  screenshots?: PaneScreenshotRegistry
   now?: () => number
 }
 
@@ -101,7 +105,11 @@ function optionalText(
   return value.trim()
 }
 
-export function parseSessionBriefPatch(body: Record<string, unknown>): SessionBriefPatch {
+export type ParsedSessionBriefPatch = Omit<SessionBriefPatch, 'publishedScreenshots'> & {
+  screenshots?: { dir: string }
+}
+
+export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSessionBriefPatch {
   const headline = optionalText(body, 'headline', 180, false)
   const recapMarkdown = optionalText(body, 'recapMarkdown', 2_000, true)
   const next = optionalText(body, 'next', 240, true)
@@ -124,7 +132,23 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): SessionBr
       ...(detail ? { detail } : {}),
     }
   }
-  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !update) {
+  let screenshots: ParsedSessionBriefPatch['screenshots']
+  if (body.screenshots !== undefined) {
+    if (!isRecord(body.screenshots)) throw new HttpError(400, 'screenshots must be a JSON object')
+    const dir = body.screenshots.dir
+    if (
+      typeof dir !== 'string' || !isAbsolute(dir) || Buffer.byteLength(dir, 'utf8') > 4_096 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(dir)
+    ) throw new HttpError(400, 'screenshots.dir must be an absolute path without control characters')
+    try {
+      const real = realpathSync(dir)
+      if (!statSync(real).isDirectory()) throw new Error('not a directory')
+      screenshots = { dir: real }
+    } catch {
+      throw new HttpError(400, 'screenshots.dir must exist and be a directory')
+    }
+  }
+  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !update && !screenshots) {
     throw new HttpError(400, 'At least one session brief field is required')
   }
   return {
@@ -133,6 +157,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): SessionBr
     ...(next !== undefined ? { next } : {}),
     ...(state ? { state: state as AgentStatusKind } : {}),
     ...(update ? { update } : {}),
+    ...(screenshots ? { screenshots } : {}),
   }
 }
 
@@ -160,19 +185,24 @@ export class SessionBriefApi {
       const paneId = targetPaneId(request)
       const target = this.dependencies.paneTarget(paneId)
       if (!target) throw new HttpError(404, 'Tmux pane does not exist')
-      const patch = parseSessionBriefPatch(await readJson(request))
+      const parsed = parseSessionBriefPatch(await readJson(request))
+      const publishedScreenshots = parsed.screenshots
+        ? this.dependencies.screenshots?.register(paneId, parsed.screenshots.dir)
+        : undefined
+      if (parsed.screenshots && !publishedScreenshots) throw new Error('Screenshot registry is unavailable')
+      const { screenshots: _screenshots, ...patch } = parsed
       const brief = await this.dependencies.store.applyAgentPatch(
         target.sessionId,
         target.sessionName,
         paneId,
-        patch,
+        { ...patch, ...(publishedScreenshots ? { publishedScreenshots } : {}) },
         this.dependencies.now?.() ?? Date.now(),
       )
       this.dependencies.onChange(brief)
       writeJson(response, 200, { ok: true, brief })
       return true
     } catch (error) {
-      if (error instanceof HttpError) {
+      if (error instanceof HttpError || error instanceof PaneScreenshotError) {
         if (error.status === 405) response.setHeader('Allow', 'POST')
         writeJson(response, error.status, { error: error.message })
       } else {

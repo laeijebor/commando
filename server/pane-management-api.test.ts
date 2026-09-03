@@ -1,9 +1,13 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxPaneActions } from './tmux-pane-actions.js'
 import type { TmuxProcessExecutor } from './tmux-session-actions.js'
+import { PaneScreenshotRegistry } from './pane-screenshots.js'
 
 const servers: Server[] = []
 
@@ -143,6 +147,45 @@ describe('pane management API', () => {
 
     expect(response.status).toBe(404)
     expect(openFolder).not.toHaveBeenCalled()
+  })
+
+  it('reveals only files and folders registered for the source pane', async () => {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), 'commando-pane-reveal-')))
+    try {
+      const folder = join(parent, 'shots')
+      const outside = join(parent, 'outside.png')
+      await import('node:fs/promises').then(({ mkdir }) => mkdir(folder))
+      await writeFile(join(folder, 'one.png'), 'png')
+      await writeFile(outside, 'outside')
+      await symlink(outside, join(folder, 'escaped.png'))
+      const screenshots = new PaneScreenshotRegistry()
+      const registration = screenshots.register('%12', folder)
+      const openFolder = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)
+      const revealFile = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined)
+      const api = new PaneManagementApi({
+        currentPaneIds: () => ['%12'],
+        panePath: () => folder,
+        screenshots,
+        openFolder,
+        revealFile,
+      })
+      const baseUrl = await startApi(api)
+      const revealUrl = `${baseUrl}/api/pane-management/panes/%2512/reveal`
+      const post = (body: unknown) => fetch(revealUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      await expect(post({ folderId: 'ffffffffffffffff' })).resolves.toMatchObject({ status: 404 })
+      await expect(post({ folderId: registration.id, file: 'escaped.png' })).resolves.toMatchObject({ status: 400 })
+      await expect(post({ folderId: registration.id })).resolves.toMatchObject({ status: 200 })
+      await expect(post({ folderId: registration.id, file: 'one.png' })).resolves.toMatchObject({ status: 200 })
+      expect(openFolder).toHaveBeenCalledWith(folder)
+      expect(revealFile).toHaveBeenCalledWith(join(folder, 'one.png'))
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
   })
 
   it('runs a validated command from the server-resolved pane path', async () => {

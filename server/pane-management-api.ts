@@ -4,7 +4,8 @@ import {
   validateTmuxPaneId,
   validateTmuxPaneTitle,
 } from './tmux-pane-actions.js'
-import { openFolderInFinder } from './open-folder.js'
+import { openFolderInFinder, revealInFinder } from './open-folder.js'
+import type { PaneScreenshotRegistry } from './pane-screenshots.js'
 import { runCommand, validateRunCommand } from './run-command.js'
 import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
 import type { PaneMark } from '../shared/protocol.js'
@@ -22,6 +23,8 @@ type PaneManagementDependencies = {
   clearPaneMark?: (targetId: string) => Promise<boolean>
   onPaneMarkChanged?: (change: { type: 'upsert'; mark: PaneMark } | { type: 'remove'; targetId: string }) => void
   openFolder?: (path: string) => Promise<void>
+  revealFile?: (path: string) => Promise<void>
+  screenshots?: PaneScreenshotRegistry
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
   onPanesChanged?: () => void | Promise<void>
@@ -71,10 +74,10 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-type PaneAction = 'rename' | 'delete' | 'open' | 'run' | 'mark' | 'acknowledge-mark'
+type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'mark' | 'acknowledge-mark'
 
 function paneRoute(pathname: string): { paneId: string; action: PaneAction } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|run|mark)(?:\/(acknowledge))?$/.exec(pathname)
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|mark)(?:\/(acknowledge))?$/.exec(pathname)
   if (!match) return null
   try {
     return {
@@ -92,10 +95,12 @@ export class PaneManagementApi {
   private readonly actions: TmuxPaneActions
   private readonly openFolder: (path: string) => Promise<void>
   private readonly runCommand: (command: string, cwd: string) => Promise<void>
+  private readonly revealFile: (path: string) => Promise<void>
 
   constructor(private readonly dependencies: PaneManagementDependencies) {
     this.actions = dependencies.actions ?? new TmuxPaneActions()
     this.openFolder = dependencies.openFolder ?? openFolderInFinder
+    this.revealFile = dependencies.revealFile ?? revealInFinder
     this.runCommand = dependencies.runCommand ?? runCommand
   }
 
@@ -129,6 +134,26 @@ export class PaneManagementApi {
         const path = this.dependencies.panePath(route.paneId)
         if (!path) throw new HttpError(404, 'Pane path is unavailable')
         await this.openFolder(path)
+        writeJson(response, 200, { ok: true, paneId: route.paneId })
+        return true
+      }
+
+      if (route.action === 'reveal') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const body = await readJson(request)
+        if (typeof body.folderId !== 'string' || !/^[0-9a-f]{16}$/.test(body.folderId)) {
+          throw new HttpError(400, 'folderId is invalid')
+        }
+        if (body.file !== undefined && (typeof body.file !== 'string' || body.file.length === 0)) {
+          throw new HttpError(400, 'file is invalid')
+        }
+        if (!this.dependencies.screenshots?.isRegisteredForPane(route.paneId, body.folderId)) {
+          throw new HttpError(404, 'Screenshot folder is not registered for this pane')
+        }
+        const path = this.dependencies.screenshots.resolveForPane(route.paneId, body.folderId, body.file as string | undefined)
+        if (!path) throw new HttpError(400, body.file === undefined ? 'Screenshot folder is unavailable' : 'Screenshot file is invalid')
+        if (body.file === undefined) await this.openFolder(path)
+        else await this.revealFile(path)
         writeJson(response, 200, { ok: true, paneId: route.paneId })
         return true
       }

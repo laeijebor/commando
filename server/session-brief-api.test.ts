@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionBrief } from '../shared/protocol.js'
 import { SessionBriefApi } from './session-brief-api.js'
 import { SessionBriefStore } from './session-briefs.js'
+import { PaneScreenshotRegistry } from './pane-screenshots.js'
 
 const token = 'session-brief-hook-token-that-is-at-least-32-characters'
 let server: Server
@@ -23,6 +24,7 @@ beforeEach(async () => {
   const api = new SessionBriefApi({
     token,
     store,
+    screenshots: new PaneScreenshotRegistry({ statePath: join(directory, 'screenshots.json'), now: () => 123 }),
     paneTarget: (paneId) => paneId === '%1'
       ? { sessionId: '$1', sessionName: 'commando' }
       : null,
@@ -94,5 +96,24 @@ describe('SessionBriefApi', () => {
     await expect(post({ update: { kind: 'script', text: 'No' } })).resolves.toMatchObject({ status: 400 })
     await expect(post({ recapMarkdown: 'x'.repeat(2_001) })).resolves.toMatchObject({ status: 400 })
     expect(changes).toHaveLength(0)
+  })
+
+  it('publishes an absolute screenshot directory and rejects relative or missing paths', async () => {
+    const shots = join(await realpath(directory), 'shots')
+    await mkdir(shots)
+    await writeFile(join(shots, 'one.png'), 'png')
+
+    const response = await post({ screenshots: { dir: shots } })
+    expect(response.status).toBe(200)
+    const body = await response.json() as { brief: SessionBrief }
+    expect(body.brief.screenshots?.[0]).toMatchObject({ dir: shots, topic: 'shots', imageCount: 1 })
+    expect(body.brief.updates[0]).toMatchObject({
+      kind: 'screenshots',
+      source: 'agent',
+      text: 'Published shots · 1 images',
+    })
+
+    await expect(post({ screenshots: { dir: 'relative/shots' } })).resolves.toMatchObject({ status: 400 })
+    await expect(post({ screenshots: { dir: join(directory, 'missing') } })).resolves.toMatchObject({ status: 400 })
   })
 })

@@ -99,6 +99,30 @@ describe('SessionBriefStore', () => {
     expect(replay.get('%1')).toEqual(updated)
   })
 
+  it('round-trips screenshot folders and suppresses unchanged-count republish events', async () => {
+    const briefs = await store()
+    const folder = {
+      id: '0123456789abcdef',
+      dir: '/tmp/project/.screenshots/review',
+      topic: 'review',
+      imageCount: 2,
+      otherCount: 1,
+      bytes: 30,
+      updatedAt: 100,
+      preview: [{ name: 'one.png', size: 10, modifiedAt: 90 }],
+    }
+    const published = await briefs.applyAgentPatch('$1', 'gizmo', '%1', { publishedScreenshots: folder }, 100)
+    await briefs.applyAgentPatch('$1', 'gizmo', '%1', {
+      publishedScreenshots: { ...folder, updatedAt: 110 },
+    }, 110)
+
+    expect(published.screenshots).toEqual([folder])
+    expect(briefs.get('%1')?.updates.filter((update) => update.kind === 'screenshots')).toHaveLength(1)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.screenshots?.[0]).toMatchObject({ id: folder.id, updatedAt: 110 })
+  })
+
   it('keeps the handoff but marks it stale when the last agent status disappears', async () => {
     const briefs = await store()
     await briefs.syncFromStatuses('$2', 'commando', [status('%3', 'done', 100, 'Complete')], 100)
