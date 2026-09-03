@@ -5,15 +5,11 @@ import type { PanePrList, PrsApiClient } from './prsApi'
 
 const POLL_INTERVAL_MS = 30_000
 
-export function PanePullRequests({
-  paneId,
-  api,
-  connected,
-}: {
-  paneId: string
-  api: Pick<PrsApiClient, 'pane'>
-  connected: boolean
-}) {
+export function usePanePullRequests(
+  paneId: string,
+  api: Pick<PrsApiClient, 'pane'>,
+  connected: boolean,
+): PanePrList | null {
   const [list, setList] = useState<PanePrList | null>(null)
   const apiRef = useRef(api)
   apiRef.current = api
@@ -37,6 +33,22 @@ export function PanePullRequests({
       document.removeEventListener('visibilitychange', refresh)
     }
   }, [connected, paneId])
+  return list
+}
+
+export function PanePullRequests({
+  paneId,
+  api,
+  connected,
+  list: suppliedList,
+}: {
+  paneId: string
+  api: Pick<PrsApiClient, 'pane'>
+  connected: boolean
+  list?: PanePrList | null
+}) {
+  const internalList = usePanePullRequests(paneId, api, connected && suppliedList === undefined)
+  const list = suppliedList === undefined ? internalList : suppliedList
 
   if (!list?.pullRequests.length) return null
 

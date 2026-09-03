@@ -92,7 +92,7 @@ import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
-import { createPaneManagementApi } from './paneManagementApi'
+import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
 import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
@@ -109,6 +109,8 @@ import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
+import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
+import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import { createNotesApi } from './notesApi'
 import { pinnedNoteFrom, storePinnedNote, storedPinnedNote, type NoteRequest, type PinnedNote } from './pinnedNote'
 import {
@@ -256,7 +258,10 @@ type TerminalPaneProps = {
   useXtermFallback: boolean
   gitApi: GitDiffApiClient
   prsApi?: PrsApiClient
+  screenshotsApi?: PaneScreenshotsApiClient
+  paneManagementApi?: PaneManagementApiClient
   onOpenPath: () => Promise<void>
+  onOpenScreenshot?: (request: Omit<PaneScreenshotLightboxRequest, 'paneId'>) => void
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onAcknowledgeMark?: () => void
@@ -300,7 +305,10 @@ export function TerminalPaneCard({
   useXtermFallback,
   gitApi,
   prsApi,
+  screenshotsApi,
+  paneManagementApi,
   onOpenPath,
+  onOpenScreenshot,
   onFocus,
   onOpenMenu,
   onAcknowledgeMark,
@@ -561,7 +569,17 @@ export function TerminalPaneCard({
           registerSink={registerSink}
           registerFocusable={registerFocusable}
         />
-        {brief ? <PaneWorklog brief={brief} paneLabel={paneLabel} prsApi={prsApi} connected={connected} /> : null}
+        {brief ? (
+          <PaneWorklog
+            brief={brief}
+            paneLabel={paneLabel}
+            prsApi={prsApi}
+            connected={connected}
+            screenshotsApi={screenshotsApi}
+            paneManagementApi={paneManagementApi}
+            onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
+          />
+        ) : null}
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
@@ -883,6 +901,7 @@ export function App() {
   const [nativeTerminalAvailable, setNativeTerminalAvailable] = useState(false)
   const [paneActionPending, setPaneActionPending] = useState(false)
   const [paneActionError, setPaneActionError] = useState('')
+  const [screenshotLightbox, setScreenshotLightbox] = useState<PaneScreenshotLightboxRequest | null>(null)
   const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
@@ -1771,6 +1790,7 @@ export function App() {
   }
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
+  const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
   const prsApi = createPrsApi(token)
@@ -2584,7 +2604,10 @@ export function App() {
                             useXtermFallback={rendererControl?.manualXterm ?? false}
                             gitApi={gitDiffApi}
                             prsApi={prsApi}
+                            screenshotsApi={paneScreenshotsApi}
+                            paneManagementApi={paneManagementApi}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
+                            onOpenScreenshot={(request) => setScreenshotLightbox({ paneId: pane.id, ...request })}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                             onAcknowledgeMark={() => { void acknowledgePaneMark(pane.id) }}
@@ -2934,6 +2957,15 @@ export function App() {
           initialSummary={null}
           comparison={prDiff.comparison}
           onClose={() => setPrDiff(null)}
+        />
+      ) : null}
+
+      {screenshotLightbox ? (
+        <PaneScreenshotLightbox
+          request={screenshotLightbox}
+          screenshotsApi={paneScreenshotsApi}
+          paneManagementApi={paneManagementApi}
+          onClose={() => setScreenshotLightbox(null)}
         />
       ) : null}
 
