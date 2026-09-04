@@ -295,6 +295,34 @@ describe('TmuxCreateControls worktrees', () => {
     })
   })
 
+  it('can skip a saved preparation command for one session without clearing it', async () => {
+    window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify({ [MAIN]: 'pnpm i' }))
+    const onCreateSession = vi.fn(async (): Promise<TmuxCreateResponse> => ({
+      created: { ...created, panePath: `${MAIN}-worktrees/quick-session` },
+      worktree: { path: `${MAIN}-worktrees/quick-session`, branch: 'quick-session', base: 'origin/main', reusedBranch: false },
+    }))
+    render(<TmuxCreateControls onCreateSession={onCreateSession} probeRepo={probeFor({ [MAIN]: repo })} />)
+
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    const runPreparation = await screen.findByLabelText('Run preparation command for this session')
+    expect(runPreparation).toBeChecked()
+    expect(screen.getByLabelText(/^Prepare worktree/)).toHaveValue('pnpm i')
+
+    fireEvent.click(runPreparation)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Quick session' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({
+      name: 'Quick session',
+      windowName: '',
+      cwd: MAIN,
+      worktree: { branch: 'quick-session' },
+    }))
+    expect(await screen.findByRole('status')).not.toHaveTextContent(/Preparation started/)
+    expect(JSON.parse(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY) ?? 'null')).toEqual({ [MAIN]: 'pnpm i' })
+    expect(runPreparation).toBeChecked()
+  })
+
   it('sends an edited worktree path and omits the worktree when the toggle is off', async () => {
     const onCreateSession = vi.fn(async () => ({ created }))
     render(<TmuxCreateControls onCreateSession={onCreateSession} probeRepo={probeFor({ [MAIN]: repo })} />)

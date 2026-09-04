@@ -150,6 +150,7 @@ export function TmuxCreateControls({
   const [branch, setBranch] = useState('')
   const [worktreePath, setWorktreePath] = useState<string | null>(null)
   const [prepareCommand, setPrepareCommand] = useState('')
+  const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [pending, setPending] = useState(false)
   const [probing, setProbing] = useState(false)
   const [error, setError] = useState('')
@@ -175,6 +176,7 @@ export function TmuxCreateControls({
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
+  const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
 
   useEffect(() => {
     setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
@@ -191,6 +193,7 @@ export function TmuxCreateControls({
     setDirectoryHistoryFiltering(false)
     setDirectoryHistoryHighlight(0)
     setWorktreeEnabled(true)
+    setPrepareEnabled(true)
     setBranchEdited(false)
     setWorktreePath(null)
     setError('')
@@ -271,6 +274,7 @@ export function TmuxCreateControls({
     setBranch('')
     setBranchEdited(false)
     setWorktreePath(null)
+    setPrepareEnabled(true)
   }
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -291,7 +295,7 @@ export function TmuxCreateControls({
         request.worktree = {
           branch: effectiveBranch,
           ...(worktreePath ? { path: worktreePath } : {}),
-          ...(prepareCommand.trim() ? { prepareCommand } : {}),
+          ...(prepareRequested ? { prepareCommand } : {}),
         }
       }
       const result = await onCreateSession(request)
@@ -300,7 +304,7 @@ export function TmuxCreateControls({
       setDirectoryHistoryOpen(false)
       const { created, worktree } = result
       setStatus(worktree
-        ? `Created session ${created.paneId} in ${created.sessionName} on branch ${worktree.branch} at ${worktree.path}${prepareCommand.trim() ? '. Preparation started in the new pane' : ''}${worktree.warning ? `. ${worktree.warning}` : ''}`
+        ? `Created session ${created.paneId} in ${created.sessionName} on branch ${worktree.branch} at ${worktree.path}${prepareRequested ? '. Preparation started in the new pane' : ''}${worktree.warning ? `. ${worktree.warning}` : ''}`
         : `Created session ${created.paneId} in ${created.sessionName}`)
       onCreated?.(created, sessionGroupId, worktree)
       resetForm(formElement)
@@ -397,6 +401,16 @@ export function TmuxCreateControls({
                 if (repo.mainRoot) saveWorktreePrepareCommand(repo.mainRoot, command)
               }}
             />
+          </label>
+          <label className="tmux-create__toggle tmux-create__prepare-toggle">
+            <input
+              type="checkbox"
+              name="prepareEnabled"
+              checked={prepareEnabled}
+              disabled={unavailable}
+              onChange={(event) => setPrepareEnabled(event.target.checked)}
+            />
+            Run preparation command for this session
           </label>
         </>
       ) : null}

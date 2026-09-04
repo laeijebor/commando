@@ -260,6 +260,11 @@
   accent-color: var(--accent);
 }
 
+.tmux-create__prepare-toggle {
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
 .tmux-create__worktree-preview {
   display: grid;
   gap: 3px;
