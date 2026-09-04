@@ -22,6 +22,7 @@ export type SessionCreateRequest = {
 }
 
 export const TMUX_CWD_HISTORY_STORAGE_KEY = 'commando.tmux-create.cwd'
+export const WORKTREE_PREPARE_COMMANDS_STORAGE_KEY = 'commando.tmux-create.prepare-by-repo'
 const MAX_WORKING_DIRECTORY_HISTORY = 10
 const REPO_PROBE_DEBOUNCE_MS = 200
 
@@ -91,6 +92,35 @@ function saveWorkingDirectoryHistory(value: string, history: readonly string[]):
   return nextHistory
 }
 
+function loadWorktreePrepareCommands(): Record<string, string> {
+  try {
+    const stored = window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)
+    if (!stored) return {}
+    const value = JSON.parse(stored) as unknown
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    return Object.fromEntries(Object.entries(value).filter(
+      (entry): entry is [string, string] => entry[0].startsWith('/') && typeof entry[1] === 'string',
+    ))
+  } catch {
+    return {}
+  }
+}
+
+function saveWorktreePrepareCommand(repoRoot: string, command: string): void {
+  try {
+    const commands = loadWorktreePrepareCommands()
+    if (command.trim()) commands[repoRoot] = command
+    else delete commands[repoRoot]
+    if (Object.keys(commands).length) {
+      window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify(commands))
+    } else {
+      window.localStorage.removeItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)
+    }
+  } catch {
+    // Persistence is optional when browser storage is unavailable.
+  }
+}
+
 export function TmuxCreateControls({
   disabled = false,
   variant = 'inline',
@@ -119,6 +149,7 @@ export function TmuxCreateControls({
   const [branchEdited, setBranchEdited] = useState(false)
   const [branch, setBranch] = useState('')
   const [worktreePath, setWorktreePath] = useState<string | null>(null)
+  const [prepareCommand, setPrepareCommand] = useState('')
   const [pending, setPending] = useState(false)
   const [probing, setProbing] = useState(false)
   const [error, setError] = useState('')
@@ -144,6 +175,10 @@ export function TmuxCreateControls({
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
+
+  useEffect(() => {
+    setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
+  }, [repo?.mainRoot])
 
   useEffect(() => {
     if (!sessionCreateRequest) return
@@ -253,7 +288,11 @@ export function TmuxCreateControls({
         cwd,
       }
       if (worktreeRequested) {
-        request.worktree = { branch: effectiveBranch, ...(worktreePath ? { path: worktreePath } : {}) }
+        request.worktree = {
+          branch: effectiveBranch,
+          ...(worktreePath ? { path: worktreePath } : {}),
+          ...(prepareCommand.trim() ? { prepareCommand } : {}),
+        }
       }
       const result = await onCreateSession(request)
       const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
@@ -261,7 +300,7 @@ export function TmuxCreateControls({
       setDirectoryHistoryOpen(false)
       const { created, worktree } = result
       setStatus(worktree
-        ? `Created session ${created.paneId} in ${created.sessionName} on branch ${worktree.branch} at ${worktree.path}${worktree.warning ? `. ${worktree.warning}` : ''}`
+        ? `Created session ${created.paneId} in ${created.sessionName} on branch ${worktree.branch} at ${worktree.path}${prepareCommand.trim() ? '. Preparation started in the new pane' : ''}${worktree.warning ? `. ${worktree.warning}` : ''}`
         : `Created session ${created.paneId} in ${created.sessionName}`)
       onCreated?.(created, sessionGroupId, worktree)
       resetForm(formElement)
@@ -341,6 +380,24 @@ export function TmuxCreateControls({
               <span>{repo.defaultBranch ? ' · fetched before branching' : ' · no remote default branch'}</span>
             </div>
           </div>
+          <label>
+            Prepare worktree <span>optional, saved for {repo.name ?? 'this repository'}</span>
+            <textarea
+              name="prepareCommand"
+              value={prepareCommand}
+              rows={3}
+              maxLength={8_192}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={unavailable}
+              placeholder="pnpm i"
+              onChange={(event) => {
+                const command = event.target.value
+                setPrepareCommand(command)
+                if (repo.mainRoot) saveWorktreePrepareCommand(repo.mainRoot, command)
+              }}
+            />
+          </label>
         </>
       ) : null}
     </div>

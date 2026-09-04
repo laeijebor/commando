@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
-import { TmuxCreator, tmuxSocketArgsFromEnv } from './tmux-create.js'
+import { TmuxCreator, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 
 const separator = '\u001f'
 const output = (
@@ -357,6 +357,39 @@ describe('TmuxCreator worktree-backed sessions', () => {
     const creator = new TmuxCreator(tmuxRunner(), [], git)
     await creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } })
     expect(git.createWorktree.mock.calls[0][0].path).toBe(target)
+  })
+
+  it('runs the repository preparation command in the new pane before opening a shell', async () => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const creator = new TmuxCreator(run, [], git)
+    await creator.createSession({
+      name: 'flow',
+      cwd: MAIN,
+      worktree: { branch: 'bot-rematch-flow', prepareCommand: 'pnpm i\npnpm build' },
+    })
+
+    const createArgs = run.mock.calls.map((call) => call[0]).find((args) => args.includes('new-session'))
+    expect(createArgs?.at(-1)).toBe(worktreePreparationShellCommand('pnpm i\npnpm build'))
+    expect(createArgs?.at(-1)).toContain('[commando] Preparing worktree')
+    expect(createArgs?.at(-1)).toContain('exec "${SHELL:-/bin/sh}" -l')
+  })
+
+  it.each([
+    ['non-string', 7],
+    ['unsupported control character', 'pnpm i\u0000rm -rf /'],
+    ['oversized', 'x'.repeat(8_193)],
+  ])('rejects an invalid %s preparation command before touching git', async (_label, prepareCommand) => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const creator = new TmuxCreator(run, [], git)
+    await expect(creator.createSession({
+      name: 'flow',
+      cwd: MAIN,
+      worktree: { branch: 'flow', prepareCommand } as never,
+    })).rejects.toThrow(/prepare command/)
+    expect(run).not.toHaveBeenCalled()
+    expect(git.createWorktree).not.toHaveBeenCalled()
   })
 
   it('checks the session name is free before touching git', async () => {

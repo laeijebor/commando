@@ -95,7 +95,8 @@
 }
 
 .tmux-create input,
-.tmux-create select {
+.tmux-create select,
+.tmux-create textarea {
   min-width: 0;
   width: 100%;
   border: 1px solid var(--text-faint);
@@ -106,8 +107,15 @@
   font: inherit;
 }
 
+.tmux-create textarea {
+  resize: vertical;
+  font-family: var(--mono);
+  line-height: 1.4;
+}
+
 .tmux-create input:focus-visible,
 .tmux-create select:focus-visible,
+.tmux-create textarea:focus-visible,
 .tmux-create button:focus-visible,
 .tmux-create > summary:focus-visible {
   outline: 2px solid #9ccfd8;
@@ -232,6 +240,11 @@
   border-radius: 6px;
   background: var(--surface-raised);
   padding: 7px 8px;
+}
+
+.tmux-create__worktree > label:not(.tmux-create__toggle) {
+  display: grid;
+  gap: 4px;
 }
 
 .tmux-create__toggle {

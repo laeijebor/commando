@@ -13,6 +13,8 @@ export type CreateTmuxSessionWorktree = {
   branch: string
   /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch)` when omitted. */
   path?: string
+  /** Multiline shell command to run in the new worktree before opening its interactive shell. */
+  prepareCommand?: string
 }
 
 export type CreateTmuxSessionRequest = {

@@ -4,7 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
-import { TMUX_CWD_HISTORY_STORAGE_KEY, TmuxCreateControls } from './TmuxCreateControls'
+import {
+  TMUX_CWD_HISTORY_STORAGE_KEY,
+  TmuxCreateControls,
+  WORKTREE_PREPARE_COMMANDS_STORAGE_KEY,
+} from './TmuxCreateControls'
 
 const created: TmuxCreatedTarget = {
   kind: 'session',
@@ -247,17 +251,48 @@ describe('TmuxCreateControls worktrees', () => {
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
     await screen.findByLabelText(/Create a worktree and branch/)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Bot rematch flow' } })
+    fireEvent.change(screen.getByLabelText(/^Prepare worktree/), { target: { value: 'pnpm i\npnpm build' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
 
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({
       name: 'Bot rematch flow',
       windowName: '',
       cwd: MAIN,
-      worktree: { branch: 'bot-rematch-flow' },
+      worktree: { branch: 'bot-rematch-flow', prepareCommand: 'pnpm i\npnpm build' },
     }))
     expect(await screen.findByRole('status')).toHaveTextContent(`bot-rematch-flow`)
+    expect(screen.getByRole('status')).toHaveTextContent(/Preparation started/)
     expect(screen.getByRole('status')).toHaveTextContent(/Could not fetch/)
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ kind: 'session' }), 'ungrouped', expect.objectContaining({ branch: 'bot-rematch-flow' }))
+  })
+
+  it('persists and pre-fills preparation commands by the main repository root', async () => {
+    window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify({
+      [MAIN]: 'pnpm i',
+      '/Users/dev/other': 'npm ci',
+    }))
+    render(
+      <TmuxCreateControls
+        sessionCreateRequest={{ id: 1, groupId: `repo:${MAIN}`, groupName: 'Save-All', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'Save-All', defaultBranch: 'main' } }}
+        onCreateSession={vi.fn()}
+        probeRepo={probeFor({ [MAIN]: repo })}
+      />,
+    )
+
+    const command = await screen.findByLabelText(/^Prepare worktree/)
+    expect(command).toHaveValue('pnpm i')
+    expect(screen.getByText(/saved for Save-All/)).toBeInTheDocument()
+
+    fireEvent.change(command, { target: { value: 'pnpm install\npnpm build' } })
+    expect(JSON.parse(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY) ?? 'null')).toEqual({
+      [MAIN]: 'pnpm install\npnpm build',
+      '/Users/dev/other': 'npm ci',
+    })
+
+    fireEvent.change(command, { target: { value: '' } })
+    expect(JSON.parse(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY) ?? 'null')).toEqual({
+      '/Users/dev/other': 'npm ci',
+    })
   })
 
   it('sends an edited worktree path and omits the worktree when the toggle is off', async () => {

@@ -18,6 +18,7 @@ const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
 const PANE_ID = /^%\d+$/
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u
+const SHELL_COMMAND_CONTROL_CHARACTER = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u
 const CREATE_FORMAT = [
   '#{session_id}',
   '#{session_name}',
@@ -134,6 +135,34 @@ function optionalName(value: unknown, field: string): string | undefined {
   return value === undefined || value === '' ? undefined : validatedName(value, field)
 }
 
+function optionalPrepareCommand(value: unknown): string | undefined {
+  if (value === undefined || value === '') return undefined
+  if (
+    typeof value !== 'string' ||
+    Buffer.byteLength(value, 'utf8') > 8_192 ||
+    SHELL_COMMAND_CONTROL_CHARACTER.test(value)
+  ) {
+    throw new Error('prepare command must be at most 8192 bytes without unsupported control characters')
+  }
+  return value.trim() ? value : undefined
+}
+
+export function worktreePreparationShellCommand(command: string): string {
+  return [
+    "printf '\\n[commando] Preparing worktree...\\n'",
+    '(',
+    command,
+    ')',
+    'commando_prepare_status=$?',
+    'if [ "$commando_prepare_status" -eq 0 ]; then',
+    "  printf '[commando] Worktree preparation complete.\\n'",
+    'else',
+    "  printf '[commando] Worktree preparation failed (exit %s).\\n' \"$commando_prepare_status\" >&2",
+    'fi',
+    'exec "${SHELL:-/bin/sh}" -l',
+  ].join('\n')
+}
+
 function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): TmuxCreatedTarget {
   const lines = output.split(/\r?\n/u).filter((line) => line.length > 0)
   if (lines.length !== 1) throw new Error('tmux returned an invalid create response')
@@ -201,6 +230,7 @@ export class TmuxCreator {
     if (!cwd) throw new Error('A working directory is required to create a worktree')
     const branch = validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
+    const prepareCommand = optionalPrepareCommand(input.worktree.prepareCommand)
     if (await this.sessionExists(name)) throw new Error(`Session ${name} already exists`)
 
     const repo = await this.worktrees.probe(cwd)
@@ -214,7 +244,15 @@ export class TmuxCreator {
       ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
     })
     try {
-      return { created: await this.newSession(name, windowName, worktree.path), worktree }
+      return {
+        created: await this.newSession(
+          name,
+          windowName,
+          worktree.path,
+          prepareCommand ? worktreePreparationShellCommand(prepareCommand) : undefined,
+        ),
+        worktree,
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       if (await this.sessionExists(name)) {
@@ -239,7 +277,12 @@ export class TmuxCreator {
     }
   }
 
-  private async newSession(name: string, windowName: string | undefined, cwd: string | undefined): Promise<TmuxCreatedTarget> {
+  private async newSession(
+    name: string,
+    windowName: string | undefined,
+    cwd: string | undefined,
+    shellCommand?: string,
+  ): Promise<TmuxCreatedTarget> {
     const args = [
       ...this.socketArgs,
       'new-session',
@@ -252,6 +295,7 @@ export class TmuxCreator {
     ]
     if (windowName) args.push('-n', windowName)
     if (cwd) args.push('-c', cwd)
+    if (shellCommand) args.push(shellCommand)
     return parseCreatedTarget(await this.run(args), 'session')
   }
 
