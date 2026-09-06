@@ -704,6 +704,10 @@ function hasRetainableRecap(record: RegistryRecord): boolean {
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
   private readonly inferenceSuppressions = new Map<string, InferenceSuppression>()
+  // Panes absent from the most recent snapshot. A record is evicted only once
+  // its pane is missing from two consecutive snapshots: hook-sourced statuses
+  // cannot be re-derived, and a single degraded tmux listing must not drop them.
+  private readonly missingPaneIds = new Set<string>()
 
   get(paneId: string): AgentStatus | undefined {
     const status = this.records.get(paneId)?.status
@@ -715,6 +719,7 @@ export class AgentStatusRegistry {
   }
 
   remove(paneId: string): AgentStatusChange {
+    this.missingPaneIds.delete(paneId)
     if (!this.records.delete(paneId)) return null
     return { type: 'remove', paneId }
   }
@@ -723,12 +728,23 @@ export class AgentStatusRegistry {
     const retained = new Set(paneIds)
     const changes: Exclude<AgentStatusChange, null>[] = []
     for (const paneId of this.records.keys()) {
-      if (retained.has(paneId)) continue
+      if (retained.has(paneId)) {
+        this.missingPaneIds.delete(paneId)
+        continue
+      }
+      if (!this.missingPaneIds.has(paneId)) {
+        this.missingPaneIds.add(paneId)
+        continue
+      }
+      this.missingPaneIds.delete(paneId)
       this.records.delete(paneId)
       changes.push({ type: 'remove', paneId })
     }
+    for (const paneId of this.missingPaneIds) {
+      if (retained.has(paneId) || !this.records.has(paneId)) this.missingPaneIds.delete(paneId)
+    }
     for (const paneId of this.inferenceSuppressions.keys()) {
-      if (!retained.has(paneId)) this.inferenceSuppressions.delete(paneId)
+      if (!retained.has(paneId) && !this.records.has(paneId)) this.inferenceSuppressions.delete(paneId)
     }
     return changes
   }

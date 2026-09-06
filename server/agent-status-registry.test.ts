@@ -1194,6 +1194,7 @@ describe('AgentStatusRegistry', () => {
     registry.applyInferred(inferred({ paneId: '%2' }))
     registry.applyInferred(inferred({ paneId: '%3' }))
 
+    expect(registry.retainPaneIds(new Set(['%1']))).toEqual([])
     expect(registry.retainPaneIds(new Set(['%1']))).toEqual([
       { type: 'remove', paneId: '%2' },
       { type: 'remove', paneId: '%3' },
@@ -1201,5 +1202,18 @@ describe('AgentStatusRegistry', () => {
     expect(registry.values().map((status) => status.paneId)).toEqual(['%1'])
     expect(registry.remove('%1')).toEqual({ type: 'remove', paneId: '%1' })
     expect(registry.remove('%1')).toBeNull()
+  })
+
+  it('keeps statuses through a single snapshot that omits their panes', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%1', claudePayload('Stop'), 1, '2.1.263')
+    registry.applyInferred(inferred({ paneId: '%2' }))
+
+    expect(registry.retainPaneIds(new Set(['%2']))).toEqual([])
+    expect(registry.values().map((status) => status.paneId)).toEqual(['%1', '%2'])
+    expect(registry.retainPaneIds(new Set(['%1', '%2']))).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']))).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']))).toEqual([{ type: 'remove', paneId: '%1' }])
+    expect(registry.values().map((status) => status.paneId)).toEqual(['%2'])
   })
 })
