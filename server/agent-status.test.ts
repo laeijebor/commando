@@ -189,6 +189,25 @@ describe('Claude Code process names', () => {
     })
   })
 
+  it('keeps Claude Code precedence over output mentions when streaming a version-named pane', () => {
+    expect(inferAgentStatus({
+      paneId: '%1',
+      command: '2.1.263-beta+build.1',
+      title: '✳ Fix Codex support',
+      content: 'Reviewing the OpenCode plugin…\nEsc to interrupt',
+      capturedAt: now,
+      lastChangedAt: now,
+    })).toMatchObject({ provider: 'claude', status: 'working' })
+    expect(inferAgentStatus({
+      paneId: '%1',
+      command: '/opt/bin/codex',
+      title: '✳ Fix Codex support',
+      content: 'Working…',
+      capturedAt: now,
+      lastChangedAt: now,
+    })).toMatchObject({ provider: 'codex' })
+  })
+
   it('reports a dead version-named Claude Code process as failed', () => {
     expect(inferAgentProcessStatus({
       paneId: '%1',

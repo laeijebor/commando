@@ -82,7 +82,7 @@ export function inferAgentProvider(
 
 // Claude Code names its process after its running version (tmux then reports
 // `pane_current_command` as e.g. `2.1.263`) and prefixes the pane title with ✳.
-const VERSION_PROCESS_NAME = /^\d+\.\d+\.\d+(?:[-+][\w.]+)?$/u
+const VERSION_PROCESS_NAME = /^\d+\.\d+\.\d+(?:[-+][\w.-]+)*$/u
 const CLAUDE_TITLE_MARKER = /^\s*✳/u
 
 export function claudeVersionProcessEvidence(
@@ -148,14 +148,13 @@ function result(
 }
 
 export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
-  const contentEvidence = inferAgentProvider(
-    input.command,
-    input.title,
-    input.content,
-  )
-  const providerEvidence = contentEvidence.provider !== 'unknown'
-    ? contentEvidence
-    : claudeVersionProcessEvidence(input.command, input.title) ?? contentEvidence
+  // Same precedence as process inference: explicit command, then Claude Code's
+  // version-named process with its title marker, then title/output mentions.
+  const commandEvidence = inferAgentProvider(input.command, '', '')
+  const providerEvidence = commandEvidence.provider !== 'unknown'
+    ? commandEvidence
+    : claudeVersionProcessEvidence(input.command, input.title)
+      ?? inferAgentProvider(input.command, input.title, input.content)
   const provider = providerEvidence.provider
   const label = provider === 'unknown' ? 'Agent' : provider
   const tail = input.content.slice(-16_000)

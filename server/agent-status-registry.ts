@@ -701,13 +701,15 @@ function hasRetainableRecap(record: RegistryRecord): boolean {
   ))
 }
 
+export const PANE_EVICTION_GRACE_MS = 30_000
+
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
   private readonly inferenceSuppressions = new Map<string, InferenceSuppression>()
-  // Panes absent from the most recent snapshot. A record is evicted only once
-  // its pane is missing from two consecutive snapshots: hook-sourced statuses
-  // cannot be re-derived, and a single degraded tmux listing must not drop them.
-  private readonly missingPaneIds = new Set<string>()
+  // When each pane first went missing from a snapshot. A record is evicted only
+  // after its pane has been absent for PANE_EVICTION_GRACE_MS: hook-sourced
+  // statuses cannot be re-derived, and degraded tmux listings must not drop them.
+  private readonly missingSince = new Map<string, number>()
 
   get(paneId: string): AgentStatus | undefined {
     const status = this.records.get(paneId)?.status
@@ -719,29 +721,31 @@ export class AgentStatusRegistry {
   }
 
   remove(paneId: string): AgentStatusChange {
-    this.missingPaneIds.delete(paneId)
+    this.missingSince.delete(paneId)
     if (!this.records.delete(paneId)) return null
     return { type: 'remove', paneId }
   }
 
-  retainPaneIds(paneIds: Iterable<string>): Exclude<AgentStatusChange, null>[] {
+  retainPaneIds(paneIds: Iterable<string>, now = Date.now()): Exclude<AgentStatusChange, null>[] {
     const retained = new Set(paneIds)
     const changes: Exclude<AgentStatusChange, null>[] = []
     for (const paneId of this.records.keys()) {
       if (retained.has(paneId)) {
-        this.missingPaneIds.delete(paneId)
+        this.missingSince.delete(paneId)
         continue
       }
-      if (!this.missingPaneIds.has(paneId)) {
-        this.missingPaneIds.add(paneId)
+      const since = this.missingSince.get(paneId)
+      if (since === undefined) {
+        this.missingSince.set(paneId, now)
         continue
       }
-      this.missingPaneIds.delete(paneId)
+      if (now - since < PANE_EVICTION_GRACE_MS) continue
+      this.missingSince.delete(paneId)
       this.records.delete(paneId)
       changes.push({ type: 'remove', paneId })
     }
-    for (const paneId of this.missingPaneIds) {
-      if (retained.has(paneId) || !this.records.has(paneId)) this.missingPaneIds.delete(paneId)
+    for (const paneId of this.missingSince.keys()) {
+      if (retained.has(paneId) || !this.records.has(paneId)) this.missingSince.delete(paneId)
     }
     for (const paneId of this.inferenceSuppressions.keys()) {
       if (!retained.has(paneId) && !this.records.has(paneId)) this.inferenceSuppressions.delete(paneId)
