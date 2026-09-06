@@ -1306,6 +1306,13 @@ export function App() {
   }, [prDiff, prDiffPaneMatches.length, snapshot])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
+  const paneSessionNames = new Map<string, string | undefined>()
+  for (const pane of snapshot?.panes ?? []) {
+    // An ambiguous durable target must not identify a producing session.
+    paneSessionNames.set(pane.targetId, paneSessionNames.has(pane.targetId)
+      ? undefined
+      : sessionMap.get(pane.sessionId)?.name)
+  }
   const selectedTabWindowId = selectedSessionId ? activeTabs[selectedSessionId] : undefined
   const activeGroup = resolveActiveGroup(
     groups,
@@ -2939,6 +2946,7 @@ export function App() {
               currentPanePath={currentPrPane?.path}
               onAttentionChange={setPrsAttention}
               liveTargetIds={livePaneTargetIds}
+              targetSessionNames={paneSessionNames}
               onJumpToTarget={jumpToPaneTarget}
               onOpenDiff={openPrDiff}
             />

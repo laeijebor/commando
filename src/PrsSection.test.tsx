@@ -127,6 +127,45 @@ describe('PrsSection', () => {
     expect(title.contains(number)).toBe(false)
   })
 
+  it.each([
+    { author: 'leo', viewerIsAuthor: true, viewerReviewRequested: false },
+    { author: 'reviewer', viewerIsAuthor: false, viewerReviewRequested: true },
+    { author: 'teammate', viewerIsAuthor: false, viewerReviewRequested: false },
+  ])('prefers the linked session in the card for $author but preserves the branch details', async (ownership) => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({
+      ...ownership,
+      commandoMarker: { version: 1, targetId, relation: 'created' },
+    })]) }) })
+    render(<PrsSection token="t" liveTargetIds={new Set([targetId])} targetSessionNames={new Map([[targetId, 'Client Onboarding flow']])} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Everyone.s/, pressed: false }))
+    const name = await screen.findByText('Client Onboarding flow')
+    expect(name).toHaveAttribute('title', 'Session: Client Onboarding flow\nBranch: leo/thing')
+    expect(screen.queryByText('leo/thing')).not.toBeInTheDocument()
+
+    fireEvent.mouseEnter(name.closest('article')!)
+    expect(await screen.findByRole('dialog', { name: 'Details for #12' })).toBeInTheDocument()
+    expect(screen.getByText('leo/thing')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy branch' }))
+    expect(writeText).toHaveBeenCalledWith('leo/thing')
+  })
+
+  it.each(['unmarked', 'stale', 'unresolved'] as const)('keeps the branch fallback for an %s target', async (state) => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({
+      commandoMarker: state === 'unmarked' ? null : { version: 1, targetId, relation: 'created' },
+    })]) }) })
+    render(<PrsSection
+      token="t"
+      liveTargetIds={new Set(state === 'stale' ? [] : [targetId])}
+      targetSessionNames={new Map([[targetId, state === 'unresolved' ? undefined : 'Client Onboarding flow']])}
+    />)
+    expect(await screen.findByText('leo/thing')).toHaveAttribute('title', 'leo/thing')
+    expect(screen.queryByText('Client Onboarding flow')).not.toBeInTheDocument()
+  })
+
   it('jumps to a live pane named by the PR body marker', async () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     const onJumpToTarget = vi.fn()

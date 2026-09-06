@@ -171,12 +171,13 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
   )
 }
 
-function PrCard({ pr, viewer, repo, api, liveTargetIds, onJumpToTarget, onOpenDiff }: {
+function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff }: {
   pr: PrSummary
   viewer: string
   repo: string
   api: ReturnType<typeof createPrsApi>
   liveTargetIds: ReadonlySet<string>
+  targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
   onOpenDiff?: (pr: PrSummary) => void
 }) {
@@ -185,6 +186,7 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, onJumpToTarget, onOpenDi
   const attention = pr.state === 'open' && (pr.conflicting || (pr.viewerIsAuthor && pr.checks?.state === 'fail'))
   const targetId = pr.commandoMarker?.targetId
   const targetIsLive = targetId !== undefined && liveTargetIds.has(targetId)
+  const sessionName = targetIsLive ? targetSessionNames?.get(targetId) : undefined
 
   const cardRef = useRef<HTMLElement | null>(null)
   const openTimer = useRef<number | null>(null)
@@ -296,7 +298,9 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, onJumpToTarget, onOpenDi
         {pr.conflicting ? <span className="pr-chip bad">⚠ conflicts</span> : null}
       </div>
       <div className="pr-foot">
-        {pr.author && pr.author !== viewer
+        {sessionName
+          ? <span className="pr-branch" title={`Session: ${sessionName}\nBranch: ${pr.headRefName}`}>{sessionName}</span>
+          : pr.author && pr.author !== viewer
           ? <span className="pr-author"><span className="pr-avatar">{pr.author.slice(0, 2).toUpperCase()}</span>{pr.author}</span>
           : <span className="pr-branch" title={pr.headRefName}>{pr.headRefName}</span>}
         <span className="pr-time">{relativeTime(pr.updatedAt)}</span>
@@ -313,6 +317,7 @@ export function PrsSection({
   currentPanePath,
   onAttentionChange,
   liveTargetIds = new Set<string>(),
+  targetSessionNames,
   onJumpToTarget,
   onOpenDiff,
 }: {
@@ -323,6 +328,7 @@ export function PrsSection({
   currentPanePath?: string | null
   onAttentionChange?: (attention: boolean) => void
   liveTargetIds?: ReadonlySet<string>
+  targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
   onOpenDiff?: (pr: PrSummary) => void
 }) {
@@ -557,19 +563,19 @@ export function PrsSection({
             {groups.yours.length > 0 ? (
               <section className="prs-group" aria-label="Your pull requests">
                 <header><strong>Yours</strong><small>{groups.yours.length}</small></header>
-                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
               </section>
             ) : null}
             {groups.needsReview.length > 0 ? (
               <section className="prs-group" aria-label="Pull requests awaiting your review">
                 <header><strong>Needs your review</strong><small>{groups.needsReview.length}</small></header>
-                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
               </section>
             ) : null}
             {showEveryone && groups.everyone.length > 0 ? (
               <section className="prs-group" aria-label="Everyone's pull requests">
                 <header><strong>Everyone&rsquo;s</strong><small>{groups.everyone.length}</small></header>
-                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
               </section>
             ) : null}
             {list.mineTruncated ? (

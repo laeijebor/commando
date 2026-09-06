@@ -543,9 +543,26 @@ describe('HUD tabs', () => {
     await renderAppWithSnapshot(snapshotAcrossSessions())
     fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
     const jumpButton = await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' })
+    const footer = jumpButton.closest('article')!.querySelector('.pr-foot')!
+    expect(footer).toHaveTextContent('review')
+    expect(footer).not.toHaveTextContent('feat/pane-marker')
+
+    const renamed = snapshotAcrossSessions()
+    renamed.sessions[1]!.name = 'Client Onboarding flow'
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: renamed }))
+    expect(footer).toHaveTextContent('Client Onboarding flow')
+
+    const ambiguous = { ...renamed, panes: renamed.panes.map((candidate) => ({ ...candidate, targetId })) }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: ambiguous }))
+    expect(footer).toHaveTextContent('feat/pane-marker')
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane]) }))
+    expect(footer).toHaveTextContent('feat/pane-marker')
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: renamed }))
+    expect(footer).toHaveTextContent('Client Onboarding flow')
 
     vi.useFakeTimers()
-    fireEvent.click(jumpButton)
+    fireEvent.click(screen.getByRole('button', { name: 'Jump to producing pane for PR #12' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(20) })
 
     const targetPane = screen.getByTestId('renderer-%21').closest('.terminal-pane')
