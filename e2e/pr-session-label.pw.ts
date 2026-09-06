@@ -133,15 +133,24 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(pr.headRefName)
     await page.screenshot({ path: testInfo.outputPath(`${size}-popover.png`) })
 
-    await card.getByRole('button', { name: 'Jump to producing pane for PR #128' }).click()
-    await expect(page.locator('.managed-session.selected strong')).toHaveText('release-review')
-    await expect(page.locator('[data-pane-id="%21"]')).toBeVisible()
-    await expect(page.getByRole('textbox', { name: 'review-agent terminal input', exact: true })).toBeFocused()
-    await expect(label).toHaveText('release-review')
-    await openPanel('session tree')
-    await page.locator('.managed-session-main').filter({ hasText: 'workspace-editor' }).click()
-    await openPanel('HUD')
-    await expect(label).toHaveText('release-review')
+    for (const action of ['session click', 'session keyboard', 'pane pill']) {
+      const sessionButton = card.getByRole('button', { name: 'release-review', exact: true })
+      if (action === 'session click') await sessionButton.click()
+      else if (action === 'session keyboard') {
+        await sessionButton.focus()
+        await expect(sessionButton).toBeFocused()
+        await sessionButton.press('Enter')
+      } else await card.getByRole('button', { name: 'Jump to producing pane for PR #128' }).click()
+      await expect(page.locator('.managed-session.selected strong')).toHaveText('release-review')
+      await expect(page.locator('[data-pane-id="%21"]')).toBeVisible()
+      await expect(page.locator('[data-pane-id="%21"]')).toHaveClass(/is-jump-highlighted/)
+      await expect(page.getByRole('textbox', { name: 'review-agent terminal input', exact: true })).toBeFocused()
+      await expect(label).toHaveText('release-review')
+      await openPanel('session tree')
+      await page.locator('.managed-session-main').filter({ hasText: 'workspace-editor' }).click()
+      await openPanel('HUD')
+      await expect(label).toHaveText('release-review')
+    }
 
     const requestsBeforeRename = listRequests
     await openPanel('session tree')
@@ -180,6 +189,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     publishSnapshot()
     await expect(label).toHaveText(pr.headRefName)
     await expect(label).toHaveAttribute('title', pr.headRefName)
+    await expect(card.locator('.pr-session-link')).toHaveCount(0)
     await expect(card.getByRole('button', { name: 'Jump to producing pane for PR #128' })).toHaveCount(0)
     await expect(card.getByRole('button', { name: /Open diff/ })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath(`${size}-removed-target.png`) })

@@ -504,7 +504,7 @@ describe('HUD tabs', () => {
     ))
   })
 
-  it('focuses and briefly highlights the exact producing pane across sessions', async () => {
+  it.each(['pane pill', 'session name'])('focuses and briefly highlights the exact producing pane across sessions via the %s', async (control) => {
     const targetId = remotePane.targetId
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -562,7 +562,9 @@ describe('HUD tabs', () => {
     expect(footer).toHaveTextContent('Client Onboarding flow')
 
     vi.useFakeTimers()
-    fireEvent.click(screen.getByRole('button', { name: 'Jump to producing pane for PR #12' }))
+    fireEvent.click(screen.getByRole('button', { name: control === 'pane pill'
+      ? 'Jump to producing pane for PR #12'
+      : 'Client Onboarding flow' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(20) })
 
     const targetPane = screen.getByTestId('renderer-%21').closest('.terminal-pane')

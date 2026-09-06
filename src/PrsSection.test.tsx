@@ -181,12 +181,16 @@ describe('PrsSection', () => {
       <PrsSection
         token="t"
         liveTargetIds={new Set([targetId])}
+        targetSessionNames={new Map([[targetId, 'Client Onboarding flow']])}
         onJumpToTarget={onJumpToTarget}
       />,
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Jump to producing pane for PR #12' }))
 
     expect(onJumpToTarget).toHaveBeenCalledWith(targetId)
+    onJumpToTarget.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Client Onboarding flow' }))
+    expect(onJumpToTarget).toHaveBeenCalledExactlyOnceWith(targetId)
   })
 
   it('does not offer a jump when the marked pane is no longer live', async () => {

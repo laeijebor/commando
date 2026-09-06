@@ -298,8 +298,13 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJu
         {pr.conflicting ? <span className="pr-chip bad">⚠ conflicts</span> : null}
       </div>
       <div className="pr-foot">
-        {sessionName
-          ? <span className="pr-branch" title={`Session: ${sessionName}\nBranch: ${pr.headRefName}`}>{sessionName}</span>
+        {sessionName && targetId
+          ? <button
+              type="button"
+              className="pr-branch pr-session-link"
+              title={`Session: ${sessionName}\nBranch: ${pr.headRefName}`}
+              onClick={() => onJumpToTarget?.(targetId)}
+            >{sessionName}</button>
           : pr.author && pr.author !== viewer
           ? <span className="pr-author"><span className="pr-avatar">{pr.author.slice(0, 2).toUpperCase()}</span>{pr.author}</span>
           : <span className="pr-branch" title={pr.headRefName}>{pr.headRefName}</span>}
