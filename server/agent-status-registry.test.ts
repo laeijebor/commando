@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, AgentStatusKind } from '../shared/protocol.js'
-import { AgentStatusRegistry } from './agent-status-registry.js'
+import { AgentStatusRegistry, PANE_EVICTION_GRACE_MS } from './agent-status-registry.js'
 
 const paneId = '%1'
 const claudeSessionId = 'claude-session-1'
@@ -1194,12 +1194,44 @@ describe('AgentStatusRegistry', () => {
     registry.applyInferred(inferred({ paneId: '%2' }))
     registry.applyInferred(inferred({ paneId: '%3' }))
 
-    expect(registry.retainPaneIds(new Set(['%1']))).toEqual([
+    expect(registry.retainPaneIds(new Set(['%1']), 0)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%1']), PANE_EVICTION_GRACE_MS)).toEqual([
       { type: 'remove', paneId: '%2' },
       { type: 'remove', paneId: '%3' },
     ])
     expect(registry.values().map((status) => status.paneId)).toEqual(['%1'])
     expect(registry.remove('%1')).toEqual({ type: 'remove', paneId: '%1' })
     expect(registry.remove('%1')).toBeNull()
+  })
+
+  it('keeps statuses while their panes are missing from snapshots within the grace period', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%1', claudePayload('Stop'), 1, '2.1.263')
+    registry.applyInferred(inferred({ paneId: '%2' }))
+
+    expect(registry.retainPaneIds(new Set(['%2']), 0)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']), 40)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']), PANE_EVICTION_GRACE_MS - 1)).toEqual([])
+    expect(registry.values().map((status) => status.paneId)).toEqual(['%1', '%2'])
+    // Reappearing resets the grace period.
+    expect(registry.retainPaneIds(new Set(['%1', '%2']), PANE_EVICTION_GRACE_MS)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']), PANE_EVICTION_GRACE_MS + 1)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']), 2 * PANE_EVICTION_GRACE_MS)).toEqual([])
+    expect(registry.retainPaneIds(new Set(['%2']), 2 * PANE_EVICTION_GRACE_MS + 1))
+      .toEqual([{ type: 'remove', paneId: '%1' }])
+    expect(registry.values().map((status) => status.paneId)).toEqual(['%2'])
+  })
+
+  it('gives a replacement status a fresh grace period after removal during absence', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyInferred(inferred({ paneId: '%1' }))
+    expect(registry.retainPaneIds(new Set(), 0)).toEqual([])
+    expect(registry.remove('%1')).toEqual({ type: 'remove', paneId: '%1' })
+
+    registry.applyClaudeHook('%1', claudePayload('UserPromptSubmit'), 1, '2.1.263')
+    expect(registry.retainPaneIds(new Set(), PANE_EVICTION_GRACE_MS + 1)).toEqual([])
+    expect(registry.retainPaneIds(new Set(), 2 * PANE_EVICTION_GRACE_MS)).toEqual([])
+    expect(registry.retainPaneIds(new Set(), 2 * PANE_EVICTION_GRACE_MS + 2))
+      .toEqual([{ type: 'remove', paneId: '%1' }])
   })
 })

@@ -80,14 +80,32 @@ export function inferAgentProvider(
   }
 }
 
+// Claude Code names its process after its running version (tmux then reports
+// `pane_current_command` as e.g. `2.1.263`) and prefixes the pane title with ✳.
+const VERSION_PROCESS_NAME = /^\d+\.\d+\.\d+(?:[-+][\w.-]+)*$/u
+const CLAUDE_TITLE_MARKER = /^\s*✳/u
+
+export function claudeVersionProcessEvidence(
+  command: string,
+  title: string,
+): ProviderEvidence | null {
+  if (!VERSION_PROCESS_NAME.test(command.trim()) || !CLAUDE_TITLE_MARKER.test(title)) return null
+  return {
+    provider: 'claude',
+    source: 'heuristic',
+    reason: 'version-named process with the Claude Code pane title marker',
+  }
+}
+
 export function inferAgentProcessStatus(input: AgentProcessStatusInput): AgentStatus {
   const commandEvidence = inferAgentProvider(input.command, '', '')
   const runtimeCanUseTitle = /(?:^|\/)(?:node|bun|deno|python\d*(?:\.\d+)?)$/i.test(
     input.command.trim(),
   )
-  const evidence = commandEvidence.provider !== 'unknown' || !runtimeCanUseTitle
+  const evidence = commandEvidence.provider !== 'unknown'
     ? commandEvidence
-    : inferAgentProvider(input.command, input.title, '')
+    : claudeVersionProcessEvidence(input.command, input.title)
+      ?? (runtimeCanUseTitle ? inferAgentProvider(input.command, input.title, '') : commandEvidence)
   const provider = evidence.provider
   const knownProvider = provider !== 'unknown'
   return {
@@ -130,11 +148,13 @@ function result(
 }
 
 export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
-  const providerEvidence = inferAgentProvider(
-    input.command,
-    input.title,
-    input.content,
-  )
+  // Same precedence as process inference: explicit command, then Claude Code's
+  // version-named process with its title marker, then title/output mentions.
+  const commandEvidence = inferAgentProvider(input.command, '', '')
+  const providerEvidence = commandEvidence.provider !== 'unknown'
+    ? commandEvidence
+    : claudeVersionProcessEvidence(input.command, input.title)
+      ?? inferAgentProvider(input.command, input.title, input.content)
   const provider = providerEvidence.provider
   const label = provider === 'unknown' ? 'Agent' : provider
   const tail = input.content.slice(-16_000)

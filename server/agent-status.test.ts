@@ -168,3 +168,64 @@ describe('agent inference', () => {
     })
   })
 })
+
+describe('Claude Code process names', () => {
+  it('recognises Claude Code when tmux reports its version as the process name', () => {
+    expect(inferAgentProcessStatus({
+      paneId: '%1',
+      command: '2.1.263',
+      title: '✳ Agent state indicators',
+      dead: false,
+      capturedAt: now,
+    })).toMatchObject({
+      provider: 'claude',
+      status: 'unknown',
+      source: 'heuristic',
+      summary: 'claude process detected',
+    })
+    expect(inferAgentProvider('2.1.263', '✳ Claude Code', '')).toMatchObject({
+      provider: 'claude',
+      source: 'heuristic',
+    })
+  })
+
+  it('keeps Claude Code precedence over output mentions when streaming a version-named pane', () => {
+    expect(inferAgentStatus({
+      paneId: '%1',
+      command: '2.1.263-beta+build.1',
+      title: '✳ Fix Codex support',
+      content: 'Reviewing the OpenCode plugin…\nEsc to interrupt',
+      capturedAt: now,
+      lastChangedAt: now,
+    })).toMatchObject({ provider: 'claude', status: 'working' })
+    expect(inferAgentStatus({
+      paneId: '%1',
+      command: '/opt/bin/codex',
+      title: '✳ Fix Codex support',
+      content: 'Working…',
+      capturedAt: now,
+      lastChangedAt: now,
+    })).toMatchObject({ provider: 'codex' })
+  })
+
+  it('reports a dead version-named Claude Code process as failed', () => {
+    expect(inferAgentProcessStatus({
+      paneId: '%1',
+      command: '2.1.263',
+      title: '✳ Agent state indicators',
+      dead: true,
+      capturedAt: now,
+    })).toMatchObject({ provider: 'claude', status: 'failed' })
+  })
+
+  it('ignores version-named processes without the Claude title marker', () => {
+    expect(inferAgentProcessStatus({
+      paneId: '%1',
+      command: '2.1.263',
+      title: 'MacBook-Pro.local',
+      dead: false,
+      capturedAt: now,
+    })).toMatchObject({ provider: 'unknown', status: 'unknown' })
+    expect(inferAgentProvider('zsh', '✳ Start fresh', '')).toMatchObject({ provider: 'unknown' })
+  })
+})
