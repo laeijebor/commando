@@ -28,18 +28,44 @@ enum TerminalClipboardBridge {
     }
 
     static func ensurePNGRepresentation(in pasteboard: NSPasteboard) -> TerminalClipboardBridgeResult {
-        if let png = pasteboard.data(forType: .png), !png.isEmpty {
-            return .unchanged
+        let fileURLs = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        let png: Data
+        if let fileURL = fileURLs?.first {
+            // Finder's image representations can be file icons, not the copied image.
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize, size > 0, size <= maxConvertedPNGBytes,
+                  let file = try? FileHandle(forReadingFrom: fileURL)
+            else { return .unavailable }
+            defer { try? file.close() }
+            guard let data = try? file.read(upToCount: maxConvertedPNGBytes + 1),
+                  !data.isEmpty, data.count <= maxConvertedPNGBytes,
+                  let bitmap = NSBitmapImageRep(data: data)
+            else { return .unavailable }
+            if data.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]) {
+                png = data
+            } else {
+                guard let converted = bitmap.representation(using: .png, properties: [:])
+                else { return .unavailable }
+                png = converted
+            }
+        } else {
+            if let existingPNG = pasteboard.data(forType: .png), !existingPNG.isEmpty {
+                return .unchanged
+            }
+            guard NSImage.canInit(with: pasteboard),
+                  let image = NSImage(pasteboard: pasteboard),
+                  let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let converted = bitmap.representation(using: .png, properties: [:])
+            else { return .unavailable }
+            png = converted
         }
-        guard NSImage.canInit(with: pasteboard),
-              let image = NSImage(pasteboard: pasteboard),
-              let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]),
-              !png.isEmpty,
-              png.count <= maxConvertedPNGBytes,
-              let originalItems = pasteboard.pasteboardItems,
-              !originalItems.isEmpty
+        guard !png.isEmpty, png.count <= maxConvertedPNGBytes else { return .unavailable }
+        if pasteboard.data(forType: .png) == png { return .unchanged }
+        guard let originalItems = pasteboard.pasteboardItems, !originalItems.isEmpty
         else {
             return .unavailable
         }

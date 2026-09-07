@@ -22,8 +22,7 @@ final class TerminalClipboardBridgeTests: XCTestCase {
         )
 
         let convertedPNG = try XCTUnwrap(pasteboard.data(forType: .png))
-        XCTAssertEqual(convertedPNG.prefix(8), Data([137, 80, 78, 71, 13, 10, 26, 10]))
-        XCTAssertNotNil(NSImage(data: convertedPNG))
+        XCTAssertEqual(convertedPNG, png)
         let URLs = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
@@ -31,11 +30,100 @@ final class TerminalClipboardBridgeTests: XCTestCase {
         XCTAssertEqual(URLs, [imageURL])
     }
 
+    func testPrefersImageFileContentsOverPNGAndTIFFIcons() throws {
+        let (directory, imageURL) = try makeImageFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let icon = try makeIcon()
+
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            let pasteboard = makePasteboard()
+            let item = NSPasteboardItem()
+            let iconData = try XCTUnwrap(icon.representation(
+                using: type == .png ? .png : .tiff, properties: [:]
+            ))
+            XCTAssertTrue(item.setString(imageURL.absoluteString, forType: .fileURL))
+            XCTAssertTrue(item.setData(iconData, forType: type))
+            XCTAssertTrue(pasteboard.writeObjects([item]))
+
+            XCTAssertEqual(TerminalClipboardBridge.ensurePNGRepresentation(in: pasteboard), .addedPNG)
+            XCTAssertEqual(pasteboard.data(forType: .png), png)
+            XCTAssertEqual(pasteboard.string(forType: .fileURL), imageURL.absoluteString)
+            if type == .tiff { XCTAssertEqual(pasteboard.data(forType: .tiff), iconData) }
+            let changeCount = pasteboard.changeCount
+            XCTAssertEqual(TerminalClipboardBridge.ensurePNGRepresentation(in: pasteboard), .unchanged)
+            XCTAssertEqual(pasteboard.changeCount, changeCount)
+        }
+    }
+
+    func testConvertsTIFFFileContentsInsteadOfClipboardPNG() throws {
+        let (directory, _) = try makeImageFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("source.tiff")
+        let source = try makeIcon()
+        try XCTUnwrap(source.representation(using: .tiff, properties: [:])).write(to: imageURL)
+        let pasteboard = makePasteboard()
+        let item = NSPasteboardItem()
+        XCTAssertTrue(item.setString(imageURL.absoluteString, forType: .fileURL))
+        XCTAssertTrue(item.setData(png, forType: .png))
+        XCTAssertTrue(pasteboard.writeObjects([item]))
+
+        XCTAssertEqual(TerminalClipboardBridge.ensurePNGRepresentation(in: pasteboard), .addedPNG)
+        let result = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(pasteboard.data(forType: .png))))
+        XCTAssertEqual(result.pixelsWide, source.pixelsWide)
+        XCTAssertEqual(result.pixelsHigh, source.pixelsHigh)
+        var pixel = [Int](repeating: 0, count: 4)
+        result.getPixel(&pixel, atX: 0, y: 0)
+        XCTAssertEqual(pixel, [255, 0, 0, 255])
+    }
+
+    func testDoesNotConvertIconsForMissingNonImageOrOversizedFiles() throws {
+        let (directory, _) = try makeImageFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let nonImage = directory.appendingPathComponent("not-an-image.png")
+        try Data("not an image".utf8).write(to: nonImage)
+        let oversized = directory.appendingPathComponent("oversized.png")
+        try png.write(to: oversized)
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(TerminalClipboardBridge.maxConvertedPNGBytes + 1))
+        try handle.close()
+        let icon = try XCTUnwrap(makeIcon().representation(using: .tiff, properties: [:]))
+
+        for url in [nonImage, oversized, directory, directory.appendingPathComponent("missing.png")] {
+            let pasteboard = makePasteboard()
+            let item = NSPasteboardItem()
+            XCTAssertTrue(item.setString(url.absoluteString, forType: .fileURL))
+            XCTAssertTrue(item.setData(icon, forType: .tiff))
+            XCTAssertTrue(pasteboard.writeObjects([item]))
+            let changeCount = pasteboard.changeCount
+
+            XCTAssertEqual(TerminalClipboardBridge.ensurePNGRepresentation(in: pasteboard), .unavailable)
+            XCTAssertNil(pasteboard.data(forType: .png))
+            XCTAssertEqual(pasteboard.changeCount, changeCount)
+            XCTAssertEqual(pasteboard.data(forType: .tiff), icon)
+        }
+    }
+
+    func testConvertsImageOnlyTIFFClipboard() throws {
+        let source = try makeIcon()
+        let tiff = try XCTUnwrap(source.representation(using: .tiff, properties: [:]))
+        let pasteboard = makePasteboard()
+        XCTAssertTrue(pasteboard.setData(tiff, forType: .tiff))
+
+        XCTAssertEqual(TerminalClipboardBridge.ensurePNGRepresentation(in: pasteboard), .addedPNG)
+        let result = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(pasteboard.data(forType: .png))))
+        XCTAssertEqual(result.pixelsWide, source.pixelsWide)
+        XCTAssertEqual(result.pixelsHigh, source.pixelsHigh)
+        XCTAssertEqual(pasteboard.data(forType: .tiff), tiff)
+    }
+
     func testControlVNormalizesTheClipboardBeforeSendingInput() throws {
         let (directory, imageURL) = try makeImageFile()
         defer { try? FileManager.default.removeItem(at: directory) }
         let pasteboard = makePasteboard()
-        XCTAssertTrue(pasteboard.writeObjects([imageURL as NSURL]))
+        let item = NSPasteboardItem()
+        XCTAssertTrue(item.setString(imageURL.absoluteString, forType: .fileURL))
+        XCTAssertTrue(item.setData(try XCTUnwrap(makeIcon().representation(using: .png, properties: [:])), forType: .png))
+        XCTAssertTrue(pasteboard.writeObjects([item]))
         var inputs: [Data] = []
         let surface = TerminalSurface(
             identity: .init(paneId: "%1", attachmentId: "image-control-v"),
@@ -43,7 +131,10 @@ final class TerminalClipboardBridgeTests: XCTestCase {
             prefersMetal: false,
             pasteboard: pasteboard
         ) { event in
-            if case let .input(data) = event { inputs.append(data) }
+            if case let .input(data) = event {
+                XCTAssertEqual(pasteboard.data(forType: .png), self.png)
+                inputs.append(data)
+            }
         }
         let controlV = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown,
@@ -168,5 +259,19 @@ final class TerminalClipboardBridgeTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try png.write(to: image)
         return (directory, image)
+    }
+
+    private func makeIcon() throws -> NSBitmapImageRep {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 3, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        for x in 0..<3 {
+            for y in 0..<2 {
+                bitmap.setColor(NSColor(deviceRed: 1, green: 0, blue: 0, alpha: 1), atX: x, y: y)
+            }
+        }
+        return bitmap
     }
 }
