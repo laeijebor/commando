@@ -306,7 +306,7 @@ describe('TmuxCreateControls worktrees', () => {
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
     const runPreparation = await screen.findByLabelText('Run preparation command for this session')
     expect(runPreparation).toBeChecked()
-    expect(screen.getByLabelText(/^Prepare worktree/)).toHaveValue('pnpm i')
+    await waitFor(() => expect(screen.getByLabelText(/^Prepare worktree/)).toHaveValue('pnpm i'))
 
     fireEvent.click(runPreparation)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Quick session' } })
