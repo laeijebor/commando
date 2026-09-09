@@ -359,7 +359,10 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
 
     /// Pushes the current zoom out to everything that renders at a scale. Kept
     /// separate from `applyZoomPercent` so a finished navigation can re-assert an
-    /// unchanged percent — a reload resets `pageZoom` even though nothing changed.
+    /// unchanged percent: `pageZoom` itself survives a load, but the page behind
+    /// it is a fresh JS context that has republished nothing yet, and
+    /// `didStartProvisionalNavigation` has torn down the tiles, so the bridges
+    /// and the `resize` nudge have to go out again.
     private func pushZoom() {
         webView.pageZoom = zoomScale
         bridge.setZoomScale(zoomScale)

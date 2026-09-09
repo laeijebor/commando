@@ -61,6 +61,14 @@ enum TerminalGeometry {
     /// the page zoom, so the zoom must *not* be multiplied in a second time —
     /// doing that sized panes by zoom squared. Zoom still reaches the surfaces
     /// separately, as a font scale, because the glyphs do need to grow.
+    ///
+    /// This has been removed once before, in dde2dfc, and reverted two hours
+    /// later in 636f883 with no reason recorded. The likeliest explanation is
+    /// that removing it on its own still looked wrong: native web pane tiles
+    /// never zoomed their own content, so a correctly sized tile sat there
+    /// rendering at 100% while the panes around it scaled. That half is fixed
+    /// too now — see `WebViewTileBridge.setZoomScale`. If zoom looks wrong
+    /// again, suspect that side before reaching for this multiplication.
     static func placement(
         for payload: PaneFramePayload,
         viewportSize: CGSize,

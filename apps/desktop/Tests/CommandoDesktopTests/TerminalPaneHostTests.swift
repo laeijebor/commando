@@ -1173,6 +1173,16 @@ final class TerminalPaneHostTests: XCTestCase {
 
     func testTopSurfaceDoesNotExposeAnOverlappedLowerTerminal() {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
+        // The hit-test points below are in overlay points, so the CSS-pixel
+        // widths have to convert 1:1. Report the window's own backing scale
+        // rather than leaning on whatever display happens to be main.
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
         let host = TerminalPaneHost(
             overlay: overlay,
             fallbackResponder: nil,
@@ -1190,7 +1200,8 @@ final class TerminalPaneHostTests: XCTestCase {
             width: 980,
             visible: true,
             resizeOwner: false,
-            order: 1
+            order: 1,
+            scale: Double(window.backingScaleFactor)
         )))
         XCTAssertTrue(host.applyFrame(frame(
             identity: high,
@@ -1198,7 +1209,8 @@ final class TerminalPaneHostTests: XCTestCase {
             width: 4_760,
             visible: true,
             resizeOwner: false,
-            order: 10
+            order: 10,
+            scale: Double(window.backingScaleFactor)
         )))
 
         let lowerView = host.registry.record(for: low)!.value.view

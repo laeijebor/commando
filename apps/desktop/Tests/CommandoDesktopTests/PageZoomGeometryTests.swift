@@ -31,6 +31,10 @@ final class PageZoomGeometryTests: XCTestCase {
         )
         let root = NSView(frame: .init(origin: .zero, size: overlaySize))
         window.contentView = root
+        // The other real-webview tests in this suite order their window in
+        // before laying out; WebKit is not obliged to lay out for a view that
+        // has never been on screen.
+        window.orderFront(nil)
         let webView = WKWebView(frame: root.bounds)
         root.addSubview(webView)
         let overlay = TerminalOverlayView(frame: root.bounds)
@@ -58,6 +62,12 @@ final class PageZoomGeometryTests: XCTestCase {
         )
         try await waitForLoad(webView)
 
+        // Baseline the ratio while unzoomed. Comparing the zoomed reading
+        // against this, rather than against the window's backing scale, keeps
+        // the assertion honest on a mixed-DPI setup where the window's scale
+        // and the page's need not agree.
+        let unzoomedScale = try await measure("full", in: webView).scale
+
         let zoomPercent = 125
         let zoomScale = CGFloat(zoomPercent) / 100
         webView.pageZoom = zoomScale
@@ -72,7 +82,7 @@ final class PageZoomGeometryTests: XCTestCase {
             let measured = try await measure(elementId, in: webView)
             XCTAssertEqual(
                 measured.scale,
-                Double(window.backingScaleFactor * zoomScale),
+                unzoomedScale * Double(zoomScale),
                 accuracy: 0.001,
                 "WebKit no longer folds pageZoom into devicePixelRatio"
             )
