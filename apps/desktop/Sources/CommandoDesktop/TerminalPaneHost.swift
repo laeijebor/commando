@@ -105,8 +105,7 @@ final class TerminalPaneHost {
         surface.applyFrame(
             payload,
             viewportSize: overlay.bounds.size,
-            backingScale: currentBackingScale(fallback: CGFloat(payload.scale)),
-            contentScale: zoomScale
+            backingScale: currentBackingScale(fallback: CGFloat(payload.scale))
         )
         reorderSurfaces()
         if TerminalFocusTransferPolicy.shouldTransfer(
@@ -146,8 +145,7 @@ final class TerminalPaneHost {
             record.value.applyFrame(
                 frame,
                 viewportSize: overlay.bounds.size,
-                backingScale: currentBackingScale(fallback: CGFloat(frame.scale)),
-                contentScale: zoomScale
+                backingScale: currentBackingScale(fallback: CGFloat(frame.scale))
             )
             if TerminalFocusTransferPolicy.shouldTransfer(
                 wasFocused: wasFocused,
