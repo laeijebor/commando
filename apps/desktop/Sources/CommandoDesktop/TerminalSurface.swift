@@ -541,8 +541,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
     func applyFrame(
         _ payload: PaneFramePayload,
         viewportSize: CGSize,
-        backingScale: CGFloat,
-        contentScale: CGFloat = 1
+        backingScale: CGFloat
     ) {
         guard !destroyed else { return }
         latestFrame = payload
@@ -555,8 +554,7 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         let placement = TerminalGeometry.placement(
             for: payload,
             viewportSize: viewportSize,
-            backingScale: backingScale,
-            contentScale: contentScale
+            backingScale: backingScale
         )
         latestPlacement = placement
         isVisible = !placement.isHidden

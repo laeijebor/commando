@@ -149,8 +149,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertEqual(surface.view.getTerminal().rows, 40)
         XCTAssertGreaterThan(surface.view.frame.width, unzoomedSize.width)
         XCTAssertGreaterThan(surface.view.frame.height, unzoomedSize.height)
-        XCTAssertEqual(surface.view.frame.minX, 12, accuracy: 0.001)
-        XCTAssertEqual(surface.view.frame.maxY, 588, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.minX, 10, accuracy: 0.001)
+        XCTAssertEqual(surface.view.frame.maxY, 590, accuracy: 0.001)
         XCTAssertTrue(surface.isFocused)
 
         XCTAssertTrue(host.applyReset(.init(
@@ -200,7 +200,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
-            width: viewportWidth / zoomScale,
+            width: viewportWidth,
             height: 300,
             visible: true,
             resizeOwner: false,
@@ -220,7 +220,7 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.focus(identity))
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
-            width: viewportWidth / zoomScale,
+            width: viewportWidth,
             height: 300,
             visible: true,
             resizeOwner: true,
@@ -260,8 +260,8 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(host.applyFrame(frame(
             identity: identity,
             x: 0,
-            width: 9_200,
-            height: 5_200,
+            width: 4_600,
+            height: 2_600,
             visible: true,
             resizeOwner: true,
             scale: Double(window.backingScaleFactor)
@@ -269,7 +269,7 @@ final class TerminalPaneHostTests: XCTestCase {
 
         let surface = try XCTUnwrap(host.registry.record(for: identity)?.value)
         XCTAssertFalse(surface.view.isHidden)
-        XCTAssertEqual(surface.view.frame, NSRect(x: 0, y: 275, width: 4_600, height: 2_600))
+        XCTAssertEqual(surface.view.frame, NSRect(x: 0, y: 270, width: 4_600, height: 2_600))
         XCTAssertGreaterThan(surface.view.getTerminal().cols, 500)
         XCTAssertGreaterThan(surface.view.getTerminal().rows, 200)
         host.destroyAll()
@@ -1173,6 +1173,16 @@ final class TerminalPaneHostTests: XCTestCase {
 
     func testTopSurfaceDoesNotExposeAnOverlappedLowerTerminal() {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 5_120, height: 1_000))
+        // The hit-test points below are in overlay points, so the CSS-pixel
+        // widths have to convert 1:1. Report the window's own backing scale
+        // rather than leaning on whatever display happens to be main.
+        let window = NSWindow(
+            contentRect: overlay.frame,
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = overlay
         let host = TerminalPaneHost(
             overlay: overlay,
             fallbackResponder: nil,
@@ -1186,19 +1196,21 @@ final class TerminalPaneHostTests: XCTestCase {
         host.attach(.init(identity: high, ariaLabel: "High"))
         XCTAssertTrue(host.applyFrame(frame(
             identity: low,
-            x: 4_300,
-            width: 1_400,
+            x: 3_010,
+            width: 980,
             visible: true,
             resizeOwner: false,
-            order: 1
+            order: 1,
+            scale: Double(window.backingScaleFactor)
         )))
         XCTAssertTrue(host.applyFrame(frame(
             identity: high,
             x: 0,
-            width: 6_800,
+            width: 4_760,
             visible: true,
             resizeOwner: false,
-            order: 10
+            order: 10,
+            scale: Double(window.backingScaleFactor)
         )))
 
         let lowerView = host.registry.record(for: low)!.value.view

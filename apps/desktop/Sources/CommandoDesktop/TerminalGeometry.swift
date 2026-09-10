@@ -53,11 +53,26 @@ enum TerminalGeometry {
         return CGPoint(x: x, y: y)
     }
 
+    /// Converts a web-reported pane rect into overlay points.
+    ///
+    /// `payload.scale` is the page's `window.devicePixelRatio`, and WebKit folds
+    /// `WKWebView.pageZoom` into that value (a 2x display at 125% zoom reports
+    /// 2.5). Dividing it by the window's backing scale therefore already yields
+    /// the page zoom, so the zoom must *not* be multiplied in a second time —
+    /// doing that sized panes by zoom squared. Zoom still reaches the surfaces
+    /// separately, as a font scale, because the glyphs do need to grow.
+    ///
+    /// This has been removed once before, in dde2dfc, and reverted two hours
+    /// later in 636f883 with no reason recorded. The likeliest explanation is
+    /// that removing it on its own still looked wrong: native web pane tiles
+    /// never zoomed their own content, so a correctly sized tile sat there
+    /// rendering at 100% while the panes around it scaled. That half is fixed
+    /// too now — see `WebViewTileBridge.setZoomScale`. If zoom looks wrong
+    /// again, suspect that side before reaching for this multiplication.
     static func placement(
         for payload: PaneFramePayload,
         viewportSize: CGSize,
-        backingScale: CGFloat,
-        contentScale: CGFloat = 1
+        backingScale: CGFloat
     ) -> TerminalPlacement {
         guard payload.visible,
                viewportSize.width > 0,
@@ -68,8 +83,6 @@ enum TerminalGeometry {
                viewportSize.height.isFinite,
                backingScale.isFinite,
                (minBackingScale...maxBackingScale).contains(backingScale),
-               contentScale.isFinite,
-               (minContentScale...maxContentScale).contains(contentScale),
                NativeTerminalProtocol.isValidFrameCoordinate(payload.x),
                NativeTerminalProtocol.isValidFrameCoordinate(payload.y),
                NativeTerminalProtocol.isValidFrameDimension(payload.width, allowsZero: true),
@@ -85,7 +98,7 @@ enum TerminalGeometry {
             return hiddenPlacement
         }
 
-        let pointsPerCSSPixel = payload.scale / Double(backingScale) * Double(contentScale)
+        let pointsPerCSSPixel = payload.scale / Double(backingScale)
         guard pointsPerCSSPixel.isFinite,
               pointsPerCSSPixel > 0,
               pointsPerCSSPixel <= maxPointsPerCSSPixel

@@ -66,18 +66,36 @@ final class GeometryAndRegistryTests: XCTestCase {
         )
     }
 
-    func testAccountsForWebKitPageZoomInLayoutCoordinates() {
-        let zoomed = TerminalGeometry.placement(
-            for: frame(x: 100, y: 50, width: 400, height: 200, scale: 2),
-            viewportSize: .init(width: 1_000, height: 700),
-            backingScale: 2,
-            contentScale: 1.25
+    /// At 125% page zoom on a 2x display WebKit reports `devicePixelRatio` 2.5
+    /// and shrinks the CSS viewport to 800x560 for a 1000x700pt overlay. The
+    /// zoom therefore arrives only inside `payload.scale`; applying it again on
+    /// top would size panes by 1.5625 and overflow the window.
+    func testDoesNotDoubleApplyWebKitPageZoomToLayoutCoordinates() {
+        let viewportSize = CGSize(width: 1_000, height: 700)
+        let fullWindow = TerminalGeometry.placement(
+            for: frame(x: 0, y: 0, width: 800, height: 560, scale: 2.5),
+            viewportSize: viewportSize,
+            backingScale: 2
         )
         XCTAssertEqual(
-            zoomed,
+            fullWindow,
             .init(
-                frame: .init(x: 125, y: 387.5, width: 500, height: 250),
-                visibleFrames: [.init(x: 125, y: 387.5, width: 500, height: 250)],
+                frame: .init(x: 0, y: 0, width: 1_000, height: 700),
+                visibleFrames: [.init(x: 0, y: 0, width: 1_000, height: 700)],
+                isHidden: false
+            )
+        )
+
+        let inset = TerminalGeometry.placement(
+            for: frame(x: 80, y: 40, width: 400, height: 200, scale: 2.5),
+            viewportSize: viewportSize,
+            backingScale: 2
+        )
+        XCTAssertEqual(
+            inset,
+            .init(
+                frame: .init(x: 100, y: 400, width: 500, height: 250),
+                visibleFrames: [.init(x: 100, y: 400, width: 500, height: 250)],
                 isHidden: false
             )
         )
