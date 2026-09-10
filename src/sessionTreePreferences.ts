@@ -78,6 +78,7 @@ export function sessionRepo(session: TmuxSession, panes: readonly TmuxPane[]): P
 const byName = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: 'base' })
 
 function repositoryContainers(
+  preferences: SessionTreePreferences,
   sessions: readonly TmuxSession[],
   panes: readonly TmuxPane[],
 ): SessionTreeContainer[] {
@@ -110,6 +111,12 @@ function repositoryContainers(
   }
   const containers = [...byRoot.values()].sort((left, right) => byName(left.name, right.name) || byName(left.id, right.id))
   if (noRepo.sessionIds.length > 0) containers.push(noRepo)
+  const order = new Map(preferences.repositorySessionIds?.map((id, index) => [id, index]))
+  for (const container of containers) {
+    container.sessionIds.sort((left, right) =>
+      (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER),
+    )
+  }
   return containers
 }
 
@@ -119,6 +126,6 @@ export function sessionTreeContainers(
   options: SessionTreeContainerOptions = { mode: 'manual', panes: [] },
 ): SessionTreeContainer[] {
   return options.mode === 'repository'
-    ? repositoryContainers(sessions, options.panes)
+    ? repositoryContainers(preferences, sessions, options.panes)
     : manualContainers(preferences, sessions)
 }

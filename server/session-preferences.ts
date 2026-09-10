@@ -18,6 +18,8 @@ export type SessionTreePreferences = {
   sessionNamesById?: Record<string, string>
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
+  /** Saved order within repository groups, independent of manual grouping. */
+  repositorySessionIds?: string[]
 }
 
 export type SessionIdentity = {
@@ -119,12 +121,23 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     if (value.groupingMode !== 'repository' && value.groupingMode !== 'manual') return null
     groupingMode = value.groupingMode
   }
+  let repositorySessionIds: string[] | undefined
+  if (value.repositorySessionIds !== undefined) {
+    if (!Array.isArray(value.repositorySessionIds) || value.repositorySessionIds.length > MAX_SESSIONS) return null
+    const ids = new Set<string>()
+    for (const id of value.repositorySessionIds) {
+      if (typeof id !== 'string' || !SESSION_ID.test(id) || ids.has(id)) return null
+      ids.add(id)
+    }
+    repositorySessionIds = [...ids]
+  }
   return {
     version: 1,
     groups,
     ungroupedSessionIds,
     ...(sessionNamesById ? { sessionNamesById } : {}),
     ...(groupingMode ? { groupingMode } : {}),
+    ...(repositorySessionIds ? { repositorySessionIds } : {}),
   }
 }
 
@@ -158,12 +171,12 @@ export function reconcileSessionTreePreferences(
 
   const claimed = new Set<string>()
   const claimedNames = new Map<string, string>()
-  const reconcileIds = (sessionIds: readonly string[]): string[] => sessionIds.flatMap((sessionId) => {
+  const reconcileIds = (sessionIds: readonly string[], seen = claimed): string[] => sessionIds.flatMap((sessionId) => {
     const storedName = parsed.sessionNamesById?.[sessionId]
     const restored = storedName ? currentByName.get(storedName) : undefined
     const nextId = restored?.id ?? sessionId
-    if (claimed.has(nextId)) return []
-    claimed.add(nextId)
+    if (seen.has(nextId)) return []
+    seen.add(nextId)
     const name = storedName ?? currentById.get(nextId)?.name
     if (name) claimedNames.set(nextId, name)
     return [nextId]
@@ -173,6 +186,9 @@ export function reconcileSessionTreePreferences(
     sessionIds: reconcileIds(group.sessionIds),
   }))
   const ungroupedSessionIds = reconcileIds(parsed.ungroupedSessionIds)
+  const repositorySessionIds = parsed.repositorySessionIds
+    ? reconcileIds(parsed.repositorySessionIds, new Set())
+    : undefined
   for (const session of currentSessions) {
     if (!claimed.has(session.id)) {
       claimed.add(session.id)
@@ -181,7 +197,7 @@ export function reconcileSessionTreePreferences(
     }
   }
   const sessionNamesById: Record<string, string> = {}
-  for (const sessionId of claimed) {
+  for (const sessionId of new Set([...claimed, ...repositorySessionIds ?? []])) {
     const name = claimedNames.get(sessionId)
     if (name) sessionNamesById[sessionId] = name
   }
@@ -191,6 +207,7 @@ export function reconcileSessionTreePreferences(
     ungroupedSessionIds,
     ...(Object.keys(sessionNamesById).length > 0 ? { sessionNamesById } : {}),
     ...(parsed.groupingMode ? { groupingMode: parsed.groupingMode } : {}),
+    ...(repositorySessionIds ? { repositorySessionIds } : {}),
   }
 }
 
@@ -222,6 +239,9 @@ export function visibleSessionTreePreferences(
       current.has(sessionId),
     ),
     ...(preferences.groupingMode ? { groupingMode: preferences.groupingMode } : {}),
+    ...(preferences.repositorySessionIds ? {
+      repositorySessionIds: preferences.repositorySessionIds.filter((sessionId) => current.has(sessionId)),
+    } : {}),
   }
 }
 

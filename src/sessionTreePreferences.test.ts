@@ -55,6 +55,20 @@ describe('sessionTreeContainers in repository mode', () => {
     expect(saveAll).toMatchObject({ kind: 'repository', repo: { root: SAVE_ALL.root, name: 'Save-All', defaultBranch: 'main' }, group: null })
   })
 
+  it('applies saved order within each repo and appends new sessions alphabetically', () => {
+    const preferences = { ...manual, repositorySessionIds: ['$2', '$99', '$1', '$4', '$3'] }
+    const extraSessions = [...sessions, session('$6', 'Apple'), session('$7', 'Zebra')]
+    const extraPanes = [...panes, pane('%7', '$6', '@6', 0, SAVE_ALL.root, SAVE_ALL), pane('%8', '$7', '@7', 0, SAVE_ALL.root, SAVE_ALL)]
+    const containers = sessionTreeContainers(preferences, extraSessions, { mode: 'repository', panes: extraPanes })
+    expect(containers.map(({ name, sessionIds }) => [name, sessionIds])).toEqual([
+      ['commando', ['$1']],
+      ['Save-All', ['$2', '$3', '$6', '$7']],
+      ['vivifit', ['$4']],
+      ['No repository', ['$5']],
+    ])
+    expect(sessionTreeContainers(preferences, sessions)).toEqual(sessionTreeContainers(manual, sessions))
+  })
+
   it('omits the no-repository container when every session has a repository', () => {
     const containers = sessionTreeContainers(manual, sessions.slice(0, 4), { mode: 'repository', panes })
     expect(containers.map((container) => container.id)).not.toContain('no-repo')

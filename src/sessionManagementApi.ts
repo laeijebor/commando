@@ -13,6 +13,8 @@ export type SessionTreePreferences = {
   sessionNamesById?: Record<string, string>
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
+  /** Saved order within repository groups, independent of manual grouping. */
+  repositorySessionIds?: string[]
 }
 
 export interface SessionManagementApiClient {

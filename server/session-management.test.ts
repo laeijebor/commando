@@ -35,6 +35,36 @@ async function startApi(api: SessionManagementApi): Promise<string> {
 }
 
 describe('session tree preferences', () => {
+  it('validates repository order independently of manual membership', () => {
+    const base = { version: 1, groups: [], ungroupedSessionIds: ['$1'], repositorySessionIds: ['$2', '$1'] }
+    expect(parseSessionTreePreferences(base)).toEqual(base)
+    for (const repositorySessionIds of [null, '$1', ['$1', '$1'], ['invalid'], [1], Array.from({ length: 4097 }, (_, i) => `$${i}`)]) {
+      expect(parseSessionTreePreferences({ ...base, repositorySessionIds })).toBeNull()
+    }
+  })
+
+  it('persists repo order across reloads and restored session IDs, retaining hidden history', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-repo-order-'))
+    directories.push(directory)
+    const path = join(directory, 'sessions.json')
+    const store = new SessionPreferenceStore(path)
+    await store.replace({
+      version: 1,
+      groups: [{ id: 'work', name: 'Work', sessionIds: ['$1', '$2'] }],
+      ungroupedSessionIds: [],
+      repositorySessionIds: ['$2', '$1'],
+    }, [{ id: '$1', name: 'alpha' }, { id: '$2', name: 'beta' }])
+    const restoredSessions = [{ id: '$8', name: 'alpha' }, { id: '$9', name: 'beta' }, { id: '$10', name: 'new' }]
+    const restored = await new SessionPreferenceStore(path).load(restoredSessions)
+    expect(restored.repositorySessionIds).toEqual(['$9', '$8'])
+    expect(restored.groups[0].sessionIds).toEqual(['$8', '$9'])
+    expect(restored.ungroupedSessionIds).toEqual(['$10'])
+    expect(visibleSessionTreePreferences(restored, restoredSessions).repositorySessionIds).toEqual(['$9', '$8'])
+    const partial = await store.load([{ id: '$8', name: 'alpha' }])
+    expect(partial.repositorySessionIds).toEqual(['$9', '$8'])
+    expect(visibleSessionTreePreferences(partial, [{ id: '$8', name: 'alpha' }]).repositorySessionIds).toEqual(['$8'])
+  })
+
   it('validates uniqueness and reconciles new sessions without discarding hidden history', () => {
     const preferences = {
       version: 1 as const,
