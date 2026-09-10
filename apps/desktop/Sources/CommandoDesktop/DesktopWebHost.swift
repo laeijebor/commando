@@ -94,6 +94,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private var cleanedUp = false
     private var isRetrying = false
     private(set) var windowActive = false
+    /// Whether the window is on screen at all. Starts true because a window is
+    /// visible when it opens, and `windowDidChangeOcclusionState` only fires on
+    /// a change. Distinct from `windowActive`, which tracks key focus: Commando
+    /// is watched while you work in another app, so losing focus must not park
+    /// the UI - only being genuinely covered or minimised should.
+    private(set) var windowPresenting = true
     private var detachedWebPaneIds: [String] = []
 
     init(
@@ -194,6 +200,12 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         guard !cleanedUp, active != windowActive else { return }
         windowActive = active
         publishWindowActivity()
+    }
+
+    func setWindowPresenting(_ presenting: Bool) {
+        guard !cleanedUp, presenting != windowPresenting else { return }
+        windowPresenting = presenting
+        publishWindowPresenting()
     }
 
     func authorizeClipboardWrite() {
@@ -316,6 +328,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
         connectionStatusView.hide()
         pushZoom()
         publishWindowActivity()
+        publishWindowPresenting()
         publishDetachedWebPaneIds()
     }
 
@@ -374,6 +387,18 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
             window.dispatchEvent(new CustomEvent("commando:desktop-window-active", { detail: active }));
             """,
             arguments: ["active": windowActive],
+            in: nil,
+            in: .page
+        ) { _ in }
+    }
+
+    private func publishWindowPresenting() {
+        webView.callAsyncJavaScript(
+            """
+            window.__commandoDesktopWindowPresenting = presenting;
+            window.dispatchEvent(new CustomEvent("commando:desktop-window-presenting", { detail: presenting }));
+            """,
+            arguments: ["presenting": windowPresenting],
             in: nil,
             in: .page
         ) { _ in }

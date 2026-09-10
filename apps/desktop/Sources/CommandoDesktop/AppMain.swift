@@ -196,6 +196,7 @@ protocol DesktopWebHosting: AnyObject {
     func applyZoomPercent(_ percent: Int)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
+    func setWindowPresenting(_ presenting: Bool)
     func authorizeClipboardWrite()
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
     func setDetachedWebPaneIds(_ webPaneIds: [String])
@@ -214,6 +215,7 @@ protocol DesktopWindowControlling: AnyObject {
     func applyZoomPercent(_ percent: Int)
     func reapplyTerminalFrames()
     func setWindowActive(_ active: Bool)
+    func setWindowPresenting(_ presenting: Bool)
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
     func setDetachedWebPaneIds(_ webPaneIds: [String])
     func cleanUp()
@@ -294,6 +296,10 @@ final class DesktopWindowSession: DesktopWindowControlling {
 
     func setWindowActive(_ active: Bool) {
         webHost.setWindowActive(active)
+    }
+
+    func setWindowPresenting(_ presenting: Bool) {
+        webHost.setWindowPresenting(presenting)
     }
 
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
@@ -569,6 +575,12 @@ final class DesktopAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
         controller(from: notification)?.reapplyTerminalFrames()
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        registry.controller(for: window)?
+            .setWindowPresenting(window.occlusionState.contains(.visible))
     }
 
     func windowDidMove(_ notification: Notification) {

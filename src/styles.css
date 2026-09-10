@@ -4137,6 +4137,17 @@ body.is-resizing-hud-pinned-note {
   }
 }
 
+/* Nothing should animate while the UI is off screen. `data-commando-presenting`
+   is maintained by src/presenting.ts from page visibility plus the desktop
+   shell's window occlusion state, so this is what stops a minimised or fully
+   covered window from still paying to repaint. Animations park rather than
+   reset, so they resume mid-cycle instead of jumping. */
+:root[data-commando-presenting='false'] *,
+:root[data-commando-presenting='false'] *::before,
+:root[data-commando-presenting='false'] *::after {
+  animation-play-state: paused !important;
+}
+
 .pane-drop-preview {
   position: absolute;
   inset: 0;

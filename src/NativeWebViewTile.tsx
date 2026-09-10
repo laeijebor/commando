@@ -8,6 +8,7 @@ import {
   isVisibleElement,
 } from './NativeTerminalPane'
 import type { PendingQueueApi } from './pendingQueueApi'
+import { isPresenting, subscribeToPresenting } from './presenting'
 import { TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
 import { subscribeWebTilePending } from './webTilePendingSubscription'
 
@@ -249,6 +250,11 @@ export function NativeWebViewTile({
       if (!bridge.frame(attachmentId, payload)) fallbackRef.current()
     }
     const schedule = () => {
+      // Publishing costs a forced full-document layout read, and while the UI is
+      // off screen the rect cannot change in any way a person can see. Skip the
+      // work and recompute once on the way back instead. This also stops the
+      // fallback timer, so a hidden window runs no per-tile polling at all.
+      if (!isPresenting()) return
       if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
@@ -266,10 +272,14 @@ export function NativeWebViewTile({
     })
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
+    const unsubscribePresenting = subscribeToPresenting((presenting) => {
+      if (presenting) schedule()
+    })
     schedule()
 
     return () => {
       resizeObserver.disconnect()
+      unsubscribePresenting()
       mutationObserver.disconnect()
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
