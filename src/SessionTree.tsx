@@ -160,11 +160,26 @@ export function SessionTree(props: Props) {
 
   const setGroupingMode = (groupingMode: SessionGroupingMode) => {
     if (groupingMode === mode) return
+    setDraggedSessionId(null)
     save({ ...preferencesRef.current, groupingMode })
   }
 
   const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
     const currentPreferences = preferencesRef.current
+    if (beforeId === sessionId) return
+    if (!manual) {
+      const container = sessionTreeContainers(currentPreferences, props.sessions, { mode, panes: props.panes })
+        .find((candidate) => candidate.id === destinationId)
+      if (!container?.sessionIds.includes(sessionId) || (beforeId && !container.sessionIds.includes(beforeId))) return
+      const sessionIds = container.sessionIds.filter((id) => id !== sessionId)
+      const index = beforeId ? sessionIds.indexOf(beforeId) : sessionIds.length
+      sessionIds.splice(index, 0, sessionId)
+      if (sessionIds.every((id, position) => id === container.sessionIds[position])) return
+      const otherSessionIds = (currentPreferences.repositorySessionIds ?? [])
+        .filter((id) => !container.sessionIds.includes(id))
+      save({ ...currentPreferences, repositorySessionIds: [...otherSessionIds, ...sessionIds] })
+      return
+    }
     const groups = currentPreferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
     let ungroupedSessionIds = currentPreferences.ungroupedSessionIds.filter((id) => id !== sessionId)
     if (destinationId === 'ungrouped') {
@@ -285,7 +300,7 @@ export function SessionTree(props: Props) {
         const collapsed = collapsedContainerIds.has(container.id)
         const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
         const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
-        const droppable = manual && container.kind !== 'no-repo'
+        const droppable = Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId)))
         return (
         <section
           className={`session-pref-group kind-${container.kind}`}
@@ -326,7 +341,24 @@ export function SessionTree(props: Props) {
                 .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
               const statusPanes = sessionPanes.filter((pane) => props.statuses[pane.id])
               const markedPanes = sessionPanes.filter((pane) => marks[pane.targetId])
-              return [<article className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`} draggable={manual} onDragStart={manual ? () => setDraggedSessionId(session.id) : undefined} onDragEnd={manual ? () => setDraggedSessionId(null) : undefined} onDragOver={droppable ? (event) => { if (draggedSessionId) event.preventDefault() } : undefined} onDrop={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && draggedSessionId !== session.id) moveToContainer(draggedSessionId, container.id, session.id); setDraggedSessionId(null) } : undefined} key={session.id}>
+              return [<article
+                className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer?.setData('text/plain', session.id)
+                  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+                  setDraggedSessionId(session.id)
+                }}
+                onDragEnd={() => setDraggedSessionId(null)}
+                onDragOver={droppable ? (event) => event.preventDefault() : undefined}
+                onDrop={droppable ? (event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (draggedSessionId) moveToContainer(draggedSessionId, container.id, session.id)
+                  setDraggedSessionId(null)
+                } : undefined}
+                key={session.id}
+              >
                 <div className="managed-session-row">
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}

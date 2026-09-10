@@ -701,6 +701,62 @@ describe('SessionTree', () => {
       }))
     })
 
+    it('reorders within a repository, persists across modes and reload, and updates shortcuts', async () => {
+      const initial = { version: 1 as const, groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$2', '$1'] }], ungroupedSessionIds: ['$3', '$4'] }
+      sessionApi.loadPreferences.mockResolvedValue(initial)
+      const onSelectSession = vi.fn()
+      const tree = renderTree({ onSelectSession })
+      await waitFor(() => expect(sessionApi.loadPreferences).toHaveBeenCalled())
+      const repo = screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!
+      const names = () => [...repo.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)
+      const team = screen.getByRole('button', { name: 'Actions for Team Battles' }).closest('article')!
+      const coins = screen.getByRole('button', { name: 'Actions for Coins everywhere' }).closest('article')!
+      expect(team).toHaveAttribute('draggable', 'true')
+      fireEvent.dragStart(team)
+      fireEvent.drop(coins)
+      expect(names()).toEqual(['Team Battles', 'Coins everywhere'])
+      const saved = { ...initial, repositorySessionIds: ['$1', '$2'] }
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith(saved))
+      fireEvent.keyDown(window, { key: '1', metaKey: true })
+      expect(onSelectSession).toHaveBeenLastCalledWith('$1')
+      fireEvent.click(screen.getByRole('button', { name: 'Group sessions manually' }))
+      const manualGroup = await screen.findByRole('button', { name: 'Collapse GIZMO' })
+      expect([...manualGroup.closest('section')!.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)).toEqual(['Coins everywhere', 'Team Battles'])
+      fireEvent.click(screen.getByRole('button', { name: 'Group sessions by repository' }))
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith({ ...saved, groupingMode: 'repository' }))
+      tree.unmount()
+      sessionApi.loadPreferences.mockResolvedValue(saved)
+      renderTree()
+      await waitFor(() => expect([...screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)).toEqual(['Team Battles', 'Coins everywhere']))
+    })
+
+    it('rejects cross-repo and self drops, and allows dropping on the group to move to the end', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      renderTree()
+      await waitFor(() => expect(sessionApi.loadPreferences).toHaveBeenCalled())
+      const coins = screen.getByRole('button', { name: 'Actions for Coins everywhere' }).closest('article')!
+      const ci = screen.getByRole('button', { name: 'Actions for CI' }).closest('article')!
+      const noRepo = screen.getByRole('button', { name: 'Collapse No repository' }).closest('section')!
+      fireEvent.dragStart(coins)
+      expect(fireEvent.dragOver(ci)).toBe(true)
+      fireEvent.drop(ci)
+      fireEvent.drop(noRepo)
+      fireEvent.drop(coins)
+      expect(sessionApi.savePreferences).not.toHaveBeenCalled()
+      fireEvent.dragStart(coins)
+      fireEvent.drop(screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!)
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith(expect.objectContaining({ repositorySessionIds: ['$1', '$2'] })))
+    })
+
+    it('also reorders sessions within No repository', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      renderTree({ panes: [] })
+      await waitFor(() => expect(sessionApi.loadPreferences).toHaveBeenCalled())
+      fireEvent.dragStart(screen.getByRole('button', { name: 'Actions for Team Battles' }).closest('article')!)
+      fireEvent.drop(screen.getByRole('button', { name: 'Actions for CI' }).closest('article')!)
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith(expect.objectContaining({ repositorySessionIds: ['$1', '$3', '$2', '$4'] })))
+    })
+
     it('offers linked worktree deletion only for a worktree-backed session', async () => {
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
       vi.spyOn(window, 'confirm').mockReturnValue(true)
