@@ -781,13 +781,44 @@ kbd {
 }
 
 .mini-status {
+  position: relative;
   width: 5px;
   height: 5px;
 }
 
 .mini-status.working {
+  /* The dot moves to ::before so the ring can paint behind it - see the ring
+     rule below. */
+  isolation: isolate;
+  background: transparent;
+}
+
+.mini-status.working::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   background: var(--accent);
+}
+
+/* Composited pulse ring - see the matching rule in session-tree.css. Rest scale
+   is 5/11: the dot's diameter inside the fully grown ring. */
+.mini-status.working::after {
+  --pulse-rest-scale: 0.4545;
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: -1;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  transform: scale(var(--pulse-rest-scale));
   animation: session-status-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+  will-change: transform;
 }
 
 .mini-status.needs_input {
@@ -2560,20 +2591,52 @@ kbd {
 }
 
 .hud-pulse {
+  position: relative;
+  isolation: isolate;
   width: 7px;
   height: 7px;
-  background: var(--accent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  /* The dot moves to ::before so the ring can paint behind it. */
+  background: transparent;
+  --pulse-dot: var(--accent);
+  --pulse-ring: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.hud-pulse::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--pulse-dot);
+}
+
+/* Composited expanding ring. Rest scale is 7/23: the dot's diameter inside the
+   ring at full 8px spread. Opacity carries the fade the old keyframe expressed
+   by mixing the shadow colour down to 0% alpha. */
+.hud-pulse::after {
+  --pulse-rest-scale: 0.3043;
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: -1;
+  width: 23px;
+  height: 23px;
+  margin: -11.5px 0 0 -11.5px;
+  border-radius: 50%;
+  background: var(--pulse-ring);
+  transform: scale(var(--pulse-rest-scale));
   animation: pulse 2s infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
 }
 
 .hud-pulse.attention {
-  background: var(--amber);
-  box-shadow: 0 0 0 0 rgba(243, 198, 107, 0.4);
+  --pulse-dot: var(--amber);
+  --pulse-ring: rgba(243, 198, 107, 0.4);
 }
 
 @keyframes pulse {
-  70% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+  70% { transform: scale(1); opacity: 0; }
 }
 
 .hud-stats {
@@ -4096,6 +4159,17 @@ body.is-resizing-hud-pinned-note {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* Nothing should animate while the UI is off screen. `data-commando-presenting`
+   is maintained by src/presenting.ts from page visibility plus the desktop
+   shell's window occlusion state, so this is what stops a minimised or fully
+   covered window from still paying to repaint. Animations park rather than
+   reset, so they resume mid-cycle instead of jumping. */
+:root[data-commando-presenting='false'] *,
+:root[data-commando-presenting='false'] *::before,
+:root[data-commando-presenting='false'] *::after {
+  animation-play-state: paused !important;
 }
 
 .pane-drop-preview {

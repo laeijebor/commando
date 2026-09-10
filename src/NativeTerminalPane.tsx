@@ -1,6 +1,7 @@
 import { type FocusEvent, useEffect, useRef, useState } from 'react'
 
 import type { PaneTerminalSink } from './paneStream'
+import { isPresenting, subscribeToPresenting } from './presenting'
 import {
   encodeBase64Bytes,
   NATIVE_TERMINAL_KEY_SHORTCUTS,
@@ -377,6 +378,11 @@ export function NativeTerminalPane({
       if (!bridge.frame(attachmentId, payload)) activeFailureRef.current()
     }
     const schedule = () => {
+      // Publishing costs a forced full-document layout read, and while the UI is
+      // off screen the rect cannot change in any way a person can see. Skip the
+      // work and recompute once on the way back instead. This also stops the
+      // fallback timer, so a hidden window runs no per-tile polling at all.
+      if (!isPresenting()) return
       if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
@@ -394,10 +400,14 @@ export function NativeTerminalPane({
     })
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
+    const unsubscribePresenting = subscribeToPresenting((presenting) => {
+      if (presenting) schedule()
+    })
     schedule()
 
     return () => {
       resizeObserver.disconnect()
+      unsubscribePresenting()
       mutationObserver.disconnect()
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)

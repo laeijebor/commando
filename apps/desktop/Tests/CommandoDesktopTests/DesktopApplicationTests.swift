@@ -15,12 +15,14 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
+    private(set) var windowPresenting: [Bool] = []
     private(set) var detachedWebPaneIds: [[String]] = []
 
     func reload(_ sender: Any?) { reloadCount += 1 }
     func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
+    func setWindowPresenting(_ presenting: Bool) { windowPresenting.append(presenting) }
     func authorizeClipboardWrite() {}
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {}
     func setDetachedWebPaneIds(_ webPaneIds: [String]) { detachedWebPaneIds.append(webPaneIds) }
@@ -39,6 +41,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     private(set) var reapplyCount = 0
     private(set) var cleanUpCount = 0
     private(set) var windowActivity: [Bool] = []
+    private(set) var windowPresenting: [Bool] = []
     private(set) var detachedWebPaneIds: [[String]] = []
     private(set) weak var windowCommandHandler: (any DesktopWindowCommandHandling)?
 
@@ -59,6 +62,7 @@ private final class DesktopWindowControllerSpy: DesktopWindowControlling {
     func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
     func reapplyTerminalFrames() { reapplyCount += 1 }
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
+    func setWindowPresenting(_ presenting: Bool) { windowPresenting.append(presenting) }
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {
         windowCommandHandler = handler
     }
@@ -423,6 +427,58 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(created.count, 2)
     }
 
+    func testOcclusionNotificationsPublishPresentingOnlyToTheirSession() {
+        var created: [DesktopWindowControllerSpy] = []
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { frame in
+                let controller = DesktopWindowControllerSpy(restoredFrame: frame)
+                created.append(controller)
+                return controller
+            },
+            restorationStore: WindowRestorationStoreSpy(),
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        let first = delegate.openWindow() as! DesktopWindowControllerSpy
+        let second = delegate.openWindow() as! DesktopWindowControllerSpy
+
+        // These windows are never ordered front, so the window server reports
+        // them as not visible - which is exactly the state the gate cares about.
+        delegate.windowDidChangeOcclusionState(
+            Notification(name: NSWindow.didChangeOcclusionStateNotification, object: first.window)
+        )
+
+        XCTAssertEqual(first.windowPresenting, [first.window.occlusionState.contains(.visible)])
+        XCTAssertTrue(second.windowPresenting.isEmpty)
+        XCTAssertEqual(created.count, 2)
+    }
+
+    func testOcclusionNotificationsForUnknownWindowsAreIgnored() {
+        let delegate = DesktopAppDelegate(
+            sessionFactory: { frame in DesktopWindowControllerSpy(restoredFrame: frame) },
+            restorationStore: WindowRestorationStoreSpy(),
+            keyWindowProvider: { nil },
+            visibleFramesProvider: { [] }
+        )
+        let tracked = delegate.openWindow() as! DesktopWindowControllerSpy
+        let stranger = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+
+        delegate.windowDidChangeOcclusionState(
+            Notification(name: NSWindow.didChangeOcclusionStateNotification, object: stranger)
+        )
+        delegate.windowDidChangeOcclusionState(
+            Notification(name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+        )
+
+        XCTAssertTrue(tracked.windowPresenting.isEmpty)
+        stranger.orderOut(nil)
+    }
+
     func testDesktopWindowSessionCleanupIsIdempotentAndReleasesItsContentView() {
         let webHost = DesktopWebHostSpy()
         let frame = NSRect(x: 30, y: 40, width: 900, height: 650)
@@ -431,6 +487,7 @@ final class DesktopApplicationTests: XCTestCase {
         session.reload()
         session.applyZoomPercent(120)
         session.reapplyTerminalFrames()
+        session.setWindowPresenting(false)
         session.cleanUp()
         session.cleanUp()
 
@@ -440,6 +497,7 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(webHost.reapplyCount, 1)
         XCTAssertEqual(webHost.cleanUpCount, 1)
         XCTAssertEqual(webHost.windowActivity, [false])
+        XCTAssertEqual(webHost.windowPresenting, [false])
         XCTAssertNil(session.window.contentView)
         XCTAssertFalse(session.window.isRestorable)
         session.window.orderOut(nil)

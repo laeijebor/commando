@@ -4,12 +4,14 @@ import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { DetachedWebPaneApp } from './DetachedWebPaneApp'
 import { detachedWebPaneIdFromLocation } from './nativeWindowBridge'
+import { startPresentingTracking } from './presenting'
 import { applyTheme, storedTheme } from './theme'
 import '@fontsource/jetbrains-mono/latin-400.css'
 import '@fontsource/jetbrains-mono/latin-700.css'
 import './styles.css'
 
 applyTheme(storedTheme())
+startPresentingTracking()
 
 const root = createRoot(document.getElementById('root')!)
 const detachedWebPaneId = detachedWebPaneIdFromLocation()
