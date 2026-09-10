@@ -787,6 +787,17 @@ kbd {
 }
 
 .mini-status.working {
+  /* The dot moves to ::before so the ring can paint behind it - see the ring
+     rule below. */
+  isolation: isolate;
+  background: transparent;
+}
+
+.mini-status.working::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
   background: var(--accent);
 }
 
@@ -798,6 +809,7 @@ kbd {
   position: absolute;
   top: 50%;
   left: 50%;
+  z-index: -1;
   width: 11px;
   height: 11px;
   margin: -5.5px 0 0 -5.5px;
@@ -2580,10 +2592,21 @@ kbd {
 
 .hud-pulse {
   position: relative;
+  isolation: isolate;
   width: 7px;
   height: 7px;
-  background: var(--accent);
+  /* The dot moves to ::before so the ring can paint behind it. */
+  background: transparent;
+  --pulse-dot: var(--accent);
   --pulse-ring: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.hud-pulse::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--pulse-dot);
 }
 
 /* Composited expanding ring. Rest scale is 7/23: the dot's diameter inside the
@@ -2595,6 +2618,7 @@ kbd {
   position: absolute;
   top: 50%;
   left: 50%;
+  z-index: -1;
   width: 23px;
   height: 23px;
   margin: -11.5px 0 0 -11.5px;
@@ -2607,7 +2631,7 @@ kbd {
 }
 
 .hud-pulse.attention {
-  background: var(--amber);
+  --pulse-dot: var(--amber);
   --pulse-ring: rgba(243, 198, 107, 0.4);
 }
 

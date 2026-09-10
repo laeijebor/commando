@@ -35,16 +35,18 @@
 .session-mark-dot.tone-purple, .mini-pane-mark.tone-purple { color: var(--accent) !important; }
 .session-mark-dot.has-activity::before { background: var(--cyan); box-shadow: 0 0 9px var(--cyan); }
 .session-mark-dot small { position: absolute; right: 0; bottom: 1px; min-width: 10px; height: 10px; display: grid; place-items: center; border-radius: 999px; color: var(--accent-ink); background: var(--cyan); font: 800 6px/1 var(--mono); }
-.session-status-dot { position: relative; width: 24px; height: 24px; flex: 0 0 24px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
+.session-status-dot { position: relative; isolation: isolate; width: 24px; height: 24px; flex: 0 0 24px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
 .session-status-dot::before { width: 6px; height: 6px; content: ''; border-radius: 50%; background: var(--muted-dim); }
 .session-status-dot:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .session-status-dot.working::before { background: var(--accent); }
 /* Composited pulse ring: a scaled disc costs no repaint, where an animated
-   box-shadow spread forced one every frame. The ring is the dot's own colour at
-   low alpha, so painting it over the opaque dot is a no-op and it reads exactly
-   like the shadow it replaces. Rest scale 0.5 == the 6px dot inside the 12px
-   ring, so the ring is hidden until the animation grows it. */
-.session-status-dot.working::after { --pulse-rest-scale: 0.5; content: ''; position: absolute; top: 50%; left: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(var(--pulse-rest-scale)); animation: session-status-pulse 1.8s ease-in-out infinite; pointer-events: none; will-change: transform; }
+   box-shadow spread forced one every frame. `z-index: -1` under the host's
+   isolation puts the disc behind the dot, which is what makes this pixel-exact:
+   box-shadow paints behind the element's background, so the dot's antialiased
+   edge has to composite over the ring rather than under it. Rest scale 0.5 ==
+   the 6px dot inside the 12px ring, so at rest the disc hides behind the dot
+   exactly as a zero spread does. */
+.session-status-dot.working::after { --pulse-rest-scale: 0.5; content: ''; position: absolute; top: 50%; left: 50%; z-index: -1; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(var(--pulse-rest-scale)); animation: session-status-pulse 1.8s ease-in-out infinite; pointer-events: none; will-change: transform; }
 .session-status-dot.needs_input::before { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
 .session-status-dot.done::before { box-sizing: border-box; border: 2px solid var(--green); background: transparent; }
 .session-status-dot.failed::before { border-radius: 1px; background: var(--red); }
