@@ -28,6 +28,7 @@ const CREATE_FORMAT = [
   '#{pane_id}',
   '#{pane_index}',
   '#{pane_current_path}',
+  '#{pane_start_path}',
 ].join(FIELD_SEPARATOR)
 
 export type TmuxCreateCommandRunner = (args: readonly string[]) => Promise<string>
@@ -167,7 +168,7 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
   const lines = output.split(/\r?\n/u).filter((line) => line.length > 0)
   if (lines.length !== 1) throw new Error('tmux returned an invalid create response')
   const fields = lines[0].split(FIELD_SEPARATOR)
-  if (fields.length !== 8) throw new Error('tmux returned an invalid create response')
+  if (fields.length !== 9) throw new Error('tmux returned an invalid create response')
 
   const [
     sessionId,
@@ -177,8 +178,12 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
     windowName,
     paneId,
     paneIndexValue,
-    panePath,
+    paneCurrentPath,
+    paneStartPath,
   ] = fields
+  // The OS may not report the child process's cwd yet when -P formats a newly
+  // created pane. tmux already knows its starting directory, even during prep.
+  const panePath = paneCurrentPath || paneStartPath
   const windowIndex = /^\d+$/u.test(windowIndexValue) ? Number(windowIndexValue) : NaN
   const paneIndex = /^\d+$/u.test(paneIndexValue) ? Number(paneIndexValue) : NaN
   if (

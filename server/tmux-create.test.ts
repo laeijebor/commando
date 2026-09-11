@@ -14,6 +14,7 @@ const output = (
     paneId: string
     paneIndex: string
     panePath: string
+    paneStartPath: string
   }> = {},
 ) => {
   const fields = {
@@ -25,6 +26,7 @@ const output = (
     paneId: '%12',
     paneIndex: '1',
     panePath: '/Users/dev/project',
+    paneStartPath: '/Users/dev/project',
     ...overrides,
   }
   return `${Object.values(fields).join(separator)}\n`
@@ -93,6 +95,27 @@ describe('TmuxCreator', () => {
       '-n',
       'tests',
     ])
+  })
+
+  it.each(['session', 'window', 'pane'] as const)(
+    'uses the starting directory when a new %s has no current path yet',
+    async (kind) => {
+      const creator = new TmuxCreator(runner(output({ panePath: '', paneStartPath: '/tmp/new worktree' })), [])
+      const created = kind === 'session'
+        ? (await creator.createSession({ name: 'work' })).created
+        : kind === 'window'
+          ? await creator.createWindow({ sessionId: '$4' })
+          : await creator.createPane({ targetId: '%12', direction: 'horizontal' })
+
+      expect(created).toMatchObject({ kind, panePath: '/tmp/new worktree' })
+    },
+  )
+
+  it('prefers the live current directory when it is available', async () => {
+    const creator = new TmuxCreator(runner(output({ paneStartPath: '/tmp/original' })), [])
+    await expect(creator.createSession({ name: 'work' })).resolves.toMatchObject({
+      created: { panePath: '/Users/dev/project' },
+    })
   })
 
   it.each([
@@ -253,6 +276,9 @@ describe('TmuxCreator', () => {
     output({ windowIndex: '' }),
     output({ windowIndex: '-1' }),
     output({ panePath: 'relative' }),
+    output({ panePath: '', paneStartPath: '' }),
+    output({ panePath: '', paneStartPath: 'relative' }),
+    output({ panePath: '', paneStartPath: '/tmp/bad\u0000path' }),
     output({ paneIndex: 'NaN' }),
     `${output()}${output()}`,
   ])('rejects malformed tmux format output', async (response) => {
@@ -373,6 +399,25 @@ describe('TmuxCreator worktree-backed sessions', () => {
     expect(createArgs?.at(-1)).toBe(worktreePreparationShellCommand('pnpm i\npnpm build'))
     expect(createArgs?.at(-1)).toContain('[commando] Preparing worktree')
     expect(createArgs?.at(-1)).toContain('exec "${SHELL:-/bin/sh}" -l')
+  })
+
+  it('reports success and keeps the worktree when preparation starts before the current path is available', async () => {
+    const git = worktrees()
+    const run = tmuxRunner().mockImplementation(async (args) => {
+      if (args.includes('has-session')) throw new Error("can't find session")
+      return output({ panePath: '', paneStartPath: target })
+    })
+    const creator = new TmuxCreator(run, [], git)
+
+    await expect(creator.createSession({
+      name: 'flow',
+      cwd: MAIN,
+      worktree: { branch: 'bot-rematch-flow', prepareCommand: 'true' },
+    })).resolves.toMatchObject({
+      created: { kind: 'session', panePath: target },
+      worktree: { path: target, branch: 'bot-rematch-flow' },
+    })
+    expect(git.rollback).not.toHaveBeenCalled()
   })
 
   it.each([
