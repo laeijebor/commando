@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import {
   createServer,
   type IncomingMessage,
@@ -46,6 +47,11 @@ import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
 import { PrService } from './prs.js'
 import { handlePrsApi } from './prs-api.js'
+import { CloudTaskStore } from './cloud-task-store.js'
+import { CloudTaskService } from './cloud-task-service.js'
+import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { ClaudeCloudAdapter } from './cloud-providers/claude-cli.js'
+import { CodexCloudAdapter } from './cloud-providers/codex-cli.js'
 import { handleNotesApi } from './notes-api.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
@@ -535,6 +541,17 @@ async function main(): Promise<void> {
   const notes = new NoteVaultManager()
   const linear = new LinearService()
   const prs = new PrService()
+  let cloudTaskStore: CloudTaskStore | undefined
+  let cloudTasks: CloudTaskService | undefined
+  try {
+    cloudTaskStore = new CloudTaskStore(resolve(process.env.COMMANDO_CLOUD_TASKS_PATH ?? `${homedir()}/.commando/cloud-tasks.sqlite`))
+    cloudTasks = new CloudTaskService({ store: cloudTaskStore, providers: [new ClaudeCloudAdapter(), new CodexCloudAdapter()] })
+  } catch {
+    cloudTaskStore?.close()
+    cloudTaskStore = undefined
+    // Storage failure must not reset task history or take local tmux offline.
+    console.error('[commando] Cloud task storage unavailable; cloud routes are disabled')
+  }
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
@@ -1830,6 +1847,13 @@ async function main(): Promise<void> {
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
+          if (!cloudTasks) {
+            writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
+            return
+          }
+          if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
+        }
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
@@ -1960,6 +1984,11 @@ async function main(): Promise<void> {
     shuttingDown = true
     clearInterval(snapshotTimer)
     resurrectSaver.stop()
+    void cloudTasks?.stop().catch(() => {
+      console.error('[commando] Cloud dispatcher stopped with uncertain delivery; saved tasks require reconciliation')
+    })
+    // Keep SQLite available to late CLI receipts while shutdown drains children.
+    process.once('beforeExit', () => cloudTaskStore?.close())
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     companion?.close()
