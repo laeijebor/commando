@@ -7,6 +7,7 @@ import {
   Bot,
   Check,
   CircleDotDashed,
+  Cloud,
   Command,
   Grid2X2,
   KeyRound,
@@ -104,6 +105,8 @@ import {
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
+import { createCloudTasksApi } from './cloudTasksApi'
+import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -703,7 +706,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'linear' | 'notes'
+type CommandoArea = 'workspace' | 'linear' | 'notes' | 'cloud'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -1029,6 +1032,7 @@ export function App() {
   }, [])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
+  const [selectedCloudTaskId, setSelectedCloudTaskId] = useState<string | null>(null)
   const [notesMounted, setNotesMounted] = useState(false)
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
@@ -1809,6 +1813,7 @@ export function App() {
   const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
   const prsApi = useMemo(() => createPrsApi(token), [token])
+  const cloudTasksApi = useMemo(() => createCloudTasksApi(token), [token])
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -2375,6 +2380,10 @@ export function App() {
               <span>Workspace</span>
               <span className="nav-count">{snapshot?.sessions.length ?? 0}</span>
             </button>
+            <button type="button" className={area === 'cloud' ? 'active' : ''} aria-current={area === 'cloud' ? 'page' : undefined} onClick={() => { setArea('cloud'); setLeftPanelOpen(false) }}>
+              <Cloud aria-hidden="true" />
+              <span>Cloud tasks</span>
+            </button>
             <button type="button" className={area === 'linear' ? 'active' : ''} aria-current={area === 'linear' ? 'page' : undefined} onClick={() => { setArea('linear'); setLeftPanelOpen(false) }}>
               <CircleDotDashed aria-hidden="true" />
               <span>Linear</span>
@@ -2800,6 +2809,7 @@ export function App() {
             ) : null}
           </div>
           </> : area === 'linear' ? <LinearSection token={token} /> : null}
+          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection
@@ -2900,6 +2910,11 @@ export function App() {
             </button>
           </div>
           <div className="agent-stream">
+            {hudTab === 'agents' ? <CloudTasksHud api={cloudTasksApi} onSelectTask={(id) => {
+              setSelectedCloudTaskId(id)
+              setArea('cloud')
+              setRightPanelOpen(false)
+            }} /> : null}
             {visibleHudGroups.map((group) => (
               <section className="agent-group" key={group.id} aria-labelledby={`agent-group-${group.id}`}>
                 <header>

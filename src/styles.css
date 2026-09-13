@@ -479,6 +479,7 @@ kbd {
 }
 
 .cockpit-body.area-linear,
+.cockpit-body.area-cloud,
 .cockpit-body.area-notes {
   grid-template-columns: 230px minmax(0, 1fr);
 }
@@ -491,6 +492,7 @@ kbd {
 }
 
 .workspace-main.area-linear,
+.workspace-main.area-cloud,
 .workspace-main.area-notes {
   grid-template-rows: minmax(0, 1fr);
   background: #0a0a0a;
@@ -3423,6 +3425,7 @@ body.is-resizing-hud-pinned-note {
 
   .cockpit-body.left-panel-hidden.right-panel-hidden,
   .cockpit-body.area-linear.left-panel-hidden,
+  .cockpit-body.area-cloud.left-panel-hidden,
   .cockpit-body.area-notes.left-panel-hidden {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3885,6 +3888,7 @@ body.is-resizing-hud-pinned-note {
 @media (max-width: 840px) {
   .cockpit-body,
   .cockpit-body.area-linear,
+  .cockpit-body.area-cloud,
   .cockpit-body.area-notes {
     grid-template-columns: minmax(0, 1fr);
   }
