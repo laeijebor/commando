@@ -17,6 +17,7 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     private(set) var windowActivity: [Bool] = []
     private(set) var windowPresenting: [Bool] = []
     private(set) var detachedWebPaneIds: [[String]] = []
+    private(set) var paneShortcuts: [String] = []
 
     func reload(_ sender: Any?) { reloadCount += 1 }
     func applyZoomPercent(_ percent: Int) { appliedZoomPercents.append(percent) }
@@ -24,6 +25,7 @@ private final class DesktopWebHostSpy: DesktopWebHosting {
     func setWindowActive(_ active: Bool) { windowActivity.append(active) }
     func setWindowPresenting(_ presenting: Bool) { windowPresenting.append(presenting) }
     func authorizeClipboardWrite() {}
+    func sendPaneShortcut(_ key: String) { paneShortcuts.append(key) }
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?) {}
     func setDetachedWebPaneIds(_ webPaneIds: [String]) { detachedWebPaneIds.append(webPaneIds) }
     func cleanUp() { cleanUpCount += 1 }
@@ -123,7 +125,12 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertTrue(newWindow.target === actionTarget)
         let closeWindow = try XCTUnwrap(fileMenu.item(withTitle: "Close Window"))
         XCTAssertEqual(closeWindow.keyEquivalent, "w")
+        XCTAssertEqual(closeWindow.keyEquivalentModifierMask, [.command, .shift])
         XCTAssertEqual(closeWindow.action, #selector(NSWindow.performClose(_:)))
+        XCTAssertEqual(fileMenu.item(withTitle: "New Pane")?.keyEquivalent, "t")
+        XCTAssertEqual(fileMenu.item(withTitle: "New Pane")?.action, #selector(DesktopWindow.newPane(_:)))
+        XCTAssertEqual(fileMenu.item(withTitle: "Close Pane")?.keyEquivalent, "w")
+        XCTAssertEqual(fileMenu.item(withTitle: "Close Pane")?.action, #selector(DesktopWindow.closePane(_:)))
 
         let editMenu = try XCTUnwrap(menu.items[2].submenu)
         XCTAssertEqual(editMenu.items.map(\.title), ["Copy", "Paste"])
@@ -645,10 +652,42 @@ final class DesktopApplicationTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testWindowRoutesPaneShortcutsToItsOwnHostWithoutTerminalInput() throws {
+        let firstHost = DesktopWebHostSpy()
+        let secondHost = DesktopWebHostSpy()
+        let first = DesktopWindowSession(webHost: firstHost)
+        let second = DesktopWindowSession(webHost: secondHost)
+        defer { first.cleanUp(); second.cleanUp() }
+        var terminalInput: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "pane-shortcuts"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { terminalInput.append(data) }
+        }
+        defer { surface.destroy() }
+        firstHost.rootView.addSubview(surface.view)
+        XCTAssertTrue(first.window.makeFirstResponder(surface.view))
+
+        first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: .command, keyCode: 17)))
+        first.window.sendEvent(try XCTUnwrap(keyEvent(key: "w", modifiers: .command, keyCode: 13)))
+        first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: [.command, .shift], keyCode: 17)))
+        first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: .command, keyCode: 17, isARepeat: true)))
+
+        XCTAssertEqual(firstHost.paneShortcuts, ["t", "w"])
+        XCTAssertTrue(secondHost.paneShortcuts.isEmpty)
+        XCTAssertTrue(terminalInput.isEmpty)
+        (second.window as? DesktopWindow)?.newPane(nil)
+        (second.window as? DesktopWindow)?.closePane(nil)
+        XCTAssertEqual(secondHost.paneShortcuts, ["t", "w"])
+    }
+
     private func keyEvent(
         key: String,
         modifiers: NSEvent.ModifierFlags,
-        keyCode: UInt16
+        keyCode: UInt16,
+        isARepeat: Bool = false
     ) -> NSEvent? {
         NSEvent.keyEvent(
             with: .keyDown,
@@ -659,7 +698,7 @@ final class DesktopApplicationTests: XCTestCase {
             context: nil,
             characters: key,
             charactersIgnoringModifiers: key,
-            isARepeat: false,
+            isARepeat: isARepeat,
             keyCode: keyCode
         )
     }

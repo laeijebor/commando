@@ -129,7 +129,7 @@ type NativeTerminalBridgeEvent =
       pageId: string
       eventSequence: number
       type: 'host.shortcut'
-      payload: { key: 'k' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'; metaKey: true }
+      payload: { key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'; metaKey: true }
     }
 
 export type NativeTerminalNegotiation =
@@ -307,7 +307,7 @@ function validatePayload(type: string, payload: Record<string, unknown>): boolea
     case 'host.shortcut':
       return hasOnlyKeys(payload, ['key', 'metaKey']) &&
         typeof payload.key === 'string' &&
-        /^(?:k|[1-9])$/.test(payload.key) &&
+        /^(?:[kwt]|[1-9])$/.test(payload.key) &&
         payload.metaKey === true
     default:
       return false
@@ -352,7 +352,7 @@ export class NativeTerminalBridge {
   private maxPanes = 0
   private hitRegionsSupported = false
   private readonly attachments = new Map<string, AttachmentRecord>()
-  private readonly shortcutListeners = new Set<(key: 'k' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
+  private readonly shortcutListeners = new Set<(key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
   private readonly previousReceiver = window.__commandoNativeTerminalReceive
   private readonly receiver = (value: unknown) => this.receive(value)
 
@@ -461,7 +461,7 @@ export class NativeTerminalBridge {
   }
 
   subscribeHostShortcuts(
-    listener: (key: 'k' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void,
+    listener: (key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void,
   ): () => void {
     this.shortcutListeners.add(listener)
     return () => this.shortcutListeners.delete(listener)

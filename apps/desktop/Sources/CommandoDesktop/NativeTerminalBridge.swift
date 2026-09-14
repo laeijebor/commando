@@ -240,8 +240,12 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
                 payload: NativeTerminalEventBuilder.paneContextMenu(identity, point: point)
             )
         case let .shortcut(key):
-            emit(type: "host.shortcut", payload: NativeTerminalEventBuilder.hostShortcut(key: key))
+            sendHostShortcut(key)
         }
+    }
+
+    func sendHostShortcut(_ key: String) {
+        emit(type: "host.shortcut", payload: NativeTerminalEventBuilder.hostShortcut(key: key))
     }
 
     private func emitPaneFailure(identity: PaneIdentity, code: String, message: String) {

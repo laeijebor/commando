@@ -336,6 +336,72 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   return view
 }
 
+describe('pane close and create shortcuts', () => {
+  const deleteUrl = (id: string) => `/api/pane-management/panes/${encodeURIComponent(id)}/delete`
+
+  it.each(['button', 'keyboard', 'native'] as const)('closes the targeted pane via %s', async (source) => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await renderAppWithSnapshot()
+    vi.mocked(fetch).mockResolvedValue(new Response('{}', { status: 200 }))
+    fireEvent.focus(screen.getByTestId(`renderer-${adjacentPane.id}`))
+
+    if (source === 'button') fireEvent.click(screen.getByRole('button', { name: 'Close api' }))
+    if (source === 'keyboard') fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    if (source === 'native') act(() => window.dispatchEvent(new CustomEvent('commando:native-terminal-shortcut', {
+      detail: { key: 'w', metaKey: true },
+    })))
+
+    const target = source === 'button' ? pane : adjacentPane
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(deleteUrl(target.id), expect.objectContaining({
+      method: 'DELETE', body: JSON.stringify({ confirmPaneId: target.id }),
+    })))
+    expect(confirm).toHaveBeenCalledWith(`Kill pane "${target.title}"? Its running process will be terminated.`)
+  })
+
+  it('keeps a pane when confirmation is cancelled and ignores modified or repeated shortcuts', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await renderAppWithSnapshot()
+    fireEvent.keyDown(window, { key: 'w', metaKey: true, shiftKey: true })
+    fireEvent.keyDown(window, { key: 'w', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'w', metaKey: true, repeat: true })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(fireEvent.keyDown(window, { key: 'w', metaKey: true })).toBe(false)
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/delete'), expect.anything())
+  })
+
+  it.each(['keyboard', 'native'] as const)('creates a pane in the current session via %s', async (source) => {
+    await renderAppWithSnapshot(snapshotAcrossSessions())
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ created: {
+      kind: 'pane', sessionId: '$3', sessionName: 'work', windowId: '@2', windowIndex: 0,
+      windowName: 'editor', paneId: '%13', paneIndex: 2, panePath: pane.path,
+    } }), { status: 200 }))
+    if (source === 'keyboard') fireEvent.keyDown(window, { key: 't', metaKey: true })
+    else act(() => window.dispatchEvent(new CustomEvent('commando:native-terminal-shortcut', {
+      detail: { key: 't', metaKey: true },
+    })))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({
+        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path,
+      }),
+    })))
+  })
+
+  it('reports failed closes and disables close controls while disconnected', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const view = await renderAppWithSnapshot()
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: 'Unable to kill test pane' }), { status: 500 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close api' }))
+    await screen.findByText('Unable to kill test pane')
+    daemonConnection = { phase: 'reconnecting', detail: 'Offline', attempt: 1 }
+    view.rerender(<App />)
+    expect(screen.getByRole('button', { name: 'Close api' })).toBeDisabled()
+    vi.mocked(confirm).mockClear()
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    expect(confirm).not.toHaveBeenCalled()
+  })
+})
+
 describe('session update briefs', () => {
   it('replays each worklog only into its source terminal pane', async () => {
     await renderAppWithSnapshot()
@@ -1235,6 +1301,7 @@ const paneProps = {
   onRenameFinished: vi.fn(),
   onMove: vi.fn(),
   onMaximize: vi.fn(),
+  onClose: vi.fn(),
   onDragStart: vi.fn(),
   onDragEnd: vi.fn(),
   onDragOver: vi.fn(),

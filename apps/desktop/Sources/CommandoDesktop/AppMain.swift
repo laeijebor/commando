@@ -11,6 +11,17 @@ extension Notification.Name {
 final class DesktopWindow: NSWindow {
     var zoomShortcutWasPressed: ((String) -> Void)?
     var commandCopyWasPressed: (() -> Void)?
+    var paneShortcutWasPressed: ((String) -> Void)?
+
+    @objc func newPane(_ sender: Any?) { paneShortcutWasPressed?("t") }
+    @objc func closePane(_ sender: Any?) { paneShortcutWasPressed?("w") }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(newPane(_:)) || menuItem.action == #selector(closePane(_:)) {
+            return paneShortcutWasPressed != nil && attachedSheet == nil
+        }
+        return super.validateMenuItem(menuItem)
+    }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let previous = firstResponder
@@ -24,6 +35,14 @@ final class DesktopWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown {
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if modifiers == .command,
+               let key = event.charactersIgnoringModifiers?.lowercased(),
+               key == "w" || key == "t",
+               let paneShortcutWasPressed,
+               attachedSheet == nil {
+                if !event.isARepeat { paneShortcutWasPressed(key) }
+                return
+            }
             if modifiers == .command,
                let key = event.charactersIgnoringModifiers,
                key == "-" || key == "=" || key == "0" {
@@ -111,11 +130,13 @@ enum DesktopMainMenu {
             keyEquivalent: "n"
         )
         newWindowItem.target = actionTarget
+        fileMenu.addItem(withTitle: "New Pane", action: #selector(DesktopWindow.newPane(_:)), keyEquivalent: "t")
+        fileMenu.addItem(withTitle: "Close Pane", action: #selector(DesktopWindow.closePane(_:)), keyEquivalent: "w")
         fileMenu.addItem(
             withTitle: "Close Window",
             action: #selector(NSWindow.performClose(_:)),
             keyEquivalent: "w"
-        )
+        ).keyEquivalentModifierMask = [.command, .shift]
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 
@@ -198,6 +219,7 @@ protocol DesktopWebHosting: AnyObject {
     func setWindowActive(_ active: Bool)
     func setWindowPresenting(_ presenting: Bool)
     func authorizeClipboardWrite()
+    func sendPaneShortcut(_ key: String)
     func setWindowCommandHandler(_ handler: (any DesktopWindowCommandHandling)?)
     func setDetachedWebPaneIds(_ webPaneIds: [String])
     func cleanUp()
@@ -264,6 +286,11 @@ final class DesktopWindowSession: DesktopWindowControlling {
         window.commandCopyWasPressed = { [weak webHost] in
             webHost?.authorizeClipboardWrite()
         }
+        if role.webPaneId == nil {
+            window.paneShortcutWasPressed = { [weak webHost] key in
+                webHost?.sendPaneShortcut(key)
+            }
+        }
         if let restoredFrame {
             window.setFrame(restoredFrame, display: false)
         } else {
@@ -317,6 +344,7 @@ final class DesktopWindowSession: DesktopWindowControlling {
         commandHandler = nil
         (window as? DesktopWindow)?.zoomShortcutWasPressed = nil
         (window as? DesktopWindow)?.commandCopyWasPressed = nil
+        (window as? DesktopWindow)?.paneShortcutWasPressed = nil
         webHost.setWindowActive(false)
         webHost.cleanUp()
         window.contentView = nil

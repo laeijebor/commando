@@ -271,6 +271,8 @@ type TerminalPaneProps = {
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
   onMaximize: () => void
+  onClose: () => void
+  closeDisabled?: boolean
   onDragStart: (event: DragEvent<HTMLElement>) => void
   onDragEnd: () => void
   onDragOver: (event: DragEvent<HTMLElement>) => void
@@ -319,6 +321,8 @@ export function TerminalPaneCard({
   onRenameFinished,
   onMove,
   onMaximize,
+  onClose,
+  closeDisabled,
   onDragStart,
   onDragEnd,
   onDragOver,
@@ -518,6 +522,17 @@ export function TerminalPaneCard({
             title={maximized ? 'Restore pane' : 'Maximize pane'}
           >
             {maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            className="icon-button compact"
+            onClick={onClose}
+            disabled={closeDisabled || !connected}
+            aria-label={`Close ${paneLabel}`}
+            aria-keyshortcuts="Meta+W"
+            title="Kill pane (⌘W)"
+          >
+            <X aria-hidden="true" />
           </button>
         </span>
       </header>
@@ -1984,6 +1999,34 @@ export function App() {
     }
   }
 
+  useEffect(() => {
+    const runPaneShortcut = (key: string) => {
+      if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || prDiff || screenshotLightbox) return
+      if (!currentPrPane || currentPrPane.sessionId !== selectedSessionId) return
+      if (key === 'w') void killPane(currentPrPane.id)
+      if (key === 't') void splitPane(currentPrPane.id, 'right')
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+      const key = event.key.toLowerCase()
+      if (key !== 'w' && key !== 't') return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!event.repeat) runPaneShortcut(key)
+    }
+    const onNativeShortcut = (event: Event) => {
+      const key = (event as CustomEvent<{ key?: string }>).detail?.key
+      if (key === 'w' || key === 't') runPaneShortcut(key)
+    }
+    // Capture before the terminal or an embedded tile can forward these keys.
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    }
+  })
+
   const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
   const paletteRunCommand = runCommandFromQuery(paletteQuery)
   const paletteRunPane = currentPrPane && !currentPrPane.dead ? currentPrPane : undefined
@@ -2638,6 +2681,8 @@ export function App() {
                               setFocusedPaneId(pane.id)
                               setMaximizedPaneId((current) => current === pane.id ? null : pane.id)
                             }}
+                            onClose={() => { void killPane(pane.id) }}
+                            closeDisabled={paneActionPending}
                             onDragStart={(event) => {
                               setDraggedPane({ kind: 'terminal', groupId: group.id, paneId: pane.id })
                               event.dataTransfer.effectAllowed = 'move'

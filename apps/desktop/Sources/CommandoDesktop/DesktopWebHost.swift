@@ -102,6 +102,11 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private(set) var windowPresenting = true
     private var detachedWebPaneIds: [String] = []
 
+    func sendPaneShortcut(_ key: String) {
+        guard !cleanedUp, role.webPaneId == nil, key == "w" || key == "t" else { return }
+        bridge.sendHostShortcut(key)
+    }
+
     init(
         configuration: DesktopConfiguration = .current(),
         role: DesktopWindowRole = .workspace,
