@@ -113,7 +113,17 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
   }
 }
 
-function generatedClaudeBridge(tokenPath: string): string {
+function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string): string {
+  return [
+    'Commando pane integration (this agent runs inside a tmux pane):',
+    `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
+    'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
+    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path).`,
+    'These instructions do not authorize creating or editing a PR unless requested by the user.',
+  ].join('\n')
+}
+
+function generatedClaudeBridge(tokenPath: string, instructions: string): string {
   return `import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 
@@ -425,6 +435,11 @@ async function main() {
     const input = JSON.parse(raw)
     const event = input.hook_event_name
     if (event === 'UserPromptSubmit' && isTaskNotification(input.prompt)) return
+    if (event === 'SessionStart' || event === 'UserPromptSubmit') {
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+        hookEventName: event, additionalContext: ${JSON.stringify(instructions)},
+      } }) + '\\n')
+    }
     const toolState = event === 'PreToolUse'
       ? 'running'
       : event === 'PostToolUseFailure' ? 'failed' : 'completed'
@@ -614,7 +629,7 @@ try {
 `
 }
 
-function generatedOpenCodePlugin(tokenPath: string): string {
+function generatedOpenCodePlugin(tokenPath: string, instructions: string): string {
   return `import { readFile } from 'node:fs/promises'
 
 const trackedEvents = new Set(${JSON.stringify(OPENCODE_HOOK_EVENTS)})
@@ -1046,6 +1061,11 @@ function enqueueInteraction(directory, event, client) {
 }
 
 export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({
+  'experimental.chat.system.transform': async (_input, output) => {
+    if (!/^%\\d+$/.test(process.env.TMUX_PANE ?? '')) return
+    const instructions = ${JSON.stringify(instructions)}
+    if (!output.system.includes(instructions)) output.system.push(instructions)
+  },
   event: ({ event }) => {
     try {
       const isChild = observeSession(event)
@@ -1224,17 +1244,18 @@ export class AgentHookInstaller {
   }
 
   async install(): Promise<AgentHookInstallResult> {
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
     await chmod(dirname(this.paths.claudeBridgePath), 0o700)
     await writeAtomically(
       this.paths.claudeBridgePath,
-      generatedClaudeBridge(this.paths.tokenPath),
+      generatedClaudeBridge(this.paths.tokenPath, instructions),
       0o600,
     )
     await writeAtomically(
       this.paths.openCodePluginPath,
-      generatedOpenCodePlugin(this.paths.tokenPath),
+      generatedOpenCodePlugin(this.paths.tokenPath, instructions),
       0o600,
     )
     await writeAtomically(

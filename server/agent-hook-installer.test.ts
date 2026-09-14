@@ -31,6 +31,7 @@ type OpenCodeEvent = {
 }
 
 type GeneratedOpenCodeHooks = {
+  'experimental.chat.system.transform': (input: { sessionID?: string }, output: { system: string[] }) => Promise<void>
   event: (input: { event: OpenCodeEvent }) => Promise<void> | undefined
   'chat.message': (
     input: { sessionID: string },
@@ -113,6 +114,51 @@ describe('agent hook token', () => {
 })
 
 describe('agent hook installer', () => {
+  it('injects PR ownership and worklog guidance in OpenCode only inside tmux', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const hooks = await loadOpenCodePlugin(paths.openCodePluginPath)
+    const output = { system: ['Existing instructions'] }
+    vi.stubEnv('TMUX_PANE', '')
+    await hooks['experimental.chat.system.transform']({}, output)
+    expect(output.system).toEqual(['Existing instructions'])
+    vi.stubEnv('TMUX_PANE', '%42')
+    await hooks['experimental.chat.system.transform']({}, output)
+    await hooks['experimental.chat.system.transform']({}, output)
+    expect(output.system).toHaveLength(2)
+    expect(output.system[1]).toContain(paths.prMarkerCliPath)
+    expect(output.system[1]).toContain('Append its exact HTML comment')
+    expect(output.system[1]).toContain(paths.sessionBriefCliPath)
+    expect(output.system[1]).toContain('unless requested by the user')
+  })
+
+  it('emits Claude context through the installed startup/prompt command without changing permission output', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const settings = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    const server = createServer((_request, response) => { response.writeHead(200); response.end('{}') })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PostToolUse']) {
+      const command = settings.hooks[event][0].hooks[0]
+      const child = spawn(command.command, command.args, {
+        env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      child.stdin.end(JSON.stringify({ hook_event_name: event, session_id: 'test', prompt: 'Create the requested PR' }))
+      const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
+      expect(code).toBe(0)
+      if (event === 'PostToolUse') expect(stdout).toBe('')
+      else expect(JSON.parse(stdout)).toMatchObject({ hookSpecificOutput: {
+        hookEventName: event, additionalContext: expect.stringContaining(paths.prMarkerCliPath),
+      } })
+    }
+  })
+
   it('honors CLAUDE_CONFIG_DIR for explicit Claude profiles', async () => {
     const home = await temporaryHome()
     const profile = join(home, '.claudep')

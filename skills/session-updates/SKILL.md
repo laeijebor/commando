@@ -9,8 +9,17 @@ Keep the current tmux pane easy to re-enter throughout its session. Commando
 shows provider tasks automatically and derives pane-local milestones from
 lifecycle hooks. Use the shared CLI when you have a deliberate summary,
 decision, blocker, note, or next action to add to the current pane's worklog.
-The worklog appears automatically after its first plan or activity and keeps
-completed, current, and pending tasks visible above chronological history.
+The worklog fills in after its first plan or activity and keeps completed,
+current, and pending tasks visible above chronological history.
+
+The worklog handle also remains available before hook data arrives, so notes
+and linked PRs are always accessible. If the worklog reports no agent hook
+data, run Commando's `npm run hooks:install`, then restart the agent when it
+is safe to do so. Running sessions may retain their old plugin configuration.
+
+When creating a PR, use the `commando-prs` skill: retrieve the pane marker
+with `node "$HOME/.commando/hooks/commando-pr-marker.mjs"` and append it to
+the PR body. Status hooks and worklog updates alone do not stamp PRs.
 
 ## Publish an update
 

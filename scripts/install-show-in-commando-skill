@@ -12,8 +12,23 @@ destination_roots=(
   "$HOME/.claudey/skills"
   "$HOME/.config/opencode/skills"
 )
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  destination_roots+=("$CLAUDE_CONFIG_DIR/skills")
+fi
 
-for skill_dir in "$skills_root"/*/; do
+skill_dirs=("$skills_root"/*/)
+if [ "$#" -gt 0 ]; then
+  skill_dirs=()
+  for name in "$@"; do
+    if [[ ! "$name" =~ ^[a-z0-9-]+$ ]] || [ ! -f "$skills_root/$name/SKILL.md" ]; then
+      echo "Unknown Commando skill: $name" >&2
+      exit 1
+    fi
+    skill_dirs+=("$skills_root/$name/")
+  done
+fi
+
+for skill_dir in "${skill_dirs[@]}"; do
   name="$(basename "$skill_dir")"
   [ -f "$skill_dir/SKILL.md" ] || continue
   for root in "${destination_roots[@]}"; do
