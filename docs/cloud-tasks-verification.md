@@ -51,7 +51,7 @@ version/account/environment verification. See README for configuration.
 
 Before completing release acceptance:
 
-- [ ] Identify provider executable paths and sign in through their official CLIs.
+- [x] Identify provider executable paths and check existing official-CLI logins (see below; no new login required).
 - [ ] Supply an explicit disposable repository/branch and Codex environment ID.
 - [ ] Capture actual sanitized CLI receipts and version evidence.
 - [ ] Confirm remote work completes after closing its local submitter.
@@ -61,3 +61,39 @@ Before completing release acceptance:
 - [ ] Resolve Claude creation's source-selection gate before claiming support.
 
 Keep the feature worktree and branch until these outstanding gates are resolved.
+
+## Existing-connection checks
+
+Read-only checks located both installed CLIs outside this agent shell's PATH:
+
+| Provider | Executable | Version | Existing authentication |
+| --- | --- | --- | --- |
+| Claude Code | `~/.local/bin/claude` | `2.1.270` | Default, with `CLAUDE_CONFIG_DIR` **unset**: claude.ai Team |
+| Claude Code (`claudep`) | Same executable | `2.1.270` | `CLAUDE_CONFIG_DIR=~/.claudep`: claude.ai Max |
+| Codex | `~/.nvm/versions/node/v24.18.0/bin/codex` | `0.153.4` | ChatGPT login |
+
+Checks used the implementation's `runCloudCli` environment construction and
+explicit executable paths, without copying credential files or printing tokens,
+account addresses, or task contents. `claude auth status --json` verified the
+logins; Codex `login status` reported ChatGPT authentication. The authenticated
+`codex cloud list --json --limit 20` request completed successfully and returned
+an empty task list with no next-page cursor. This verifies read-only cloud access,
+not submission or task execution. With no tasks returned, existing-task
+inspection/diff could not be exercised.
+
+Claude's installed help advertises `--cloud`, `--remote`, and `--teleport`.
+This does not establish cloud-session policy or follow-up delivery on either
+Claude account; no documented headless cloud-listing surface was exercised.
+
+Explicitly setting `CLAUDE_CONFIG_DIR=~/.claude` reports signed out, despite the
+unset default reporting Team authentication. `~/.claudey` also reports signed
+out. Preserve **unset versus explicitly configured** profile selection rather
+than treating those paths as interchangeable. The `claudep` shell alias selects
+`~/.claudep`; the adapters execute binaries directly and do not inherit aliases.
+
+Using the resolved executable overrides, both actual adapters recognize their
+installed version and correctly remain **unverified** for gated actions. No
+verified-version flags or shared daemon configuration were changed. Production
+configuration must select the intended Team or Max profile and resolve the
+executable paths; it should not request a new login simply because PATH discovery
+failed. Provider submission/detach/receipt acceptance remains pending.
