@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -14,13 +14,16 @@ import type {
   SessionBriefUpdateKind,
   PaneScreenshotFolder,
 } from '../shared/protocol.js'
+import { isCommandoTargetId } from '../shared/pane-target.js'
 
 type StateFile = {
   version: 3
   briefs: Record<string, SessionBrief>
 }
 
-type LegacySessionBrief = Omit<SessionBrief, 'paneId'>
+type LegacySessionBrief = Omit<SessionBrief, 'paneId' | 'targetId'>
+
+type BriefPaneIdentity = { paneId: string; targetId: string; sessionId: string; sessionName: string }
 
 export type SessionBriefPatch = {
   headline?: string
@@ -208,8 +211,9 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
 
 export function parseSessionBrief(value: unknown): SessionBrief | null {
   if (!isRecord(value) || typeof value.paneId !== 'string' || !PANE_ID.test(value.paneId)) return null
+  if (value.targetId !== undefined && !isCommandoTargetId(value.targetId)) return null
   const content = parseSessionBriefContent(value)
-  return content ? { paneId: value.paneId, ...content } : null
+  return content ? { paneId: value.paneId, ...(value.targetId ? { targetId: value.targetId as string } : {}), ...content } : null
 }
 
 function migrateLegacyBrief(brief: LegacySessionBrief): SessionBrief[] {
@@ -380,13 +384,20 @@ function dedupeUpdates(updates: SessionBriefUpdate[]): SessionBriefUpdate[] {
 }
 
 export function defaultSessionBriefStatePath(): string {
-  return process.env.COMMANDO_SESSION_BRIEFS_PATH
-    ?? join(homedir(), '.commando', 'session-briefs.json')
+  if (process.env.COMMANDO_SESSION_BRIEFS_PATH) return process.env.COMMANDO_SESSION_BRIEFS_PATH
+  // A verification daemon on another tmux server must never prune the user's worklogs.
+  const socket = process.env.COMMANDO_TMUX_SOCKET_PATH
+    ? `path:${process.env.COMMANDO_TMUX_SOCKET_PATH}`
+    : process.env.COMMANDO_TMUX_SOCKET_NAME && process.env.COMMANDO_TMUX_SOCKET_NAME !== 'default'
+      ? `name:${process.env.COMMANDO_TMUX_SOCKET_NAME}` : undefined
+  const suffix = socket ? `-${createHash('sha256').update(socket).digest('hex').slice(0, 16)}` : ''
+  return join(homedir(), '.commando', `session-briefs${suffix}.json`)
 }
 
 export class SessionBriefStore {
   readonly statePath: string
   private readonly briefs = new Map<string, SessionBrief>()
+  private livePanes = new Map<string, BriefPaneIdentity>()
   private writes: Promise<void> = Promise.resolve()
 
   constructor(statePath = defaultSessionBriefStatePath()) {
@@ -423,6 +434,45 @@ export class SessionBriefStore {
       .map(cloneBrief)
   }
 
+  /** Rebind before pruning: a pane can move out of a session that just disappeared. */
+  async reconcilePanes(panes: readonly BriefPaneIdentity[]): Promise<boolean> {
+    this.livePanes = new Map(panes.map((pane) => [pane.paneId, pane]))
+    // No-server discovery is indistinguishable from an empty server. Keep disk history
+    // until a populated snapshot can establish ownership, rather than erasing it.
+    if (panes.length === 0) return false
+    const byTarget = new Map([...this.briefs.values()].filter((brief) => brief.targetId).map((brief) => [brief.targetId, brief]))
+    const retained = new Map<string, SessionBrief>()
+    for (const pane of panes) {
+      const legacy = this.briefs.get(pane.paneId)
+      const previous = byTarget.get(pane.targetId)
+        ?? (!legacy?.targetId && legacy?.sessionId === pane.sessionId ? legacy : undefined)
+      if (!previous) continue
+      const unchanged = previous.paneId === pane.paneId && previous.targetId === pane.targetId
+        && previous.sessionId === pane.sessionId && previous.sessionName === pane.sessionName
+      retained.set(pane.paneId, unchanged ? previous : {
+        ...previous, ...pane,
+        updates: previous.paneId === pane.paneId ? previous.updates
+          : previous.updates.map((update) => ({ ...update, paneId: pane.paneId })),
+      })
+    }
+    const changed = retained.size !== this.briefs.size || [...retained].some(([id, brief]) => (
+      brief !== this.briefs.get(id)
+    ))
+    if (!changed) return false
+    this.briefs.clear()
+    for (const [id, brief] of retained) this.briefs.set(id, brief)
+    await this.persist()
+    return true
+  }
+
+  private currentBrief(paneId: string, sessionId: string): SessionBrief | undefined {
+    const previous = this.briefs.get(paneId)
+    const live = this.livePanes.get(paneId)
+    return previous && (previous.targetId && live
+      ? previous.targetId === live.targetId
+      : previous.sessionId === sessionId) ? previous : undefined
+  }
+
   async syncFromStatuses(
     sessionId: string,
     sessionName: string,
@@ -436,10 +486,8 @@ export class SessionBriefStore {
     const livePaneIds = new Set(statuses.map((status) => status.paneId))
     for (const status of statuses) {
       if (!PANE_ID.test(status.paneId)) continue
-      const previous = this.briefs.get(status.paneId)
-      const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
-        ? previous
-        : undefined
+      const current = this.currentBrief(status.paneId, sessionId)
+      const targetId = this.livePanes.get(status.paneId)?.targetId ?? current?.targetId
       const statusEvent = statusUpdate(status)
       const taskEvents = taskTransitionUpdates(current?.tasks, status.details?.tasks, status)
       const updates = [...taskEvents, ...(statusEvent ? [statusEvent] : [])]
@@ -447,6 +495,7 @@ export class SessionBriefStore {
       const recap = current?.recapMarkdown ?? status.details?.recap?.summary
       const brief: SessionBrief = {
         paneId: status.paneId,
+        ...(targetId ? { targetId } : {}),
         sessionId,
         sessionName: cleanSessionName,
         state: status.status,
@@ -496,10 +545,8 @@ export class SessionBriefStore {
     if (!SESSION_ID.test(sessionId) || !PANE_ID.test(paneId)) throw new Error('Invalid tmux target')
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
-    const previous = this.briefs.get(paneId)
-    const current = previous?.sessionId === sessionId && previous.sessionName === cleanSessionName
-      ? previous
-      : undefined
+    const current = this.currentBrief(paneId, sessionId)
+    const targetId = this.livePanes.get(paneId)?.targetId ?? current?.targetId
     const update = patch.update ? {
       id: `agent:${now}:${randomUUID()}`,
       paneId,
@@ -539,6 +586,7 @@ export class SessionBriefStore {
       ?? 'Session update'
     const brief: SessionBrief = {
       paneId,
+      ...(targetId ? { targetId } : {}),
       sessionId,
       sessionName: cleanSessionName,
       state: patch.state ?? current?.state ?? 'working',

@@ -1114,10 +1114,13 @@ async function main(): Promise<void> {
           broadcast({ type: 'pane_mark_removed', targetId })
         }
 
-        const briefsRemoved = await sessionBriefs.removeMissingSessions(
-          snapshot.sessions.map((session) => session.id),
+        const briefsChanged = await sessionBriefs.reconcilePanes(
+          snapshot.panes.map((pane) => ({
+            paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId,
+            sessionName: snapshot.sessions.find((session) => session.id === pane.sessionId)?.name ?? pane.sessionId,
+          })),
         )
-        if (briefsRemoved) {
+        if (briefsChanged) {
           broadcast({ type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
         }
 

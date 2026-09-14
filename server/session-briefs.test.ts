@@ -2,10 +2,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentStatus } from '../shared/protocol.js'
-import { parseSessionBrief, SessionBriefStore } from './session-briefs.js'
+import { defaultSessionBriefStatePath, parseSessionBrief, SessionBriefStore } from './session-briefs.js'
 
 const directories: string[] = []
 
@@ -51,10 +51,80 @@ function status(
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
 describe('SessionBriefStore', () => {
+  const targetId = '550e8400-e29b-41d4-a716-446655440000'
+  const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'original' }
+
+  it('keeps tasks, authored history and screenshots across rename, move and daemon reload', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.syncFromStatuses('$1', 'original', [status('%1', 'working', 100, 'Working', 'Keep the plan')], 100)
+    await briefs.applyAgentPatch('$1', 'original', '%1', {
+      headline: 'Authored handoff', recapMarkdown: 'Keep this recap', next: 'Review',
+      update: { kind: 'decision', text: 'Preserve history' },
+      publishedScreenshots: { id: '0123456789abcdef', dir: '/tmp/shots', topic: 'review', imageCount: 0, otherCount: 0, bytes: 0, updatedAt: 100, preview: [] },
+    }, 101)
+    // A rename must be safe even before the next discovery reconciliation.
+    await briefs.applyAgentPatch('$1', 'renamed', '%1', { update: { kind: 'note', text: 'After rename' } }, 102)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    const moved = { ...identity, sessionId: '$2', sessionName: 'destination' }
+    await replay.reconcilePanes([moved])
+    await replay.syncFromStatuses('$2', 'destination', [{ ...status('%1', 'done', 103, 'Done'), details: undefined }], 103)
+    expect(replay.get('%1')).toMatchObject({
+      targetId, sessionId: '$2', sessionName: 'destination', headline: 'Authored handoff',
+      recapMarkdown: 'Keep this recap', next: 'Review',
+      tasks: [{ content: 'Keep the plan' }], screenshots: [{ id: '0123456789abcdef' }],
+    })
+    expect(replay.get('%1')?.updates.map(({ text }) => text)).toEqual(expect.arrayContaining(['Preserve history', 'After rename']))
+  })
+
+  it('preserves disk history during empty discovery, rebinds matching targets and rejects recycled pane IDs', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.applyAgentPatch('$1', 'original', '%1', { update: { kind: 'note', text: 'Original owner' } }, 100)
+    expect(await briefs.reconcilePanes([])).toBe(false)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.headline).toBe('Original owner')
+    await replay.reconcilePanes([{ ...identity, paneId: '%2' }])
+    expect(replay.get('%1')).toBeNull()
+    expect(replay.get('%2')?.updates[0].paneId).toBe('%2')
+    await replay.reconcilePanes([{ ...identity, paneId: '%2', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }])
+    expect(replay.get('%2')).toBeNull()
+  })
+
+  it('migrates legacy ownership once and prunes closed panes on populated discovery', async () => {
+    const briefs = await store()
+    await briefs.applyAgentPatch('$1', 'original', '%1', { headline: 'Legacy' }, 100)
+    await briefs.applyAgentPatch('$1', 'original', '%2', { headline: 'Closed sibling' }, 100)
+    expect(await briefs.reconcilePanes([{ ...identity, sessionName: 'renamed' }])).toBe(true)
+    expect(briefs.get('%1')).toMatchObject({ targetId, headline: 'Legacy', sessionName: 'renamed' })
+    expect(briefs.get('%2')).toBeNull()
+    expect(await briefs.reconcilePanes([{ ...identity, sessionName: 'renamed' }])).toBe(false)
+  })
+
+  it('isolates alternate socket persistence while preserving the default and explicit paths', () => {
+    vi.stubEnv('COMMANDO_SESSION_BRIEFS_PATH', '')
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_PATH', '')
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', '')
+    const defaultPath = defaultSessionBriefStatePath()
+    expect(defaultPath).toMatch(/\/session-briefs.json$/)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', 'default')
+    expect(defaultSessionBriefStatePath()).toBe(defaultPath)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', 'verification')
+    const alternate = defaultSessionBriefStatePath()
+    expect(alternate).not.toBe(defaultPath)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_PATH', '/tmp/verification')
+    expect(defaultSessionBriefStatePath()).not.toBe(alternate)
+    vi.stubEnv('COMMANDO_SESSION_BRIEFS_PATH', '/tmp/explicit-briefs.json')
+    expect(defaultSessionBriefStatePath()).toBe('/tmp/explicit-briefs.json')
+  })
+
   it('persists and replays independent briefs for each pane', async () => {
     const briefs = await store()
     await briefs.syncFromStatuses('$1', 'gizmo', [

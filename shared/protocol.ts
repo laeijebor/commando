@@ -150,6 +150,8 @@ export type SessionBriefUpdate = {
 
 export type SessionBrief = {
   paneId: string
+  /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
+  targetId?: string
   sessionId: string
   sessionName: string
   state: AgentStatusKind
