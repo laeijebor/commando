@@ -36,6 +36,29 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('migrates notes to durable ownership and retains them across session moves', () => {
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({ note: 'Keep my note', minimized: false, visibilitySet: true }))
+    const view = render(<PaneWorklog brief={{ ...brief, targetId }} paneLabel="Tests" />)
+    expect(screen.getByRole('textbox', { name: 'Note for Tests' })).toHaveValue('Keep my note')
+    expect(window.localStorage.getItem('commando.pane-worklog.$1:%12')).toBeNull()
+    view.unmount()
+    render(<PaneWorklog brief={{ ...brief, targetId, sessionId: '$2', sessionName: 'moved' }} paneLabel="Tests" />)
+    expect(screen.getByRole('textbox', { name: 'Note for Tests' })).toHaveValue('Keep my note')
+  })
+
+  it('shows linked PRs and missing-hook guidance without activity metadata', async () => {
+    const prsApi = { pane: vi.fn().mockResolvedValue({
+      targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
+      pullRequests: [{ repo: 'acme/app', number: 1, title: 'Linked work', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02' }],
+    }) }
+    render(<PaneWorklog brief={{ ...brief, tasks: [], updates: [] }} empty hookConnected={false} paneLabel="Tests" prsApi={prsApi} />)
+    expect(await screen.findByLabelText('Open pull request')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('status')).toHaveTextContent('No agent hook data received')
+    expect(screen.getByLabelText('Pull requests for pane %12')).toHaveTextContent('Linked work')
+  })
+
   it('starts minimized when the pane has no saved preference', () => {
     render(<PaneWorklog brief={brief} paneLabel="Tests" />)
 

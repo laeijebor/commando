@@ -403,6 +403,19 @@ describe('pane close and create shortcuts', () => {
 })
 
 describe('session update briefs', () => {
+  it('keeps worklogs and personal notes available before any hook brief arrives', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand worklog for api' }))
+    expect(screen.getByLabelText('Worklog for api')).toHaveTextContent('No agent hook data received')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Note for api' }), { target: { value: 'Waiting for agent metadata' } })
+    expect(screen.getByRole('textbox', { name: 'Note for api' })).toHaveValue('Waiting for agent metadata')
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: '%12', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8', sessionId: '$3', sessionName: 'work',
+      state: 'done', headline: 'An old owner', headlineSource: 'agent', updates: [], updatedAt: 1,
+    } }))
+    expect(screen.getByLabelText('Worklog for api')).not.toHaveTextContent('An old owner')
+  })
+
   it('replays each worklog only into its source terminal pane', async () => {
     await renderAppWithSnapshot()
     const apiBrief: SessionBrief = {

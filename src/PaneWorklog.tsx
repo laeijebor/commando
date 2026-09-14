@@ -49,12 +49,13 @@ const markdownComponents: Components = {
 }
 
 function preferenceKey(brief: SessionBrief): string {
-  return `${PREFERENCE_PREFIX}${brief.sessionId}:${brief.paneId}`
+  return `${PREFERENCE_PREFIX}${brief.targetId ?? `${brief.sessionId}:${brief.paneId}`}`
 }
 
 function storedPreferences(brief: SessionBrief): WorklogPreferences {
   try {
-    const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief)) ?? '{}') as Partial<WorklogPreferences>
+    const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief))
+      ?? window.localStorage.getItem(`${PREFERENCE_PREFIX}${brief.sessionId}:${brief.paneId}`) ?? '{}') as Partial<WorklogPreferences>
     const visibilitySet = value.visibilitySet === true
     return {
       minimized: visibilitySet ? value.minimized !== false : true,
@@ -74,6 +75,7 @@ function storedPreferences(brief: SessionBrief): WorklogPreferences {
 function storePreferences(brief: SessionBrief, preferences: WorklogPreferences): void {
   try {
     window.localStorage.setItem(preferenceKey(brief), JSON.stringify(preferences))
+    if (brief.targetId) window.localStorage.removeItem(`${PREFERENCE_PREFIX}${brief.sessionId}:${brief.paneId}`)
   } catch {
     // Worklog controls still function in memory when storage is unavailable.
   }
@@ -118,6 +120,8 @@ export function PaneWorklog({
   revealInFinder = true,
   onOpenScreenshot = () => undefined,
   connected = true,
+  empty = false,
+  hookConnected = true,
 }: {
   brief: SessionBrief
   paneLabel: string
@@ -127,6 +131,8 @@ export function PaneWorklog({
   revealInFinder?: boolean
   onOpenScreenshot?: OpenPaneScreenshot
   connected?: boolean
+  empty?: boolean
+  hookConnected?: boolean
 }) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
   const [compact, setCompact] = useState(false)
@@ -134,12 +140,13 @@ export function PaneWorklog({
   const [unread, setUnread] = useState(0)
   const activityRef = useRef<HTMLDivElement>(null)
   const previousUpdateCount = useRef(brief.updates.length)
-  const prList = usePanePullRequests(
+  const fetchedPrList = usePanePullRequests(
     brief.paneId,
     prsApi ?? { pane: async () => { throw new Error('PR API unavailable') } },
     Boolean(prsApi && connected),
     preferences.minimized || compact,
   )
+  const prList = !brief.targetId || fetchedPrList?.targetId === brief.targetId ? fetchedPrList : null
   const hasOpenPr = Boolean(prList?.pullRequests.some((pullRequest) => pullRequest.state === 'open'))
   const screenshotFolders = brief.screenshots ?? []
   const unseenScreenshots = screenshotFolders.reduce((count, folder) => (
@@ -166,7 +173,7 @@ export function PaneWorklog({
     setFollowing(true)
     setUnread(0)
     previousUpdateCount.current = brief.updates.length
-  }, [brief.paneId, brief.sessionId])
+  }, [brief.targetId ?? `${brief.sessionId}:${brief.paneId}`])
 
   useEffect(() => {
     const node = activityRef.current?.closest('.terminal-pane-body')
@@ -251,7 +258,7 @@ export function PaneWorklog({
         <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
         <span className="pane-worklog-heading">
           <strong>{brief.headline}</strong>
-          <small>Worklog · {relativeAge(brief.updatedAt)}</small>
+          <small>{empty ? 'Notes, pull requests, tasks and screenshots' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
         </span>
         <button type="button" onClick={() => setMinimized(true)} aria-label={`Minimize worklog for ${paneLabel}`} title="Minimize worklog">
           <ChevronRight aria-hidden="true" />
@@ -264,6 +271,14 @@ export function PaneWorklog({
         setFollowing(atStart)
         if (atStart) setUnread(0)
       }}>
+        {(!hookConnected || empty) ? (
+          <div className="pane-worklog-recap" role="status">
+            {!connected ? 'Disconnected from Commando. Saved notes and history remain available.'
+              : !hookConnected ? <>No agent hook data received for this pane. Notes and linked PRs still work. For automatic tasks and activity, run <code>npm run hooks:install</code> in Commando, then restart the agent when convenient.</>
+                : 'Agent connected. Tasks and activity will appear when work begins.'}
+            {empty ? <p>Publish screenshot folders with <code>commando-session-update.mjs --screenshots /absolute/path</code>.</p> : null}
+          </div>
+        ) : null}
         {brief.recapMarkdown ? (
           <div className="pane-worklog-recap">
             <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>

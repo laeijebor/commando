@@ -94,6 +94,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       else if (path === '/api/prs/prefs') json = { prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } }
       else if (path === '/api/prs/repos') json = { repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] }
       else if (path === '/api/prs/repo') json = { repo: 'acme/widgets' }
+      else if (path === '/api/prs/pane') json = { list: { targetId: panes.find((pane) => pane.id === new URL(route.request().url()).searchParams.get('paneId'))?.targetId, pullRequests: [], totalCount: 0, truncated: false, fetchedAt: Date.now() } }
       else if (path === '/api/prs') { listRequests += 1; json = { list } }
       else if (path === '/api/session-management/sessions/%246/rename') {
         snapshot.sessions[1].name = route.request().postDataJSON().name

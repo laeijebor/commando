@@ -293,7 +293,7 @@ type TerminalPaneProps = {
 export function TerminalPaneCard({
   pane,
   status,
-  brief,
+  brief: suppliedBrief,
   mark,
   index,
   count,
@@ -340,6 +340,11 @@ export function TerminalPaneCard({
   registerFocusable,
 }: TerminalPaneProps) {
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
+  const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
+  const worklogBrief = useMemo<SessionBrief>(() => brief ? { ...brief, targetId: pane.targetId } : ({
+    paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
+    state: status?.status ?? 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0,
+  }), [brief, pane.id, pane.targetId, pane.sessionId, status?.status])
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
@@ -558,7 +563,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className={`terminal-pane-body${brief ? ' has-worklog' : ''}`}>
+      <div className="terminal-pane-body has-worklog">
         <TerminalPaneRenderer
           paneId={pane.id}
           cols={pane.width}
@@ -566,7 +571,7 @@ export function TerminalPaneCard({
           terminalState={pane}
           connected={connected}
           resizeOwner={resizeOwner}
-          measurementKey={`${measurementKey}:${brief ? 'worklog' : 'terminal'}`}
+          measurementKey={`${measurementKey}:worklog`}
           ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
           order={index}
           nativeRetryKey={nativeRetryKey}
@@ -587,18 +592,19 @@ export function TerminalPaneCard({
           registerSink={registerSink}
           registerFocusable={registerFocusable}
         />
-        {brief ? (
-          <PaneWorklog
-            brief={brief}
-            paneLabel={paneLabel}
-            prsApi={prsApi}
-            connected={connected}
-            screenshotsApi={screenshotsApi}
-            paneManagementApi={paneManagementApi}
-            revealInFinder={revealInFinder}
-            onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
-          />
-        ) : null}
+        <PaneWorklog
+          key={pane.targetId}
+          brief={worklogBrief}
+          empty={!brief}
+          hookConnected={status?.source === 'hook'}
+          paneLabel={paneLabel}
+          prsApi={prsApi}
+          connected={connected}
+          screenshotsApi={screenshotsApi}
+          paneManagementApi={paneManagementApi}
+          revealInFinder={revealInFinder}
+          onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
+        />
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
