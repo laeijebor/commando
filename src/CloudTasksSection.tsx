@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  CLOUD_PROMPT_LIMIT, cloudProviderHome, cloudTaskLabel, isSafeCloudUrl,
+  CLOUD_PROMPT_LIMIT, cloudConnectionKey, cloudProviderHome, cloudTaskLabel, isSafeCloudUrl,
   type CloudOperation, type CloudTaskDetail, type CloudTaskSummary,
 } from '../shared/cloud-tasks'
 import type { CloudTasksApi } from './cloudTasksApi'
 import { useCloudTask, useCloudTasks } from './cloudTaskStore'
-import { CloudTaskCard } from './CloudTaskCard'
+import { CloudTaskCard, cloudTaskConnectionLabel } from './CloudTaskCard'
 import { CloudTaskCreateDialog, useCloudAccountConfirmation } from './CloudTaskCreateDialog'
 import { CloudTaskDiff } from './CloudTaskDiff'
 import './cloud-tasks.css'
@@ -89,7 +89,7 @@ export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
     <div className={`cloud-content${detailOpen && id ? ' cloud-content--detail-open' : ''}`}>
       <section className="cloud-list" ref={list} aria-label="Saved cloud tasks">
         <div className="cloud-list-tools"><strong>Saved tasks</strong><label className="cloud-check"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />Archived</label></div>
-        {state.tasks.filter((task) => showArchived || !task.archivedAt).map((task) => <CloudTaskCard key={task.id} task={task} selected={task.id === id} onSelect={select} />)}
+        {state.tasks.filter((task) => showArchived || !task.archivedAt).map((task) => <CloudTaskCard key={task.id} task={task} connectionLabel={cloudTaskConnectionLabel(task, state.providers?.providers)} selected={task.id === id} onSelect={select} />)}
         {!state.tasks.some((task) => showArchived || !task.archivedAt) && <p>{state.loading ? 'Loading…' : 'No saved cloud tasks. Create or link a task to get started; no local session is required.'}</p>}
         <p className="cloud-hint">Only tasks submitted or explicitly linked through Commando.</p>
       </section>
@@ -99,6 +99,7 @@ export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
           setDetailOpen(false)
         }}>← Back to tasks</button>
         <h2 tabIndex={-1} ref={title}>{detail?.task.title ?? selected?.title ?? (id ? 'Loading task…' : 'Select a cloud task')}</h2>
+        {(detail?.task ?? selected) && <p className="cloud-hint">{cloudTaskConnectionLabel((detail?.task ?? selected)!, state.providers?.providers)}</p>}
         {detail ? <TaskDetail key={detail.task.id} api={api} detail={detail} /> : selected ? <>
           <p>{cloudTaskLabel(selected)}</p><ProviderLink task={selected} />
         </> : <p>Provider-hosted tasks stay available independently of local terminal sessions.</p>}
@@ -116,7 +117,7 @@ function ProviderLink({ task }: { task: CloudTaskSummary }) {
 function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDetail }) {
   const { task, operations } = detail
   const { providers, connected, pending, store } = useCloudTasks(api)
-  const provider = providers?.providers.find((item) => item.id === task.provider)
+  const provider = providers?.providers.find((item) => cloudConnectionKey(item.id, item.credentialContextId) === cloudConnectionKey(task.provider, task.credentialContextId))
   const canInspect = provider?.readiness === 'ready' && provider.capabilities.inspect
   const [title, setTitle] = useState(task.title)
   const [message, setMessage] = useState('')
@@ -136,6 +137,7 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
   }
   return <>
     <div className="cloud-notice"><strong>{cloudTaskLabel(task)}</strong>
+      {!provider && <p>Connection {cloudTaskConnectionLabel(task)} is unavailable. Restore this connection to use provider actions; another profile will not be substituted.</p>}
       {['prepared', 'dispatching'].includes(task.deliveryState) && <p>A local acknowledgement is not cloud acceptance. Do not close the laptop expecting hosted execution before a provider receipt.</p>}
       {task.deliveryState === 'delivery_unknown' && <p>Delivery unknown — check provider before retrying. A timeout or list miss cannot prove this request did not arrive. No automatic replay.</p>}
       {task.identityEvidence === 'user_link' && <p>Identity supplied by you. Linking does not prove acceptance of an earlier request or any follow-up message.</p>}
@@ -152,7 +154,7 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
     </div>
     <p className="cloud-hint">Archive only changes local presentation; remote work is unaffected.</p>
     <dl className="cloud-data">
-      <dt>Provider</dt><dd>{provider?.label ?? task.provider} · {provider?.readiness ?? 'unavailable'}{provider?.reason ? ` — ${provider.reason}` : ''}</dd>
+      <dt>Provider</dt><dd>{cloudTaskConnectionLabel(task, providers?.providers)} · {provider?.readiness ?? 'unavailable'}{provider?.reason ? ` — ${provider.reason}` : ''}</dd>
       <dt>Repository</dt><dd>{task.source.repository ?? 'Not recorded'}</dd>
       <dt>Environment</dt><dd>{task.source.environmentId ?? 'Not recorded'}</dd>
       <dt>Checkout</dt><dd>{task.source.checkoutPath ?? 'Not required for saved identity'}</dd>
@@ -210,7 +212,7 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
 
 function PreparedOperation({ api, operation, task }: { api: CloudTasksApi; operation: CloudOperation; task: CloudTaskSummary }) {
   const { providers, connected, store } = useCloudTasks(api)
-  const provider = providers?.providers.find((item) => item.id === task.provider)
+  const provider = providers?.providers.find((item) => cloudConnectionKey(item.id, item.credentialContextId) === cloudConnectionKey(task.provider, task.credentialContextId))
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(provider)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -230,7 +232,7 @@ function PreparedOperation({ api, operation, task }: { api: CloudTasksApi; opera
   }}>
     <h3>Resume prepared operation</h3>
     <p>Only this recorded, not-yet-dispatched request can resume. Unknown or accepted operations cannot be replayed.</p>
-    <p>Original context: <code>{operation.payload.credentialContextId}</code>. Current context: <code>{provider?.credentialContextId ?? 'Unavailable'}</code> · {provider?.verifiedAccountRef ?? 'Account identity unverified'}.</p>
+    <p>Connection: {cloudTaskConnectionLabel(task, providers?.providers)}. Original context: <code>{operation.payload.credentialContextId}</code>. Current context: <code>{provider?.credentialContextId ?? 'Unavailable'}</code> · {provider?.verifiedAccountRef ?? 'Account identity unverified'}.</p>
     <p>Original target: {task.id} · {task.providerTaskId ?? 'New provider task'}.</p>
     <p className="cloud-prompt">Original source: {JSON.stringify('source' in operation.payload ? operation.payload.source ?? task.source : task.source, null, 2)}</p>
     {'prompt' in operation.payload && <p className="cloud-prompt">Recorded request: {operation.payload.prompt}</p>}
@@ -245,13 +247,13 @@ function PreparedOperation({ api, operation, task }: { api: CloudTasksApi; opera
 
 /** Independent HUD group; never mixes cloud tasks into pane-based counts or filters. */
 export function CloudTasksHud({ api, onSelectTask }: { api: CloudTasksApi; onSelectTask: (id: string) => void }) {
-  const { tasks, connected, loading, pending } = useCloudTasks(api)
+  const { tasks, providers, connected, loading, pending } = useCloudTasks(api)
   const active = tasks.filter((task) => !task.archivedAt)
   return <section className="cloud-tasks cloud-hud" aria-label="Cloud tasks HUD">
     <h2>Cloud tasks <span>{active.length}</span></h2>
     {!connected && <p role="status">{loading ? 'Loading cloud tasks…' : 'Offline · last-known tasks'}</p>}
     {!!pending.length && <p role="status">{pending.length} unresolved intent{pending.length === 1 ? '' : 's'} · review in Cloud tasks</p>}
-    {active.map((task) => <CloudTaskCard key={task.id} task={task} compact onSelect={onSelectTask} />)}
+    {active.map((task) => <CloudTaskCard key={task.id} task={task} connectionLabel={cloudTaskConnectionLabel(task, providers?.providers)} compact onSelect={onSelectTask} />)}
     {!active.length && !loading && <p>No active cloud tasks.</p>}
   </section>
 }

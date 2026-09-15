@@ -1,11 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { CLOUD_PROMPT_LIMIT, cloudProviderHome, validCloudRemoteId, type CloudProviderId, type CloudProviderInfo, type CloudTaskSummary } from '../shared/cloud-tasks'
+import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, cloudProviderHome, validCloudRemoteId, type CloudProviderId, type CloudProviderInfo, type CloudTaskSummary } from '../shared/cloud-tasks'
 import type { CloudTasksApi } from './cloudTasksApi'
 import { CloudIntentMismatchError, useCloudTasks, type CloudIntent } from './cloudTaskStore'
+import { cloudTaskConnectionLabel } from './CloudTaskCard'
 import './cloud-tasks.css'
 
 export const CLAUDE_CREATE_DISABLED_REASON = 'Claude creation is unverified: receipt/detach and an enforceable pushed-source/no-bundle path have not been confirmed. Create in Claude, then link the session here.'
+
+type ConnectionChoice = Pick<CloudProviderInfo, 'id' | 'credentialContextId' | 'label'>
+function initialConnection(providers: CloudProviderInfo[]): ConnectionChoice | null {
+  const codex = providers.filter((info) => info.id === 'codex')
+  const info = codex.length === 1 ? codex[0] : providers[0]
+  return info ? { id: info.id, credentialContextId: info.credentialContextId, label: info.label } : null
+}
 
 /** Keep the context the user actually saw, and invalidate confirmation on provider/account drift. */
 export function useCloudAccountConfirmation(info: CloudProviderInfo | undefined) {
@@ -29,8 +37,16 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   const [kind, setKind] = useState<CloudIntent['kind']>(mode)
   const [reentryTarget, setReentryTarget] = useState('')
   const boundTask = recoveryTask ?? (reentryKey && kind !== 'create' ? tasks.find((task) => task.id === reentryTarget) : undefined)
-  const [providerChoice, setProvider] = useState<CloudProviderId>(recoveryTask?.provider ?? 'codex')
-  const provider = boundTask?.provider ?? providerChoice
+  const hasBinding = !!recoveryTask || (!!reentryKey && kind !== 'create' && !!reentryTarget)
+  const [connectionChoice, setConnectionChoice] = useState<ConnectionChoice | null>(() => initialConnection(providers?.providers ?? []))
+  // Default only once providers arrive. Neither reordering nor removal may rebind this draft.
+  useEffect(() => {
+    if (!connectionChoice && providers?.providers.length) setConnectionChoice(initialConnection(providers.providers))
+  }, [connectionChoice, providers])
+  const connection = boundTask ? { id: boundTask.provider, credentialContextId: boundTask.credentialContextId }
+    : hasBinding ? null : connectionChoice
+  const selectedConnectionKey = connection ? cloudConnectionKey(connection.id, connection.credentialContextId) : ''
+  const provider = connection?.id ?? 'codex'
   const [target, setTarget] = useState('')
   const [branch, setBranch] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -47,13 +63,15 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   close.current = onClose
   const headingId = useId()
   const helpId = useId()
-  const info = providers?.providers.find((item) => item.id === provider)
+  const info = providers?.providers.find((item) => cloudConnectionKey(item.id, item.credentialContextId) === selectedConnectionKey)
+  const connectionLabel = info?.label ?? (connection ? `${provider === 'claude' ? 'Claude' : 'Codex'} · ${connection.credentialContextId} (unavailable)` : 'Connection unavailable')
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(info)
   const linking = kind === 'link'
   const messaging = kind === 'message'
   const capability = linking ? info?.capabilities.link : info?.readiness === 'ready' && (messaging ? info.capabilities.sendMessage : info.capabilities.create)
   const uncertainIntents = pending.some((item) => item.status !== 'recorded' || item.operation?.state === 'delivery_unknown')
-  const reason = capability ? info?.reason : !linking && provider === 'claude'
+  const reason = !info ? 'Selected connection is unavailable. Restore it or explicitly select a configured connection; another profile is never substituted.'
+    : capability ? info.reason : kind === 'create' && provider === 'claude'
     ? [info?.reason, CLAUDE_CREATE_DISABLED_REASON].filter(Boolean).join(' ') : info?.reason ?? 'Provider capability has not been verified.'
 
   useEffect(() => {
@@ -130,14 +148,19 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
             </select></label>
             {kind !== 'create' && <label>Original local task target<select required={messaging} value={reentryTarget} onChange={(event) => setReentryTarget(event.target.value)}>
               <option value="">{messaging ? 'Choose the original task' : 'New tracked identity (no existing local task)'}</option>
-              {tasks.map((task) => <option key={task.id} value={task.id}>{task.title} · {task.id}</option>)}
+              {tasks.map((task) => <option key={task.id} value={task.id}>{cloudTaskConnectionLabel(task, providers?.providers)} · {task.title} · {task.id}</option>)}
             </select></label>}
           </>}
-          <label>Provider<select value={provider} disabled={!!boundTask} onChange={(event) => {
-            setProvider(event.target.value as CloudProviderId); setTarget(''); setConfirmed(false)
-          }}><option value="codex">Codex Cloud · CX</option><option value="claude">Claude Code Cloud · CL</option></select></label>
+          <label>Connection<select value={selectedConnectionKey} disabled={hasBinding} onChange={(event) => {
+            const selected = providers?.providers.find((item) => cloudConnectionKey(item.id, item.credentialContextId) === event.target.value)
+            if (!selected) return
+            setConnectionChoice({ id: selected.id, credentialContextId: selected.credentialContextId, label: selected.label }); setTarget(''); setConfirmed(false)
+          }}>
+            {!info && <option value={selectedConnectionKey} disabled>{connectionLabel}</option>}
+            {providers?.providers.map((item) => <option key={cloudConnectionKey(item.id, item.credentialContextId)} value={cloudConnectionKey(item.id, item.credentialContextId)}>{item.label}</option>)}
+          </select></label>
           <p id={helpId} className="cloud-notice">{info?.readiness ?? 'unverified'}{info?.version ? ` · ${info.version}` : ''} — {reason}</p>
-          <p>Confirmation context: <code>{info?.credentialContextId ?? 'Unavailable'}</code> · {info?.verifiedAccountRef ?? 'Account identity unverified'}</p>
+          <p>Connection: {connectionLabel}. Confirmation context: <code>{connection?.credentialContextId ?? 'Unavailable'}</code> · {info?.verifiedAccountRef ?? 'Account identity unverified'}</p>
           {contextChanged && <p role="alert">Provider account/context changed. Review the displayed context and confirm again; the previous confirmation cannot authorize it.</p>}
           <a href={cloudProviderHome(provider)} target="_blank" rel="noopener noreferrer">Open {provider === 'claude' ? 'Claude' : 'Codex'} ↗</a>
           {!messaging && <label>Title (optional)<input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label>}
@@ -152,11 +175,11 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
             <label>{provider === 'codex' ? 'Existing environment ID' : 'Existing checkout path'}<input required value={target} maxLength={provider === 'codex' ? 160 : 1_024} onChange={(event) => setTarget(event.target.value)} /></label>
             <label>Requested branch<input required value={branch} maxLength={240} onChange={(event) => setBranch(event.target.value)} /></label>
             <label>Task prompt<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} onChange={(event) => setPrompt(event.target.value)} /></label>
-            <p className="cloud-destination"><strong>Destination: {provider === 'claude' ? 'Claude' : 'Codex'} Cloud</strong><br />{target || 'Choose a source'} · {branch || 'Choose a branch'}</p>
+            <p className="cloud-destination"><strong>Destination: {connectionLabel}</strong><br />{target || 'Choose a source'} · {branch || 'Choose a branch'}</p>
             <p>{provider === 'codex' ? 'Uses your existing provider environment. A moving branch does not verify a remote commit.'
               : 'Requires verified clean, pushed source and an enforceable no-bundle policy; source is revalidated before dispatch.'} No automatic push, apply, or merge.</p>
           </>}
-          <label className="cloud-check"><input type="checkbox" required checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+          <label className="cloud-check"><input type="checkbox" required checked={confirmed} disabled={!info} onChange={(event) => setConfirmed(event.target.checked)} />
             I confirm the current CLI account/context and this destination{linking ? ' belong to this task' : ''}.
           </label>
           {!info?.verifiedAccountRef && <p>Official account identity is unverified. This confirmation is a user check, not provider evidence.</p>}

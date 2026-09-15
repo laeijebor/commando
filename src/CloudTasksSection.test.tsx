@@ -4,10 +4,10 @@ import { webcrypto } from 'node:crypto'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CloudOperation, CloudProviderInfo, CloudTask, CloudTaskDetail } from '../shared/cloud-tasks'
+import { cloudConnectionKey, type CloudOperation, type CloudProviderInfo, type CloudTask, type CloudTaskDetail } from '../shared/cloud-tasks'
 import type { CloudTasksApi } from './cloudTasksApi'
 import { CloudTasksHud, CloudTasksSection } from './CloudTasksSection'
-import { CLAUDE_CREATE_DISABLED_REASON } from './CloudTaskCreateDialog'
+import { CLAUDE_CREATE_DISABLED_REASON, CloudTaskCreateDialog } from './CloudTaskCreateDialog'
 import { boundCloudDiff } from './CloudTaskDiff'
 import { CLOUD_PENDING_STORAGE_KEY, cloudTaskStoreFor, digestCloudIntent } from './cloudTaskStore'
 
@@ -26,27 +26,27 @@ function fixtureOperation(task: CloudTask, overrides: Partial<CloudOperation> = 
     createdAt: task.createdAt, updatedAt: task.updatedAt,
     receipt: { providerTaskId: task.providerTaskId!, providerUrl: task.providerUrl!, evidence: 'provider_receipt' }, issue: null, ...overrides }
 }
-function fixtureApi(initial = fixtureTask()): CloudTasksApi {
+function fixtureApi(initial = fixtureTask(), extra: CloudTask[] = []): CloudTasksApi {
   const capabilities = { create: true, link: true, list: true, inspect: true, sendMessage: false, diff: true, accountIdentity: false }
   const providers: CloudProviderInfo[] = [
     { id: 'codex', label: 'Codex Cloud', homeUrl: 'https://chatgpt.com/codex', readiness: 'ready', reason: 'Synthetic verified fixture', version: 'fixture', credentialContextId: 'fixture-context', verifiedAccountRef: null, capabilities },
     { id: 'claude', label: 'Claude Code Cloud', homeUrl: 'https://claude.ai/code', readiness: 'missing_cli', reason: 'Claude CLI not installed.', version: null, credentialContextId: 'fixture-context', verifiedAccountRef: null,
       capabilities: { ...capabilities, create: false, list: false, inspect: false, diff: false, sendMessage: true } },
   ]
-  const records = new Map<string, CloudTaskDetail>([[initial.id, { task: initial, operations: [fixtureOperation(initial, { state: initial.deliveryState })] }]])
+  const records = new Map<string, CloudTaskDetail>([initial, ...extra].map((task) => [task.id, { task, operations: [fixtureOperation(task, { state: task.deliveryState })] }]))
   return {
     providers: vi.fn(async () => ({ installationId: 'ui-installation', providers })),
     list: vi.fn(async () => [...records.values()].map(({ task: { prompt: _prompt, ...task } }) => task)),
     get: vi.fn(async (id) => records.get(id)!), refresh: vi.fn(async (id) => records.get(id)!),
     create: vi.fn(async (input, key) => {
-      const task = fixtureTask({ id: 'created-task', provider: input.provider, source: input.source, prompt: input.prompt,
+      const task = fixtureTask({ id: 'created-task', provider: input.provider, credentialContextId: input.credentialContextId, source: input.source, prompt: input.prompt,
         title: input.title ?? 'New task', providerTaskId: null, providerUrl: null, identityEvidence: null, deliveryState: 'prepared', remoteState: 'unknown', observationState: 'unavailable' })
       const operation = fixtureOperation(task, { id: 'created-op', idempotencyKey: key, state: 'prepared', receipt: null, payload: input })
       records.set(task.id, { task, operations: [operation] })
       return { task, operation, reused: false }
     }),
     link: vi.fn(async (input, key, id) => {
-      const task = fixtureTask({ ...records.get(id ?? '')?.task, id: id ?? 'linked-task', provider: input.provider,
+      const task = fixtureTask({ ...records.get(id ?? '')?.task, id: id ?? 'linked-task', provider: input.provider, credentialContextId: input.credentialContextId,
         providerTaskId: input.providerTaskId, identityEvidence: 'user_link', observationState: 'unavailable', revision: 2 })
       const operation = fixtureOperation(task, { id: 'link-op', idempotencyKey: key, kind: 'link', payload: input,
         receipt: { providerTaskId: input.providerTaskId, providerUrl: task.providerUrl!, evidence: 'user_link' } })
@@ -99,7 +99,7 @@ describe('cloud list/detail and integration exports', () => {
     const select = vi.fn()
     render(<><CloudTasksSection api={api} /><CloudTasksHud api={api} onSelectTask={select} /></>)
     const list = within(screen.getByRole('region', { name: 'Saved cloud tasks' }))
-    const card = await list.findByRole('button', { name: /Codex: Review empty state. Result ready/ })
+    const card = await list.findByRole('button', { name: /Codex Cloud: Review empty state. Result ready/ })
     expect(api.list).toHaveBeenCalledTimes(1)
     expect(api.get).not.toHaveBeenCalled()
     expect(screen.queryByText('PRIVATE original prompt')).not.toBeInTheDocument()
@@ -147,7 +147,7 @@ describe('cloud list/detail and integration exports', () => {
     await screen.findByRole('button', { name: 'Unarchive' })
     expect(within(screen.getByRole('region', { name: 'Saved cloud tasks' })).queryByRole('button', { name: /Renamed locally/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Archived'))
-    expect(screen.getByRole('button', { name: /Codex: Renamed locally.*Archived/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Codex Cloud: Renamed locally.*Archived/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Unarchive' }))
     await screen.findByRole('button', { name: 'Archive' })
     expect(api.patch).toHaveBeenLastCalledWith('local-codex', { archivedAt: null })
@@ -211,14 +211,14 @@ describe('cloud task dialog and browser-intent UX', () => {
   it('disables unverified Claude creation with precise reason but links an existing session without the CLI', async () => {
     const api = fixtureApi()
     const dialog = await openCreate(api)
-    fireEvent.change(dialog.getByLabelText('Provider'), { target: { value: 'claude' } })
+    fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'fixture-context') } })
     expect(dialog.getByText(new RegExp('receipt/detach'))).toHaveTextContent(CLAUDE_CREATE_DISABLED_REASON)
     expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
     fireEvent.mouseDown(screen.getByRole('dialog').parentElement!)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Link existing' }))
     const linkDialog = within(screen.getByRole('dialog'))
-    fireEvent.change(linkDialog.getByLabelText('Provider'), { target: { value: 'claude' } })
+    fireEvent.change(linkDialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'fixture-context') } })
     fireEvent.change(linkDialog.getByLabelText('Provider task or session ID'), { target: { value: 'session_known' } })
     fireEvent.click(linkDialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
     expect(linkDialog.getByRole('button', { name: 'Link identity only' })).toBeEnabled()
@@ -306,7 +306,10 @@ describe('cloud task dialog and browser-intent UX', () => {
     expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
     fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
     expect(api.create).not.toHaveBeenCalled()
-    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('codex', 'fixture-context'))
+    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).toBeDisabled()
+    fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('codex', 'replacement-context') } })
+    fillCreate(dialog)
     fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
     await waitFor(() => expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ credentialContextId: 'replacement-context' }), expect.any(String)))
   })
@@ -363,5 +366,209 @@ describe('bounded diff rendering', () => {
     const bytes = boundCloudDiff({ text: '界'.repeat(100_000), truncated: false })
     expect(bytes.truncated).toBe(true)
     expect(new TextEncoder().encode(bytes.text).length).toBeLessThanOrEqual(256 * 1024)
+  })
+})
+
+function profileTask(context: string, overrides: Partial<CloudTask> = {}): CloudTask {
+  return fixtureTask({ id: `local-${context}`, provider: 'claude', credentialContextId: context,
+    title: 'Same task title', providerTaskId: 'session_shared', providerUrl: 'https://claude.ai/code/session_shared',
+    remoteState: 'unknown', observationState: 'unavailable', ...overrides })
+}
+async function profileFixture(initial = fixtureTask(), extra: CloudTask[] = []) {
+  const api = fixtureApi(initial, extra)
+  const response = await api.providers()
+  const codex = response.providers[0]
+  const team: CloudProviderInfo = { ...response.providers[1], label: 'Claude Team', credentialContextId: 'claude:team',
+    readiness: 'ready', reason: 'Synthetic Team evidence only', capabilities: { ...response.providers[1].capabilities, create: true, sendMessage: true } }
+  const max: CloudProviderInfo = { ...team, label: 'Claude Max', credentialContextId: 'claude:max', readiness: 'unverified',
+    reason: 'Max capability not verified', capabilities: { ...team.capabilities, create: false, sendMessage: false } }
+  // Claude deliberately comes first: a unique Codex connection is still the initial default.
+  response.providers.splice(0, response.providers.length, team, max, codex)
+  return { api, response, team, max, codex }
+}
+
+describe('multiple provider connections', () => {
+  it('offers exact Team/Max/Codex keys and gates creation independently while clearing switched confirmation', async () => {
+    const { api, team, max, codex } = await profileFixture()
+    const dialog = await openCreate(api)
+    const select = dialog.getByLabelText('Connection')
+    expect(select).toHaveValue(cloudConnectionKey(codex.id, codex.credentialContextId))
+    for (const info of [team, max, codex]) expect(dialog.getByRole('option', { name: info.label })).toHaveValue(cloudConnectionKey(info.id, info.credentialContextId))
+    expect(select.querySelector('option[value="claude"]')).toBeNull()
+    fireEvent.change(select, { target: { value: cloudConnectionKey(team.id, team.credentialContextId) } })
+    fireEvent.change(dialog.getByLabelText('Existing checkout path'), { target: { value: '/disposable/source' } })
+    fireEvent.change(dialog.getByLabelText('Requested branch'), { target: { value: 'main' } })
+    fireEvent.change(dialog.getByLabelText('Task prompt'), { target: { value: 'Synthetic task' } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeEnabled()
+    fireEvent.change(select, { target: { value: cloudConnectionKey(max.id, max.credentialContextId) } })
+    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).not.toBeChecked()
+    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
+    expect(dialog.getByText(/Max capability not verified/)).toBeInTheDocument()
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
+  it.each(['claude:team', 'claude:max'])('links through exactly %s and preserves explicit selection/confirmation on reorder', async (context) => {
+    const { api, response } = await profileFixture()
+    render(<CloudTasksSection api={api} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Link existing' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Link existing' }))
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', context) } })
+    fireEvent.change(dialog.getByLabelText('Provider task or session ID'), { target: { value: 'session_shared' } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    response.providers.reverse()
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', context))
+    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).toBeChecked()
+    fireEvent.click(dialog.getByRole('button', { name: 'Link identity only' }))
+    await waitFor(() => expect(api.link).toHaveBeenCalledWith(expect.objectContaining({ provider: 'claude', credentialContextId: context, providerTaskId: 'session_shared' }), expect.any(String), undefined))
+  })
+
+  it('retains a removed selected connection as unavailable instead of selecting the remaining Claude profile', async () => {
+    const { api, response, team, codex } = await profileFixture()
+    const dialog = await openCreate(api)
+    fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'claude:max') } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
+    expect(dialog.getByRole('option', { name: 'Claude · claude:max (unavailable)' })).toBeDisabled()
+    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).toBeDisabled()
+    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes same-family/same-title/same-remote-ID tasks in the list, heading context, and HUD', async () => {
+    const maxTask = profileTask('claude:max')
+    const teamTask = profileTask('claude:team')
+    const { api, response, team, codex } = await profileFixture(maxTask, [teamTask])
+    render(<><CloudTasksSection api={api} selectedTaskId={maxTask.id} /><CloudTasksHud api={api} onSelectTask={vi.fn()} /></>)
+    const list = within(screen.getByRole('region', { name: 'Saved cloud tasks' }))
+    const hud = within(screen.getByRole('region', { name: 'Cloud tasks HUD' }))
+    expect(await list.findByRole('button', { name: /Claude Max: Same task title/ })).toBeInTheDocument()
+    expect(list.getByRole('button', { name: /Claude Team: Same task title/ })).toBeInTheDocument()
+    expect(hud.getByRole('button', { name: /Claude Max: Same task title/ })).toHaveTextContent('Claude Max')
+    expect(hud.getByRole('button', { name: /Claude Team: Same task title/ })).toHaveTextContent('Claude Team')
+    expect(within(screen.getByRole('article', { name: 'Selected cloud task' })).getByText('Claude Max')).toBeInTheDocument()
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(list.getByRole('button', { name: /Claude · claude:max: Same task title/ })).toBeInTheDocument()
+    expect(hud.getByRole('button', { name: /Claude · claude:max: Same task title/ })).toBeInTheDocument()
+    expect(screen.getByText(/another profile will not be substituted/)).toHaveTextContent('claude:max')
+    expect(screen.getByRole('link', { name: 'Open in Claude ↗' })).toHaveAttribute('href', maxTask.providerUrl)
+  })
+
+  it.each(['claude:team', 'claude:max'])('messages a persisted %s task using its context regardless of provider order', async (context) => {
+    const task = profileTask(context)
+    const { api, response, max } = await profileFixture(task)
+    max.readiness = 'ready'; max.capabilities.sendMessage = true
+    render(<CloudTasksSection api={api} selectedTaskId={task.id} />)
+    const message = await screen.findByLabelText('Message')
+    fireEvent.change(message, { target: { value: 'Exact-profile follow-up' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: /owns this session/ }))
+    response.providers.reverse()
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(screen.getByRole('checkbox', { name: /owns this session/ })).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Send new message' }))
+    await waitFor(() => expect(api.message).toHaveBeenCalledWith(task.id, { credentialContextId: context, message: 'Exact-profile follow-up', accountConfirmed: true }, expect.any(String)))
+  })
+
+  it('does not inherit enabled Team messaging for a disabled or missing Max task', async () => {
+    const task = profileTask('claude:max')
+    const { api, response, team, codex } = await profileFixture(task)
+    render(<CloudTasksSection api={api} selectedTaskId={task.id} />)
+    await screen.findByText('PRIVATE original prompt')
+    expect(screen.queryByRole('button', { name: 'Send new message' })).not.toBeInTheDocument()
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(screen.queryByRole('button', { name: 'Send new message' })).not.toBeInTheDocument()
+    expect(api.message).not.toHaveBeenCalled()
+  })
+
+  it('keeps recovery linking locked to a persisted missing Max connection', async () => {
+    const task = profileTask('claude:max', { deliveryState: 'delivery_unknown' })
+    const { api, response, team, codex } = await profileFixture(task)
+    render(<CloudTasksSection api={api} selectedTaskId={task.id} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Link known task identity' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
+    expect(dialog.getByLabelText('Connection')).toBeDisabled()
+    fireEvent.change(dialog.getByLabelText('Provider task or session ID'), { target: { value: 'session_known' } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(dialog.getByRole('button', { name: 'Link identity only' })).toBeDisabled()
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
+    expect(api.link).not.toHaveBeenCalled()
+  })
+
+  it('locks message re-entry to the original Max tuple and preserves its existing digest/key format', async () => {
+    const task = profileTask('claude:max')
+    const input = { credentialContextId: 'claude:max', message: 'Original profile-bound message', accountConfirmed: true }
+    const digest = await digestCloudIntent({ kind: 'message', taskId: task.id, input })
+    localStorage.setItem(CLOUD_PENDING_STORAGE_KEY, JSON.stringify([{ key: 'max-key', digest, installationId: 'ui-installation' }]))
+    const { api, response, team, max, codex } = await profileFixture(task)
+    max.readiness = 'ready'; max.capabilities.sendMessage = true
+    render(<CloudTasksSection api={api} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-enter original intent…' }))
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.change(dialog.getByLabelText('Original operation'), { target: { value: 'message' } })
+    fireEvent.change(dialog.getByLabelText('Original local task target'), { target: { value: task.id } })
+    expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
+    expect(dialog.getByLabelText('Connection')).toBeDisabled()
+    fireEvent.change(dialog.getByLabelText('Message'), { target: { value: input.message } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(dialog.getByRole('button', { name: 'Reconfirm and recover original intent' })).toBeDisabled()
+    expect(api.message).not.toHaveBeenCalled()
+    response.providers.push(max)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    // Reconfirm explicitly after restoring the connection, regardless of the retained checkbox state.
+    const confirmation = dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })
+    if ((confirmation as HTMLInputElement).checked) fireEvent.click(confirmation)
+    fireEvent.click(confirmation)
+    fireEvent.click(dialog.getByRole('button', { name: 'Reconfirm and recover original intent' }))
+    await waitFor(() => expect(api.message).toHaveBeenCalledWith(task.id, input, 'max-key'))
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)[0].digest).toBe(digest)
+  })
+
+  it('resumes a prepared Max operation only with its own configured, verified connection', async () => {
+    const task = profileTask('claude:max', { deliveryState: 'prepared' })
+    const { api, response, team, max, codex } = await profileFixture(task)
+    render(<CloudTasksSection api={api} selectedTaskId={task.id} />)
+    const form = within(await screen.findByRole('form', { name: 'Resume prepared create' }))
+    expect(form.getByRole('button', { name: 'Resume prepared operation' })).toBeDisabled()
+    expect(form.getByRole('checkbox')).toBeDisabled()
+    response.providers.splice(0, response.providers.length, team, codex)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(form.getByRole('checkbox')).toBeDisabled()
+    max.readiness = 'ready'; max.capabilities.create = true
+    response.providers.unshift(max)
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    fireEvent.click(form.getByRole('checkbox'))
+    fireEvent.click(form.getByRole('button', { name: 'Resume prepared operation' }))
+    await waitFor(() => expect(api.resumeOperation).toHaveBeenCalledWith('create-op', { credentialContextId: 'claude:max', accountConfirmed: true }))
+  })
+
+  it.each([true, false])('initializes after async provider load (unique Codex present: %s) without later rebinding', async (withCodex) => {
+    const { api, response, team, codex } = await profileFixture()
+    if (!withCodex) response.providers.splice(response.providers.indexOf(codex), 1)
+    let resolve!: (value: typeof response) => void
+    vi.mocked(api.providers).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    render(<CloudTaskCreateDialog api={api} onClose={vi.fn()} />)
+    expect(screen.getByLabelText('Connection')).toHaveValue('')
+    await act(async () => { resolve(response) })
+    const chosen = withCodex ? codex : team
+    const chosenKey = cloudConnectionKey(chosen.id, chosen.credentialContextId)
+    expect(screen.getByLabelText('Connection')).toHaveValue(chosenKey)
+    response.providers.reverse()
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(screen.getByLabelText('Connection')).toHaveValue(chosenKey)
+    chosen.credentialContextId = 'replacement-profile'
+    await act(async () => { await cloudTaskStoreFor(api).refresh() })
+    expect(screen.getByLabelText('Connection')).toHaveValue(chosenKey)
+    expect(screen.getByRole('option', { name: /\(unavailable\)/ })).toBeDisabled()
   })
 })

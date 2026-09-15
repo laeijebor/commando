@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import {
-  canonicalCloudRequest, type CloudCreateInput, type CloudLinkInput, type CloudMessageInput,
+  canonicalCloudRequest, cloudConnectionKey, type CloudCreateInput, type CloudLinkInput, type CloudMessageInput,
   type CloudOperation, type CloudProvidersResponse, type CloudResumeInput, type CloudTaskAction, type CloudTaskDetail,
   type CloudTaskSummary,
 } from '../shared/cloud-tasks'
@@ -164,7 +164,7 @@ export class CloudTaskStore {
     // Drain every task rather than flooding the daemon's bounded provider queue.
     for (const id of ids) {
       const task = this.snapshot.tasks.find((item) => item.id === id)
-      const info = providers.providers.find((provider) => provider.id === task?.provider)
+      const info = task && providers.providers.find((provider) => cloudConnectionKey(provider.id, provider.credentialContextId) === cloudConnectionKey(task.provider, task.credentialContextId))
       const inspect = info?.readiness === 'ready' && info.capabilities.inspect
       // Receipt-only providers never get invented live polling. Only selected details are loaded.
       try {

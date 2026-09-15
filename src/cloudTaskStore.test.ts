@@ -244,6 +244,27 @@ describe('shared cloud task store', () => {
     expect(store.getSnapshot().error).toBe('')
   })
 
+  it('uses each task connection tuple for polling and never substitutes another Claude profile', async () => {
+    const api = apiFixture()
+    const team = { ...provider, id: 'claude' as const, credentialContextId: 'claude:team', capabilities: { ...provider.capabilities, inspect: false } }
+    const max = { ...team, credentialContextId: 'claude:max', capabilities: { ...team.capabilities, inspect: true } }
+    const tasks = [team, max, { ...team, credentialContextId: 'legacy-context' }].map((info) => task({ id: info.credentialContextId, provider: 'claude', credentialContextId: info.credentialContextId }))
+    vi.mocked(api.providers).mockResolvedValue({ installationId: 'installation', providers: [team, max] })
+    vi.mocked(api.list).mockResolvedValue(tasks)
+    vi.mocked(api.refresh).mockImplementation(async (id) => ({ task: tasks.find((task) => task.id === id)!, operations: [] }))
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    expect(api.refresh).toHaveBeenCalledTimes(1)
+    expect(api.refresh).toHaveBeenCalledWith('claude:max')
+    vi.mocked(api.providers).mockResolvedValue({ installationId: 'installation', providers: [max, team] })
+    await store.refresh()
+    expect(api.refresh).toHaveBeenCalledTimes(2)
+    vi.mocked(api.providers).mockResolvedValue({ installationId: 'installation', providers: [team] })
+    await store.refresh()
+    expect(api.refresh).toHaveBeenCalledTimes(2)
+    expect(store.getSnapshot().tasks).toHaveLength(3)
+  })
+
   it.each(['error', 'stale', 'auth_required'] as const)('backs off HTTP-200 %s observations without treating the daemon as disconnected', async (observationState) => {
     vi.useFakeTimers()
     vi.spyOn(Math, 'random').mockReturnValue(0)
