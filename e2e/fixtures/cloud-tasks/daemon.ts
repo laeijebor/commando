@@ -23,6 +23,15 @@ export function providers(ready = false): CloudProvidersResponse {
   })) }
 }
 
+export function teamMaxConnections(): CloudProvidersResponse {
+  const [codex, claude] = providers(true).providers
+  return { installationId, providers: [
+    { ...claude, label: 'Claude Team', credentialContextId: 'claude:team' },
+    { ...claude, label: 'Claude Max', credentialContextId: 'claude:max' },
+    { ...codex, credentialContextId: 'codex:default' },
+  ] }
+}
+
 export function task(overrides: Partial<CloudTask> = {}): CloudTask {
   return {
     id: 'qa-codex', provider: 'codex', credentialContextId: 'qa-context', verifiedAccountRef: null,
@@ -143,9 +152,15 @@ export class CloudDaemonFixture {
       }
       // Reject outdated fixtures/clients rather than silently accepting an unconfirmed context.
       if (method === 'POST' && /^\/api\/cloud-(tasks|operations)(\/|$)/.test(path) && !path.endsWith('/refresh')) {
-        const input = body as { credentialContextId?: unknown; accountConfirmed?: unknown } | null
+        const input = body as { provider?: unknown; credentialContextId?: unknown; accountConfirmed?: unknown } | null
+        const taskId = path.match(/^\/api\/cloud-tasks\/([^/]+)\//)?.[1]
+        const opId = path.match(/^\/api\/cloud-operations\/([^/]+)\/dispatch$/)?.[1]
+        const boundTask = taskId ? this.details.get(decodeURIComponent(taskId))?.task
+          : opId ? [...this.details.values()].find((detail) => detail.operations.some((op) => op.id === decodeURIComponent(opId)))?.task : undefined
+        const providerId = boundTask?.provider ?? input?.provider
         if (input?.accountConfirmed !== true || typeof input.credentialContextId !== 'string'
-          || !this.providerResponse.providers.some((provider) => provider.credentialContextId === input.credentialContextId)) {
+          || !this.providerResponse.providers.some((provider) => provider.id === providerId && provider.credentialContextId === input.credentialContextId)
+          || (boundTask && boundTask.credentialContextId !== input.credentialContextId)) {
           this.unexpected.push(`Unconfirmed credential context: ${method} ${path}`)
           return route.abort()
         }
@@ -194,7 +209,8 @@ export class CloudDaemonFixture {
         if (detail) {
           const op = operation(detail.task, { id: `message-${key}`, kind: 'message', payload: body as CloudMessageInput,
             idempotencyKey: key, state: this.loseMessageResponse ? 'delivery_unknown' : 'accepted',
-            receipt: this.loseMessageResponse ? null : operation(detail.task).receipt })
+            receipt: this.loseMessageResponse ? null : { providerTaskId: detail.task.providerTaskId!,
+              providerUrl: detail.task.providerUrl!, evidence: 'provider_receipt' } })
           this.save({ ...detail.task, revision: detail.task.revision + 1 }, [...detail.operations, op])
           if (this.loseMessageResponse) return fail()
           return reply({ task: this.details.get(detail.task.id)!.task, operation: op, reused: false } satisfies CloudTaskAction, 202)

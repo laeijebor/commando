@@ -11,9 +11,9 @@ Final automated checks for this implementation:
 | Check | Result |
 | --- | --- |
 | `npm run typecheck` | Pass |
-| `npm test` | 128 files / 1,742 tests passed |
+| `npm test` | 129 files / 1,781 tests passed |
 | `npm run build` | Pass |
-| Cloud Playwright suite | 21 tests passed |
+| Cloud Playwright suite | 23 tests passed |
 | Standalone TypeScript check of cloud E2E files | Pass |
 
 The browser suite renders the real App and CSS using fail-closed synthetic
@@ -97,3 +97,29 @@ verified-version flags or shared daemon configuration were changed. Production
 configuration must select the intended Team or Max profile and resolve the
 executable paths; it should not request a new login simply because PATH discovery
 failed. Provider submission/detach/receipt acceptance remains pending.
+
+## Both Claude profiles implemented
+
+The user subsequently selected both existing Claude profiles. The daemon now
+constructs distinct **Claude Team** (`claude:team`) and **Claude Max**
+(`claude:max`) connections alongside Codex. Team explicitly removes the child
+`CLAUDE_CONFIG_DIR`; Max sets it to `~/.claudep`. Neither changes `process.env`.
+Version attestations, queues, probes, task routing, and UI selection are scoped to
+the full provider/context tuple. Missing profiles never substitute another login.
+
+The connection factory now discovers the existing native Claude and NVM Codex
+installations without executable overrides. A further real read-only probe
+using that factory and the actual runner found Claude **2.1.272** and Codex
+**0.153.4**. Simultaneous `auth status --json` calls through the configured Team
+and Max child environments both succeeded with the expected subscriptions. The
+parent profile variable remained unchanged. Codex's authenticated cloud list
+again succeeded and returned zero tasks. No new login, cloud task, or message
+was submitted, and the profile-specific mutation gates remain unverified.
+
+Regression coverage now includes concurrent child environment isolation,
+independent version gates, identical remote IDs stored under both profiles,
+connection reordering/removal, per-profile messages and resume, and exact tuple
+selection in list/detail/HUD. The actual-daemon test preserves both profile
+identities across restart. All 23 real-App/CSS browser cases pass at desktop and
+narrow widths; independent code review found no blockers in the dual-profile
+change. The release gates above still apply to live task execution.

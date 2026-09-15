@@ -1,7 +1,8 @@
 import { expect, test as base, type Page } from '@playwright/test'
 import { writeFile } from 'node:fs/promises'
 import { createServer, type ViteDevServer } from 'vite'
-import { CloudDaemonFixture, hostileText, installationId, localSnapshot, operation, pendingKey, providers, task } from './fixtures/cloud-tasks/daemon'
+import { cloudConnectionKey } from '../shared/cloud-tasks'
+import { CloudDaemonFixture, hostileText, installationId, localSnapshot, operation, pendingKey, providers, task, teamMaxConnections } from './fixtures/cloud-tasks/daemon'
 
 // Real App and production CSS. No daemon, provider process, or shared tmux server.
 const port = Number(process.env.COMMANDO_E2E_VITE_PORT ?? 5297)
@@ -90,7 +91,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const dialog = page.getByRole('dialog', { name: 'Link existing cloud task' })
       await expect(dialog).toHaveAttribute('data-native-terminal-occluder', '')
       await expect(dialog.getByRole('button', { name: 'Close cloud task dialog' })).toBeFocused()
-      await dialog.getByRole('combobox', { name: /^Provider/ }).selectOption('claude')
+      await dialog.getByRole('combobox', { name: /^Connection/ }).selectOption(cloudConnectionKey('claude', 'qa-context'))
       await expect(dialog).toContainText('missing_cli')
       await dialog.getByLabel('Title (optional)').fill('Linked Claude without local session')
       await dialog.getByLabel('Provider task or session ID').fill('https://evil.example/session_qa')
@@ -111,7 +112,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(dialog).toHaveCount(0)
       await expect(opener).toBeFocused()
       await opener.click()
-      await dialog.getByRole('combobox', { name: /^Provider/ }).selectOption('claude')
+      await dialog.getByRole('combobox', { name: /^Connection/ }).selectOption(cloudConnectionKey('claude', 'qa-context'))
       await dialog.getByLabel('Title (optional)').fill('Linked Claude without local session')
       await dialog.getByLabel('Provider task or session ID').fill('session_qa')
       await dialog.getByRole('checkbox', { name: /I confirm/ }).check()
@@ -143,18 +144,136 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(daemon.requests.some((request) => request.path.endsWith('/refresh'))).toBe(false)
     })
 
+    test('Team and Max connections isolate identical session IDs, messages and unavailable profiles', async ({ page, daemon }, testInfo) => {
+      daemon.providerResponse = teamMaxConnections()
+      daemon.loseMessageResponse = false
+      daemon.save(task({ title: 'Codex connection anchor', credentialContextId: 'codex:default' }))
+      await start(page)
+      const profiles = [{ label: 'Claude Team', context: 'claude:team' }, { label: 'Claude Max', context: 'claude:max' }]
+      const linkedIds: Record<string, string> = {}
+      const showList = async () => {
+        if (size === 'narrow' && await detail(page).isVisible()) await detail(page).getByRole('button', { name: '← Back to tasks' }).click()
+      }
+      for (const profile of profiles) {
+        await page.getByRole('button', { name: 'Link existing', exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: 'Link existing cloud task' })
+        const connection = dialog.getByRole('combobox', { name: /^Connection/ })
+        await expect(connection).toHaveValue(cloudConnectionKey('codex', 'codex:default'))
+        await expect(connection.locator('option')).toHaveText(['Claude Team', 'Claude Max', 'Codex Cloud'])
+        await connection.selectOption(cloudConnectionKey('claude', profile.context))
+        // Same title and provider identity deliberately require connection labels to distinguish records.
+        await dialog.getByLabel('Title (optional)').fill('Shared Claude session')
+        await dialog.getByLabel('Provider task or session ID').fill('session_shared_qa')
+        const confirmation = dialog.getByRole('checkbox', { name: /I confirm/ })
+        const submit = dialog.getByRole('button', { name: 'Link identity only' })
+        await confirmation.check()
+        if (profile.context === 'claude:team') {
+          await connection.selectOption(cloudConnectionKey('claude', 'claude:max'))
+          await expect(confirmation).not.toBeChecked()
+          await expect(submit).toBeDisabled()
+          await expect(dialog).toContainText('Connection: Claude Max')
+          await connection.selectOption(cloudConnectionKey('claude', 'claude:team'))
+          await expect(confirmation).not.toBeChecked()
+          await confirmation.check()
+        } else {
+          // Wake polling with the modal open; no injected component/store state or direct API calls.
+          daemon.providerResponse.providers.reverse()
+          await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+          await expect(connection.locator('option')).toHaveText(['Codex Cloud', 'Claude Max', 'Claude Team'])
+          await expect(connection).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
+          await expect(confirmation).toBeChecked()
+          await expect(submit).toBeEnabled()
+          await page.screenshot({ path: testInfo.outputPath(`${size}-connections-reordered.png`) })
+        }
+        await submit.click()
+        await expect(dialog).toHaveCount(0)
+        await expect(detail(page).getByRole('heading', { level: 2 })).toHaveText('Shared Claude session')
+        await expect(detail(page).getByText(profile.label, { exact: true })).toBeVisible()
+        await expect(detail(page)).toContainText(`Confirmation context: ${profile.context}`)
+        const linked = [...daemon.details.values()].find(({ task }) => task.credentialContextId === profile.context)!.task
+        linkedIds[profile.context] = linked.id
+        await detail(page).getByLabel('Message', { exact: true }).fill(`Follow-up through ${profile.label}`)
+        await detail(page).getByRole('checkbox', { name: /I confirm/ }).check()
+        await detail(page).getByRole('button', { name: 'Send new message' }).click()
+        await expect(detail(page).locator('.cloud-activity')).toContainText('Follow-up · Message sent')
+        await expect(detail(page).locator('.cloud-activity')).toContainText(`Follow-up through ${profile.label}`)
+        await showList()
+        await expect(list(page).getByRole('button', { name: new RegExp(`^${profile.label}: Shared Claude session`) }).getByText(profile.label, { exact: true })).toBeVisible()
+      }
+      expect(linkedIds['claude:team']).not.toBe(linkedIds['claude:max'])
+      expect([...daemon.details.values()].filter(({ task }) => task.providerTaskId === 'session_shared_qa')).toHaveLength(2)
+      expect(daemon.mutations().filter((request) => request.path === '/api/cloud-tasks/link').map(({ body }) => body)).toEqual(profiles.map((profile) => ({
+        provider: 'claude', credentialContextId: profile.context, providerTaskId: 'session_shared_qa', title: 'Shared Claude session', accountConfirmed: true,
+      })))
+      await page.getByRole('heading', { name: 'Cloud tasks', exact: true, level: 1 }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: testInfo.outputPath(`${size}-team-max-task-list.png`) })
+
+      await page.reload()
+      await navigate(page, 'Cloud tasks')
+      await expect(list(page).getByRole('button')).toHaveCount(3)
+      for (const profile of profiles) await expect(list(page).getByRole('button', { name: new RegExp(`^${profile.label}:`) })).toBeVisible()
+      await navigate(page, 'Workspace')
+      await openPanel(page, 'HUD')
+      const hud = page.getByRole('region', { name: 'Cloud tasks HUD' })
+      await expect(hud.getByRole('button')).toHaveCount(3)
+      for (const profile of profiles) await expect(hud.getByRole('button', { name: new RegExp(`^${profile.label}:`) }).getByText(profile.label, { exact: true })).toBeVisible()
+      await expect(hud.getByRole('button', { name: /^Codex Cloud:/ })).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath(`${size}-team-max-hud.png`) })
+      await hud.getByRole('button', { name: /^Claude Max:/ }).click()
+      await expect(detail(page).getByText('Claude Max', { exact: true })).toBeVisible()
+      await expect(detail(page).locator('.cloud-activity')).toContainText('Follow-up through Claude Max')
+      await expect(detail(page).locator('.cloud-activity')).not.toContainText('Follow-up through Claude Team')
+      await page.getByRole('heading', { name: 'Cloud tasks', exact: true, level: 1 }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: testInfo.outputPath(`${size}-max-task-selected.png`) })
+      daemon.providerResponse.providers.reverse()
+      await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
+      await expect(page.getByRole('button', { name: 'Refresh tasks', exact: true })).toBeEnabled()
+      await expect(page.locator('.cloud-list [aria-current="true"]')).toHaveAttribute('data-cloud-task-id', linkedIds['claude:max'])
+      await expect(detail(page).getByText('Claude Max', { exact: true })).toBeVisible()
+
+      await detail(page).getByLabel('Message', { exact: true }).fill('Must never fall back to Team')
+      await detail(page).getByRole('checkbox', { name: /I confirm/ }).check()
+      daemon.providerResponse.providers = daemon.providerResponse.providers.filter((provider) => provider.credentialContextId !== 'claude:max')
+      await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
+      await expect(detail(page)).toContainText('another profile will not be substituted')
+      await expect(detail(page)).toContainText('claude:max')
+      await expect(detail(page).getByRole('button', { name: 'Send new message' })).toHaveCount(0)
+      await expect(detail(page).getByRole('button', { name: 'Refresh status' })).toHaveCount(0)
+      await expect(detail(page).getByRole('button', { name: 'Refresh saved record' })).toBeEnabled()
+      await expect(detail(page).getByRole('link', { name: 'Open in Claude ↗' })).toHaveAttribute('href', 'https://claude.ai/code/session_shared_qa')
+      await expect(detail(page).getByText('Claude Team', { exact: true })).toHaveCount(0)
+      await page.screenshot({ path: testInfo.outputPath(`${size}-max-connection-unavailable.png`) })
+      await showList()
+      await expect(list(page).getByRole('button')).toHaveCount(3)
+      await expect(list(page).getByRole('button', { name: /^Claude · claude:max:/ })).toBeVisible()
+      await list(page).getByRole('button', { name: /^Claude Team:/ }).click()
+      await expect(detail(page)).toContainText('Confirmation context: claude:team')
+      await detail(page).getByLabel('Message', { exact: true }).fill('Team remains available after Max removal')
+      await detail(page).getByRole('checkbox', { name: /I confirm/ }).check()
+      await detail(page).getByRole('button', { name: 'Send new message' }).click()
+      await expect(detail(page).locator('.cloud-activity')).toContainText('Team remains available after Max removal')
+      expect(daemon.mutations().filter((request) => request.path.endsWith('/messages')).map(({ path, body }) => ({ path, body }))).toEqual([
+        ...profiles.map((profile) => ({ path: `/api/cloud-tasks/${linkedIds[profile.context]}/messages`,
+          body: { credentialContextId: profile.context, message: `Follow-up through ${profile.label}`, accountConfirmed: true } })),
+        { path: `/api/cloud-tasks/${linkedIds['claude:team']}/messages`, body: { credentialContextId: 'claude:team',
+          message: 'Team remains available after Max removal', accountConfirmed: true } },
+      ])
+      expect(daemon.creates()).toHaveLength(0)
+      expect(daemon.requests.filter((request) => request.path.endsWith('/refresh'))).toHaveLength(0)
+    })
+
     test('capability gate and local 202 become accepted only after a provider receipt', async ({ page, daemon }, testInfo) => {
       daemon.providerResponse = providers(true)
       await start(page)
       const dialog = await fillCreate(page)
       const submit = dialog.getByRole('button', { name: 'Record cloud task' })
       await expect(submit).toBeDisabled()
-      await dialog.getByRole('combobox', { name: /^Provider/ }).selectOption('claude')
+      await dialog.getByRole('combobox', { name: /^Connection/ }).selectOption(cloudConnectionKey('claude', 'qa-context'))
       await dialog.getByLabel('Existing checkout path').fill('/tmp/cloud-qa-fixture')
       await dialog.getByRole('checkbox', { name: /I confirm/ }).check()
       await expect(dialog).toContainText('Claude creation is unverified')
       await expect(submit).toBeDisabled()
-      await dialog.getByRole('combobox', { name: /^Provider/ }).selectOption('codex')
+      await dialog.getByRole('combobox', { name: /^Connection/ }).selectOption(cloudConnectionKey('codex', 'qa-context'))
       await dialog.getByLabel('Existing environment ID').fill('env_qa')
       await expect(dialog.getByRole('checkbox', { name: /I confirm/ })).not.toBeChecked()
       await dialog.getByRole('checkbox', { name: /I confirm/ }).check()

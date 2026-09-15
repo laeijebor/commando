@@ -86,6 +86,13 @@ Claude Code Cloud sessions and Codex Cloud tasks independently of tmux. A compac
 Cloud tasks group in the workspace HUD opens the same saved records. Removing a
 local session or archiving a cloud card does not cancel provider work.
 
+The **Connection** picker offers **Claude Team**, **Claude Max**, and **Codex**.
+Team uses Claude's default login with `CLAUDE_CONFIG_DIR` unset; Max uses
+`~/.claudep`. Each subprocess gets its own profile setting, so concurrent work
+does not switch another agent's login. Task cards and the HUD show the selected
+connection. A saved task remains bound to that connection across reloads,
+reordering and recovery; an unavailable Max connection never falls back to Team.
+
 ### Current provider support
 
 | Action | Claude Code Cloud | Codex Cloud |
@@ -117,18 +124,40 @@ COMMANDO_CLOUD_CODEX_VERIFIED_VERSION='<verified-semver>'
 COMMANDO_CLOUD_CODEX_CONTEXT=codex-work-account
 
 COMMANDO_CLAUDE_CLI=/absolute/path/to/claude
-COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION='<verified-semver>'
-COMMANDO_CLOUD_CLAUDE_CONTEXT=claude-work-account
+COMMANDO_CLOUD_CLAUDE_TEAM_VERIFIED_VERSION='<verified-team-semver>'
+COMMANDO_CLOUD_CLAUDE_MAX_VERIFIED_VERSION='<verified-max-semver>'
+
+# Optional: these are the default connection identities and Max directory.
+COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT=claude:team
+COMMANDO_CLOUD_CLAUDE_MAX_CONTEXT=claude:max
+COMMANDO_CLOUD_CLAUDE_MAX_CONFIG_DIR="$HOME/.claudep"
 ```
 
 Pass these variables to the daemon's launch environment. Executable overrides
-are optional; defaults are `codex` and `claude` on its PATH. Version values are
+are optional: discovery checks PATH, then `~/.local/bin`, and for Codex checks
+installed NVM Node versions newest-first. An explicit override always wins,
+including an invalid one; it never silently falls back to a different binary.
+Discovery does not execute shell aliases or install/update software. Version values are
 the exact version numbers, not the full `codex-cli …` or `… (Claude Code)` label,
 and ranges are not accepted. A version mismatch disables CLI capabilities again.
-The Claude version setting enables only supported follow-up delivery, not creation.
+Each Claude version setting enables only its own supported follow-up delivery,
+not creation; verifying Team does not enable Max. The former singular
+`COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION` is not used by the two-connection factory.
 Context labels are local identity namespaces, not credentials. Use a new context
 when changing accounts; the app checks declared context changes and requires
 confirmation when the provider's actual account identity cannot be inspected.
+
+Team explicitly removes `CLAUDE_CONFIG_DIR` from its child environment even if
+the daemon inherited it. It is important not to replace this with an explicit
+`~/.claude` value: those selections can resolve different saved credentials.
+Max's directory override must be an absolute path. The parent environment and
+other local agent processes are unchanged.
+
+Legacy records using `claude-default` or a custom singular context remain visible
+but are not silently assigned to Team or Max. If their original profile is known,
+set the corresponding new connection's `*_CONTEXT` to that recorded identity;
+otherwise explicitly link under the intended connection. The former singular
+`COMMANDO_CLOUD_CLAUDE_CONTEXT` does not select either new connection.
 
 The daemon lets the official CLIs manage subscription authentication. It does
 not copy OAuth credentials, use private cloud-task APIs, install provider CLIs,

@@ -25,10 +25,16 @@ loopback port 9. Browser routing rejects external origins and unhandled APIs.
 
 ## Coverage
 
-Nine scenarios each run at 1440×1000 and 390×844:
+Ten scenarios each run at 1440×1000 and 390×844:
 
 - Zero tmux sessions, missing CLI, validated identity-only Claude link, dialog
   focus trap/Escape/restoration, keyboard selection and narrow Back.
+- Claude Team + Claude Max + Codex connections: exact `cloudConnectionKey` tuple
+  dropdown values, confirmation cleared when switching, selection retained on
+  provider-list reorder, identical session IDs saved separately, connection labels
+  in list/detail/HUD, messages scoped to their own context, and no Team fallback
+  after the Max connection is removed. Both link fixtures use the same task title
+  as well as remote ID to make connection-label ambiguity observable.
 - Independent provider capabilities/account confirmation, local 202 acknowledgement,
   eventual provider receipt, and clearing the durable browser pending index.
 - Prepared resume after reload: missing readiness and changed credential context
@@ -63,8 +69,14 @@ require their separate verification packages.
 
 ## Latest QA result
 
-2026-09-13 rerun after D's fixes: **21 passed** in 41.7 seconds. Narrow Back focus
-restoration now passes with a hard assertion. Fixtures enforce the required
-confirmed `credentialContextId` on cloud submissions. Strict standalone
-TypeScript checking of the test and fixture files also passes. No expected-failure
-annotations or product-code workarounds are used.
+Team/Max contract rerun after D's Connection label fix: **23 passed** in 38.1
+seconds. Both complete dual-profile flows now pass, including link/message/
+reorder/removal assertions. No fallback selectors, expected-failure annotations,
+or product-code workarounds are used. A screenshot-only adjustment scrolls the
+desktop list to the top and captures selected Max detail; the two dual-profile
+cases then passed again in 6.3 seconds, with refreshed captures under
+`test-results/cloud-tasks-dual-profile/`.
+
+Fixtures enforce the full provider/context tuple on submissions and require
+task-bound messages/resumes to match their saved context. All provider data and
+message receipts are synthetic. Strict standalone TypeScript checking passes.
