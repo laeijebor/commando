@@ -2,11 +2,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import {
   CLOUD_DIFF_BYTE_LIMIT, CLOUD_DIFF_LINE_LIMIT, CLOUD_PROMPT_LIMIT,
-  canonicalCloudRequest, cloudProviderHome, cloudTaskUrl, isCloudProvider, validCloudRemoteId,
+  canonicalCloudRequest, cloudConnectionKey, cloudProviderHome, cloudTaskUrl, isCloudProvider, validCloudRemoteId,
   type CloudCreateInput, type CloudDiff,
 } from '../shared/cloud-tasks.js'
 import type {
-  CloudIssue, CloudLinkInput, CloudMessageInput, CloudOperation, CloudProviderInfo,
+  CloudIssue, CloudLinkInput, CloudMessageInput, CloudOperation, CloudProviderId, CloudProviderInfo,
   CloudProvidersResponse, CloudReceipt, CloudResumeInput, CloudSource, CloudTask, CloudTaskAction, CloudTaskDetail,
 } from '../shared/cloud-tasks.js'
 import { CloudTaskError, type CloudInspection, type CloudProviderAdapter } from './cloud-provider.js'
@@ -23,6 +23,7 @@ const READ_QUEUE_LIMIT = 16
 const CACHE_LIMIT = 256
 
 type QueuedRead = { run: () => void; cancel: () => void }
+type ConfiguredConnection = Readonly<{ id: CloudProviderId; credentialContextId: string; label: string; adapter: CloudProviderAdapter }>
 
 /** Only service-owned text is exposed, never an adapter exception or process diagnostic. */
 const ISSUES: Record<string, string> = {
@@ -154,7 +155,7 @@ export type CloudTaskServiceOptions = { store: CloudTaskRepository; providers: C
 
 export class CloudTaskService {
   private readonly store: CloudTaskRepository
-  private readonly providers: Map<string, CloudProviderAdapter>
+  private readonly providers: Map<string, ConfiguredConnection>
   private readonly now: () => number
   private readonly ownerId = randomUUID()
   private readonly heartbeatTimer: ReturnType<typeof setInterval>
@@ -167,7 +168,7 @@ export class CloudTaskService {
   private readonly observations = new Map<string, Promise<CloudTaskDetail>>()
   private readonly diffs = new Map<string, Promise<CloudDiff>>()
   private readonly diffCache = new Map<string, { at: number; value: CloudDiff }>()
-  private readonly providerReads = new Set<string>()
+  private readonly connectionReads = new Set<string>()
   private readonly readQueues = new Map<string, QueuedRead[]>()
   private readonly observedAt = new Map<string, number>()
 
@@ -176,8 +177,14 @@ export class CloudTaskService {
     this.now = now
     this.providers = new Map()
     for (const adapter of providers) {
-      if (!isCloudProvider(adapter.id) || this.providers.has(adapter.id)) throw new Error('Invalid or duplicate cloud provider')
-      this.providers.set(adapter.id, adapter)
+      if (!isCloudProvider(adapter.id)) throw new Error('Invalid cloud provider')
+      const credentialContextId = contextId(adapter.credentialContextId)
+      const key = cloudConnectionKey(adapter.id, credentialContextId)
+      if (this.providers.has(key)) throw new Error('Duplicate cloud provider connection')
+      const label = typeof adapter.label === 'string' && adapter.label.trim() && Buffer.byteLength(adapter.label) <= 128 && !/[\x00-\x1f\x7f]/.test(adapter.label)
+        ? adapter.label : adapter.id === 'claude' ? 'Claude' : 'Codex'
+      // Snapshot the configured namespace and label; discovery can never rebind it.
+      this.providers.set(key, Object.freeze({ id: adapter.id, credentialContextId, label, adapter }))
     }
     // Recovery marks abandoned work unknown; it never claims or replays prepared intents.
     store.heartbeat(this.ownerId)
@@ -196,27 +203,36 @@ export class CloudTaskService {
     return promise
   }
   private timestamp(): string { return new Date(this.now()).toISOString() }
-  private adapter(provider: string): CloudProviderAdapter {
-    const adapter = this.providers.get(provider)
-    if (!adapter) fail(503, 'provider_unavailable')
-    return adapter
+  private connection(provider: CloudProviderId, credentialContextId: string): ConfiguredConnection {
+    const connection = this.providers.get(cloudConnectionKey(provider, credentialContextId))
+    if (!connection || connection.adapter.id !== connection.id || connection.adapter.credentialContextId !== connection.credentialContextId) fail(409, 'context_mismatch')
+    return connection
   }
-  private async info(adapter: CloudProviderAdapter): Promise<CloudProviderInfo> {
+  private adapter(provider: CloudProviderId, credentialContextId: string): CloudProviderAdapter {
+    return this.connection(provider, credentialContextId).adapter
+  }
+  private async info(connection: ConfiguredConnection): Promise<CloudProviderInfo> {
     try {
       this.active()
+      const adapter = this.adapter(connection.id, connection.credentialContextId)
       const value = await bounded(this.track(adapter.info()), PROBE_TIMEOUT_MS)
-      if (!value || value.id !== adapter.id || !['ready', 'missing_cli', 'unverified', 'error'].includes(value.readiness)
+      this.connection(connection.id, connection.credentialContextId)
+      if (!value || value.id !== connection.id || !['ready', 'missing_cli', 'unverified', 'error'].includes(value.readiness)
         || typeof value.credentialContextId !== 'string' || !/^[A-Za-z0-9_.:-]{1,256}$/.test(value.credentialContextId)
         || (value.verifiedAccountRef !== null && (typeof value.verifiedAccountRef !== 'string' || !/^[^\x00-\x1f\x7f]{1,256}$/.test(value.verifiedAccountRef)))
         || !value.capabilities || ['create', 'link', 'list', 'inspect', 'sendMessage', 'diff', 'accountIdentity'].some((key) => typeof value.capabilities[key as keyof typeof value.capabilities] !== 'boolean')) fail(503, 'provider_unavailable')
+      if (value.credentialContextId !== connection.credentialContextId) fail(409, 'context_mismatch')
       return {
-        id: adapter.id, label: adapter.id === 'claude' ? 'Claude' : 'Codex', homeUrl: cloudProviderHome(adapter.id),
+        id: connection.id, label: connection.label, homeUrl: cloudProviderHome(connection.id),
         readiness: value.readiness, reason: this.readinessReason(value),
         version: typeof value.version === 'string' && /^[A-Za-z0-9_.+ -]{1,80}$/.test(value.version) ? value.version : null,
-        credentialContextId: value.credentialContextId, verifiedAccountRef: value.capabilities.accountIdentity ? value.verifiedAccountRef : null,
+        credentialContextId: connection.credentialContextId, verifiedAccountRef: value.capabilities.accountIdentity ? value.verifiedAccountRef : null,
         capabilities: Object.fromEntries(Object.entries(value.capabilities).filter(([key]) => ['create', 'link', 'list', 'inspect', 'sendMessage', 'diff', 'accountIdentity'].includes(key))) as CloudProviderInfo['capabilities'],
       }
-    } catch { fail(503, 'provider_unavailable') }
+    } catch (error) {
+      if (error instanceof CloudTaskError && error.code === 'context_mismatch') throw error
+      fail(503, 'provider_unavailable')
+    }
   }
   private readinessReason(info: CloudProviderInfo): string {
     const readiness = info.readiness === 'ready' ? 'The CLI matches its locally verified version.'
@@ -233,10 +249,10 @@ export class CloudTaskService {
       ? ' Account identity is unverified; confirm the current provider account before each submission, message, or link.' : ''
     return readiness + creation + followUp + account
   }
-  private async ready(provider: string, capability: 'create' | 'link' | 'sendMessage' | 'inspect' | 'diff', accountConfirmed: boolean, task?: CloudTask, expectedContextId?: string): Promise<CloudProviderInfo> {
+  private async ready(provider: CloudProviderId, capability: 'create' | 'link' | 'sendMessage' | 'inspect' | 'diff', accountConfirmed: boolean, task?: CloudTask, expectedContextId?: string): Promise<CloudProviderInfo> {
     this.active()
     if (task && expectedContextId !== undefined && expectedContextId !== task.credentialContextId) fail(409, 'context_mismatch')
-    const info = await this.info(this.adapter(provider))
+    const info = await this.info(this.connection(provider, contextId(expectedContextId ?? task?.credentialContextId)))
     this.active()
     if (expectedContextId !== undefined && info.credentialContextId !== expectedContextId) fail(409, 'context_mismatch')
     // Linking is local and can remain available without a verified mutation CLI.
@@ -247,9 +263,9 @@ export class CloudTaskService {
     return info
   }
   async listProviders(): Promise<CloudProvidersResponse> {
-    const providers = await Promise.all([...this.providers.values()].map(async (adapter): Promise<CloudProviderInfo> => {
-      try { return await this.info(adapter) } catch {
-        return { id: adapter.id, label: adapter.id === 'claude' ? 'Claude' : 'Codex', homeUrl: cloudProviderHome(adapter.id), readiness: 'error', reason: ISSUES.provider_unavailable, version: null, credentialContextId: 'unavailable', verifiedAccountRef: null, capabilities: { create: false, link: false, list: false, inspect: false, sendMessage: false, diff: false, accountIdentity: false } }
+    const providers = await Promise.all([...this.providers.values()].map(async (connection): Promise<CloudProviderInfo> => {
+      try { return await this.info(connection) } catch {
+        return { id: connection.id, label: connection.label, homeUrl: cloudProviderHome(connection.id), readiness: 'error', reason: ISSUES.provider_unavailable, version: null, credentialContextId: connection.credentialContextId, verifiedAccountRef: null, capabilities: { create: false, link: false, list: false, inspect: false, sendMessage: false, diff: false, accountIdentity: false } }
       }
     }))
     return { installationId: this.store.installationId, providers }
@@ -378,7 +394,7 @@ export class CloudTaskService {
       const current = this.store.getOperation(id)
       if (current?.state !== 'dispatching' || current.ownerId !== this.ownerId) return
       this.store.heartbeat(this.ownerId)
-      const adapter = this.adapter(task.provider)
+      const adapter = this.adapter(task.provider, task.credentialContextId)
       if (operation.kind === 'link') {
         localLink = true
         const input = operation.payload as CloudLinkInput
@@ -447,54 +463,56 @@ export class CloudTaskService {
   }
   private recent(at: number | undefined): boolean { return at !== undefined && this.now() >= at && this.now() - at < OBSERVATION_TTL_MS }
   private trim<T>(map: Map<string, T>): void { while (map.size > CACHE_LIMIT) map.delete(map.keys().next().value!) }
-  private queueRead<T>(provider: string, work: () => Promise<T>): Promise<T> {
+  private queueRead<T>(connection: string, work: () => Promise<T>): Promise<T> {
     this.active()
-    const queue = this.readQueues.get(provider) ?? []
+    const queue = this.readQueues.get(connection) ?? []
     if (queue.length >= READ_QUEUE_LIMIT) return Promise.reject(new CloudTaskError(429, 'rate_limited', ISSUES.rate_limited))
     const pending = new Promise<T>((resolve, reject) => {
       queue.push({
         cancel: () => reject(new CloudTaskError(503, 'service_stopped', ISSUES.service_stopped)),
         run: () => {
-          this.providerReads.add(provider)
+          this.connectionReads.add(connection)
           const job = (async () => {
             try { this.active(); resolve(await work()) }
             catch (error) { reject(error) }
-            finally { this.providerReads.delete(provider); this.pumpReads(provider) }
+            finally { this.connectionReads.delete(connection); this.pumpReads(connection) }
           })()
           this.track(job)
         },
       })
     })
-    this.readQueues.set(provider, queue)
-    this.pumpReads(provider)
+    this.readQueues.set(connection, queue)
+    this.pumpReads(connection)
     return this.track(pending)
   }
-  private pumpReads(provider: string): void {
-    if (this.stopped || this.providerReads.has(provider)) return
-    const queue = this.readQueues.get(provider)
+  private pumpReads(connection: string): void {
+    if (this.stopped || this.connectionReads.has(connection)) return
+    const queue = this.readQueues.get(connection)
     const next = queue?.shift()
-    if (!queue?.length) this.readQueues.delete(provider)
+    if (!queue?.length) this.readQueues.delete(connection)
     next?.run()
   }
   refreshTask(id: string): Promise<CloudTaskDetail> {
     this.active()
     const cached = this.getTask(id)
     const task = cached.task
-    const existing = this.observations.get(id)
+    const connection = cloudConnectionKey(task.provider, task.credentialContextId)
+    const cacheKey = `${connection}/${id}`
+    const existing = this.observations.get(cacheKey)
     if (existing) return existing
-    if (!task.providerTaskId || this.recent(this.observedAt.get(id))) return Promise.resolve(cached)
+    if (!task.providerTaskId || this.recent(this.observedAt.get(cacheKey))) return Promise.resolve(cached)
     const controller = new AbortController()
     this.readers.add(controller)
     const pending = this.track((async () => {
       try {
-        await this.queueRead(task.provider, async () => {
+        await this.queueRead(connection, async () => {
           try {
             await this.ready(task.provider, 'inspect', false, task)
             this.active()
-            const observation = await bounded(this.track(this.adapter(task.provider).inspect(structuredClone(task), controller.signal)), READ_TIMEOUT_MS, () => controller.abort())
+            const observation = await bounded(this.track(this.adapter(task.provider, task.credentialContextId).inspect(structuredClone(task), controller.signal)), READ_TIMEOUT_MS, () => controller.abort())
             if (!this.stopped) this.store.updateTask(id, { ...inspectionPatch(observation), observationState: 'fresh', lastObservedAt: this.timestamp(), issue: this.identityConflict(id) })
           } finally {
-            this.observedAt.set(id, this.now())
+            this.observedAt.set(cacheKey, this.now())
             this.trim(this.observedAt)
           }
         })
@@ -504,13 +522,13 @@ export class CloudTaskService {
           this.store.updateTask(id, { observationState: safeIssue.code === 'capability_unavailable' ? 'unavailable' : safeIssue.code === 'auth_required' ? 'auth_required' : 'error', issue: this.identityConflict(id) ?? safeIssue })
         }
       } finally {
-        this.observations.delete(id)
+        this.observations.delete(cacheKey)
         this.readers.delete(controller)
       }
       // An uncooperative adapter can outlive the shutdown grace and a closed store.
       return this.stopped ? cached : this.getTask(id)
     })())
-    this.observations.set(id, pending)
+    this.observations.set(cacheKey, pending)
     return pending
   }
   private identityConflict(id: string): CloudIssue | null {
@@ -520,21 +538,23 @@ export class CloudTaskService {
   getDiff(id: string): Promise<CloudDiff> {
     this.active()
     const task = this.getTask(id).task
-    const existing = this.diffs.get(id)
+    const connection = cloudConnectionKey(task.provider, task.credentialContextId)
+    const cacheKey = `${connection}/${id}`
+    const existing = this.diffs.get(cacheKey)
     if (existing) return existing
-    const cached = this.diffCache.get(id)
+    const cached = this.diffCache.get(cacheKey)
     if (cached && this.recent(cached.at)) return Promise.resolve(cached.value)
     if (!task.providerTaskId) throw new CloudTaskError(409, 'task_unlinked', 'A provider task identity is required')
     const controller = new AbortController()
     this.readers.add(controller)
     const pending = this.track((async () => {
       try {
-        return await this.queueRead(task.provider, async () => {
+        return await this.queueRead(connection, async () => {
           await this.ready(task.provider, 'diff', false, task)
           this.active()
-          const diff = boundedDiff(await bounded(this.track(this.adapter(task.provider).diff(structuredClone(task), controller.signal)), READ_TIMEOUT_MS, () => controller.abort()))
+          const diff = boundedDiff(await bounded(this.track(this.adapter(task.provider, task.credentialContextId).diff(structuredClone(task), controller.signal)), READ_TIMEOUT_MS, () => controller.abort()))
           this.active()
-          this.diffCache.set(id, { at: this.now(), value: diff })
+          this.diffCache.set(cacheKey, { at: this.now(), value: diff })
           this.trim(this.diffCache)
           return diff
         })
@@ -542,11 +562,11 @@ export class CloudTaskService {
         const safeIssue = providerIssue(error, 'observation_failed')
         throw new CloudTaskError(safeIssue.code === 'rate_limited' ? 429 : safeIssue.code === 'service_stopped' ? 503 : 502, safeIssue.code, safeIssue.message)
       } finally {
-        this.diffs.delete(id)
+        this.diffs.delete(cacheKey)
         this.readers.delete(controller)
       }
     })())
-    this.diffs.set(id, pending)
+    this.diffs.set(cacheKey, pending)
     return pending
   }
   /** Abort local signals and cancel queued reads, journal uncertainty, release the lease,

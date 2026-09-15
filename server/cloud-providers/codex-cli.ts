@@ -114,7 +114,7 @@ export class CodexCloudAdapter implements CloudProviderAdapter {
   private readonly runner: CloudCliRunner
   private readonly executable: string
   private readonly verifiedVersion: string | undefined
-  private readonly credentialContextId: string
+  readonly credentialContextId: string
 
   constructor(options: { runner?: CloudCliRunner; executable?: string; verifiedVersion?: string; credentialContextId?: string } = {}) {
     this.runner = options.runner ?? runCloudCli

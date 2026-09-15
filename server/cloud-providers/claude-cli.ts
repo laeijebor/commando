@@ -20,6 +20,8 @@ type Options = {
   executable?: string
   verifiedVersion?: string
   credentialContextId?: string
+  configDir?: string | null
+  label?: string
 }
 type Probe = { version: string | null; readiness: CloudProviderInfo['readiness']; reason: string }
 
@@ -59,10 +61,12 @@ function parseObject(output: string): Record<string, unknown> | null {
  * not an account check; the service must confirm the current account per send. */
 export class ClaudeCloudAdapter implements CloudProviderAdapter {
   readonly id = 'claude' as const
+  readonly credentialContextId: string
+  readonly label: string
   private readonly runner: CloudCliRunner
   private readonly executable: string
   private readonly verifiedVersion: string | undefined
-  private readonly credentialContextId: string
+  private readonly configDir: string | null | undefined
   private probeCache?: { expiresAt: number; value: Probe }
   private probeFlight?: Promise<Probe>
 
@@ -71,6 +75,8 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
     this.executable = options.executable ?? process.env.COMMANDO_CLAUDE_CLI ?? 'claude'
     this.verifiedVersion = options.verifiedVersion ?? process.env.COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION
     this.credentialContextId = options.credentialContextId ?? process.env.COMMANDO_CLOUD_CLAUDE_CONTEXT ?? 'claude-default'
+    this.configDir = options.configDir
+    this.label = options.label ?? 'Claude'
   }
 
   private probe(): Promise<Probe> {
@@ -86,7 +92,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
   private async detectVersion(): Promise<Probe> {
     let result: CloudCliResult
     try {
-      result = await this.runner({ executable: this.executable, args: ['--version'], cwd: homedir(), timeoutMs: 3_000, maxOutputBytes: 4_096 })
+      result = await this.runner({ executable: this.executable, args: ['--version'], cwd: homedir(), timeoutMs: 3_000, maxOutputBytes: 4_096, claudeConfigDir: this.configDir })
     } catch {
       return { version: null, readiness: 'error', reason: 'Unable to check the Claude CLI version.' }
     }
@@ -105,7 +111,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
   async info(): Promise<CloudProviderInfo> {
     const probe = await this.probe()
     return {
-      id: this.id, label: 'Claude', homeUrl: cloudProviderHome(this.id),
+      id: this.id, label: this.label, homeUrl: cloudProviderHome(this.id),
       readiness: probe.readiness, reason: `${probe.reason} Local links are user-supplied, not provider-verified. ${SOURCE_POLICY_REASON}`,
       version: probe.version, credentialContextId: this.credentialContextId, verifiedAccountRef: null,
       capabilities: { create: false, link: true, list: false, inspect: false,
@@ -140,6 +146,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
         // The prompt never occupies an option position (including leading '-' text).
         args: ['-p', '--cloud', task.providerTaskId, '--output-format', 'json'],
         stdin: message, cwd: homedir(), timeoutMs: 30_000, maxOutputBytes: 64 * 1024, signal,
+        claudeConfigDir: this.configDir,
       })
     } catch { return unknown() }
     if (!result.spawned) return rejected('cli_not_started', 'Claude CLI did not start; no message was dispatched.')

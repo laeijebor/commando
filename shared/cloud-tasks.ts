@@ -69,6 +69,8 @@ export const CLOUD_PROMPT_LIMIT = 16_384
 export const CLOUD_DIFF_BYTE_LIMIT = 256 * 1024
 export const CLOUD_DIFF_LINE_LIMIT = 5_000
 export function isCloudProvider(value: unknown): value is CloudProviderId { return value === 'claude' || value === 'codex' }
+/** Use the full connection identity in registries and UI selection. Never provider alone. */
+export function cloudConnectionKey(provider: CloudProviderId, credentialContextId: string): string { return `${provider}/${credentialContextId}` }
 export function cloudProviderHome(provider: CloudProviderId): string { return provider === 'claude' ? 'https://claude.ai/code' : 'https://chatgpt.com/codex' }
 /** Accept an ID, never an arbitrary URL or shell fragment. */
 export function validCloudRemoteId(provider: CloudProviderId, id: unknown): id is string {

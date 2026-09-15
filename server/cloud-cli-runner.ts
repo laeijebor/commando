@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
+import { isAbsolute } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import type { CloudCliResult, CloudCliRunner } from './cloud-provider.js'
+import type { CloudCliRequest, CloudCliResult, CloudCliRunner } from './cloud-provider.js'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 120_000
@@ -22,11 +23,15 @@ const ENV_KEYS = [
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ] as const
 
-function cliEnvironment(): NodeJS.ProcessEnv {
+function cliEnvironment(request: CloudCliRequest): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const key of ENV_KEYS) {
     if (process.env[key] !== undefined) env[key] = process.env[key]
   }
+  // Unset and an explicit ~/.claude path are different CLI credential contexts.
+  // Apply the per-instance selection only to this child's fresh environment.
+  if (request.claudeConfigDir === null) delete env.CLAUDE_CONFIG_DIR
+  else if (request.claudeConfigDir !== undefined) env.CLAUDE_CONFIG_DIR = request.claudeConfigDir
   return env
 }
 
@@ -35,7 +40,8 @@ function bounded(value: number | undefined, fallback: number, maximum: number): 
 }
 
 /** Internal daemon primitive: executable/argv must come from a provider adapter,
- * never HTTP input. The frozen request deliberately has no shell or env override. */
+ * never HTTP input. Only the named Claude config selection is supported, not an
+ * arbitrary environment override or shell command. */
 export const runCloudCli: CloudCliRunner = (request) => new Promise((resolve) => {
   const result: CloudCliResult = {
     stdout: '', stderr: '', exitCode: null, signal: null,
@@ -45,6 +51,9 @@ export const runCloudCli: CloudCliRunner = (request) => new Promise((resolve) =>
   if (request.signal?.aborted || !request.executable || request.executable.includes('\0')
     || request.args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))
     || request.cwd?.includes('\0')
+    || (request.claudeConfigDir !== undefined && request.claudeConfigDir !== null
+      && (typeof request.claudeConfigDir !== 'string' || !isAbsolute(request.claudeConfigDir)
+        || request.claudeConfigDir.includes('\0')))
     || Buffer.byteLength(request.stdin ?? '') > MAX_INPUT_BYTES
     || request.args.reduce((size, arg) => size + Buffer.byteLength(arg), 0) > 128 * 1024
     || (request.timeoutMs !== undefined && !Number.isFinite(request.timeoutMs))
@@ -59,7 +68,7 @@ export const runCloudCli: CloudCliRunner = (request) => new Promise((resolve) =>
   try {
     child = spawn(request.executable, request.args, {
       cwd: request.cwd, shell: false, windowsHide: true,
-      env: cliEnvironment(), stdio: ['pipe', 'pipe', 'pipe'],
+      env: cliEnvironment(request), stdio: ['pipe', 'pipe', 'pipe'],
     })
   } catch {
     resolve(result)

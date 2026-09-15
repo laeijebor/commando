@@ -50,8 +50,7 @@ import { handlePrsApi } from './prs-api.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
-import { ClaudeCloudAdapter } from './cloud-providers/claude-cli.js'
-import { CodexCloudAdapter } from './cloud-providers/codex-cli.js'
+import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
@@ -545,7 +544,7 @@ async function main(): Promise<void> {
   let cloudTasks: CloudTaskService | undefined
   try {
     cloudTaskStore = new CloudTaskStore(resolve(process.env.COMMANDO_CLOUD_TASKS_PATH ?? `${homedir()}/.commando/cloud-tasks.sqlite`))
-    cloudTasks = new CloudTaskService({ store: cloudTaskStore, providers: [new ClaudeCloudAdapter(), new CodexCloudAdapter()] })
+    cloudTasks = new CloudTaskService({ store: cloudTaskStore, providers: createCloudConnections() })
   } catch {
     cloudTaskStore?.close()
     cloudTaskStore = undefined

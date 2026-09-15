@@ -35,7 +35,7 @@ describe('ClaudeCloudAdapter capability discovery', () => {
       id: 'claude', version: '9.9.9', readiness: 'ready', verifiedAccountRef: null,
       capabilities: { create: false, link: true, sendMessage: true, list: false, inspect: false, diff: false, accountIdentity: false },
     })
-    expect(runner.mock.calls[0][0]).toMatchObject({ executable: '/local/fake-claude', args: ['--version'], timeoutMs: 3000, maxOutputBytes: 4096 })
+    expect(runner.mock.calls[0][0]).toMatchObject({ executable: '/local/fake-claude', args: ['--version'], timeoutMs: 3000, maxOutputBytes: 4096, claudeConfigDir: undefined })
   })
 
   it('distinguishes missing CLI from installed but unverified, preserving local linking in both cases', async () => {
@@ -117,6 +117,86 @@ describe('ClaudeCloudAdapter capability discovery', () => {
   })
 })
 
+describe('ClaudeCloudAdapter connection isolation', () => {
+  const maxDir = '/synthetic/claude-max'
+
+  it('keeps concurrent version flights, cached results, labels and exact-version gates independent', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let now = 10
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const runner = vi.fn(async (request: CloudCliRequest) => {
+      await gate
+      return result({ stdout: request.claudeConfigDir === null ? '9.9.9 (Claude Code)' : '9.9.10 (Claude Code)' })
+    })
+    const team = new ClaudeCloudAdapter({ runner, executable: '/local/fake-claude', credentialContextId: 'claude:team', configDir: null, label: 'Claude Team', verifiedVersion: '9.9.9' })
+    const max = new ClaudeCloudAdapter({ runner, executable: '/local/fake-claude', credentialContextId: 'claude:max', configDir: maxDir, label: 'Claude Max', verifiedVersion: '9.9.9' })
+    expect(team.credentialContextId).toBe('claude:team')
+    expect(max.credentialContextId).toBe('claude:max')
+    expect(team.label).toBe('Claude Team')
+    expect(max.label).toBe('Claude Max')
+    const pending = Promise.all([team.info(), max.info(), team.info(), max.info()])
+    expect(runner).toHaveBeenCalledTimes(2)
+    expect(runner.mock.calls.map(([request]) => request.claudeConfigDir)).toEqual([null, maxDir])
+    release()
+    const [teamInfo, maxInfo, teamRepeat, maxRepeat] = await pending
+    expect(teamInfo).toMatchObject({ label: 'Claude Team', credentialContextId: 'claude:team', version: '9.9.9', readiness: 'ready', capabilities: { create: false, sendMessage: true } })
+    expect(maxInfo).toMatchObject({ label: 'Claude Max', credentialContextId: 'claude:max', version: '9.9.10', readiness: 'unverified', capabilities: { create: false, sendMessage: false } })
+    expect(teamRepeat).toEqual(teamInfo)
+    expect(maxRepeat).toEqual(maxInfo)
+    await Promise.all([max.info(), team.info()])
+    expect(runner).toHaveBeenCalledTimes(2)
+    now += 5001
+    await max.info()
+    expect(runner).toHaveBeenCalledTimes(3)
+    expect(runner.mock.calls[2][0].claudeConfigDir).toBe(maxDir)
+    await team.info()
+    expect(runner).toHaveBeenCalledTimes(4)
+    expect(runner.mock.calls[3][0].claudeConfigDir).toBeNull()
+  })
+
+  it('carries the immutable per-instance config selection on every concurrent probe and message', async () => {
+    const { runner } = setup()
+    const team = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:team', configDir: null, verifiedVersion: '9.9.9' })
+    const max = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:max', configDir: maxDir, verifiedVersion: '9.9.9' })
+    const responses = await Promise.all([
+      team.sendMessage({ ...task, credentialContextId: team.credentialContextId }, 'Team message'),
+      max.sendMessage({ ...task, credentialContextId: max.credentialContextId }, 'Max message'),
+    ])
+    expect(responses).toEqual([expect.objectContaining({ state: 'accepted' }), expect.objectContaining({ state: 'accepted' })])
+    expect(runner).toHaveBeenCalledTimes(4)
+    const requests = runner.mock.calls.map(([request]) => request)
+    expect(requests.filter((request) => request.args[0] === '--version').map((request) => request.claudeConfigDir)).toEqual([null, maxDir])
+    expect(requests.filter((request) => request.args[0] === '-p')).toEqual([
+      expect.objectContaining({ claudeConfigDir: null, stdin: 'Team message', args: ['-p', '--cloud', 'session_synthetic', '--output-format', 'json'] }),
+      expect.objectContaining({ claudeConfigDir: maxDir, stdin: 'Max message', args: ['-p', '--cloud', 'session_synthetic', '--output-format', 'json'] }),
+    ])
+  })
+
+  it('does not enable an unverified connection merely because another verifies the same installed version', async () => {
+    const { runner } = setup()
+    const team = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:team', configDir: null, verifiedVersion: '9.9.9' })
+    const max = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:max', configDir: maxDir, verifiedVersion: '' })
+    const [teamInfo, maxInfo] = await Promise.all([team.info(), max.info()])
+    expect(teamInfo).toMatchObject({ version: '9.9.9', readiness: 'ready', capabilities: { sendMessage: true } })
+    expect(maxInfo).toMatchObject({ version: '9.9.9', readiness: 'unverified', capabilities: { sendMessage: false } })
+    expect(await max.sendMessage({ ...task, credentialContextId: max.credentialContextId }, 'Not verified')).toMatchObject({ state: 'rejected', issue: { code: 'capability_unverified' } })
+    expect(runner).toHaveBeenCalledTimes(2)
+    expect(runner.mock.calls.every(([request]) => request.args[0] === '--version')).toBe(true)
+  })
+
+  it('rejects cross-connection messages before probing or dispatching either profile', async () => {
+    const { runner } = setup()
+    const team = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:team', configDir: null, verifiedVersion: '9.9.9' })
+    const max = new ClaudeCloudAdapter({ runner, credentialContextId: 'claude:max', configDir: maxDir, verifiedVersion: '9.9.9' })
+    for (const response of await Promise.all([
+      team.sendMessage({ ...task, credentialContextId: max.credentialContextId }, 'Wrong context'),
+      max.sendMessage({ ...task, credentialContextId: team.credentialContextId }, 'Wrong context'),
+    ])) expect(response).toMatchObject({ state: 'rejected', issue: { code: 'credential_context_mismatch' } })
+    expect(runner).not.toHaveBeenCalled()
+  })
+})
+
 describe('ClaudeCloudAdapter follow-up receipts', () => {
   it('sends literal prompt text on stdin and canonicalizes only the documented matching receipt URL', async () => {
     const { adapter, runner } = setup()
@@ -133,6 +213,7 @@ describe('ClaudeCloudAdapter follow-up receipts', () => {
     expect(runner.mock.calls[1][0]).toMatchObject({
       executable: '/local/fake-claude', args: ['-p', '--cloud', 'session_synthetic', '--output-format', 'json'], stdin: input.message,
       timeoutMs: 30_000, maxOutputBytes: 64 * 1024,
+      claudeConfigDir: undefined,
     })
     expect(runner.mock.calls[1][0].cwd).not.toBe('/deleted/worktree')
   })

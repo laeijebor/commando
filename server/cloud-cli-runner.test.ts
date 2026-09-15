@@ -82,6 +82,42 @@ describe('runCloudCli', () => {
     expect(await runCloudCli({ executable: `${executable} ; exit 0`, args: [] })).toMatchObject({ spawned: false, stdout: '', stderr: '' })
   })
 
+  it.each([true, false])('isolates concurrent Team, Max and inherited child environments (parent configured: %s)', async (configured) => {
+    const inherited = configured ? join(directory, 'inherited-profile') : undefined
+    const maxConfig = join(directory, 'max profile')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', inherited)
+    vi.stubEnv('HOME', directory)
+    vi.stubEnv('CODEX_HOME', join(directory, 'codex'))
+    vi.stubEnv('ANTHROPIC_API_KEY', 'synthetic-stripped-key')
+    vi.stubEnv('COMMANDO_TOKEN', 'synthetic-stripped-token')
+    const keys = ['CLAUDE_CONFIG_DIR', 'HOME', 'PATH', 'CODEX_HOME', 'ANTHROPIC_API_KEY', 'COMMANDO_TOKEN']
+    const parent = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+    const pending = [null, maxConfig, undefined].map((claudeConfigDir) => runCloudCli({
+      executable, args: ['inspect', JSON.stringify(keys)], claudeConfigDir,
+    }))
+    // Check both while children are in flight and after all have completed.
+    expect(Object.fromEntries(keys.map((key) => [key, process.env[key]]))).toEqual(parent)
+    const results = await Promise.all(pending)
+    expect(Object.fromEntries(keys.map((key) => [key, process.env[key]]))).toEqual(parent)
+    for (const [index, result] of results.entries()) {
+      expect(result).toMatchObject({ spawned: true, exitCode: 0, stderr: '', truncated: false })
+      expect(JSON.parse(result.stdout).env).toEqual({
+        CLAUDE_CONFIG_DIR: [null, maxConfig, inherited ?? null][index],
+        HOME: directory, PATH: parent.PATH, CODEX_HOME: parent.CODEX_HOME,
+        ANTHROPIC_API_KEY: null, COMMANDO_TOKEN: null,
+      })
+    }
+  })
+
+  it.each(['', ' ', 'relative/profile', './claude', '~/.claudep', '/absolute\0profile'])('rejects malformed Claude config paths before spawning: %j', async (claudeConfigDir) => {
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(directory, 'parent-profile'))
+    const parent = process.env.CLAUDE_CONFIG_DIR
+    expect(await runCloudCli({ executable, args: ['inspect', '["CLAUDE_CONFIG_DIR"]'], claudeConfigDir })).toMatchObject({
+      spawned: false, exitCode: null, stdout: '', stderr: '', timedOut: false,
+    })
+    expect(process.env.CLAUDE_CONFIG_DIR).toBe(parent)
+  })
+
   it.each([
     { executable: '/definitely-missing-cloud-cli', args: [] },
     { executable: 'invalid\0file', args: [] },

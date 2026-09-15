@@ -11,15 +11,16 @@ export function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-export function fakeProvider(id: CloudProviderId = 'codex') {
+export function fakeProvider(id: CloudProviderId = 'codex', options: { credentialContextId?: string; label?: string } = {}) {
+  const credentialContextId = options.credentialContextId ?? 'fixture-context'
   const info: CloudProviderInfo = {
     id, label: id, homeUrl: cloudProviderHome(id), readiness: 'ready', reason: 'Synthetic fixture', version: 'synthetic-1',
-    credentialContextId: 'fixture-context', verifiedAccountRef: 'fixture-account',
+    credentialContextId, verifiedAccountRef: 'fixture-account',
     capabilities: { create: true, link: true, list: true, inspect: true, sendMessage: true, diff: true, accountIdentity: true },
   }
   const receipt = (remoteId = id === 'codex' ? 'task_synthetic' : 'session_synthetic'): CloudDispatchResult => ({ state: 'accepted', receipt: { providerTaskId: remoteId, providerUrl: cloudTaskUrl(id, remoteId), evidence: 'provider_receipt' } })
   const adapter = {
-    id,
+    id, credentialContextId, label: options.label,
     info: vi.fn(async () => structuredClone(info)),
     create: vi.fn<CloudProviderAdapter['create']>(async () => receipt()),
     sendMessage: vi.fn<CloudProviderAdapter['sendMessage']>(async (task) => receipt(task.providerTaskId!)),

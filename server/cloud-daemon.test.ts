@@ -7,10 +7,13 @@ import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { CloudLinkInput, CloudProvidersResponse, CloudTaskAction, CloudTaskDetail } from '../shared/cloud-tasks.js'
+import type { CloudLinkInput, CloudProvidersResponse, CloudTaskAction, CloudTaskDetail, CloudTaskSummary } from '../shared/cloud-tasks.js'
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url))
 const ownerEmail = 'cloud-daemon-owner@example.test'
+const teamContext = 'claude:team:daemon-test'
+const maxContext = 'claude:max:daemon-test'
+const codexContext = 'codex:daemon-test'
 const cleanup: Array<() => Promise<void>> = []
 
 afterEach(async () => {
@@ -74,8 +77,10 @@ async function isolatedEnvironment() {
     // live provider or fall back to credentials/CLIs installed on the host.
     COMMANDO_CLAUDE_CLI: join(directory, 'nonexistent-claude'),
     COMMANDO_CODEX_CLI: join(directory, 'nonexistent-codex'),
-    COMMANDO_CLOUD_CLAUDE_CONTEXT: 'claude:daemon-test',
-    COMMANDO_CLOUD_CODEX_CONTEXT: 'codex:daemon-test',
+    COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT: teamContext,
+    COMMANDO_CLOUD_CLAUDE_MAX_CONTEXT: maxContext,
+    COMMANDO_CLOUD_CLAUDE_MAX_CONFIG_DIR: join(home, '.claude-max'),
+    COMMANDO_CLOUD_CODEX_CONTEXT: codexContext,
   }
   return { env, ownerToken, hookToken, databasePath: env.COMMANDO_CLOUD_TASKS_PATH! }
 }
@@ -167,7 +172,7 @@ function mutation(method: string, body: unknown, key?: string): RequestInit {
 }
 
 describe('cloud routes composed by the actual daemon', () => {
-  it('enforces outer owner auth and persists local links, operations and archive across restart', async () => {
+  it('enforces outer owner auth and preserves distinct Team/Max links to the same remote ID across restart', async () => {
     const fixture = await isolatedEnvironment()
     const daemon = await startDaemon(fixture)
     const { json, request, ownerHeaders } = daemon
@@ -216,11 +221,16 @@ describe('cloud routes composed by the actual daemon', () => {
 
     const providers = await json<CloudProvidersResponse>('/api/cloud-providers')
     expect(providers.installationId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(providers.providers.map((provider) => provider.id).sort()).toEqual(['claude', 'codex'])
+    expect(providers.providers.map(({ id, label, credentialContextId }) => ({ id, label, credentialContextId })))
+      .toEqual([
+        { id: 'claude', label: 'Claude Team', credentialContextId: teamContext },
+        { id: 'claude', label: 'Claude Max', credentialContextId: maxContext },
+        { id: 'codex', label: 'Codex', credentialContextId: codexContext },
+      ])
+    expect(new Set(providers.providers.map((provider) => provider.credentialContextId)).size).toBe(3)
     for (const provider of providers.providers) {
       expect(provider).toMatchObject({
         readiness: 'missing_cli', version: null, verifiedAccountRef: null,
-        credentialContextId: `${provider.id}:daemon-test`,
         capabilities: { create: false, link: true, list: false, inspect: false, sendMessage: false, diff: false, accountIdentity: false },
       })
     }
@@ -246,7 +256,7 @@ describe('cloud routes composed by the actual daemon', () => {
     await forbiddenCookie.body?.cancel()
 
     const input: CloudLinkInput = {
-      provider: 'claude', credentialContextId: 'claude:daemon-test',
+      provider: 'claude', credentialContextId: teamContext,
       providerTaskId: 'session_synthetic_daemon_only', title: 'Synthetic daemon link', accountConfirmed: true,
     }
     for (const body of [
@@ -267,7 +277,7 @@ describe('cloud routes composed by the actual daemon', () => {
       ...input, accountConfirmed: false,
     }, randomUUID()))).toMatchObject({ code: 'account_confirmation_required' })
     expect(await json('/api/cloud-tasks', 409, mutation('POST', {
-      provider: 'codex', credentialContextId: 'codex:daemon-test', accountConfirmed: true,
+      provider: 'codex', credentialContextId: codexContext, accountConfirmed: true,
       prompt: 'Synthetic prompt, never dispatched', source: { environmentId: 'env_synthetic', branch: 'main' },
     }, randomUUID()))).toMatchObject({ code: 'capability_unavailable' })
     expect(await json('/api/cloud-tasks')).toEqual({ tasks: [] })
@@ -297,7 +307,7 @@ describe('cloud routes composed by the actual daemon', () => {
       id: linked.operation.id, state: 'accepted', receipt: { evidence: 'user_link', providerTaskId: input.providerTaskId },
     })
     expect(await json(`${taskPath}/messages`, 409, mutation('POST', {
-      credentialContextId: 'codex:daemon-test', accountConfirmed: true, message: 'Never dispatched',
+      credentialContextId: maxContext, accountConfirmed: true, message: 'Never dispatched',
     }, randomUUID()))).toMatchObject({ code: 'context_mismatch' })
     const { prompt: _prompt, ...summary } = detail.task
     expect(await json('/api/cloud-tasks')).toEqual({ tasks: [summary] })
@@ -314,18 +324,74 @@ describe('cloud routes composed by the actual daemon', () => {
     expect(archived.operations).toEqual(detail.operations)
     expect(await json('/api/cloud-tasks?includeArchived=0')).toEqual({ tasks: [] })
 
+    // The same provider + remote ID in Max must not alias the archived Team task.
+    // Use the real Max connection and a valid body to prove hook denial precedes
+    // local writes, then submit that exact intent with the owner's bearer token.
+    const maxKey = randomUUID()
+    const maxLink = mutation('POST', { ...input, credentialContextId: maxContext }, maxKey)
+    const deniedMaxLink = await request('/api/cloud-tasks/link', {
+      ...maxLink, headers: { ...maxLink.headers, ...hookHeaders },
+    })
+    expect(deniedMaxLink.status).toBe(401)
+    expect(await deniedMaxLink.json()).toEqual({ error: 'Unauthorized' })
+    const { prompt: _archivedPrompt, ...archivedSummary } = archived.task
+    expect(await json('/api/cloud-tasks')).toEqual({ tasks: [archivedSummary] })
+    const maxLinked = await json<CloudTaskAction>('/api/cloud-tasks/link', 202, maxLink)
+    expect(maxLinked.reused).toBe(false)
+    expect(maxLinked.task.id).not.toBe(linked.task.id)
+    expect(maxLinked.operation.id).not.toBe(linked.operation.id)
+    const maxTaskPath = `/api/cloud-tasks/${maxLinked.task.id}`
+    await expect.poll(async () => (await json<CloudTaskDetail>(maxTaskPath)).task.deliveryState, {
+      timeout: 10_000, interval: 50,
+    }).toBe('accepted')
+    const maxDetail = await json<CloudTaskDetail>(maxTaskPath)
+    expect(maxDetail.task).toMatchObject({
+      id: maxLinked.task.id, provider: 'claude', credentialContextId: maxContext,
+      providerTaskId: input.providerTaskId, providerUrl: detail.task.providerUrl,
+      identityEvidence: 'user_link', remoteState: 'unknown', observationState: 'unavailable',
+      archivedAt: null, prompt: '',
+    })
+    expect(maxDetail.operations).toHaveLength(1)
+    expect(maxDetail.operations[0]).toMatchObject({
+      id: maxLinked.operation.id, taskId: maxLinked.task.id, kind: 'link',
+      idempotencyKey: maxKey, state: 'accepted',
+      payload: { credentialContextId: maxContext, providerTaskId: input.providerTaskId },
+      receipt: { evidence: 'user_link', providerTaskId: input.providerTaskId },
+    })
+    for (const path of [taskPath, maxTaskPath]) {
+      const denied = await request(path, { headers: hookHeaders })
+      expect(denied.status, `hook-only ${path}`).toBe(401)
+      expect(await denied.json()).toEqual({ error: 'Unauthorized' })
+    }
+    expect(await json(taskPath)).toEqual(archived)
+    expect(await json('/api/cloud-tasks/link', 409, mutation('POST', {
+      ...input, credentialContextId: maxContext,
+    }, key))).toMatchObject({ code: 'idempotency_conflict' })
+    const { prompt: _maxPrompt, ...maxSummary } = maxDetail.task
+    const allTasks = await json<{ tasks: CloudTaskSummary[] }>('/api/cloud-tasks')
+    expect(allTasks.tasks).toHaveLength(2)
+    expect(allTasks.tasks).toEqual(expect.arrayContaining([archivedSummary, maxSummary]))
+    expect(await json('/api/cloud-tasks?includeArchived=0')).toEqual({ tasks: [maxSummary] })
+
     await daemon.stop()
     expect(daemon.child.exitCode, daemon.logs()).toBe(0)
     const restarted = await startDaemon(fixture)
-    expect((await restarted.json<CloudProvidersResponse>('/api/cloud-providers')).installationId).toBe(providers.installationId)
+    expect(await restarted.json<CloudProvidersResponse>('/api/cloud-providers')).toEqual(providers)
     expect(await restarted.json(taskPath)).toEqual(archived)
+    expect(await restarted.json(maxTaskPath)).toEqual(maxDetail)
     expect(await restarted.json(`/api/cloud-operations/by-key/${key}`)).toEqual({ operation: detail.operations[0] })
+    expect(await restarted.json(`/api/cloud-operations/by-key/${maxKey}`)).toEqual({ operation: maxDetail.operations[0] })
     expect(await restarted.json('/api/cloud-tasks/link', 202, link)).toMatchObject({
       reused: true, task: { id: linked.task.id }, operation: { id: linked.operation.id, state: 'accepted' },
     })
-    const { prompt: _archivedPrompt, ...archivedSummary } = archived.task
-    expect(await restarted.json('/api/cloud-tasks?includeArchived=1')).toEqual({ tasks: [archivedSummary] })
-    expect(await restarted.json('/api/cloud-tasks?includeArchived=0')).toEqual({ tasks: [] })
+    expect(await restarted.json('/api/cloud-tasks/link', 202, maxLink)).toMatchObject({
+      reused: true, task: { id: maxLinked.task.id, credentialContextId: maxContext },
+      operation: { id: maxLinked.operation.id, state: 'accepted' },
+    })
+    const restoredTasks = await restarted.json<{ tasks: CloudTaskSummary[] }>('/api/cloud-tasks?includeArchived=1')
+    expect(restoredTasks.tasks).toHaveLength(2)
+    expect(restoredTasks.tasks).toEqual(expect.arrayContaining([archivedSummary, maxSummary]))
+    expect(await restarted.json('/api/cloud-tasks?includeArchived=0')).toEqual({ tasks: [maxSummary] })
     expect(await restarted.json('/api/snapshot')).toMatchObject({ sessions: [], panes: [] })
   }, 90_000)
 

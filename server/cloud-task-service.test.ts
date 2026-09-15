@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CLOUD_DIFF_BYTE_LIMIT, CLOUD_DIFF_LINE_LIMIT, cloudTaskUrl, type CloudCreateInput } from '../shared/cloud-tasks.js'
+import { CLOUD_DIFF_BYTE_LIMIT, CLOUD_DIFF_LINE_LIMIT, cloudConnectionKey, cloudTaskUrl, type CloudCreateInput } from '../shared/cloud-tasks.js'
 import { CloudTaskError, type CloudDispatchResult, type CloudInspection } from './cloud-provider.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { FakeCloudRepository, deferred, fakeProvider } from './cloud-test-fixtures/fakes.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CodexCloudAdapter } from './cloud-providers/codex-cli.js'
 import { runCloudCli } from './cloud-cli-runner.js'
+import type { CloudTaskRepository } from './cloud-task-repository.js'
 
 const services: CloudTaskService[] = []
 const databases: CloudTaskStore[] = []
@@ -685,6 +686,163 @@ describe('durable cloud orchestration', () => {
     const lines = await service.getDiff(second.task.id)
     expect(lines.text.split('\n')).toHaveLength(CLOUD_DIFF_LINE_LIMIT)
     expect(lines.truncated).toBe(true)
+  })
+})
+
+describe('profile-scoped Claude connections', () => {
+  function profiles(store: CloudTaskRepository = new FakeCloudRepository()) {
+    const team = fakeProvider('claude', { credentialContextId: 'claude:team', label: 'Claude Team' })
+    const max = fakeProvider('claude', { credentialContextId: 'claude:max', label: 'Claude Max' })
+    team.info.capabilities.inspect = false
+    max.info.capabilities.inspect = false
+    const service = new CloudTaskService({ store, providers: [team.adapter, max.adapter] })
+    services.push(service)
+    return { service, store, team, max }
+  }
+  async function linkBoth(service: CloudTaskService) {
+    const team = await service.linkTask({ provider: 'claude', credentialContextId: 'claude:team', providerTaskId: 'session_shared', source: { repository: 'synthetic/repo' }, accountConfirmed: true }, 'team-link')
+    const max = await service.linkTask({ provider: 'claude', credentialContextId: 'claude:max', providerTaskId: 'session_shared', source: { repository: 'synthetic/repo' }, accountConfirmed: true }, 'max-link')
+    await turn()
+    return { team, max }
+  }
+
+  it('accepts distinct full tuples, rejects exact duplicates, and retains immutable connection labels on probe failure', async () => {
+    const { service, team, max } = profiles()
+    const initial = (await service.listProviders()).providers
+    expect(initial.map((entry) => [cloudConnectionKey(entry.id, entry.credentialContextId), entry.label])).toEqual([
+      ['claude/claude:team', 'Claude Team'], ['claude/claude:max', 'Claude Max'],
+    ])
+    team.adapter.info.mockRejectedValue(new Error('private process output'))
+    team.adapter.label = 'unexpected relabel'
+    const failed = (await service.listProviders()).providers
+    expect(failed[0]).toMatchObject({ id: 'claude', credentialContextId: 'claude:team', label: 'Claude Team', readiness: 'error', capabilities: { sendMessage: false } })
+    expect(failed[1]).toMatchObject({ credentialContextId: 'claude:max', label: 'Claude Max', readiness: 'ready' })
+    expect(JSON.stringify(failed)).not.toContain('private process output')
+    const duplicate = fakeProvider('claude', { credentialContextId: 'claude:max' })
+    expect(() => new CloudTaskService({ store: new FakeCloudRepository(), providers: [max.adapter, duplicate.adapter] })).toThrow('Duplicate cloud provider connection')
+    const codex = fakeProvider('codex', { credentialContextId: 'claude:max', label: 'x'.repeat(129) })
+    const otherFamily = new CloudTaskService({ store: new FakeCloudRepository(), providers: [max.adapter, codex.adapter] })
+    services.push(otherFamily)
+    expect((await otherFamily.listProviders()).providers.map((entry) => entry.label)).toEqual(['Claude Max', 'Codex'])
+  })
+
+  it('routes identical remote IDs through distinct runners and SQLite namespaces after connection reordering', async () => {
+    const store = new CloudTaskStore(':memory:')
+    databases.push(store)
+    const { service, team, max } = profiles(store)
+    const tasks = await linkBoth(service)
+    expect(service.listTasks()).toHaveLength(2)
+    expect(service.getTask(tasks.team.task.id).task).toMatchObject({ providerTaskId: 'session_shared', credentialContextId: 'claude:team' })
+    expect(service.getTask(tasks.max.task.id).task).toMatchObject({ providerTaskId: 'session_shared', credentialContextId: 'claude:max' })
+    const messages = await Promise.all([
+      service.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', message: 'Team-only message', accountConfirmed: true }, 'team-message'),
+      service.sendMessage(tasks.max.task.id, { credentialContextId: 'claude:max', message: 'Max-only message', accountConfirmed: true }, 'max-message'),
+    ])
+    await service.stop()
+    const reordered = new CloudTaskService({ store, providers: [max.adapter, team.adapter] })
+    services.push(reordered)
+    await Promise.all([
+      reordered.resumeOperation(messages[0].operation.id, { credentialContextId: 'claude:team', accountConfirmed: true }),
+      reordered.resumeOperation(messages[1].operation.id, { credentialContextId: 'claude:max', accountConfirmed: true }),
+    ])
+    await turn()
+    expect(team.adapter.sendMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ credentialContextId: 'claude:team', providerTaskId: 'session_shared' }), 'Team-only message', expect.any(AbortSignal))
+    expect(max.adapter.sendMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ credentialContextId: 'claude:max', providerTaskId: 'session_shared' }), 'Max-only message', expect.any(AbortSignal))
+    team.adapter.diff.mockResolvedValue({ text: 'Team diff', truncated: false })
+    max.adapter.diff.mockResolvedValue({ text: 'Max diff', truncated: false })
+    expect(await reordered.getDiff(tasks.team.task.id)).toEqual({ text: 'Team diff', truncated: false })
+    expect(await reordered.getDiff(tasks.max.task.id)).toEqual({ text: 'Max diff', truncated: false })
+    expect((await reordered.getDiff(tasks.team.task.id)).text).toBe('Team diff')
+    expect(team.adapter.diff).toHaveBeenCalledTimes(1)
+    expect(max.adapter.diff).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses independent create/message capability and account gates for each configured context', async () => {
+    const { service, team, max } = profiles()
+    team.info.readiness = 'unverified'
+    team.info.capabilities.create = false
+    team.info.capabilities.sendMessage = false
+    max.info.verifiedAccountRef = null
+    const tasks = await linkBoth(service)
+    const create = { provider: 'claude', credentialContextId: 'claude:team', source: { checkoutPath: '/synthetic/checkout' }, prompt: 'Synthetic create', accountConfirmed: true }
+    await expect(service.createTask(create, 'disabled-team-create')).rejects.toMatchObject({ code: 'capability_unavailable' })
+    await service.createTask({ ...create, credentialContextId: 'claude:max' }, 'max-create')
+    await expect(service.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', accountConfirmed: true, message: 'Blocked' }, 'disabled-team-message')).rejects.toMatchObject({ code: 'capability_unavailable' })
+    await expect(service.sendMessage(tasks.max.task.id, { credentialContextId: 'claude:max', accountConfirmed: false, message: 'Unconfirmed' }, 'unconfirmed-max-message')).rejects.toMatchObject({ code: 'account_confirmation_required' })
+    await service.sendMessage(tasks.max.task.id, { credentialContextId: 'claude:max', accountConfirmed: true, message: 'Confirmed Max' }, 'confirmed-max-message')
+    await turn()
+    expect(team.adapter.create).not.toHaveBeenCalled()
+    expect(team.adapter.sendMessage).not.toHaveBeenCalled()
+    expect(max.adapter.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ credentialContextId: 'claude:max' }), expect.any(AbortSignal))
+    expect(max.adapter.sendMessage).toHaveBeenCalledTimes(1)
+    expect((await service.listProviders()).providers.map((entry) => entry.capabilities.create)).toEqual([false, true])
+  })
+
+  it('preserves records but never falls back when their configured connection was removed', async () => {
+    const { service, store, team, max } = profiles()
+    const tasks = await linkBoth(service)
+    const prepared = await service.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', message: 'Prepared Team', accountConfirmed: true }, 'prepared-team')
+    await service.stop()
+    max.adapter.info.mockClear()
+    const remaining = new CloudTaskService({ store, providers: [max.adapter] })
+    services.push(remaining)
+    await expect(remaining.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', message: 'Missing Team', accountConfirmed: true }, 'missing-team')).rejects.toMatchObject({ code: 'context_mismatch' })
+    await expect(remaining.resumeOperation(prepared.operation.id, { credentialContextId: 'claude:team', accountConfirmed: true })).rejects.toMatchObject({ code: 'context_mismatch' })
+    await expect(remaining.getDiff(tasks.team.task.id)).rejects.toMatchObject({ code: 'context_mismatch' })
+    expect((await remaining.refreshTask(tasks.team.task.id)).task.issue?.code).toBe('context_mismatch')
+    await expect(remaining.linkTask({ provider: 'claude', credentialContextId: 'claude:team', providerTaskId: 'session_external', accountConfirmed: true }, 'missing-link')).rejects.toMatchObject({ code: 'context_mismatch' })
+    expect(max.adapter.info).not.toHaveBeenCalled()
+    expect(max.adapter.sendMessage).not.toHaveBeenCalled()
+    expect(team.adapter.sendMessage).not.toHaveBeenCalled()
+    expect(remaining.listTasks()).toHaveLength(2)
+    expect(remaining.getOperation(prepared.operation.id).state).toBe('prepared')
+    expect((await remaining.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', message: 'Prepared Team', accountConfirmed: true }, 'prepared-team')).reused).toBe(true)
+    await remaining.sendMessage(tasks.max.task.id, { credentialContextId: 'claude:max', accountConfirmed: true, message: 'Still Max' }, 'still-max')
+    await turn()
+    expect(max.adapter.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not rebind a connection when discovery or its configured adapter property changes', async () => {
+    const { service, team, max } = profiles()
+    const tasks = await linkBoth(service)
+    team.info.credentialContextId = 'claude:max'
+    await expect(service.sendMessage(tasks.team.task.id, { credentialContextId: 'claude:team', accountConfirmed: true, message: 'Do not reroute' }, 'drift')).rejects.toMatchObject({ code: 'context_mismatch' })
+    team.info.credentialContextId = 'claude:team'
+    team.adapter.credentialContextId = 'claude:replacement'
+    const providers = (await service.listProviders()).providers
+    expect(providers[0]).toMatchObject({ credentialContextId: 'claude:team', readiness: 'error' })
+    expect(providers[1]).toMatchObject({ credentialContextId: 'claude:max', readiness: 'ready' })
+    await expect(service.linkTask({ provider: 'claude', credentialContextId: 'claude:replacement', providerTaskId: 'session_new', accountConfirmed: true }, 'replacement')).rejects.toMatchObject({ code: 'context_mismatch' })
+    expect(team.adapter.sendMessage).not.toHaveBeenCalled()
+    expect(max.adapter.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('keeps Team queue saturation and failure independent of Max reads and per-task caching', async () => {
+    const store = new FakeCloudRepository()
+    const { service, team, max } = profiles(store)
+    const tasks = await linkBoth(service)
+    team.info.capabilities.inspect = true
+    max.info.capabilities.inspect = true
+    const held = deferred<CloudInspection>()
+    team.adapter.inspect.mockReturnValueOnce(held.promise)
+    const first = service.refreshTask(tasks.team.task.id)
+    const queued: Promise<unknown>[] = []
+    for (let index = 0; index < 17; index++) {
+      const id = `team-queued-${index}`
+      store.tasks.set(id, { ...service.getTask(tasks.team.task.id).task, id, providerTaskId: `session_queued_${index}` })
+      if (index < 16) queued.push(service.refreshTask(id))
+    }
+    expect((await service.refreshTask('team-queued-16')).task.issue?.code).toBe('rate_limited')
+    expect((await service.refreshTask(tasks.max.task.id)).task.observationState).toBe('fresh')
+    expect((await service.getDiff(tasks.max.task.id)).text).toContain('synthetic change')
+    expect(team.adapter.inspect).toHaveBeenCalledTimes(1)
+    expect(max.adapter.inspect).toHaveBeenCalledTimes(1)
+    team.adapter.info.mockRejectedValue(new Error('Team only unavailable'))
+    held.reject(new Error('Team only failed'))
+    await Promise.all([first, ...queued])
+    expect((await service.refreshTask(tasks.max.task.id)).task.observationState).toBe('fresh')
+    expect(max.adapter.inspect).toHaveBeenCalledTimes(1)
+    expect(service.getTask(tasks.team.task.id).task.observationState).toBe('error')
   })
 })
 
