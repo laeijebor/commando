@@ -32,31 +32,34 @@ An independent adversarial review drove fixes for expected-context binding,
 queue starvation, observation-error backoff, explicit prepared create/message/link
 resume, visibility of conflicting late receipts, and digest-bound draft re-entry.
 
-## Provider acceptance still pending
+## Live acceptance: Codex smoke passed; Claude pending
 
-Neither provider CLI was available on the implementation shell's PATH. No live
-provider task, actual laptop-sleep test, repository upload or subscription charge
-was performed. The user selected both providers for smoke verification but has
-not supplied a disposable repository/branch or Codex environment.
+The original implementation was verified with synthetic fixtures. On 2026-09-16,
+the user supplied a Codex environment and one real read-only task was submitted
+through the actual service, journal, runner, and Codex adapter. Its provider
+receipt, detached progression to result-ready, UI observation, and recovery
+across an isolated daemon restart passed. Details are below.
 
-Consequently, adapter fixtures are explicitly synthetic, CLI capabilities are
-disabled until the installed version is explicitly verified, and this branch
-must not be represented as having passed authenticated cloud acceptance.
+This is live Codex evidence for CLI **0.153.4**. Claude follow-up/cloud creation
+and a physical laptop-lid-close test have not been exercised. Automated fixtures
+remain explicitly synthetic. Verification flags were set only for the isolated
+Codex test processes; shared daemon configuration was not changed.
 
 Claude cloud creation remains disabled independently of the version setting:
 there is no verified enforceable no-bundle source-selection path yet. Existing
 Claude sessions can be linked; follow-up can be enabled after version/account
-verification. Codex submission, observation and diff can be enabled after its
-version/account/environment verification. See README for configuration.
+verification. Codex submission and observation passed against the supplied
+environment; a nonempty diff was not produced by this read-only task. See README
+for version-gated configuration.
 
 Before completing release acceptance:
 
 - [x] Identify provider executable paths and check existing official-CLI logins (see below; no new login required).
-- [ ] Supply an explicit disposable repository/branch and Codex environment ID.
-- [ ] Capture actual sanitized CLI receipts and version evidence.
-- [ ] Confirm remote work completes after closing its local submitter.
-- [ ] Restart Commando and recover the same task without a duplicate submission.
-- [ ] Verify Claude follow-up delivery and Codex results against actual accounts.
+- [x] Use the supplied Codex environment and Commando's pushed default branch, `main`.
+- [x] Capture an actual Codex receipt and CLI 0.153.4 version evidence.
+- [x] Observe Codex reaching result-ready after its local submitter exits.
+- [x] Restart isolated Commando and recover the same task without a duplicate submission.
+- [ ] Verify Claude Team and Max follow-up delivery against actual cloud sessions.
 - [ ] Record a real lid-close result separately from simulated disconnect tests.
 - [ ] Resolve Claude creation's source-selection gate before claiming support.
 
@@ -123,3 +126,42 @@ selection in list/detail/HUD. The actual-daemon test preserves both profile
 identities across restart. All 23 real-App/CSS browser cases pass at desktop and
 narrow widths; independent code review found no blockers in the dual-profile
 change. The release gates above still apply to live task execution.
+
+## Live Codex smoke — 2026-09-16
+
+**Target:** the user-supplied environment, labeled `laeijebor/commando` by the
+provider, with explicit branch `main`. The request asked for a read-only summary
+of README/package.json run/test instructions, no changes/install/build/test/git
+writes or PRs, and a 60-second wait to make detached execution observable.
+
+| Evidence | Observed |
+| --- | --- |
+| CLI | `codex-cli 0.153.4` |
+| Actual adapter invocation | `cloud exec --env <supplied-id> --branch main -- <read-only-prompt>` |
+| Local submission acknowledgement | Durable `prepared` operation before CLI dispatch |
+| Provider receipt | Canonical task URL plus newline, parsed successfully; exit 0 |
+| First observation | `pending` → normalized `unknown`, not guessed queued/running |
+| After the local submitter exited | Provider status became `ready` → `result_ready` |
+| Remote diff summary | 0 files changed, 0 lines added, 0 lines removed |
+| Real production App/CSS | Displayed the saved task and “Result ready”; no JS errors |
+| Isolated daemon restart | Same local/remote task IDs, operation ID, installation identity and receipt hash |
+| Duplicate check | Exactly 1 task and 1 operation before and after restart |
+
+The create CLI returned at 04:36:12 UTC. Its submitting service then stopped and
+closed its journal. A separate process reopened the same journal at 04:37:20
+without invoking create. The provider's result-ready update was timestamped
+04:38:16 UTC. The real UI subsequently refreshed that record, restarted its
+isolated daemon once, and refreshed the same identity again.
+
+The CLI listing's `environment_id` was null; the submitted request records the
+supplied ID, while the returned `environment_label` identifies the repository.
+We did not infer a different environment or a verified remote commit from that
+missing field. `ready` is result availability, not proof that the generated
+summary is correct or that tests passed; tests were not requested.
+
+Only one provider task was created. Subsequent CLI/API requests were observations.
+The isolated daemon, browser and review tile were cleaned up; the shared daemon
+and existing agent sessions were preserved. Detailed evidence, private task
+references and screenshots are recorded in the default vault's cloud-agent note.
+The provider task remains available for review. Physical laptop sleep, Claude
+session messages and nonempty diff retrieval remain separate verification work.
