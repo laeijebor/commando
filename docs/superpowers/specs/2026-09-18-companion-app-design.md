@@ -175,6 +175,6 @@ built on existing owner-authenticated surfaces:
 - [x] App: New session / window / pane sheets
 - [x] App: Tiles list + chromium screencast + review mode + pending strip
 - [x] App: Settings (rules, mutes, quiet hours, terminal, theme)
-- [ ] App: iPad three-column layout
+- [x] App: iPad three-column layout
 - [ ] E2E: daemon on a QA tmux socket + Tailscale, phone on the tailnet, full loop:
       notification → answer → agent continues → recap notification
