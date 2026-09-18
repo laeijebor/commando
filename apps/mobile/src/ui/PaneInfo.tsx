@@ -70,36 +70,42 @@ const SECTION_LABELS: Record<SectionId, string> = {
   screenshots: 'Screenshots',
 }
 
-export type PaneInfoProps = {
+export type PaneInfoSectionId = SectionId
+
+export const PANE_INFO_SECTION_IDS = SECTION_IDS
+
+export type PaneInfoSectionsProps = {
   host: Host
   paneId: string
   brief?: SessionBrief
   status?: AgentStatus
   pane?: TmuxPane
-  sessionName?: string
   ports: readonly OpenPort[]
-  onClose: () => void
+  /** Which sections to draw. Defaults to all five, in the sheet's order. */
+  sections?: readonly SectionId[]
+  /** Where each section starts, for a chip row that scrolls to it. */
+  onLayoutSection?: (section: SectionId, y: number) => void
 }
 
 /**
- * Screen 05: everything the desktop shows to the right of a pane, stacked into
- * one sheet — worklog, changes, pull request, ports and screenshots — with a
- * chip row that scrolls to each section.
+ * Everything the desktop shows to the right of a pane — worklog, changes, pull
+ * request, ports and screenshots — along with the polling, the file-diff
+ * viewer and the screenshot viewer that go with them, but no chrome of its own.
+ *
+ * The Info sheet stacks all five under its chip row; the iPad cockpit's HUD
+ * column takes the first four and leaves the screenshots to the sheet.
  */
-export function PaneInfo({
+export function PaneInfoSections({
   host,
   paneId,
   brief,
   status,
   pane,
-  sessionName,
   ports,
-  onClose,
-}: PaneInfoProps): React.JSX.Element {
+  sections = SECTION_IDS,
+  onLayoutSection,
+}: PaneInfoSectionsProps): React.JSX.Element {
   const theme = useTheme()
-  const scrollRef = useRef<ScrollView>(null)
-  const offsets = useRef<Partial<Record<SectionId, number>>>({})
-  const [active, setActive] = useState<SectionId>('worklog')
   const [summary, setSummary] = useState<GitDiffSummary | null>(null)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [prs, setPrs] = useState<PanePrList | null>(null)
@@ -166,11 +172,6 @@ export function PaneInfo({
     }
   }, [host, paneId])
 
-  const scrollTo = useCallback((section: SectionId) => {
-    setActive(section)
-    scrollRef.current?.scrollTo({ y: Math.max(0, (offsets.current[section] ?? 0) - 8), animated: true })
-  }, [])
-
   const openDiff = useCallback(async (file: string) => {
     setDiffError(null)
     setDiff({ file, diff: '' })
@@ -208,61 +209,14 @@ export function PaneInfo({
   }, [host, paneId])
 
   const onSectionLayout = (section: SectionId) => (event: { nativeEvent: { layout: { y: number } } }) => {
-    offsets.current[section] = event.nativeEvent.layout.y
+    onLayoutSection?.(section, event.nativeEvent.layout.y)
   }
 
+  const shows = (section: SectionId): boolean => sections.includes(section)
+
   return (
-    <View style={[styles.screen, { backgroundColor: theme.bg }]}>
-      <View style={[styles.grab, { backgroundColor: theme.borderStrong }]} />
-      <View style={styles.nav}>
-        <Pressable accessibilityRole="button" onPress={onClose} style={styles.back}>
-          <Feather color={theme.accent} name="chevron-left" size={18} />
-          <Text style={[styles.backLabel, { color: theme.accent }]}>Pane</Text>
-        </Pressable>
-        <View style={styles.navTitle}>
-          <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>
-            {sessionName ?? brief?.sessionName ?? 'Pane'}
-            {status ? ` · ${providerName(status)}` : ''}
-          </Text>
-          <Text numberOfLines={1} style={[styles.navSubtitle, { color: theme.muted }]}>
-            {pane?.repo?.name ? `${pane.repo.name} · ` : ''}
-            {pane?.targetId ?? paneId}
-            {worklog?.updatedAt || status?.updatedAt
-              ? ` · updated ${relativeTime(worklog?.updatedAt ?? status?.updatedAt) || 'now'}`
-              : ''}
-          </Text>
-        </View>
-        <Pill label={statusLabel(state)} tone={statusTone(state)} />
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.chipsRow}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.chips}
-      >
-        {SECTION_IDS.map((section) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: active === section }}
-            key={section}
-            onPress={() => scrollTo(section)}
-            style={[
-              styles.chip,
-              {
-                backgroundColor: active === section ? theme.surfaceSoft : theme.surface,
-                borderColor: active === section ? theme.borderStrong : theme.border,
-              },
-            ]}
-          >
-            <Text style={[styles.chipLabel, { color: active === section ? theme.text : theme.muted }]}>
-              {SECTION_LABELS[section]}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-
-      <ScrollView contentContainerStyle={styles.body} ref={scrollRef}>
+    <>
+      {shows('worklog') ? (
         <View onLayout={onSectionLayout('worklog')} style={styles.section}>
           {worklog ? (
             <>
@@ -380,7 +334,9 @@ export function PaneInfo({
             </Card>
           )}
         </View>
+      ) : null}
 
+      {shows('changes') ? (
         <View onLayout={onSectionLayout('changes')} style={styles.section}>
           <SectionHeader label="Changes" note={changes ? changesHeadline(changes) : undefined} />
           {changes?.isRepo === false ? (
@@ -427,7 +383,9 @@ export function PaneInfo({
             <Meta>Reading the diff…</Meta>
           )}
         </View>
+      ) : null}
 
+      {shows('pr') ? (
         <View onLayout={onSectionLayout('pr')} style={styles.section}>
           <SectionHeader label="Pull request" note={prs?.totalCount ? String(prs.totalCount) : undefined} />
           {prs?.pullRequests.length ? (
@@ -479,7 +437,9 @@ export function PaneInfo({
             <Meta>{prError ?? 'No pull request links this pane yet.'}</Meta>
           )}
         </View>
+      ) : null}
 
+      {shows('ports') ? (
         <View onLayout={onSectionLayout('ports')} style={styles.section}>
           <SectionHeader label="Ports" note={sessionPorts.length ? String(sessionPorts.length) : undefined} />
           {sessionPorts.length === 0 ? (
@@ -501,7 +461,9 @@ export function PaneInfo({
           )}
           {tileNote ? <Meta>{tileNote}</Meta> : null}
         </View>
+      ) : null}
 
+      {shows('screenshots') ? (
         <View onLayout={onSectionLayout('screenshots')} style={styles.section}>
           <SectionHeader
             label="Screenshots"
@@ -539,7 +501,7 @@ export function PaneInfo({
             <Meta>No screenshot folders registered for this pane.</Meta>
           )}
         </View>
-      </ScrollView>
+      ) : null}
 
       <Modal animationType="slide" onRequestClose={() => setDiff(null)} visible={diff !== null}>
         <View style={[styles.modal, { backgroundColor: theme.bg }]}>
@@ -610,6 +572,112 @@ export function PaneInfo({
           </View>
         </View>
       </Modal>
+    </>
+  )
+}
+
+export type PaneInfoProps = {
+  host: Host
+  paneId: string
+  brief?: SessionBrief
+  status?: AgentStatus
+  pane?: TmuxPane
+  sessionName?: string
+  ports: readonly OpenPort[]
+  onClose: () => void
+}
+
+/**
+ * Screen 05: the Info sections in a sheet pushed over the pane, with a nav row
+ * and a chip row that scrolls to each section.
+ */
+export function PaneInfo({
+  host,
+  paneId,
+  brief,
+  status,
+  pane,
+  sessionName,
+  ports,
+  onClose,
+}: PaneInfoProps): React.JSX.Element {
+  const theme = useTheme()
+  const scrollRef = useRef<ScrollView>(null)
+  const offsets = useRef<Partial<Record<SectionId, number>>>({})
+  const [active, setActive] = useState<SectionId>('worklog')
+
+  const worklog = useMemo(() => (brief ? buildWorklogView(brief) : null), [brief])
+  const state = worklog?.state ?? status?.status ?? 'unknown'
+
+  const scrollTo = useCallback((section: SectionId) => {
+    setActive(section)
+    scrollRef.current?.scrollTo({ y: Math.max(0, (offsets.current[section] ?? 0) - 8), animated: true })
+  }, [])
+
+  return (
+    <View style={[styles.screen, { backgroundColor: theme.bg }]}>
+      <View style={[styles.grab, { backgroundColor: theme.borderStrong }]} />
+      <View style={styles.nav}>
+        <Pressable accessibilityRole="button" onPress={onClose} style={styles.back}>
+          <Feather color={theme.accent} name="chevron-left" size={18} />
+          <Text style={[styles.backLabel, { color: theme.accent }]}>Pane</Text>
+        </Pressable>
+        <View style={styles.navTitle}>
+          <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>
+            {sessionName ?? brief?.sessionName ?? 'Pane'}
+            {status ? ` · ${providerName(status)}` : ''}
+          </Text>
+          <Text numberOfLines={1} style={[styles.navSubtitle, { color: theme.muted }]}>
+            {pane?.repo?.name ? `${pane.repo.name} · ` : ''}
+            {pane?.targetId ?? paneId}
+            {worklog?.updatedAt || status?.updatedAt
+              ? ` · updated ${relativeTime(worklog?.updatedAt ?? status?.updatedAt) || 'now'}`
+              : ''}
+          </Text>
+        </View>
+        <Pill label={statusLabel(state)} tone={statusTone(state)} />
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.chipsRow}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.chips}
+      >
+        {SECTION_IDS.map((section) => (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: active === section }}
+            key={section}
+            onPress={() => scrollTo(section)}
+            style={[
+              styles.chip,
+              {
+                backgroundColor: active === section ? theme.surfaceSoft : theme.surface,
+                borderColor: active === section ? theme.borderStrong : theme.border,
+              },
+            ]}
+          >
+            <Text style={[styles.chipLabel, { color: active === section ? theme.text : theme.muted }]}>
+              {SECTION_LABELS[section]}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <ScrollView contentContainerStyle={styles.body} ref={scrollRef}>
+        <PaneInfoSections
+          brief={brief}
+          host={host}
+          onLayoutSection={(section, y) => {
+            offsets.current[section] = y
+          }}
+          pane={pane}
+          paneId={paneId}
+          ports={ports}
+          status={status}
+        />
+      </ScrollView>
     </View>
   )
 }
