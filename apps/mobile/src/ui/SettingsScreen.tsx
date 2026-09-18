@@ -1,11 +1,15 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import { useHostsStore } from '../hosts/store'
+import {
+  TERMINAL_FONT_SIZES,
+  useHydratedTerminalPrefs,
+} from '../terminal/prefs'
 import { THEMES, THEME_NAMES, useTheme, useThemeContext } from '../theme'
-import { Card, ScreenTitle, SectionHeader } from './primitives'
+import { Card, ScreenTitle, SectionHeader, Segmented, withAlpha } from './primitives'
 
 /**
  * Screen 09. The theme picker is live — it writes through to SecureStore and
@@ -16,6 +20,7 @@ export function SettingsScreen(): React.JSX.Element {
   const theme = useTheme()
   const { themeName, setThemeName } = useThemeContext()
   const hosts = useHostsStore((state) => state.hosts)
+  const terminal = useHydratedTerminalPrefs()
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
@@ -60,10 +65,42 @@ export function SettingsScreen(): React.JSX.Element {
           <StubRow label="Muted sessions" value="None" last />
         </Card>
 
-        <SectionHeader label="Terminal" note="Phase 4" />
+        <SectionHeader label="Terminal" />
         <Card>
-          <StubRow label="Fit to phone" value="Off" />
-          <StubRow label="Font size" value="11pt" last />
+          <View style={[styles.row, { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border }]}>
+            <View style={styles.rowText}>
+              <Text style={[styles.label, { color: theme.text }]}>Fit pane to phone</Text>
+              <Text style={[styles.hint, { color: theme.muted }]}>
+                The default for a pane you open. Fitting takes the resize lease and
+                shrinks the real tmux pane, so it stays opt-in.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Fit pane to phone by default"
+              ios_backgroundColor={theme.borderMid}
+              onValueChange={(next) => {
+                terminal.setFitToPhone(next)
+                void Haptics.selectionAsync()
+              }}
+              thumbColor="#ffffff"
+              trackColor={{ false: theme.borderMid, true: withAlpha(theme.green, 0.9) }}
+              value={terminal.fitToPhone}
+            />
+          </View>
+          <View style={styles.fontSize}>
+            <Text style={[styles.label, { color: theme.text }]}>Font size</Text>
+            <Segmented
+              onChange={(value) => {
+                terminal.setFontSize(Number.parseInt(value, 10))
+                void Haptics.selectionAsync()
+              }}
+              options={TERMINAL_FONT_SIZES.map((size) => ({
+                value: String(size),
+                label: String(size),
+              }))}
+              value={String(terminal.fontSize)}
+            />
+          </View>
         </Card>
 
         <SectionHeader label="Hosts" note={String(hosts.length)} />
@@ -131,6 +168,9 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 11,
   },
+  rowText: { flex: 1, gap: 2 },
+  hint: { fontSize: 12, lineHeight: 17 },
+  fontSize: { gap: 8, paddingVertical: 11 },
   label: { fontSize: 15 },
   value: { fontSize: 14 },
 })
