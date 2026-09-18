@@ -83,6 +83,10 @@ import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { ExpoPushSender } from './expo-push.js'
+import { PushApi } from './push-api.js'
+import { PushDeviceRegistry } from './push-devices.js'
+import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
@@ -543,6 +547,7 @@ async function main(): Promise<void> {
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
   let companion: CompanionHub | null = null
+  let pushNotifier: PushNotifier | null = null
   let companionClientCount = 0
   let companionPublishTimer: NodeJS.Timeout | undefined
   const companionOutputRefreshTimers = new Map<string, NodeJS.Timeout>()
@@ -643,6 +648,7 @@ async function main(): Promise<void> {
       ) primeStatusTail(change.status.paneId)
     }
     if (change) companion?.publish()
+    pushNotifier?.handleStatusChange(change)
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1286,6 +1292,32 @@ async function main(): Promise<void> {
   })
   const interactions = new AgentInteractionBroker()
   const providerUsage = new ProviderUsageService()
+  const pushDevices = new PushDeviceRegistry()
+  await pushDevices.load().catch((error: unknown) => {
+    console.error('[commando] failed to load persisted push devices', error)
+  })
+  const expoPush = new ExpoPushSender({
+    onDeviceNotRegistered: async (expoPushToken) => {
+      const removed = await pushDevices.removeByToken(expoPushToken)
+      for (const deviceId of removed) {
+        console.warn(`[commando] dropped push device ${deviceId}: Expo reports it is no longer registered`)
+      }
+    },
+  })
+  const notifier = new PushNotifier({
+    registry: pushDevices,
+    sender: expoPush,
+    paneContext: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      return pane && session ? { sessionId: session.id, sessionName: session.name } : null
+    },
+  })
+  pushNotifier = notifier
+  const pushApi = new PushApi({
+    registry: pushDevices,
+    sendTest: (device) => notifier.sendTest(device),
+  })
   companion = new CompanionHub({
     interactions,
     registry: agentStatuses,
@@ -1840,6 +1872,7 @@ async function main(): Promise<void> {
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
+        if (await pushApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
@@ -1963,6 +1996,7 @@ async function main(): Promise<void> {
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     companion?.close()
+    pushNotifier?.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void tmux.releaseAllPaneResizes().finally(() => {
