@@ -162,8 +162,10 @@ export function buildNotification(
       dedupeKey: `needs_input:${status.paneId}:${request.id}`,
     }
   }
+  // Heuristic completion flips on every idle prompt; only a lifecycle hook
+  // knows a turn really ended or failed.
   if (status.status === 'done') {
-    if (previous === 'done') return null
+    if (previous === 'done' || status.source !== 'hook') return null
     const completedAt = status.details?.recap?.completedAt ?? status.updatedAt
     return {
       kind: 'done',
@@ -175,7 +177,7 @@ export function buildNotification(
     }
   }
   if (status.status === 'failed') {
-    if (previous === 'failed') return null
+    if (previous === 'failed' || status.source !== 'hook') return null
     const completedAt = status.details?.recap?.completedAt ?? status.updatedAt
     return {
       kind: 'failed',

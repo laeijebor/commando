@@ -152,6 +152,12 @@ describe('push notification building', () => {
     )).toMatchObject({ categoryId: 'failed', title: 'Claude failed · island', body: 'Tests are red' })
   })
 
+  it('ignores heuristic completions and failures', () => {
+    const context = { sessionId: '$3', sessionName: 'island' }
+    expect(buildNotification(status('done', { source: 'heuristic' }), 'working', context)).toBeNull()
+    expect(buildNotification(status('failed', { source: 'process' }), 'working', context)).toBeNull()
+  })
+
   it('ignores working and repeat terminal statuses', () => {
     const context = { sessionId: '$3', sessionName: 'island' }
     expect(buildNotification(status('working'), 'needs_input', context)).toBeNull()
