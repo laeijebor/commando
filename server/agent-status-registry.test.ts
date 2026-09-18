@@ -5,6 +5,7 @@ import { AgentStatusRegistry, PANE_EVICTION_GRACE_MS } from './agent-status-regi
 const paneId = '%1'
 const claudeSessionId = 'claude-session-1'
 const openCodeSessionId = 'ses_opencode_1'
+const codexThreadId = 'thread_codex_1'
 
 function claudePayload(
   hook_event_name: string,
@@ -18,6 +19,17 @@ function openCodeEvent(
   properties: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return { type, properties: { sessionID: openCodeSessionId, ...properties } }
+}
+
+function codexEvent(
+  payload: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    type: 'agent-turn-complete',
+    'turn-id': 'turn-1',
+    'thread-id': codexThreadId,
+    ...payload,
+  }
 }
 
 function inferred(
@@ -1202,6 +1214,133 @@ describe('AgentStatusRegistry', () => {
     expect(registry.values().map((status) => status.paneId)).toEqual(['%1'])
     expect(registry.remove('%1')).toEqual({ type: 'remove', paneId: '%1' })
     expect(registry.remove('%1')).toBeNull()
+  })
+
+  it('maps a Codex turn-completion callback to a hook-sourced completion', () => {
+    const registry = new AgentStatusRegistry()
+
+    expect(registry.applyCodexEvent(paneId, codexEvent({
+      'input-messages': ['Rename foo to bar and update the callsites.'],
+      'last-assistant-message': 'Renamed the symbol.\n🟢 Renamed foo to bar across 4 files',
+    }), 10, 'codex')).toMatchObject({
+      type: 'upsert',
+      status: {
+        provider: 'codex',
+        agentSessionId: codexThreadId,
+        status: 'done',
+        source: 'hook',
+        confidence: 'high',
+        summary: 'Renamed foo to bar across 4 files',
+      },
+    })
+    expect(registry.get(paneId)?.details).toMatchObject({
+      intent: 'Rename foo to bar and update the callsites.',
+      recap: { outcome: 'done', summary: 'Renamed foo to bar across 4 files', completedAt: 10 },
+    })
+  })
+
+  it('falls back to a deterministic Codex recap and tolerates payload variants', () => {
+    const registry = new AgentStatusRegistry()
+
+    registry.applyCodexEvent(paneId, codexEvent({
+      'thread-id': undefined,
+      'session-id': 'legacy-session',
+      'last-assistant-message': 'First line of the answer\nA later unmarked line',
+    }), 10, 'codex')
+    expect(registry.get(paneId)).toMatchObject({
+      agentSessionId: 'legacy-session',
+      status: 'done',
+      summary: 'First line of the answer',
+    })
+
+    expect(registry.applyCodexEvent('%9', codexEvent({
+      'thread-id': undefined,
+      'turn-id': undefined,
+    }), 11, 'codex')).toMatchObject({
+      status: { agentSessionId: 'codex:%9', summary: 'Codex completed the turn' },
+    })
+  })
+
+  it('treats a red Codex quick recap as needing attention and ignores unknown events', () => {
+    const registry = new AgentStatusRegistry()
+
+    expect(registry.applyCodexEvent(paneId, codexEvent({
+      'last-assistant-message': '🔴 Blocked on a missing API key',
+    }), 10, 'codex')).toMatchObject({
+      status: { status: 'needs_input', summary: 'Blocked on a missing API key' },
+    })
+    expect(registry.applyCodexEvent('%9', codexEvent({ type: 'approval-requested' }), 11, 'codex'))
+      .toBeNull()
+    expect(registry.applyCodexEvent('%9', 'not-an-object', 11, 'codex')).toBeNull()
+    expect(registry.get('%9')).toBeUndefined()
+  })
+
+  it('cycles a Codex pane working -> done -> working -> done', () => {
+    const registry = new AgentStatusRegistry()
+    const working = (updatedAt: number): AgentStatus => inferred({
+      provider: 'codex',
+      status: 'working',
+      summary: 'codex is working',
+      source: 'heuristic',
+      confidence: 'high',
+      reason: 'recent output contains an active-work indicator',
+      updatedAt,
+    })
+
+    expect(registry.applyInferred(working(1))).toMatchObject({
+      status: { provider: 'codex', status: 'working', source: 'heuristic' },
+    })
+    expect(registry.applyCodexEvent(paneId, codexEvent({
+      'last-assistant-message': '🟢 First turn finished',
+    }), 1_000, 'codex')).toMatchObject({
+      status: { status: 'done', source: 'hook', summary: 'First turn finished' },
+    })
+
+    // The completion only describes the turn that ended, so a pane that visibly
+    // resumes goes back to working instead of staying idle forever.
+    expect(registry.applyInferred(working(1_500))).toBeNull()
+    expect(registry.applyInferred(working(3_000))).toMatchObject({
+      status: { provider: 'codex', status: 'working', source: 'heuristic' },
+    })
+    expect(registry.applyCodexEvent(paneId, codexEvent({
+      'last-assistant-message': '🟢 Second turn finished',
+    }), 4_000, 'codex')).toMatchObject({
+      status: { status: 'done', source: 'hook', summary: 'Second turn finished', updatedAt: 4_000 },
+    })
+    expect(registry.get(paneId)?.details?.recap).toEqual({
+      outcome: 'done',
+      summary: 'Second turn finished',
+      completedAt: 4_000,
+    })
+  })
+
+  it('keeps a hook-sourced Codex completion against weak or unrelated inference', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCodexEvent(paneId, codexEvent(), 1_000, 'codex')
+
+    // Low-confidence "produced output recently" must not undo the completion.
+    expect(registry.applyInferred(inferred({
+      provider: 'codex',
+      status: 'working',
+      source: 'process',
+      confidence: 'low',
+      updatedAt: 9_000,
+    }))).toBeNull()
+    expect(registry.applyInferred(inferred({
+      provider: 'codex',
+      status: 'done',
+      source: 'heuristic',
+      confidence: 'high',
+      updatedAt: 9_000,
+    }))).toBeNull()
+    expect(registry.applyInferred(inferred({
+      provider: 'claude',
+      status: 'working',
+      source: 'heuristic',
+      confidence: 'high',
+      updatedAt: 9_000,
+    }))).toBeNull()
+    expect(registry.get(paneId)).toMatchObject({ status: 'done', source: 'hook' })
   })
 
   it('keeps statuses while their panes are missing from snapshots within the grace period', () => {

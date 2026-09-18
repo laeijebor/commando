@@ -87,6 +87,46 @@ describe('AgentStatusHookApi', () => {
     expect(registry.get('%1')).toMatchObject({ provider: 'opencode', status: 'working' })
   })
 
+  it('accepts authenticated Codex turn callbacks', async () => {
+    const response = await post('/api/agent-status/hooks/codex', {
+      event: {
+        type: 'agent-turn-complete',
+        'turn-id': 'turn-1',
+        'thread-id': 'thread-1',
+        'input-messages': ['Ship the release'],
+        'last-assistant-message': '🟢 Released 1.2.0',
+      },
+      receivedAt: 100,
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, changed: true })
+    expect(registry.get('%1')).toMatchObject({
+      provider: 'codex',
+      agentSessionId: 'thread-1',
+      status: 'done',
+      source: 'hook',
+      confidence: 'high',
+      summary: 'Released 1.2.0',
+      updatedAt: 123,
+    })
+    expect(changes).toHaveLength(1)
+  })
+
+  it('rejects malformed Codex bodies and reports unknown Codex events as unchanged', async () => {
+    expect((await post('/api/agent-status/hooks/codex', {})).status).toBe(400)
+    expect((await post('/api/agent-status/hooks/codex', { event: [] })).status).toBe(400)
+    expect((await post('/api/agent-status/hooks/codex', { event: { type: 42 } })).status).toBe(400)
+
+    const unknown = await post('/api/agent-status/hooks/codex', {
+      event: { type: 'approval-requested' },
+    })
+
+    expect(unknown.status).toBe(200)
+    expect(await unknown.json()).toEqual({ ok: true, changed: false })
+    expect(registry.values()).toEqual([])
+  })
+
   it('clears an OpenCode question when the provider answers it elsewhere', async () => {
     interactions.setConsumerCount(1)
     const asked = post('/api/agent-status/hooks/opencode', {
