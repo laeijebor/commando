@@ -212,7 +212,7 @@ Email delivery, address verification, password-reset emails, invitations, and ad
 
 ## Push Notifications
 
-The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.
+The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Completion and failure pushes come only from hook-reported lifecycle events (Claude Code, OpenCode, Codex bridges), never from heuristic status, so an idle prompt does not read as a finished turn. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.
 
 All routes are owner-authenticated, take JSON bodies of at most 16 KiB, and live under `/api/push`:
 
