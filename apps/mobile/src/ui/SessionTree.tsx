@@ -1,0 +1,214 @@
+import { useState } from 'react'
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
+import Feather from '@expo/vector-icons/Feather'
+
+import type { AgentStatusKind } from '@commando/protocol'
+
+import {
+  sortStatusKinds,
+  type TreeRepoGroup,
+  type TreeSessionNode,
+  type TreeWindowNode,
+} from '../agents/selectors'
+import { useTheme } from '../theme'
+import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
+
+/**
+ * Screen 02's tree view: repo groups, then sessions with their branch and
+ * window/pane counts and a status-dot cluster, expanding into windows and their
+ * panes and tiles.
+ */
+export function SessionTree({
+  groups,
+  onSelectPane,
+}: {
+  groups: readonly TreeRepoGroup[]
+  onSelectPane?: (paneId: string) => void
+}): React.JSX.Element {
+  return (
+    <View style={styles.tree}>
+      {groups.map((group) => (
+        <View key={group.id} style={styles.group}>
+          <SectionHeader label={group.name} note={group.path} />
+          {group.sessions.map((session) => (
+            <SessionNode
+              key={session.session.id}
+              node={session}
+              onSelectPane={onSelectPane}
+            />
+          ))}
+        </View>
+      ))}
+    </View>
+  )
+}
+
+function SessionNode({
+  node,
+  onSelectPane,
+}: {
+  node: TreeSessionNode
+  onSelectPane?: (paneId: string) => void
+}): React.JSX.Element {
+  const theme = useTheme()
+  const [expanded, setExpanded] = useState(false)
+  const dots = sortStatusKinds(node.statuses).slice(0, 6)
+
+  return (
+    <View style={styles.sessionBlock}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        accessibilityLabel={`${node.session.name} session`}
+        onPress={() => setExpanded((current) => !current)}
+        style={[
+          styles.sessionRow,
+          { backgroundColor: theme.surface, borderColor: expanded ? theme.borderStrong : theme.border },
+        ]}
+      >
+        <Feather color={theme.muted} name={expanded ? 'chevron-down' : 'chevron-right'} size={16} />
+        <View style={styles.sessionText}>
+          <Text numberOfLines={1} style={[styles.sessionName, { color: theme.text }]}>
+            {node.session.name}
+          </Text>
+          <Text numberOfLines={1} style={[styles.sessionMeta, { color: theme.muted }]}>
+            <Text style={styles.mono}>{node.branch ? `⎇ ${node.branch}` : 'no repo'}</Text>
+            {` · ${node.windowCount} ${node.windowCount === 1 ? 'window' : 'windows'} · ${node.paneCount} ${node.paneCount === 1 ? 'pane' : 'panes'}`}
+          </Text>
+        </View>
+        <View style={styles.dots}>
+          {dots.map((status: AgentStatusKind, index) => (
+            <StatusDot key={`${status}-${index}`} size={9} status={status} />
+          ))}
+        </View>
+      </Pressable>
+
+      {expanded ? (
+        <View style={[styles.children, { borderLeftColor: theme.border }]}>
+          {node.windows.map((window) => (
+            <WindowNode key={window.id} node={window} onSelectPane={onSelectPane} />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  )
+}
+
+function WindowNode({
+  node,
+  onSelectPane,
+}: {
+  node: TreeWindowNode
+  onSelectPane?: (paneId: string) => void
+}): React.JSX.Element {
+  const theme = useTheme()
+  return (
+    <View style={styles.windowBlock}>
+      <Text style={[styles.windowName, { color: theme.textDim }]}>
+        {node.index}: {node.name}
+      </Text>
+      {node.children.map((child) => {
+        if (child.kind === 'tile') {
+          return (
+            <View
+              key={child.webPane.id}
+              style={[styles.leaf, { backgroundColor: theme.surface, borderColor: theme.border }]}
+            >
+              <Pill label="tile" tone="mute" />
+              <View style={styles.leafText}>
+                <Text numberOfLines={1} style={[styles.leafName, { color: theme.text }]}>
+                  {child.webPane.url}
+                </Text>
+                <Text numberOfLines={1} style={[styles.leafMeta, { color: theme.muted }]}>
+                  {child.webPane.engine} · {child.webPane.status}
+                </Text>
+              </View>
+              <Feather color={theme.textFaint} name="chevron-right" size={16} />
+            </View>
+          )
+        }
+        const status = child.status
+        const hot = status?.status === 'needs_input' || status?.status === 'failed'
+        return (
+          <Pressable
+            accessibilityRole="button"
+            key={child.pane.id}
+            onPress={() => onSelectPane?.(child.pane.id)}
+            style={[
+              styles.leaf,
+              {
+                backgroundColor: theme.surface,
+                borderColor: hot ? withAlpha(theme.amber, 0.45) : theme.border,
+              },
+            ]}
+          >
+            <Pill
+              label={status ? shortProvider(status.provider) : 'sh'}
+              tone={status ? providerTone(status.provider) : 'shell'}
+            />
+            <View style={styles.leafText}>
+              <Text numberOfLines={1} style={[styles.leafName, { color: theme.text }]}>
+                {child.pane.title || child.pane.command}
+                <Text style={[styles.leafIndex, { color: theme.textDim }]}> {child.pane.targetId}</Text>
+              </Text>
+              <Text numberOfLines={1} style={[styles.leafMeta, { color: theme.muted }]}>
+                {status?.summary ?? child.pane.command}
+              </Text>
+            </View>
+            {status ? <StatusDot size={9} status={status.status} /> : null}
+          </Pressable>
+        )
+      })}
+    </View>
+  )
+}
+
+function shortProvider(provider: string): string {
+  if (provider === 'claude') return 'CL'
+  if (provider === 'codex') return 'CX'
+  if (provider === 'opencode') return 'OC'
+  return 'sh'
+}
+
+function providerTone(provider: string): 'claude' | 'codex' | 'opencode' | 'shell' {
+  if (provider === 'claude') return 'claude'
+  if (provider === 'codex') return 'codex'
+  if (provider === 'opencode') return 'opencode'
+  return 'shell'
+}
+
+const styles = StyleSheet.create({
+  tree: { gap: 16 },
+  group: { gap: 8 },
+  sessionBlock: { gap: 6 },
+  sessionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+  },
+  sessionText: { flex: 1, gap: 3 },
+  sessionName: { fontSize: 15, fontWeight: '600' },
+  sessionMeta: { fontSize: 12 },
+  mono: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  dots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  children: { borderLeftWidth: 1, marginLeft: 8, paddingLeft: 14, gap: 8, paddingVertical: 4 },
+  windowBlock: { gap: 6 },
+  windowName: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
+  leaf: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+  },
+  leafText: { flex: 1, gap: 2 },
+  leafName: { fontSize: 14, fontWeight: '600' },
+  leafIndex: { fontSize: 12, fontWeight: '500' },
+  leafMeta: { fontSize: 12 },
+})
