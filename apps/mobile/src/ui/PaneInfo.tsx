@@ -24,6 +24,7 @@ import {
   fetchGitSummary,
   fetchFileDiff,
   fetchPanePrs,
+  fetchRepoPrs,
   fetchScreenshotFolder,
   openWebPane,
   screenshotImageSource,
@@ -33,6 +34,7 @@ import {
 } from '../daemon/paneApi'
 import type { Host } from '../hosts/types'
 import { changesHeadline, gitSummaryView, parseDiffLines } from '../pane/gitSummary'
+import { prChips, type PrDetail } from '../pane/prs'
 import type { MarkdownBlock } from '../pane/markdown'
 import {
   buildWorklogView,
@@ -102,6 +104,7 @@ export function PaneInfo({
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [prs, setPrs] = useState<PanePrList | null>(null)
   const [prError, setPrError] = useState<string | null>(null)
+  const [prDetails, setPrDetails] = useState<Record<number, PrDetail>>({})
   const [diff, setDiff] = useState<{ file: string; diff: string } | null>(null)
   const [diffError, setDiffError] = useState<string | null>(null)
   const [viewer, setViewer] = useState<PaneScreenshotListing | null>(null)
@@ -143,11 +146,17 @@ export function PaneInfo({
   useEffect(() => {
     let cancelled = false
     fetchPanePrs(host, paneId)
-      .then((list) => {
-        if (!cancelled) {
-          setPrs(list)
-          setPrError(null)
-        }
+      .then(async (list) => {
+        if (cancelled) return
+        setPrs(list)
+        setPrError(null)
+        // The checks and review state only exist on the repository list, so it
+        // is asked for once a pane is known to have an open PR.
+        const repo = list.pullRequests.find((pullRequest) => pullRequest.state === 'open')?.repo
+        if (!repo) return
+        const full = await fetchRepoPrs(host, repo).catch(() => null)
+        if (cancelled || !full) return
+        setPrDetails(Object.fromEntries(full.pullRequests.map((entry) => [entry.number, entry])))
       })
       .catch((error: unknown) => {
         if (!cancelled) setPrError(error instanceof Error ? error.message : 'PR lookup failed')
@@ -440,6 +449,13 @@ export function PaneInfo({
                       {pullRequest.title}
                     </Text>
                   </View>
+                  {prChips(prDetails[pullRequest.number]).length ? (
+                    <View style={styles.chipCluster}>
+                      {prChips(prDetails[pullRequest.number]).map((chip) => (
+                        <Pill key={chip.label} label={chip.label} tone={chip.tone} />
+                      ))}
+                    </View>
+                  ) : null}
                   <Meta>{pullRequest.repo} · updated {relativeTime(Date.parse(pullRequest.updatedAt))}</Meta>
                 </Card>
               </Pressable>

@@ -8,6 +8,7 @@ import type {
 } from '@commando/tmux-create'
 import { TMUX_CREATE_ROUTES } from '@commando/tmux-create'
 
+import type { PrDetail } from '../pane/prs'
 import { authHeaders, daemonFetch, DaemonHttpError } from '../hosts/api'
 import type { Host } from '../hosts/types'
 
@@ -62,6 +63,11 @@ export type PanePrList = {
 
 export type PaneScreenshotListing = PaneScreenshotFolder & { files: PaneScreenshotFile[] }
 
+/** The fields of `GET /api/prs` the Info sheet joins onto a pane's PRs. */
+export type PrListEntry = PrDetail & { title: string; url: string }
+
+export type PrRepoList = { repo: string; pullRequests: PrListEntry[] }
+
 async function errorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const parsed: unknown = await response.json()
@@ -112,6 +118,21 @@ export function fetchRepoInfo(host: Host, directory: string): Promise<GitRepoInf
 /** `GET /api/prs/pane?paneId=…` — pull requests linked to the pane's target. */
 export async function fetchPanePrs(host: Host, paneId: string): Promise<PanePrList> {
   const body = await json<{ list: PanePrList }>(host, `/api/prs/pane${query({ paneId })}`, 'PR lookup failed', 20_000)
+  return body.list
+}
+
+/**
+ * `GET /api/prs?repo=…&state=open` — the fuller list, asked for only so the
+ * checks, review decision and unresolved threads can be shown for a PR the
+ * pane is already linked to.
+ */
+export async function fetchRepoPrs(host: Host, repo: string): Promise<PrRepoList> {
+  const body = await json<{ list: PrRepoList }>(
+    host,
+    `/api/prs${query({ repo, state: 'open' })}`,
+    'PR list failed',
+    20_000,
+  )
   return body.list
 }
 
