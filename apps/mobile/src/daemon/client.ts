@@ -1,4 +1,4 @@
-import type { ClientMessage, SpecialKey } from '@commando/protocol'
+import type { ClientMessage, ServerMessage, SpecialKey } from '@commando/protocol'
 
 import type { Host } from '../hosts/types'
 import { webSocketBase } from '../hosts/types'
@@ -42,6 +42,8 @@ export function nextRequestId(): string {
   return `m-${Date.now().toString(36)}-${requestCounter.toString(36)}`
 }
 
+export type ServerMessageListener = (message: ServerMessage) => void
+
 export type DaemonClientOptions = {
   host: Host
   /** Session cookie captured at sign-in, replayed when the jar is not shared. */
@@ -62,11 +64,29 @@ export class DaemonClient {
   private attempt = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
+  private readonly listeners = new Set<ServerMessageListener>()
 
   constructor(options: DaemonClientOptions) {
     this.host = options.host
     this.hostId = options.host.id
     this.cookie = options.cookie ?? null
+  }
+
+  /** True while the socket can carry a message right now. */
+  get isOpen(): boolean {
+    return this.socket?.readyState === 1
+  }
+
+  /**
+   * Every parsed message, after the store has folded it in. Screens that need
+   * a reply to one request they sent (an answered agent request, an `error`
+   * carrying their `requestId`) listen here rather than polling the store.
+   */
+  subscribe(listener: ServerMessageListener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
 
   get url(): string {
@@ -167,6 +187,7 @@ export class DaemonClient {
       const message = parseServerMessage(event.data)
       if (!message) return
       useDaemonStore.getState().ingest(this.hostId, message)
+      for (const listener of [...this.listeners]) listener(message)
     }
 
     socket.onerror = () => {
