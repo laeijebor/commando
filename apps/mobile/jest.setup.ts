@@ -19,3 +19,10 @@ jest.mock('expo-haptics', () => ({
   impactAsync: jest.fn(async () => undefined),
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
 }))
+
+// Nothing in the unit suite should reach the network; the reachability probe
+// is exercised through this stub rather than a real daemon.
+globalThis.fetch = jest.fn(async () => new Response(
+  JSON.stringify({ ok: true, sessions: 0 }),
+  { status: 200, headers: { 'Content-Type': 'application/json' } },
+)) as unknown as typeof fetch

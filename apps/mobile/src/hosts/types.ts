@@ -28,7 +28,11 @@ export type AuthBootstrap = {
 export function normaliseBaseUrl(input: string): string {
   const trimmed = input.trim()
   if (!trimmed) throw new Error('Enter the daemon address')
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed)?.[1]?.toLowerCase()
+  if (scheme && scheme !== 'http' && scheme !== 'https') {
+    throw new Error('The daemon speaks http or https only')
+  }
+  const withScheme = scheme ? trimmed : `http://${trimmed}`
   let url: URL
   try {
     url = new URL(withScheme)

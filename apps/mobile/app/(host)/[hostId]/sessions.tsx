@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
@@ -14,16 +14,9 @@ import {
   writePreference,
 } from '../../../src/prefs'
 import { useTheme } from '../../../src/theme'
-import { AgentRowCard } from '../../../src/ui/AgentRowCard'
-import {
-  EmptyState,
-  Pill,
-  ScreenTitle,
-  SectionHeader,
-  Segmented,
-} from '../../../src/ui/primitives'
+import { AttentionList } from '../../../src/ui/AttentionList'
+import { EmptyState, Pill, ScreenTitle, Segmented } from '../../../src/ui/primitives'
 import { SessionTree } from '../../../src/ui/SessionTree'
-import { UsageTiles } from '../../../src/ui/UsageTiles'
 
 type SessionsView = 'attention' | 'tree'
 
@@ -104,25 +97,7 @@ export default function SessionsScreen(): React.JSX.Element {
         ) : null}
 
         {view === 'attention' ? (
-          <>
-            <UsageTiles usage={state.usage} />
-            {groups.map((group) => (
-              <View key={group.id} style={styles.group}>
-                <SectionHeader label={group.label} note={String(group.rows.length)} />
-                <View style={styles.list}>
-                  {group.rows.map((row) => (
-                    <AgentRowCard key={row.paneId} onPress={() => openPane(row.paneId)} row={row} />
-                  ))}
-                </View>
-              </View>
-            ))}
-            {groups.length === 0 ? (
-              <EmptyState
-                body="Once an agent reports in, it shows up here grouped by who needs you."
-                title="No agents reporting"
-              />
-            ) : null}
-          </>
+          <AttentionList groups={groups} onSelectPane={openPane} usage={state.usage} />
         ) : (
           <>
             <SessionTree groups={tree} onSelectPane={openPane} />
@@ -152,8 +127,6 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   body: { paddingHorizontal: 16, paddingBottom: 96, gap: 12 },
   connection: { fontSize: 12.5 },
-  group: { gap: 8 },
-  list: { gap: 8 },
   fab: {
     position: 'absolute',
     right: 20,
