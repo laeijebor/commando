@@ -1,5 +1,4 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{color-scheme:dark}body{margin:0;font:14px system-ui}img{max-width:100%}</style></head><body>
-<title>Commando Companion</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{color-scheme:dark}body{margin:0;font:14px system-ui}img{max-width:100%}</style></head><body><title>Commando Companion</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap">
 <style>
 :root{
@@ -222,7 +221,7 @@ figcaption code{font-family:var(--mono);font-size:11.5px;color:var(--cyan)}
 <header class="hero">
   <div class="eyebrow">Commando · companion app · mockup round 1</div>
   <h1>Your agents, in your pocket, over your tailnet.</h1>
-  <p>Nine iPhone screens and one iPad layout for the Expo companion. Every screen is drawn from data the daemon already emits (session snapshot, agent HUD, worklog briefs, web tiles, pending redline answers) plus the three things we would add: an owner-authenticated answer channel, provider usage for owner clients, and push registration. Captions name the daemon surface each screen uses.</p>
+  <p>Ten iPhone screens and one iPad layout for the Expo companion. Every screen is drawn from data the daemon already emits (session snapshot, agent HUD, worklog briefs, web tiles, pending redline answers) plus the three things we would add: an owner-authenticated answer channel, provider usage for owner clients, and push registration. Captions name the daemon surface each screen uses.</p>
   <div class="legend">
     <span><b>Purple</b> theme tokens from <code>src/styles.css</code></span>
     <span><b>Terminal</b> Rosé Pine Moon · JetBrains Mono</span>
@@ -277,6 +276,7 @@ figcaption code{font-family:var(--mono);font-size:11.5px;color:var(--cyan)}
   <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
   <div class="big"><span>Sessions</span><span class="pill mute" style="font-size:12px">studio</span></div>
   <div class="body">
+    <div class="seg" style="grid-template-columns:1fr 1fr"><span class="on">Attention</span><span>Tree</span></div>
     <div class="usage">
       <div class="card"><b><span>Claude</span><span style="color:var(--green)">58% left</span></b><div class="bar g"><i style="width:42%"></i></div><small>5h window · resets 11:20</small></div>
       <div class="card"><b><span>Codex</span><span style="color:var(--cyan)">91% left</span></b><div class="bar c"><i style="width:9%"></i></div><small>weekly · resets Mon</small></div>
@@ -326,7 +326,56 @@ figcaption code{font-family:var(--mono);font-size:11.5px;color:var(--cyan)}
   </div>
   <div class="home"></div>
 </div></div>
-<figcaption><span class="step">02 · HOME</span><h3>Sessions, sorted by who needs you</h3><p>The same grouping the Island uses (<code>needs_input → failed → working → done → idle</code>), built from the <code>/ws</code> snapshot plus <code>agent_status</code> messages. Each row is one agent pane: tmux session, provider chip, HUD headline, current activity and todo progress. Usage tiles need the companion's provider-usage feed exposed to owners. The + button opens the new-session sheet.</p></figcaption>
+<figcaption><span class="step">02 · HOME · ATTENTION</span><h3>Sessions, sorted by who needs you</h3><p>The same grouping the Island uses (<code>needs_input → failed → working → done → idle</code>), built from the <code>/ws</code> snapshot plus <code>agent_status</code> messages. Each row is one agent pane: tmux session, provider chip, HUD headline, current activity and todo progress. Usage tiles need the companion's provider-usage feed exposed to owners. The + button opens the new-session sheet.</p></figcaption>
+</figure>
+
+<!-- 2b · Tree view -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="big"><span>Sessions</span><span class="pill mute" style="font-size:12px">studio</span></div>
+  <div class="body">
+    <div class="seg" style="grid-template-columns:1fr 1fr"><span>Attention</span><span class="on">Tree</span></div>
+    <div class="sec"><span>commando</span><span class="n mono" style="text-transform:none">~/code/commando</span></div>
+    <div class="list">
+      <div class="row" style="grid-template-columns:auto 1fr auto;border-color:var(--border-strong)">
+        <span style="color:var(--muted)">⌄</span>
+        <div class="t"><b><span class="sess">commando</span></b><div class="m"><span class="mono">⎇ feat/companion-app</span> · 3 windows · 4 panes</div></div>
+        <div style="display:flex;gap:4px;align-items:center"><span class="dot amber"></span><span class="dot green"></span><span class="dot mute"></span></div>
+      </div>
+      <div style="display:grid;gap:6px;padding-left:14px;border-left:1px solid var(--border);margin-left:8px">
+        <div class="row hot" style="padding:9px 10px"><span class="pill claude">CL</span><div class="t"><b style="font-size:14px"><span class="sess">island</span><span style="color:var(--dim);font-weight:500">%14</span></b><div class="h">Which auth flow should the companion use?</div></div><span class="dot amber pulse"></span></div>
+        <div class="row" style="padding:9px 10px"><span class="pill shell">sh</span><div class="t"><b style="font-size:14px"><span class="sess">server</span><span style="color:var(--dim);font-weight:500">%15</span></b><div class="m mono">tsx watch server/index.ts · :4310</div></div><span class="dot mute"></span></div>
+        <div class="row" style="padding:9px 10px"><span class="pill shell">sh</span><div class="t"><b style="font-size:14px"><span class="sess">web</span><span style="color:var(--dim);font-weight:500">%16</span></b><div class="m mono">vite · :5173</div></div><span class="dot mute"></span></div>
+        <div class="row" style="padding:9px 10px"><span class="pill mute">tile</span><div class="t"><b style="font-size:14px"><span class="sess">Companion mockups</span></b><div class="m">chromium · beside %14 · 2 queued</div></div><span class="chev">›</span></div>
+      </div>
+      <div class="row" style="grid-template-columns:auto 1fr auto">
+        <span style="color:var(--muted)">›</span>
+        <div class="t"><b><span class="sess">island</span></b><div class="m"><span class="mono">⎇ fix/visor-nonotch</span> · 1 window · 2 panes</div></div>
+        <div style="display:flex;gap:4px;align-items:center"><span class="dot green" style="background:transparent;border:2px solid var(--green);width:9px;height:9px"></span></div>
+      </div>
+    </div>
+    <div class="sec"><span>lavish</span><span class="n mono" style="text-transform:none">~/code/lavish</span></div>
+    <div class="list">
+      <div class="row" style="grid-template-columns:auto 1fr auto"><span style="color:var(--muted)">›</span><div class="t"><b><span class="sess">lavish</span></b><div class="m"><span class="mono">⎇ feat/feedback-retry</span> · 2 windows · 3 panes</div></div><div style="display:flex;gap:4px;align-items:center"><span class="dot green"></span><span class="dot red" style="border-radius:2px"></span></div></div>
+    </div>
+    <div class="sec"><span>notes-vault</span><span class="n mono" style="text-transform:none">~/code/notes-vault</span></div>
+    <div class="list">
+      <div class="row" style="grid-template-columns:auto 1fr auto"><span style="color:var(--muted)">›</span><div class="t"><b><span class="sess">notes-vault</span></b><div class="m"><span class="mono">⎇ main</span> · 1 window · 1 pane</div></div><div style="display:flex;gap:4px;align-items:center"><span class="dot green"></span></div></div>
+    </div>
+    <div class="sec"><span>Ungrouped</span><span class="n">2</span></div>
+  </div>
+  <div class="fab">+</div>
+  <div class="tabbar">
+    <div class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>Sessions</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Activity</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>Tiles</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">02 · HOME · TREE</span><h3>The same sessions as a tree</h3><p>The toggle switches to the desktop's session tree: repo groups from <code>PaneRepo</code>, then sessions with branch and counts, expanding to windows, panes and tiles. Status dots use the desktop shapes (pulsing circle working, amber diamond needs input, hollow ring done, red square failed). The choice is remembered per device.</p></figcaption>
 </figure>
 
 <!-- 3 · Terminal -->

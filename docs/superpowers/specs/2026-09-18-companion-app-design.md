@@ -1,7 +1,7 @@
 # Commando Companion (Expo) — design
 
 **Date:** 2026-09-18
-**Status:** Draft for brainstorm (round 1)
+**Status:** Round 1 decisions agreed (2026-09-18)
 **Branch:** `claude/commando-companion-app-5v1pmi`
 **Mockups:** `docs/mockups/2026-09-18-companion-app.html` (open in a browser; also published as an artifact)
 
@@ -139,28 +139,36 @@ built on existing owner-authenticated surfaces:
 9. **Settings** — notification rules, mutes, quiet hours, terminal, theme, hosts.
 10. **iPad** — three columns: sessions / terminal / HUD + worklog.
 
-## Open questions (defaults in bold)
+## Decisions (agreed 2026-09-18)
 
-1. Auth for v1: **owner email + password (session cookie)**, pairing QR, or token?
-2. Terminal sizing: **source size + opt-in Fit to phone**, or always take the lease?
-3. Webkit tiles: **prompt to reopen as chromium**, or add a daemon HTTP proxy?
-4. Push transport: **Expo push service (daemon → exp.host)**, APNs direct, or ntfy?
-5. Codex: **ship the notify bridge in v1**, or accept heuristic status?
-6. Home layout: **inbox-first (grouped by attention)** or tree-first like the desktop?
-7. Answer channel placement: **extend `/ws`** or relax `/companion/ws` to owners?
-8. Distribution: **EAS dev build + TestFlight** (personal), no store listing.
-9. Repo layout: **`apps/mobile` in this repo**, or a separate repo?
-10. Anything you want from Island that is missing here (visor terminal is out)?
+1. **Auth:** owner email + password reusing the Better Auth session cookie. Pairing QR
+   is a later nicety, not v1.
+2. **Terminal sizing:** source-sized pane with pan and an opt-in "Fit to phone" that
+   takes the resize lease.
+3. **Webkit tiles:** prompt to reopen as chromium; no daemon HTTP proxy in v1.
+4. **Push:** Expo push service. The daemon registers devices and posts to Expo's API.
+5. **Codex callbacks are in v1:** the `hooks:install` command also installs a Codex
+   `notify` bridge so Codex "finished" (and any other lifecycle events Codex emits)
+   become hook-sourced status rather than heuristics.
+6. **Home ordering:** both attention-first (grouped Needs you / Working / Done / Idle)
+   and tree-first (repo → session → window → pane, like the desktop session tree),
+   switched by a segmented toggle on the Sessions screen and remembered per device.
+7. **Answer channel:** extend `/ws` with `answer_agent_request` so any owner client,
+   not only the MacBook's loopback companion, can answer questions and permissions.
+   Owner sockets that opt in count as interaction consumers; first valid answer wins
+   and Island keeps working alongside.
+8. **Distribution:** EAS dev build + TestFlight, personal use.
+9. **Repo layout:** `apps/mobile` in this repo beside `apps/desktop` and `apps/island`.
 
 ## v1 plan checklist
 
 - [ ] Daemon: `answer_agent_request` on `/ws` + consumer counting (tests)
 - [ ] Daemon: provider usage broadcast for owners
 - [ ] Daemon: push device registry + Expo push sender + rules
-- [ ] Daemon: Codex notify bridge in `hooks:install`
+- [ ] Daemon: Codex notify bridge in `hooks:install` (v1)
 - [ ] App: scaffold `apps/mobile` (expo-router, theme, secure store, WS client)
 - [ ] App: Hosts + sign-in
-- [ ] App: Sessions inbox with HUD data and usage
+- [ ] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
 - [ ] App: Pane screen with xterm WebView, key bar, composer
 - [ ] App: Answer screen (question + permission) and notification actions
 - [ ] App: Info sheet (worklog, git, PR, ports, screenshots)
