@@ -18,9 +18,18 @@ only. Bundle id `com.commando.companion`.
   segmented toggle that is remembered per device.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
-- Pane, Answer, New session, Activity and Tiles are navigable placeholders that
-  already render the live data they have. The terminal WebView, the answer
-  channel and push notifications are later phases of the plan in the spec.
+- **Info sheet** — pushed over a pane: the worklog (headline, recap, Next, plan
+  checklist and activity timeline from `session_brief`), the HUD details when a
+  pane has no brief, the diff from `GET /api/git/summary` polled every 15s with
+  a file-diff viewer, linked pull requests from `GET /api/prs/pane`, the
+  session's open ports with "Open as tile", and screenshot folders with a
+  full-screen viewer.
+- **Create** — new session (repository, directory, worktree branch and path,
+  preparation command, agent and opening prompt), new window and split pane,
+  reached from the "+" affordances on the tree's session and window rows.
+- Pane, Answer, Activity and Tiles are navigable placeholders that already
+  render the live data they have. The terminal WebView, the answer channel and
+  push notifications are later phases of the plan in the spec.
 
 ## Running it
 
@@ -60,11 +69,19 @@ automation token" and paste `COMMANDO_TOKEN`.
 
 ## Shared protocol
 
-`@commando/protocol` resolves to `<repo>/shared/protocol.ts` — the same file the
-daemon and the web cockpit compile, never a copy. TypeScript learns about it
-through the path alias in `tsconfig.json`, Metro through `watchFolders` and
+`@commando/protocol` resolves to `<repo>/shared/protocol.ts` and
+`@commando/tmux-create` to `<repo>/shared/tmux-create.ts` — the same files the
+daemon and the web cockpit compile, never a copy. TypeScript learns about them
+through the path aliases in `tsconfig.json`, Metro through `watchFolders` and
 `resolver.extraNodeModules` in `metro.config.js`, and Jest through
 `moduleNameMapper` in `package.json`.
+
+The create flows keep their directory history and per-repo preparation commands
+on the device (SecureStore, under the desktop's own
+`commando.tmux-create.*` keys) and the sessions to notify about under
+`commando.notify.sessions`. The daemon's
+`/api/session-management/preferences` is not a home for them: it only persists
+the session tree's grouping and drops every other key.
 
 ## Checks
 
