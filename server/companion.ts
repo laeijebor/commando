@@ -191,6 +191,7 @@ export class CompanionHub {
   private readonly idempotencyKeys = new IdempotencyKeyMemory()
   private readonly focusedPaneIds = new Map<WebSocket, string>()
   private readonly consumerReleases = new Map<WebSocket, () => void>()
+  private releaseUsage: (() => void) | undefined
 
   constructor(private readonly options: CompanionHubOptions) {}
 
@@ -198,8 +199,8 @@ export class CompanionHub {
     this.clients.add(socket)
     this.consumerReleases.set(socket, this.options.interactions.registerConsumer())
     this.options.onClientCountChange(this.clients.size)
-    if (this.clients.size === 1) {
-      this.options.usage.start(() => this.publish())
+    if (!this.releaseUsage) {
+      this.releaseUsage = this.options.usage.acquire(() => this.publish())
     }
     this.sendSnapshot(socket)
 
@@ -265,7 +266,7 @@ export class CompanionHub {
       this.consumerReleases.get(socket)?.()
       this.consumerReleases.delete(socket)
       this.options.onClientCountChange(this.clients.size)
-      if (this.clients.size === 0) this.options.usage.stop()
+      if (this.clients.size === 0) this.stopUsage()
     }
     socket.on('close', disconnect)
     socket.on('error', disconnect)
@@ -282,7 +283,12 @@ export class CompanionHub {
     for (const release of this.consumerReleases.values()) release()
     this.consumerReleases.clear()
     this.options.onClientCountChange(0)
-    this.options.usage.stop()
+    this.stopUsage()
+  }
+
+  private stopUsage(): void {
+    this.releaseUsage?.()
+    this.releaseUsage = undefined
   }
 
   private sendSnapshot(socket: WebSocket): void {

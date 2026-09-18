@@ -153,6 +153,8 @@ The app connects only to `127.0.0.1` and reads the private `~/.commando/agent-ho
 
 Claude and Codex usage are fetched by the daemon directly from their provider usage endpoints using the CLI OAuth sessions already stored in macOS Keychain and `~/.codex/auth.json`. Credentials remain in the daemon process; the companion receives only percentages and reset timestamps. Providers that are signed out, rate limited, or do not expose a current window appear as unavailable rather than blocking the rest of the panel.
 
+The same usage is also available to owner clients outside the island: a `/ws` socket receives `provider_usage` pushes after sending `watch_usage`, and `GET /api/usage` returns the cached snapshot, with the daemon running a single shared refresh loop for as long as any consumer wants it.
+
 The companion uses `COMMANDO_PORT`, defaulting to `4310`, when run from a terminal. For an installed Finder-launched app using a non-default daemon port, set the app preference once:
 
 ```bash

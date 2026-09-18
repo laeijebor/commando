@@ -85,6 +85,7 @@ import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answer
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { handleUsageApi } from './usage-api.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
@@ -128,6 +129,7 @@ type ClientState = {
   violations: number
   releaseInteractions: (() => void) | null
   answeredRequestIds: IdempotencyKeyMemory
+  releaseUsage: (() => void) | undefined
 }
 
 type PaneStreamState = {
@@ -1708,6 +1710,40 @@ async function main(): Promise<void> {
         })
         return
       }
+      case 'watch_usage': {
+        if (!message.enabled) {
+          client.releaseUsage?.()
+          client.releaseUsage = undefined
+          return
+        }
+        if (!client.releaseUsage) {
+          client.releaseUsage = providerUsage.acquire((usage) => {
+            send(client, { type: 'provider_usage', usage })
+          })
+        }
+        send(client, { type: 'provider_usage', usage: providerUsage.values() })
+        return
+      }
+      case 'refresh_usage': {
+        if (!client.releaseUsage) {
+          sendError(
+            client,
+            'usage_not_watched',
+            'Enable usage updates before refreshing',
+            message.requestId,
+          )
+          return
+        }
+        void providerUsage.refresh().catch((error: unknown) => {
+          sendError(
+            client,
+            'usage_refresh_failed',
+            error instanceof Error ? error.message : 'Usage refresh failed',
+            message.requestId,
+          )
+        })
+        return
+      }
       case 'save_workspace': {
         const canonicalWorkspace = {
           ...message.workspace,
@@ -1768,6 +1804,7 @@ async function main(): Promise<void> {
       violations: 0,
       releaseInteractions: null,
       answeredRequestIds: new IdempotencyKeyMemory(),
+      releaseUsage: undefined,
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
@@ -1812,6 +1849,8 @@ async function main(): Promise<void> {
       if (!clients.delete(client)) return
       client.releaseInteractions?.()
       client.releaseInteractions = null
+      client.releaseUsage?.()
+      client.releaseUsage = undefined
       syncRequiredSessions()
       void tmux
         .releasePaneResize(client.id)
@@ -1902,6 +1941,7 @@ async function main(): Promise<void> {
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
+        if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await agentRequestApi.handle(request, response, url)) return

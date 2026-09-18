@@ -541,6 +541,7 @@ export type ServerMessage =
       changed: boolean
       requestId: string
     }
+  | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -622,3 +623,5 @@ export type ClientMessage =
       answer: AgentInteractionAnswer
       requestId: string
     }
+  | { type: 'watch_usage'; enabled: boolean; requestId: string }
+  | { type: 'refresh_usage'; requestId: string }
