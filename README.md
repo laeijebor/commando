@@ -56,13 +56,13 @@ npm run build
 
 ## Agent Status Hooks
 
-Install the authenticated Claude Code and OpenCode status bridges for the current user:
+Install the authenticated Claude Code, Codex, and OpenCode status bridges for the current user:
 
 ```bash
 npm run hooks:install
 ```
 
-The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, and installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
+The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`, and points Codex's `notify` program at `~/.commando/hooks/commando-codex-notify.mjs`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
 
 For a named Claude profile, set Claude's standard `CLAUDE_CONFIG_DIR` while installing. Repeat the command for each profile that should report to Commando; the bridge, update CLI, hook token, and OpenCode plugin remain shared:
 
@@ -73,11 +73,22 @@ CLAUDE_CONFIG_DIR="$HOME/.claudey" npm run hooks:install
 
 The installer generates a dedicated hook bearer token at `~/.commando/agent-hook-token`. The token is separate from browser and automation authentication, remains on disk with mode `0600`, and is read at hook runtime rather than embedded in generated files. Set `COMMANDO_AGENT_HOOK_TOKEN_PATH` for both installation and daemon startup to use another path. Hooks post to the loopback `COMMANDO_PORT`, defaulting to `4310`, and silently continue when Commando is unavailable.
 
-The bridges also provide the HUD with bounded task intent, normalized tool activity, todo progress, changed-file counts, check outcomes, attention prompts, and final-response metadata. They do not forward raw tool arguments or output, full shell commands, file contents, patches, reasoning, or complete message arrays. Final lines using the `🟢`, `🟡`, or `🔴` quick-recap convention become the completed card headline; otherwise Commando produces a deterministic local recap from the final response and structured progress. The latest completed recap remains visible until that pane starts another agent turn or closes.
+The Claude and OpenCode bridges also provide the HUD with bounded task intent, normalized tool activity, todo progress, changed-file counts, check outcomes, attention prompts, and final-response metadata. They do not forward raw tool arguments or output, full shell commands, file contents, patches, reasoning, or complete message arrays. Final lines using the `🟢`, `🟡`, or `🔴` quick-recap convention become the completed card headline; otherwise Commando produces a deterministic local recap from the final response and structured progress. The latest completed recap remains visible until that pane starts another agent turn or closes.
 
 The same authenticated lifecycle updates maintain a persisted worklog for each active tmux pane. A pane adds a collapsed right-side worklog handle as soon as an agent reports a plan or meaningful activity; expand it to see the current checklist above a chronological milestone history, short Markdown recap, and one next action. The worklog remembers its visibility per pane, automatically compacts when a pane is too narrow to spare terminal columns, survives daemon/browser reconnects, and is removed with its tmux session. Agents can publish deliberate milestones through `~/.commando/hooks/commando-session-update.mjs`. Run `npm run skills:install` to install the `session-updates` skill alongside the other Commando skills so Claude and OpenCode know when and how to maintain those handoffs.
 
-Interactive bridges additionally forward bounded permission labels, question text, and answer labels while a request is pending. Values pass through the same credential redaction and size limits as HUD metadata. Claude Code receives answers through its synchronous `PermissionRequest` hook output; OpenCode receives them through its local permission and question SDK methods. If Commando Island is not connected, hooks return immediately and the normal terminal prompt remains in control.
+Interactive bridges — Claude Code and OpenCode, not Codex — additionally forward bounded permission labels, question text, and answer labels while a request is pending. Values pass through the same credential redaction and size limits as HUD metadata. Claude Code receives answers through its synchronous `PermissionRequest` hook output; OpenCode receives them through its local permission and question SDK methods. If Commando Island is not connected, hooks return immediately and the normal terminal prompt remains in control.
+
+### Codex
+
+Codex CLI has no per-tool hook surface: its one external callback is the top-level `notify` program, which Codex spawns once per turn with a single JSON argument. The installer writes the bridge and merges a `notify` entry into `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). Because Commando ships no TOML parser, the merge is deliberately narrow: it rewrites only its own block, marked with a `# commando:codex-notify v1` comment, leaves every other line's text and position untouched, creates the file when missing, and never looks at a `notify` inside a `[table]`. A `notify` you already configured is preserved — the marker records it and the Commando bridge re-spawns it with the same JSON argument — and a `notify` Commando cannot safely parse is left exactly as it is, with an instruction printed instead:
+
+```toml
+# commando:codex-notify v1 wrapped=["notify-send","Codex"]
+notify = ["node", "/Users/you/.commando/hooks/commando-codex-notify.mjs"]
+```
+
+The Codex bridge reports turn completion and nothing else. An `agent-turn-complete` callback becomes a hook-sourced `done` with the recap and headline taken from Codex's last assistant message and the turn intent from its input messages, so "Codex finished" stops being a guess. It cannot report tool activity, checks, file changes, or progress, and **Codex permission and approval prompts stay in the terminal** — they are never forwarded and cannot be answered from Commando or the companion app. Because the callback only describes the turn that just ended, heuristics take the pane back to `working` as soon as it visibly resumes, and the next callback records a fresh completion.
 
 ## Web Pane Tiles
 
