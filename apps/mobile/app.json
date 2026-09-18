@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Commando",
+    "slug": "commando-companion",
+    "scheme": "commando",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "backgroundColor": "#0c0a14",
+    "platforms": ["ios"],
+    "ios": {
+      "bundleIdentifier": "com.commando.companion",
+      "supportsTablet": true,
+      "requireFullScreen": false,
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0c0a14",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
