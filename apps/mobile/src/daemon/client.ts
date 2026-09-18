@@ -194,7 +194,16 @@ export class DaemonClient {
   }
 
   private syncSubscriptions(): void {
-    this.send({ type: 'subscribe', paneIds: this.subscribedPaneIds })
+    // Subscribing to a pane that has since died is a protocol violation, and
+    // eight of those close the socket — so a pane the snapshot no longer knows
+    // about is left out rather than asked for again on every reconnect.
+    const snapshot = useDaemonStore.getState().byHost[this.hostId]?.snapshot
+    const paneIds = snapshot
+      ? this.subscribedPaneIds.filter((paneId) => (
+          snapshot.panes.some((pane) => pane.id === paneId)
+        ))
+      : this.subscribedPaneIds
+    this.send({ type: 'subscribe', paneIds })
   }
 
   private dispatchPaneMessage(message: PaneStreamMessage): void {
