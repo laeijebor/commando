@@ -24,15 +24,19 @@ export function PaneNav({
   subtitle: string
   fit: boolean
   onToggleFit: () => void
-  onBack: () => void
-  onInfo: () => void
+  /** Omitted in the iPad cockpit, where the pane is a column and not a screen. */
+  onBack?: () => void
+  /** Omitted when the Info sections are already beside the terminal. */
+  onInfo?: () => void
 }): React.JSX.Element {
   const theme = useTheme()
   return (
     <View style={styles.nav}>
-      <Pressable accessibilityLabel="Back to sessions" accessibilityRole="button" onPress={onBack}>
-        <Feather color={theme.accent} name="chevron-left" size={26} />
-      </Pressable>
+      {onBack ? (
+        <Pressable accessibilityLabel="Back to sessions" accessibilityRole="button" onPress={onBack}>
+          <Feather color={theme.accent} name="chevron-left" size={26} />
+        </Pressable>
+      ) : null}
       <View style={styles.navTitle}>
         <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>
           {title}
@@ -57,9 +61,11 @@ export function PaneNav({
         <Feather color={fit ? theme.accent : theme.muted} name="minimize-2" size={13} />
         <Text style={[styles.fitLabel, { color: fit ? theme.accent : theme.muted }]}>Fit</Text>
       </Pressable>
-      <Pressable accessibilityLabel="Pane info" accessibilityRole="button" onPress={onInfo}>
-        <Text style={[styles.action, { color: theme.accent }]}>Info</Text>
-      </Pressable>
+      {onInfo ? (
+        <Pressable accessibilityLabel="Pane info" accessibilityRole="button" onPress={onInfo}>
+          <Text style={[styles.action, { color: theme.accent }]}>Info</Text>
+        </Pressable>
+      ) : null}
     </View>
   )
 }
