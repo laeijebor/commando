@@ -170,11 +170,11 @@ built on existing owner-authenticated surfaces:
 - [ ] App: Hosts + sign-in
 - [ ] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
 - [ ] App: Pane screen with xterm WebView, key bar, composer
-- [ ] App: Answer screen (question + permission) and notification actions
+- [x] App: Answer screen (question + permission) and notification actions
 - [ ] App: Info sheet (worklog, git, PR, ports, screenshots)
 - [ ] App: New session / window / pane sheets
 - [ ] App: Tiles list + chromium screencast + review mode + pending strip
-- [ ] App: Settings (rules, mutes, quiet hours, terminal, theme)
+- [ ] App: Settings (rules, mutes, quiet hours, terminal, theme) — rules, mutes, quiet hours and theme done; terminal rows wait on the pane screen
 - [ ] App: iPad three-column layout
 - [ ] E2E: daemon on a QA tmux socket + Tailscale, phone on the tailnet, full loop:
       notification → answer → agent continues → recap notification
