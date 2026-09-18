@@ -55,9 +55,14 @@ only. Bundle id `com.commando.companion`.
   Send all and Send + Build. The redline controls inside the page keep working
   through the screencast, because the queue binding lives in the daemon's
   Chromium.
+- **Settings** — the notification rules, muted sessions and quiet hours; the
+  push registration and a test notification; the five themes; and the terminal
+  defaults ("Fit pane to phone" and the font size) a newly opened pane starts
+  from.
 - **iPad** — the three-column cockpit of screen 10; see below.
-- Activity is a navigable placeholder that already renders the live data it
-  has.
+- **Activity** is the one tab that is not built: it is a real route that names
+  what will fill it (a cross-session worklog feed), so the tab bar matches the
+  mockup. It is not one of the spec's ten screens.
 
 ## iPad
 
@@ -122,9 +127,9 @@ npm install          # inside apps/mobile; the root install does not cover it
 npx expo start       # or `npm run mobile:start` from the repo root
 ```
 
-`expo-secure-store` and (later) the terminal WebView and push notifications are
-native modules, so **Expo Go will not run this app**. Build an EAS dev client
-once and then `expo start` against it:
+`expo-secure-store`, the terminal WebView and push notifications are native
+modules, so **Expo Go will not run this app**. Build an EAS dev client once and
+then `expo start` against it:
 
 ```sh
 npx eas build --profile development --platform ios
