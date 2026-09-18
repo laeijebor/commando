@@ -1,8 +1,8 @@
 // Metro config for the Commando companion app.
 //
 // The app lives at <repo>/apps/mobile but imports `@commando/protocol` and
-// `@commando/tmux-create` from <repo>/shared, which is outside the project root. Metro only
-// watches the project root by default, so the repo root is added to
+// `@commando/tmux-create` from <repo>/shared, which is outside the project
+// root. Metro only watches the project root by default, so the repo root is added to
 // `watchFolders` and the alias is resolved explicitly — the tsconfig path alias
 // only teaches TypeScript about it, not the bundler.
 const path = require('node:path')
