@@ -327,10 +327,16 @@ export default function TileScreen(): React.JSX.Element {
 
       {!tile ? (
         <View style={styles.body}>
-          <EmptyState
-            body="It was closed on the host, or this phone has not received the tile list yet."
-            title="This tile is gone"
-          />
+          {daemon.phase === 'live' ? (
+            <EmptyState
+              body="It was closed on the host. Go back to the list to see what is still open."
+              title="This tile is gone"
+            />
+          ) : (
+            // The tile list arrives on the host socket, so until that is live
+            // a missing tile means "not told yet", not "closed".
+            <EmptyState body={daemon.detail} title="Waiting for the host" />
+          )}
         </View>
       ) : !chromium ? (
         <View style={styles.body}>
