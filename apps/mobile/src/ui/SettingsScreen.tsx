@@ -176,17 +176,6 @@ export function SettingsScreen(): React.JSX.Element {
           {testResult ? <Meta>{testResult}</Meta> : null}
         </Card>
 
-        <SectionHeader label="Terminal" note="Phase 4" />
-        <Card>
-          <StubRow label="Font size" value="11pt" />
-          <StubRow
-            hint="Takes the tmux resize lease while viewing"
-            label="Fit pane to phone"
-            last
-            value="Set on the pane"
-          />
-        </Card>
-
         <SectionHeader label="Appearance" />
         <View style={styles.themes}>
           {THEME_NAMES.map((name) => {
@@ -262,7 +251,7 @@ export function SettingsScreen(): React.JSX.Element {
             <Text style={[styles.value, { color: theme.muted }]}>No hosts added yet.</Text>
           ) : (
             hosts.map((candidate, index) => (
-              <StubRow
+              <ValueRow
                 key={candidate.id}
                 label={candidate.name}
                 last={index === hosts.length - 1}
@@ -361,7 +350,7 @@ function ClockField({
   )
 }
 
-function StubRow({
+function ValueRow({
   label,
   value,
   hint,
