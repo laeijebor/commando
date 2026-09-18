@@ -1,7 +1,8 @@
-import type { ClientMessage } from '@commando/protocol'
+import type { ClientMessage, SpecialKey } from '@commando/protocol'
 
 import type { Host } from '../hosts/types'
 import { webSocketBase } from '../hosts/types'
+import { inputFits, MAX_INPUT_BYTES, MAX_PASTE_BYTES, pasteFits } from './limits'
 import { parseServerMessage } from './state'
 import { useDaemonStore } from './store'
 
@@ -100,6 +101,29 @@ export class DaemonClient {
     if (!socket || socket.readyState !== 1) return null
     socket.send(JSON.stringify({ ...message, requestId }))
     return requestId
+  }
+
+  /**
+   * Composer sends: a bracketed paste followed by Enter, which is what keeps a
+   * multi-line prompt intact for Claude Code. Oversized payloads are refused
+   * here rather than bounced by the daemon.
+   */
+  paste(paneId: string, data: string): string | null {
+    if (!pasteFits(data)) {
+      throw new RangeError(`A paste must stay under ${MAX_PASTE_BYTES} bytes`)
+    }
+    return this.send({ type: 'paste', paneId, data })
+  }
+
+  input(paneId: string, data: string): string | null {
+    if (!inputFits(data)) {
+      throw new RangeError(`Keystroke input must stay under ${MAX_INPUT_BYTES} bytes`)
+    }
+    return this.send({ type: 'input', paneId, data })
+  }
+
+  key(paneId: string, key: SpecialKey): string | null {
+    return this.send({ type: 'key', paneId, key })
   }
 
   private setPhase(

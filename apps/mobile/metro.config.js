@@ -15,8 +15,13 @@ const config = getDefaultConfig(projectRoot)
 
 config.watchFolders = [...(config.watchFolders ?? []), path.join(repoRoot, 'shared')]
 
-config.resolver.nodeModulesPaths = [path.join(projectRoot, 'node_modules')]
-config.resolver.disableHierarchicalLookup = true
+// Hierarchical lookup stays on so nested installs (expo-router's own
+// @expo/metro-runtime, for one) still resolve; apps/mobile/node_modules is
+// reached first for everything the app imports directly.
+config.resolver.nodeModulesPaths = [
+  path.join(projectRoot, 'node_modules'),
+  ...(config.resolver.nodeModulesPaths ?? []),
+]
 config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   '@commando/protocol': path.join(repoRoot, 'shared', 'protocol.ts'),
