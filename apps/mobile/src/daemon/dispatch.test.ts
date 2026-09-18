@@ -49,7 +49,7 @@ const originalWebSocket = globalThis.WebSocket
 globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { DaemonClient } = require('./client') as typeof import('./client')
+const { connectHost, DaemonClient, disconnectHost } = require('./client') as typeof import('./client')
 const { useDaemonStore } = require('./store') as typeof import('./store')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -173,6 +173,25 @@ describe('pane subscriptions', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+})
+
+describe('connectHost', () => {
+  it('re-opens the socket when the host is signed in to or edited', () => {
+    const client = connectHost(HOST, null)
+    const first = FakeSocket.last
+    first?.open()
+
+    // The same credentials must not churn the socket every screen mounts on.
+    expect(connectHost(HOST, null)).toBe(client)
+    expect(FakeSocket.last).toBe(first)
+
+    // A cookie captured at sign-in changes what the socket has to carry, and a
+    // socket the daemon already rejected never retries on its own.
+    expect(connectHost(HOST, 'commando.session=abc')).toBe(client)
+    expect(FakeSocket.last).not.toBe(first)
+
+    disconnectHost(HOST.id)
   })
 })
 

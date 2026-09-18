@@ -119,6 +119,24 @@ export class DaemonClient {
     this.open(false)
   }
 
+  /**
+   * Re-points a live client at the same host after it was edited or signed in
+   * to. The socket carries the address, the token and the session cookie, so a
+   * change to any of them has to be re-opened rather than waited out — a socket
+   * the daemon closed with 4401 never retries on its own.
+   */
+  reconfigure(host: Host, cookie: string | null): void {
+    const unchanged = host.baseUrl === this.host.baseUrl &&
+      JSON.stringify(host.auth) === JSON.stringify(this.host.auth) &&
+      cookie === this.cookie
+    this.host = host
+    this.cookie = cookie
+    if (unchanged) return
+    this.stop()
+    this.attempt = 0
+    this.start()
+  }
+
   stop(): void {
     this.stopped = true
     if (this.retryTimer) {
@@ -337,7 +355,10 @@ const clients = new Map<string, DaemonClient>()
 /** One live client per host id, shared by every screen that mounts. */
 export function connectHost(host: Host, cookie?: string | null): DaemonClient {
   const existing = clients.get(host.id)
-  if (existing) return existing
+  if (existing) {
+    existing.reconfigure(host, cookie ?? null)
+    return existing
+  }
   const client = new DaemonClient({ host, cookie })
   clients.set(host.id, client)
   client.start()
