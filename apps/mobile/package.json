@@ -13,9 +13,12 @@
     "@expo/vector-icons": "^15.1.1",
     "expo": "~57.0.24",
     "expo-asset": "~57.0.5",
+    "expo-clipboard": "~57.0.2",
     "expo-constants": "~57.0.19",
+    "expo-device": "~57.0.2",
     "expo-haptics": "~57.0.3",
     "expo-linking": "~57.0.10",
+    "expo-notifications": "~57.0.20",
     "expo-router": "~57.0.22",
     "expo-secure-store": "~57.0.4",
     "expo-splash-screen": "~57.0.9",
@@ -25,6 +28,7 @@
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
+    "react-native-webview": "^13.16.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
