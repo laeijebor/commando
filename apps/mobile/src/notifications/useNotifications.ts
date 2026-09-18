@@ -113,13 +113,12 @@ async function answerFromNotification(
 ): Promise<void> {
   const host = useHostsStore.getState().hosts.find((candidate) => candidate.id === hostId)
   if (!host || !data.interactionId) return
-  await answerOverHttp(
-    host,
-    data.paneId,
-    data.interactionId,
-    answer,
-    `push-${data.interactionId}-${answer.action}`.slice(0, 128),
-  )
+  // The daemon's idempotency keys are `[A-Za-z0-9._:-]{1,128}`, and the same
+  // action delivered twice must not answer twice.
+  const key = `push-${data.interactionId}-${answer.action}`
+    .replace(/[^A-Za-z0-9._:-]/g, '-')
+    .slice(0, 128)
+  await answerOverHttp(host, data.paneId, data.interactionId, answer, key)
 }
 
 /**
