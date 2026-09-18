@@ -375,7 +375,9 @@ export class TileRelayClient {
         request.route(message as unknown as Record<string, unknown>)
         return
       }
-      if (message.type === 'ready') this.send({ type: 'viewport', ...(this.viewport ?? { width: 390, height: 640, deviceScaleFactor: 2 }) })
+      // Chromium attaches its target on `ready`; re-assert the viewport so a
+      // target that came up after ours does not keep the engine's default.
+      if (message.type === 'ready' && this.viewport) this.send({ type: 'viewport', ...this.viewport })
       this.setState(reduceTileMessage(this.state, message))
     }
 

@@ -18,7 +18,20 @@ only. Bundle id `com.commando.companion`.
   segmented toggle that is remembered per device.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
-- Pane, Answer, New session, Activity and Tiles are navigable placeholders that
+- **Tiles** — every web pane the daemon holds, grouped by session, with the
+  owner's confirmation card for an external origin, a "Reopen as chromium"
+  offer for webkit tiles (which only exist inside the host's own WebView), and
+  a "+" sheet that opens a URL beside a chosen pane. Opening a chromium tile
+  streams it: the daemon's screencast arrives as PNG frames over
+  `/ws/web-tiles/:id`, the phone sends its own viewport and pixel ratio so the
+  page lays out for a phone, and touches become CDP input — tap is a click,
+  a drag is a wheel, a long press is a right click. **Review** mode swaps taps
+  for the `inspect` hit test, anchors a comment card to the element, draws a
+  pin for every queued note, and puts the pending queue on a strip with
+  Send all and Send + Build. The redline controls inside the page keep working
+  through the screencast, because the queue binding lives in the daemon's
+  Chromium.
+- Pane, Answer, New session and Activity are navigable placeholders that
   already render the live data they have. The terminal WebView, the answer
   channel and push notifications are later phases of the plan in the spec.
 
