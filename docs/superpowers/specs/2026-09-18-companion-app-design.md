@@ -169,12 +169,12 @@ built on existing owner-authenticated surfaces:
 - [x] App: scaffold `apps/mobile` (expo-router, theme, secure store, WS client)
 - [x] App: Hosts + sign-in
 - [x] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
-- [ ] App: Pane screen with xterm WebView, key bar, composer
+- [x] App: Pane screen with xterm WebView, key bar, composer
 - [x] App: Answer screen (question + permission) and notification actions
-- [ ] App: Info sheet (worklog, git, PR, ports, screenshots)
-- [ ] App: New session / window / pane sheets
+- [x] App: Info sheet (worklog, git, PR, ports, screenshots)
+- [x] App: New session / window / pane sheets
 - [ ] App: Tiles list + chromium screencast + review mode + pending strip
-- [ ] App: Settings (rules, mutes, quiet hours, terminal, theme) — rules, mutes, quiet hours and theme done; terminal rows wait on the pane screen
+- [x] App: Settings (rules, mutes, quiet hours, terminal, theme)
 - [ ] App: iPad three-column layout
 - [ ] E2E: daemon on a QA tmux socket + Tailscale, phone on the tailnet, full loop:
       notification → answer → agent continues → recap notification
