@@ -17,7 +17,9 @@ jest.mock('expo-secure-store', () => {
 jest.mock('expo-haptics', () => ({
   selectionAsync: jest.fn(async () => undefined),
   impactAsync: jest.fn(async () => undefined),
+  notificationAsync: jest.fn(async () => undefined),
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
+  NotificationFeedbackType: { Success: 'success', Warning: 'warning', Error: 'error' },
 }))
 
 // Push needs native modules: the unit suite drives these doubles instead, and
