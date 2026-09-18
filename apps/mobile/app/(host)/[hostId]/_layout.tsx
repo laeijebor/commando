@@ -50,7 +50,10 @@ export default function HostTabsLayout(): React.JSX.Element {
         }}
       />
       <Tabs.Screen name="new-session" options={{ href: null }} />
+      <Tabs.Screen name="new-window" options={{ href: null }} />
+      <Tabs.Screen name="new-pane" options={{ href: null }} />
       <Tabs.Screen name="pane/[paneId]" options={{ href: null }} />
+      <Tabs.Screen name="pane/[paneId]/info" options={{ href: null }} />
       <Tabs.Screen name="answer/[paneId]/[interactionId]" options={{ href: null }} />
       <Tabs.Screen name="index" options={{ href: null }} />
     </Tabs>

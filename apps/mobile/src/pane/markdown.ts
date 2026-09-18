@@ -56,21 +56,21 @@ export function parseMarkdown(source: string | undefined): MarkdownBlock[] {
     const heading = /^(#{1,6})\s+(.*)$/u.exec(line)
     if (heading) {
       flush()
-      blocks.push({ kind: 'heading', level: heading[1].length, spans: parseInline(heading[2]) })
+      blocks.push({ kind: 'heading', level: (heading[1] ?? '#').length, spans: parseInline(heading[2] ?? '') })
       continue
     }
     const bullet = /^[-*+]\s+(.*)$/u.exec(line)
     if (bullet) {
       flush()
-      const spans = parseInline(bullet[1])
+      const spans = parseInline(bullet[1] ?? '')
       if (spans.length) blocks.push({ kind: 'bullet', spans })
       continue
     }
     const ordered = /^(\d{1,3})[.)]\s+(.*)$/u.exec(line)
     if (ordered) {
       flush()
-      const spans = parseInline(ordered[2])
-      if (spans.length) blocks.push({ kind: 'bullet', spans, ordinal: `${ordered[1]}.` })
+      const spans = parseInline(ordered[2] ?? '')
+      if (spans.length) blocks.push({ kind: 'bullet', spans, ordinal: `${ordered[1] ?? ''}.` })
       continue
     }
     paragraph.push(line)

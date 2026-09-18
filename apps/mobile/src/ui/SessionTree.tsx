@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
+import { useLocalSearchParams, useRouter } from 'expo-router'
 import Feather from '@expo/vector-icons/Feather'
 
 import type { AgentStatusKind } from '@commando/protocol'
@@ -12,6 +13,41 @@ import {
 } from '../agents/selectors'
 import { useTheme } from '../theme'
 import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
+
+/**
+ * Adds a window to a session, or splits a window's active pane. The tree owns
+ * the navigation rather than taking it as a prop so the "+" affordances can be
+ * added without touching the screen around it.
+ */
+function useCreateRoutes(): { newWindow: (sessionId: string) => void; newPane: (targetId: string) => void } {
+  const router = useRouter()
+  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  return {
+    newWindow: (sessionId) => router.push({
+      pathname: '/(host)/[hostId]/new-window',
+      params: { hostId: hostId ?? '', sessionId },
+    }),
+    newPane: (targetId) => router.push({
+      pathname: '/(host)/[hostId]/new-pane',
+      params: { hostId: hostId ?? '', targetId },
+    }),
+  }
+}
+
+function AddButton({ label, onPress }: { label: string; onPress: () => void }): React.JSX.Element {
+  const theme = useTheme()
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={8}
+      onPress={onPress}
+      style={[styles.add, { borderColor: theme.border, backgroundColor: theme.surfaceRaised }]}
+    >
+      <Feather color={theme.muted} name="plus" size={14} />
+    </Pressable>
+  )
+}
 
 /**
  * Screen 02's tree view: repo groups, then sessions with their branch and
@@ -51,6 +87,7 @@ function SessionNode({
   onSelectPane?: (paneId: string) => void
 }): React.JSX.Element {
   const theme = useTheme()
+  const routes = useCreateRoutes()
   const [expanded, setExpanded] = useState(false)
   const dots = sortStatusKinds(node.statuses).slice(0, 6)
 
@@ -81,6 +118,10 @@ function SessionNode({
             <StatusDot key={`${status}-${index}`} size={9} status={status} />
           ))}
         </View>
+        <AddButton
+          label={`New window in ${node.session.name}`}
+          onPress={() => routes.newWindow(node.session.id)}
+        />
       </Pressable>
 
       {expanded ? (
@@ -102,11 +143,15 @@ function WindowNode({
   onSelectPane?: (paneId: string) => void
 }): React.JSX.Element {
   const theme = useTheme()
+  const routes = useCreateRoutes()
   return (
     <View style={styles.windowBlock}>
-      <Text style={[styles.windowName, { color: theme.textDim }]}>
-        {node.index}: {node.name}
-      </Text>
+      <View style={styles.windowHead}>
+        <Text style={[styles.windowName, { color: theme.textDim }]}>
+          {node.index}: {node.name}
+        </Text>
+        <AddButton label={`Split ${node.name}`} onPress={() => routes.newPane(node.id)} />
+      </View>
       {node.children.map((child) => {
         if (child.kind === 'tile') {
           return (
@@ -197,6 +242,15 @@ const styles = StyleSheet.create({
   dots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   children: { borderLeftWidth: 1, marginLeft: 8, paddingLeft: 14, gap: 8, paddingVertical: 4 },
   windowBlock: { gap: 6 },
+  windowHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  add: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   windowName: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   leaf: {
     flexDirection: 'row',
