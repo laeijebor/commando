@@ -42,8 +42,21 @@ only. Bundle id `com.commando.companion`.
 - **Notifications** — permission, the Expo push token and a stable per-install
   device id in the keychain, registered with every host through
   `PUT /api/push/devices/:id`. See below.
-- Activity and Tiles are navigable placeholders that already render the live
-  data they have.
+- **Tiles** — every web pane the daemon holds, grouped by session, with the
+  owner's confirmation card for an external origin, a "Reopen as chromium"
+  offer for webkit tiles (which only exist inside the host's own WebView), and
+  a "+" sheet that opens a URL beside a chosen pane. Opening a chromium tile
+  streams it: the daemon's screencast arrives as PNG frames over
+  `/ws/web-tiles/:id`, the phone sends its own viewport and pixel ratio so the
+  page lays out for a phone, and touches become CDP input — tap is a click,
+  a drag is a wheel, a long press is a right click. **Review** mode swaps taps
+  for the `inspect` hit test, anchors a comment card to the element, draws a
+  pin for every queued note, and puts the pending queue on a strip with
+  Send all and Send + Build. The redline controls inside the page keep working
+  through the screencast, because the queue binding lives in the daemon's
+  Chromium.
+- Activity is a navigable placeholder that already renders the live data it
+  has.
 
 ## The terminal page
 
