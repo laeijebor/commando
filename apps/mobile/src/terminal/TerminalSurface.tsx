@@ -82,7 +82,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
           javaScriptEnabled
           onLoadStart={handleLoadStart}
           onMessage={handleMessage}
-          originWhitelist={['about:blank']}
+          onShouldStartLoadWithRequest={shouldStartLoad}
+          originWhitelist={['about:*']}
           ref={webViewRef}
           // A source-sized pane is wider than the phone on purpose: the page
           // pans sideways rather than reflowing the agent's output.
@@ -98,6 +99,15 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, TerminalSurface
     )
   },
 )
+
+/**
+ * The document is loaded from a string, so the only request the page should
+ * ever make is that initial `about:blank` load. Anything else — a stray link in
+ * terminal output, say — is refused rather than navigated to.
+ */
+function shouldStartLoad(request: { url: string }): boolean {
+  return request.url === 'about:blank' || request.url.startsWith('about:')
+}
 
 const styles = StyleSheet.create({
   surface: { flex: 1, overflow: 'hidden', borderRadius: 14, borderWidth: 1 },

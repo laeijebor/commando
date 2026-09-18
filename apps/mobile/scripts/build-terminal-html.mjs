@@ -37,14 +37,21 @@ const html = `<!doctype html>
 ${xtermCss}
 </style>
 <style>
-html, body { margin: 0; padding: 0; height: 100%; background: #232136; overflow: hidden; }
-body { -webkit-text-size-adjust: none; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; height: 100%; background: #232136; }
+/*
+ * The page is the pan surface in both directions: a source-sized pane is
+ * routinely wider and taller than the phone, and xterm always paints its whole
+ * grid, so the last rows are only reachable by moving pixels. xterm's own
+ * viewport still owns the scrollback, and iOS chains to the page once that
+ * inner scroller runs out.
+ */
+body { overflow: auto; -webkit-overflow-scrolling: touch; -webkit-text-size-adjust: none; -webkit-tap-highlight-color: transparent; }
 /*
  * width:max-content is what makes the default (source-sized) mode work: the
  * page is as wide as the pane's own columns and WKWebView pans it sideways.
  * In "Fit to phone" the computed columns match the viewport, so nothing pans.
  */
-#terminal { height: 100%; width: max-content; min-width: 100%; }
+#terminal { width: max-content; min-width: 100%; min-height: 100%; }
 .xterm .xterm-viewport { overflow-y: auto; -webkit-overflow-scrolling: touch; }
 </style>
 </head>

@@ -91,9 +91,16 @@
     return host.querySelector('.xterm-screen')
   }
 
+  /*
+   * "At the bottom" means both scrollers: xterm's own viewport holds the
+   * scrollback, and the page itself pans a source-sized grid that is taller
+   * than the phone.
+   */
   function atBottom() {
     var buffer = terminal.buffer.active
-    return buffer.viewportY >= buffer.baseY
+    var pageBottom =
+      window.scrollY + document.documentElement.clientHeight >= document.body.scrollHeight - 1
+    return buffer.viewportY >= buffer.baseY && pageBottom
   }
 
   function postCells() {
@@ -122,6 +129,7 @@
     post({ type: 'selection', text: selection })
   })
   terminal.onScroll(postScroll)
+  window.addEventListener('scroll', postScroll, { passive: true })
   window.addEventListener('resize', function () {
     postCells()
   })
@@ -159,6 +167,7 @@
         return
       case 'scroll_to_bottom':
         terminal.scrollToBottom()
+        window.scrollTo(0, document.body.scrollHeight)
         postScroll()
         return
       case 'clear_selection':
