@@ -166,9 +166,9 @@ built on existing owner-authenticated surfaces:
 - [x] Daemon: provider usage broadcast for owners
 - [x] Daemon: push device registry + Expo push sender + rules
 - [x] Daemon: Codex notify bridge in `hooks:install` (v1)
-- [ ] App: scaffold `apps/mobile` (expo-router, theme, secure store, WS client)
-- [ ] App: Hosts + sign-in
-- [ ] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
+- [x] App: scaffold `apps/mobile` (expo-router, theme, secure store, WS client)
+- [x] App: Hosts + sign-in
+- [x] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
 - [ ] App: Pane screen with xterm WebView, key bar, composer
 - [ ] App: Answer screen (question + permission) and notification actions
 - [ ] App: Info sheet (worklog, git, PR, ports, screenshots)
