@@ -14,9 +14,12 @@ import { ProgressBar, ProviderPill, StatusDot, withAlpha } from './primitives'
 export function AgentRowCard({
   row,
   onPress,
+  selected = false,
 }: {
   row: AgentRow
   onPress?: () => void
+  /** True for the pane the iPad cockpit is showing. */
+  selected?: boolean
 }): React.JSX.Element {
   const theme = useTheme()
   const hot = row.group === 'needs_you'
@@ -31,12 +34,17 @@ export function AgentRowCard({
       accessibilityRole="button"
       accessibilityHint={answerable ? 'Opens the answer screen' : 'Opens the pane'}
       accessibilityLabel={`${row.sessionName}: ${row.headline}`}
+      accessibilityState={{ selected }}
       onPress={onPress}
       style={[
         styles.row,
         {
-          backgroundColor: theme.surface,
-          borderColor: hot ? withAlpha(theme.amber, 0.45) : theme.border,
+          backgroundColor: selected ? theme.surfaceSoft : theme.surface,
+          borderColor: selected
+            ? theme.accent
+            : hot
+              ? withAlpha(theme.amber, 0.45)
+              : theme.border,
         },
       ]}
     >

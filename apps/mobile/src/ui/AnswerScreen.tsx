@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
-import type { AgentQuestion } from '@commando/protocol'
+import type { AgentInteractionRequest, AgentQuestion, AgentStatus } from '@commando/protocol'
 
 import {
   answersAreComplete,
@@ -30,6 +30,7 @@ import {
 } from '../answers'
 import { useDaemonConnection } from '../daemon/useDaemonConnection'
 import { useHostsStore } from '../hosts/store'
+import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
 import { relativeTime } from '../time'
 import { Button, Card, Meta, Pill, ProviderPill, withAlpha } from './primitives'
@@ -56,7 +57,6 @@ export function AnswerScreen(): React.JSX.Element {
 
   const status = paneId ? state.agentStatuses[paneId] : undefined
   const request = status?.details?.requests?.find((candidate) => candidate.id === interactionId)
-  const questions = useMemo(() => request?.questions ?? [], [request])
 
   const sessionName = useMemo(() => {
     const pane = state.snapshot?.panes.find((candidate) => candidate.id === paneId)
@@ -64,19 +64,9 @@ export function AnswerScreen(): React.JSX.Element {
     return session?.name ?? status?.agentSessionName ?? 'pane'
   }, [state.snapshot, paneId, status])
 
-  const [selections, setSelections] = useState<QuestionSelection[]>(() => emptySelections(questions))
-  const [note, setNote] = useState('')
-  const [busy, setBusy] = useState<'answer' | 'reject' | PermissionDecision | null>(null)
-  const [error, setError] = useState<string | null>(null)
   // The request leaves the store the instant the daemon accepts the answer, so
   // the "no longer pending" card must not flash while we are navigating away.
   const answered = useRef(false)
-
-  useEffect(() => {
-    setSelections(emptySelections(questions))
-    setNote('')
-    setError(null)
-  }, [interactionId, questions])
 
   const openPane = useCallback((replace: boolean): void => {
     const target = {
@@ -88,6 +78,7 @@ export function AnswerScreen(): React.JSX.Element {
   }, [hostId, paneId, router])
 
   const leaveAfterAnswer = useCallback((): void => {
+    answered.current = true
     if (from === 'notification') {
       router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: hostId ?? '' } })
       return
@@ -95,30 +86,6 @@ export function AnswerScreen(): React.JSX.Element {
     if (router.canGoBack()) router.back()
     else openPane(true)
   }, [from, hostId, openPane, router])
-
-  const send = useCallback(async (
-    kind: 'answer' | 'reject' | PermissionDecision,
-  ): Promise<void> => {
-    if (!host || !paneId || !interactionId) return
-    const answer = kind === 'answer'
-      ? buildQuestionAnswer(questions, selections, note)
-      : kind === 'reject'
-        ? buildRejectAnswer()
-        : buildPermissionAnswer(kind)
-
-    setBusy(kind)
-    setError(null)
-    const result = await sendAgentAnswer({ host, paneId, interactionId, answer })
-    setBusy(null)
-    if (!result.ok) {
-      setError(answerErrorText(result.code, result.message))
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      return
-    }
-    answered.current = true
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-    leaveAfterAnswer()
-  }, [host, interactionId, leaveAfterAnswer, note, paneId, questions, selections])
 
   if (!request) {
     return (
@@ -145,17 +112,103 @@ export function AnswerScreen(): React.JSX.Element {
     )
   }
 
-  const permission = request.kind === 'permission'
-
   return (
     <AnswerFrame
       onShowPane={() => openPane(false)}
       sessionName={sessionName}
       subtitle={`${paneId} · asked ${relativeTime(request.createdAt) || 'now'}`}
-      title={permission
+      title={request.kind === 'permission'
         ? `${providerName(status?.provider)} wants permission`
         : `${providerName(status?.provider)} is asking`}
     >
+      <AnswerCards
+        detail={state.detail}
+        host={host}
+        live={state.phase === 'live'}
+        onAnswered={leaveAfterAnswer}
+        paneId={paneId ?? ''}
+        request={request}
+        sessionName={sessionName}
+        status={status}
+      />
+    </AnswerFrame>
+  )
+}
+
+export type AnswerCardsProps = {
+  host: Host | undefined
+  paneId: string
+  request: AgentInteractionRequest
+  status: AgentStatus | undefined
+  sessionName: string
+  /** Whether the socket is up; an answer falls back to the HTTP route if not. */
+  live: boolean
+  /** The connection detail line, shown when the socket is down. */
+  detail: string
+  /** Called once the daemon has taken the answer. */
+  onAnswered: () => void
+}
+
+/**
+ * The cards themselves: one per `AgentQuestion` with its options and custom
+ * field, or the permission's tool and prompt over Allow once / Always / Deny,
+ * plus the note field, the actions and any error.
+ *
+ * Screen 04 wraps these in its own nav; the iPad cockpit puts them at the top
+ * of the HUD column and answers the focused pane's request in place.
+ */
+export function AnswerCards({
+  host,
+  paneId,
+  request,
+  status,
+  sessionName,
+  live,
+  detail,
+  onAnswered,
+}: AnswerCardsProps): React.JSX.Element {
+  const theme = useTheme()
+  const questions = useMemo(() => request.questions ?? [], [request])
+  const interactionId = request.id
+
+  const [selections, setSelections] = useState<QuestionSelection[]>(() => emptySelections(questions))
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState<'answer' | 'reject' | PermissionDecision | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelections(emptySelections(questions))
+    setNote('')
+    setError(null)
+  }, [interactionId, questions])
+
+  const send = useCallback(async (
+    kind: 'answer' | 'reject' | PermissionDecision,
+  ): Promise<void> => {
+    if (!host || !paneId || !interactionId) return
+    const answer = kind === 'answer'
+      ? buildQuestionAnswer(questions, selections, note)
+      : kind === 'reject'
+        ? buildRejectAnswer()
+        : buildPermissionAnswer(kind)
+
+    setBusy(kind)
+    setError(null)
+    const result = await sendAgentAnswer({ host, paneId, interactionId, answer })
+    setBusy(null)
+    if (!result.ok) {
+      setError(answerErrorText(result.code, result.message))
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      return
+    }
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+    onAnswered()
+  }, [host, interactionId, note, onAnswered, paneId, questions, selections])
+
+  const permission = request.kind === 'permission'
+
+  return (
+    <>
       {permission ? (
         <Card raised style={styles.card}>
           <View style={styles.cardHead}>
@@ -278,10 +331,8 @@ export function AnswerScreen(): React.JSX.Element {
         </Card>
       ) : null}
 
-      {state.phase !== 'live' ? (
-        <Meta>{state.detail} · the answer will go over the HTTP route instead.</Meta>
-      ) : null}
-    </AnswerFrame>
+      {live ? null : <Meta>{detail} · the answer will go over the HTTP route instead.</Meta>}
+    </>
   )
 }
 

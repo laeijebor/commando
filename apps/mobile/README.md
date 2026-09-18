@@ -55,8 +55,40 @@ only. Bundle id `com.commando.companion`.
   Send all and Send + Build. The redline controls inside the page keep working
   through the screencast, because the queue binding lives in the daemon's
   Chromium.
+- **iPad** — the three-column cockpit of screen 10; see below.
 - Activity is a navigable placeholder that already renders the live data it
   has.
+
+## iPad
+
+`useLayoutMode()` reads the window, not the device: under 900pt of width (or
+under 600pt of height, which is how a landscape iPhone 16 Pro Max's 956pt is
+kept on the phone layout) the app is the iPhone app. At 900pt and up — a
+landscape iPad, or a large one in portrait — it is the cockpit of mockup 10:
+the sessions list at 300pt, the focused pane's terminal, and a 340pt HUD
+column, divided by the theme's border under one status row with the host, the
+connection phase and the snapshot revision. Between 700 and 900pt the sessions
+list moves into a slide-over opened from that row and the other two columns
+stay. `useWindowDimensions` drives it, so a rotation or a Split View drag moves
+between the three on its own.
+
+Nothing is duplicated to get there. The columns are `SessionsPanel` (the same
+component and the same remembered Attention / Tree choice as screen 02),
+`PaneView` (the phone's pane screen, minus its nav), `AnswerCards` (screen 04's
+cards, answering in place) and `PaneInfoSections` (the Info sheet's worklog,
+changes, PR and ports; screenshots stay in the sheet).
+
+The focused pane is the first pane that needs the owner, else the first one
+working, else whatever is there; a pane picked by hand stays picked for as long
+as it exists, per host, for the run of the app. Selecting a row focuses it
+rather than navigating, and the list highlights it in both views.
+
+Routing stays one set of routes for both form factors: `/(host)/[hostId]/sessions`
+renders the phone list or the cockpit, and `/pane/[paneId]` and
+`/answer/[paneId]/[interactionId]` redirect to it with `?focus=<paneId>` when
+the screen is wide. A notification deep link therefore lands in the cockpit with
+its pane focused and its question in the HUD column, and on an iPhone it still
+opens the full-screen pane or answer screen.
 
 ## The terminal page
 
