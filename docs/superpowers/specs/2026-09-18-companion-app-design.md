@@ -45,7 +45,7 @@ built on existing owner-authenticated surfaces:
 
 | Need | Existing surface |
 | --- | --- |
-| Auth | Better Auth cookie (`/api/auth/*`) or `COMMANDO_TOKEN` bearer / `?token=`; both work on `/ws` and every `/api/*` route |
+| Auth | Better Auth cookie (`/api/auth/*`) or `COMMANDO_TOKEN` bearer / `?token=`; both work on `/ws` and every owner-facing `/api/*` route. Exceptions that take only the agent hook token: `/api/agent-status/hooks/*`, `/api/session-brief`, `/api/pane-target-marker`; `/companion/ws` additionally requires a loopback peer |
 | Tailscale | `COMMANDO_TAILSCALE=true` binds Tailscale addresses and accepts Tailscale peers; a native client sends no `Origin`, so it passes the origin check. MagicDNS hostnames need `COMMANDO_TRUSTED_ORIGINS` |
 | Sessions / windows / panes / ports | `snapshot` on `/ws`, `GET /api/snapshot` |
 | Agent HUD | `agent_status` / `agent_status_snapshot` on `/ws`, including `details.requests` (pending questions and permissions, read-only) |
