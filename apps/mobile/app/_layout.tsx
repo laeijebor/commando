@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import { useHostsStore } from '../src/hosts/store'
+import { useNotificationRouting, usePushRegistration } from '../src/notifications'
 import { ThemeProvider, useTheme } from '../src/theme'
 
 function RootStack(): React.JSX.Element {
@@ -13,6 +14,11 @@ function RootStack(): React.JSX.Element {
   useEffect(() => {
     void hydrate()
   }, [hydrate])
+
+  // Push lives at the root so a notification can be handled whatever screen is
+  // on top, including the cold start that a tapped notification causes.
+  usePushRegistration()
+  useNotificationRouting()
 
   return (
     <>

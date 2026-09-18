@@ -20,6 +20,25 @@ jest.mock('expo-haptics', () => ({
   ImpactFeedbackStyle: { Light: 'light', Medium: 'medium', Heavy: 'heavy' },
 }))
 
+// Push needs native modules: the unit suite drives these doubles instead, and
+// asserts on the categories and registrations the app asked for.
+jest.mock('expo-notifications', () => ({
+  setNotificationHandler: jest.fn(),
+  setNotificationCategoryAsync: jest.fn(async () => ({ identifier: 'stub', actions: [] })),
+  getPermissionsAsync: jest.fn(async () => ({ granted: true, canAskAgain: true, status: 'granted' })),
+  requestPermissionsAsync: jest.fn(async () => ({ granted: true, canAskAgain: true, status: 'granted' })),
+  getExpoPushTokenAsync: jest.fn(async () => ({ data: 'ExponentPushToken[unit-test]', type: 'expo' })),
+  getLastNotificationResponseAsync: jest.fn(async () => null),
+  addNotificationReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+}))
+
+jest.mock('expo-device', () => ({
+  isDevice: true,
+  deviceName: "Leo's iPhone",
+  modelName: 'iPhone 15 Pro',
+}))
+
 // Nothing in the unit suite should reach the network; the reachability probe
 // is exercised through this stub rather than a real daemon.
 globalThis.fetch = jest.fn(async () => new Response(

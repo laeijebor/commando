@@ -23,3 +23,8 @@ export async function writePreference(key: string, value: string): Promise<void>
 
 export const THEME_PREFERENCE_KEY = 'commando.theme'
 export const SESSIONS_VIEW_PREFERENCE_KEY = 'commando.sessions.view'
+
+/** Notification rules, the stable per-install push device id and the hosts it is registered with. */
+export const PUSH_RULES_PREFERENCE_KEY = 'commando.push.rules'
+export const PUSH_DEVICE_ID_KEY = 'commando.push.deviceId'
+export const PUSH_REGISTERED_HOSTS_KEY = 'commando.push.hosts'
