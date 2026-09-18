@@ -32,18 +32,32 @@ function validAnswer(
 
 export class AgentInteractionBroker {
   private readonly pending = new Map<string, PendingInteraction>()
-  private consumers = 0
+  private readonly consumers = new Set<symbol>()
   private onPendingChange: () => void = () => undefined
 
   constructor(private readonly timeoutMs = DEFAULT_TIMEOUT_MS) {}
 
-  setConsumerCount(count: number): void {
-    this.consumers = Math.max(0, count)
-    if (this.consumers === 0) this.cancelAll()
+  /**
+   * Registers one interaction consumer (a companion socket, an owner socket that
+   * opted in with `watch_interactions`, ...) and returns a release function.
+   * Hooks stay held open while any source is registered; the last release
+   * cancels every pending request. Releasing twice is a no-op.
+   */
+  registerConsumer(): () => void {
+    const handle = Symbol('agent-interaction-consumer')
+    this.consumers.add(handle)
+    return () => {
+      if (!this.consumers.delete(handle)) return
+      if (this.consumers.size === 0) this.cancelAll()
+    }
+  }
+
+  consumerCount(): number {
+    return this.consumers.size
   }
 
   hasConsumers(): boolean {
-    return this.consumers > 0
+    return this.consumers.size > 0
   }
 
   setPendingChangeListener(listener: () => void): void {

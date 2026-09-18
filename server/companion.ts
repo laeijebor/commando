@@ -1,7 +1,6 @@
 import { WebSocket } from 'ws'
 
 import type {
-  AgentInteractionAnswer,
   AgentProvider,
   AgentStatus,
   AgentStatusKind,
@@ -13,12 +12,17 @@ import type {
   ProviderUsage,
 } from '../shared/protocol.js'
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
+import {
+  answerAgentRequest,
+  IdempotencyKeyMemory,
+  isInteractionId,
+  parseAgentInteractionAnswer,
+} from './agent-request-answers.js'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
 import type { ProviderUsageService } from './provider-usage.js'
 import { companionOutputTail } from './terminal-text.js'
 
 const MAX_BUFFERED_BYTES = 256 * 1024
-const MAX_IDEMPOTENCY_KEYS = 500
 
 type CompanionHubOptions = {
   interactions: AgentInteractionBroker
@@ -151,31 +155,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseAnswer(value: unknown): AgentInteractionAnswer | null {
-  if (!isRecord(value)) return null
-  const action = value.action
-  if (
-    action !== 'allow_once' &&
-    action !== 'allow_always' &&
-    action !== 'deny' &&
-    action !== 'answer' &&
-    action !== 'reject'
-  ) return null
-  if (value.answers !== undefined) {
-    if (
-      !Array.isArray(value.answers) ||
-      value.answers.length > 8 ||
-      !value.answers.every((answer) => (
-        Array.isArray(answer) &&
-        answer.length <= 12 &&
-        answer.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 300)
-      ))
-    ) return null
-    return { action, answers: value.answers as string[][] }
-  }
-  return { action }
-}
-
 export function parseCompanionMessage(value: unknown): CompanionClientMessage | null {
   if (!isRecord(value) || typeof value.type !== 'string') return null
   if (value.type === 'focus_output') {
@@ -190,10 +169,10 @@ export function parseCompanionMessage(value: unknown): CompanionClientMessage | 
       : null
   }
   if (value.type !== 'answer_agent_request') return null
-  const answer = parseAnswer(value.answer)
+  const answer = parseAgentInteractionAnswer(value.answer)
   if (
     typeof value.paneId !== 'string' || !/^%\d+$/.test(value.paneId) ||
-    typeof value.requestId !== 'string' || value.requestId.length > 200 ||
+    !isInteractionId(value.requestId) ||
     typeof value.requestIdempotencyKey !== 'string' ||
     !/^[A-Za-z0-9._:-]{1,128}$/.test(value.requestIdempotencyKey) ||
     !answer
@@ -209,14 +188,15 @@ export function parseCompanionMessage(value: unknown): CompanionClientMessage | 
 
 export class CompanionHub {
   private readonly clients = new Set<WebSocket>()
-  private readonly idempotencyKeys = new Set<string>()
+  private readonly idempotencyKeys = new IdempotencyKeyMemory()
   private readonly focusedPaneIds = new Map<WebSocket, string>()
+  private readonly consumerReleases = new Map<WebSocket, () => void>()
 
   constructor(private readonly options: CompanionHubOptions) {}
 
   connect(socket: WebSocket): void {
     this.clients.add(socket)
-    this.options.interactions.setConsumerCount(this.clients.size)
+    this.consumerReleases.set(socket, this.options.interactions.registerConsumer())
     this.options.onClientCountChange(this.clients.size)
     if (this.clients.size === 1) {
       this.options.usage.start(() => this.publish())
@@ -260,28 +240,30 @@ export class CompanionHub {
         this.sendSnapshot(socket)
         return
       }
-      if (!this.options.interactions.answer(message.paneId, message.requestId, message.answer)) {
-        this.sendError(
-          socket,
-          'request_unavailable',
-          'The agent request is no longer pending',
-          message.requestIdempotencyKey,
-        )
+      const outcome = answerAgentRequest(
+        {
+          interactions: this.options.interactions,
+          registry: this.options.registry,
+          onStatusChange: this.options.onStatusChange,
+          onAnswered: () => this.publish(),
+        },
+        message.paneId,
+        message.requestId,
+        message.answer,
+      )
+      if (!outcome.ok) {
+        this.sendError(socket, outcome.code, outcome.message, message.requestIdempotencyKey)
         this.sendSnapshot(socket)
         return
       }
-      this.rememberIdempotencyKey(message.requestIdempotencyKey)
-      this.options.onStatusChange(this.options.registry.resolveInteractionRequest(
-        message.paneId,
-        message.requestId,
-      ))
-      this.publish()
+      this.idempotencyKeys.remember(message.requestIdempotencyKey)
     })
 
     const disconnect = (): void => {
       if (!this.clients.delete(socket)) return
       this.focusedPaneIds.delete(socket)
-      this.options.interactions.setConsumerCount(this.clients.size)
+      this.consumerReleases.get(socket)?.()
+      this.consumerReleases.delete(socket)
       this.options.onClientCountChange(this.clients.size)
       if (this.clients.size === 0) this.options.usage.stop()
     }
@@ -297,7 +279,8 @@ export class CompanionHub {
     for (const client of this.clients) client.terminate()
     this.clients.clear()
     this.focusedPaneIds.clear()
-    this.options.interactions.setConsumerCount(0)
+    for (const release of this.consumerReleases.values()) release()
+    this.consumerReleases.clear()
     this.options.onClientCountChange(0)
     this.options.usage.stop()
   }
@@ -335,12 +318,5 @@ export class CompanionHub {
       return
     }
     socket.send(serialized)
-  }
-
-  private rememberIdempotencyKey(key: string): void {
-    this.idempotencyKeys.add(key)
-    if (this.idempotencyKeys.size <= MAX_IDEMPOTENCY_KEYS) return
-    const oldest = this.idempotencyKeys.values().next().value
-    if (oldest !== undefined) this.idempotencyKeys.delete(oldest)
   }
 }
