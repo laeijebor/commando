@@ -23,9 +23,11 @@ export function AgentRowCard({
 }): React.JSX.Element {
   const theme = useTheme()
   const hot = row.group === 'needs_you'
-  // A Needs-you row goes to the answer screen rather than the pane, so it says
-  // so instead of showing the plain chevron.
-  const answerable = hot && row.pendingQuestionCount > 0
+  // A row with a request pending goes to the answer screen rather than the
+  // pane, so it says so instead of showing the plain chevron. The test is the
+  // same `details.requests` the screen's `pendingRequest` reads, so the
+  // affordance cannot promise something the tap does not do.
+  const answerable = row.pendingQuestionCount > 0
   const progress = row.progress
   const accent = statusColor(theme, row.status.status)
 

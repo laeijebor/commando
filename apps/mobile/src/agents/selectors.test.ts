@@ -7,6 +7,7 @@ import {
   buildSessionTree,
   compareAgentRows,
   groupAgentRows,
+  pendingRequest,
   sortStatusKinds,
   STATUS_PRIORITY,
 } from './selectors'
@@ -82,6 +83,14 @@ describe('buildAgentRows', () => {
     const row = rows.find((candidate) => candidate.paneId === '%40')
     expect(row?.headline).toBe('🟢 Visor shortcut works on non-notch Macs')
     expect(row?.activity).toBe('2 files changed')
+  })
+
+  it('counts a pending request exactly when one can be answered', () => {
+    // The row card shows "Answer" on `pendingQuestionCount`, the screen routes
+    // to the answer screen on `pendingRequest`; they must agree on every row.
+    for (const row of rows) {
+      expect(row.pendingQuestionCount > 0).toBe(pendingRequest(row.status) !== undefined)
+    }
   })
 
   it('carries the running check and the todo progress', () => {
