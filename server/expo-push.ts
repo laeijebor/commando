@@ -134,11 +134,15 @@ export class ExpoPushSender {
     }
     batch.forEach((message, index) => {
       const ticket = tickets?.[index]
-      if (!ticket || ticket.status === 'ok') {
+      if (ticket?.status === 'ok') {
         outcome.accepted += 1
         return
       }
       outcome.rejected += 1
+      if (!ticket) {
+        this.logger.warn('[commando] Expo push response carried no ticket for a notification')
+        return
+      }
       this.logger.warn(
         `[commando] Expo push rejected a notification: ${ticket.error ?? ticket.message ?? 'unknown error'}`,
       )

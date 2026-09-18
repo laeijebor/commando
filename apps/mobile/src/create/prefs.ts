@@ -14,10 +14,8 @@ import { readPreference, writePreference } from '../prefs'
 export const CWD_HISTORY_KEY = 'commando.tmux-create.cwd'
 export const PREPARE_COMMANDS_KEY = 'commando.tmux-create.prepare-by-repo'
 /** Session names the notifications settings screen will read back. */
-export const NOTIFY_SESSIONS_KEY = 'commando.notify.sessions'
 
 const MAX_DIRECTORY_HISTORY = 10
-const MAX_NOTIFY_SESSIONS = 50
 
 async function readJson(key: string): Promise<unknown> {
   const stored = await readPreference(key)
@@ -64,17 +62,4 @@ export async function rememberPrepareCommand(repoRoot: string, command: string):
   await writePreference(PREPARE_COMMANDS_KEY, JSON.stringify(commands))
 }
 
-export async function loadNotifySessions(): Promise<string[]> {
-  const value = await readJson(NOTIFY_SESSIONS_KEY)
-  if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is string => typeof entry === 'string')
-}
 
-/** Adds or removes a session name from the list push rules will be built from. */
-export async function setNotifySession(sessionName: string, notify: boolean): Promise<string[]> {
-  const current = await loadNotifySessions()
-  const without = current.filter((entry) => entry !== sessionName)
-  const next = notify ? [sessionName, ...without].slice(0, MAX_NOTIFY_SESSIONS) : without
-  await writePreference(NOTIFY_SESSIONS_KEY, JSON.stringify(next))
-  return next
-}

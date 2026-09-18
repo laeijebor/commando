@@ -19,7 +19,12 @@ export function useTileRelay(
   const clientRef = useRef<TileRelayClient | null>(null)
   const enabled = options.enabled !== false
 
-  const key = host && webPaneId && enabled ? `${host.id}:${webPaneId}:${cookie ?? ''}` : null
+  // Every identity the socket depends on: an edited address, a changed token
+  // or a fresh session cookie must reopen the stream, as the /ws client does.
+  const auth = host?.auth.kind === 'token' ? `token:${host.auth.token}` : 'session'
+  const key = host && webPaneId && enabled
+    ? `${host.id}:${host.baseUrl}:${auth}:${webPaneId}:${cookie ?? ''}`
+    : null
 
   useEffect(() => {
     if (!key || !host || !webPaneId) {

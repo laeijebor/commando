@@ -53,6 +53,8 @@ type PushStoreState = {
   registerAll: (hosts: readonly Host[]) => Promise<void>
   sendTest: (host: Host) => Promise<{ ok: boolean; message: string }>
   registeredHostIds: () => string[]
+  /** Drops a removed host's registration so notifications never resolve to it. */
+  forgetHost: (hostId: string) => Promise<void>
 }
 
 function createDeviceId(): string {
@@ -268,6 +270,17 @@ export const usePushStore = create<PushStoreState>((set, get) => ({
         message: error instanceof Error ? error.message : 'The daemon is unreachable',
       }
     }
+  },
+
+  forgetHost: async (hostId) => {
+    if (!(hostId in get().registrations)) return
+    const registrations = { ...get().registrations }
+    delete registrations[hostId]
+    set({ registrations })
+    await writePreference(
+      PUSH_REGISTERED_HOSTS_KEY,
+      JSON.stringify(Object.values(registrations).filter((entry) => entry.ok).map((entry) => entry.hostId)),
+    )
   },
 
   registeredHostIds: () => Object.values(get().registrations)

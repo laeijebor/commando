@@ -31,9 +31,9 @@ import {
   loadPrepareCommands,
   rememberDirectory,
   rememberPrepareCommand,
-  setNotifySession,
 } from '../../../src/create/prefs'
 import { useHostsStore } from '../../../src/hosts/store'
+import { toggleMutedSession, usePushStore } from '../../../src/notifications'
 import { useTheme } from '../../../src/theme'
 import { CreateSheet } from '../../../src/ui/CreateSheet'
 import { FormError, RowGroup, TextRow, ToggleRow, ValueRow } from '../../../src/ui/formPrimitives'
@@ -139,7 +139,13 @@ export default function NewSessionScreen(): React.JSX.Element {
       const { created } = await createTmuxSession(host, request)
       setDirectoryHistory(await rememberDirectory(directory))
       if (repo?.mainRoot) await rememberPrepareCommand(repo.mainRoot, prepareCommand)
-      await setNotifySession(created.sessionName, notify)
+      // The daemon evaluates push rules per device, so "notify me" is the
+      // absence of the session from the muted list rather than a local flag.
+      const push = usePushStore.getState()
+      const muted = push.rules.mutedSessions.includes(created.sessionName)
+      if (muted === notify) {
+        await push.setRules(toggleMutedSession(push.rules, created.sessionName), useHostsStore.getState().hosts)
+      }
       const command = agentRunCommand(agent, prompt)
       if (command) {
         try {

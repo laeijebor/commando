@@ -101,6 +101,17 @@ describe('expo push sender', () => {
     expect(onDeviceNotRegistered).toHaveBeenCalledExactlyOnceWith(stale)
   })
 
+  it('counts a notification with no ticket in the response as rejected', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ status: 'ok', id: 'ticket' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const sender = new ExpoPushSender({ fetch: fetchMock as unknown as typeof fetch, logger: silent })
+
+    const outcome = await sender.send([message(), message({ to: 'ExponentPushToken[bbbbbbbbbbbbbbbbbbbbbb]' })])
+
+    expect(outcome).toEqual({ accepted: 1, rejected: 1, unregisteredTokens: [] })
+  })
+
   it('logs and survives transport failures, HTTP errors and junk responses', async () => {
     const warn = vi.fn()
     const fetchMock = vi.fn()

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 import { disconnectHost } from '../daemon/client'
 import { useDaemonStore } from '../daemon/store'
+import { usePushStore } from '../notifications/store'
 import { probeHost } from './api'
 import { createHostId, loadHosts, saveHosts } from './storage'
 import { normaliseBaseUrl, type Host, type HostAuth, type HostReachability } from './types'
@@ -58,6 +59,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     // otherwise keep reconnecting to an address the owner has deleted.
     disconnectHost(id)
     useDaemonStore.getState().reset(id)
+    await usePushStore.getState().forgetHost(id)
     const hosts = get().hosts.filter((host) => host.id !== id)
     const reachability = { ...get().reachability }
     const cookies = { ...get().cookies }
