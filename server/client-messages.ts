@@ -449,6 +449,23 @@ export function parseClientMessage(value: unknown): ParseResult {
         message: { type: 'save_workspace', workspace, requestId: id },
       }
     }
+    case 'watch_usage': {
+      const id = requestId(value.requestId)
+      if (!id || typeof value.enabled !== 'boolean') {
+        return {
+          ok: false,
+          error: 'Invalid usage watch request',
+          requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+        }
+      }
+      return { ok: true, message: { type: 'watch_usage', enabled: value.enabled, requestId: id } }
+    }
+    case 'refresh_usage': {
+      const id = requestId(value.requestId)
+      return id
+        ? { ok: true, message: { type: 'refresh_usage', requestId: id } }
+        : { ok: false, error: 'Invalid usage refresh request' }
+    }
     default:
       return { ok: false, error: 'Unsupported message type' }
   }
