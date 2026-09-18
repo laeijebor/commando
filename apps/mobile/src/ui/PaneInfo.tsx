@@ -26,7 +26,6 @@ import {
   fetchPanePrs,
   fetchRepoPrs,
   fetchScreenshotFolder,
-  openWebPane,
   screenshotImageSource,
   type GitDiffSummary,
   type PanePrList,
@@ -42,6 +41,7 @@ import {
   UPDATE_KIND_LABEL,
   type TimelineEntry,
 } from '../pane/worklog'
+import { openTile } from '../tiles/api'
 import { relativeTime } from '../time'
 import { statusLabel, useTheme, type Theme } from '../theme'
 import {
@@ -197,7 +197,7 @@ export function PaneInfoSections({
   const openAsTile = useCallback(async (port: number) => {
     setTileNote(null)
     try {
-      const result = await openWebPane(host, {
+      const result = await openTile(host, {
         url: `http://localhost:${port}`,
         anchor: paneId,
         engine: 'chromium',

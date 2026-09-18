@@ -180,14 +180,6 @@ export function runInPane(host: Host, paneId: string, command: string): Promise<
   )
 }
 
-/** `POST /api/web-panes` — opens a URL as a tile anchored to a pane. */
-export function openWebPane(
-  host: Host,
-  input: { url: string; anchor: string; engine?: 'chromium' | 'webkit' },
-): Promise<{ webPaneId: string; status: 'open' | 'pending' }> {
-  return post(host, '/api/web-panes', input, 'Opening the tile failed')
-}
-
 export function createTmuxSession(host: Host, input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
   return post(host, TMUX_CREATE_ROUTES.session, input, 'Creating the session failed')
 }
