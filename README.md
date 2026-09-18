@@ -173,6 +173,8 @@ Remove that override with `defaults delete com.commando.island CommandoPort`.
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |
 | `COMMANDO_AGENT_HOOK_TOKEN_PATH` | Persisted bearer token shared by installed agent hooks and the daemon | `~/.commando/agent-hook-token` |
 | `COMMANDO_SESSION_BRIEFS_PATH` | Persisted pane-local worklogs and task history | `~/.commando/session-briefs.json` |
+| `COMMANDO_PUSH_DEVICES_PATH` | Registered companion push devices and their notification rules | `~/.commando/push-devices.json` |
+| `EXPO_ACCESS_TOKEN` | Expo access token sent as a bearer when posting push notifications | None (Expo accepts unauthenticated sends) |
 | `BETTER_AUTH_SECRET` | Explicit cookie-signing secret of at least 32 characters | Generated and persisted locally |
 | `BETTER_AUTH_URL` | Canonical auth URL, primarily for an HTTPS proxy | `http://127.0.0.1:<port>` |
 | `COMMANDO_TOKEN` | Fixed bearer token for automation or recovery | Random per daemon start |
@@ -209,6 +211,55 @@ npm start
 If Tailscale Serve or another reverse proxy terminates HTTPS and forwards to the loopback listener, set both `COMMANDO_TRUSTED_ORIGINS` and `BETTER_AUTH_URL` to that public HTTPS origin. The proxy is responsible for TLS; Commando itself serves HTTP.
 
 Email delivery, address verification, password-reset emails, invitations, and additional owners are intentionally deferred. The database schema and Better Auth integration can support those flows later without replacing existing accounts or sessions.
+
+## Push Notifications
+
+The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Completion and failure pushes come only from hook-reported lifecycle events (Claude Code, OpenCode, Codex bridges), never from heuristic status, so an idle prompt does not read as a finished turn. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.
+
+All routes are owner-authenticated, take JSON bodies of at most 16 KiB, and live under `/api/push`:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/push/devices` | List registered devices |
+| `PUT /api/push/devices/:id` | Register or update a device (the id is client-chosen, up to 64 characters of `A-Za-z0-9._-`) |
+| `DELETE /api/push/devices/:id` | Remove a device |
+| `POST /api/push/devices/:id/test` | Send a test notification to one device, ignoring its rules |
+
+A registration body carries the Expo token, a display name, the platform, and the notification rules:
+
+```json
+{
+  "expoPushToken": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]",
+  "name": "iPhone",
+  "platform": "ios",
+  "rules": {
+    "needsInput": true,
+    "done": true,
+    "failed": true,
+    "quietHours": { "start": "23:00", "end": "07:00", "timeZone": "Europe/Berlin" },
+    "mutedSessions": ["scratch"]
+  }
+}
+```
+
+Rules are evaluated per device: the three kind toggles, then `mutedSessions` (tmux session names, at most 64), then `quietHours`, which may cross midnight and is evaluated in the device's own IANA time zone. Multiple status changes for the same pane within one second are coalesced to the latest one, a pending request notifies at most once per request id, and a completion notifies once per recap.
+
+Notifications use the categories `needs_input`, `permission`, `done` and `failed`, and carry a payload the app deep-links from:
+
+```json
+{
+  "paneId": "%12",
+  "sessionId": "$3",
+  "sessionName": "island",
+  "provider": "claude",
+  "kind": "needs_input",
+  "requestId": "req-1",
+  "requestKind": "permission",
+  "interactionId": "req-1"
+}
+```
+
+`interactionId` is the pending request's id, so a notification action can answer it directly through `POST /api/agent-requests/:paneId/:interactionId/answer`.
 
 ## Markdown Notes
 
