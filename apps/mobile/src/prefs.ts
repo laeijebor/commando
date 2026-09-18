@@ -23,3 +23,6 @@ export async function writePreference(key: string, value: string): Promise<void>
 
 export const THEME_PREFERENCE_KEY = 'commando.theme'
 export const SESSIONS_VIEW_PREFERENCE_KEY = 'commando.sessions.view'
+/** Default for the pane screen's "Fit pane to phone" toggle. */
+export const TERMINAL_FIT_PREFERENCE_KEY = 'commando.terminal.fit'
+export const TERMINAL_FONT_SIZE_PREFERENCE_KEY = 'commando.terminal.fontSize'

@@ -1,8 +1,8 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useHostsStore } from '../hosts/store'
 import type { Host } from '../hosts/types'
-import { connectHost } from './client'
+import { connectHost, type DaemonClient } from './client'
 import { useHostState } from './store'
 import type { HostDaemonState } from './state'
 
@@ -21,4 +21,23 @@ export function useDaemonConnection(host: Host | undefined): HostDaemonState {
   }, [host, cookie])
 
   return state
+}
+
+/**
+ * The same shared socket as `useDaemonConnection`, but handed back as the
+ * client itself — the pane screen needs to send on it, not only read the store.
+ */
+export function useDaemonClient(host: Host | undefined): DaemonClient | undefined {
+  const cookie = useHostsStore((state) => (host ? state.cookies[host.id] : undefined))
+  const [client, setClient] = useState<DaemonClient | undefined>(undefined)
+
+  useEffect(() => {
+    if (!host) {
+      setClient(undefined)
+      return
+    }
+    setClient(connectHost(host, cookie ?? null))
+  }, [host, cookie])
+
+  return client
 }
