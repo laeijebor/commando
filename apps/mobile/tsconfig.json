@@ -6,11 +6,17 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "exactOptionalPropertyTypes": false,
-    "types": ["jest", "expo/types"],
-    "baseUrl": ".",
+    "types": [
+      "jest",
+      "expo/types"
+    ],
     "paths": {
-      "@commando/protocol": ["../../shared/protocol.ts"],
-      "@/*": ["./src/*"]
+      "@commando/protocol": [
+        "../../shared/protocol.ts"
+      ],
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
   "include": [
@@ -20,5 +26,7 @@
     "expo-env.d.ts",
     "../../shared/protocol.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

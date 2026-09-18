@@ -30,6 +30,7 @@
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^30.0.0",
     "@types/react": "~19.2.2",
+    "babel-preset-expo": "^57.0.12",
     "jest": "^30.5.1",
     "jest-expo": "~57.0.5",
     "react-dom": "^19.2.3",

@@ -27,6 +27,13 @@ export function retryDelay(attempt: number): number {
   return Math.min(BASE_RETRY_MS * 2 ** step, MAX_RETRY_MS)
 }
 
+/** `Omit` collapses a union, so distribute it to keep every message variant. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+export type OutgoingMessage = DistributiveOmit<ClientMessage, 'requestId'> & {
+  requestId?: string
+}
+
 let requestCounter = 0
 
 export function nextRequestId(): string {
@@ -87,7 +94,7 @@ export class DaemonClient {
   }
 
   /** Stamps a `requestId` so callers only describe the message they want. */
-  send(message: Omit<ClientMessage, 'requestId'> & { requestId?: string }): string | null {
+  send(message: OutgoingMessage): string | null {
     const requestId = message.requestId ?? nextRequestId()
     const socket = this.socket
     if (!socket || socket.readyState !== 1) return null
