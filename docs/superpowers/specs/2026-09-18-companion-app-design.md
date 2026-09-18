@@ -173,7 +173,7 @@ built on existing owner-authenticated surfaces:
 - [x] App: Answer screen (question + permission) and notification actions
 - [x] App: Info sheet (worklog, git, PR, ports, screenshots)
 - [x] App: New session / window / pane sheets
-- [ ] App: Tiles list + chromium screencast + review mode + pending strip
+- [x] App: Tiles list + chromium screencast + review mode + pending strip
 - [x] App: Settings (rules, mutes, quiet hours, terminal, theme)
 - [ ] App: iPad three-column layout
 - [ ] E2E: daemon on a QA tmux socket + Tailscale, phone on the tailnet, full loop:
