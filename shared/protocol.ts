@@ -534,6 +534,7 @@ export type ServerMessage =
       reason: 'load' | 'save'
     }
   | { type: 'web_panes'; webPanes: WebPane[]; feedback?: Record<string, WebPaneFeedbackInfo> }
+  | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -607,3 +608,5 @@ export type ClientMessage =
   | { type: 'refresh'; requestId: string }
   | { type: 'load_workspace'; sessionId: string; requestId: string }
   | { type: 'save_workspace'; workspace: SavedWorkspace; requestId: string }
+  | { type: 'watch_usage'; enabled: boolean; requestId: string }
+  | { type: 'refresh_usage'; requestId: string }

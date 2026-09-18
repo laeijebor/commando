@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import type { ProviderUsage, UsageWindow } from '../shared/protocol.js'
 
 const execFileAsync = promisify(execFile)
-const REFRESH_INTERVAL_MS = 60_000
+export const USAGE_REFRESH_INTERVAL_MS = 60_000
 const REQUEST_TIMEOUT_MS = 5_000
 
 type Fetch = typeof fetch
@@ -152,15 +152,18 @@ function failed(provider: 'claude' | 'codex', updatedAt: number): ProviderUsage 
   }
 }
 
+type UsageConsumer = { notify: (usage: ProviderUsage[]) => void }
+
 export class ProviderUsageService {
   private readonly fetch: Fetch
   private readonly now: () => number
   private readonly readClaudeCredentials: () => Promise<unknown>
   private readonly readCodexCredentials: () => Promise<unknown>
+  private readonly consumers = new Set<UsageConsumer>()
   private timer: NodeJS.Timeout | undefined
   private refreshing: Promise<ProviderUsage[]> | null = null
   private usage: ProviderUsage[] = []
-  private onUpdate: ((usage: ProviderUsage[]) => void) | undefined
+  private lastUpdated = 0
 
   constructor(options: ProviderUsageOptions = {}) {
     this.fetch = options.fetch ?? globalThis.fetch
@@ -176,18 +179,38 @@ export class ProviderUsageService {
     }))
   }
 
-  start(onUpdate: (usage: ProviderUsage[]) => void): void {
-    this.onUpdate = onUpdate
-    if (this.timer) return
-    void this.refresh()
-    this.timer = setInterval(() => void this.refresh(), REFRESH_INTERVAL_MS)
-    this.timer.unref()
+  /** Timestamp of the last completed refresh, or 0 while the cache is empty. */
+  lastUpdatedAt(): number {
+    return this.lastUpdated
   }
 
+  consumerCount(): number {
+    return this.consumers.size
+  }
+
+  /**
+   * Registers a consumer of the shared refresh loop. The loop starts with the
+   * first consumer and stops once the returned release function has been called
+   * by every consumer; releasing twice is a no-op.
+   */
+  acquire(onUpdate: (usage: ProviderUsage[]) => void): () => void {
+    const consumer: UsageConsumer = { notify: onUpdate }
+    this.consumers.add(consumer)
+    if (!this.timer) {
+      void this.refresh()
+      this.timer = setInterval(() => void this.refresh(), USAGE_REFRESH_INTERVAL_MS)
+      this.timer.unref()
+    }
+    return () => {
+      if (!this.consumers.delete(consumer)) return
+      if (this.consumers.size === 0) this.stop()
+    }
+  }
+
+  /** Stops the refresh loop regardless of consumers; used on shutdown. */
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
-    this.onUpdate = undefined
   }
 
   refresh(): Promise<ProviderUsage[]> {
@@ -195,8 +218,10 @@ export class ProviderUsageService {
     this.refreshing = Promise.all([this.loadClaude(), this.loadCodex()])
       .then((usage) => {
         this.usage = usage
-        this.onUpdate?.(this.values())
-        return this.values()
+        this.lastUpdated = this.now()
+        const values = this.values()
+        for (const consumer of this.consumers) consumer.notify(this.values())
+        return values
       })
       .finally(() => {
         this.refreshing = null

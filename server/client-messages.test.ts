@@ -403,3 +403,36 @@ describe('pane reset limiting', () => {
     expect(gate.decide('%1', false)).toBe('allow')
   })
 })
+
+describe('usage messages', () => {
+  it('parses usage watch requests', () => {
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true, requestId: 'r1' })).toEqual({
+      ok: true,
+      message: { type: 'watch_usage', enabled: true, requestId: 'r1' },
+    })
+    expect(parseClientMessage({ type: 'watch_usage', enabled: false, requestId: 'r2' })).toEqual({
+      ok: true,
+      message: { type: 'watch_usage', enabled: false, requestId: 'r2' },
+    })
+  })
+
+  it('rejects usage watch requests without a boolean flag or request id', () => {
+    expect(parseClientMessage({ type: 'watch_usage', enabled: 'yes', requestId: 'r1' })).toEqual({
+      ok: false,
+      error: 'Invalid usage watch request',
+      requestId: 'r1',
+    })
+    expect(parseClientMessage({ type: 'watch_usage', requestId: 'r1' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true, requestId: 'no spaces' }).ok).toBe(false)
+  })
+
+  it('parses usage refresh requests and rejects malformed ids', () => {
+    expect(parseClientMessage({ type: 'refresh_usage', requestId: 'r3' })).toEqual({
+      ok: true,
+      message: { type: 'refresh_usage', requestId: 'r3' },
+    })
+    expect(parseClientMessage({ type: 'refresh_usage' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'refresh_usage', requestId: 42 }).ok).toBe(false)
+  })
+})
