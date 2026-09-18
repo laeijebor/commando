@@ -31,9 +31,19 @@ only. Bundle id `com.commando.companion`.
 - **Create** — new session (repository, directory, worktree branch and path,
   preparation command, agent and opening prompt), new window and split pane,
   reached from the "+" affordances on the tree's session and window rows.
-- Answer, Activity and Tiles are navigable placeholders that already render the
-  live data they have. The answer channel and push notifications are later
-  phases of the plan in the spec.
+- **Answer** — screen 04. A pending `AgentInteractionRequest` from
+  `AgentStatus.details.requests` is rendered as one card per `AgentQuestion`
+  (radio or checkbox options per `multiple`, descriptions, a custom-answer
+  field per `custom`) with **Answer** and **Reject**, or, for a permission, the
+  tool name and prompt over **Allow once / Always / Deny**. The answer goes out
+  as `answer_agent_request` on the live socket and falls back to
+  `POST /api/agent-requests/:paneId/:interactionId/answer` with the same id as
+  the `idempotencyKey`. A request that is no longer pending says so.
+- **Notifications** — permission, the Expo push token and a stable per-install
+  device id in the keychain, registered with every host through
+  `PUT /api/push/devices/:id`. See below.
+- Activity and Tiles are navigable placeholders that already render the live
+  data they have.
 
 ## The terminal page
 
@@ -95,6 +105,26 @@ A native client sends no `Origin` header, so it passes the daemon's origin
 check on its own; the trusted-origins list only matters for browser clients on
 the same name. Token-only daemons work too — switch the sign-in sheet to "Use
 automation token" and paste `COMMANDO_TOKEN`.
+
+## Push notifications
+
+The app registers one device per install with every host it knows:
+
+- the device id is created once and kept in `expo-secure-store`, so a
+  re-registration updates the same row in `~/.commando/push-devices.json`;
+- the rules (needs input / finishes / fails, quiet hours in the device's IANA
+  time zone, muted tmux sessions) are edited on the Settings screen, persisted
+  locally and re-`PUT` to every host on change — the daemon evaluates them, so
+  a mute stops the push at the source;
+- the categories match the daemon's: `needs_input` ("Answer", "Open pane"),
+  `permission` ("Allow once", "Deny" — both answered in the background over the
+  HTTP answer route — and "Open"), `done` and `failed` (tap opens the pane);
+- a tapped notification deep-links by its `data`. The payload carries no host
+  id, so the app picks the registered host whose snapshot holds the pane, then
+  the only registered host, then the host on screen.
+
+A push token needs a real device and an EAS project id; on the simulator, or
+without one, the Settings screen says so instead of failing silently.
 
 ## Shared protocol
 

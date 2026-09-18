@@ -20,12 +20,16 @@ export function AgentRowCard({
 }): React.JSX.Element {
   const theme = useTheme()
   const hot = row.group === 'needs_you'
+  // A Needs-you row goes to the answer screen rather than the pane, so it says
+  // so instead of showing the plain chevron.
+  const answerable = hot && row.pendingQuestionCount > 0
   const progress = row.progress
   const accent = statusColor(theme, row.status.status)
 
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityHint={answerable ? 'Opens the answer screen' : 'Opens the pane'}
       accessibilityLabel={`${row.sessionName}: ${row.headline}`}
       onPress={onPress}
       style={[
@@ -68,7 +72,11 @@ export function AgentRowCard({
       </View>
       <View style={styles.when}>
         <Text style={[styles.stamp, { color: theme.textDim }]}>{relativeTime(row.updatedAt)}</Text>
-        <Feather color={hot ? accent : theme.textFaint} name="chevron-right" size={16} />
+        {answerable ? (
+          <Text style={[styles.answer, { color: accent }]}>Answer</Text>
+        ) : (
+          <Feather color={hot ? accent : theme.textFaint} name="chevron-right" size={16} />
+        )}
       </View>
     </Pressable>
   )
@@ -92,4 +100,5 @@ const styles = StyleSheet.create({
   progress: { gap: 4, paddingTop: 2 },
   when: { alignItems: 'flex-end', gap: 6 },
   stamp: { fontSize: 12, fontVariant: ['tabular-nums'] },
+  answer: { fontSize: 13, fontWeight: '600' },
 })

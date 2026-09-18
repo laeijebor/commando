@@ -46,6 +46,7 @@ export function nextRequestId(): string {
 export type PaneStreamMessage = Extract<ServerMessage, { type: 'pane_reset' | 'pane_data' }>
 
 export type PaneStreamHandler = (message: PaneStreamMessage) => void
+export type ServerMessageListener = (message: ServerMessage) => void
 
 export type DaemonClientOptions = {
   host: Host
@@ -74,11 +75,29 @@ export class DaemonClient {
   private readonly paneHandlers = new Map<string, Set<PaneStreamHandler>>()
   /** Panes this socket currently holds a resize lease on. */
   private readonly resizeLeases = new Set<string>()
+  private readonly listeners = new Set<ServerMessageListener>()
 
   constructor(options: DaemonClientOptions) {
     this.host = options.host
     this.hostId = options.host.id
     this.cookie = options.cookie ?? null
+  }
+
+  /** True while the socket can carry a message right now. */
+  get isOpen(): boolean {
+    return this.socket?.readyState === 1
+  }
+
+  /**
+   * Every parsed message, after the store has folded it in. Screens that need
+   * a reply to one request they sent (an answered agent request, an `error`
+   * carrying their `requestId`) listen here rather than polling the store.
+   */
+  subscribe(listener: ServerMessageListener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
 
   get url(): string {
@@ -262,6 +281,7 @@ export class DaemonClient {
         return
       }
       useDaemonStore.getState().ingest(this.hostId, message)
+      for (const listener of [...this.listeners]) listener(message)
     }
 
     socket.onerror = () => {

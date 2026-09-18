@@ -5,7 +5,13 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
-import { buildAgentRows, buildSessionTree, groupAgentRows } from '../../../src/agents/selectors'
+import {
+  buildAgentRows,
+  buildSessionTree,
+  groupAgentRows,
+  pendingRequest,
+  type AgentRow,
+} from '../../../src/agents/selectors'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import { useHostsStore } from '../../../src/hosts/store'
 import {
@@ -70,6 +76,20 @@ export default function SessionsScreen(): React.JSX.Element {
     })
   }
 
+  // A row with a pending question or permission opens the answer screen; every
+  // other row opens the pane.
+  const openRow = (row: AgentRow): void => {
+    const request = pendingRequest(row.status)
+    if (!request) {
+      openPane(row.paneId)
+      return
+    }
+    router.push({
+      pathname: '/(host)/[hostId]/answer/[paneId]/[interactionId]',
+      params: { hostId: hostId ?? '', paneId: row.paneId, interactionId: request.id },
+    })
+  }
+
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <ScreenTitle
@@ -97,7 +117,7 @@ export default function SessionsScreen(): React.JSX.Element {
         ) : null}
 
         {view === 'attention' ? (
-          <AttentionList groups={groups} onSelectPane={openPane} usage={state.usage} />
+          <AttentionList groups={groups} onSelectRow={openRow} usage={state.usage} />
         ) : (
           <>
             <SessionTree groups={tree} onSelectPane={openPane} />

@@ -26,3 +26,8 @@ export const SESSIONS_VIEW_PREFERENCE_KEY = 'commando.sessions.view'
 /** Default for the pane screen's "Fit pane to phone" toggle. */
 export const TERMINAL_FIT_PREFERENCE_KEY = 'commando.terminal.fit'
 export const TERMINAL_FONT_SIZE_PREFERENCE_KEY = 'commando.terminal.fontSize'
+
+/** Notification rules, the stable per-install push device id and the hosts it is registered with. */
+export const PUSH_RULES_PREFERENCE_KEY = 'commando.push.rules'
+export const PUSH_DEVICE_ID_KEY = 'commando.push.deviceId'
+export const PUSH_REGISTERED_HOSTS_KEY = 'commando.push.hosts'

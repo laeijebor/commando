@@ -2,7 +2,7 @@ import { StyleSheet, View } from 'react-native'
 
 import type { ProviderUsage } from '@commando/protocol'
 
-import type { AgentGroup } from '../agents/selectors'
+import type { AgentGroup, AgentRow } from '../agents/selectors'
 import { AgentRowCard } from './AgentRowCard'
 import { EmptyState, SectionHeader } from './primitives'
 import { UsageTiles } from './UsageTiles'
@@ -15,11 +15,11 @@ import { UsageTiles } from './UsageTiles'
 export function AttentionList({
   groups,
   usage,
-  onSelectPane,
+  onSelectRow,
 }: {
   groups: readonly AgentGroup[]
   usage: readonly ProviderUsage[]
-  onSelectPane?: (paneId: string) => void
+  onSelectRow?: (row: AgentRow) => void
 }): React.JSX.Element {
   return (
     <View style={styles.container}>
@@ -29,7 +29,7 @@ export function AttentionList({
           <SectionHeader label={group.label} note={String(group.rows.length)} />
           <View style={styles.list}>
             {group.rows.map((row) => (
-              <AgentRowCard key={row.paneId} onPress={() => onSelectPane?.(row.paneId)} row={row} />
+              <AgentRowCard key={row.paneId} onPress={() => onSelectRow?.(row)} row={row} />
             ))}
           </View>
         </View>

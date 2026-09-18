@@ -1,4 +1,5 @@
 import type {
+  AgentInteractionRequest,
   AgentProvider,
   AgentStatus,
   AgentStatusKind,
@@ -166,6 +167,15 @@ export function buildAgentRows({ statuses, snapshot, briefs = {} }: AgentRowInpu
       group: agentGroupFor(status),
     }
   })
+}
+
+/**
+ * The request a Needs-you row answers when it is tapped: the oldest pending
+ * one, which is the same one the row's headline and the daemon's push
+ * notification describe.
+ */
+export function pendingRequest(status: AgentStatus): AgentInteractionRequest | undefined {
+  return status.details?.requests?.[0]
 }
 
 export function compareAgentRows(left: AgentRow, right: AgentRow): number {
