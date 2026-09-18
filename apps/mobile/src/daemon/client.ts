@@ -1,4 +1,4 @@
-import type { ClientMessage, SpecialKey } from '@commando/protocol'
+import type { ClientMessage, ServerMessage, SpecialKey } from '@commando/protocol'
 
 import type { Host } from '../hosts/types'
 import { webSocketBase } from '../hosts/types'
@@ -42,6 +42,11 @@ export function nextRequestId(): string {
   return `m-${Date.now().toString(36)}-${requestCounter.toString(36)}`
 }
 
+/** A pane stream message the pane screen renders: `pane_reset` or `pane_data`. */
+export type PaneStreamMessage = Extract<ServerMessage, { type: 'pane_reset' | 'pane_data' }>
+
+export type PaneStreamHandler = (message: PaneStreamMessage) => void
+
 export type DaemonClientOptions = {
   host: Host
   /** Session cookie captured at sign-in, replayed when the jar is not shared. */
@@ -62,6 +67,13 @@ export class DaemonClient {
   private attempt = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
+  /**
+   * `subscribe` replaces the daemon's whole set for this socket, so the client
+   * — not the screen — owns the union of what every mounted screen wants.
+   */
+  private readonly paneHandlers = new Map<string, Set<PaneStreamHandler>>()
+  /** Panes this socket currently holds a resize lease on. */
+  private readonly resizeLeases = new Set<string>()
 
   constructor(options: DaemonClientOptions) {
     this.host = options.host
@@ -90,6 +102,7 @@ export class DaemonClient {
     }
     const socket = this.socket
     this.socket = null
+    this.resizeLeases.clear()
     socket?.close()
     this.setPhase('idle', 'Disconnected')
   }
@@ -124,6 +137,79 @@ export class DaemonClient {
 
   key(paneId: string, key: SpecialKey): string | null {
     return this.send({ type: 'key', paneId, key })
+  }
+
+  /**
+   * Streams one pane into `handler` for as long as the returned disposer is
+   * uncalled. Subscribing re-sends the union of every subscribed pane, which
+   * is also how unsubscribing works: the daemon is told the remaining set.
+   */
+  subscribePane(paneId: string, handler: PaneStreamHandler): () => void {
+    const handlers = this.paneHandlers.get(paneId)
+    if (handlers) handlers.add(handler)
+    else this.paneHandlers.set(paneId, new Set([handler]))
+    this.syncSubscriptions()
+
+    let disposed = false
+    return () => {
+      if (disposed) return
+      disposed = true
+      const current = this.paneHandlers.get(paneId)
+      if (!current) return
+      current.delete(handler)
+      if (current.size === 0) {
+        this.paneHandlers.delete(paneId)
+        this.releaseResize(paneId)
+      }
+      this.syncSubscriptions()
+    }
+  }
+
+  get subscribedPaneIds(): string[] {
+    return [...this.paneHandlers.keys()]
+  }
+
+  /** Asks the daemon to seed the pane again — used after a queue overflow. */
+  requestPaneReset(paneId: string): string | null {
+    return this.send({ type: 'request_pane_reset', paneId })
+  }
+
+  /**
+   * Takes the resize lease for "Fit to phone". The daemon resizes the real
+   * tmux pane, so this is opt-in and always paired with `releaseResize`.
+   */
+  resizePane(paneId: string, cols: number, rows: number): string | null {
+    const requestId = this.send({ type: 'resize_pane', paneId, cols, rows })
+    if (requestId !== null) this.resizeLeases.add(paneId)
+    return requestId
+  }
+
+  releaseResize(paneId: string): string | null {
+    if (!this.resizeLeases.delete(paneId)) return null
+    return this.send({ type: 'release_resize', paneId })
+  }
+
+  holdsResizeLease(paneId: string): boolean {
+    return this.resizeLeases.has(paneId)
+  }
+
+  private syncSubscriptions(): void {
+    // Subscribing to a pane that has since died is a protocol violation, and
+    // eight of those close the socket — so a pane the snapshot no longer knows
+    // about is left out rather than asked for again on every reconnect.
+    const snapshot = useDaemonStore.getState().byHost[this.hostId]?.snapshot
+    const paneIds = snapshot
+      ? this.subscribedPaneIds.filter((paneId) => (
+          snapshot.panes.some((pane) => pane.id === paneId)
+        ))
+      : this.subscribedPaneIds
+    this.send({ type: 'subscribe', paneIds })
+  }
+
+  private dispatchPaneMessage(message: PaneStreamMessage): void {
+    const handlers = this.paneHandlers.get(message.paneId)
+    if (!handlers) return
+    for (const handler of handlers) handler(message)
   }
 
   private setPhase(
@@ -161,11 +247,20 @@ export class DaemonClient {
       // while a consumer asks for them, so opt in on every (re)connect.
       this.send({ type: 'watch_usage', enabled: true })
       this.send({ type: 'watch_interactions', enabled: true })
+      // A new socket subscribes to nothing, so the panes on screen have to be
+      // re-subscribed; the daemon answers each one with a fresh `pane_reset`.
+      if (this.paneHandlers.size > 0) this.syncSubscriptions()
     }
 
     socket.onmessage = (event: { data?: unknown }) => {
       const message = parseServerMessage(event.data)
       if (!message) return
+      if (message.type === 'pane_reset' || message.type === 'pane_data') {
+        // Pane bytes are hot and the store has no use for them; they go
+        // straight to whichever screen asked for that pane.
+        this.dispatchPaneMessage(message)
+        return
+      }
       useDaemonStore.getState().ingest(this.hostId, message)
     }
 
@@ -175,6 +270,10 @@ export class DaemonClient {
 
     socket.onclose = (event: { code?: number; reason?: string }) => {
       if (this.socket === socket) this.socket = null
+      // The daemon drops every lease held by a socket that goes away, so the
+      // bookkeeping is cleared rather than sent: there is nothing to send it
+      // down. A screen with "Fit to phone" still on re-takes it on reconnect.
+      this.resizeLeases.clear()
       if (this.stopped) return
       if (event.code === 4401 || event.code === 4403) {
         this.setPhase('unauthorized', 'The daemon rejected these credentials')

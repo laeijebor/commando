@@ -7,6 +7,7 @@
     "start": "expo start",
     "ios": "expo start --ios",
     "typecheck": "tsc --noEmit",
+    "build:terminal": "node scripts/build-terminal-html.mjs",
     "test": "jest"
   },
   "dependencies": {
