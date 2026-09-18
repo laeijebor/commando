@@ -174,6 +174,12 @@ defaults write com.commando.island CommandoPort -int 4310
 
 Remove that override with `defaults delete com.commando.island CommandoPort`.
 
+### Companion clients
+
+Island is not the only client that can answer an agent. Any owner-authenticated `/ws` client may opt in with `{type:'watch_interactions', enabled:true, requestId}` and answer with `{type:'answer_agent_request', paneId, interactionId, answer, requestId}`; the daemon acks with `{type:'agent_request_answered', paneId, interactionId, changed, requestId}` and refuses with an `error` carrying `request_unavailable`, `invalid_answer`, or `invalid_pane`. The `requestId` doubles as the idempotency key, so a retried answer re-acks instead of answering a second request. Notification actions that have no socket can use `POST /api/agent-requests/:paneId/:interactionId/answer` with `{answer, idempotencyKey}` (the pane id is percent-encoded, so `%12` is sent as `%2512`), which returns `{ok:true, changed}` behind the same owner authorization as every other `/api/*` route.
+
+Opting in holds agent hooks open exactly like Island does: a pending permission or question keeps the agent's hook request waiting while at least one consumer — a companion socket or an opted-in owner socket — is connected, and every pending request is cancelled back to the terminal prompt once the last one disconnects. Clients that do not opt in, including the desktop web cockpit, still see pending requests in `agent_status` but do not hold hooks open. The first valid answer wins, so Island and a phone can be connected at once.
+
 ## Configuration
 
 | Variable | Purpose | Default |

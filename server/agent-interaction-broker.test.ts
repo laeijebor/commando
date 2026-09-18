@@ -18,7 +18,7 @@ describe('AgentInteractionBroker', () => {
 
   it('delivers validated answers to the matching provider hook', async () => {
     const broker = new AgentInteractionBroker()
-    broker.setConsumerCount(1)
+    broker.registerConsumer()
     const waiting = broker.wait('%1', permission)
 
     expect(broker.hasPending('%1', permission.id)).toBe(true)
@@ -30,7 +30,7 @@ describe('AgentInteractionBroker', () => {
 
   it('cancels a request when the provider answers it elsewhere', async () => {
     const broker = new AgentInteractionBroker()
-    broker.setConsumerCount(1)
+    broker.registerConsumer()
     const waiting = broker.wait('%1', permission)
 
     expect(broker.cancel('%1', permission.id)).toBe(true)
@@ -40,14 +40,47 @@ describe('AgentInteractionBroker', () => {
 
   it('rejects mismatched answer shapes and releases hooks on disconnect', async () => {
     const broker = new AgentInteractionBroker()
-    broker.setConsumerCount(1)
+    const release = broker.registerConsumer()
     const waiting = broker.wait('%1', permission)
 
     expect(broker.answer('%1', permission.id, {
       action: 'answer',
       answers: [['Production']],
     })).toBe(false)
-    broker.setConsumerCount(0)
+    release()
     await expect(waiting).resolves.toBeNull()
+  })
+
+  it('holds hooks open until every registered consumer has released', async () => {
+    const broker = new AgentInteractionBroker()
+    const companion = broker.registerConsumer()
+    const ownerSocket = broker.registerConsumer()
+    expect(broker.consumerCount()).toBe(2)
+
+    const waiting = broker.wait('%1', permission)
+    companion()
+    expect(broker.hasConsumers()).toBe(true)
+    expect(broker.hasPending('%1', permission.id)).toBe(true)
+
+    companion()
+    expect(broker.consumerCount()).toBe(1)
+    expect(broker.hasPending('%1', permission.id)).toBe(true)
+
+    ownerSocket()
+    expect(broker.hasConsumers()).toBe(false)
+    await expect(waiting).resolves.toBeNull()
+    await expect(broker.wait('%1', permission)).resolves.toBeNull()
+  })
+
+  it('accepts hooks again once a new consumer registers', async () => {
+    const broker = new AgentInteractionBroker()
+    const release = broker.registerConsumer()
+    release()
+    await expect(broker.wait('%1', permission)).resolves.toBeNull()
+
+    broker.registerConsumer()
+    const waiting = broker.wait('%1', permission)
+    expect(broker.answer('%1', permission.id, { action: 'deny' })).toBe(true)
+    await expect(waiting).resolves.toEqual({ action: 'deny' })
   })
 })

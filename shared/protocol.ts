@@ -534,6 +534,13 @@ export type ServerMessage =
       reason: 'load' | 'save'
     }
   | { type: 'web_panes'; webPanes: WebPane[]; feedback?: Record<string, WebPaneFeedbackInfo> }
+  | {
+      type: 'agent_request_answered'
+      paneId: string
+      interactionId: string
+      changed: boolean
+      requestId: string
+    }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
@@ -608,5 +615,13 @@ export type ClientMessage =
   | { type: 'refresh'; requestId: string }
   | { type: 'load_workspace'; sessionId: string; requestId: string }
   | { type: 'save_workspace'; workspace: SavedWorkspace; requestId: string }
+  | { type: 'watch_interactions'; enabled: boolean; requestId: string }
+  | {
+      type: 'answer_agent_request'
+      paneId: string
+      interactionId: string
+      answer: AgentInteractionAnswer
+      requestId: string
+    }
   | { type: 'watch_usage'; enabled: boolean; requestId: string }
   | { type: 'refresh_usage'; requestId: string }

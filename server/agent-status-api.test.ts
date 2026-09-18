@@ -128,7 +128,7 @@ describe('AgentStatusHookApi', () => {
   })
 
   it('clears an OpenCode question when the provider answers it elsewhere', async () => {
-    interactions.setConsumerCount(1)
+    interactions.registerConsumer()
     const asked = post('/api/agent-status/hooks/opencode', {
       directory: '/workspace',
       event: {
@@ -170,7 +170,7 @@ describe('AgentStatusHookApi', () => {
   })
 
   it('does not resurrect an OpenCode question when its reply arrives first', async () => {
-    interactions.setConsumerCount(1)
+    interactions.registerConsumer()
     await post('/api/agent-status/hooks/opencode', {
       directory: '/workspace',
       event: {
