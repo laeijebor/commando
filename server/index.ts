@@ -80,6 +80,8 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { AgentRequestApi } from './agent-request-api.js'
+import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answers.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
@@ -124,6 +126,8 @@ type ClientState = {
   paneResetGate: PaneResetGate
   inputQueue: Promise<void>
   violations: number
+  releaseInteractions: (() => void) | null
+  answeredRequestIds: IdempotencyKeyMemory
 }
 
 type PaneStreamState = {
@@ -1316,6 +1320,13 @@ async function main(): Promise<void> {
     onStatusChange: publishAgentStatusChange,
   })
   interactions.setPendingChangeListener(() => companion?.publish())
+  const agentRequestApi = new AgentRequestApi({
+    interactions,
+    registry: agentStatuses,
+    onStatusChange: publishAgentStatusChange,
+    onAnswered: () => companion?.publish(),
+    paneExists,
+  })
   const agentStatusHooks = new AgentStatusHookApi({
     token: agentHookToken,
     registry: agentStatuses,
@@ -1648,6 +1659,55 @@ async function main(): Promise<void> {
             ),
           )
         return
+      case 'watch_interactions': {
+        if (message.enabled) {
+          client.releaseInteractions ??= interactions.registerConsumer()
+        } else {
+          client.releaseInteractions?.()
+          client.releaseInteractions = null
+        }
+        return
+      }
+      case 'answer_agent_request': {
+        if (!paneExists(message.paneId)) {
+          sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
+          return
+        }
+        if (client.answeredRequestIds.has(message.requestId)) {
+          send(client, {
+            type: 'agent_request_answered',
+            paneId: message.paneId,
+            interactionId: message.interactionId,
+            changed: false,
+            requestId: message.requestId,
+          })
+          return
+        }
+        const outcome = answerAgentRequest(
+          {
+            interactions,
+            registry: agentStatuses,
+            onStatusChange: publishAgentStatusChange,
+            onAnswered: () => companion?.publish(),
+          },
+          message.paneId,
+          message.interactionId,
+          message.answer,
+        )
+        if (!outcome.ok) {
+          sendError(client, outcome.code, outcome.message, message.requestId)
+          return
+        }
+        client.answeredRequestIds.remember(message.requestId)
+        send(client, {
+          type: 'agent_request_answered',
+          paneId: message.paneId,
+          interactionId: message.interactionId,
+          changed: outcome.changed,
+          requestId: message.requestId,
+        })
+        return
+      }
       case 'save_workspace': {
         const canonicalWorkspace = {
           ...message.workspace,
@@ -1706,6 +1766,8 @@ async function main(): Promise<void> {
       paneResetGate: new PaneResetGate(),
       inputQueue: Promise.resolve(),
       violations: 0,
+      releaseInteractions: null,
+      answeredRequestIds: new IdempotencyKeyMemory(),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
@@ -1748,6 +1810,8 @@ async function main(): Promise<void> {
     })
     const removeClient = (): void => {
       if (!clients.delete(client)) return
+      client.releaseInteractions?.()
+      client.releaseInteractions = null
       syncRequiredSessions()
       void tmux
         .releasePaneResize(client.id)
@@ -1840,6 +1904,7 @@ async function main(): Promise<void> {
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
+        if (await agentRequestApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
