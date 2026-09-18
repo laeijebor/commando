@@ -1,0 +1,670 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{color-scheme:dark}body{margin:0;font:14px system-ui}img{max-width:100%}</style></head><body>
+<title>Commando Companion</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+:root{
+  --bg:#0c0a14;--surface:#100d1a;--raised:#131020;--soft:#181428;--hover:#1f1a31;
+  --border:#2c2542;--border-mid:#363048;--border-strong:#443a63;
+  --text:#f5f3fa;--text-soft:#c6c0d6;--muted:#8f87a6;--dim:#655f78;--faint:#524f67;
+  --accent:#b9a3ff;--accent-ink:#0e0a1c;--green:#85f4b1;--cyan:#73d9e2;--amber:#f3c66b;--red:#ff8d89;
+  --term-bg:#0a0a0a;
+  /* Rosé Pine Moon */
+  --rp-text:#e0def4;--rp-subtle:#908caa;--rp-muted:#6e6a86;--rp-iris:#c4a7e7;--rp-foam:#9ccfd8;--rp-gold:#f6c177;--rp-love:#eb6f92;--rp-rose:#ea9a97;--rp-pine:#3e8fb0;
+  --ui:-apple-system,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",Arial,sans-serif;
+  --page:"Manrope",var(--ui);
+  --mono:"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+html,body{background:var(--bg);color:var(--text);margin:0}
+body{font-family:var(--page);padding-block:0 96px;padding-inline:clamp(16px,4vw,48px);line-height:1.5}
+*{box-sizing:border-box}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:700}
+p{margin:0}
+a{color:var(--accent)}
+.wrap{max-width:1360px;margin:0 auto}
+.hero{padding-block:56px 32px;display:grid;gap:14px;max-width:760px}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.hero h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.02em;line-height:1.05}
+.hero p{color:var(--text-soft);font-size:17px;max-width:62ch}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.legend span{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:4px 10px}
+.legend b{color:var(--text-soft);font-weight:600}
+section.screens{padding-block:32px;border-top:1px solid var(--border)}
+section.screens>h2{font-size:22px;letter-spacing:-.01em;margin-bottom:6px}
+section.screens>p.lead{color:var(--muted);max-width:70ch;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,393px),1fr));gap:40px 32px;align-items:start;justify-items:center}
+figure{margin:0;display:grid;gap:14px;width:100%;max-width:393px}
+figcaption{display:grid;gap:6px}
+figcaption h3{font-size:15px}
+figcaption p{font-size:13px;color:var(--muted);line-height:1.5}
+figcaption code{font-family:var(--mono);font-size:11.5px;color:var(--cyan)}
+.step{font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:.08em}
+
+/* ---------- phone frame ---------- */
+.phone{width:100%;max-width:393px;height:852px;border-radius:54px;background:#000;border:1px solid var(--border-strong);box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 0 0 10px #050408;padding:10px;position:relative;font-family:var(--ui);color:var(--text);font-size:15px;line-height:1.35}
+.screen{position:relative;height:100%;border-radius:44px;background:var(--bg);overflow:hidden;display:flex;flex-direction:column}
+.status{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 30px 0 34px;font-size:15px;font-weight:600;flex:none}
+.island{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:120px;height:35px;border-radius:20px;background:#000}
+.status .r{display:flex;gap:6px;align-items:center;font-size:12px}
+.status .r i{display:inline-block;width:18px;height:10px;border:1.5px solid var(--text);border-radius:3px;position:relative}
+.status .r i::after{content:"";position:absolute;inset:1.5px;right:4px;background:var(--text);border-radius:1px}
+.nav{display:flex;align-items:center;gap:10px;padding:6px 16px 10px;flex:none}
+.nav .back{color:var(--accent);font-size:15px;display:flex;align-items:center;gap:2px}
+.nav .title{flex:1;min-width:0}
+.nav .title b{display:block;font-size:17px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .title small{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .act{color:var(--accent);font-size:15px;font-weight:600}
+.big{padding:6px 20px 12px;font-size:32px;font-weight:800;letter-spacing:-.02em;display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.body{flex:1;overflow:hidden;padding:0 16px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.home{height:5px;width:134px;border-radius:3px;background:var(--text);opacity:.85;margin:8px auto 6px;flex:none}
+.tabbar{flex:none;display:grid;grid-template-columns:repeat(4,1fr);padding:10px 12px 0;border-top:1px solid var(--border);background:var(--surface)}
+.tabbar div{display:grid;justify-items:center;gap:3px;font-size:10px;color:var(--dim);font-weight:600}
+.tabbar div.on{color:var(--accent)}
+.tabbar svg{width:24px;height:24px}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}
+.pill.claude{background:rgba(185,163,255,.16);color:var(--accent)}
+.pill.codex{background:rgba(115,217,226,.14);color:var(--cyan)}
+.pill.opencode{background:rgba(243,198,107,.14);color:var(--amber)}
+.pill.shell{background:var(--soft);color:var(--muted)}
+.pill.ok{background:rgba(133,244,177,.14);color:var(--green)}
+.pill.warn{background:rgba(243,198,107,.16);color:var(--amber)}
+.pill.bad{background:rgba(255,141,137,.16);color:var(--red)}
+.pill.mute{background:var(--soft);color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.dot.amber{background:var(--amber);box-shadow:0 0 0 3px rgba(243,198,107,.18)}
+.dot.green{background:var(--green)}
+.dot.red{background:var(--red)}
+.dot.mute{background:var(--faint)}
+.dot.pulse{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(243,198,107,.05)}}
+@media (prefers-reduced-motion:reduce){.dot.pulse{animation:none}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px 14px}
+.card.raised{background:var(--raised)}
+.sec{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:700;display:flex;justify-content:space-between;align-items:center}
+.sec .n{color:var(--dim);letter-spacing:0}
+.list{display:grid;gap:8px}
+.row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:11px 12px}
+.row.hot{border-color:rgba(243,198,107,.45);background:linear-gradient(180deg,rgba(243,198,107,.06),transparent 60%),var(--surface)}
+.row .t{min-width:0;display:grid;gap:3px}
+.row .t b{font-size:15px;font-weight:650;display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden}
+.row .t b .sess{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .t .h{font-size:13.5px;color:var(--text-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .t .m{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center;overflow:hidden;white-space:nowrap}
+.row .when{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;align-self:start;display:grid;justify-items:end;gap:6px}
+.chev{color:var(--faint)}
+.bar{height:4px;border-radius:2px;background:var(--soft);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.bar.g i{background:var(--green)}.bar.a i{background:var(--amber)}.bar.c i{background:var(--cyan)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:12px;padding:11px 14px;font-size:15px;font-weight:650;border:1px solid var(--border-mid);background:var(--soft);color:var(--text)}
+.btn.p{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.d{background:rgba(255,141,137,.12);color:var(--red);border-color:rgba(255,141,137,.3)}
+.btn.s{padding:7px 10px;font-size:13px;border-radius:9px}
+.btn.g{background:rgba(133,244,177,.14);color:var(--green);border-color:rgba(133,244,177,.3)}
+.mono{font-family:var(--mono)}
+.field{background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:15px;color:var(--text);display:flex;align-items:center;gap:8px}
+.field.ph{color:var(--dim)}
+.field label{font-size:12px;color:var(--muted);font-weight:600;min-width:74px}
+.kb{display:flex;gap:6px;overflow:hidden;padding:8px 12px 4px;flex:none}
+.kb span{flex:none;background:var(--soft);border:1px solid var(--border-mid);border-radius:8px;padding:6px 10px;font-size:12.5px;font-weight:600;font-family:var(--mono);color:var(--text-soft)}
+.kb span.on{background:rgba(185,163,255,.2);color:var(--accent);border-color:rgba(185,163,255,.4)}
+.composer{display:flex;gap:8px;align-items:center;padding:6px 12px 4px;flex:none}
+.composer .field{flex:1;border-radius:22px;padding:10px 14px}
+.composer .send{width:38px;height:38px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-weight:800;flex:none}
+.term{flex:1;min-height:0;background:var(--term-bg);border-radius:14px;border:1px solid var(--border);padding:12px 12px;font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--rp-text);overflow:hidden;white-space:pre;position:relative}
+.term .c{color:var(--rp-subtle)}.term .g{color:var(--rp-gold)}.term .f{color:var(--rp-foam)}.term .i{color:var(--rp-iris)}.term .l{color:var(--rp-love)}.term .p{color:var(--rp-pine)}.term .r{color:var(--rp-rose)}.term .m{color:var(--rp-muted)}
+.term .cur{display:inline-block;width:7px;height:13px;background:var(--rp-text);vertical-align:-2px}
+.term .box{border:1px solid var(--rp-muted);border-radius:4px;padding:4px 8px;margin-top:6px;white-space:pre-wrap}
+.chips{display:flex;gap:6px;overflow:hidden;flex:none;padding:0 16px}
+.chips span{flex:none;border-radius:10px;padding:6px 10px;font-size:12.5px;font-weight:600;color:var(--muted);background:var(--surface);border:1px solid var(--border);display:flex;gap:6px;align-items:center}
+.chips span.on{color:var(--text);background:var(--soft);border-color:var(--border-strong)}
+.hud{display:grid;gap:6px;background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:8px 12px;flex:none}
+.hud .l1{display:flex;align-items:center;gap:8px;font-size:13px}
+.hud .l1 b{font-weight:650}
+.hud .l1 .act{color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;flex:1;min-width:0}
+.hud .l1 .n{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+.sheet{margin-top:auto;background:var(--surface);border:1px solid var(--border-mid);border-bottom:0;border-radius:24px 24px 0 0;padding:8px 16px 12px;display:grid;gap:12px;box-shadow:0 -20px 60px rgba(0,0,0,.5)}
+.grab{width:36px;height:5px;border-radius:3px;background:var(--border-strong);margin:0 auto 2px}
+.opt{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:10px 12px}
+.opt.on{border-color:var(--accent);background:rgba(185,163,255,.08)}
+.opt .radio{width:20px;height:20px;border-radius:50%;border:2px solid var(--border-strong);margin-top:1px}
+.opt.on .radio{border-color:var(--accent);background:radial-gradient(circle,var(--accent) 45%,transparent 50%)}
+.opt b{display:block;font-size:14.5px;font-weight:650}
+.opt small{display:block;font-size:12.5px;color:var(--muted);line-height:1.4}
+.kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13.5px}
+.kv span:nth-child(2n){color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.check{display:grid;gap:6px;font-size:14px}
+.check div{display:flex;gap:8px;align-items:flex-start}
+.check i{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--border-strong);flex:none;margin-top:2px;display:grid;place-items:center;font-style:normal;font-size:10px}
+.check i.d{background:var(--green);border-color:var(--green);color:#0a1c14}
+.check i.p{border-color:var(--accent);background:rgba(185,163,255,.2)}
+.check .s{color:var(--muted);text-decoration:line-through}
+.tl{display:grid;gap:8px;font-size:13px}
+.tl div{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start;color:var(--text-soft)}
+.tl .k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;padding:2px 6px;border-radius:6px;margin-top:1px}
+.tl .k.c{background:rgba(115,217,226,.14);color:var(--cyan)}.tl .k.d{background:rgba(185,163,255,.16);color:var(--accent)}.tl .k.k{background:rgba(133,244,177,.14);color:var(--green)}.tl .k.b{background:rgba(255,141,137,.14);color:var(--red)}
+.tl small{color:var(--dim);font-variant-numeric:tabular-nums}
+.files{display:grid;gap:4px;font-family:var(--mono);font-size:11.5px}
+.files div{display:flex;justify-content:space-between;gap:8px;color:var(--text-soft)}
+.files em{font-style:normal;color:var(--green)}.files s{text-decoration:none;color:var(--red)}
+.seg{display:grid;grid-template-columns:repeat(4,1fr);background:var(--raised);border:1px solid var(--border);border-radius:10px;padding:3px;font-size:13px;font-weight:600;text-align:center}
+.seg span{padding:7px 4px;border-radius:8px;color:var(--muted)}
+.seg span.on{background:var(--soft);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+.toggle{width:44px;height:26px;border-radius:13px;background:var(--border-mid);position:relative;flex:none}
+.toggle::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff}
+.toggle.on{background:var(--green)}.toggle.on::after{left:21px}
+.set{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.set div{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--surface);padding:11px 14px;font-size:15px}
+.set div small{display:block;font-size:12px;color:var(--muted)}
+.set div span:last-child{color:var(--muted);font-size:14px}
+/* notification cards (lock screen) */
+.lock{position:absolute;inset:0;background:radial-gradient(120% 70% at 50% 0%,#2a1f4d 0%,#120d22 45%,#0c0a14 100%)}
+.clock{text-align:center;padding-top:70px;font-weight:300;font-size:82px;letter-spacing:-.03em;line-height:1}
+.clock small{display:block;font-size:20px;font-weight:600;letter-spacing:0}
+.notes{position:absolute;left:12px;right:12px;bottom:110px;display:grid;gap:8px}
+.note{background:rgba(24,20,40,.82);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:22px;padding:12px 14px;display:grid;grid-template-columns:38px 1fr;gap:10px;font-size:14px}
+.note .ic{width:38px;height:38px;border-radius:10px;background:linear-gradient(145deg,#b9a3ff,#7a5cff);display:grid;place-items:center;color:#0e0a1c;font-weight:900;font-family:var(--mono)}
+.note .h{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}
+.note b{display:block;font-weight:650}
+.note p{color:var(--text-soft);font-size:13.5px}
+.note .acts{grid-column:2;display:flex;gap:6px;margin-top:4px}
+.note .acts span{border-radius:9px;padding:6px 10px;font-size:13px;font-weight:600;background:rgba(255,255,255,.08)}
+.note .acts span.p{background:var(--accent);color:var(--accent-ink)}
+/* tile mock content */
+.tile{flex:1;min-height:0;border-radius:14px;border:1px solid var(--border);background:#0f0c1a;overflow:hidden;position:relative;font-size:12px}
+.tile .rn{background:#151024;border-bottom:1px solid var(--border);padding:8px 10px;display:grid;gap:2px}
+.tile .rn small{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.tile .rn b{font-size:14px}
+.tile .rn .st{display:flex;gap:6px;margin-top:4px;font-size:10.5px;color:var(--muted)}
+.tile .rn .st span{border:1px solid var(--border);border-radius:6px;padding:2px 6px}
+.tile .rn .st span.on{color:var(--text);border-color:var(--accent);background:rgba(185,163,255,.12)}
+.tile .sec2{padding:10px;display:grid;gap:8px}
+.tile h4{margin:0;font-size:13px}
+.tile p{color:var(--text-soft);font-size:11.5px;line-height:1.45}
+.mini{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.mini div{border:1px solid var(--border);border-radius:8px;height:64px;background:var(--surface);position:relative;overflow:hidden}
+.mini div::before{content:"";position:absolute;left:8px;right:8px;top:8px;height:6px;background:var(--border-strong);border-radius:3px}
+.mini div::after{content:"";position:absolute;left:8px;right:30px;top:20px;height:5px;background:var(--border);border-radius:3px;box-shadow:0 10px 0 var(--border),0 20px 0 var(--border)}
+.mini div.sel{outline:2px solid var(--amber);outline-offset:-2px}
+.pin{position:absolute;width:20px;height:20px;border-radius:50% 50% 50% 0;background:var(--amber);color:#1c1406;font-size:11px;font-weight:800;display:grid;place-items:center;transform:rotate(-45deg)}
+.pin b{transform:rotate(45deg)}
+.aura{border:1px solid rgba(185,163,255,.35);background:linear-gradient(180deg,rgba(185,163,255,.10),rgba(185,163,255,.03));border-radius:10px;padding:8px 10px;display:grid;gap:6px}
+.aura .q{font-weight:650;font-size:12.5px}
+.aura .o{display:flex;gap:6px;flex-wrap:wrap}
+.aura .o span{border:1px solid var(--border-strong);border-radius:999px;padding:3px 9px;font-size:11px}
+.aura .o span.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.aura .qa{display:flex;gap:6px;align-items:center;justify-content:space-between}
+.aura .qa i{font-style:normal;font-size:10.5px;color:var(--green)}
+.aura .qa span{font-size:11px;font-weight:700;border-radius:7px;padding:5px 9px;background:var(--soft);border:1px solid var(--border-mid)}
+.qstrip{flex:none;display:flex;gap:8px;align-items:center;background:var(--raised);border:1px solid var(--border-mid);border-radius:12px;padding:8px 10px;font-size:12.5px}
+.qstrip .q{display:flex;gap:6px;flex:1;min-width:0;overflow:hidden}
+.qstrip .q span{border-radius:999px;padding:2px 8px;font-size:11px;font-weight:600;background:rgba(243,198,107,.14);color:var(--amber);white-space:nowrap}
+.qstrip .q span.ok{background:rgba(133,244,177,.14);color:var(--green)}
+.fab{position:absolute;right:18px;bottom:96px;width:52px;height:52px;border-radius:16px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:28px;font-weight:700;box-shadow:0 10px 30px rgba(185,163,255,.35)}
+.usage{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.usage .card{padding:9px 12px;display:grid;gap:5px}
+.usage .card b{font-size:12.5px;display:flex;justify-content:space-between}
+.usage .card small{font-size:11px;color:var(--dim)}
+
+/* ---------- iPad ---------- */
+.pad-wrap{width:100%;overflow:hidden}
+.pad{width:1180px;height:820px;border-radius:38px;background:#000;border:1px solid var(--border-strong);padding:14px;box-shadow:0 30px 80px rgba(0,0,0,.6);transform-origin:top left;font-family:var(--ui);font-size:14px;line-height:1.35}
+.pad .screen{border-radius:26px;display:grid;grid-template-columns:300px 1fr 340px;grid-template-rows:auto 1fr;height:100%}
+.pad .pstatus{grid-column:1/-1;height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:12px;font-weight:600;color:var(--text-soft)}
+.pad .col{display:flex;flex-direction:column;gap:10px;min-height:0;padding:6px 12px 12px;border-right:1px solid var(--border)}
+.pad .col:last-child{border-right:0}
+.pad .list .row{padding:9px 10px}
+.pad .row .t b{font-size:13.5px}.pad .row .t .h{font-size:12.5px}.pad .row .t .m{font-size:11px}
+.pad .card{padding:10px 12px;font-size:13px}
+.pad .term{font-size:11.5px}
+.pad .kb span{font-size:12px}
+</style>
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">Commando · companion app · mockup round 1</div>
+  <h1>Your agents, in your pocket, over your tailnet.</h1>
+  <p>Eight iPhone screens and one iPad layout for the Expo companion. Every screen is drawn from data the daemon already emits (session snapshot, agent HUD, worklog briefs, web tiles, pending redline answers) plus the two things we would add: an owner-authenticated answer channel and push registration. Captions name the daemon surface each screen uses.</p>
+  <div class="legend">
+    <span><b>Purple</b> theme tokens from <code>src/styles.css</code></span>
+    <span><b>Terminal</b> Rosé Pine Moon · JetBrains Mono</span>
+    <span><b>Target</b> iPhone 15/16 Pro · iPad landscape</span>
+    <span><b>Status</b> concept, not a faithful screenshot</span>
+  </div>
+</header>
+
+<section class="screens">
+<h2>Phone</h2>
+<p class="lead">Attention first: the app opens on what needs you, one tap from answering. The terminal is a full screen of its own, not a thumbnail in a grid.</p>
+<div class="grid">
+
+<!-- 1 · Hosts + sign in -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="big"><span>Hosts</span><span class="act" style="font-size:15px;color:var(--accent);font-weight:600">Edit</span></div>
+  <div class="body">
+    <div class="list">
+      <div class="row">
+        <span class="dot green"></span>
+        <div class="t"><b><span class="sess">studio</span></b><div class="m mono">studio.tail-1a2b.ts.net · 4310</div><div class="m"><span class="dot amber" style="width:6px;height:6px"></span>1 needs you · 3 working · 6 sessions</div></div>
+        <span class="chev">›</span>
+      </div>
+      <div class="row">
+        <span class="dot mute"></span>
+        <div class="t"><b><span class="sess">mba</span></b><div class="m mono">100.101.2.7 · 4310</div><div class="m">Offline · last seen 2h ago</div></div>
+        <span class="chev">›</span>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--dim);line-height:1.45">Hosts are reached over Tailscale only. Start the daemon with <span class="mono">COMMANDO_TAILSCALE=true</span>; MagicDNS names also need <span class="mono">COMMANDO_TRUSTED_ORIGINS</span>.</p>
+  </div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div><b style="font-size:20px;font-weight:800;letter-spacing:-.01em">Sign in to studio</b><p style="color:var(--muted);font-size:13px">Owner account · session lasts 30 days</p></div>
+    <div class="field"><label>Email</label><span>leo@ijebor.com</span></div>
+    <div class="field"><label>Password</label><span>••••••••••••••</span></div>
+    <div class="btn p">Sign in</div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--accent)"><span>Use automation token</span><span>Scan pairing QR</span></div>
+    <div class="home"></div>
+  </div>
+</div></div>
+<figcaption><span class="step">01 · CONNECT</span><h3>Hosts and sign-in</h3><p>One card per daemon. Reachability is a <code>GET /api/health</code> probe; badge counts come from the first snapshot. Sign-in posts to Better Auth (<code>/api/auth/sign-in/email</code>) and keeps the cookie in the keychain; the token path exists for token-only daemons. A pairing QR (daemon prints it) is the nicest way to avoid typing a Tailscale IP.</p></figcaption>
+</figure>
+
+<!-- 2 · Sessions inbox -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="big"><span>Sessions</span><span class="pill mute" style="font-size:12px">studio</span></div>
+  <div class="body">
+    <div class="usage">
+      <div class="card"><b><span>Claude</span><span style="color:var(--green)">58% left</span></b><div class="bar g"><i style="width:42%"></i></div><small>5h window · resets 11:20</small></div>
+      <div class="card"><b><span>Codex</span><span style="color:var(--cyan)">91% left</span></b><div class="bar c"><i style="width:9%"></i></div><small>weekly · resets Mon</small></div>
+    </div>
+    <div class="sec"><span>Needs you</span><span class="n">1</span></div>
+    <div class="list">
+      <div class="row hot">
+        <span class="dot amber pulse"></span>
+        <div class="t"><b><span class="sess">commando</span><span class="pill claude">Claude</span></b><div class="h">Which auth flow should the companion use?</div><div class="m">Question · 3 options · window island</div></div>
+        <div class="when">4m<span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="sec"><span>Working</span><span class="n">3</span></div>
+    <div class="list">
+      <div class="row">
+        <span class="dot green"></span>
+        <div class="t"><b><span class="sess">lavish</span><span class="pill codex">Codex</span></b><div class="h">Add retry to the feedback poll</div><div class="m">✎ src/poll.ts · 4/7 tasks</div><div class="bar" style="margin-top:2px"><i style="width:57%"></i></div></div>
+        <div class="when">12m<span class="chev">›</span></div>
+      </div>
+      <div class="row">
+        <span class="dot green"></span>
+        <div class="t"><b><span class="sess">notes-vault</span><span class="pill opencode">OpenCode</span></b><div class="h">Migrate vault picker to Markdown dirs</div><div class="m">▶ vitest · running</div></div>
+        <div class="when">31m<span class="chev">›</span></div>
+      </div>
+      <div class="row">
+        <span class="dot green"></span>
+        <div class="t"><b><span class="sess">cheque-app</span><span class="pill claude">Claude</span></b><div class="h">Wire Stripe webhook idempotency</div><div class="m">⌕ reading app/webhooks.ts</div></div>
+        <div class="when">1h<span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="sec"><span>Done</span><span class="n">1</span></div>
+    <div class="list">
+      <div class="row">
+        <span class="dot mute"></span>
+        <div class="t"><b><span class="sess">island</span><span class="pill claude">Claude</span></b><div class="h">🟢 Visor shortcut works on non-notch Macs</div><div class="m">Recap ready · 2 files changed</div></div>
+        <div class="when">2h<span class="chev">›</span></div>
+      </div>
+    </div>
+    <div class="sec"><span>Idle</span><span class="n">2</span></div>
+  </div>
+  <div class="fab">+</div>
+  <div class="tabbar">
+    <div class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>Sessions</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Activity</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>Tiles</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">02 · HOME</span><h3>Sessions, sorted by who needs you</h3><p>The same grouping the Island uses (<code>needs_input → failed → working → done → idle</code>), built from the <code>/ws</code> snapshot plus <code>agent_status</code> messages. Each row is one agent pane: tmux session, provider chip, HUD headline, current activity and todo progress. Usage tiles need the companion's provider-usage feed exposed to owners. The + button opens the new-session sheet.</p></figcaption>
+</figure>
+
+<!-- 3 · Terminal -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="nav"><span class="back">‹ Sessions</span><div class="title"><b>commando</b><small>island %14 · claude · ⎇ feat/companion-app</small></div><span class="act">Info</span></div>
+  <div class="chips"><span class="on"><span class="dot amber" style="width:6px;height:6px"></span>island</span><span>server</span><span>web</span><span>tiles ·1</span><span>+</span></div>
+  <div class="body" style="padding-top:10px;gap:8px">
+    <div class="hud"><div class="l1"><span class="dot amber pulse"></span><b>Needs input</b><span class="act">Which auth flow should the companion use?</span><span class="n">4/7</span></div><div class="bar a"><i style="width:57%"></i></div></div>
+    <div class="term"><span class="i">●</span> <span class="c">Read</span> server/companion.ts <span class="m">(346 lines)</span>
+<span class="i">●</span> <span class="c">Read</span> server/network-access.ts
+<span class="f">●</span> <span class="c">Edit</span> shared/protocol.ts
+  <span class="m">Added 24 lines, removed 2 lines</span>
+<span class="g">●</span> <span class="c">Bash</span> npm test -- companion
+  <span class="m">✓ 41 passed (2.1s)</span>
+
+<span class="i">✻</span> The companion endpoint is loopback-only and keyed
+  on the hook token, so a phone cannot reach it. Before I
+  add the owner-auth answer path I need one decision.
+
+<div class="box"><span class="g">?</span> <span class="r">Which auth flow should the companion use?</span>
+
+  <span class="f">❯ 1.</span> Owner email + password (session cookie)
+  <span class="m">  2.</span> Pairing code shown by the daemon
+  <span class="m">  3.</span> Automation bearer token
+
+  <span class="m">Enter to select · ↑↓ to move · Esc to cancel</span></div>
+<span class="cur"></span></div>
+    <div class="kb"><span>esc</span><span>tab</span><span>⌃c</span><span>↑</span><span>↓</span><span>←</span><span>→</span><span>⏎</span><span class="on">/</span><span>⌘k</span><span>paste</span></div>
+    <div class="composer"><div class="field ph">Message Claude…</div><div class="send">↑</div></div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">03 · PANE</span><h3>Live terminal with a composer</h3><p>xterm.js inside a WebView, fed by <code>pane_reset</code> / <code>pane_data</code> from <code>/ws</code>. The pane is shown at its source size and scrolls sideways; a "Fit to phone" toggle would take a resize lease and shrink the real tmux pane, so it is opt-in. The key bar sends <code>key</code> messages; the composer sends <code>paste</code> then Enter, so multi-line prompts arrive intact. Window and tile chips switch panes; the HUD strip mirrors the desktop card.</p></figcaption>
+</figure>
+
+<!-- 4 · Question -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="nav"><span class="back">‹ commando</span><div class="title"><b>Claude is asking</b><small>island %14 · asked 4 minutes ago</small></div><span class="act" style="color:var(--muted)">Show pane</span></div>
+  <div class="body" style="padding-top:8px">
+    <div class="card raised" style="display:grid;gap:10px">
+      <div style="display:flex;gap:8px;align-items:center"><span class="pill warn">Question</span><span class="pill claude">Claude</span><span style="font-size:12px;color:var(--dim);margin-left:auto">1 of 1</span></div>
+      <div><div class="sec" style="margin-bottom:4px">Auth flow</div><b style="font-size:19px;font-weight:750;letter-spacing:-.01em;line-height:1.25;display:block">Which auth flow should the companion use for its first version?</b></div>
+      <div class="list">
+        <div class="opt on"><span class="radio"></span><div><b>Owner email + password</b><small>Reuses the Better Auth session cookie; nothing new on the daemon.</small></div></div>
+        <div class="opt"><span class="radio"></span><div><b>Pairing code shown by the daemon</b><small>Scan a QR or type 6 digits; the daemon mints a device token.</small></div></div>
+        <div class="opt"><span class="radio"></span><div><b>Automation bearer token</b><small>Paste <span class="mono">COMMANDO_TOKEN</span>. Simplest, least friendly.</small></div></div>
+      </div>
+      <div class="field ph">Or type your own answer…</div>
+      <div class="field ph" style="min-height:64px;align-items:flex-start">Note for Claude (optional)</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:8px"><div class="btn p">Answer</div><div class="btn">Reject</div></div>
+    <div class="card" style="display:grid;gap:8px">
+      <div style="display:flex;gap:8px;align-items:center"><span class="pill bad">Permission</span><span class="pill codex">Codex</span><span style="font-size:12px;color:var(--dim);margin-left:auto">lavish · 40s</span></div>
+      <div><b style="font-weight:650">Run <span class="mono">Bash</span></b><div class="mono" style="font-size:12px;color:var(--text-soft);margin-top:4px;background:var(--term-bg);border-radius:8px;padding:8px 10px">git push -u origin feat/feedback-retry</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px"><div class="btn s g">Allow once</div><div class="btn s">Always</div><div class="btn s d">Deny</div></div>
+    </div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">04 · ANSWER</span><h3>Questions and permissions, natively</h3><p>Rendered from <code>AgentInteractionRequest</code> (already broadcast on <code>/ws</code> inside agent status). Answering needs a new owner-auth message, <code>answer_agent_request</code>, mirroring the companion channel; the daemon holds the agent's hook open for up to ten minutes, so a phone reply lands in time. Multi-select and custom answers follow the <code>AgentQuestion</code> flags. Below, a permission card with the three legal actions.</p></figcaption>
+</figure>
+
+<!-- 5 · Info / worklog sheet -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="nav"><span class="back">‹ Pane</span><div class="title"><b>island · Claude</b><small>commando · %14 · updated just now</small></div><span class="pill warn">needs input</span></div>
+  <div class="chips"><span class="on">Worklog</span><span>Changes</span><span>PR</span><span>Ports</span><span>Screenshots</span></div>
+  <div class="body" style="padding-top:10px;gap:10px">
+    <div class="card raised" style="display:grid;gap:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start"><span class="dot amber" style="margin-top:6px"></span><div><b style="font-size:16px;font-weight:700;line-height:1.3;display:block">Add an owner-auth answer channel for the companion</b><small style="color:var(--muted);font-size:12px">Task · from hook</small></div></div>
+      <p style="font-size:13.5px;color:var(--text-soft);line-height:1.45">Reusing <span class="mono">buildCompanionSnapshot</span> keeps one snapshot shape for Island and mobile. Blocked on the auth-flow question before touching <span class="mono">server/index.ts</span>.</p>
+      <div class="kv" style="border-top:1px solid var(--border);padding-top:8px"><span>Next</span><span style="color:var(--text)">Wire <span class="mono">answer_agent_request</span> on /ws</span></div>
+    </div>
+    <div class="sec"><span>Plan</span><span class="n">4 / 7</span></div>
+    <div class="bar"><i style="width:57%"></i></div>
+    <div class="check">
+      <div><i class="d">✓</i><span class="s">Read companion hub and broker</span></div>
+      <div><i class="d">✓</i><span class="s">Add ClientMessage answer_agent_request</span></div>
+      <div><i class="d">✓</i><span class="s">Broker: count /ws consumers</span></div>
+      <div><i class="d">✓</i><span class="s">Unit tests for parse + idempotency</span></div>
+      <div><i class="p"></i><span>Decide auth flow with Leo</span></div>
+      <div><i></i><span>Expose provider usage to owner clients</span></div>
+      <div><i></i><span>Push registration route</span></div>
+    </div>
+    <div class="sec"><span>Changes</span><span class="n"><em style="font-style:normal;color:var(--green)">+212</em> <s style="text-decoration:none;color:var(--red)">−48</s> · 6 files · ⎇ feat/companion-app</span></div>
+    <div class="files">
+      <div><span>shared/protocol.ts</span><span><em>+24</em> <s>−2</s></span></div>
+      <div><span>server/companion.ts</span><span><em>+84</em> <s>−12</s></span></div>
+      <div><span>server/agent-interaction-broker.ts</span><span><em>+31</em> <s>−9</s></span></div>
+      <div><span>server/companion.test.ts</span><span><em>+73</em> <s>−25</s></span></div>
+    </div>
+    <div class="sec"><span>Pull request</span></div>
+    <div class="card" style="display:grid;gap:6px">
+      <div style="display:flex;gap:8px;align-items:center"><span class="mono" style="font-size:12px;color:var(--muted)">#142</span><span class="pill mute">Open</span><b style="font-size:14px;font-weight:650;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">feat: owner-auth companion channel</b></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill ok">✓ 3 checks</span><span class="pill warn">● 1 running</span><span class="pill mute">2 unresolved</span><span class="pill mute">review required</span></div>
+    </div>
+    <div class="sec"><span>Activity</span><span class="n">12</span></div>
+    <div class="tl">
+      <div><span class="k c">check</span><span>vitest · 41 passed</span><small>3m</small></div>
+      <div><span class="k d">decision</span><span>Keep the hook token separate from owner sessions</span><small>15m</small></div>
+      <div><span class="k k">changed</span><span>Companion snapshot builder now accepts owner clients</span><small>22m</small></div>
+      <div><span class="k b">blocker</span><span>/companion/ws rejects non-loopback peers</span><small>40m</small></div>
+    </div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">05 · INFO</span><h3>The right-hand panels, as a sheet</h3><p>Everything the desktop HUD and pane worklog show, stacked: headline and recap (<code>session_brief</code> on <code>/ws</code>), plan checklist, next action, diff stats (<code>GET /api/git/summary</code>), linked PR (<code>GET /api/prs/pane</code>), activity timeline, ports and screenshots. Swipe up from the pane or tap Info.</p></figcaption>
+</figure>
+
+<!-- 6 · Redline tile -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="nav"><span class="back">‹ Tiles</span><div class="title"><b>Companion mockups · round 2</b><small class="mono">127.0.0.1:4310/redline/artifacts/3f9c…/companion.html</small></div><span class="pill claude">chromium</span></div>
+  <div class="chips" style="padding-bottom:8px"><span>Browse</span><span class="on">Review</span><span style="margin-left:auto">↻</span><span>⤢</span></div>
+  <div class="body" style="gap:8px">
+    <div class="tile">
+      <div class="rn"><small>Commando · companion app</small><b>Home screen direction</b><div class="st"><span class="on">Home</span><span>Terminal</span><span>Answer</span><span>Decisions</span></div></div>
+      <div class="sec2">
+        <h4>Which home layout?</h4>
+        <p>Two candidates. Inbox-first groups agents by attention; tree-first mirrors the desktop session tree.</p>
+        <div class="mini" style="position:relative"><div class="sel"></div><div></div><span class="pin" style="left:8px;top:-8px"><b>1</b></span></div>
+        <div class="aura">
+          <div class="q">Which home layout should v1 ship?</div>
+          <div class="o"><span class="on">Inbox-first</span><span>Tree-first</span><span>Both, toggle</span></div>
+          <div class="field ph" style="padding:6px 10px;font-size:11.5px;border-radius:8px">Note (optional)</div>
+          <div class="qa"><i>Queued ✓</i><span>Queue answer</span></div>
+        </div>
+        <h4>Attention row density</h4>
+        <p>The needs-you row carries the question text so you can answer without opening the pane.</p>
+      </div>
+      <div style="position:absolute;left:12px;right:12px;bottom:10px;background:var(--surface);border:1px solid var(--amber);border-radius:10px;padding:8px 10px;font-size:11.5px;display:grid;gap:6px;box-shadow:0 10px 30px rgba(0,0,0,.5)"><div style="display:flex;gap:6px;align-items:center"><span class="pin" style="position:static;width:16px;height:16px;font-size:9px"><b>1</b></span><span class="mono" style="color:var(--muted)">#candidate-inbox</span></div><div style="color:var(--text)">Make the needs-you row taller; the question text is the point.</div><div style="display:flex;gap:6px;justify-content:flex-end"><span class="btn s">Cancel</span><span class="btn s p">Queue note</span></div></div>
+    </div>
+    <div class="qstrip"><div class="q"><span class="ok">Plan: Inbox-first</span><span>#candidate-inbox</span><span>+1</span></div><span class="btn s">Send all</span><span class="btn s p">Send + Build</span></div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">06 · TILE</span><h3>Redline tile with review mode</h3><p>Chromium tiles stream as PNG frames over <code>/ws/web-tiles/:id</code>; the phone sends its own viewport and DPR so the page lays out for a phone, and touches map to CDP mouse events. Redline controls work in-page because the queue binding lives in the daemon's Chromium. Tap-to-annotate uses the same <code>inspect</code> hit-test as the desktop. The strip mirrors the pending queue (<code>?mode=review</code> snapshots) with Send all and Send + Build. Webkit tiles get a "Reopen as chromium" prompt.</p></figcaption>
+</figure>
+
+<!-- 7 · New session -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="nav"><span class="back" style="color:var(--muted)">Cancel</span><div class="title" style="text-align:center"><b>New session</b><small>on studio</small></div><span class="act">Create</span></div>
+  <div class="body" style="padding-top:8px;gap:14px">
+    <div class="set">
+      <div><span>Name</span><span style="color:var(--text)">companion-app</span></div>
+      <div><span>Repository</span><span style="color:var(--text)">commando <small style="display:inline;color:var(--muted)">~/code/commando</small> ›</span></div>
+      <div><span>Directory</span><span class="mono" style="font-size:12.5px">~/code/commando</span></div>
+    </div>
+    <div class="sec">Worktree</div>
+    <div class="set">
+      <div><span>Create a worktree and branch<small>Keeps main untouched, per AGENTS.md</small></span><span class="toggle on"></span></div>
+      <div><span>Branch</span><span class="mono" style="font-size:12.5px;color:var(--text)">feat/companion-app</span></div>
+      <div><span>Path</span><span class="mono" style="font-size:12px">~/code/commando-worktrees/feat-companion-app</span></div>
+      <div><span>From</span><span class="mono" style="font-size:12.5px">origin/main · fetched first</span></div>
+      <div><span>Run preparation<small class="mono">npm install</small></span><span class="toggle on"></span></div>
+    </div>
+    <div class="sec">Start with</div>
+    <div class="seg"><span class="on">Claude</span><span>Codex</span><span>OpenCode</span><span>Shell</span></div>
+    <div class="field" style="min-height:96px;align-items:flex-start;font-size:14px;line-height:1.4;color:var(--text)">Plan the Expo companion app. Read docs/superpowers/specs/2026-09-18-companion-app-design.md first and update the checklist as you go.</div>
+    <div class="set">
+      <div><span>Notify me when it needs input or finishes</span><span class="toggle on"></span></div>
+    </div>
+    <p style="font-size:12px;color:var(--dim);line-height:1.45">Recent directories and per-repo preparation commands come from the daemon's session preferences, the same list the desktop combobox shows.</p>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">07 · CREATE</span><h3>New session, worktree and agent in one go</h3><p>Maps to <code>POST /api/tmux/sessions</code> with the worktree block, then <code>POST /api/pane-management/panes/:id/run</code> to launch the chosen agent with the prompt. Fields mirror the desktop create dialog (name, window, directory history, branch, worktree path, preparation command). New windows and split panes are lighter variants of this sheet.</p></figcaption>
+</figure>
+
+<!-- 8 · Notifications -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="lock">
+    <div class="island"></div>
+    <div class="clock"><small>Thursday 18 September</small>9:41</div>
+    <div class="notes">
+      <div class="note"><div class="ic">›_</div><div><div class="h"><span>Commando · studio</span><span>now</span></div><b>Claude needs input · commando</b><p>Which auth flow should the companion use for its first version?</p></div><div class="acts"><span class="p">Answer</span><span>Open pane</span></div></div>
+      <div class="note"><div class="ic">›_</div><div><div class="h"><span>Commando · studio</span><span>2m</span></div><b>Codex wants to run Bash · lavish</b><p class="mono" style="font-size:12px">git push -u origin feat/feedback-retry</p></div><div class="acts"><span class="p">Allow once</span><span>Deny</span></div></div>
+      <div class="note"><div class="ic">›_</div><div><div class="h"><span>Commando · studio</span><span>14m</span></div><b>OpenCode finished · notes-vault</b><p>🟢 Vault picker now lists Markdown directories; 41 tests pass.</p></div></div>
+    </div>
+    <div class="home" style="position:absolute;bottom:0;left:0;right:0"></div>
+  </div>
+</div></div>
+<figcaption><span class="step">08 · NOTIFY</span><h3>Push notifications with actions</h3><p>The daemon already computes the transitions (<code>needs_input</code>, <code>done</code> with a recap, <code>failed</code>); it needs one new route to register a device and an outbound call to Expo's push service. Permission and question notifications carry the legal actions as buttons, so simple cases never open the app. Recaps use the agent's 🟢🟡🔴 headline. Codex today is heuristic-only; a Codex <code>notify</code> bridge would make its "finished" events reliable.</p></figcaption>
+</figure>
+
+<!-- 9 · Settings -->
+<figure>
+<div class="phone"><div class="screen">
+  <div class="island"></div>
+  <div class="status"><span>9:41</span><span class="r">●●●● <i></i></span></div>
+  <div class="big"><span>Settings</span></div>
+  <div class="body" style="gap:14px">
+    <div class="sec">Notify me when</div>
+    <div class="set">
+      <div><span>An agent needs input<small>Questions and permission prompts</small></span><span class="toggle on"></span></div>
+      <div><span>An agent finishes<small>Uses the recap headline</small></span><span class="toggle on"></span></div>
+      <div><span>An agent fails</span><span class="toggle on"></span></div>
+      <div><span>A PR needs me<small>Review requested, checks failing, conflicts</small></span><span class="toggle"></span></div>
+      <div><span>Quiet hours</span><span>23:00 – 07:00 ›</span></div>
+    </div>
+    <div class="sec">Muted sessions</div>
+    <div class="set">
+      <div><span>scratch</span><span>Muted ›</span></div>
+      <div><span>dotfiles</span><span>Muted ›</span></div>
+    </div>
+    <div class="sec">Terminal</div>
+    <div class="set">
+      <div><span>Font size</span><span>11 pt ›</span></div>
+      <div><span>Fit pane to phone<small>Takes the tmux resize lease while viewing</small></span><span class="toggle"></span></div>
+      <div><span>Haptics on agent events</span><span class="toggle on"></span></div>
+    </div>
+    <div class="sec">Appearance</div>
+    <div class="set">
+      <div><span>Theme</span><span>Purple ›</span></div>
+    </div>
+    <div class="sec">Hosts</div>
+    <div class="set">
+      <div><span>studio<small class="mono">studio.tail-1a2b.ts.net:4310</small></span><span style="color:var(--green)">Signed in</span></div>
+      <div><span>mba<small class="mono">100.101.2.7:4310</small></span><span>Offline</span></div>
+    </div>
+  </div>
+  <div class="tabbar">
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>Sessions</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Activity</div>
+    <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>Tiles</div>
+    <div class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</div>
+  </div>
+  <div class="home"></div>
+</div></div>
+<figcaption><span class="step">09 · SETTINGS</span><h3>Notification rules and terminal preferences</h3><p>Rules are evaluated on the daemon per registered device, so muting a session or setting quiet hours stops the push at the source. The five desktop themes carry over unchanged; semantic colours are theme-invariant so status reads the same everywhere.</p></figcaption>
+</figure>
+
+</div>
+</section>
+
+<section class="screens">
+<h2>iPad</h2>
+<p class="lead">Landscape iPad is closest to the desktop: sessions on the left, the terminal in the middle, the worklog and HUD on the right. Split View with a browser or notes is the expected companion.</p>
+<div class="pad-wrap"><div class="pad" id="pad"><div class="screen">
+  <div class="pstatus"><span>9:41 · Thu 18 Sep</span><span>studio · live · r1842</span><span>●●●● 100%</span></div>
+  <div class="col">
+    <div class="usage"><div class="card"><b><span>Claude</span><span style="color:var(--green)">58%</span></b><div class="bar g"><i style="width:42%"></i></div></div><div class="card"><b><span>Codex</span><span style="color:var(--cyan)">91%</span></b><div class="bar c"><i style="width:9%"></i></div></div></div>
+    <div class="sec"><span>Needs you</span><span class="n">1</span></div>
+    <div class="list">
+      <div class="row hot"><span class="dot amber pulse"></span><div class="t"><b><span class="sess">commando</span><span class="pill claude">Claude</span></b><div class="h">Which auth flow should the companion use?</div><div class="m">Question · island</div></div><div class="when">4m</div></div>
+    </div>
+    <div class="sec"><span>Working</span><span class="n">3</span></div>
+    <div class="list">
+      <div class="row"><span class="dot green"></span><div class="t"><b><span class="sess">lavish</span><span class="pill codex">Codex</span></b><div class="h">Add retry to the feedback poll</div><div class="m">✎ src/poll.ts · 4/7</div></div><div class="when">12m</div></div>
+      <div class="row"><span class="dot green"></span><div class="t"><b><span class="sess">notes-vault</span><span class="pill opencode">OpenCode</span></b><div class="h">Migrate vault picker</div><div class="m">▶ vitest</div></div><div class="when">31m</div></div>
+      <div class="row"><span class="dot green"></span><div class="t"><b><span class="sess">cheque-app</span><span class="pill claude">Claude</span></b><div class="h">Stripe webhook idempotency</div><div class="m">⌕ app/webhooks.ts</div></div><div class="when">1h</div></div>
+    </div>
+    <div class="sec"><span>Done</span><span class="n">1</span></div>
+    <div class="list"><div class="row"><span class="dot mute"></span><div class="t"><b><span class="sess">island</span><span class="pill claude">Claude</span></b><div class="h">🟢 Visor shortcut on non-notch Macs</div></div><div class="when">2h</div></div></div>
+    <div style="margin-top:auto" class="btn">+ New session</div>
+  </div>
+  <div class="col">
+    <div style="display:flex;align-items:center;gap:10px"><div class="title" style="flex:1"><b style="font-size:16px;font-weight:700">commando</b> <small style="color:var(--muted)">island %14 · claude · ⎇ feat/companion-app</small></div><span class="pill warn">needs input</span></div>
+    <div class="chips" style="padding:0"><span class="on"><span class="dot amber" style="width:6px;height:6px"></span>island</span><span>server</span><span>web</span><span>Companion mockups · tile</span><span>+</span></div>
+    <div class="term"><span class="i">●</span> <span class="c">Read</span> server/companion.ts <span class="m">(346 lines)</span>
+<span class="i">●</span> <span class="c">Read</span> server/network-access.ts <span class="m">(168 lines)</span>
+<span class="f">●</span> <span class="c">Edit</span> shared/protocol.ts
+  <span class="m">Added 24 lines, removed 2 lines</span>
+<span class="f">●</span> <span class="c">Edit</span> server/agent-interaction-broker.ts
+  <span class="m">Added 31 lines, removed 9 lines</span>
+<span class="g">●</span> <span class="c">Bash</span> npm test -- companion broker
+  <span class="m">✓ 41 passed (2.1s)</span>
+
+<span class="i">✻</span> The companion endpoint is loopback-only and keyed on the hook token, so a
+  phone cannot reach it. The cleanest fix reuses buildCompanionSnapshot for
+  owner clients on /ws and counts those sockets as interaction consumers.
+  Before I add the owner-auth answer path I need one decision.
+
+<div class="box"><span class="g">?</span> <span class="r">Which auth flow should the companion use for its first version?</span>
+
+  <span class="f">❯ 1.</span> Owner email + password (session cookie)
+  <span class="m">  2.</span> Pairing code shown by the daemon
+  <span class="m">  3.</span> Automation bearer token
+
+  <span class="m">Enter to select · ↑↓ to move · Esc to cancel</span></div>
+<span class="cur"></span></div>
+    <div class="kb" style="padding:0"><span>esc</span><span>tab</span><span>⌃c</span><span>⌃d</span><span>↑</span><span>↓</span><span>←</span><span>→</span><span>⏎</span><span class="on">/</span><span>⌘k</span><span>paste</span><span>fit</span></div>
+    <div class="composer" style="padding:0"><div class="field ph">Message Claude…</div><div class="send">↑</div></div>
+  </div>
+  <div class="col">
+    <div class="card raised" style="display:grid;gap:8px;border-color:rgba(243,198,107,.45)">
+      <div style="display:flex;gap:8px;align-items:center"><span class="pill warn">Question</span><span style="font-size:11px;color:var(--dim);margin-left:auto">4m</span></div>
+      <b style="font-size:14.5px;font-weight:700;line-height:1.3">Which auth flow should the companion use for its first version?</b>
+      <div class="list" style="gap:6px">
+        <div class="opt on" style="padding:8px 10px"><span class="radio"></span><div><b style="font-size:13px">Owner email + password</b></div></div>
+        <div class="opt" style="padding:8px 10px"><span class="radio"></span><div><b style="font-size:13px">Pairing code from the daemon</b></div></div>
+        <div class="opt" style="padding:8px 10px"><span class="radio"></span><div><b style="font-size:13px">Automation bearer token</b></div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:6px"><div class="btn s p">Answer</div><div class="btn s">Reject</div></div>
+    </div>
+    <div class="sec"><span>Worklog</span><span class="n">just now</span></div>
+    <div class="card" style="display:grid;gap:6px"><b style="font-weight:650;font-size:13.5px;line-height:1.3">Add an owner-auth answer channel for the companion</b><div class="bar"><i style="width:57%"></i></div><div class="check" style="font-size:12.5px"><div><i class="d">✓</i><span class="s">Broker: count /ws consumers</span></div><div><i class="p"></i><span>Decide auth flow with Leo</span></div><div><i></i><span>Expose provider usage to owners</span></div></div><div class="kv" style="font-size:12px"><span>Next</span><span>answer_agent_request on /ws</span></div></div>
+    <div class="sec"><span>Changes</span><span class="n"><em style="font-style:normal;color:var(--green)">+212</em> <s style="text-decoration:none;color:var(--red)">−48</s> · 6 files</span></div>
+    <div class="files"><div><span>shared/protocol.ts</span><span><em>+24</em> <s>−2</s></span></div><div><span>server/companion.ts</span><span><em>+84</em> <s>−12</s></span></div><div><span>server/agent-interaction-broker.ts</span><span><em>+31</em> <s>−9</s></span></div></div>
+    <div class="sec"><span>Pull request</span></div>
+    <div class="card" style="display:grid;gap:6px"><div style="display:flex;gap:8px;align-items:center"><span class="mono" style="font-size:11px;color:var(--muted)">#142</span><b style="font-size:13px;font-weight:650;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">feat: owner-auth companion channel</b></div><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill ok">✓ 3</span><span class="pill warn">● 1</span><span class="pill mute">2 unresolved</span></div></div>
+    <div class="sec"><span>Ports</span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill mute mono">4310 node</span><span class="pill mute mono">5173 vite</span><span class="pill claude">Open 5173 as tile</span></div>
+  </div>
+</div></div></div>
+<figcaption style="max-width:760px;margin-top:16px"><span class="step">10 · IPAD</span><h3>Three columns, no drawers</h3><p>Same data, same components, laid out like the desktop cockpit. The right column is the HUD: the pending question sits on top, then worklog, changes, PR and ports for the focused pane. Portrait iPad collapses the left column into a slide-over and keeps the right column.</p></figcaption>
+</section>
+
+<section class="screens" style="border-top:1px solid var(--border)">
+<h2>What the daemon needs</h2>
+<p class="lead">Almost everything above reads from existing owner-authenticated surfaces. Four additions unlock the rest.</p>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;justify-items:stretch">
+  <div class="card raised"><b style="display:block;margin-bottom:6px">1 · Answer channel on /ws</b><p style="font-size:13px;color:var(--text-soft)">Add <span class="mono">answer_agent_request</span> to <span class="mono">ClientMessage</span> and count owner sockets as interaction consumers. Today only the loopback companion socket can answer, so hooks are not even held open when Island is closed.</p></div>
+  <div class="card raised"><b style="display:block;margin-bottom:6px">2 · Usage for owners</b><p style="font-size:13px;color:var(--text-soft)">Broadcast <span class="mono">ProviderUsage[]</span> on /ws (or <span class="mono">GET /api/usage</span>). The service already exists; it only runs while a companion is connected.</p></div>
+  <div class="card raised"><b style="display:block;margin-bottom:6px">3 · Push devices</b><p style="font-size:13px;color:var(--text-soft)"><span class="mono">POST /api/push/devices</span> stores an Expo push token plus rules; the daemon posts to Expo's push API on status transitions. Quiet hours and mutes evaluate server-side.</p></div>
+  <div class="card raised"><b style="display:block;margin-bottom:6px">4 · Pairing (optional)</b><p style="font-size:13px;color:var(--text-soft)">A QR from the daemon that encodes host, port and a one-time code, exchanged for a device token. Avoids typing Tailscale IPs and keeps the owner password off the phone.</p></div>
+</div>
+</section>
+</div>
+<script>
+(function(){
+  var pad=document.getElementById('pad');var wrap=pad.parentElement;
+  function fit(){var w=wrap.clientWidth;var s=Math.min(1,w/1180);pad.style.transform='scale('+s+')';wrap.style.height=(820*s)+'px';}
+  fit();window.addEventListener('resize',fit);
+})();
+</script>
+</body></html>
