@@ -1,73 +1,37 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
-import {
-  buildAgentRows,
-  buildSessionTree,
-  groupAgentRows,
-  pendingRequest,
-  type AgentRow,
-} from '../../../src/agents/selectors'
+import { pendingRequest, type AgentRow } from '../../../src/agents/selectors'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import { useHostsStore } from '../../../src/hosts/store'
-import {
-  readPreference,
-  SESSIONS_VIEW_PREFERENCE_KEY,
-  writePreference,
-} from '../../../src/prefs'
+import { WideCockpit } from '../../../src/layout/WideCockpit'
+import { useLayoutMode } from '../../../src/layout/useLayoutMode'
 import { useTheme } from '../../../src/theme'
-import { AttentionList } from '../../../src/ui/AttentionList'
-import { EmptyState, Pill, ScreenTitle, Segmented } from '../../../src/ui/primitives'
-import { SessionTree } from '../../../src/ui/SessionTree'
+import { Pill, ScreenTitle } from '../../../src/ui/primitives'
+import { SessionsPanel, useSessionsView } from '../../../src/ui/SessionsPanel'
 
-type SessionsView = 'attention' | 'tree'
-
-const VIEW_OPTIONS = [
-  { value: 'attention' as const, label: 'Attention' },
-  { value: 'tree' as const, label: 'Tree' },
-]
-
+/**
+ * Screen 02 on the phone, screen 10 on an iPad: this is the route both form
+ * factors land on, so a deep link and a notification behave the same on each.
+ * The optional `focus` param is how `/pane/[paneId]` and `/answer/…` hand a
+ * pane over when the screen is wide enough for the cockpit.
+ */
 export default function SessionsScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const mode = useLayoutMode()
+  const { hostId, focus } = useLocalSearchParams<{ hostId: string; focus?: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const refreshReachability = useHostsStore((state) => state.refreshReachability)
   const state = useDaemonConnection(host)
 
-  const [view, setView] = useState<SessionsView>('attention')
+  const [view, changeView] = useSessionsView()
   const [refreshing, setRefreshing] = useState(false)
-
-  // The toggle choice is remembered per device, as agreed in the spec.
-  useEffect(() => {
-    void readPreference(SESSIONS_VIEW_PREFERENCE_KEY).then((stored) => {
-      if (stored === 'attention' || stored === 'tree') setView(stored)
-    })
-  }, [])
-
-  const changeView = (next: SessionsView): void => {
-    setView(next)
-    void Haptics.selectionAsync()
-    void writePreference(SESSIONS_VIEW_PREFERENCE_KEY, next)
-  }
-
-  const rows = useMemo(
-    () => buildAgentRows({
-      statuses: state.agentStatuses,
-      snapshot: state.snapshot,
-      briefs: state.briefs,
-    }),
-    [state.agentStatuses, state.snapshot, state.briefs],
-  )
-  const groups = useMemo(() => groupAgentRows(rows), [rows])
-  const tree = useMemo(
-    () => buildSessionTree(state.snapshot, state.agentStatuses, state.webPanes),
-    [state.snapshot, state.agentStatuses, state.webPanes],
-  )
+  const [sheetOpen, setSheetOpen] = useState(false)
 
   const openPane = (paneId: string): void => {
     router.push({
@@ -90,6 +54,18 @@ export default function SessionsScreen(): React.JSX.Element {
     })
   }
 
+  if (mode !== 'phone') {
+    return (
+      <WideCockpit
+        focusRequest={focus}
+        hostId={hostId ?? ''}
+        mode={mode}
+        onSheetOpenChange={setSheetOpen}
+        sheetOpen={sheetOpen}
+      />
+    )
+  }
+
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <ScreenTitle
@@ -110,22 +86,13 @@ export default function SessionsScreen(): React.JSX.Element {
           />
         }
       >
-        <Segmented options={VIEW_OPTIONS} onChange={changeView} value={view} />
-
-        {state.phase !== 'live' ? (
-          <Text style={[styles.connection, { color: theme.muted }]}>{state.detail}</Text>
-        ) : null}
-
-        {view === 'attention' ? (
-          <AttentionList groups={groups} onSelectRow={openRow} usage={state.usage} />
-        ) : (
-          <>
-            <SessionTree groups={tree} onSelectPane={openPane} />
-            {tree.length === 0 ? (
-              <EmptyState body="Waiting for the daemon's first snapshot." title="No tmux sessions" />
-            ) : null}
-          </>
-        )}
+        <SessionsPanel
+          onChangeView={changeView}
+          onSelectPane={openPane}
+          onSelectRow={openRow}
+          state={state}
+          view={view}
+        />
       </ScrollView>
 
       <Pressable
@@ -146,7 +113,6 @@ export default function SessionsScreen(): React.JSX.Element {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   body: { paddingHorizontal: 16, paddingBottom: 96, gap: 12 },
-  connection: { fontSize: 12.5 },
   fab: {
     position: 'absolute',
     right: 20,

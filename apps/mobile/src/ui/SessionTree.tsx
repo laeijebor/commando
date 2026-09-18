@@ -57,9 +57,12 @@ function AddButton({ label, onPress }: { label: string; onPress: () => void }): 
 export function SessionTree({
   groups,
   onSelectPane,
+  selectedPaneId,
 }: {
   groups: readonly TreeRepoGroup[]
   onSelectPane?: (paneId: string) => void
+  /** The pane the iPad cockpit is showing, highlighted in the tree. */
+  selectedPaneId?: string | undefined
 }): React.JSX.Element {
   return (
     <View style={styles.tree}>
@@ -71,6 +74,7 @@ export function SessionTree({
               key={session.session.id}
               node={session}
               onSelectPane={onSelectPane}
+              selectedPaneId={selectedPaneId}
             />
           ))}
         </View>
@@ -82,13 +86,19 @@ export function SessionTree({
 function SessionNode({
   node,
   onSelectPane,
+  selectedPaneId,
 }: {
   node: TreeSessionNode
   onSelectPane?: (paneId: string) => void
+  selectedPaneId?: string | undefined
 }): React.JSX.Element {
   const theme = useTheme()
   const routes = useCreateRoutes()
-  const [expanded, setExpanded] = useState(false)
+  const holdsSelection = selectedPaneId !== undefined &&
+    node.windows.some((window) => window.children.some((child) => (
+      child.kind === 'pane' && child.pane.id === selectedPaneId
+    )))
+  const [expanded, setExpanded] = useState(holdsSelection)
   const dots = sortStatusKinds(node.statuses).slice(0, 6)
 
   return (
@@ -127,7 +137,12 @@ function SessionNode({
       {expanded ? (
         <View style={[styles.children, { borderLeftColor: theme.border }]}>
           {node.windows.map((window) => (
-            <WindowNode key={window.id} node={window} onSelectPane={onSelectPane} />
+            <WindowNode
+              key={window.id}
+              node={window}
+              onSelectPane={onSelectPane}
+              selectedPaneId={selectedPaneId}
+            />
           ))}
         </View>
       ) : null}
@@ -138,9 +153,11 @@ function SessionNode({
 function WindowNode({
   node,
   onSelectPane,
+  selectedPaneId,
 }: {
   node: TreeWindowNode
   onSelectPane?: (paneId: string) => void
+  selectedPaneId?: string | undefined
 }): React.JSX.Element {
   const theme = useTheme()
   const routes = useCreateRoutes()
@@ -174,16 +191,22 @@ function WindowNode({
         }
         const status = child.status
         const hot = status?.status === 'needs_input' || status?.status === 'failed'
+        const selected = child.pane.id === selectedPaneId
         return (
           <Pressable
             accessibilityRole="button"
+            accessibilityState={{ selected }}
             key={child.pane.id}
             onPress={() => onSelectPane?.(child.pane.id)}
             style={[
               styles.leaf,
               {
-                backgroundColor: theme.surface,
-                borderColor: hot ? withAlpha(theme.amber, 0.45) : theme.border,
+                backgroundColor: selected ? theme.surfaceSoft : theme.surface,
+                borderColor: selected
+                  ? theme.accent
+                  : hot
+                    ? withAlpha(theme.amber, 0.45)
+                    : theme.border,
               },
             ]}
           >

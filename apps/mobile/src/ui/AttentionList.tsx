@@ -16,10 +16,13 @@ export function AttentionList({
   groups,
   usage,
   onSelectRow,
+  selectedPaneId,
 }: {
   groups: readonly AgentGroup[]
   usage: readonly ProviderUsage[]
   onSelectRow?: (row: AgentRow) => void
+  /** The pane the iPad cockpit is showing, highlighted in the list. */
+  selectedPaneId?: string | undefined
 }): React.JSX.Element {
   return (
     <View style={styles.container}>
@@ -29,7 +32,12 @@ export function AttentionList({
           <SectionHeader label={group.label} note={String(group.rows.length)} />
           <View style={styles.list}>
             {group.rows.map((row) => (
-              <AgentRowCard key={row.paneId} onPress={() => onSelectRow?.(row)} row={row} />
+              <AgentRowCard
+                key={row.paneId}
+                onPress={() => onSelectRow?.(row)}
+                row={row}
+                selected={row.paneId === selectedPaneId}
+              />
             ))}
           </View>
         </View>
