@@ -49,6 +49,7 @@
     ],
     "moduleNameMapper": {
       "^@commando/protocol$": "<rootDir>/../../shared/protocol.ts",
+      "^@commando/tmux-create$": "<rootDir>/../../shared/tmux-create.ts",
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "testPathIgnorePatterns": [
