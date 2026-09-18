@@ -98,6 +98,24 @@ export function toViewportPoint(point: TilePoint, geometry: TileGeometry): TileP
   }
 }
 
+/**
+ * Page coordinates → view coordinates: the inverse of `toViewportPoint`, used
+ * to draw the element highlight and the pending pins on top of the frame.
+ */
+export function toViewRect(
+  rect: { x: number; y: number; width: number; height: number },
+  geometry: TileGeometry,
+): { x: number; y: number; width: number; height: number } {
+  const scaleX = geometry.viewport.width > 0 ? geometry.view.width / geometry.viewport.width : 1
+  const scaleY = geometry.viewport.height > 0 ? geometry.view.height / geometry.viewport.height : 1
+  return {
+    x: rect.x * scaleX,
+    y: rect.y * scaleY,
+    width: rect.width * scaleX,
+    height: rect.height * scaleY,
+  }
+}
+
 /** Scales a distance (not a position), so pans move the page by what the finger moved. */
 export function toViewportDelta(delta: TilePoint, geometry: TileGeometry): TilePoint {
   const scaleX = geometry.view.width > 0 ? geometry.viewport.width / geometry.view.width : 1

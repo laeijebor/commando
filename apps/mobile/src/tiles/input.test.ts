@@ -7,6 +7,7 @@ import {
   tileTypingMessages,
   toViewportDelta,
   toViewportPoint,
+  toViewRect,
   windowsVirtualKeyCode,
 } from './input'
 
@@ -117,5 +118,16 @@ describe('typing', () => {
     expect(messages).toHaveLength(9)
     expect(messages.filter((message) => message.type === 'char').map((message) => message.text))
       .toEqual(['h', 'i', '\r'])
+  })
+})
+
+describe('viewport to view rectangles', () => {
+  it('scales a highlight back onto the frame the phone is showing', () => {
+    expect(toViewRect({ x: 20, y: 40, width: 100, height: 60 }, SCALED)).toEqual({
+      x: 10,
+      y: 20,
+      width: 50,
+      height: 30,
+    })
   })
 })
