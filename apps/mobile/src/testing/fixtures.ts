@@ -308,3 +308,114 @@ export const STATUS_SNAPSHOT_MESSAGE: ServerMessage = {
   type: 'agent_status_snapshot',
   statuses: [NEEDS_INPUT_STATUS, WORKING_STATUS, CHECKING_STATUS, DONE_STATUS],
 }
+
+/**
+ * The worklog behind mockup 05: a plan with a cancelled task (which the
+ * progress bar must ignore), an out-of-order activity timeline, and a
+ * screenshot folder.
+ */
+export const WORKLOG_BRIEF: SessionBrief = {
+  paneId: '%14',
+  sessionId: '$1',
+  sessionName: 'commando',
+  state: 'needs_input',
+  headline: 'Add an owner-auth answer channel for the companion',
+  headlineSource: 'hook',
+  recapMarkdown: [
+    'Reusing `buildCompanionSnapshot` keeps **one** snapshot shape for Island and mobile.',
+    '',
+    '- Broker counts /ws consumers',
+    '- ![diagram](shot.png) dropped by the renderer',
+  ].join('\n'),
+  next: 'Wire answer_agent_request on /ws',
+  tasks: [
+    { id: 't1', content: 'Read companion hub and broker', status: 'completed', priority: 'high' },
+    { id: 't2', content: 'Add ClientMessage answer_agent_request', status: 'completed', priority: 'high' },
+    { id: 't3', content: 'Broker: count /ws consumers', status: 'completed', priority: 'medium' },
+    { id: 't4', content: 'Unit tests for parse + idempotency', status: 'completed', priority: 'medium' },
+    { id: 't5', content: 'Decide auth flow with Leo', status: 'in_progress', priority: 'high' },
+    { id: 't6', content: 'Expose provider usage to owner clients', status: 'pending', priority: 'low' },
+    { id: 't7', content: 'Push registration route', status: 'pending', priority: 'low' },
+    { id: 't8', content: 'Rewrite the tile proxy', status: 'cancelled', priority: 'low' },
+  ],
+  screenshots: [
+    {
+      id: '00112233445566aa',
+      dir: '/Users/leo/code/commando/.shots/answer-channel',
+      topic: 'answer-channel',
+      imageCount: 2,
+      otherCount: 0,
+      bytes: 204_800,
+      updatedAt: NOW - 8 * 60 * 1000,
+      preview: [
+        { name: 'sheet.png', size: 102_400, modifiedAt: NOW - 9 * 60 * 1000 },
+        { name: 'strip.png', size: 102_400, modifiedAt: NOW - 8 * 60 * 1000 },
+      ],
+    },
+  ],
+  updates: [
+    {
+      id: 'u2',
+      paneId: '%14',
+      kind: 'decision',
+      text: 'Keep the hook token separate from owner sessions',
+      source: 'agent',
+      createdAt: NOW - 15 * 60 * 1000,
+    },
+    {
+      id: 'u1',
+      paneId: '%14',
+      kind: 'check',
+      text: 'vitest · 41 passed',
+      detail: 'server/companion.test.ts',
+      source: 'hook',
+      createdAt: NOW - 3 * 60 * 1000,
+    },
+    {
+      id: 'u3',
+      paneId: '%14',
+      kind: 'blocker',
+      text: '/companion/ws rejects non-loopback peers',
+      source: 'agent',
+      createdAt: NOW - 40 * 60 * 1000,
+    },
+  ],
+  updatedAt: NOW - 3 * 60 * 1000,
+}
+
+/** `GET /api/git/summary` for the same pane. */
+export const GIT_SUMMARY = {
+  isRepo: true,
+  root: '/Users/leo/code/commando',
+  branch: 'feat/companion-app',
+  target: 'origin/main',
+  targetMode: 'auto' as const,
+  additions: 212,
+  deletions: 48,
+  files: [
+    { path: 'shared/protocol.ts', status: 'M', additions: 24, deletions: 2, binary: false },
+    { path: 'server/companion.ts', status: 'M', additions: 84, deletions: 12, binary: false },
+    { path: 'server/agent-interaction-broker.ts', status: 'M', additions: 31, deletions: 9, binary: false },
+    { path: 'server/companion.test.ts', status: 'M', additions: 73, deletions: 25, binary: false },
+  ],
+}
+
+/** `GET /api/prs/pane` for the same pane. */
+export const PANE_PRS = {
+  targetId: '%14',
+  totalCount: 1,
+  truncated: false,
+  fetchedAt: NOW,
+  pullRequests: [
+    {
+      repo: 'leo/commando',
+      number: 142,
+      title: 'feat: owner-auth companion channel',
+      url: 'https://github.com/leo/commando/pull/142',
+      state: 'open' as const,
+      isDraft: false,
+      createdAt: new Date(NOW - 3 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
+    },
+  ],
+}

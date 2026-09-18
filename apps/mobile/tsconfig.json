@@ -16,6 +16,9 @@
       ],
       "@/*": [
         "./src/*"
+      ],
+      "@commando/tmux-create": [
+        "../../shared/tmux-create.ts"
       ]
     }
   },
@@ -24,7 +27,8 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
-    "../../shared/protocol.ts"
+    "../../shared/protocol.ts",
+    "../../shared/tmux-create.ts"
   ],
   "exclude": [
     "node_modules"
