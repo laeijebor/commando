@@ -290,6 +290,9 @@ function HudColumn({
       <PaneInfoSections
         brief={state.briefs[paneId]}
         host={host}
+        // A new pane starts from nothing rather than showing the last one's
+        // diff until the poll comes back.
+        key={paneId}
         pane={pane}
         paneId={paneId}
         ports={state.snapshot?.ports ?? []}
