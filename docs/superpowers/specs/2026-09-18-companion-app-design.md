@@ -162,10 +162,10 @@ built on existing owner-authenticated surfaces:
 
 ## v1 plan checklist
 
-- [ ] Daemon: `answer_agent_request` on `/ws` + consumer counting (tests)
-- [ ] Daemon: provider usage broadcast for owners
-- [ ] Daemon: push device registry + Expo push sender + rules
-- [ ] Daemon: Codex notify bridge in `hooks:install` (v1)
+- [x] Daemon: `answer_agent_request` on `/ws` + consumer counting (tests)
+- [x] Daemon: provider usage broadcast for owners
+- [x] Daemon: push device registry + Expo push sender + rules
+- [x] Daemon: Codex notify bridge in `hooks:install` (v1)
 - [ ] App: scaffold `apps/mobile` (expo-router, theme, secure store, WS client)
 - [ ] App: Hosts + sign-in
 - [ ] App: Sessions screen with HUD data and usage, attention-first / tree-first toggle
