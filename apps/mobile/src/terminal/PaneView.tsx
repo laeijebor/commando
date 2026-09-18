@@ -10,6 +10,8 @@ import {
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 
+import type { WebPane } from '@commando/protocol'
+
 import { useDaemonClient, useDaemonConnection } from '../daemon/useDaemonConnection'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
@@ -33,7 +35,8 @@ export type PaneViewProps = {
   onBack?: () => void
   /** Omitted when the Info sections are already beside the terminal. */
   onInfo?: () => void
-  onOpenTiles: () => void
+  /** A tile chip: the tile itself when it can stream, else the tiles list. */
+  onOpenTile: (tile: WebPane) => void
   onSelectWindow: (chip: PaneWindowChip) => void
 }
 
@@ -52,7 +55,7 @@ export function PaneView({
   active,
   onBack,
   onInfo,
-  onOpenTiles,
+  onOpenTile,
   onSelectWindow,
 }: PaneViewProps): React.JSX.Element {
   const theme = useTheme()
@@ -130,7 +133,7 @@ export function PaneView({
       />
       <PaneChips
         context={context}
-        onOpenTiles={onOpenTiles}
+        onOpenTile={onOpenTile}
         onSelectWindow={onSelectWindow}
       />
       {status ? <PaneHud status={status} /> : null}

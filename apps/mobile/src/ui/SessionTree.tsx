@@ -3,7 +3,7 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import Feather from '@expo/vector-icons/Feather'
 
-import type { AgentStatusKind } from '@commando/protocol'
+import type { AgentStatusKind, WebPane } from '@commando/protocol'
 
 import {
   sortStatusKinds,
@@ -12,14 +12,20 @@ import {
   type TreeWindowNode,
 } from '../agents/selectors'
 import { useTheme } from '../theme'
+import { canStream } from '../tiles/list'
 import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
 
 /**
- * Adds a window to a session, or splits a window's active pane. The tree owns
- * the navigation rather than taking it as a prop so the "+" affordances can be
- * added without touching the screen around it.
+ * Adds a window to a session, splits a window's active pane, or opens a tile.
+ * The tree owns the navigation rather than taking it as a prop so the "+"
+ * affordances and the tile rows can be added without touching the screen
+ * around it.
  */
-function useCreateRoutes(): { newWindow: (sessionId: string) => void; newPane: (targetId: string) => void } {
+function useTreeRoutes(): {
+  newWindow: (sessionId: string) => void
+  newPane: (targetId: string) => void
+  openTile: (tile: WebPane) => void
+} {
   const router = useRouter()
   const { hostId } = useLocalSearchParams<{ hostId: string }>()
   return {
@@ -31,6 +37,14 @@ function useCreateRoutes(): { newWindow: (sessionId: string) => void; newPane: (
       pathname: '/(host)/[hostId]/new-pane',
       params: { hostId: hostId ?? '', targetId },
     }),
+    // A tile that cannot stream to the phone goes to the list, where it can be
+    // confirmed or reopened as chromium.
+    openTile: (tile) => (canStream(tile)
+      ? router.push({
+          pathname: '/(host)/[hostId]/tile/[tileId]',
+          params: { hostId: hostId ?? '', tileId: tile.id },
+        })
+      : router.push({ pathname: '/(host)/[hostId]/tiles', params: { hostId: hostId ?? '' } })),
   }
 }
 
@@ -93,7 +107,7 @@ function SessionNode({
   selectedPaneId?: string | undefined
 }): React.JSX.Element {
   const theme = useTheme()
-  const routes = useCreateRoutes()
+  const routes = useTreeRoutes()
   const holdsSelection = selectedPaneId !== undefined &&
     node.windows.some((window) => window.children.some((child) => (
       child.kind === 'pane' && child.pane.id === selectedPaneId
@@ -160,7 +174,7 @@ function WindowNode({
   selectedPaneId?: string | undefined
 }): React.JSX.Element {
   const theme = useTheme()
-  const routes = useCreateRoutes()
+  const routes = useTreeRoutes()
   return (
     <View style={styles.windowBlock}>
       <View style={styles.windowHead}>
@@ -172,8 +186,11 @@ function WindowNode({
       {node.children.map((child) => {
         if (child.kind === 'tile') {
           return (
-            <View
+            <Pressable
+              accessibilityLabel={`Tile ${child.webPane.url}`}
+              accessibilityRole="button"
               key={child.webPane.id}
+              onPress={() => routes.openTile(child.webPane)}
               style={[styles.leaf, { backgroundColor: theme.surface, borderColor: theme.border }]}
             >
               <Pill label="tile" tone="mute" />
@@ -186,7 +203,7 @@ function WindowNode({
                 </Text>
               </View>
               <Feather color={theme.textFaint} name="chevron-right" size={16} />
-            </View>
+            </Pressable>
           )
         }
         const status = child.status

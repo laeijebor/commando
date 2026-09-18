@@ -3,6 +3,7 @@ import { StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 
 import { useHostsStore } from '../../../../src/hosts/store'
+import { canStream } from '../../../../src/tiles/list'
 import { isCockpitMode, useLayoutMode } from '../../../../src/layout/useLayoutMode'
 import { useTheme } from '../../../../src/theme'
 import { PaneView } from '../../../../src/terminal/PaneView'
@@ -45,10 +46,18 @@ export default function PaneScreen(): React.JSX.Element {
           pathname: '/(host)/[hostId]/pane/[paneId]/info',
           params: { hostId: hostId ?? '', paneId: paneId ?? '' },
         })}
-        onOpenTiles={() => router.push({
-          pathname: '/(host)/[hostId]/tiles',
-          params: { hostId: hostId ?? '' },
-        })}
+        onOpenTile={(tile) => {
+          // A tile that cannot stream here is handled on the list, which is
+          // where the confirm and "Reopen as chromium" affordances live.
+          if (canStream(tile)) {
+            router.push({
+              pathname: '/(host)/[hostId]/tile/[tileId]',
+              params: { hostId: hostId ?? '', tileId: tile.id },
+            })
+            return
+          }
+          router.push({ pathname: '/(host)/[hostId]/tiles', params: { hostId: hostId ?? '' } })
+        }}
         onSelectWindow={(chip) => {
           if (!chip.targetPaneId || chip.targetPaneId === paneId) return
           router.replace({

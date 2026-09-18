@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
-import type { AgentStatus } from '@commando/protocol'
+import type { AgentStatus, WebPane } from '@commando/protocol'
 
 import { statusLabel, useTheme } from '../theme'
 import { Dot, ProgressBar, StatusDot, withAlpha } from '../ui/primitives'
@@ -77,11 +77,12 @@ export function PaneNav({
 export function PaneChips({
   context,
   onSelectWindow,
-  onOpenTiles,
+  onOpenTile,
 }: {
   context: PaneContext
   onSelectWindow: (chip: PaneWindowChip) => void
-  onOpenTiles: () => void
+  /** One tile chip: the tile screen when it can stream, else the tiles list. */
+  onOpenTile: (tile: WebPane) => void
 }): React.JSX.Element {
   const theme = useTheme()
   return (
@@ -117,7 +118,7 @@ export function PaneChips({
           accessibilityLabel={`Tile ${tileLabel(tile)}`}
           accessibilityRole="button"
           key={tile.id}
-          onPress={onOpenTiles}
+          onPress={() => onOpenTile(tile)}
           style={[styles.chip, { backgroundColor: theme.surface, borderColor: theme.border }]}
         >
           <Feather color={theme.cyan} name="layout" size={12} />

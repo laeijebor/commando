@@ -11,6 +11,7 @@ import { useDaemonConnection } from '../daemon/useDaemonConnection'
 import { useHostsStore } from '../hosts/store'
 import type { Host } from '../hosts/types'
 import { PaneView } from '../terminal/PaneView'
+import { canStream } from '../tiles/list'
 import { relativeTime } from '../time'
 import { useTheme } from '../theme'
 import { AnswerCards } from '../ui/AnswerScreen'
@@ -135,7 +136,18 @@ export function WideCockpit({
             <PaneView
               active={screenFocused}
               host={host}
-              onOpenTiles={() => router.push({ pathname: '/(host)/[hostId]/tiles', params: { hostId } })}
+              onOpenTile={(tile) => {
+                // Same rule as the phone: a streaming tile opens itself, and
+                // anything else goes to the list that can act on it.
+                if (canStream(tile)) {
+                  router.push({
+                    pathname: '/(host)/[hostId]/tile/[tileId]',
+                    params: { hostId, tileId: tile.id },
+                  })
+                  return
+                }
+                router.push({ pathname: '/(host)/[hostId]/tiles', params: { hostId } })
+              }}
               onSelectWindow={(chip) => {
                 if (chip.targetPaneId) focusPane(chip.targetPaneId)
               }}
