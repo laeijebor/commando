@@ -7,8 +7,8 @@ import {
   sendComposer,
   sendOps,
   type PaneSender,
-} from './composer'
-import { KEY_BAR_ITEMS, keyBarItem } from './keyBar'
+} from './composerOps'
+import { KEY_BAR_ITEMS, keyBarItem } from './keyBarItems'
 
 function fakeClient(): PaneSender & {
   calls: string[]

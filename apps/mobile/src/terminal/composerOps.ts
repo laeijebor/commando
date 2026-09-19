@@ -1,7 +1,7 @@
 import type { SpecialKey } from '@commando/protocol'
 
 import { inputFits, pasteFits } from '../daemon/limits'
-import type { KeyBarAction } from './keyBar'
+import type { KeyBarAction } from './keyBarItems'
 
 /**
  * One thing to send to a pane. The composer turns what was typed into a short

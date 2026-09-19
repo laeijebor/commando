@@ -2,7 +2,7 @@ import { Pressable, ScrollView, StyleSheet, Text } from 'react-native'
 
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
-import { KEY_BAR_ITEMS, type KeyBarItem } from './keyBar'
+import { KEY_BAR_ITEMS, type KeyBarItem } from './keyBarItems'
 
 /**
  * The scrolling key bar from mockup 03. Every button is a `key` message except

@@ -23,8 +23,8 @@ import { TerminalSurface, type TerminalSurfaceHandle } from './TerminalSurface'
 import { buildPaneContext, type PaneWindowChip } from './paneContext'
 import { useHydratedTerminalPrefs } from './prefs'
 import { usePaneTerminal } from './usePaneTerminal'
-import { composerOps, keyBarOps, rawOps, sendOps, type SendResult } from './composer'
-import type { KeyBarItem } from './keyBar'
+import { composerOps, keyBarOps, rawOps, sendOps, type SendResult } from './composerOps'
+import type { KeyBarItem } from './keyBarItems'
 
 export type PaneViewProps = {
   host: Host | undefined
