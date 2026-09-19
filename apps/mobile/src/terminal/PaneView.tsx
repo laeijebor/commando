@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -13,6 +11,7 @@ import * as Haptics from 'expo-haptics'
 import type { WebPane } from '@commando/protocol'
 
 import { useDaemonClient, useDaemonConnection } from '../daemon/useDaemonConnection'
+import { useKeyboardInset } from '../layout/useKeyboardInset'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
@@ -62,6 +61,9 @@ export function PaneView({
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
   const prefs = useHydratedTerminalPrefs()
+  // The key bar and composer sit at the bottom of a tab screen, so they have to
+  // be lifted over the keyboard by hand — see `keyboardInset`.
+  const keyboardInset = useKeyboardInset()
 
   const surface = useRef<TerminalSurfaceHandle | null>(null)
   const [fit, setFit] = useState(prefs.fitToPhone)
@@ -138,11 +140,7 @@ export function PaneView({
       />
       {status ? <PaneHud status={status} /> : null}
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-        style={styles.body}
-      >
+      <View style={[styles.body, { paddingBottom: keyboardInset }]}>
         <View style={styles.terminalWrap}>
           <TerminalSurface
             onEvent={terminal.onEvent}
@@ -181,7 +179,7 @@ export function PaneView({
           onToggleRaw={setRaw}
           raw={raw}
         />
-      </KeyboardAvoidingView>
+      </View>
     </View>
   )
 }
