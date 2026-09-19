@@ -167,12 +167,19 @@ export class TerminalCommandQueue {
     return drained
   }
 
-  /** The WebView started loading a document again; queue from scratch. */
+  /**
+   * The WebView started loading a document. Only the readiness flag is cleared:
+   * whatever is still queued has not reached any page yet, and on iOS
+   * `onLoadStart` routinely arrives *after* the first `pane_reset` — clearing
+   * the queue here would throw the seed away and leave the pane blank, because
+   * a reset is only sent once per subscription.
+   *
+   * Commands already injected into the previous document die with it, so a
+   * reload that leaves nothing queued has to ask the daemon to seed again.
+   */
   markLoading(): void {
+    if (this.ready && this.queued.length === 0) this.dropped = true
     this.ready = false
-    this.queued = []
-    this.queuedChars = 0
-    this.dropped = false
   }
 
   clearReseed(): void {

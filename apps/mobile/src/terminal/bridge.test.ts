@@ -173,6 +173,33 @@ describe('TerminalCommandQueue', () => {
     expect(queue.isReady).toBe(false)
     expect(queue.push(write('cc', 2))).toEqual([])
   })
+
+  it('keeps a seed that arrived before the page started loading', () => {
+    // The real iOS order: the socket is already open, so `pane_reset` lands
+    // before the WebView reports `onLoadStart`. The seed is only sent once per
+    // subscription, so losing it here leaves the pane blank for good.
+    const queue = new TerminalCommandQueue()
+    const seed = resetCommand(reset({ revision: 3 }))
+    queue.push(seed)
+    queue.push(write('after', 4))
+
+    queue.markLoading()
+
+    expect(queue.needsReseed).toBe(false)
+    expect(queue.markReady().map((command) => command.type)).toEqual(['reset', 'write'])
+  })
+
+  it('asks for a reseed when a reload leaves nothing queued to rebuild from', () => {
+    const queue = new TerminalCommandQueue()
+    queue.markReady()
+    queue.push(resetCommand(reset()))
+
+    // That reset went into a document the reload has just thrown away.
+    queue.markLoading()
+
+    expect(queue.needsReseed).toBe(true)
+    expect(queue.markReady()).toEqual([])
+  })
 })
 
 describe('terminalDimensionsForViewport', () => {
