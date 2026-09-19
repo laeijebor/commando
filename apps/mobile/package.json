@@ -5,7 +5,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "ios": "expo start --ios",
+    "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
     "build:terminal": "node scripts/build-terminal-html.mjs",
     "test": "jest"
