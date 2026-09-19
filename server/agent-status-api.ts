@@ -158,7 +158,7 @@ export class AgentStatusHookApi {
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
 
       const provider = url.pathname.slice(`${API_ROOT}/`.length)
-      if (provider !== 'claude' && provider !== 'opencode') {
+      if (provider !== 'claude' && provider !== 'codex' && provider !== 'opencode') {
         throw new HttpError(404, 'Not found')
       }
       const targetPaneId = paneId(request)
@@ -178,6 +178,16 @@ export class AgentStatusHookApi {
         change = this.dependencies.registry.applyClaudeHook(
           targetPaneId,
           body,
+          updatedAt,
+          processCommand,
+        )
+      } else if (provider === 'codex') {
+        const event = body.event
+        if (!isRecord(event)) throw new HttpError(400, 'event must be a JSON object')
+        requiredString(event, 'type')
+        change = this.dependencies.registry.applyCodexEvent(
+          targetPaneId,
+          event,
           updatedAt,
           processCommand,
         )

@@ -80,9 +80,16 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { AgentRequestApi } from './agent-request-api.js'
+import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answers.js'
 import { CompanionHub } from './companion.js'
 import { captureRenderedCompanionOutput } from './companion-output.js'
 import { ProviderUsageService } from './provider-usage.js'
+import { handleUsageApi } from './usage-api.js'
+import { ExpoPushSender } from './expo-push.js'
+import { PushApi } from './push-api.js'
+import { PushDeviceRegistry } from './push-devices.js'
+import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
@@ -124,6 +131,9 @@ type ClientState = {
   paneResetGate: PaneResetGate
   inputQueue: Promise<void>
   violations: number
+  releaseInteractions: (() => void) | null
+  answeredRequestIds: IdempotencyKeyMemory
+  releaseUsage: (() => void) | undefined
 }
 
 type PaneStreamState = {
@@ -543,6 +553,7 @@ async function main(): Promise<void> {
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
   let companion: CompanionHub | null = null
+  let pushNotifier: PushNotifier | null = null
   let companionClientCount = 0
   let companionPublishTimer: NodeJS.Timeout | undefined
   const companionOutputRefreshTimers = new Map<string, NodeJS.Timeout>()
@@ -643,6 +654,7 @@ async function main(): Promise<void> {
       ) primeStatusTail(change.status.paneId)
     }
     if (change) companion?.publish()
+    pushNotifier?.handleStatusChange(change)
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1286,6 +1298,32 @@ async function main(): Promise<void> {
   })
   const interactions = new AgentInteractionBroker()
   const providerUsage = new ProviderUsageService()
+  const pushDevices = new PushDeviceRegistry()
+  await pushDevices.load().catch((error: unknown) => {
+    console.error('[commando] failed to load persisted push devices', error)
+  })
+  const expoPush = new ExpoPushSender({
+    onDeviceNotRegistered: async (expoPushToken) => {
+      const removed = await pushDevices.removeByToken(expoPushToken)
+      for (const deviceId of removed) {
+        console.warn(`[commando] dropped push device ${deviceId}: Expo reports it is no longer registered`)
+      }
+    },
+  })
+  const notifier = new PushNotifier({
+    registry: pushDevices,
+    sender: expoPush,
+    paneContext: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      return pane && session ? { sessionId: session.id, sessionName: session.name } : null
+    },
+  })
+  pushNotifier = notifier
+  const pushApi = new PushApi({
+    registry: pushDevices,
+    sendTest: (device) => notifier.sendTest(device),
+  })
   companion = new CompanionHub({
     interactions,
     registry: agentStatuses,
@@ -1316,6 +1354,13 @@ async function main(): Promise<void> {
     onStatusChange: publishAgentStatusChange,
   })
   interactions.setPendingChangeListener(() => companion?.publish())
+  const agentRequestApi = new AgentRequestApi({
+    interactions,
+    registry: agentStatuses,
+    onStatusChange: publishAgentStatusChange,
+    onAnswered: () => companion?.publish(),
+    paneExists,
+  })
   const agentStatusHooks = new AgentStatusHookApi({
     token: agentHookToken,
     registry: agentStatuses,
@@ -1648,6 +1693,89 @@ async function main(): Promise<void> {
             ),
           )
         return
+      case 'watch_interactions': {
+        if (message.enabled) {
+          client.releaseInteractions ??= interactions.registerConsumer()
+        } else {
+          client.releaseInteractions?.()
+          client.releaseInteractions = null
+        }
+        return
+      }
+      case 'answer_agent_request': {
+        if (!paneExists(message.paneId)) {
+          sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
+          return
+        }
+        if (client.answeredRequestIds.has(message.requestId)) {
+          send(client, {
+            type: 'agent_request_answered',
+            paneId: message.paneId,
+            interactionId: message.interactionId,
+            changed: false,
+            requestId: message.requestId,
+          })
+          return
+        }
+        const outcome = answerAgentRequest(
+          {
+            interactions,
+            registry: agentStatuses,
+            onStatusChange: publishAgentStatusChange,
+            onAnswered: () => companion?.publish(),
+          },
+          message.paneId,
+          message.interactionId,
+          message.answer,
+        )
+        if (!outcome.ok) {
+          sendError(client, outcome.code, outcome.message, message.requestId)
+          return
+        }
+        client.answeredRequestIds.remember(message.requestId)
+        send(client, {
+          type: 'agent_request_answered',
+          paneId: message.paneId,
+          interactionId: message.interactionId,
+          changed: outcome.changed,
+          requestId: message.requestId,
+        })
+        return
+      }
+      case 'watch_usage': {
+        if (!message.enabled) {
+          client.releaseUsage?.()
+          client.releaseUsage = undefined
+          return
+        }
+        if (!client.releaseUsage) {
+          client.releaseUsage = providerUsage.acquire((usage) => {
+            send(client, { type: 'provider_usage', usage })
+          })
+        }
+        send(client, { type: 'provider_usage', usage: providerUsage.values() })
+        return
+      }
+      case 'refresh_usage': {
+        if (!client.releaseUsage) {
+          sendError(
+            client,
+            'usage_not_watched',
+            'Enable usage updates before refreshing',
+            message.requestId,
+          )
+          return
+        }
+        void providerUsage.refresh().catch((error: unknown) => {
+          sendError(
+            client,
+            'usage_refresh_failed',
+            error instanceof Error ? error.message : 'Usage refresh failed',
+            message.requestId,
+          )
+        })
+        return
+      }
       case 'save_workspace': {
         const canonicalWorkspace = {
           ...message.workspace,
@@ -1706,6 +1834,9 @@ async function main(): Promise<void> {
       paneResetGate: new PaneResetGate(),
       inputQueue: Promise.resolve(),
       violations: 0,
+      releaseInteractions: null,
+      answeredRequestIds: new IdempotencyKeyMemory(),
+      releaseUsage: undefined,
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
@@ -1748,6 +1879,10 @@ async function main(): Promise<void> {
     })
     const removeClient = (): void => {
       if (!clients.delete(client)) return
+      client.releaseInteractions?.()
+      client.releaseInteractions = null
+      client.releaseUsage?.()
+      client.releaseUsage = undefined
       syncRequiredSessions()
       void tmux
         .releasePaneResize(client.id)
@@ -1838,8 +1973,11 @@ async function main(): Promise<void> {
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
+        if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
+        if (await agentRequestApi.handle(request, response, url)) return
+        if (await pushApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
@@ -1963,6 +2101,7 @@ async function main(): Promise<void> {
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     companion?.close()
+    pushNotifier?.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void tmux.releaseAllPaneResizes().finally(() => {
