@@ -31,8 +31,22 @@ function RootStack(): React.JSX.Element {
           contentStyle: { backgroundColor: theme.bg },
         }}
       >
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(host)" options={{ headerShown: false }} />
+        {/*
+          `title` is what the next screen's back button reads, so the hosts
+          list needs one even though it draws its own header.
+        */}
+        <Stack.Screen name="index" options={{ headerShown: false, title: 'Hosts' }} />
+        {/*
+          `app/(host)` holds no layout of its own, so the group adds no
+          navigator level and the child route's real name is the whole path.
+          Naming it `(host)` matched nothing: the screen fell back to the
+          defaults and drew `(host)/[hostId]` as its title.
+
+          The host's own tabs carry the titles, and nothing inside them leads
+          back to the hosts list, so this header stays for its back button and
+          only drops the redundant title.
+        */}
+        <Stack.Screen name="(host)/[hostId]" options={{ title: '' }} />
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
       </Stack>
     </>
