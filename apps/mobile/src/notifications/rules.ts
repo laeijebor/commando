@@ -1,0 +1,151 @@
+/**
+ * The notification rules the daemon evaluates per registered device
+ * (`server/push-devices.ts`). They are edited on the phone, persisted locally
+ * and re-`PUT` to every connected host whenever they change.
+ */
+export type PushQuietHours = {
+  /** `HH:MM`, 24 hour, in `timeZone`. */
+  start: string
+  end: string
+  /** IANA zone, taken from the device. */
+  timeZone: string
+}
+
+export type PushRules = {
+  needsInput: boolean
+  done: boolean
+  failed: boolean
+  quietHours?: PushQuietHours
+  mutedSessions: string[]
+}
+
+export const MAX_MUTED_SESSIONS = 64
+export const MAX_DEVICE_NAME_LENGTH = 80
+const CLOCK_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/
+
+export const DEFAULT_QUIET_HOURS = { start: '23:00', end: '07:00' } as const
+
+export const DEFAULT_PUSH_RULES: PushRules = {
+  needsInput: true,
+  done: true,
+  failed: true,
+  mutedSessions: [],
+}
+
+export function isClockTime(value: string): boolean {
+  return CLOCK_TIME.test(value)
+}
+
+/** The device's IANA zone, so quiet hours mean the same on both ends. */
+export function deviceTimeZone(): string {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return zone && zone.length <= 64 ? zone : 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
+export function toggleMutedSession(rules: PushRules, sessionName: string): PushRules {
+  const muted = rules.mutedSessions.includes(sessionName)
+    ? rules.mutedSessions.filter((candidate) => candidate !== sessionName)
+    : [...rules.mutedSessions, sessionName].slice(0, MAX_MUTED_SESSIONS)
+  return { ...rules, mutedSessions: muted }
+}
+
+export function withQuietHours(rules: PushRules, quietHours: PushQuietHours | null): PushRules {
+  if (!quietHours) {
+    const { quietHours: _dropped, ...rest } = rules
+    return rest
+  }
+  return { ...rules, quietHours }
+}
+
+/** Tolerant parse of the persisted JSON; anything odd falls back to a default. */
+export function parsePushRules(raw: string | null): PushRules {
+  if (!raw) return DEFAULT_PUSH_RULES
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return DEFAULT_PUSH_RULES
+  }
+  if (typeof value !== 'object' || value === null) return DEFAULT_PUSH_RULES
+  const record = value as Record<string, unknown>
+  const quietHours = record.quietHours
+  const parsedQuietHours = typeof quietHours === 'object' && quietHours !== null
+    ? quietHours as Record<string, unknown>
+    : null
+  return normalisePushRules({
+    needsInput: record.needsInput !== false,
+    done: record.done !== false,
+    failed: record.failed !== false,
+    mutedSessions: Array.isArray(record.mutedSessions)
+      ? record.mutedSessions.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    ...(parsedQuietHours
+      ? {
+          quietHours: {
+            start: String(parsedQuietHours.start ?? ''),
+            end: String(parsedQuietHours.end ?? ''),
+            timeZone: String(parsedQuietHours.timeZone ?? deviceTimeZone()),
+          },
+        }
+      : {}),
+  })
+}
+
+/** Drops anything the daemon's validator would reject rather than being refused. */
+export function normalisePushRules(rules: PushRules): PushRules {
+  const mutedSessions: string[] = []
+  for (const entry of rules.mutedSessions) {
+    const name = entry.trim()
+    if (!name || name.length > 128 || mutedSessions.includes(name)) continue
+    if (mutedSessions.length >= MAX_MUTED_SESSIONS) break
+    mutedSessions.push(name)
+  }
+  const quiet = rules.quietHours
+  const quietHours = quiet && isClockTime(quiet.start) && isClockTime(quiet.end)
+    ? { start: quiet.start, end: quiet.end, timeZone: quiet.timeZone || deviceTimeZone() }
+    : undefined
+  return {
+    needsInput: rules.needsInput,
+    done: rules.done,
+    failed: rules.failed,
+    ...(quietHours ? { quietHours } : {}),
+    mutedSessions,
+  }
+}
+
+export function serialisePushRules(rules: PushRules): string {
+  return JSON.stringify(normalisePushRules(rules))
+}
+
+export type PushDeviceRegistration = {
+  id: string
+  expoPushToken: string
+  name: string
+  platform: 'ios' | 'android'
+  rules: PushRules
+}
+
+/**
+ * The body of `PUT /api/push/devices/:id`. The daemon validates every field,
+ * so the name is trimmed and the rules normalised before they go out.
+ */
+export function deviceRegistrationBody(input: {
+  id: string
+  expoPushToken: string
+  name: string
+  platform?: 'ios' | 'android'
+  rules: PushRules
+}): PushDeviceRegistration {
+  const name = input.name.trim().replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  return {
+    id: input.id,
+    expoPushToken: input.expoPushToken,
+    name: (name || 'iPhone').slice(0, MAX_DEVICE_NAME_LENGTH),
+    platform: input.platform ?? 'ios',
+    rules: normalisePushRules(input.rules),
+  }
+}

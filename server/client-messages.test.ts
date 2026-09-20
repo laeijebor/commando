@@ -363,6 +363,156 @@ describe('subscribe messages', () => {
   })
 })
 
+describe('interaction answer messages', () => {
+  it('accepts an opt-in and an opt-out interaction watch', () => {
+    expect(parseClientMessage({
+      type: 'watch_interactions',
+      enabled: true,
+      requestId: 'watch-1',
+    })).toEqual({
+      ok: true,
+      message: { type: 'watch_interactions', enabled: true, requestId: 'watch-1' },
+    })
+    expect(parseClientMessage({
+      type: 'watch_interactions',
+      enabled: false,
+      requestId: 'watch-1',
+    })).toEqual({
+      ok: true,
+      message: { type: 'watch_interactions', enabled: false, requestId: 'watch-1' },
+    })
+  })
+
+  it('rejects an interaction watch without a boolean or a request id', () => {
+    expect(parseClientMessage({
+      type: 'watch_interactions',
+      enabled: 'yes',
+      requestId: 'watch-1',
+    })).toEqual({
+      ok: false,
+      error: 'Invalid interaction watch request',
+      requestId: 'watch-1',
+    })
+    expect(parseClientMessage({ type: 'watch_interactions', enabled: true }).ok).toBe(false)
+  })
+
+  it('accepts permission and question answers', () => {
+    expect(parseClientMessage({
+      type: 'answer_agent_request',
+      paneId: '%12',
+      interactionId: 'permission-1',
+      answer: { action: 'allow_once' },
+      requestId: 'answer-1',
+    })).toEqual({
+      ok: true,
+      message: {
+        type: 'answer_agent_request',
+        paneId: '%12',
+        interactionId: 'permission-1',
+        answer: { action: 'allow_once' },
+        requestId: 'answer-1',
+      },
+    })
+    expect(parseClientMessage({
+      type: 'answer_agent_request',
+      paneId: '%12',
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [['macOS', 'iOS']] },
+      requestId: 'answer-2',
+    })).toEqual({
+      ok: true,
+      message: {
+        type: 'answer_agent_request',
+        paneId: '%12',
+        interactionId: 'question-1',
+        answer: { action: 'answer', answers: [['macOS', 'iOS']] },
+        requestId: 'answer-2',
+      },
+    })
+    expect(parseClientMessage({
+      type: 'answer_agent_request',
+      paneId: '%12',
+      interactionId: 'question-1',
+      answer: { action: 'reject' },
+      requestId: 'answer-3',
+    }).ok).toBe(true)
+  })
+
+  it('rejects unknown actions, malformed pane ids, and missing ids', () => {
+    for (const message of [
+      { paneId: '%12', interactionId: 'permission-1', answer: { action: 'maybe' } },
+      { paneId: '12', interactionId: 'permission-1', answer: { action: 'deny' } },
+      { paneId: '%12', interactionId: '', answer: { action: 'deny' } },
+      { paneId: '%12', interactionId: 'permission-1', answer: 'deny' },
+      { paneId: '%12', interactionId: 'permission-1' },
+    ]) {
+      expect(parseClientMessage({
+        type: 'answer_agent_request',
+        requestId: 'answer-1',
+        ...message,
+      })).toEqual({
+        ok: false,
+        error: 'Invalid agent request answer',
+        requestId: 'answer-1',
+      })
+    }
+    expect(parseClientMessage({
+      type: 'answer_agent_request',
+      paneId: '%12',
+      interactionId: 'permission-1',
+      answer: { action: 'deny' },
+    }).ok).toBe(false)
+  })
+
+  it('rejects oversized interaction ids and answer payloads', () => {
+    const base = {
+      type: 'answer_agent_request',
+      paneId: '%12',
+      requestId: 'answer-1',
+    }
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'x'.repeat(200),
+      answer: { action: 'deny' },
+    }).ok).toBe(true)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'x'.repeat(201),
+      answer: { action: 'deny' },
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [Array.from({ length: 12 }, () => 'ok')] },
+    }).ok).toBe(true)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [Array.from({ length: 13 }, () => 'ok')] },
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: Array.from({ length: 9 }, () => ['ok']) },
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [['x'.repeat(300)]] },
+    }).ok).toBe(true)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [['x'.repeat(301)]] },
+    }).ok).toBe(false)
+    expect(parseClientMessage({
+      ...base,
+      interactionId: 'question-1',
+      answer: { action: 'answer', answers: [['']] },
+    }).ok).toBe(false)
+  })
+})
+
 describe('pane reset limiting', () => {
   it('coalesces pending resets without consuming the bounded reset quota', () => {
     let now = 0
@@ -401,5 +551,38 @@ describe('pane reset limiting', () => {
     gate.forget('%1')
 
     expect(gate.decide('%1', false)).toBe('allow')
+  })
+})
+
+describe('usage messages', () => {
+  it('parses usage watch requests', () => {
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true, requestId: 'r1' })).toEqual({
+      ok: true,
+      message: { type: 'watch_usage', enabled: true, requestId: 'r1' },
+    })
+    expect(parseClientMessage({ type: 'watch_usage', enabled: false, requestId: 'r2' })).toEqual({
+      ok: true,
+      message: { type: 'watch_usage', enabled: false, requestId: 'r2' },
+    })
+  })
+
+  it('rejects usage watch requests without a boolean flag or request id', () => {
+    expect(parseClientMessage({ type: 'watch_usage', enabled: 'yes', requestId: 'r1' })).toEqual({
+      ok: false,
+      error: 'Invalid usage watch request',
+      requestId: 'r1',
+    })
+    expect(parseClientMessage({ type: 'watch_usage', requestId: 'r1' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'watch_usage', enabled: true, requestId: 'no spaces' }).ok).toBe(false)
+  })
+
+  it('parses usage refresh requests and rejects malformed ids', () => {
+    expect(parseClientMessage({ type: 'refresh_usage', requestId: 'r3' })).toEqual({
+      ok: true,
+      message: { type: 'refresh_usage', requestId: 'r3' },
+    })
+    expect(parseClientMessage({ type: 'refresh_usage' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'refresh_usage', requestId: 42 }).ok).toBe(false)
   })
 })

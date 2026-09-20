@@ -8,3 +8,5 @@ playwright-report/
 .commando-state.json
 node_modules
 apps/island/.build/
+apps/mobile/node_modules/
+apps/mobile/.expo/

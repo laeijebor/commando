@@ -1,10 +1,20 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   parseClaudeUsage,
   parseCodexUsage,
   ProviderUsageService,
+  USAGE_REFRESH_INTERVAL_MS,
 } from './provider-usage.js'
+
+function stubService(options: { now?: () => number } = {}): ProviderUsageService {
+  return new ProviderUsageService({
+    fetch: vi.fn<typeof fetch>(async () => new Response('{}', { status: 200 })),
+    now: options.now ?? (() => 0),
+    readClaudeCredentials: async () => ({ claudeAiOauth: { accessToken: 'token' } }),
+    readCodexCredentials: async () => ({ tokens: { access_token: 'token' } }),
+  })
+}
 
 describe('provider usage', () => {
   it('normalizes Claude remaining usage and reset times', () => {
@@ -86,5 +96,79 @@ describe('provider usage', () => {
     ])
     expect(JSON.stringify(result)).not.toContain('private-')
     expect(request).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('provider usage consumers', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('runs one refresh loop for any number of consumers', async () => {
+    vi.useFakeTimers()
+    const service = stubService()
+    const first = vi.fn()
+    const second = vi.fn()
+
+    const releaseFirst = service.acquire(first)
+    const releaseSecond = service.acquire(second)
+    expect(service.consumerCount()).toBe(2)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(USAGE_REFRESH_INTERVAL_MS)
+    expect(first).toHaveBeenCalledTimes(2)
+    expect(second).toHaveBeenCalledTimes(2)
+
+    releaseFirst()
+    expect(service.consumerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(USAGE_REFRESH_INTERVAL_MS)
+    expect(first).toHaveBeenCalledTimes(2)
+    expect(second).toHaveBeenCalledTimes(3)
+
+    releaseSecond()
+    expect(service.consumerCount()).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the loop alive when consumers are released out of order and ignores double releases', async () => {
+    vi.useFakeTimers()
+    const service = stubService()
+    const first = vi.fn()
+    const second = vi.fn()
+
+    const releaseFirst = service.acquire(first)
+    const releaseSecond = service.acquire(second)
+    await vi.advanceTimersByTimeAsync(0)
+
+    releaseSecond()
+    releaseSecond()
+    expect(service.consumerCount()).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+
+    releaseFirst()
+    expect(service.consumerCount()).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+
+    const third = vi.fn()
+    service.acquire(third)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(third).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('records when the cached snapshot was last refreshed', async () => {
+    let now = 5_000
+    const service = stubService({ now: () => now })
+
+    expect(service.lastUpdatedAt()).toBe(0)
+    await service.refresh()
+    expect(service.lastUpdatedAt()).toBe(5_000)
+
+    now = 9_000
+    await service.refresh()
+    expect(service.lastUpdatedAt()).toBe(9_000)
   })
 })
