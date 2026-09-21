@@ -30,6 +30,11 @@ test('creates and kills terminal panes with shortcuts and the header close contr
     COMMANDO_OWNER_EMAIL: '',
   }
   delete env.COMMANDO_TMUX_SOCKET_PATH
+  // The daemon resolves agent profiles from its environment, so an inherited profile variable
+  // would reach past this temporary HOME into the developer's real settings.
+  delete env.CLAUDE_CONFIG_DIR
+  delete env.CODEX_HOME
+  delete env.COMMANDO_AGENT_HOOK_TOKEN_PATH
   const children: ChildProcess[] = []
   let logs = ''
   const start = (args: string[]) => {

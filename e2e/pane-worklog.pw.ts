@@ -24,8 +24,13 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
   const daemonPort = await freePort()
   const webPort = await freePort()
   const token = 'worklog-e2e'
+  // The daemon resolves agent profiles from its environment, so an inherited profile variable
+  // would reach past this temporary HOME into the developer's real settings.
+  const inheritedEnv = Object.entries(process.env).filter(([key]) => (
+    !key.startsWith('COMMANDO_') && key !== 'CLAUDE_CONFIG_DIR' && key !== 'CODEX_HOME'
+  ))
   const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COMMANDO_'))),
+    ...Object.fromEntries(inheritedEnv),
     HOME: home, COMMANDO_PORT: String(daemonPort), COMMANDO_TMUX_SOCKET_NAME: socket,
     COMMANDO_TOKEN: token, COMMANDO_OWNER_EMAIL: '',
   }

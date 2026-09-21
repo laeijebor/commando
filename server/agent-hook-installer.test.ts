@@ -1095,6 +1095,20 @@ describe('agent hook repair', () => {
     expect(paths.claudeBridgePath).not.toBe(join(foreign, '.commando', 'hooks'))
   })
 
+  it('never repairs a profile outside the running home', async () => {
+    const elsewhere = await temporaryHome()
+    const elsewherePaths = await new AgentHookInstaller({ home: elsewhere }).install()
+    const before = await readFile(elsewherePaths.claudeSettingsPath, 'utf8')
+    await rm(elsewherePaths.claudeBridgePath)
+
+    const home = await temporaryHome()
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(elsewhere, '.claude'))
+
+    expect(await repairAgentStatusHooks()).toEqual({ repaired: false, staleBridgePaths: [] })
+    expect(await readFile(elsewherePaths.claudeSettingsPath, 'utf8')).toBe(before)
+    await expect(stat(join(home, '.commando', 'hooks'))).rejects.toThrow()
+  })
+
   it('repairs the profile named by CLAUDE_CONFIG_DIR', async () => {
     const home = await temporaryHome()
     const profile = join(home, '.claudew')

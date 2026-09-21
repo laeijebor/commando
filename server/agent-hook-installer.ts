@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
 
 export const CLAUDE_HOOK_EVENTS = [
@@ -1230,8 +1230,14 @@ async function readClaudeSettings(path: string): Promise<{ mode: number; setting
   }
 }
 
+function isWithin(directory: string, path: string): boolean {
+  const offset = relative(directory, path)
+  return offset !== '' && !offset.startsWith('..') && !isAbsolute(offset)
+}
+
 export class AgentHookInstaller {
   readonly paths: AgentHookInstallResult
+  private readonly home: string
 
   constructor(options: AgentHookInstallerOptions = {}) {
     const home = options.home ?? process.env.HOME
@@ -1243,6 +1249,7 @@ export class AgentHookInstaller {
     if (configuredClaudeDirectory !== undefined && configuredClaudeDirectory.trim().length === 0) {
       throw new Error('CLAUDE_CONFIG_DIR must not be empty')
     }
+    this.home = resolvedHome
     const configuredTokenPath = options.tokenPath
       ?? (options.home === undefined ? process.env[AGENT_HOOK_TOKEN_PATH_ENV] : undefined)
     this.paths = {
@@ -1282,6 +1289,10 @@ export class AgentHookInstaller {
    * profile in.
    */
   async staleClaudeBridgePaths(): Promise<string[]> {
+    // A profile outside this home belongs to someone else: a daemon running with an overridden
+    // HOME (tests, sandboxes) must never rewrite the developer's real settings to point at its
+    // own bridge. Such a profile is repaired by installing from its own home instead.
+    if (!isWithin(this.home, this.paths.claudeSettingsPath)) return []
     const { settings } = await readClaudeSettings(this.paths.claudeSettingsPath)
     const installed = installedClaudeBridgePaths(settings)
     if (installed.size === 0) return []
@@ -1338,8 +1349,8 @@ export async function installAgentStatusHooks(
 /**
  * Repair Claude hooks that point at a bridge which has moved or disappeared — a test run or
  * a stale profile can leave every hook throwing MODULE_NOT_FOUND in each new session. Only
- * profiles that already carry Commando hooks are touched, and an unchanged profile is left
- * alone.
+ * profiles inside this home that already carry Commando hooks are touched, and an unchanged
+ * profile is left alone.
  */
 export async function repairAgentStatusHooks(
   options: AgentHookInstallerOptions = {},
