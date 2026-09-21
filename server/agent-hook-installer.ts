@@ -60,6 +60,7 @@ export type AgentHookInstallerOptions = {
 
 export type AgentHookRepairResult = {
   repaired: boolean
+  /** Every stale bridge path found, across Claude hooks and the Codex notify. */
   staleBridgePaths: string[]
 }
 
@@ -1547,6 +1548,22 @@ function installedClaudeBridgePaths(settings: JsonObject): Set<string> {
   return paths
 }
 
+function installedCodexBridgePaths(content: string): Set<string> {
+  const body = content.endsWith('\n') ? content.slice(0, -1) : content
+  const lines = body.length ? body.split('\n') : []
+  const { notify, unterminated } = scanTopLevelNotify(lines)
+  if (unterminated || notify === null) return new Set()
+  const argv = parseNotifyArgv(notify.value)
+  if (argv === null) return new Set()
+  // Only an argument that names the generated bridge is ours to repair. A notify the operator
+  // wrote themselves stays theirs, even under a marker they left behind.
+  return new Set(
+    argv
+      .filter((entry) => entry.endsWith(`/${CODEX_BRIDGE_FILENAME}`))
+      .map((entry) => resolve(entry)),
+  )
+}
+
 async function isReadableFile(path: string): Promise<boolean> {
   try {
     await access(path)
@@ -1699,7 +1716,47 @@ export class AgentHookInstaller {
     return stale.sort()
   }
 
+  /**
+   * The Codex `notify` bridge recorded in config.toml when it no longer resolves to a usable
+   * bridge. A config without a Commando notify yields an empty list.
+   */
+  async staleCodexBridgePaths(): Promise<string[]> {
+    if (!isWithin(this.home, this.paths.codexConfigPath)) return []
+    const { content } = await readCodexConfig(this.paths.codexConfigPath)
+    const stale: string[] = []
+    for (const path of installedCodexBridgePaths(content)) {
+      if (path !== this.paths.codexBridgePath || !(await isReadableFile(path))) stale.push(path)
+    }
+    return stale.sort()
+  }
+
   async install(): Promise<AgentHookInstallResult> {
+    await this.installGeneratedScripts()
+    const codexNotifyWarning = await this.installCodexNotify()
+    await this.installClaudeHooks()
+    return {
+      ...this.paths,
+      ...(codexNotifyWarning ? { codexNotifyWarning } : {}),
+    }
+  }
+
+  /**
+   * Rewrite hooks that point at a bridge which has moved or disappeared. Each provider is
+   * repaired only when its own recorded bridge is stale, so a broken Claude profile never
+   * makes Commando take over a Codex notify it does not already manage.
+   */
+  async repair(): Promise<AgentHookRepairResult> {
+    const staleClaude = await this.staleClaudeBridgePaths()
+    const staleCodex = await this.staleCodexBridgePaths()
+    const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex])].sort()
+    if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths }
+    await this.installGeneratedScripts()
+    if (staleCodex.length > 0) await this.installCodexNotify()
+    if (staleClaude.length > 0) await this.installClaudeHooks()
+    return { repaired: true, staleBridgePaths }
+  }
+
+  private async installGeneratedScripts(): Promise<void> {
     const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
@@ -1724,9 +1781,9 @@ export class AgentHookInstaller {
       generatedPrMarkerCli(this.paths.tokenPath),
       0o700,
     )
+  }
 
-    const codexNotifyWarning = await this.installCodexNotify()
-
+  private async installClaudeHooks(): Promise<void> {
     const { mode, settings } = await readClaudeSettings(this.paths.claudeSettingsPath)
     const merged = mergeClaudeHooks(settings, this.paths.claudeBridgePath)
     await writeAtomically(
@@ -1734,10 +1791,6 @@ export class AgentHookInstaller {
       `${JSON.stringify(merged, null, 2)}\n`,
       mode,
     )
-    return {
-      ...this.paths,
-      ...(codexNotifyWarning ? { codexNotifyWarning } : {}),
-    }
   }
 
   // Codex only learns about the bridge through `notify`, so the script is
@@ -1764,17 +1817,13 @@ export async function installAgentStatusHooks(
 }
 
 /**
- * Repair Claude hooks that point at a bridge which has moved or disappeared — a test run or
- * a stale profile can leave every hook throwing MODULE_NOT_FOUND in each new session. Only
- * profiles inside this home that already carry Commando hooks are touched, and an unchanged
- * profile is left alone.
+ * Repair the Claude hooks and the Codex notify when they point at a bridge which has moved or
+ * disappeared — a test run or a stale profile can leave every hook throwing MODULE_NOT_FOUND in
+ * each new session. Only profiles inside this home that already carry Commando hooks are
+ * touched, and an unchanged profile is left alone.
  */
 export async function repairAgentStatusHooks(
   options: AgentHookInstallerOptions = {},
 ): Promise<AgentHookRepairResult> {
-  const installer = new AgentHookInstaller(options)
-  const staleBridgePaths = await installer.staleClaudeBridgePaths()
-  if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths }
-  await installer.install()
-  return { repaired: true, staleBridgePaths }
+  return new AgentHookInstaller(options).repair()
 }

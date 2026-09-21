@@ -1348,6 +1348,90 @@ describe('agent hook repair', () => {
     expect(paths.claudeBridgePath).not.toBe(join(foreign, '.commando', 'hooks'))
   })
 
+  it('rewrites a Codex notify left pointing at a departed bridge', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const departed = join(home, 'departed', 'commando-codex-notify.mjs')
+    await writeFile(paths.codexConfigPath, [
+      '# commando:codex-notify v1',
+      `notify = ["node", "${departed}"]`,
+      '',
+    ].join('\n'))
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [departed] })
+    expect(await readFile(paths.codexConfigPath, 'utf8')).toBe([
+      '# commando:codex-notify v1',
+      `notify = ["node", "${paths.codexBridgePath}"]`,
+      '',
+    ].join('\n'))
+    expect((await stat(paths.codexBridgePath)).mode & 0o777).toBe(0o600)
+  })
+
+  it('restores a Codex bridge deleted from underneath a healthy notify', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const notify = await readFile(paths.codexConfigPath, 'utf8')
+    await rm(paths.codexBridgePath)
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [paths.codexBridgePath] })
+    expect(await readFile(paths.codexConfigPath, 'utf8')).toBe(notify)
+    expect((await stat(paths.codexBridgePath)).mode & 0o777).toBe(0o600)
+  })
+
+  it('keeps a notify Commando does not manage out of a Claude repair', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const foreignNotify = 'notify = ["/usr/local/bin/my-notifier"]\n'
+    await writeFile(paths.codexConfigPath, foreignNotify)
+    await rm(paths.claudeBridgePath)
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [paths.claudeBridgePath] })
+    expect(await readFile(paths.codexConfigPath, 'utf8')).toBe(foreignNotify)
+  })
+
+  it('never creates a Codex config for a home that has none', async () => {
+    const home = await temporaryHome()
+    const settingsPath = join(home, '.claude', 'settings.json')
+    await mkdir(join(home, '.claude'), { recursive: true })
+    await writeFile(settingsPath, `${JSON.stringify({
+      hooks: {
+        Stop: [{
+          matcher: '',
+          hooks: [{
+            type: 'command',
+            command: 'node',
+            args: [join(home, 'gone.mjs'), '--commando-agent-status-hook'],
+          }],
+        }],
+      },
+    }, null, 2)}\n`)
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [join(home, 'gone.mjs')] })
+    await expect(stat(join(home, '.codex', 'config.toml'))).rejects.toThrow()
+  })
+
+  it('never repairs a Codex config outside the running home', async () => {
+    const elsewhere = await temporaryHome()
+    const elsewherePaths = await new AgentHookInstaller({ home: elsewhere }).install()
+    const before = await readFile(elsewherePaths.codexConfigPath, 'utf8')
+    await rm(elsewherePaths.codexBridgePath)
+
+    await temporaryHome()
+    vi.stubEnv('CODEX_HOME', join(elsewhere, '.codex'))
+
+    expect(await repairAgentStatusHooks()).toEqual({ repaired: false, staleBridgePaths: [] })
+    expect(await readFile(elsewherePaths.codexConfigPath, 'utf8')).toBe(before)
+    await expect(stat(elsewherePaths.codexBridgePath)).rejects.toThrow()
+  })
+
   it('never repairs a profile outside the running home', async () => {
     const elsewhere = await temporaryHome()
     const elsewherePaths = await new AgentHookInstaller({ home: elsewhere }).install()
