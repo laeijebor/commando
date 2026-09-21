@@ -126,6 +126,41 @@ Consistent share mechanism`}
     expect(screen.getByLabelText('Note body')).toHaveAttribute('contenteditable', 'false')
   })
 
+  it('renders the fallback instead of a read-only editor when Markdown is lossy', async () => {
+    render(
+      <NoteBlockEditor
+        markdown={'Keep <u>underlining</u>'}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        uploadImage={vi.fn()}
+        resolveImageUrl={(url) => url}
+        label="Pinned note body"
+        fallback={<textarea aria-label="Pinned note body" readOnly value={'Keep <u>underlining</u>'} />}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Pinned note body')).toBeInstanceOf(HTMLTextAreaElement))
+    expect(screen.queryByText(/cannot preserve/)).not.toBeInTheDocument()
+  })
+
+  it('drops the side menu and labels the editor for compact surfaces', async () => {
+    const { container } = render(
+      <NoteBlockEditor
+        compact
+        label="Pinned note body"
+        markdown={'- [ ] Integrate UI'}
+        onChange={vi.fn()}
+        onSave={vi.fn()}
+        uploadImage={vi.fn()}
+        resolveImageUrl={(url) => url}
+      />,
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Pinned note body')).toHaveAttribute('contenteditable', 'true'))
+    expect(container.querySelector('.notes-block-editor-shell')).toHaveClass('compact')
+    expect(container.querySelector('.bn-side-menu')).toBeNull()
+  })
+
   it('does not ignore whitespace inside fenced code', () => {
     expect(comparableMarkdown('```txt\na\n\n\nb\n```')).not.toBe(
       comparableMarkdown('```txt\na\n\nb\n```'),

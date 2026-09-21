@@ -7,6 +7,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HudPinnedNote } from './HudPinnedNote'
 import type { PinnedNote } from './pinnedNote'
 
+// The real block editor is covered by NoteBlockEditor.test.tsx; stubbing it here
+// keeps these tests about the pinned note's own behaviour.
+vi.mock('./NoteBlockEditor', () => ({
+  NoteBlockEditor: ({
+    markdown,
+    onChange,
+    onSave,
+    label,
+  }: {
+    markdown: string
+    onChange(markdown: string): void
+    onSave(): void
+    label: string
+  }) => (
+    <textarea
+      aria-label={label}
+      value={markdown}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+          event.preventDefault()
+          onSave()
+        }
+      }}
+    />
+  ),
+}))
+
 const note: PinnedNote = {
   vaultId: 'vault-1',
   id: 'note-1',
@@ -14,6 +42,11 @@ const note: PinnedNote = {
   body: '- [x] Typecheck\n- [ ] Browser verification',
   folder: 'Projects/Commando',
   updatedAt: 1_700_000_100_000,
+}
+
+const images = {
+  uploadImage: async () => 'attachments/shot.png',
+  resolveImageUrl: (_note: PinnedNote, url: string) => url,
 }
 
 afterEach(() => {
@@ -27,7 +60,7 @@ describe('HudPinnedNote', () => {
     const onOpen = vi.fn()
     const onSave = vi.fn().mockResolvedValue(note)
     const onUnpin = vi.fn()
-    render(<HudPinnedNote note={note} onOpen={onOpen} onSave={onSave} onUnpin={onUnpin} />)
+    render(<HudPinnedNote note={note} onOpen={onOpen} onSave={onSave} onUnpin={onUnpin} {...images} />)
 
     expect(screen.getByRole('region', { name: 'Pinned note: Release checklist' })).toBeVisible()
     expect(screen.getByText('Projects/Commando')).toBeVisible()
@@ -49,7 +82,7 @@ describe('HudPinnedNote', () => {
       updatedAt: note.updatedAt + 1,
     }
     const onSave = vi.fn().mockResolvedValue(saved)
-    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} />)
+    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} {...images} />)
 
     expect(screen.queryByLabelText('Pinned note body')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Edit pinned note' }))
@@ -74,7 +107,7 @@ describe('HudPinnedNote', () => {
     const onSave = vi.fn()
       .mockRejectedValueOnce(new Error('Note changed outside Commando'))
       .mockResolvedValueOnce({ ...note, body: 'Retry me', updatedAt: note.updatedAt + 1 })
-    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} />)
+    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} {...images} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit pinned note' }))
     fireEvent.change(screen.getByLabelText('Pinned note body'), { target: { value: 'Retry me' } })
@@ -92,8 +125,44 @@ describe('HudPinnedNote', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
+  it('ticks a task from view mode and autosaves the rewritten Markdown', async () => {
+    vi.useFakeTimers()
+    const onSave = vi.fn().mockImplementation(async (next: PinnedNote) => ({ ...next, updatedAt: note.updatedAt + 1 }))
+    render(<HudPinnedNote note={note} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} {...images} />)
+
+    const browserCheck = screen.getByRole('checkbox', { name: 'Browser verification' })
+    expect(browserCheck).not.toBeChecked()
+    expect(browserCheck).toBeEnabled()
+
+    fireEvent.click(browserCheck)
+    expect(screen.getByRole('checkbox', { name: 'Browser verification' })).toBeChecked()
+
+    await act(async () => {
+      vi.advanceTimersByTime(650)
+      await Promise.resolve()
+    })
+
+    expect(onSave).toHaveBeenCalledWith({ ...note, body: '- [x] Typecheck\n- [x] Browser verification' })
+  })
+
+  it('unticks the clicked task when items repeat the same text', async () => {
+    vi.useFakeTimers()
+    const repeated: PinnedNote = { ...note, body: '- [x] Review\n- [x] Review' }
+    const onSave = vi.fn().mockImplementation(async (next: PinnedNote) => ({ ...next, updatedAt: note.updatedAt + 1 }))
+    render(<HudPinnedNote note={repeated} onOpen={vi.fn()} onSave={onSave} onUnpin={vi.fn()} {...images} />)
+
+    fireEvent.click(screen.getAllByRole('checkbox', { name: 'Review' })[1])
+
+    await act(async () => {
+      vi.advanceTimersByTime(650)
+      await Promise.resolve()
+    })
+
+    expect(onSave).toHaveBeenCalledWith({ ...repeated, body: '- [x] Review\n- [ ] Review' })
+  })
+
   it('resizes with pointer and keyboard controls and restores the saved height', () => {
-    const props = { note, onOpen: vi.fn(), onSave: vi.fn().mockResolvedValue(note), onUnpin: vi.fn() }
+    const props = { note, onOpen: vi.fn(), onSave: vi.fn().mockResolvedValue(note), onUnpin: vi.fn(), ...images }
     const view = render(<HudPinnedNote {...props} />)
     const region = screen.getByRole('region', { name: 'Pinned note: Release checklist' })
     const handle = screen.getByRole('separator', { name: 'Resize pinned note height' })

@@ -1,8 +1,19 @@
 import { Eye, NotebookPen, Pencil, Pin, PinOff } from 'lucide-react'
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { toggleMarkdownTaskAt } from './markdownTasks'
+import { NoteBlockEditor } from './NoteBlockEditor'
 import type { PinnedNote } from './pinnedNote'
 
 const PINNED_NOTE_HEIGHT_STORAGE_KEY = 'commando.hud.pinned-note-height'
@@ -28,13 +39,52 @@ function storePinnedNoteHeight(height: number): void {
   }
 }
 
-const markdownComponents: Components = {
-  a({ node: _node, ...props }) {
-    return <a {...props} target="_blank" rel="noreferrer" />
-  },
-  img() {
-    return null
-  },
+/**
+ * Source offset of the list item a checkbox belongs to. The GFM checkbox is
+ * synthesised during rendering and carries no position of its own, so the
+ * enclosing `li` hands its offset down for the toggle to write back against.
+ */
+const TaskItemContext = createContext<{ offset: number; label: string } | null>(null)
+
+function nodeText(node: unknown): string {
+  if (!node || typeof node !== 'object') return ''
+  const candidate = node as { value?: unknown; children?: unknown }
+  if (typeof candidate.value === 'string') return candidate.value
+  if (!Array.isArray(candidate.children)) return ''
+  return candidate.children.map(nodeText).join('')
+}
+
+function taskComponents(toggleTask: (offset: number) => void): Components {
+  return {
+    a({ node: _node, ...props }) {
+      return <a {...props} target="_blank" rel="noreferrer" />
+    },
+    img() {
+      return null
+    },
+    li({ node, children, ...props }) {
+      const offset = node?.position?.start?.offset
+      if (typeof offset !== 'number') return <li {...props}>{children}</li>
+      return (
+        <TaskItemContext.Provider value={{ offset, label: nodeText(node).trim().replace(/\s+/g, ' ') }}>
+          <li {...props}>{children}</li>
+        </TaskItemContext.Provider>
+      )
+    },
+    input({ node: _node, type, checked, disabled, ...props }) {
+      const task = useContext(TaskItemContext)
+      if (type !== 'checkbox' || !task) return <input {...props} type={type} checked={checked} disabled={disabled} readOnly />
+      return (
+        <input
+          {...props}
+          type="checkbox"
+          checked={Boolean(checked)}
+          aria-label={task.label || 'Task'}
+          onChange={() => toggleTask(task.offset)}
+        />
+      )
+    },
+  }
 }
 
 export function HudPinnedNote({
@@ -42,11 +92,15 @@ export function HudPinnedNote({
   onOpen,
   onSave,
   onUnpin,
+  uploadImage,
+  resolveImageUrl,
 }: {
   note: PinnedNote
   onOpen: () => void
   onSave: (note: PinnedNote) => Promise<PinnedNote>
   onUnpin: () => void
+  uploadImage: (note: PinnedNote, file: File) => Promise<string>
+  resolveImageUrl: (note: PinnedNote, url: string) => string
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => ({ title: note.title, body: note.body }))
@@ -98,6 +152,14 @@ export function HudPinnedNote({
     setSaveError('')
     changeSavePhase('dirty')
   }
+
+  const toggleTask = (offset: number) => {
+    const body = toggleMarkdownTaskAt(draftRef.current.body, offset)
+    if (body === null) return
+    changeDraft({ ...draftRef.current, body })
+  }
+
+  const markdownComponents = useMemo(() => taskComponents(toggleTask), [])
 
   const save = async () => {
     if (saveInFlight.current || savePhaseRef.current === 'saved') return
@@ -227,12 +289,26 @@ export function HudPinnedNote({
               <small>{note.folder || 'Root'}</small>
               {saveStatus ? <span className={savePhase === 'error' ? 'error' : ''} role={savePhase === 'error' ? 'alert' : 'status'} title={saveStatus}>{saveStatus}</span> : null}
             </div>
-            <textarea
-              className="hud-pinned-note-body-input"
-              value={draft.body}
-              onChange={(event) => changeDraft({ ...draftRef.current, body: event.target.value })}
-              onKeyDown={saveWithShortcut}
-              aria-label="Pinned note body"
+            <NoteBlockEditor
+              compact
+              label="Pinned note body"
+              markdown={draft.body}
+              uploadImage={(file) => uploadImage(noteRef.current, file)}
+              resolveImageUrl={(url) => resolveImageUrl(noteRef.current, url)}
+              onChange={(body) => {
+                if (body === draftRef.current.body) return
+                changeDraft({ ...draftRef.current, body })
+              }}
+              onSave={() => { void save() }}
+              fallback={(
+                <textarea
+                  className="hud-pinned-note-body-input"
+                  value={draft.body}
+                  onChange={(event) => changeDraft({ ...draftRef.current, body: event.target.value })}
+                  onKeyDown={saveWithShortcut}
+                  aria-label="Pinned note body"
+                />
+              )}
             />
           </>
         ) : (

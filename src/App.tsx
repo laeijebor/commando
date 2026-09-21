@@ -985,6 +985,16 @@ export function App() {
     return next
   }, [token])
 
+  const uploadPinnedNoteImage = useCallback(
+    (note: PinnedNote, file: File) => createNotesApi(token).uploadImage(note.vaultId, note.id, file),
+    [token],
+  )
+
+  const resolvePinnedNoteImageUrl = useCallback(
+    (note: PinnedNote, url: string) => createNotesApi(token).resolveImageUrl(url, note.vaultId),
+    [token],
+  )
+
   useEffect(() => {
     const broker = new SessionTokenBroker()
     tokenBrokerRef.current = broker
@@ -2897,6 +2907,8 @@ export function App() {
               }}
               onSave={savePinnedNote}
               onUnpin={() => changePinnedNote(null)}
+              uploadImage={uploadPinnedNoteImage}
+              resolveImageUrl={resolvePinnedNoteImageUrl}
             />
           ) : null}
           <nav className="hud-tabs" role="tablist" aria-label="HUD sections">

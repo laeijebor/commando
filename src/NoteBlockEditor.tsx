@@ -6,7 +6,7 @@ import {
 } from '@blocknote/core'
 import { BlockNoteView } from '@blocknote/ariakit'
 import { useCreateBlockNote } from '@blocknote/react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
@@ -40,6 +40,11 @@ type NoteBlockEditorProps = {
   onSave(): void
   uploadImage(file: File): Promise<string>
   resolveImageUrl(url: string): string
+  /** Drops the block side menu and tightens spacing for narrow surfaces such as the HUD rail. */
+  compact?: boolean
+  /** Rendered instead of the read-only warning when the Markdown cannot round-trip through blocks. */
+  fallback?: ReactNode
+  label?: string
 }
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm)
@@ -99,6 +104,9 @@ export function NoteBlockEditor({
   onSave,
   uploadImage,
   resolveImageUrl,
+  compact = false,
+  fallback,
+  label = 'Note body',
 }: NoteBlockEditorProps) {
   const applyingMarkdown = useRef(false)
   const lastEmittedMarkdown = useRef<string | null>(null)
@@ -122,7 +130,7 @@ export function NoteBlockEditor({
     resolveFileUrl: async (url) => resolveImageUrlRef.current(url),
     domAttributes: {
       editor: {
-        'aria-label': 'Note body',
+        'aria-label': label,
         'aria-multiline': 'true',
       },
     },
@@ -142,8 +150,10 @@ export function NoteBlockEditor({
     applyingMarkdown.current = false
   }, [editor, markdown])
 
+  if (!compatible && fallback !== undefined) return <>{fallback}</>
+
   return (
-    <div className="notes-block-editor-shell">
+    <div className={`notes-block-editor-shell${compact ? ' compact' : ''}`}>
       {!compatible ? (
         <div className="notes-markdown-warning" role="status">
           This note contains Markdown that the block editor cannot preserve. Edit the body in Obsidian; Commando will keep it unchanged.
@@ -151,9 +161,10 @@ export function NoteBlockEditor({
       ) : null}
       {uploadError ? <div className="notes-image-error" role="alert">{uploadError}</div> : null}
       <BlockNoteView
-        className="notes-block-editor"
+        className={`notes-block-editor${compact ? ' compact' : ''}`}
         editor={editor}
         editable={compatible}
+        sideMenu={!compact}
         theme="dark"
         onChange={() => {
           if (applyingMarkdown.current || !compatible) return
