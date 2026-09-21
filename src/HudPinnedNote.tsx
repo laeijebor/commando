@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentPropsWithoutRef,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
@@ -54,6 +55,27 @@ function nodeText(node: unknown): string {
   return candidate.children.map(nodeText).join('')
 }
 
+function TaskCheckbox({
+  toggleTask,
+  checked,
+  // react-markdown always renders the GFM checkbox disabled; drop it so the
+  // interactive branch below cannot inherit it through the spread.
+  disabled: _disabled,
+  ...props
+}: ComponentPropsWithoutRef<'input'> & { toggleTask: (offset: number) => void }) {
+  const task = useContext(TaskItemContext)
+  if (!task) return <input {...props} type="checkbox" checked={checked} disabled readOnly />
+  return (
+    <input
+      {...props}
+      type="checkbox"
+      checked={Boolean(checked)}
+      aria-label={task.label || 'Task'}
+      onChange={() => toggleTask(task.offset)}
+    />
+  )
+}
+
 function taskComponents(toggleTask: (offset: number) => void): Components {
   return {
     a({ node: _node, ...props }) {
@@ -71,18 +93,9 @@ function taskComponents(toggleTask: (offset: number) => void): Components {
         </TaskItemContext.Provider>
       )
     },
-    input({ node: _node, type, checked, disabled, ...props }) {
-      const task = useContext(TaskItemContext)
-      if (type !== 'checkbox' || !task) return <input {...props} type={type} checked={checked} disabled={disabled} readOnly />
-      return (
-        <input
-          {...props}
-          type="checkbox"
-          checked={Boolean(checked)}
-          aria-label={task.label || 'Task'}
-          onChange={() => toggleTask(task.offset)}
-        />
-      )
+    input({ node: _node, type, ...props }) {
+      if (type !== 'checkbox') return <input {...props} type={type} readOnly />
+      return <TaskCheckbox {...props} toggleTask={toggleTask} />
     },
   }
 }
