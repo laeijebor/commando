@@ -47,6 +47,11 @@ type OpenCodeEvent = {
   properties: Record<string, unknown>
 }
 
+type CodexEvent = {
+  type: string
+  payload: Record<string, unknown>
+}
+
 const MAX_INTENT_LENGTH = 240
 const MAX_ACTIVITY_LABEL_LENGTH = 240
 const MAX_RECENT_ACTIVITIES = 3
@@ -70,6 +75,10 @@ const MAX_CHECKS = 4
 const MAX_ATTENTION_LENGTH = 200
 const MAX_FINAL_MESSAGE_LENGTH = 2_000
 const MAX_RECAP_SUMMARY_LENGTH = 180
+const MAX_CODEX_INPUT_MESSAGES = 8
+// A hook-sourced Codex completion only describes the turn that just ended, so
+// heuristics may take the pane back once it has visibly resumed for this long.
+const CODEX_COMPLETION_SETTLE_MS = 2_000
 
 const activityKinds = new Set<AgentActivityKind>([
   'inspect',
@@ -83,6 +92,16 @@ const activityKinds = new Set<AgentActivityKind>([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const PROVIDER_NAMES: Record<Exclude<AgentProvider, 'unknown'>, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+}
+
+function providerName(provider: AgentProvider): string {
+  return provider === 'unknown' ? 'Agent' : PROVIDER_NAMES[provider]
 }
 
 function boundedText(value: unknown, maximum: number): string | null {
@@ -108,6 +127,37 @@ function parseOpenCodeEvent(value: unknown): OpenCodeEvent | null {
   }
   const type = boundedText(value.type, 100)
   return type ? { type, properties: value.properties } : null
+}
+
+// Codex CLI spawns its `notify` program with a single JSON argument. Field names
+// drifted between releases (`thread-id` used to be `session-id`, and some builds
+// emit snake_case), so every lookup tolerates the known spellings and any
+// unrecognised `type` is ignored rather than guessed at.
+function parseCodexEvent(value: unknown): CodexEvent | null {
+  if (!isRecord(value)) return null
+  const type = boundedText(value.type, 100)
+  return type ? { type, payload: value } : null
+}
+
+function codexProperty(
+  payload: Record<string, unknown>,
+  names: string[],
+  maximum = 200,
+): string | null {
+  for (const name of names) {
+    const text = boundedText(payload[name], maximum)
+    if (text) return text
+  }
+  return null
+}
+
+function codexIntent(value: unknown): string | null {
+  if (!Array.isArray(value)) return boundedText(value, MAX_INTENT_LENGTH)
+  for (const candidate of value.slice(0, MAX_CODEX_INPUT_MESSAGES)) {
+    const text = boundedText(candidate, MAX_INTENT_LENGTH)
+    if (text) return text
+  }
+  return null
 }
 
 function openCodeSessionId(properties: Record<string, unknown>): string | null {
@@ -184,7 +234,7 @@ function hookStatus(
   status: AgentStatusKind,
   updatedAt: number,
 ): AgentStatus {
-  const name = provider === 'claude' ? 'Claude' : 'OpenCode'
+  const name = providerName(provider)
   const descriptions: Record<AgentStatusKind, { summary: string; reason: string }> = {
     working: {
       summary: `${name} is working`,
@@ -227,7 +277,7 @@ function hookStatus(
 
 function attachDetails(status: AgentStatus, details: AgentDetails): AgentStatus {
   const summary = status.status === 'needs_input' && details.attention
-    ? boundedText(`${status.provider === 'claude' ? 'Claude' : 'OpenCode'} needs input: ${details.attention}`, MAX_ACTIVITY_LABEL_LENGTH)
+    ? boundedText(`${providerName(status.provider)} needs input: ${details.attention}`, MAX_ACTIVITY_LABEL_LENGTH)
     : (status.status === 'needs_input' || status.status === 'done' || status.status === 'failed') && details.recap
       ? details.recap.summary
       : status.status === 'working' && details.currentActivity
@@ -522,7 +572,7 @@ function updateTodos(
 }
 
 function attentionFallback(provider: Exclude<AgentProvider, 'unknown'>): string {
-  return provider === 'claude' ? 'Claude needs input' : 'OpenCode needs input'
+  return `${providerName(provider)} needs input`
 }
 
 function setAttention(
@@ -642,7 +692,7 @@ function recapFallback(
   provider: Exclude<AgentProvider, 'unknown'>,
   outcome: AgentRecap['outcome'],
 ): string {
-  const name = provider === 'claude' ? 'Claude' : 'OpenCode'
+  const name = providerName(provider)
   if (outcome === 'failed') return `${name} stopped with an error`
   if (outcome === 'blocked') return `${name} is waiting for input`
   if (outcome === 'follow_up') return `${name} has follow-up work`
@@ -772,9 +822,22 @@ export class AgentStatusRegistry {
       status.source === 'heuristic' &&
       status.confidence === 'high' &&
       status.updatedAt - previous.status.updatedAt >= 2_000
+    // Codex's only lifecycle callback is "the turn finished", so a hook-sourced
+    // `done` is a point-in-time fact rather than a standing claim. Once the pane
+    // has visibly resumed, heuristics own it again and the next
+    // `agent-turn-complete` records a fresh completion.
+    const resumesCodexAfterCompletion = previous?.status.source === 'hook' &&
+      previous.status.provider === 'codex' &&
+      previous.status.status === 'done' &&
+      status.provider === 'codex' &&
+      status.status !== 'done' &&
+      status.source === 'heuristic' &&
+      status.confidence === 'high' &&
+      status.updatedAt - previous.status.updatedAt >= CODEX_COMPLETION_SETTLE_MS
     if (
       previous?.status.source === 'hook' &&
       !reconcilesOpenCodeCompletion &&
+      !resumesCodexAfterCompletion &&
       !(previous.retainedCompletion && status.provider !== 'unknown' && status.provider !== previous.status.provider)
     ) return null
 
@@ -1236,6 +1299,71 @@ export class AgentStatusRegistry {
     })
   }
 
+  // Codex reports only turn completion: it has no turn-start, tool, or permission
+  // callback, so working state still comes from heuristics and permission prompts
+  // stay in the terminal.
+  applyCodexEvent(
+    paneId: string,
+    value: unknown,
+    updatedAt = Date.now(),
+    processCommand: string | null = null,
+  ): AgentStatusChange {
+    const event = parseCodexEvent(value)
+    if (!event || event.type !== 'agent-turn-complete') return null
+
+    const agentSessionId = codexProperty(event.payload, [
+      'thread-id',
+      'thread_id',
+      'threadId',
+      'session-id',
+      'session_id',
+      'sessionId',
+      'turn-id',
+      'turn_id',
+      'turnId',
+    ]) ?? `codex:${paneId}`
+    if (!this.acceptHookProcess(paneId, 'codex', processCommand, true)) return null
+
+    // Every callback closes a turn, so the completed turn always starts from a
+    // clean slate rather than inheriting the previous turn's recap.
+    const intent = codexIntent(event.payload['input-messages'] ?? event.payload.input_messages)
+    const details = emptyDetails(intent)
+    const finalMessage = event.payload['last-assistant-message'] ??
+      event.payload.last_assistant_message
+    const recap = createRecap(
+      'codex',
+      'done',
+      details,
+      false,
+      finalMessage,
+      0,
+      undefined,
+      updatedAt,
+    )
+    setRecap(details, recap)
+    const status: AgentStatusKind = recap.outcome === 'blocked' ? 'needs_input' : 'done'
+
+    return this.upsert({
+      status: attachDetails(hookStatus(
+        paneId,
+        'codex',
+        agentSessionId,
+        null,
+        status,
+        updatedAt,
+      ), details),
+      providerSessionId: agentSessionId,
+      processCommand,
+      pendingRequests: new Map(),
+      runningActivities: new Map(),
+      runningChecks: new Map(),
+      changedFiles: new Set(),
+      tasks: new Map(),
+      turnId: codexProperty(event.payload, ['turn-id', 'turn_id', 'turnId']),
+      retainedCompletion: false,
+    })
+  }
+
   resolveInteractionRequest(
     paneId: string,
     requestId: string,
@@ -1253,17 +1381,17 @@ export class AgentStatusRegistry {
     const details = cloneDetails(previous.status.details ?? emptyDetails())
     syncAttention(details, pendingRequests)
     const status = pendingRequests.size ? 'needs_input' : 'working'
-    const providerName = previous.status.provider === 'claude' ? 'Claude' : 'OpenCode'
+    const name = providerName(previous.status.provider)
     return this.upsert({
       ...previous,
       status: attachDetails({
         ...previous.status,
         status,
         summary: pendingRequests.size
-          ? `${providerName} needs input`
-          : `${providerName} is working`,
+          ? `${name} needs input`
+          : `${name} is working`,
         reason: pendingRequests.size
-          ? `${providerName} has another pending response`
+          ? `${name} has another pending response`
           : 'Companion answered the pending request',
         updatedAt,
       }, details),
