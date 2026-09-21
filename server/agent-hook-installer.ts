@@ -40,6 +40,7 @@ export const OPENCODE_HOOK_EVENTS = [
 const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
 const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
+const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
 const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 
@@ -48,6 +49,8 @@ type JsonObject = Record<string, unknown>
 export type AgentHookInstallerOptions = {
   claudeBridgePath?: string
   claudeSettingsPath?: string
+  codexBridgePath?: string
+  codexConfigPath?: string
   home?: string
   openCodePluginPath?: string
   prMarkerCliPath?: string
@@ -63,6 +66,9 @@ export type AgentHookRepairResult = {
 export type AgentHookInstallResult = {
   claudeBridgePath: string
   claudeSettingsPath: string
+  codexBridgePath: string
+  codexConfigPath: string
+  codexNotifyWarning?: string
   openCodePluginPath: string
   prMarkerCliPath: string
   sessionBriefCliPath: string
@@ -504,6 +510,131 @@ async function main() {
     if (output) process.stdout.write(JSON.stringify(output))
   } catch {
     // Agent hooks must never interrupt Claude Code when Commando is unavailable.
+  }
+}
+
+await main()
+`
+}
+
+function generatedCodexBridge(tokenPath: string, forwardTo: readonly string[] | null): string {
+  return `import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+
+// Codex CLI spawns this program once per turn with a single JSON argument.
+// Anything the user configured before Commando is chained with the same
+// argument so installing the bridge never silences an existing notifier.
+const forwardTo = ${JSON.stringify(forwardTo ?? null)}
+
+function boundedSource(value, maximum) {
+  const limit = Math.max(1024, maximum * 4)
+  if (value.length <= limit) return value
+  const half = Math.floor(limit / 2)
+  return value.slice(0, half) + '\\n' + value.slice(-half)
+}
+
+function boundedText(value, maximum) {
+  if (typeof value !== 'string') return undefined
+  const text = boundedSource(value, maximum)
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----[\\s\\S]*?(?:-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----|$)/gi, '[REDACTED PRIVATE KEY]')
+    .replace(/(\\b[a-z][a-z0-9+.-]*:\\/\\/[^:\\s/@]+:)[^@\\s/]+@/gi, '$1[REDACTED]@')
+    .replace(/\\b(?:Bearer|Basic)\\s+[^\\s,;]+/gi, (match) => match.split(/\\s/, 1)[0] + ' [REDACTED]')
+    .replace(/\\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b/g, '[REDACTED JWT]')
+    .replace(/((?:"|')?(?:[A-Za-z0-9]+[_ -])*(?:api[_ -]?(?:key|token|secret)|access[_ -]?(?:key|token)|auth[_ -]?token|secret[_ -]?access[_ -]?key|private[_ -]?key|client[_ -]?secret|token|secret|password|credential)(?:"|')?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\r\\n,;]+)/gi, '$1[REDACTED]')
+    .replace(/[\\r\\n]+/g, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim()
+  return text ? text.slice(0, maximum) : undefined
+}
+
+function boundedMessage(value, maximum) {
+  if (typeof value !== 'string') return undefined
+  const lines = boundedSource(value, maximum)
+    .split(/\\r?\\n/)
+    .map((line) => boundedText(line, 240))
+    .filter(Boolean)
+  if (!lines.length) return undefined
+  const text = lines.join('\\n')
+  if (text.length <= maximum) return text
+  const last = lines.at(-1)
+  const headLength = Math.max(0, maximum - last.length - 1)
+  return (text.slice(0, headLength) + '\\n' + last).slice(0, maximum)
+}
+
+function firstText(payload, names, maximum) {
+  for (const name of names) {
+    const text = boundedText(payload[name], maximum)
+    if (text) return text
+  }
+  return undefined
+}
+
+function inputMessages(value) {
+  if (!Array.isArray(value)) return undefined
+  const messages = value.slice(0, 8).map((entry) => boundedText(entry, 240)).filter(Boolean)
+  return messages.length ? messages : undefined
+}
+
+function forwardPreviousNotifier(argument) {
+  if (!Array.isArray(forwardTo) || forwardTo.length === 0) return
+  try {
+    const child = spawn(
+      forwardTo[0],
+      [...forwardTo.slice(1), ...(typeof argument === 'string' ? [argument] : [])],
+      { detached: true, stdio: 'ignore' },
+    )
+    child.on('error', () => undefined)
+    child.unref()
+  } catch {
+    // A broken previous notifier must not break Codex either.
+  }
+}
+
+async function main() {
+  const argument = process.argv[2]
+  forwardPreviousNotifier(argument)
+  try {
+    if (typeof argument !== 'string' || argument.length > 1_000_000) return
+    let payload
+    try {
+      payload = JSON.parse(argument)
+    } catch {
+      return
+    }
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return
+    const type = boundedText(payload.type, 80)
+    if (!type) return
+    const pane = process.env.TMUX_PANE
+    if (!pane || !/^%\\d+$/.test(pane)) return
+    const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
+    if (token.length < 32) return
+    const port = process.env.COMMANDO_PORT || '4310'
+    if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
+    const event = {
+      type,
+      'turn-id': firstText(payload, ['turn-id', 'turn_id', 'turnId'], 200),
+      'thread-id': firstText(payload, ['thread-id', 'thread_id', 'threadId', 'session-id', 'session_id', 'sessionId'], 200),
+      cwd: boundedText(payload.cwd, 240),
+      client: boundedText(payload.client, 80),
+      'input-messages': inputMessages(payload['input-messages'] ?? payload.input_messages),
+      'last-assistant-message': boundedMessage(
+        payload['last-assistant-message'] ?? payload.last_assistant_message,
+        2000,
+      ),
+    }
+    await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/codex\`, {
+      method: 'POST',
+      headers: {
+        'Authorization': \`Bearer \${token}\`,
+        'Content-Type': 'application/json',
+        'X-Commando-Pane': pane,
+      },
+      body: JSON.stringify({ event, receivedAt: Date.now() }),
+      signal: AbortSignal.timeout(1000),
+    })
+  } catch {
+    // Lifecycle callbacks must never interrupt Codex when Commando is unavailable.
   }
 }
 
@@ -1141,6 +1272,247 @@ export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({
 `
 }
 
+// Codex has no JSON config and Commando ships no TOML parser, so the `notify`
+// key is merged by line surgery: only the managed block is ever rewritten, every
+// other line keeps its exact text and position, and the block records any
+// notifier it wrapped so reruns stay idempotent.
+const CODEX_NOTIFY_MARKER = '# commando:codex-notify v1'
+const CODEX_NOTIFY_MARKER_LINE = /^[ \t]*# commando:codex-notify v1(?:[ \t]+wrapped=(.*?))?[ \t]*$/
+const CODEX_NOTIFY_KEY = /^[ \t]*(?:notify|"notify"|'notify')[ \t]*=/
+
+type TomlScanState = { multiline: string | null; depth: number }
+
+type CodexNotifySpan = {
+  start: number
+  end: number
+  value: string
+}
+
+export type CodexNotifyMerge = {
+  content: string
+  changed: boolean
+  forwardTo: string[] | null
+  warning: string | null
+}
+
+function skipTomlString(line: string, index: number, quote: string): number {
+  let cursor = index + 1
+  while (cursor < line.length) {
+    if (quote === '"' && line[cursor] === '\\') {
+      cursor += 2
+      continue
+    }
+    if (line[cursor] === quote) return cursor + 1
+    cursor += 1
+  }
+  return line.length
+}
+
+function consumeTomlLine(line: string, state: TomlScanState): TomlScanState {
+  let { multiline, depth } = state
+  let cursor = 0
+  while (cursor < line.length) {
+    if (multiline !== null) {
+      const close = line.indexOf(multiline, cursor)
+      if (close === -1) return { multiline, depth }
+      cursor = close + multiline.length
+      multiline = null
+      continue
+    }
+    if (line.startsWith('"""', cursor) || line.startsWith("'''", cursor)) {
+      multiline = line.slice(cursor, cursor + 3)
+      cursor += 3
+      continue
+    }
+    const character = line[cursor]
+    if (character === '#') return { multiline, depth }
+    if (character === '"' || character === "'") {
+      cursor = skipTomlString(line, cursor, character)
+      continue
+    }
+    if (character === '[') depth += 1
+    else if (character === ']') depth = Math.max(0, depth - 1)
+    cursor += 1
+  }
+  return { multiline, depth }
+}
+
+// Scans the document's top-level region (everything before the first table
+// header) for a `notify` assignment, following its value across continuation
+// lines. A `notify` inside a table is deliberately invisible here.
+function scanTopLevelNotify(lines: string[]): {
+  end: number
+  notify: CodexNotifySpan | null
+  unterminated: boolean
+} {
+  let state: TomlScanState = { multiline: null, depth: 0 }
+  let notify: CodexNotifySpan | null = null
+  let start: number | null = null
+  let end = lines.length
+  for (const [index, line] of lines.entries()) {
+    if (state.multiline === null && state.depth === 0) {
+      if (line.trim().startsWith('[')) {
+        end = index
+        break
+      }
+      if (notify === null && start === null && CODEX_NOTIFY_KEY.test(line)) start = index
+    }
+    state = consumeTomlLine(line, state)
+    if (start !== null && state.multiline === null && state.depth === 0) {
+      const text = lines.slice(start, index + 1).join('\n')
+      notify = { start, end: index, value: text.slice(text.indexOf('=') + 1) }
+      start = null
+    }
+  }
+  return { end, notify, unterminated: start !== null }
+}
+
+function unescapeTomlBasicString(value: string): string | null {
+  let text = ''
+  let cursor = 0
+  while (cursor < value.length) {
+    const character = value[cursor]
+    if (character !== '\\') {
+      text += character
+      cursor += 1
+      continue
+    }
+    const escape = value[cursor + 1]
+    const replacements: Record<string, string> = {
+      '"': '"',
+      '\\': '\\',
+      b: '\b',
+      f: '\f',
+      n: '\n',
+      r: '\r',
+      t: '\t',
+    }
+    if (escape === undefined || replacements[escape] === undefined) return null
+    text += replacements[escape]
+    cursor += 2
+  }
+  return text
+}
+
+// Reads a plain array of quoted strings. Anything richer (nested arrays, inline
+// tables, numbers) yields null so the caller leaves the user's line alone.
+function parseNotifyArgv(value: string): string[] | null {
+  const open = value.indexOf('[')
+  if (open === -1) return null
+  const argv: string[] = []
+  let cursor = open + 1
+  let expectsValue = true
+  while (cursor < value.length) {
+    const character = value[cursor]
+    if (character === ']') {
+      return /^\s*(?:#[^\n]*)?\s*$/.test(value.slice(cursor + 1)) ? argv : null
+    }
+    if (/\s/.test(character)) {
+      cursor += 1
+      continue
+    }
+    if (character === '#') {
+      const newline = value.indexOf('\n', cursor)
+      if (newline === -1) return null
+      cursor = newline + 1
+      continue
+    }
+    if (character === ',') {
+      if (expectsValue) return null
+      expectsValue = true
+      cursor += 1
+      continue
+    }
+    if (!expectsValue || (character !== '"' && character !== "'")) return null
+    if (value.startsWith('"""', cursor) || value.startsWith("'''", cursor)) return null
+    const end = skipTomlString(value, cursor, character)
+    if (end > value.length || value[end - 1] !== character) return null
+    const raw = value.slice(cursor + 1, end - 1)
+    const entry = character === '"' ? unescapeTomlBasicString(raw) : raw
+    if (entry === null) return null
+    argv.push(entry)
+    expectsValue = false
+    cursor = end
+  }
+  return null
+}
+
+function codexNotifyBlock(bridgePath: string, forwardTo: readonly string[] | null): string[] {
+  return [
+    forwardTo ? `${CODEX_NOTIFY_MARKER} wrapped=${JSON.stringify(forwardTo)}` : CODEX_NOTIFY_MARKER,
+    `notify = ["node", ${JSON.stringify(bridgePath)}]`,
+  ]
+}
+
+function wrappedFromMarker(line: string | undefined): {
+  managed: boolean
+  forwardTo: string[] | null
+} {
+  const match = line === undefined ? null : CODEX_NOTIFY_MARKER_LINE.exec(line)
+  if (!match) return { managed: false, forwardTo: null }
+  if (match[1] === undefined) return { managed: true, forwardTo: null }
+  try {
+    const parsed: unknown = JSON.parse(match[1])
+    const valid = Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every((entry) => typeof entry === 'string')
+    return { managed: true, forwardTo: valid ? (parsed as string[]) : null }
+  } catch {
+    return { managed: true, forwardTo: null }
+  }
+}
+
+export function mergeCodexNotify(content: string, bridgePath: string): CodexNotifyMerge {
+  const body = content.endsWith('\n') ? content.slice(0, -1) : content
+  const lines = body.length ? body.split('\n') : []
+  const { end, notify, unterminated } = scanTopLevelNotify(lines)
+  const untouched = (warning: string): CodexNotifyMerge => ({
+    content,
+    changed: false,
+    forwardTo: null,
+    warning,
+  })
+
+  if (unterminated) {
+    return untouched('its top-level notify value could not be read, so Commando left the file alone')
+  }
+
+  let next: string[]
+  let forwardTo: string[] | null = null
+  if (notify === null) {
+    const block = codexNotifyBlock(bridgePath, null)
+    if (end > 0 && lines[end - 1].trim().length > 0) block.unshift('')
+    if (end < lines.length && lines[end].trim().length > 0) block.push('')
+    next = [...lines.slice(0, end), ...block, ...lines.slice(end)]
+  } else {
+    const marker = wrappedFromMarker(lines[notify.start - 1])
+    const argv = parseNotifyArgv(notify.value)
+    const ownsArgv = argv !== null &&
+      argv.some((entry) => entry === bridgePath || entry.endsWith(`/${CODEX_BRIDGE_FILENAME}`))
+    if (!marker.managed && !ownsArgv) {
+      if (argv === null) {
+        return untouched(
+          'it already sets a top-level notify that Commando cannot safely rewrite, so the file was left alone',
+        )
+      }
+      forwardTo = argv.length ? argv : null
+    } else {
+      // A hand-edited notify that no longer points at the bridge is the newer
+      // intent, so wrap that instead of whatever the marker remembered.
+      forwardTo = argv !== null && argv.length > 0 && !ownsArgv ? argv : marker.forwardTo
+    }
+    const start = marker.managed ? notify.start - 1 : notify.start
+    next = [
+      ...lines.slice(0, start),
+      ...codexNotifyBlock(bridgePath, forwardTo),
+      ...lines.slice(notify.end + 1),
+    ]
+  }
+
+  const merged = next.length ? `${next.join('\n')}\n` : ''
+  return { content: merged, changed: merged !== content, forwardTo, warning: null }
+}
+
 function isInstalledClaudeHook(value: unknown, bridgePath: string): boolean {
   if (!isObject(value) || value.type !== 'command' || value.command !== 'node') return false
   if (!Array.isArray(value.args)) return false
@@ -1235,6 +1607,16 @@ function isWithin(directory: string, path: string): boolean {
   return offset !== '' && !offset.startsWith('..') && !isAbsolute(offset)
 }
 
+async function readCodexConfig(path: string): Promise<{ mode: number; content: string }> {
+  const mode = await existingFileMode(path, 0o600)
+  try {
+    return { mode, content: await readFile(path, 'utf8') }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { mode, content: '' }
+    throw error
+  }
+}
+
 export class AgentHookInstaller {
   readonly paths: AgentHookInstallResult
   private readonly home: string
@@ -1250,6 +1632,10 @@ export class AgentHookInstaller {
       throw new Error('CLAUDE_CONFIG_DIR must not be empty')
     }
     this.home = resolvedHome
+    const configuredCodexHome = options.home === undefined ? process.env.CODEX_HOME : undefined
+    if (configuredCodexHome !== undefined && configuredCodexHome.trim().length === 0) {
+      throw new Error('CODEX_HOME must not be empty')
+    }
     const configuredTokenPath = options.tokenPath
       ?? (options.home === undefined ? process.env[AGENT_HOOK_TOKEN_PATH_ENV] : undefined)
     this.paths = {
@@ -1266,6 +1652,16 @@ export class AgentHookInstaller {
           ?? (configuredClaudeDirectory
             ? resolve(configuredClaudeDirectory, 'settings.json')
             : resolve(resolvedHome, '.claude', 'settings.json')),
+      ),
+      codexBridgePath: resolve(
+        options.codexBridgePath
+          ?? resolve(resolvedHome, '.commando', 'hooks', CODEX_BRIDGE_FILENAME),
+      ),
+      codexConfigPath: resolve(
+        options.codexConfigPath
+          ?? (configuredCodexHome
+            ? resolve(configuredCodexHome, 'config.toml')
+            : resolve(resolvedHome, '.codex', 'config.toml')),
       ),
       openCodePluginPath: resolve(
         options.openCodePluginPath
@@ -1329,6 +1725,8 @@ export class AgentHookInstaller {
       0o700,
     )
 
+    const codexNotifyWarning = await this.installCodexNotify()
+
     const { mode, settings } = await readClaudeSettings(this.paths.claudeSettingsPath)
     const merged = mergeClaudeHooks(settings, this.paths.claudeBridgePath)
     await writeAtomically(
@@ -1336,7 +1734,26 @@ export class AgentHookInstaller {
       `${JSON.stringify(merged, null, 2)}\n`,
       mode,
     )
-    return { ...this.paths }
+    return {
+      ...this.paths,
+      ...(codexNotifyWarning ? { codexNotifyWarning } : {}),
+    }
+  }
+
+  // Codex only learns about the bridge through `notify`, so the script is
+  // written after the merge decided which notifier (if any) it must chain to.
+  private async installCodexNotify(): Promise<string | null> {
+    const existing = await readCodexConfig(this.paths.codexConfigPath)
+    const merged = mergeCodexNotify(existing.content, this.paths.codexBridgePath)
+    await writeAtomically(
+      this.paths.codexBridgePath,
+      generatedCodexBridge(this.paths.tokenPath, merged.forwardTo),
+      0o600,
+    )
+    if (merged.changed) {
+      await writeAtomically(this.paths.codexConfigPath, merged.content, existing.mode)
+    }
+    return merged.warning === null ? null : `${this.paths.codexConfigPath}: ${merged.warning}`
   }
 }
 

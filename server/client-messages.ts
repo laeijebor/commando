@@ -13,6 +13,10 @@ import {
   MAX_LAYOUT_SPEC_DEPTH,
   MAX_LAYOUT_SPEC_PANES,
 } from '../shared/window-layout.js'
+import {
+  isInteractionId,
+  parseAgentInteractionAnswer,
+} from './agent-request-answers.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -434,6 +438,45 @@ export function parseClientMessage(value: unknown): ParseResult {
           }
         : { ok: false, error: 'Invalid workspace load request' }
     }
+    case 'watch_interactions': {
+      const id = requestId(value.requestId)
+      return id && typeof value.enabled === 'boolean'
+        ? {
+            ok: true,
+            message: { type: 'watch_interactions', enabled: value.enabled, requestId: id },
+          }
+        : {
+            ok: false,
+            error: 'Invalid interaction watch request',
+            requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+          }
+    }
+    case 'answer_agent_request': {
+      const id = requestId(value.requestId)
+      const answer = parseAgentInteractionAnswer(value.answer)
+      if (
+        !id ||
+        !isPaneId(value.paneId) ||
+        !isInteractionId(value.interactionId) ||
+        !answer
+      ) {
+        return {
+          ok: false,
+          error: 'Invalid agent request answer',
+          requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+        }
+      }
+      return {
+        ok: true,
+        message: {
+          type: 'answer_agent_request',
+          paneId: value.paneId,
+          interactionId: value.interactionId,
+          answer,
+          requestId: id,
+        },
+      }
+    }
     case 'save_workspace': {
       const id = requestId(value.requestId)
       const workspace = parseSavedWorkspace(value.workspace)
@@ -448,6 +491,23 @@ export function parseClientMessage(value: unknown): ParseResult {
         ok: true,
         message: { type: 'save_workspace', workspace, requestId: id },
       }
+    }
+    case 'watch_usage': {
+      const id = requestId(value.requestId)
+      if (!id || typeof value.enabled !== 'boolean') {
+        return {
+          ok: false,
+          error: 'Invalid usage watch request',
+          requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+        }
+      }
+      return { ok: true, message: { type: 'watch_usage', enabled: value.enabled, requestId: id } }
+    }
+    case 'refresh_usage': {
+      const id = requestId(value.requestId)
+      return id
+        ? { ok: true, message: { type: 'refresh_usage', requestId: id } }
+        : { ok: false, error: 'Invalid usage refresh request' }
     }
     default:
       return { ok: false, error: 'Unsupported message type' }

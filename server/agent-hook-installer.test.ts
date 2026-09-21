@@ -8,6 +8,7 @@ import {
   AgentHookInstaller,
   CLAUDE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
+  mergeCodexNotify,
   repairAgentStatusHooks,
 } from './agent-hook-installer.js'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
@@ -117,6 +118,109 @@ describe('agent hook token', () => {
 
     expect((await stat(directory)).mode & 0o777).toBe(0o750)
     expect((await stat(path)).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('Codex notify merge', () => {
+  const bridgePath = '/home/agent/.commando/hooks/commando-codex-notify.mjs'
+  const managed = `notify = ["node", "${bridgePath}"]`
+
+  it('adds a managed block to the top-level region without reordering anything', () => {
+    const merged = mergeCodexNotify(
+      'model = "gpt-5"\napproval_policy = "on-request"\n\n[tui]\nnotifications = true\n',
+      bridgePath,
+    )
+
+    expect(merged.changed).toBe(true)
+    expect(merged.forwardTo).toBeNull()
+    expect(merged.warning).toBeNull()
+    expect(merged.content).toBe([
+      'model = "gpt-5"',
+      'approval_policy = "on-request"',
+      '',
+      '# commando:codex-notify v1',
+      managed,
+      '',
+      '[tui]',
+      'notifications = true',
+      '',
+    ].join('\n'))
+  })
+
+  it('creates the file, stays idempotent, and never touches tables', () => {
+    const first = mergeCodexNotify('', bridgePath)
+    const second = mergeCodexNotify(first.content, bridgePath)
+
+    expect(first.content).toBe(`# commando:codex-notify v1\n${managed}\n`)
+    expect(second.changed).toBe(false)
+    expect(second.content).toBe(first.content)
+
+    const scoped = mergeCodexNotify('[profiles.work]\nnotify = ["their-notifier"]\n', bridgePath)
+    expect(scoped.forwardTo).toBeNull()
+    expect(scoped.content).toBe(
+      `# commando:codex-notify v1\n${managed}\n\n[profiles.work]\nnotify = ["their-notifier"]\n`,
+    )
+  })
+
+  it('wraps a pre-existing notifier and remembers it across reruns', () => {
+    const first = mergeCodexNotify(
+      'model = "x"\nnotify = [\n  "notify-send",\n  "Codex",  # label\n]\nsandbox_mode = "workspace-write"\n',
+      bridgePath,
+    )
+
+    expect(first.forwardTo).toEqual(['notify-send', 'Codex'])
+    expect(first.content).toBe([
+      'model = "x"',
+      '# commando:codex-notify v1 wrapped=["notify-send","Codex"]',
+      managed,
+      'sandbox_mode = "workspace-write"',
+      '',
+    ].join('\n'))
+
+    const rerun = mergeCodexNotify(first.content, bridgePath)
+    expect(rerun.changed).toBe(false)
+    expect(rerun.forwardTo).toEqual(['notify-send', 'Codex'])
+
+    // A hand-edited notify is the newer intent, so it is wrapped in turn.
+    const edited = mergeCodexNotify(
+      first.content.replace(managed, 'notify = ["their-notifier"]'),
+      bridgePath,
+    )
+    expect(edited.forwardTo).toEqual(['their-notifier'])
+    expect(edited.content).toBe([
+      'model = "x"',
+      '# commando:codex-notify v1 wrapped=["their-notifier"]',
+      managed,
+      'sandbox_mode = "workspace-write"',
+      '',
+    ].join('\n'))
+  })
+
+  it('leaves a notify it cannot parse alone and reports it', () => {
+    const merged = mergeCodexNotify('notify = [42, "Codex"]\nmodel = "x"\n', bridgePath)
+
+    expect(merged.changed).toBe(false)
+    expect(merged.content).toBe('notify = [42, "Codex"]\nmodel = "x"\n')
+    expect(merged.warning).toContain('cannot safely rewrite')
+  })
+
+  it('does not mistake bracketed text inside a multi-line string for a table', () => {
+    const merged = mergeCodexNotify(
+      'instructions = """\n[not a table]\nnotify = ["not a key"]\n"""\nmodel = "x"\n',
+      bridgePath,
+    )
+
+    expect(merged.content).toBe([
+      'instructions = """',
+      '[not a table]',
+      'notify = ["not a key"]',
+      '"""',
+      'model = "x"',
+      '',
+      '# commando:codex-notify v1',
+      managed,
+      '',
+    ].join('\n'))
   })
 })
 
@@ -253,11 +357,15 @@ describe('agent hook installer', () => {
     const firstSettings = await readFile(paths.claudeSettingsPath, 'utf8')
     const firstBridge = await readFile(paths.claudeBridgePath, 'utf8')
     const firstPlugin = await readFile(paths.openCodePluginPath, 'utf8')
+    const firstCodexConfig = await readFile(paths.codexConfigPath, 'utf8')
+    const firstCodexBridge = await readFile(paths.codexBridgePath, 'utf8')
     await installer.install()
 
     expect(await readFile(paths.claudeSettingsPath, 'utf8')).toBe(firstSettings)
     expect(await readFile(paths.claudeBridgePath, 'utf8')).toBe(firstBridge)
     expect(await readFile(paths.openCodePluginPath, 'utf8')).toBe(firstPlugin)
+    expect(await readFile(paths.codexConfigPath, 'utf8')).toBe(firstCodexConfig)
+    expect(await readFile(paths.codexBridgePath, 'utf8')).toBe(firstCodexBridge)
     expect(await readFile(unrelatedPlugin, 'utf8')).toBe('export const unrelated = true\n')
     expect(await readFile(unrelatedHook, 'utf8')).toBe('#!/bin/sh\n')
 
@@ -314,6 +422,151 @@ describe('agent hook installer', () => {
       child.on('exit', resolve)
     })
     expect(cliExit).toBe(2)
+  })
+
+  it('installs the Codex notify bridge into config.toml', async () => {
+    const home = await temporaryHome()
+    await mkdir(join(home, '.codex'), { recursive: true })
+    await writeFile(
+      join(home, '.codex', 'config.toml'),
+      'model = "gpt-5"\n\n[tui]\nnotifications = true\n',
+    )
+    const paths = await new AgentHookInstaller({ home }).install()
+    const token = (await readFile(paths.tokenPath, 'utf8')).trim()
+    const bridge = await readFile(paths.codexBridgePath, 'utf8')
+
+    expect(paths.codexBridgePath).toBe(
+      join(home, '.commando', 'hooks', 'commando-codex-notify.mjs'),
+    )
+    expect(await readFile(paths.codexConfigPath, 'utf8')).toBe([
+      'model = "gpt-5"',
+      '',
+      '# commando:codex-notify v1',
+      `notify = ["node", "${paths.codexBridgePath}"]`,
+      '',
+      '[tui]',
+      'notifications = true',
+      '',
+    ].join('\n'))
+    expect(bridge).toContain('/api/agent-status/hooks/codex')
+    expect(bridge).toContain('X-Commando-Pane')
+    expect(bridge).toContain('const forwardTo = null')
+    expect(bridge).not.toContain(token)
+    expect((await stat(paths.codexBridgePath)).mode & 0o777).toBe(0o600)
+
+    // Running it without a payload or a pane must stay silent and successful.
+    const exit = await new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [paths.codexBridgePath], {
+        env: { ...process.env, TMUX_PANE: '' },
+        stdio: 'ignore',
+      })
+      child.on('exit', resolve)
+    })
+    expect(exit).toBe(0)
+  })
+
+  it('honors CODEX_HOME and leaves an unparseable notify to the operator', async () => {
+    const home = await temporaryHome()
+    const codexHome = join(home, 'codex-profile')
+    await mkdir(codexHome, { recursive: true })
+    await writeFile(join(codexHome, 'config.toml'), 'notify = [42]\n')
+    vi.stubEnv('HOME', home)
+    vi.stubEnv('CODEX_HOME', codexHome)
+
+    const installed = await new AgentHookInstaller().install()
+
+    expect(installed.codexConfigPath).toBe(join(codexHome, 'config.toml'))
+    expect(await readFile(installed.codexConfigPath, 'utf8')).toBe('notify = [42]\n')
+    expect(installed.codexNotifyWarning).toContain(installed.codexConfigPath)
+
+    vi.stubEnv('CODEX_HOME', '   ')
+    expect(() => new AgentHookInstaller()).toThrow('CODEX_HOME must not be empty')
+  })
+
+  it('forwards only bounded sanitized Codex metadata and chains the previous notifier', async () => {
+    const home = await temporaryHome()
+    const previousNotifier = join(home, 'previous-notifier.mjs')
+    const forwarded = join(home, 'forwarded.txt')
+    await mkdir(join(home, '.codex'), { recursive: true })
+    await writeFile(
+      previousNotifier,
+      `import { appendFile } from 'node:fs/promises'\n` +
+      `await appendFile(${JSON.stringify(forwarded)}, process.argv.slice(2).join(' ') + '\\n')\n`,
+    )
+    await writeFile(
+      join(home, '.codex', 'config.toml'),
+      `notify = ["node", ${JSON.stringify(previousNotifier)}]\n`,
+    )
+    const paths = await new AgentHookInstaller({ home }).install()
+    const token = (await readFile(paths.tokenPath, 'utf8')).trim()
+    const received: Array<{
+      authorization: string | undefined
+      body: Record<string, unknown>
+      pane: string | undefined
+    }> = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push({
+          authorization: request.headers.authorization,
+          body: JSON.parse(body),
+          pane: request.headers['x-commando-pane'] as string | undefined,
+        })
+        response.writeHead(200)
+        response.end()
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+
+    try {
+      expect(await readFile(paths.codexConfigPath, 'utf8')).toBe([
+        `# commando:codex-notify v1 wrapped=["node",${JSON.stringify(previousNotifier)}]`,
+        `notify = ["node", "${paths.codexBridgePath}"]`,
+        '',
+      ].join('\n'))
+
+      const payload = JSON.stringify({
+        type: 'agent-turn-complete',
+        'turn-id': 'turn-1',
+        'session-id': 'legacy-thread',
+        cwd: '/repo',
+        client: 'codex-tui',
+        'input-messages': ['Rename foo\nOPENAI_API_KEY=raw-input-secret'],
+        'last-assistant-message': 'Renamed foo.\nghp_1234567890abcdefghijkl\n🟢 Renamed foo to bar',
+        'raw-transcript': 'raw-transcript-content',
+      })
+      const child = spawn(process.execPath, [paths.codexBridgePath, payload], {
+        env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+        stdio: 'ignore',
+      })
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject)
+        child.once('exit', (code) => code === 0
+          ? resolve()
+          : reject(new Error(`Bridge exited ${code}`)))
+      })
+      await vi.waitFor(() => expect(received).toHaveLength(1))
+      await vi.waitFor(async () => expect(await readFile(forwarded, 'utf8')).toContain(payload))
+
+      expect(received[0].pane).toBe('%42')
+      expect(received[0].authorization).toBe(`Bearer ${token}`)
+      expect(received[0].body.receivedAt).toBeTypeOf('number')
+      expect(received[0].body.event).toEqual({
+        type: 'agent-turn-complete',
+        'turn-id': 'turn-1',
+        'thread-id': 'legacy-thread',
+        cwd: '/repo',
+        client: 'codex-tui',
+        'input-messages': ['Rename foo OPENAI_API_KEY=[REDACTED]'],
+        'last-assistant-message': 'Renamed foo.\n[REDACTED]\n🟢 Renamed foo to bar',
+      })
+      expect(JSON.stringify(received[0].body)).not.toContain('raw-transcript-content')
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 
   it('forwards only bounded sanitized Claude metadata', async () => {
