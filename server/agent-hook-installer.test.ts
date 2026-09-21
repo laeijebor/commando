@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,8 +8,10 @@ import {
   AgentHookInstaller,
   CLAUDE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
+  repairAgentStatusHooks,
 } from './agent-hook-installer.js'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
+import { SANDBOXED_AGENT_PROFILE_ENV } from './test-env-sandbox.js'
 
 const cleanup: Array<() => Promise<void>> = []
 
@@ -22,6 +24,11 @@ afterEach(async () => {
 async function temporaryHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'commando-hook-home-'))
   cleanup.push(() => rm(home, { recursive: true, force: true }))
+  // Installer paths must stay inside this home even when the caller constructs an installer
+  // without options: an inherited profile variable would otherwise point a real settings file
+  // at the bridge below, which cleanup deletes.
+  vi.stubEnv('HOME', home)
+  for (const name of SANDBOXED_AGENT_PROFILE_ENV) vi.stubEnv(name, undefined)
   return home
 }
 
@@ -157,6 +164,23 @@ describe('agent hook installer', () => {
         hookEventName: event, additionalContext: expect.stringContaining(paths.prMarkerCliPath),
       } })
     }
+  })
+
+  it('keeps installer writes inside the test home when profile variables are inherited', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'commando-hook-outside-'))
+    cleanup.push(() => rm(outside, { recursive: true, force: true }))
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(outside, 'claude'))
+    vi.stubEnv(AGENT_HOOK_TOKEN_PATH_ENV, join(outside, 'token'))
+
+    const home = await temporaryHome()
+    const installed = await new AgentHookInstaller().install()
+
+    expect(installed.claudeSettingsPath).toBe(join(home, '.claude', 'settings.json'))
+    expect(installed.claudeBridgePath).toBe(
+      join(home, '.commando', 'hooks', 'commando-claude-agent-status.mjs'),
+    )
+    expect(installed.tokenPath).toBe(join(home, '.commando', 'agent-hook-token'))
+    await expect(readdir(outside)).resolves.toEqual([])
   })
 
   it('honors CLAUDE_CONFIG_DIR for explicit Claude profiles', async () => {
@@ -1008,5 +1032,83 @@ describe('agent hook installer', () => {
       'eyJheader123.payload123.signature123',
       'raw-private-key',
     ]) expect(serialized).not.toContain(secret)
+  })
+})
+
+describe('agent hook repair', () => {
+  it('rewrites hooks left pointing at a bridge that no longer exists', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const departed = join(home, 'departed', 'commando-claude-agent-status.mjs')
+    const settings = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      settings.hooks[event].at(-1).hooks[0].args[0] = departed
+    }
+    await writeFile(paths.claudeSettingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [departed] })
+    const repaired = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    for (const event of CLAUDE_HOOK_EVENTS) {
+      expect(repaired.hooks[event].at(-1).hooks[0].args).toEqual([
+        paths.claudeBridgePath,
+        '--commando-agent-status-hook',
+      ])
+    }
+  })
+
+  it('restores a bridge deleted from underneath healthy settings', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    await rm(paths.claudeBridgePath)
+
+    const repair = await repairAgentStatusHooks({ home })
+
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [paths.claudeBridgePath] })
+    expect((await stat(paths.claudeBridgePath)).mode & 0o777).toBe(0o600)
+  })
+
+  it('leaves installed hooks and profiles without Commando hooks untouched', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+
+    expect(await repairAgentStatusHooks({ home })).toEqual({
+      repaired: false,
+      staleBridgePaths: [],
+    })
+
+    const foreign = await temporaryHome()
+    const foreignSettingsPath = join(foreign, '.claude', 'settings.json')
+    const foreignSettings = `${JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: '/usr/local/bin/other-hook' }] }] },
+    }, null, 2)}\n`
+    await mkdir(join(foreign, '.claude'), { recursive: true })
+    await writeFile(foreignSettingsPath, foreignSettings)
+
+    expect(await repairAgentStatusHooks({ home: foreign })).toEqual({
+      repaired: false,
+      staleBridgePaths: [],
+    })
+    expect(await readFile(foreignSettingsPath, 'utf8')).toBe(foreignSettings)
+    await expect(stat(join(foreign, '.commando', 'hooks'))).rejects.toThrow()
+    expect(paths.claudeBridgePath).not.toBe(join(foreign, '.commando', 'hooks'))
+  })
+
+  it('repairs the profile named by CLAUDE_CONFIG_DIR', async () => {
+    const home = await temporaryHome()
+    const profile = join(home, '.claudew')
+    vi.stubEnv('CLAUDE_CONFIG_DIR', profile)
+    const paths = await new AgentHookInstaller().install()
+    const settings = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    settings.hooks.Stop.at(-1).hooks[0].args[0] = join(home, 'gone.mjs')
+    await writeFile(paths.claudeSettingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+
+    const repair = await repairAgentStatusHooks()
+
+    expect(paths.claudeSettingsPath).toBe(join(profile, 'settings.json'))
+    expect(repair).toEqual({ repaired: true, staleBridgePaths: [join(home, 'gone.mjs')] })
+    const repaired = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    expect(repaired.hooks.Stop.at(-1).hooks[0].args[0]).toBe(paths.claudeBridgePath)
   })
 })

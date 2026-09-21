@@ -67,6 +67,7 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
+import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -421,12 +422,23 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
   )
 }
 
+async function repairStaleAgentHooks(): Promise<void> {
+  try {
+    const { repaired, staleBridgePaths } = await repairAgentStatusHooks()
+    if (!repaired) return
+    console.log(`[commando] repaired agent hooks pointing at ${staleBridgePaths.join(', ')}`)
+  } catch (error) {
+    console.error('[commando] failed to repair agent hooks', error)
+  }
+}
+
 async function main(): Promise<void> {
   const port = configuredPort()
   const networkAccess = createNetworkAccess(port)
   const token = authToken()
   const digest = tokenDigest(token)
   const agentHookToken = await loadOrCreateAgentHookToken()
+  await repairStaleAgentHooks()
   const companionTokenDigest = tokenDigest(agentHookToken)
   const ownerEmail = configuredOwnerEmail()
   const authBaseURL = process.env.BETTER_AUTH_URL ?? `http://127.0.0.1:${port}`

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
 
@@ -53,6 +53,11 @@ export type AgentHookInstallerOptions = {
   prMarkerCliPath?: string
   sessionBriefCliPath?: string
   tokenPath?: string
+}
+
+export type AgentHookRepairResult = {
+  repaired: boolean
+  staleBridgePaths: string[]
 }
 
 export type AgentHookInstallResult = {
@@ -1152,6 +1157,33 @@ function removeInstalledClaudeHooks(entry: unknown, bridgePath: string): unknown
   return { ...entry, hooks }
 }
 
+function installedClaudeBridgePaths(settings: JsonObject): Set<string> {
+  const paths = new Set<string>()
+  if (!isObject(settings.hooks)) return paths
+  for (const configured of Object.values(settings.hooks)) {
+    if (!Array.isArray(configured)) continue
+    for (const entry of configured) {
+      if (!isObject(entry) || !Array.isArray(entry.hooks)) continue
+      for (const hook of entry.hooks) {
+        if (!isObject(hook) || hook.command !== 'node' || !Array.isArray(hook.args)) continue
+        if (!hook.args.includes(CLAUDE_HOOK_MARKER)) continue
+        const [path] = hook.args
+        if (typeof path === 'string') paths.add(resolve(path))
+      }
+    }
+  }
+  return paths
+}
+
+async function isReadableFile(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function mergeClaudeHooks(settings: JsonObject, bridgePath: string): JsonObject {
   if (settings.hooks !== undefined && !isObject(settings.hooks)) {
     throw new Error('Claude settings "hooks" must be an object')
@@ -1243,6 +1275,23 @@ export class AgentHookInstaller {
     }
   }
 
+  /**
+   * Bridge paths already written into the Claude settings by a previous install that no
+   * longer resolve to a usable bridge. A settings file with no Commando hooks yields an
+   * empty list: staleness is only about repairing our own entries, never about opting a
+   * profile in.
+   */
+  async staleClaudeBridgePaths(): Promise<string[]> {
+    const { settings } = await readClaudeSettings(this.paths.claudeSettingsPath)
+    const installed = installedClaudeBridgePaths(settings)
+    if (installed.size === 0) return []
+    const stale: string[] = []
+    for (const path of installed) {
+      if (path !== this.paths.claudeBridgePath || !(await isReadableFile(path))) stale.push(path)
+    }
+    return stale.sort()
+  }
+
   async install(): Promise<AgentHookInstallResult> {
     const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
@@ -1284,4 +1333,20 @@ export async function installAgentStatusHooks(
   options: AgentHookInstallerOptions = {},
 ): Promise<AgentHookInstallResult> {
   return new AgentHookInstaller(options).install()
+}
+
+/**
+ * Repair Claude hooks that point at a bridge which has moved or disappeared — a test run or
+ * a stale profile can leave every hook throwing MODULE_NOT_FOUND in each new session. Only
+ * profiles that already carry Commando hooks are touched, and an unchanged profile is left
+ * alone.
+ */
+export async function repairAgentStatusHooks(
+  options: AgentHookInstallerOptions = {},
+): Promise<AgentHookRepairResult> {
+  const installer = new AgentHookInstaller(options)
+  const staleBridgePaths = await installer.staleClaudeBridgePaths()
+  if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths }
+  await installer.install()
+  return { repaired: true, staleBridgePaths }
 }
