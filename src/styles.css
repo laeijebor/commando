@@ -2819,11 +2819,26 @@ kbd {
 .hud-pinned-note-markdown ul, .hud-pinned-note-markdown ol { padding-left: 18px; }
 .hud-pinned-note-markdown a { color: var(--accent); }
 .hud-pinned-note-markdown code { color: var(--amber); font-family: var(--mono); }
-.hud-pinned-note-markdown input { accent-color: var(--accent); }
+.hud-pinned-note-markdown li.task-list-item { list-style: none; margin-left: -14px; }
+.hud-pinned-note-markdown input[type='checkbox'] { margin-right: 4px; accent-color: var(--accent); cursor: pointer; }
+.hud-pinned-note-markdown input[type='checkbox']:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 .hud-pinned-note-content.editing {
   display: grid;
   grid-template-rows: auto auto minmax(54px, 1fr);
+}
+
+.hud-pinned-note-content.editing .notes-block-editor-shell {
+  min-height: 0;
+  margin-top: 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+.hud-pinned-note-content.editing .notes-block-editor-shell:focus-within {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
 }
 
 .hud-pinned-note-title-input,

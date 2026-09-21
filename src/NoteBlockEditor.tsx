@@ -11,6 +11,7 @@ import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import '@blocknote/ariakit/style.css'
+import './note-block-editor.css'
 
 const markdownSchema = BlockNoteSchema.create({
   blockSpecs: {
