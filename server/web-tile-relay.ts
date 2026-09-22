@@ -8,8 +8,10 @@ import {
   parseTileSelectionRequest,
   type ChromiumEngine,
 } from './chromium-engine.js'
+import { MAX_INSPECT_SELECTOR } from '../shared/tile-inspect.js'
 import type { WebPaneService } from './web-panes.js'
 import type { WebPanePendingSnapshot } from '../shared/protocol.js'
+import type { RedlinePageQuestionSnapshot } from '../shared/redline-response.js'
 
 const WEB_TILE_PATH = /^\/ws\/web-tiles\/(w-[0-9a-f]{8})$/
 const MAX_CLIENT_MESSAGE_BYTES = 16 * 1024
@@ -44,6 +46,7 @@ export class WebTileRelay {
     perMessageDeflate: false,
   })
   private readonly subscribers = new Map<string, Set<WebSocket>>()
+  private readonly questions = new Map<string, { pageUrl: string; snapshot: RedlinePageQuestionSnapshot }>()
 
   constructor(private readonly dependencies: RelayDependencies) {}
 
@@ -57,16 +60,33 @@ export class WebTileRelay {
 
   /** Closes streams for tiles that are gone, pending, or engine-switched. */
   dropStale(liveIds: ReadonlySet<string>): void {
-    for (const webPaneId of [...this.subscribers.keys()]) {
+    const cachedIds = new Set([...this.subscribers.keys(), ...this.questions.keys()])
+    for (const webPaneId of cachedIds) {
       if (!liveIds.has(webPaneId)) this.dropTile(webPaneId)
     }
   }
 
   dropTile(webPaneId: string): void {
+    this.questions.delete(webPaneId)
     const sockets = this.subscribers.get(webPaneId)
     if (!sockets) return
     this.subscribers.delete(webPaneId)
     for (const socket of sockets) socket.close(4410, 'Web tile is no longer streamable')
+  }
+
+  /** Broadcasts page-owned open questions. This inventory is intentionally ephemeral. */
+  broadcastQuestions(
+    webPaneId: string,
+    pageUrl: string,
+    snapshot: RedlinePageQuestionSnapshot,
+  ): void {
+    this.questions.set(webPaneId, { pageUrl, snapshot })
+    const sockets = this.subscribers.get(webPaneId)
+    if (!sockets) return
+    const message = JSON.stringify({ pageUrl, ...snapshot })
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(message)
+    }
   }
 
   /**
@@ -89,6 +109,7 @@ export class WebTileRelay {
       for (const socket of sockets) socket.terminate()
     }
     this.subscribers.clear()
+    this.questions.clear()
     this.webSocketServer.close()
   }
 
@@ -115,6 +136,10 @@ export class WebTileRelay {
     // reappear without waiting for the stream to come up.
     if ((pending.notes.length > 0 || pending.dropped > 0) && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'pending', ...pending }))
+    }
+    const questions = this.questions.get(webPaneId)
+    if (questions && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ pageUrl: questions.pageUrl, ...questions.snapshot }))
     }
 
     let unsubscribe: (() => void) | null = null
@@ -248,6 +273,16 @@ export class WebTileRelay {
           if (socket.readyState !== WebSocket.OPEN) return
           socket.send(JSON.stringify({ type: 'selection_result', id: request.id, ...result }))
         })
+      return
+    }
+    if (
+      message.type === 'reveal_selector' &&
+      typeof message.selector === 'string' &&
+      message.selector.length > 0 &&
+      message.selector.length <= MAX_INSPECT_SELECTOR &&
+      !message.selector.startsWith('redline:')
+    ) {
+      void this.dependencies.engine.revealSelector(webPaneId, message.selector).catch(() => undefined)
     }
   }
 }

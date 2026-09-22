@@ -458,7 +458,7 @@ export class WebPanePendingStore {
     webPaneId: string,
     noteId: number,
     expectedRevision: number,
-    change: { answer?: string; note?: string },
+    change: { answer?: string; note?: string; response?: RedlinePageResponse },
   ): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
     const index = state.notes.findIndex((note) => note.id === noteId)
@@ -466,7 +466,10 @@ export class WebPanePendingStore {
     this.assertRevision(current, expectedRevision)
     const hasAnswer = Object.prototype.hasOwnProperty.call(change, 'answer')
     const hasNote = Object.prototype.hasOwnProperty.call(change, 'note')
-    if (!hasAnswer && !hasNote) throw new WebPaneError(400, 'At least answer or note must be provided')
+    const hasResponse = Object.prototype.hasOwnProperty.call(change, 'response')
+    if (!hasAnswer && !hasNote && !hasResponse) {
+      throw new WebPaneError(400, 'At least answer, note, or response must be provided')
+    }
 
     const updated: WebPanePendingNote = {
       ...current,
@@ -474,6 +477,35 @@ export class WebPanePendingStore {
       attachments: [...(current.attachments ?? [])],
     }
     if (current.response) {
+      if (hasResponse) {
+        const input = change.response
+        if (!input) throw new WebPaneError(400, 'Response must be provided')
+        const response = {
+          question: input.question,
+          answer: input.answer,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.data !== undefined ? { data: input.data } : {}),
+        }
+        updated.selector = input.selector ?? `redline:${input.queueKey ?? input.question.slice(0, 64)}`
+        updated.tag = input.tag ?? 'redline'
+        if (input.text === undefined) delete updated.text
+        else updated.text = input.text
+        updated.rect = input.rect ?? { x: 0, y: 0, width: 0, height: 0 }
+        if (input.queueKey === undefined) delete updated.queueKey
+        else updated.queueKey = input.queueKey
+        updated.response = response
+        updated.comment = responseComment(response)
+      }
+      if (hasResponse && (hasAnswer || hasNote)) {
+        throw new WebPaneError(400, 'Response cannot be combined with answer or note')
+      }
+      if (hasResponse) {
+        state.revision += 1
+        state.notes[index] = updated
+        this.journal.appendNote(webPaneId, updated, state.revision)
+        this.journal.compact(webPaneId)
+        return this.snapshot(webPaneId)
+      }
       const response = { ...current.response }
       if (hasAnswer) {
         if (typeof change.answer !== 'string' || change.answer.length === 0 || change.answer.length > MAX_RESPONSE_ANSWER) {

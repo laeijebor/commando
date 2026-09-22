@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { MAX_PENDING_NOTES, REDLINE_BUILD_HANDOFF_INSTRUCTION } from '../shared/protocol.js'
-import { MAX_RESPONSE_NOTE } from '../shared/redline-response.js'
+import { MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_NOTE } from '../shared/redline-response.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
@@ -698,7 +698,10 @@ describe('feedback routes', () => {
     )).status).toBe(400)
     expect((await post(
       baseUrl, `/api/web-panes/${id}/feedback`,
-      { notes: [{ ...feedbackNote(), response: { question: 'q', answer: 'a', data: 'x'.repeat(5000) } }] }, ownerAuth,
+      { notes: [{
+        ...feedbackNote(),
+        response: { question: 'q', answer: 'a', data: 'x'.repeat(MAX_RESPONSE_DATA_JSON) },
+      }] }, ownerAuth,
     )).status).toBe(400)
     expect((await post(
       baseUrl, `/api/web-panes/${id}/feedback`,
@@ -882,6 +885,26 @@ describe('pending note routes', () => {
     })
     expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ notes: body.notes }))
 
+    const refreshed = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
+      method: 'PATCH',
+      headers: { ...ownerAuth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedRevision: 2,
+        response: {
+          question: 'Which plan?',
+          answer: 'Pulse, Crest',
+          selector: '#plan',
+          data: { choice: ['Pulse, Crest'], options: ['Pulse, Crest', 'Team'], multiple: true },
+        },
+      }),
+    })
+    expect(refreshed.status).toBe(200)
+    expect((await refreshed.json() as { notes: Array<{ response?: unknown }> }).notes[0]?.response).toEqual({
+      question: 'Which plan?',
+      answer: 'Pulse, Crest',
+      data: { choice: ['Pulse, Crest'], options: ['Pulse, Crest', 'Team'], multiple: true },
+    })
+
     const stale = await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
       method: 'PATCH',
       headers: { ...ownerAuth, 'Content-Type': 'application/json' },
@@ -891,7 +914,7 @@ describe('pending note routes', () => {
     expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
       method: 'PATCH',
       headers: { ...agentAuth, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ expectedRevision: 2, answer: 'Enterprise' }),
+      body: JSON.stringify({ expectedRevision: 3, answer: 'Enterprise' }),
     })).status).toBe(403)
     expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/1`, {
       method: 'PATCH',

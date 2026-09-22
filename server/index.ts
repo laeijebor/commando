@@ -529,6 +529,9 @@ async function main(): Promise<void> {
         webPanePending.addResponse(webPaneId, pageUrl, response),
       )
     },
+    onPageQuestions: (webPaneId, snapshot, pageUrl) => {
+      if (webPanes.get(webPaneId)) webTileRelay.broadcastQuestions(webPaneId, pageUrl, snapshot)
+    },
   })
   const webTileRelay = new WebTileRelay({
     engine: chromiumEngine,

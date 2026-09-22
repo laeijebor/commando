@@ -311,6 +311,50 @@ describe('WebPanePendingStore', () => {
     })
   })
 
+  it('revision-updates a keyless response in place with refreshed metadata', () => {
+    const store = makeStore()
+    store.addResponse('w-11111111', PAGE_URL, {
+      question: 'Which signals?',
+      answer: 'Orbit',
+      selector: '#signals',
+      tag: 'redline-choice',
+    })
+
+    const snapshot = store.update('w-11111111', 1, 1, {
+      response: {
+        question: 'Which signals?',
+        answer: 'Pulse, Crest',
+        selector: '#signals',
+        tag: 'redline-choice',
+        data: {
+          choice: ['Pulse, Crest'],
+          options: ['Pulse, Crest', 'Orbit'],
+          multiple: true,
+        },
+      },
+    })
+
+    expect(snapshot.notes).toHaveLength(1)
+    expect(snapshot.notes[0]).toMatchObject({
+      id: 1,
+      revision: 2,
+      selector: '#signals',
+      comment: 'Which signals?: Pulse, Crest',
+      response: {
+        question: 'Which signals?',
+        answer: 'Pulse, Crest',
+        data: {
+          choice: ['Pulse, Crest'],
+          options: ['Pulse, Crest', 'Orbit'],
+          multiple: true,
+        },
+      },
+    })
+    expect(() => store.update('w-11111111', 1, 1, {
+      response: { question: 'Which signals?', answer: 'Orbit' },
+    })).toThrow(WebPaneError)
+  })
+
   it('clears a legacy approve comment when its response note is cleared', () => {
     const store = makeStore()
     store.addResponse('w-11111111', PAGE_URL, {

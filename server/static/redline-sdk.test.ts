@@ -85,11 +85,14 @@ beforeEach(() => {
   document.head.querySelectorAll('style[data-redline-styles]').forEach((s) => s.remove())
   delete (window as unknown as Record<string, unknown>).__commandoRedlineQueue
   delete (window as unknown as Record<string, unknown>).__commandoRedlinePendingSnapshot
+  delete (window as unknown as Record<string, unknown>).__commandoRedlineQuestionSnapshot
   delete (window as unknown as Record<string, unknown>).redline
   window.dispatchEvent(new CustomEvent('commando:redline-pending', { detail: { version: 1, controls: [] } }))
 })
 
-afterEach(() => {
+afterEach(async () => {
+  document.body.innerHTML = ''
+  await Promise.resolve()
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -133,7 +136,7 @@ describe('window.redline.queueResponse', () => {
     const ok = (window as any).redline.queueResponse({
       question: 'Which plan?',
       answer: 'Pro',
-      data: { blob: 'x'.repeat(5000) },
+      data: { blob: 'x'.repeat(300_000) },
       element: target,
     })
     expect(ok).toBe(true)
@@ -142,6 +145,25 @@ describe('window.redline.queueResponse', () => {
     expect(calls[0].answer).toBe('Pro')
     expect(calls[0].data).toBeUndefined()
     expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('compacts oversized choice metadata without losing exact selections', () => {
+    const calls = loadSdk()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const choices = Array.from({ length: 40 }, (_, index) => (
+      `${index}`.padStart(2, '0') + '\u0001'.repeat(1_022)
+    ))
+
+    expect((window as any).redline.queueResponse({
+      question: 'Which signals?',
+      answer: 'Selected signals',
+      data: { choice: choices, options: choices, multiple: true },
+    })).toBe(true)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].data).toEqual({ choice: choices, multiple: true })
+    expect(warnSpy).toHaveBeenCalledWith('redline: answer option metadata compacted to fit the size cap')
     warnSpy.mockRestore()
   })
 
@@ -163,6 +185,88 @@ describe('window.redline.queueResponse', () => {
     ;(window as any).redline.queueResponse({ question: 'q', answer: 'a', note: 'n'.repeat(1200) })
     expect(calls[0]).toMatchObject({ question: 'q', answer: 'a' })
     expect(calls[0].note).toHaveLength(1024)
+  })
+})
+
+describe('open question inventory', () => {
+  it('publishes every live unresolved control with its editor shape', async () => {
+    const payloads: unknown[] = []
+    ;(window as unknown as Record<string, unknown>).__commandoRedlineQueue = (payload: string) => {
+      payloads.push(JSON.parse(payload) as unknown)
+    }
+    window.eval(source)
+    document.body.innerHTML = `
+      <redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>
+      <redline-rating key="vibe" prompt="Rate the vibe" max="3"></redline-rating>
+      <redline-ask key="name" prompt="What should we call it?"></redline-ask>
+      <redline-approve key="done" prompt="Done?" resolved answer="approve"></redline-approve>`
+
+    await Promise.resolve()
+
+    const snapshot = payloads.find((payload) => (payload as { type?: string }).type === 'questions')
+    expect(snapshot).toEqual({
+      type: 'questions',
+      version: 1,
+      questions: [
+        expect.objectContaining({
+          question: 'Which plan?',
+          queueKey: 'plan',
+          kind: 'choice',
+          options: ['Starter', 'Pro'],
+          multiple: false,
+        }),
+        expect.objectContaining({ question: 'Rate the vibe', queueKey: 'vibe', kind: 'rating', max: 3 }),
+        expect.objectContaining({ question: 'What should we call it?', queueKey: 'name', kind: 'text' }),
+      ],
+    })
+    expect((window as any).__commandoRedlineQuestionSnapshot).toEqual(snapshot)
+  })
+
+  it('bounds choice metadata before publishing the inventory', async () => {
+    const payloads: unknown[] = []
+    ;(window as unknown as Record<string, unknown>).__commandoRedlineQueue = (payload: string) => {
+      payloads.push(JSON.parse(payload) as unknown)
+    }
+    window.eval(source)
+    const control = document.createElement('redline-choice')
+    control.setAttribute('prompt', 'Pick one')
+    control.setAttribute('options', [
+      'x'.repeat(1_100),
+      ...Array.from({ length: 55 }, (_, index) => `Option ${index + 1}`),
+    ].join(','))
+    document.body.append(control)
+
+    await Promise.resolve()
+
+    const snapshot = payloads.find((payload) => (payload as { type?: string }).type === 'questions') as {
+      questions: Array<{ options: string[] }>
+    }
+    expect(snapshot.questions[0].options).toHaveLength(50)
+    expect(snapshot.questions[0].options[0]).toHaveLength(1_024)
+    expect(control.querySelectorAll('input')).toHaveLength(56)
+  })
+
+  it('publishes the questions that fit when the full inventory would exceed the byte cap', async () => {
+    ;(window as unknown as Record<string, unknown>).__commandoRedlineQueue = () => undefined
+    window.eval(source)
+    const options = Array.from({ length: 50 }, (_, index) => `${index}-${'x'.repeat(1_020)}`).join(',')
+    for (let index = 0; index < 8; index += 1) {
+      const control = document.createElement('redline-choice')
+      control.setAttribute('prompt', `Question ${index + 1}`)
+      control.setAttribute('options', options)
+      document.body.append(control)
+    }
+
+    await Promise.resolve()
+
+    const snapshot = (window as any).__commandoRedlineQuestionSnapshot as {
+      type: 'questions'
+      version: 1
+      questions: unknown[]
+    }
+    expect(snapshot.questions.length).toBeGreaterThan(0)
+    expect(snapshot.questions.length).toBeLessThan(8)
+    expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength).toBeLessThanOrEqual(256 * 1_024)
   })
 })
 

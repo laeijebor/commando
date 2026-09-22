@@ -832,7 +832,7 @@
 
 .tile-review-drawer-head > div:first-child {
   display: grid;
-  gap: 1px;
+  gap: 4px;
 }
 
 .tile-review-drawer-head strong {
@@ -847,6 +847,35 @@
   font-weight: 700;
   letter-spacing: 0.11em;
   text-transform: uppercase;
+}
+
+.tile-review-filters {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.tile-review-filters button,
+.tile-review-show-context {
+  width: max-content;
+  border: 1px solid var(--border-mid, #2c2740);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #9b93ad);
+  font: 700 8px var(--mono);
+  cursor: pointer;
+}
+
+.tile-review-filters button {
+  padding: 3px 7px;
+}
+
+.tile-review-filters button:hover,
+.tile-review-filters button.is-active,
+.tile-review-show-context:hover {
+  border-color: color-mix(in srgb, var(--accent, #7c5cff) 60%, var(--border-mid, #2c2740));
+  background: color-mix(in srgb, var(--accent, #7c5cff) 10%, transparent);
+  color: var(--text, #f2eef8);
 }
 
 .tile-review-drawer-actions {
@@ -978,6 +1007,22 @@
   color: var(--accent, #9b83ff);
 }
 
+.tile-review-type.is-answered {
+  background: color-mix(in srgb, var(--green, #46d58a) 11%, transparent);
+  color: var(--green, #46d58a);
+}
+
+.tile-review-type.is-unanswered {
+  background: color-mix(in srgb, var(--amber, #e0a458) 11%, transparent);
+  color: var(--amber, #e0a458);
+}
+
+.tile-review-list-empty {
+  padding: 14px 10px;
+  color: var(--text-faint, #6e667e);
+  font-size: 10px;
+}
+
 .tile-review-dirty {
   color: var(--amber, #e0a458);
 }
@@ -1009,6 +1054,10 @@
 .tile-review-detail-heading code {
   color: var(--text-faint, #6e667e);
   font-size: 9px;
+}
+
+.tile-review-show-context {
+  padding: 4px 8px;
 }
 
 .tile-review-conflict {

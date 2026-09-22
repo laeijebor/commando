@@ -82,6 +82,23 @@ describe('pending note routes', () => {
     expect(JSON.parse(String(init.body))).toEqual({ expectedRevision: 3, answer: 'Team', note: 'Need SSO' })
   })
 
+  it('sends a full structured response through the revision-guarded update', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { revision: 4, notes: [], knownUpTo: 1, dropped: 0 }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+    const response = {
+      question: 'Which signals?',
+      answer: 'Pulse, Crest',
+      selector: '#signals',
+      data: { choice: ['Pulse, Crest'], options: ['Pulse, Crest', 'Orbit'], multiple: true },
+    }
+
+    await api.updatePendingNote('w/id', 7, 3, { response })
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/web-panes/w%2Fid/pending/7')
+    expect(JSON.parse(String(init.body))).toEqual({ expectedRevision: 3, response })
+  })
+
   it('uploads an attachment as the raw file with binary headers', async () => {
     const fetcher = vi.fn(async () => jsonResponse(200, { notes: [], knownUpTo: 1, dropped: 0 }))
     const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)

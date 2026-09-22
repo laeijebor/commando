@@ -14,11 +14,17 @@
   const BINDING = '__commandoRedlineQueue'
   const PENDING_SNAPSHOT = '__commandoRedlinePendingSnapshot'
   const PENDING_EVENT = 'commando:redline-pending'
+  const QUESTION_SNAPSHOT = '__commandoRedlineQuestionSnapshot'
 
   // Mirrors shared/redline-response.ts MAX_RESPONSE_DATA_JSON — keep in sync.
-  const MAX_RESPONSE_DATA_JSON = 4096
+  const MAX_RESPONSE_DATA_JSON = (256 * 1024) + 4096
   // Mirrors shared/redline-response.ts MAX_RESPONSE_PAYLOAD_BYTES — keep in sync.
-  const MAX_RESPONSE_PAYLOAD_BYTES = 16384
+  const MAX_RESPONSE_PAYLOAD_BYTES = MAX_RESPONSE_DATA_JSON + (16 * 1024)
+  // Mirrors shared/redline-response.ts question-inventory limits.
+  const MAX_OPEN_QUESTIONS = 200
+  const MAX_QUESTION_OPTIONS = 50
+  const MAX_QUESTION_OPTION_LENGTH = 1024
+  const MAX_QUESTION_SNAPSHOT_BYTES = 256 * 1024
   // Dropped in this order, least important to the answer first, until the
   // payload fits under MAX_RESPONSE_PAYLOAD_BYTES.
   const OPTIONAL_FIELD_DROP_ORDER = ['data', 'text', 'selector', 'rect']
@@ -30,6 +36,7 @@
   const SKIPPED_ANSWER = '(skipped)'
 
   const bindingAvailable = () => typeof window[BINDING] === 'function'
+  const utf8Bytes = (value) => new TextEncoder().encode(value).byteLength
 
   // The engine starts the page navigating the moment it creates the target,
   // before it finishes wiring Runtime.addBinding — so a component can render
@@ -63,6 +70,7 @@
         // Re-derive each control's real state: "binding is here" only lifts the
         // no-tile block, it does not mean an empty control may be queued.
         for (const control of pendingControls) renderPendingState(control)
+        publishQuestionSnapshot()
         return
       }
       bindingPollElapsedMs += BINDING_POLL_INTERVAL_MS
@@ -116,13 +124,25 @@
       } catch (error) {
         json = undefined
       }
-      if (json !== undefined && json.length <= MAX_RESPONSE_DATA_JSON) {
+      if (json !== undefined && utf8Bytes(json) <= MAX_RESPONSE_DATA_JSON) {
         payload.data = input.data
       } else {
-        // data is best-effort: drop it locally rather than fail the whole answer —
-        // the daemon would drop it anyway, but this saves the round trip and
-        // tells the page author immediately.
-        console.warn('redline: answer data dropped (unserializable or over the size cap)', input.data)
+        const compact = input.data && typeof input.data === 'object' && 'choice' in input.data
+          ? { choice: input.data.choice, multiple: input.data.multiple === true }
+          : undefined
+        let compactJson
+        try {
+          compactJson = compact === undefined ? undefined : JSON.stringify(compact)
+        } catch (error) {
+          compactJson = undefined
+        }
+        if (compactJson !== undefined && utf8Bytes(compactJson) <= MAX_RESPONSE_DATA_JSON) {
+          payload.data = compact
+          console.warn('redline: answer option metadata compacted to fit the size cap')
+        } else {
+          // Data is best-effort: drop it locally rather than fail the whole answer.
+          console.warn('redline: answer data dropped (unserializable or over the size cap)', input.data)
+        }
       }
     }
     if (typeof input.queueKey === 'string' && input.queueKey.length > 0) {
@@ -147,7 +167,7 @@
     // drop optional fields rather than lose the queued answer.
     let serialized = JSON.stringify(payload)
     for (const field of OPTIONAL_FIELD_DROP_ORDER) {
-      if (serialized.length <= MAX_RESPONSE_PAYLOAD_BYTES) break
+      if (utf8Bytes(serialized) <= MAX_RESPONSE_PAYLOAD_BYTES) break
       if (payload[field] === undefined) continue
       delete payload[field]
       console.warn(`redline: dropped "${field}" to fit the answer under the payload size cap`)
@@ -548,6 +568,43 @@
 
   const pendingControls = new Set()
   let pendingSnapshot = null
+  let questionPublishQueued = false
+
+  const publishQuestionSnapshot = () => {
+    if (questionPublishQueued) return
+    questionPublishQueued = true
+    queueMicrotask(() => {
+      questionPublishQueued = false
+      const questions = []
+      const identities = new Set()
+      for (const control of pendingControls) {
+        if (questions.length >= MAX_OPEN_QUESTIONS) break
+        const question = control.questionDescriptor()
+        if (!question) continue
+        const identity = question.queueKey ? `key:${question.queueKey}` : `selector:${question.selector}`
+        if (identities.has(identity)) continue
+        const candidate = { type: 'questions', version: 1, questions: [...questions, question] }
+        if (new TextEncoder().encode(JSON.stringify(candidate)).byteLength > MAX_QUESTION_SNAPSHOT_BYTES) {
+          continue
+        }
+        identities.add(identity)
+        questions.push(question)
+      }
+      const snapshot = { type: 'questions', version: 1, questions }
+      window[QUESTION_SNAPSHOT] = snapshot
+      if (!bindingAvailable()) return
+      const payload = JSON.stringify(snapshot)
+      if (new TextEncoder().encode(payload).byteLength > MAX_QUESTION_SNAPSHOT_BYTES) {
+        console.warn('redline: open-question inventory exceeds the tile payload limit')
+        return
+      }
+      try {
+        window[BINDING](payload)
+      } catch (error) {
+        console.warn('redline: failed to publish open questions', error)
+      }
+    })
+  }
 
   const validPendingSnapshot = (value) =>
     value && value.version === 1 && Array.isArray(value.controls)
@@ -718,6 +775,7 @@
     }
     disconnectedCallback() {
       pendingControls.delete(this)
+      publishQuestionSnapshot()
     }
     key() {
       return this.getAttribute('key') || undefined
@@ -797,9 +855,23 @@
     registerPendingControl() {
       if (!this._queueButton || !this.isConnected) return
       pendingControls.add(this)
+      publishQuestionSnapshot()
       const snapshot = currentPendingSnapshot()
       if (snapshot) this.applyPendingSnapshot(snapshot)
     }
+    questionDescriptor() {
+      const selector = cssPath(this)
+      if (!selector) return null
+      const editor = this.questionEditor()
+      if (!editor) return null
+      return {
+        question: this.prompt().slice(0, 256),
+        selector: selector.slice(0, 1024),
+        ...(this.key() ? { queueKey: this.key().slice(0, 128) } : {}),
+        ...editor,
+      }
+    }
+    questionEditor() { return { kind: 'text' } }
     applyPendingSnapshot(snapshot) {
       const currentBaseline = this.currentBaseline()
       const wasClean = currentBaseline === (
@@ -965,8 +1037,21 @@
       })
       this.append(list, note, button)
       this._multiple = multiple
+      this._options = options
       if (!multiple) enableRadioDeselect(list)
       this.finishRender(button, note)
+    }
+    questionEditor() {
+      return this._options?.length
+        ? {
+            kind: 'choice',
+            options: this._options
+              .map((option) => option.slice(0, MAX_QUESTION_OPTION_LENGTH))
+              .filter(Boolean)
+              .slice(0, MAX_QUESTION_OPTIONS),
+            multiple: this._multiple === true,
+          }
+        : null
     }
     hydrate(response) {
       const choice = response.data?.choice
@@ -1013,6 +1098,9 @@
       this.append(list, note, button)
       enableRadioDeselect(list)
       this.finishRender(button, note)
+    }
+    questionEditor() {
+      return { kind: 'approve', options: ['approve', 'reject', 'needs-changes'] }
     }
     legacyNote(response) {
       return typeof response.data?.comment === 'string' ? response.data.comment : ''
@@ -1066,6 +1154,7 @@
       enableRadioDeselect(list)
       this.finishRender(button, note)
     }
+    questionEditor() { return { kind: 'rating', max: this._max } }
     hydrate(response) {
       const rating = response.data?.rating ?? String(response.answer).split('/')[0]
       for (const input of this.querySelectorAll('.redline-options input')) input.checked = input.value === String(rating)

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol.js'
-import { REDLINE_BINDING_NAME } from '../shared/redline-response.js'
+import { MAX_QUESTION_SNAPSHOT_BYTES, REDLINE_BINDING_NAME } from '../shared/redline-response.js'
 import {
   ChromiumEngine,
   findChromiumBinary,
@@ -529,8 +529,12 @@ describe('ChromiumEngine', () => {
     await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
     const currentUrl = 'http://localhost:5173/current/path'
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: currentUrl } })
+    stub.emit('T1', 'Runtime.executionContextCreated', {
+      context: { id: 1, auxData: { frameId: 'F1', isDefault: true } },
+    })
     stub.emit('T1', 'Runtime.bindingCalled', {
       name: REDLINE_BINDING_NAME,
+      executionContextId: 1,
       payload: JSON.stringify({ question: 'Ship it?', answer: 'yes', queueKey: 'ship' }),
     })
 
@@ -540,6 +544,99 @@ describe('ChromiumEngine', () => {
       { question: 'Ship it?', answer: 'yes', queueKey: 'ship' },
       currentUrl,
     )
+  })
+
+  it('accepts a valid response larger than the question-inventory cap', async () => {
+    const onPageResponse = vi.fn()
+    const { stub, engine } = await createHarness({ onPageResponse })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    stub.emit('T1', 'Runtime.executionContextCreated', {
+      context: { id: 1, auxData: { frameId: 'F1', isDefault: true } },
+    })
+    const data = { choice: 'x'.repeat(MAX_QUESTION_SNAPSHOT_BYTES) }
+    stub.emit('T1', 'Runtime.bindingCalled', {
+      name: REDLINE_BINDING_NAME,
+      executionContextId: 1,
+      payload: JSON.stringify({ question: 'Large answer?', answer: 'yes', data }),
+    })
+
+    await until(() => onPageResponse.mock.calls.length === 1, 'large page response callback')
+    expect(onPageResponse).toHaveBeenCalledWith(
+      'w-11111111',
+      { question: 'Large answer?', answer: 'yes', data },
+      'http://localhost:5173/',
+    )
+  })
+
+  it('reports validated open-question snapshots separately from answers', async () => {
+    const onPageQuestions = vi.fn()
+    const { stub, engine } = await createHarness({ onPageQuestions })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const currentUrl = 'http://localhost:5173/review'
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: currentUrl } })
+    stub.emit('T1', 'Runtime.executionContextCreated', {
+      context: { id: 1, auxData: { frameId: 'F1', isDefault: true } },
+    })
+    const snapshot = {
+      type: 'questions' as const,
+      version: 1 as const,
+      questions: [{ question: 'Ship it?', selector: '#ship', kind: 'text' as const }],
+    }
+    stub.emit('T1', 'Runtime.bindingCalled', {
+      name: REDLINE_BINDING_NAME,
+      executionContextId: 1,
+      payload: JSON.stringify(snapshot),
+    })
+
+    await until(() => onPageQuestions.mock.calls.length === 2, 'page questions callback')
+    expect(onPageQuestions.mock.calls).toEqual([
+      ['w-11111111', { type: 'questions', version: 1, questions: [] }, currentUrl],
+      ['w-11111111', snapshot, currentUrl],
+    ])
+  })
+
+  it('accepts inventories only from the main frame and rebases them across navigation', async () => {
+    const onPageQuestions = vi.fn()
+    const { stub, engine } = await createHarness({ onPageQuestions })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const currentUrl = 'http://localhost:5173/review'
+    const snapshot = {
+      type: 'questions' as const,
+      version: 1 as const,
+      questions: [{ question: 'Ship it?', selector: '#ship', kind: 'text' as const }],
+    }
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: currentUrl } })
+    stub.emit('T1', 'Runtime.executionContextCreated', {
+      context: { id: 1, auxData: { frameId: 'F1', isDefault: true } },
+    })
+    stub.emit('T1', 'Runtime.executionContextCreated', {
+      context: { id: 2, auxData: { frameId: 'F2', isDefault: true } },
+    })
+    stub.emit('T1', 'Runtime.bindingCalled', {
+      name: REDLINE_BINDING_NAME,
+      executionContextId: 2,
+      payload: JSON.stringify(snapshot),
+    })
+    await until(() => onPageQuestions.mock.calls.length === 1, 'initial question clear')
+
+    stub.emit('T1', 'Runtime.bindingCalled', {
+      name: REDLINE_BINDING_NAME,
+      executionContextId: 1,
+      payload: JSON.stringify(snapshot),
+    })
+    const sameDocumentUrl = `${currentUrl}#details`
+    stub.emit('T1', 'Page.navigatedWithinDocument', { frameId: 'F1', url: sameDocumentUrl })
+    stub.emit('T1', 'Page.frameNavigated', {
+      frame: { id: 'F1', url: 'http://localhost:5173/next' },
+    })
+
+    await until(() => onPageQuestions.mock.calls.length === 4, 'question navigation lifecycle')
+    expect(onPageQuestions.mock.calls.slice(1)).toEqual([
+      ['w-11111111', snapshot, currentUrl],
+      ['w-11111111', snapshot, sameDocumentUrl],
+      ['w-11111111', { type: 'questions', version: 1, questions: [] }, 'http://localhost:5173/next'],
+    ])
   })
 
   it('retains the latest snapshot across target recreation', async () => {
@@ -991,6 +1088,19 @@ describe('ChromiumEngine', () => {
       await expect(engine.resolveSelectors('w-11111111', [
         { noteId: 7, selector: '#target' },
       ])).rejects.toThrow('unrequested selector anchor')
+    })
+  })
+
+  describe('revealSelector', () => {
+    it('scrolls only the requested selector into page context', async () => {
+      const { stub, engine } = await createHarness()
+      await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+
+      await engine.revealSelector('w-11111111', '#question')
+
+      const call = stub.calls.filter((entry) => entry.method === 'Runtime.evaluate').at(-1)
+      expect(String(call?.params?.expression)).toContain('document.querySelector("#question")')
+      expect(String(call?.params?.expression)).toContain('scrollIntoView')
     })
   })
 

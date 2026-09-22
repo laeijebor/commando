@@ -31,7 +31,7 @@ export interface WebPanesApiClient {
     webPaneId: string,
     noteId: number,
     expectedRevision: number,
-    change: { answer?: string; note?: string },
+    change: { answer?: string; note?: string; response?: RedlinePageResponse },
   ): Promise<WebPanePendingSnapshot>
   uploadPendingAttachment(
     webPaneId: string,

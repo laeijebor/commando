@@ -90,6 +90,7 @@ function nativeHarness(supportsReview = true, supportsPageResponses = true) {
     setReviewInput: vi.fn(() => supportsReview),
     presentReviewHighlights: vi.fn(() => supportsReview),
     presentPendingSnapshot: vi.fn(() => supportsPageResponses),
+    revealSelector: vi.fn(() => true),
     detach: vi.fn(),
   }
   const bridge = {
@@ -103,9 +104,21 @@ function nativeHarness(supportsReview = true, supportsPageResponses = true) {
   return {
     attachment,
     bridge,
+    navigationStarted: () => listener?.({ type: 'webview.navigationStarted' }),
     loaded: (url?: string) => listener?.({ type: 'webview.loaded', ...(url ? { url } : {}) }),
     pageResponse: (url: string, response: { question: string; answer: string; queueKey?: string }) => {
       listener?.({ type: 'webview.pageResponse', url, response })
+    },
+    pageQuestions: (url: string) => {
+      listener?.({
+        type: 'webview.pageQuestions',
+        url,
+        snapshot: {
+          type: 'questions',
+          version: 1,
+          questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+        },
+      })
     },
   }
 }
@@ -121,6 +134,39 @@ afterEach(() => {
 })
 
 describe('NativeWebViewTile review integration', () => {
+  it('surfaces native page questions and reveals their source control', async () => {
+    const { attachment, bridge, loaded, navigationStarted, pageQuestions } = nativeHarness()
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        pendingQueue={pendingQueue}
+        onFallback={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalled())
+
+    act(() => pageQuestions(webPane.url))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer queue · 1' }))
+    fireEvent.click(screen.getByRole('button', { name: /Which plan\?/ }))
+    expect(attachment.revealSelector).toHaveBeenCalledWith('#plan')
+
+    act(() => loaded(`${webPane.url}#details`))
+    expect(screen.getByRole('dialog', { name: 'Answer queue' })).toBeInTheDocument()
+
+    act(() => navigationStarted())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Answer queue' })).not.toBeInTheDocument())
+
+    act(() => pageQuestions(webPane.url))
+    expect(screen.queryByRole('button', { name: 'Answer queue · 1' })).not.toBeInTheDocument()
+
+    act(() => loaded('https://example.com/next'))
+    act(() => pageQuestions('https://example.com/next'))
+    expect(await screen.findByRole('button', { name: 'Answer queue · 1' })).toBeInTheDocument()
+  })
+
   it('keeps the native attachment active, routes review input, highlights, and pending snapshots', async () => {
     const { attachment, bridge } = nativeHarness()
     const view = render(

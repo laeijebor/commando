@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
 import {
+  parseRedlinePageQuestionSnapshot,
+  type RedlinePageQuestionSnapshot,
+} from '../shared/redline-response'
+import {
   parseTileSelectorAnchors,
   type TileInspectResult,
   type TileSelectorAnchor,
@@ -42,6 +46,9 @@ type TileSocketMessage = {
   dropped?: number
   knownUpTo?: number
   anchors?: unknown
+  pageUrl?: string
+  version?: number
+  questions?: unknown
 }
 
 function toInspectResult(message: TileSocketMessage): TileInspectResult {
@@ -96,6 +103,10 @@ export function ChromiumTileCard({
     reject?: (error: Error) => void
   }>())
   const pendingListeners = useRef(new Set<(snapshot: WebPanePendingSnapshot) => void>())
+  const questionListeners = useRef(new Set<(
+    pageUrl: string,
+    snapshot: RedlinePageQuestionSnapshot,
+  ) => void>())
   const activePointer = useRef<{
     id: number
     button: 'none' | 'left' | 'middle' | 'right'
@@ -132,6 +143,16 @@ export function ChromiumTileCard({
       subscribePending: (listener) => {
         pendingListeners.current.add(listener)
         return () => pendingListeners.current.delete(listener)
+      },
+      subscribeQuestions: (listener) => {
+        questionListeners.current.add(listener)
+        return () => questionListeners.current.delete(listener)
+      },
+      revealSelector: (selector) => {
+        const socket = socketRef.current
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'reveal_selector', selector }))
+        }
       },
     }
   }
@@ -298,6 +319,16 @@ export function ChromiumTileCard({
             dropped: typeof message.dropped === 'number' ? message.dropped : 0,
           }
           for (const listener of pendingListeners.current) listener(snapshot)
+          return
+        }
+        if (message.type === 'questions' && typeof message.pageUrl === 'string') {
+          const snapshot = parseRedlinePageQuestionSnapshot({
+            type: 'questions',
+            version: message.version,
+            questions: message.questions,
+          })
+          if (!snapshot) return
+          for (const listener of questionListeners.current) listener(message.pageUrl, snapshot)
           return
         }
         if (message.type === 'ready') {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { MAX_QUESTION_SNAPSHOT_BYTES } from '../shared/redline-response'
 
 import {
   NATIVE_WEBVIEW_INSPECT_CAPABILITY,
@@ -8,6 +9,7 @@ import {
   NATIVE_WEBVIEW_PROTOCOL,
   NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY,
   NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY,
+  NATIVE_WEBVIEW_REVEAL_SELECTOR_CAPABILITY,
   NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY,
   NativeWebViewBridge,
   type NativeWebViewTileEvent,
@@ -202,18 +204,23 @@ describe('NativeWebViewBridge', () => {
       events.push(event)
     })
 
-    receive(bridge, 2, 'webview.loaded', {
+    receive(bridge, 2, 'webview.navigationStarted', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+    })
+    receive(bridge, 3, 'webview.loaded', {
       webPaneId: 'w-abcd1234',
       attachmentId: attachment.attachmentId,
       url: 'https://example.com/after-navigation',
     })
-    receive(bridge, 3, 'webview.loaded', {
+    receive(bridge, 4, 'webview.loaded', {
       webPaneId: 'w-abcd1234',
       attachmentId: attachment.attachmentId,
       url: 'file:///etc/passwd',
     })
 
     expect(events).toEqual([
+      { type: 'webview.navigationStarted' },
       { type: 'webview.loaded', url: 'https://example.com/after-navigation' },
       { type: 'webview.loaded' },
     ])
@@ -223,7 +230,11 @@ describe('NativeWebViewBridge', () => {
     const messages: PostedMessage[] = []
     installHandler(messages)
     const bridge = new NativeWebViewBridge()
-    await connect(bridge, ['webview.embed.v1', NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY])
+    await connect(bridge, [
+      'webview.embed.v1',
+      NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY,
+      NATIVE_WEBVIEW_REVEAL_SELECTOR_CAPABILITY,
+    ])
     const events: NativeWebViewTileEvent[] = []
     const attachment = bridge.attach(
       'w-abcd1234',
@@ -248,6 +259,11 @@ describe('NativeWebViewBridge', () => {
       type: 'webview.presentPendingSnapshot',
       payload: { pageUrl: 'https://example.com/review', snapshot: { version: 1 } },
     })
+    expect(attachment.revealSelector('#plan')).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'webview.revealSelector',
+      payload: { selector: '#plan' },
+    })
 
     receive(bridge, 2, 'webview.pageResponse', {
       webPaneId: 'w-abcd1234',
@@ -268,10 +284,43 @@ describe('NativeWebViewBridge', () => {
     receive(bridge, 3, 'webview.pageResponse', {
       webPaneId: 'w-abcd1234',
       attachmentId: attachment.attachmentId,
+      url: 'https://example.com/review',
+      responsePayload: JSON.stringify({
+        type: 'questions',
+        version: 1,
+        questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+      }),
+    })
+    expect(events[1]).toEqual({
+      type: 'webview.pageQuestions',
+      url: 'https://example.com/review',
+      snapshot: {
+        type: 'questions',
+        version: 1,
+        questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+      },
+    })
+
+    receive(bridge, 4, 'webview.pageResponse', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
       url: 'file:///etc/passwd',
       responsePayload: JSON.stringify({ question: 'Ignored?', answer: 'Yes' }),
     })
-    expect(events).toHaveLength(1)
+    expect(events).toHaveLength(2)
+
+    const data = { choice: 'x'.repeat(MAX_QUESTION_SNAPSHOT_BYTES) }
+    receive(bridge, 5, 'webview.pageResponse', {
+      webPaneId: 'w-abcd1234',
+      attachmentId: attachment.attachmentId,
+      url: 'https://example.com/review',
+      responsePayload: JSON.stringify({ question: 'Large answer?', answer: 'yes', data }),
+    })
+    expect(events[2]).toEqual({
+      type: 'webview.pageResponse',
+      url: 'https://example.com/review',
+      response: { question: 'Large answer?', answer: 'yes', data },
+    })
   })
 
   it('does not expose page responses without explicit opt-in and capability', async () => {

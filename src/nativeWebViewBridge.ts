@@ -2,7 +2,11 @@ import type { NativeTerminalFramePayload } from './nativeTerminalBridge'
 import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
 import {
   MAX_RESPONSE_PAYLOAD_BYTES,
+  MAX_QUESTION_SNAPSHOT_BYTES,
+  MAX_PENDING_SNAPSHOT_BYTES,
+  parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
+  type RedlinePageQuestionSnapshot,
   type RedlinePagePendingSnapshot,
   type RedlinePageResponse,
 } from '../shared/redline-response'
@@ -33,6 +37,7 @@ export const NATIVE_WEBVIEW_RESOLVE_SELECTORS_CAPABILITY = 'webview.resolveSelec
 export const NATIVE_WEBVIEW_REVIEW_INPUT_CAPABILITY = 'webview.reviewInput.v1' as const
 export const NATIVE_WEBVIEW_REVIEW_HIGHLIGHTS_CAPABILITY = 'webview.reviewHighlights.v1' as const
 export const NATIVE_WEBVIEW_PAGE_RESPONSES_CAPABILITY = 'webview.pageResponses.v1' as const
+export const NATIVE_WEBVIEW_REVEAL_SELECTOR_CAPABILITY = 'webview.revealSelector.v1' as const
 export const NATIVE_WEBVIEW_HIT_REGIONS_CAPABILITY = 'webview.hitRegions.v1' as const
 
 type NativeMessageHandler = {
@@ -51,8 +56,10 @@ export type NativeWebViewNegotiation =
 
 export type NativeWebViewTileEvent =
   | { type: 'webview.attached' }
+  | { type: 'webview.navigationStarted' }
   | { type: 'webview.loaded'; url?: string }
   | { type: 'webview.pageResponse'; url: string; response: RedlinePageResponse }
+  | { type: 'webview.pageQuestions'; url: string; snapshot: RedlinePageQuestionSnapshot }
   | { type: 'webview.failed'; code: string }
 
 export type NativeWebViewAttachOptions = {
@@ -68,6 +75,7 @@ export type NativeWebViewAttachment = {
   setReviewInput: (enabled: boolean) => boolean
   presentReviewHighlights: (highlights: readonly NativeWebViewReviewHighlight[]) => boolean
   presentPendingSnapshot: (pageUrl: string, snapshot: RedlinePagePendingSnapshot) => boolean
+  revealSelector: (selector: string) => boolean
   detach: () => void
 }
 
@@ -88,8 +96,6 @@ const INSPECTION_TIMEOUT_MS = 5_000
 const MAX_INSPECTION_COORDINATE = 100_000
 const MAX_PENDING_INSPECTIONS = 32
 const MAX_REVIEW_HIGHLIGHTS = MAX_SELECTOR_RESOLVE_ITEMS + 1
-const MAX_PENDING_SNAPSHOT_BYTES = 512 * 1_024
-
 type PendingInspect = {
   attachmentId: string
   resolve: (result: TileInspectResult) => void
@@ -224,6 +230,7 @@ export class NativeWebViewBridge {
       presentPendingSnapshot: (pageUrl, snapshot) => (
         this.presentPendingSnapshot(attachmentId, pageUrl, snapshot)
       ),
+      revealSelector: (selector) => this.revealSelector(attachmentId, selector),
       detach: () => {
         if (this.attachments.delete(attachmentId)) {
           this.rejectPendingForAttachment(attachmentId, 'Native web view attachment detached')
@@ -306,6 +313,17 @@ export class NativeWebViewBridge {
       pageUrl: boundedPageUrl,
       snapshot,
     })
+  }
+
+  private revealSelector(attachmentId: string, selector: string): boolean {
+    if (
+      !this.capabilities.has(NATIVE_WEBVIEW_REVEAL_SELECTOR_CAPABILITY) ||
+      typeof selector !== 'string' ||
+      selector.length < 1 ||
+      selector.length > MAX_INSPECT_SELECTOR ||
+      selector.startsWith('redline:')
+    ) return false
+    return this.postForAttachment('webview.revealSelector', attachmentId, { selector })
   }
 
   dispose(): void {
@@ -572,9 +590,12 @@ export class NativeWebViewBridge {
     if (type === 'webview.pageResponse') {
       const responsePayload = payload.responsePayload
       const url = boundedHttpUrl(payload.url)
+      const responseBytes = typeof responsePayload === 'string'
+        ? new TextEncoder().encode(responsePayload).byteLength
+        : Number.POSITIVE_INFINITY
       if (
         typeof responsePayload !== 'string' ||
-        new TextEncoder().encode(responsePayload).byteLength > MAX_RESPONSE_PAYLOAD_BYTES ||
+        responseBytes > Math.max(MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES) ||
         !url
       ) return
       let value: unknown
@@ -583,6 +604,13 @@ export class NativeWebViewBridge {
       } catch {
         return
       }
+      const questions = parseRedlinePageQuestionSnapshot(value)
+      if (questions) {
+        if (responseBytes > MAX_QUESTION_SNAPSHOT_BYTES) return
+        record.listener({ type: 'webview.pageQuestions', url, snapshot: questions })
+        return
+      }
+      if (responseBytes > MAX_RESPONSE_PAYLOAD_BYTES) return
       const response = parseRedlinePageResponse(value)
       if (response) record.listener({ type: 'webview.pageResponse', url, response })
       return
@@ -590,6 +618,8 @@ export class NativeWebViewBridge {
 
     if (type === 'webview.attached') {
       record.listener({ type: 'webview.attached' })
+    } else if (type === 'webview.navigationStarted') {
+      record.listener({ type: 'webview.navigationStarted' })
     } else if (type === 'webview.loaded') {
       const url = boundedHttpUrl(payload.url)
       record.listener({ type: 'webview.loaded', ...(url ? { url } : {}) })

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
-import { redlinePendingSnapshotForPage } from '../shared/redline-response'
+import {
+  EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
+  redlinePendingSnapshotForPage,
+} from '../shared/redline-response'
+import type { RedlinePageQuestionSnapshot } from '../shared/redline-response'
 import type { NativeWebViewAttachment, NativeWebViewBridge } from './nativeWebViewBridge'
 import {
   clippingRect,
@@ -53,6 +57,12 @@ export function NativeWebViewTile({
   const [pageUrl, setPageUrl] = useState(webPane.url)
   const pageUrlRef = useRef(pageUrl)
   const latestPendingRevisionRef = useRef<number | undefined>(undefined)
+  const questionListenersRef = useRef(new Set<(
+    pageUrl: string,
+    snapshot: RedlinePageQuestionSnapshot,
+  ) => void>())
+  const latestQuestionsRef = useRef<{ pageUrl: string; snapshot: RedlinePageQuestionSnapshot } | null>(null)
+  const documentNavigationRef = useRef(false)
   const loadedRef = useRef(onLoaded)
   const fallbackRef = useRef(onFallback)
   const reviewFallbackRef = useRef(onReviewFallback)
@@ -91,8 +101,23 @@ export function NativeWebViewTile({
     try {
       attachment = bridge.attach(webPane.id, webPane.url, (event) => {
         if (!active) return
+        if (event.type === 'webview.navigationStarted') {
+          documentNavigationRef.current = true
+          latestQuestionsRef.current = null
+          for (const listener of questionListenersRef.current) {
+            listener(pageUrlRef.current, EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT)
+          }
+        }
         if (event.type === 'webview.loaded') {
-          if (event.url) setPageUrl(event.url)
+          if (event.url) {
+            setPageUrl(event.url)
+            const latest = latestQuestionsRef.current
+            if (!documentNavigationRef.current && latest) {
+              latestQuestionsRef.current = { pageUrl: event.url, snapshot: latest.snapshot }
+              for (const listener of questionListenersRef.current) listener(event.url, latest.snapshot)
+            }
+          }
+          documentNavigationRef.current = false
           loadedRef.current?.()
         }
         if (event.type === 'webview.pageResponse') {
@@ -104,6 +129,11 @@ export function NativeWebViewTile({
               presentPendingSnapshot(current, snapshot, pageUrlRef.current)
             }
           }).catch(() => undefined)
+        }
+        if (event.type === 'webview.pageQuestions') {
+          if (documentNavigationRef.current) return
+          latestQuestionsRef.current = { pageUrl: event.url, snapshot: event.snapshot }
+          for (const listener of questionListenersRef.current) listener(event.url, event.snapshot)
         }
         if (event.type === 'webview.failed') fallbackRef.current()
       }, { pageResponses: typeof pendingQueueRef.current?.addResponse === 'function' })
@@ -191,6 +221,15 @@ export function NativeWebViewTile({
           listener(snapshot)
         })
       : () => undefined,
+    subscribeQuestions: (listener) => {
+      questionListenersRef.current.add(listener)
+      const latest = latestQuestionsRef.current
+      if (latest) listener(latest.pageUrl, latest.snapshot)
+      return () => questionListenersRef.current.delete(listener)
+    },
+    revealSelector: (selector) => {
+      attachment?.revealSelector(selector)
+    },
     presentHighlights: ({ hover, queued }) => {
       if (!attachment) return
       const ok = attachment.presentReviewHighlights([

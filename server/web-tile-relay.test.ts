@@ -64,6 +64,7 @@ async function startRelay(
     reload: vi.fn(async () => undefined),
     inspectAt: vi.fn(async () => ({ ok: true as const, selector: '#a', tag: 'div', rect: { x: 0, y: 0, width: 1, height: 1 } })),
     resolveSelectors: vi.fn(async () => [{ noteId: 4, rect: { x: 1, y: 2, width: 3, height: 4 } }]),
+    revealSelector: vi.fn(async () => undefined),
     readSelection: vi.fn(async () => ({ ok: true as const, source: 'dom' as const, text: 'selected text' })),
     ...engineOverrides,
   } as unknown as ChromiumEngine
@@ -89,7 +90,7 @@ async function startRelay(
     messages.push(JSON.parse(String(data)) as Record<string, unknown>)
   })
   await new Promise<void>((resolve) => socket.once('open', () => resolve()))
-  return { socket, engine, relay, messages }
+  return { socket, engine, relay, messages, port }
 }
 
 function nextMessage(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
@@ -206,9 +207,56 @@ describe('web tile relay selector resolution', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(engine.resolveSelectors).not.toHaveBeenCalled()
   })
+
+  it('routes a bounded selector reveal without accepting synthetic selectors', async () => {
+    const { socket, engine } = await startRelay()
+    socket.send(JSON.stringify({ type: 'reveal_selector', selector: '#question' }))
+    await vi.waitFor(() => expect(engine.revealSelector).toHaveBeenCalledWith('w-11111111', '#question'))
+
+    socket.send(JSON.stringify({ type: 'reveal_selector', selector: 'redline:question' }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(engine.revealSelector).toHaveBeenCalledOnce()
+  })
 })
 
 describe('web tile relay pending broadcast', () => {
+  it('broadcasts the ephemeral open-question inventory', async () => {
+    const { socket, relay } = await startRelay()
+    const reply = nextMessage(socket, 'questions')
+    relay.broadcastQuestions('w-11111111', 'http://127.0.0.1:5173/', {
+      type: 'questions',
+      version: 1,
+      questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+    })
+    expect(await reply).toEqual({
+      type: 'questions',
+      version: 1,
+      pageUrl: 'http://127.0.0.1:5173/',
+      questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+    })
+  })
+
+  it('drops cached inventories for tiles that are no longer live', async () => {
+    const { socket, relay, port } = await startRelay()
+    relay.broadcastQuestions('w-11111111', 'http://127.0.0.1:5173/', {
+      type: 'questions',
+      version: 1,
+      questions: [{ question: 'Which plan?', selector: '#plan', kind: 'text' }],
+    })
+    socket.terminate()
+    await new Promise<void>((resolve) => socket.once('close', () => resolve()))
+    relay.dropStale(new Set())
+
+    const reconnected = new WebSocket(`ws://127.0.0.1:${port}/ws/web-tiles/w-11111111?mode=review`)
+    sockets.push(reconnected)
+    const messages: Record<string, unknown>[] = []
+    reconnected.on('message', (data) => messages.push(JSON.parse(String(data)) as Record<string, unknown>))
+    await new Promise<void>((resolve) => reconnected.once('open', () => resolve()))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(messages.some((message) => message.type === 'questions')).toBe(false)
+  })
+
   it('broadcasts the pending queue to subscribed tile sockets', async () => {
     const { socket, relay } = await startRelay()
     const reply = nextMessage(socket, 'pending')

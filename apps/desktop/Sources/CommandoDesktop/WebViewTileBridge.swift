@@ -24,6 +24,7 @@ enum WebViewTileProtocol {
         "webview.reviewInput.v1",
         "webview.reviewHighlights.v1",
         "webview.pageResponses.v1",
+        "webview.revealSelector.v1",
         "webview.hitRegions.v1",
     ]
     static let maxURLLength = 2_048
@@ -39,7 +40,9 @@ enum WebViewTileProtocol {
     static let maxPendingInspectionRequests = 32
     static let inspectionTimeout: Duration = .seconds(5)
     static let maxReviewHighlights = maxSelectorResolveItems + 1
-    static let maxPageResponseBytes = 16 * 1_024
+    // Question inventories share the page-response binding and are validated
+    // more narrowly by the TypeScript bridge after crossing this transport.
+    static let maxPagePayloadBytes = 288 * 1_024
     static let maxPendingSnapshotBytes = 512 * 1_024
     static let maxPendingControls = 50
     /// Tile host views sort above the terminal surfaces in the shared overlay.
@@ -142,6 +145,20 @@ enum WebViewTileProtocol {
     static let presentPendingSnapshotScript = """
     window.__commandoRedlinePendingSnapshot = pendingSnapshot;
     window.dispatchEvent(new CustomEvent("commando:redline-pending", { detail: pendingSnapshot }));
+    """
+
+    static let revealSelectorScript = """
+    let element = null;
+    try { element = document.querySelector(revealSelector); } catch { return false; }
+    if (!element || !element.isConnected) return false;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    element.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "center",
+        inline: "nearest",
+    });
+    if (typeof element.focus === "function") element.focus({ preventScroll: true });
+    return true;
     """
 }
 
@@ -269,6 +286,7 @@ final class WebViewTileReviewOverlayView: NSView {
 }
 
 enum WebViewTileEvent {
+    case navigationStarted
     case loaded(url: String?)
     case pageResponse(payload: String, url: String)
     case failed(code: String)
@@ -440,11 +458,12 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func receivePageResponse(body: Any, url: URL) {
-        guard let admission = pageResponseAdmission,
+        guard isDocumentReady,
+              let admission = pageResponseAdmission,
               admission.allowsNavigation(to: url),
               boundedCurrentURL() == url.absoluteString,
               let payload = body as? String,
-              payload.utf8.count <= WebViewTileProtocol.maxPageResponseBytes,
+              payload.utf8.count <= WebViewTileProtocol.maxPagePayloadBytes,
               url.absoluteString.utf16.count <= WebViewTileProtocol.maxURLLength
         else {
             return
@@ -480,6 +499,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         didStartProvisionalNavigation navigation: WKNavigation!
     ) {
         invalidateDocument()
+        eventSink(identity, .navigationStarted)
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -686,6 +706,8 @@ final class WebViewTileBridge: NSObject {
             presentReviewHighlights(payload)
         case "webview.presentPendingSnapshot":
             presentPendingSnapshot(payload)
+        case "webview.revealSelector":
+            revealSelector(payload)
         case "webview.detach":
             detach(payload)
         default:
@@ -770,6 +792,11 @@ final class WebViewTileBridge: NSObject {
             pageResponsesEnabled: payload["pageResponses"] as? Bool == true
         ) { [weak self] identity, event in
             switch event {
+            case .navigationStarted:
+                self?.emit(type: "webview.navigationStarted", payload: [
+                    "webPaneId": identity.paneId,
+                    "attachmentId": identity.attachmentId,
+                ])
             case let .loaded(url):
                 var payload: [String: Any] = [
                     "webPaneId": identity.paneId,
@@ -1007,6 +1034,22 @@ final class WebViewTileBridge: NSObject {
             return
         }
         tile.presentPendingSnapshot(pageUrl: pageUrl, snapshot: snapshot)
+    }
+
+    private func revealSelector(_ payload: [String: Any]) {
+        guard let tile = tile(for: payload),
+              tile.isDocumentReady,
+              let selector = payload["selector"] as? String,
+              !selector.isEmpty,
+              selector.utf16.count <= WebViewTileProtocol.maxSelectorLength,
+              !selector.hasPrefix("redline:")
+        else {
+            return
+        }
+        tile.evaluateInspection(
+            script: WebViewTileProtocol.revealSelectorScript,
+            arguments: ["revealSelector": selector]
+        ) { _ in }
     }
 
     private func detach(_ payload: [String: Any]) {

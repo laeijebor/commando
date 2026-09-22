@@ -651,6 +651,8 @@ final class NativeAppKitIntegrationTests: XCTestCase {
             pageResponsesEnabled: true,
             eventSink: { _, event in
                 switch event {
+                case .navigationStarted:
+                    break
                 case let .loaded(url):
                     latestLoadedURL = url
                     if waitingForSameDocument {

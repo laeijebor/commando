@@ -11,6 +11,12 @@ import {
   type TileSelectorResolveItem,
 } from '../shared/tile-inspect'
 import { loadPendingMirror, savePendingMirror } from './pendingMirror'
+import type {
+  RedlinePageQuestion,
+  RedlinePageQuestionSnapshot,
+  RedlinePageResponse,
+} from '../shared/redline-response'
+import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON } from '../shared/redline-response'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { createInspectThrottle } from './tileReview'
 import type { PendingSendTarget } from './webPanesApi'
@@ -36,6 +42,10 @@ export type TileReviewSurface = {
     reject?: (error: Error) => void,
   ) => void
   subscribePending: (listener: (snapshot: WebPanePendingSnapshot) => void) => () => void
+  subscribeQuestions: (
+    listener: (pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void,
+  ) => () => void
+  revealSelector: (selector: string) => void
   presentHighlights?: (presentation: TileReviewHighlightPresentation) => void
 }
 
@@ -68,8 +78,10 @@ const EMPTY_SNAPSHOT: WebPanePendingSnapshot = {
 type PendingDraft = {
   answer: string
   note: string
+  choices: string[]
   baseAnswer: string
   baseNote: string
+  baseChoices: string[]
   baseRevision: number
   dirty: boolean
   conflict: boolean
@@ -86,6 +98,83 @@ type PendingEditor =
   | { kind: 'rating'; max: number }
   | { kind: 'text' }
 
+type QuestionDraft = { answer: string; note: string; choices: string[] }
+
+function sameChoices(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((choice, index) => choice === right[index])
+}
+
+function displayAnswerForChoices(choices: readonly string[], fallback: string): string {
+  const answer = choices.length > 0 ? choices.join(', ') : fallback.trim()
+  return answer.length <= MAX_RESPONSE_ANSWER
+    ? answer
+    : `${answer.slice(0, MAX_RESPONSE_ANSWER - 3)}...`
+}
+
+function boundedChoiceData(choice: string | string[], options: readonly string[] | undefined, multiple: boolean): unknown {
+  const complete = { choice, ...(options ? { options } : {}), multiple }
+  if (new TextEncoder().encode(JSON.stringify(complete)).byteLength <= MAX_RESPONSE_DATA_JSON) return complete
+  return { choice, multiple }
+}
+
+function choiceResponseData(question: RedlinePageQuestion, choices: readonly string[]): unknown {
+  const choice = question.multiple ? [...choices] : choices[0] ?? ''
+  return boundedChoiceData(choice, question.options, question.multiple === true)
+}
+
+function questionKey(question: RedlinePageQuestion): string {
+  return question.queueKey ? `key:${question.queueKey}` : `selector:${question.selector}`
+}
+
+function questionDraftKey(question: RedlinePageQuestion): string {
+  return `${questionKey(question)}:${JSON.stringify([
+    question.kind,
+    question.options ?? null,
+    question.multiple === true,
+    question.max ?? null,
+  ])}`
+}
+
+function pendingForQuestion(
+  question: RedlinePageQuestion,
+  notes: readonly WebPanePendingNote[],
+  pageUrl: string,
+): WebPanePendingNote | undefined {
+  return notes.find((note) => (
+    note.response !== undefined &&
+    (note.pageUrl === undefined || note.pageUrl === pageUrl) &&
+    (question.queueKey
+      ? note.queueKey === question.queueKey
+      : note.queueKey === undefined && note.selector === question.selector)
+  ))
+}
+
+function responseForQuestion(question: RedlinePageQuestion, draft: QuestionDraft): RedlinePageResponse {
+  const answer = question.kind === 'choice' && question.multiple
+    ? displayAnswerForChoices(draft.choices, draft.answer)
+    : draft.answer.trim()
+  let data: unknown
+  if (question.kind === 'choice') {
+    data = question.multiple
+      ? choiceResponseData(question, draft.choices)
+      : choiceResponseData(question, [answer])
+  } else if (question.kind === 'approve') {
+    data = { verdict: answer }
+  } else if (question.kind === 'rating') {
+    data = { rating: Number.parseInt(answer, 10), max: question.max }
+  }
+  return {
+    question: question.question,
+    answer,
+    ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(question.queueKey ? { queueKey: question.queueKey } : {}),
+    selector: question.selector,
+    tag: 'redline',
+    text: question.question,
+  }
+}
+
 function responseData(note: WebPanePendingNote): Record<string, unknown> {
   const data = note.response?.data
   return typeof data === 'object' && data !== null && !Array.isArray(data)
@@ -95,8 +184,18 @@ function responseData(note: WebPanePendingNote): Record<string, unknown> {
 
 function editorFor(note: WebPanePendingNote): PendingEditor {
   const data = responseData(note)
-  if (Array.isArray(data.options) && data.options.every((option) => typeof option === 'string')) {
-    return { kind: 'choice', options: data.options, multiple: data.multiple === true }
+  const options = Array.isArray(data.options) && data.options.every((option) => typeof option === 'string')
+    ? data.options
+    : undefined
+  const selected = Array.isArray(data.choice) && data.choice.every((option) => typeof option === 'string')
+    ? data.choice
+    : typeof data.choice === 'string' ? [data.choice] : undefined
+  if (options || selected) {
+    return {
+      kind: 'choice',
+      options: options ?? selected ?? [],
+      multiple: data.multiple === true || Array.isArray(data.choice),
+    }
   }
   if (typeof data.verdict === 'string') {
     return { kind: 'approve', options: ['approve', 'reject', 'needs-changes'] }
@@ -107,15 +206,32 @@ function editorFor(note: WebPanePendingNote): PendingEditor {
   return { kind: 'text' }
 }
 
-function draftValues(note: WebPanePendingNote): { answer: string; note: string } {
-  if (!note.response) return { answer: note.comment, note: '' }
+function editorForQuestion(question: RedlinePageQuestion): PendingEditor {
+  if (question.kind === 'choice') {
+    return { kind: 'choice', options: question.options ?? [], multiple: question.multiple === true }
+  }
+  if (question.kind === 'approve') {
+    return { kind: 'approve', options: question.options ?? [] }
+  }
+  if (question.kind === 'rating') return { kind: 'rating', max: question.max ?? 5 }
+  return { kind: 'text' }
+}
+
+function draftValues(note: WebPanePendingNote): { answer: string; note: string; choices: string[] } {
+  if (!note.response) return { answer: note.comment, note: '', choices: [] }
   const data = responseData(note)
   const editor = editorFor(note)
   let answer = note.response.answer
+  let choices: string[] = []
   if (editor.kind === 'choice') {
     const choice = data.choice
-    if (Array.isArray(choice)) answer = choice.map(String).join(', ')
-    else if (typeof choice === 'string') answer = choice
+    if (Array.isArray(choice)) {
+      choices = choice.filter((value): value is string => typeof value === 'string')
+      if (choices.length > 0) answer = displayAnswerForChoices(choices, answer)
+    } else if (typeof choice === 'string') {
+      choices = [choice]
+      answer = choice
+    }
   } else if (editor.kind === 'approve' && typeof data.verdict === 'string') {
     answer = data.verdict
   } else if (editor.kind === 'rating') {
@@ -123,7 +239,7 @@ function draftValues(note: WebPanePendingNote): { answer: string; note: string }
     if (Number.isFinite(rating)) answer = `${rating}/${editor.max}`
   }
   const legacyNote = typeof data.comment === 'string' ? data.comment : ''
-  return { answer, note: note.response.note ?? legacyNote }
+  return { answer, note: note.response.note ?? legacyNote, choices }
 }
 
 function draftFor(note: WebPanePendingNote): PendingDraft {
@@ -132,9 +248,38 @@ function draftFor(note: WebPanePendingNote): PendingDraft {
     ...values,
     baseAnswer: values.answer,
     baseNote: values.note,
+    baseChoices: [...values.choices],
     baseRevision: note.revision ?? 1,
     dirty: false,
     conflict: false,
+  }
+}
+
+function responseForPendingNote(note: WebPanePendingNote, draft: PendingDraft): RedlinePageResponse {
+  const current = note.response
+  if (!current) throw new Error('Pending note does not contain a response')
+  const editor = editorFor(note)
+  const currentData = responseData(note)
+  let data: unknown = current.data
+  if (editor.kind === 'choice') {
+    const choice = editor.multiple ? [...draft.choices] : draft.answer
+    const options = Array.isArray(currentData.options) ? currentData.options as string[] : undefined
+    data = boundedChoiceData(choice, options, editor.multiple)
+  } else if (editor.kind === 'approve') {
+    data = { ...currentData, verdict: draft.answer }
+  } else if (editor.kind === 'rating') {
+    data = { ...currentData, rating: Number.parseInt(draft.answer, 10), max: editor.max }
+  }
+  return {
+    question: current.question,
+    answer: draft.answer,
+    ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(note.queueKey ? { queueKey: note.queueKey } : {}),
+    selector: note.selector,
+    tag: note.tag,
+    ...(note.text ? { text: note.text } : {}),
+    rect: note.rect,
   }
 }
 
@@ -161,7 +306,7 @@ function PendingEditorFields({
   draft: PendingDraft
   editor: PendingEditor
   busy: boolean
-  onChange: (change: Partial<Pick<PendingDraft, 'answer' | 'note'>>) => void
+  onChange: (change: Partial<Pick<PendingDraft, 'answer' | 'note' | 'choices'>>) => void
 }) {
   return (
     <fieldset className="tile-review-editor" disabled={busy}>
@@ -169,7 +314,7 @@ function PendingEditorFields({
       {editor.kind === 'choice' && editor.multiple ? (
         <div className="tile-review-checks">
           {editor.options.map((option) => {
-            const values = draft.answer.split(', ').filter(Boolean)
+            const values = draft.choices
             return (
               <label key={option}>
                 <input
@@ -179,8 +324,10 @@ function PendingEditorFields({
                     const next = new Set(values)
                     if (event.target.checked) next.add(option)
                     else next.delete(option)
+                    const choices = editor.options.filter((value) => next.has(value))
                     onChange({
-                      answer: editor.options.filter((value) => next.has(value)).join(', '),
+                      answer: displayAnswerForChoices(choices, ''),
+                      choices,
                     })
                   }}
                 />
@@ -241,6 +388,86 @@ function PendingEditorFields({
   )
 }
 
+function QuestionEditorFields({
+  question,
+  draft,
+  busy,
+  onChange,
+}: {
+  question: RedlinePageQuestion
+  draft: QuestionDraft
+  busy: boolean
+  onChange: (change: Partial<QuestionDraft>) => void
+}) {
+  const choices = draft.choices
+  return (
+    <fieldset className="tile-review-editor" disabled={busy}>
+      <legend>Answer</legend>
+      {question.kind === 'choice' && question.multiple ? (
+        <div className="tile-review-checks">
+          {question.options?.map((option) => (
+            <label key={option}>
+              <input
+                type="checkbox"
+                checked={choices.includes(option)}
+                onChange={(event) => {
+                  const next = new Set(choices)
+                  if (event.target.checked) next.add(option)
+                  else next.delete(option)
+                  const selected = question.options?.filter((value) => next.has(value)) ?? []
+                  onChange({
+                    answer: displayAnswerForChoices(selected, ''),
+                    choices: selected,
+                  })
+                }}
+              />
+              <span>{option}</span>
+            </label>
+          ))}
+        </div>
+      ) : question.kind === 'choice' || question.kind === 'approve' ? (
+        <select
+          aria-label="Answer"
+          value={draft.answer}
+          onChange={(event) => onChange({ answer: event.target.value })}
+        >
+          <option value="">Choose an answer</option>
+          {question.options?.map((option) => <option key={option}>{option}</option>)}
+        </select>
+      ) : question.kind === 'rating' ? (
+        <div className="tile-review-rating" role="radiogroup" aria-label="Rating">
+          {Array.from({ length: question.max ?? 5 }, (_, index) => index + 1).map((rating) => (
+            <label key={rating}>
+              <input
+                type="radio"
+                name={`question-rating-${questionKey(question)}`}
+                value={rating}
+                checked={draft.answer === `${rating}/${question.max}`}
+                onChange={() => onChange({ answer: `${rating}/${question.max}` })}
+              />
+              <span>{rating}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <textarea
+          aria-label="Answer"
+          value={draft.answer}
+          onChange={(event) => onChange({ answer: event.target.value })}
+        />
+      )}
+      <label className="tile-review-note-field">
+        <span>Optional note</span>
+        <textarea
+          aria-label="Optional note"
+          value={draft.note}
+          onChange={(event) => onChange({ note: event.target.value })}
+        />
+      </label>
+    </fieldset>
+  )
+}
+
 function cardPosition(
   rect: TileInspectRect,
   container: DOMRect | null,
@@ -289,9 +516,16 @@ export function TileReviewLayer({
   const [comment, setComment] = useState('')
   const [queued, setQueued] = useState<WebPanePendingNote[]>([])
   const [dropped, setDropped] = useState(0)
+  const [questions, setQuestions] = useState<RedlinePageQuestion[]>([])
+  const [questionsPageUrl, setQuestionsPageUrl] = useState(pageUrl ?? '')
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, QuestionDraft>>({})
+  const [questionFilter, setQuestionFilter] = useState<'all' | 'unanswered'>('all')
+  const [queueingQuestion, setQueueingQuestion] = useState<string | null>(null)
+  const queueingQuestionRef = useRef<string | null>(null)
   const [hydrated, setHydrated] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedQuestionKey, setSelectedQuestionKey] = useState<string | null>(null)
   const [popoverId, setPopoverId] = useState<number | null>(null)
   const [queuedAnchors, setQueuedAnchors] = useState<Record<number, TileInspectRect | null>>({})
   const [drafts, setDrafts] = useState<Record<number, PendingDraft>>({})
@@ -308,6 +542,14 @@ export function TileReviewLayer({
   surfaceRef.current = surface
   const queuedRef = useRef(queued)
   queuedRef.current = queued
+  const questionsRef = useRef(questions)
+  questionsRef.current = questions
+  const questionsPageUrlRef = useRef(questionsPageUrl)
+  questionsPageUrlRef.current = questionsPageUrl
+  const selectedIdRef = useRef(selectedId)
+  selectedIdRef.current = selectedId
+  const selectedQuestionKeyRef = useRef(selectedQuestionKey)
+  selectedQuestionKeyRef.current = selectedQuestionKey
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
   const latestSnapshotRevisionRef = useRef<number | undefined>(undefined)
@@ -316,6 +558,13 @@ export function TileReviewLayer({
   const hoverGeneration = useRef(0)
   const clickGeneration = useRef(0)
   const anchorGeneration = useRef(0)
+  const queueToggleRef = useRef<HTMLButtonElement | null>(null)
+  const drawerRef = useRef<HTMLElement | null>(null)
+  const drawerDetailRef = useRef<HTMLDivElement | null>(null)
+  const drawerWasOpenRef = useRef(false)
+  const focusDetailAfterQueueRef = useRef(false)
+  const unansweredFilterRef = useRef<HTMLButtonElement | null>(null)
+  const previousUnansweredCountRef = useRef(0)
 
   useEffect(() => {
     hoverGeneration.current += 1
@@ -350,8 +599,12 @@ export function TileReviewLayer({
               ...current,
               baseAnswer: serverDraft.baseAnswer,
               baseNote: serverDraft.baseNote,
+              baseChoices: serverDraft.baseChoices,
               baseRevision: serverDraft.baseRevision,
-              dirty: current.answer !== serverDraft.baseAnswer || current.note !== serverDraft.baseNote,
+              dirty:
+                current.answer !== serverDraft.baseAnswer ||
+                current.note !== serverDraft.baseNote ||
+                !sameChoices(current.choices, serverDraft.baseChoices),
               conflict: current.conflict,
             }
           : serverDraft
@@ -373,7 +626,7 @@ export function TileReviewLayer({
     setDrafts(nextDrafts)
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
-    if (snapshot.notes.length === 0) setDrawerOpen(false)
+    if (snapshot.notes.length === 0 && questionsRef.current.length === 0) setDrawerOpen(false)
     const noteIds = new Set(snapshot.notes.map((note) => note.id))
     setQueuedAnchors((current) => Object.fromEntries(
       Object.entries(current).filter(([noteId]) => noteIds.has(Number(noteId))),
@@ -383,11 +636,10 @@ export function TileReviewLayer({
       note.attachments ?? []
     ).map((attachment) => attachment.id)))
     setPreview((current) => current && attachmentIds.has(current.id) ? current : null)
-    setSelectedId((current) => (
-      current !== null && snapshot.notes.some((note) => note.id === current)
-        ? current
-        : snapshot.notes[0]?.id ?? null
-    ))
+    setSelectedId((current) => {
+      if (selectedQuestionKeyRef.current) return null
+      return current !== null && noteIds.has(current) ? current : snapshot.notes[0]?.id ?? null
+    })
     return true
   }
   const applySnapshotRef = useRef(applySnapshot)
@@ -429,6 +681,24 @@ export function TileReviewLayer({
       attachmentMutations.size > 0 ? { rebase: new Set(attachmentMutations) } : undefined,
     )
     setHydrated(true)
+  }), [surface])
+
+  useEffect(() => surface.subscribeQuestions((nextPageUrl, snapshot) => {
+    const pageChanged = questionsPageUrlRef.current !== nextPageUrl
+    questionsPageUrlRef.current = nextPageUrl
+    setQuestionsPageUrl(nextPageUrl)
+    setQuestions(snapshot.questions)
+    const keys = new Set(snapshot.questions.map(questionKey))
+    const draftKeys = new Set(snapshot.questions.map(questionDraftKey))
+    setQuestionDrafts((current) => pageChanged || snapshot.questions.length === 0 ? {} : Object.fromEntries(
+      Object.entries(current).filter(([key]) => draftKeys.has(key)),
+    ))
+    setSelectedQuestionKey((current) => {
+      if (current && keys.has(current)) return current
+      if (selectedIdRef.current !== null) return null
+      return snapshot.questions[0] ? questionKey(snapshot.questions[0]) : null
+    })
+    if (snapshot.questions.length === 0 && queuedRef.current.length === 0) setDrawerOpen(false)
   }), [surface])
 
   useEffect(() => {
@@ -568,6 +838,31 @@ export function TileReviewLayer({
   }, [preview])
 
   useEffect(() => {
+    if (drawerOpen) {
+      drawerWasOpenRef.current = true
+      drawerRef.current?.focus()
+    } else if (drawerWasOpenRef.current) {
+      drawerWasOpenRef.current = false
+      queueToggleRef.current?.focus()
+    }
+  }, [drawerOpen])
+
+  useEffect(() => {
+    if (!drawerOpen || preview) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [drawerOpen, preview])
+
+  useEffect(() => {
+    if (queueingQuestion !== null || !focusDetailAfterQueueRef.current) return
+    focusDetailAfterQueueRef.current = false
+    drawerDetailRef.current?.focus()
+  }, [queueingQuestion])
+
+  useEffect(() => {
     if (popoverId === null) return
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPopoverId(null)
@@ -585,12 +880,18 @@ export function TileReviewLayer({
     }
   }
 
-  const changeDraft = (noteId: number, change: Partial<Pick<PendingDraft, 'answer' | 'note'>>) => {
+  const changeDraft = (
+    noteId: number,
+    change: Partial<Pick<PendingDraft, 'answer' | 'note' | 'choices'>>,
+  ) => {
     const serverNote = queuedRef.current.find((note) => note.id === noteId)
     if (!serverNote) return
     const current = draftsRef.current[noteId] ?? draftFor(serverNote)
     const nextDraft = { ...current, ...change }
-    nextDraft.dirty = nextDraft.answer !== nextDraft.baseAnswer || nextDraft.note !== nextDraft.baseNote
+    nextDraft.dirty =
+      nextDraft.answer !== nextDraft.baseAnswer ||
+      nextDraft.note !== nextDraft.baseNote ||
+      !sameChoices(nextDraft.choices, nextDraft.baseChoices)
     if (!nextDraft.dirty) nextDraft.conflict = false
     const nextDrafts = { ...draftsRef.current, [noteId]: nextDraft }
     draftsRef.current = nextDrafts
@@ -624,12 +925,26 @@ export function TileReviewLayer({
       return false
     }
     try {
+      const currentQuestion = questionsRef.current.find((question) => (
+        pendingForQuestion(question, [serverNote], questionsPageUrlRef.current)?.id === noteId
+      ))
+      const currentEditor = editorFor(serverNote)
       const snapshot = await pendingQueueRef.current.update(
         noteId,
         draft.baseRevision,
-        serverNote.response
-          ? { answer: draft.answer, note: draft.note }
-          : { answer: draft.answer },
+        currentQuestion
+          ? {
+              response: responseForQuestion(currentQuestion, {
+                answer: draft.answer,
+                note: draft.note,
+                choices: draft.choices,
+              }),
+            }
+          : serverNote.response
+            ? currentEditor.kind === 'choice' && currentEditor.multiple
+              ? { response: responseForPendingNote(serverNote, draft) }
+              : { answer: draft.answer, note: draft.note }
+            : { answer: draft.answer },
       )
       const accepted = applySnapshot(snapshot, { reset: new Set([noteId]) })
       if (!accepted) {
@@ -756,6 +1071,44 @@ export function TileReviewLayer({
     }
   }
 
+  const changeQuestionDraft = (question: RedlinePageQuestion, change: Partial<QuestionDraft>) => {
+    const key = questionDraftKey(question)
+    setQuestionDrafts((current) => ({
+      ...current,
+      [key]: { ...(current[key] ?? { answer: '', note: '', choices: [] }), ...change },
+    }))
+    setQueueError('')
+  }
+
+  const queueQuestionAnswer = async (question: RedlinePageQuestion) => {
+    const addResponse = pendingQueueRef.current.addResponse
+    const key = questionKey(question)
+    const draft = questionDrafts[questionDraftKey(question)] ?? { answer: '', note: '', choices: [] }
+    if (
+      queueingQuestionRef.current !== null ||
+      !addResponse ||
+      !questionsPageUrl ||
+      !draft.answer.trim()
+    ) return
+    queueingQuestionRef.current = key
+    setQueueingQuestion(key)
+    try {
+      const accepted = applySnapshot(await addResponse(
+        questionsPageUrl,
+        responseForQuestion(question, draft),
+      ))
+      if (accepted && drawerOpen) focusDetailAfterQueueRef.current = true
+      setQueueError('')
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not queue the answer')
+    } finally {
+      if (queueingQuestionRef.current === key) {
+        queueingQuestionRef.current = null
+        setQueueingQuestion(null)
+      }
+    }
+  }
+
   const uploadAttachment = async (noteId: number, file: File) => {
     if (sendingAllRef.current) return
     const acceptedTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
@@ -810,9 +1163,30 @@ export function TileReviewLayer({
     }
   }
 
-  const selected = selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
+  const questionItems = questions.map((question) => ({
+    question,
+    key: questionKey(question),
+    pending: pendingForQuestion(question, queued, questionsPageUrl),
+  }))
+  const answeredQuestions = questionItems.filter((item) => item.pending !== undefined)
+  const unansweredQuestions = questionItems.filter((item) => item.pending === undefined)
+  const visibleQuestions = questionFilter === 'unanswered' ? unansweredQuestions : questionItems
+  const matchedResponseIds = new Set(answeredQuestions.map((item) => item.pending?.id))
+  const otherQueued = queued.filter((note) => !note.response || !matchedResponseIds.has(note.id))
+  const selectedQuestion = selectedQuestionKey === null
+    ? undefined
+    : questionItems.find((item) => item.key === selectedQuestionKey)
+  const selectedQuestionDraft = selectedQuestion
+    ? questionDrafts[questionDraftKey(selectedQuestion.question)] ?? { answer: '', note: '', choices: [] }
+    : undefined
+  const selectedQuestionBusy = queueingQuestion !== null
+  const selected = selectedQuestion?.pending ?? (
+    selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
+  )
   const selectedDraft = selected ? drafts[selected.id] ?? draftFor(selected) : undefined
-  const selectedEditor = selected ? editorFor(selected) : undefined
+  const selectedEditor = selected
+    ? selectedQuestion ? editorForQuestion(selectedQuestion.question) : editorFor(selected)
+    : undefined
   const sendingAll = sendingAllMode !== null
   const selectedBusy = selected ? sendingAll || busyIds.has(selected.id) : false
   const popoverNote = popoverId === null ? undefined : queued.find((note) => note.id === popoverId)
@@ -830,6 +1204,31 @@ export function TileReviewLayer({
         REVIEW_POPOVER_HEIGHT,
       )
     : undefined
+  useEffect(() => {
+    if (questionFilter !== 'unanswered') return
+    const unansweredKeys = new Set(unansweredQuestions.map((item) => item.key))
+    setSelectedQuestionKey((current) => (
+      current && unansweredKeys.has(current) ? current : unansweredQuestions[0]?.key ?? null
+    ))
+  }, [questionFilter, questions, questionsPageUrl, queued])
+  useEffect(() => {
+    if (
+      questionFilter === 'unanswered' &&
+      previousUnansweredCountRef.current > 0 &&
+      unansweredQuestions.length === 0
+    ) {
+      unansweredFilterRef.current?.focus()
+    }
+    previousUnansweredCountRef.current = unansweredQuestions.length
+  }, [questionFilter, unansweredQuestions.length])
+  const openDrawer = () => {
+    setPopoverId(null)
+    if (!selectedQuestionKey && selectedId === null) {
+      if (questionItems[0]) setSelectedQuestionKey(questionItems[0].key)
+      else setSelectedId(otherQueued[0]?.id ?? null)
+    }
+    setDrawerOpen(true)
+  }
 
   return (
     <>
@@ -849,6 +1248,7 @@ export function TileReviewLayer({
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => {
               setDrawerOpen(false)
+              setSelectedQuestionKey(null)
               setSelectedId(note.id)
               setPopoverId(note.id)
               setQueueError('')
@@ -970,10 +1370,10 @@ export function TileReviewLayer({
             <button
               type="button"
               className="web-pane-action is-ghost"
-              onClick={() => {
-                setPopoverId(null)
-                setDrawerOpen(true)
-              }}
+             onClick={() => {
+               setPopoverId(null)
+               openDrawer()
+             }}
             >
               Open full queue
             </button>
@@ -997,7 +1397,7 @@ export function TileReviewLayer({
           </footer>
         </section>
       )}
-      {(queued.length > 0 || dropped > 0) && (
+      {(questions.length > 0 || queued.length > 0 || dropped > 0) && (
         <>
           {!drawerOpen ? (
             <div
@@ -1023,26 +1423,35 @@ export function TileReviewLayer({
                   </button>
                 </span>
               )}
-              {queued.length > 0 && (
+              {(questions.length > 0 || queued.length > 0) && (
                 <button
+                  ref={queueToggleRef}
                   type="button"
                   className="tile-review-queue-toggle"
                   aria-expanded="false"
-                  onClick={() => {
-                    setPopoverId(null)
-                    setDrawerOpen(true)
-                  }}
+                  onClick={openDrawer}
                 >
-                  Review queue · {queued.length}
+                  {questions.length > 0
+                    ? `Answer queue · ${questions.length}`
+                    : `Review queue · ${queued.length}`}
                 </button>
               )}
               <div className="tile-review-strip-items" aria-hidden="true">
-                {queued.slice(0, 3).map((note) => (
-                  <span key={note.id} className={`tile-review-chip is-${note.response ? 'response' : 'annotation'}`}>
-                    {note.response ? note.response.answer : note.comment}
+                {(questions.length > 0 ? questionItems : queued).slice(0, 3).map((item) => (
+                  <span
+                    key={'question' in item ? item.key : item.id}
+                    className={`tile-review-chip is-${'question' in item ? 'response' : item.response ? 'response' : 'annotation'}`}
+                  >
+                    {'question' in item
+                      ? item.pending?.response?.answer ?? 'Unanswered'
+                      : item.response ? item.response.answer : item.comment}
                   </span>
                 ))}
-                {queued.length > 3 && <span className="tile-review-chip">+{queued.length - 3}</span>}
+                {(questions.length > 0 ? questionItems.length : queued.length) > 3 && (
+                  <span className="tile-review-chip">
+                    +{(questions.length > 0 ? questionItems.length : queued.length) - 3}
+                  </span>
+                )}
               </div>
               {queued.length > 0 && (
                 <div className="tile-review-strip-actions">
@@ -1068,16 +1477,49 @@ export function TileReviewLayer({
             </div>
           ) : (
             <section
+              ref={drawerRef}
               className="tile-review-drawer"
               role="dialog"
-              aria-label="Pending review queue"
+              aria-label={questions.length > 0 ? 'Answer queue' : 'Pending review queue'}
+              tabIndex={-1}
               data-testid="pending-queue-drawer"
               data-native-terminal-occluder=""
             >
               <header className="tile-review-drawer-head">
                 <div>
-                  <span className="tile-review-eyebrow">Pending answers</span>
-                  <strong>Review queue · {queued.length}</strong>
+                  <span className="tile-review-eyebrow">
+                    {questions.length > 0 ? 'Open questions' : 'Pending review'}
+                  </span>
+                  <strong>
+                    {questions.length > 0
+                      ? `Answer queue · ${unansweredQuestions.length} unanswered · ${answeredQuestions.length} answered`
+                      : `Review queue · ${queued.length}`}
+                  </strong>
+                  {questions.length > 0 && (
+                    <div className="tile-review-filters" role="group" aria-label="Filter questions">
+                      <button
+                        type="button"
+                        className={questionFilter === 'all' ? 'is-active' : ''}
+                        aria-pressed={questionFilter === 'all'}
+                        onClick={() => setQuestionFilter('all')}
+                      >
+                        All
+                      </button>
+                      <button
+                        ref={unansweredFilterRef}
+                        type="button"
+                        className={questionFilter === 'unanswered' ? 'is-active' : ''}
+                        aria-pressed={questionFilter === 'unanswered'}
+                        onClick={() => {
+                          setQuestionFilter('unanswered')
+                          setSelectedId(null)
+                          setSelectedQuestionKey(unansweredQuestions[0]?.key ?? null)
+                        }}
+                      >
+                        Unanswered · {unansweredQuestions.length}
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div className="tile-review-drawer-actions">
                   <button
@@ -1121,8 +1563,36 @@ export function TileReviewLayer({
                 </div>
               )}
               <div className="tile-review-drawer-body">
-                <nav className="tile-review-drawer-list" aria-label="Queued review items">
-                  {queued.map((note) => {
+                <nav
+                  className="tile-review-drawer-list"
+                  aria-label={questions.length > 0 ? 'Open questions and queued review items' : 'Queued review items'}
+                >
+                  {visibleQuestions.map(({ question, key, pending }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`tile-review-list-item${key === selectedQuestionKey ? ' is-selected' : ''}`}
+                      aria-current={key === selectedQuestionKey ? 'true' : undefined}
+                      onClick={() => {
+                        setSelectedId(null)
+                        setSelectedQuestionKey(key)
+                        if (resolvableSelector(question.selector)) {
+                          surfaceRef.current.revealSelector(question.selector)
+                        }
+                      }}
+                    >
+                      <span className="tile-review-list-meta">
+                        <span className={`tile-review-type is-${pending ? 'answered' : 'unanswered'}`}>
+                          {pending ? 'Answered' : 'Unanswered'}
+                        </span>
+                      </span>
+                      <strong>{question.question}</strong>
+                      <span className="tile-review-list-preview">
+                        {pending?.response?.answer ?? 'Click to answer and show in page'}
+                      </span>
+                    </button>
+                  ))}
+                  {questionFilter === 'all' && otherQueued.map((note) => {
                     const draft = drafts[note.id] ?? draftFor(note)
                     return (
                       <button
@@ -1130,7 +1600,13 @@ export function TileReviewLayer({
                         type="button"
                         className={`tile-review-list-item${note.id === selectedId ? ' is-selected' : ''}`}
                         aria-current={note.id === selectedId ? 'true' : undefined}
-                        onClick={() => setSelectedId(note.id)}
+                        onClick={() => {
+                          setSelectedQuestionKey(null)
+                          setSelectedId(note.id)
+                          if (resolvableSelector(note.selector)) {
+                            surfaceRef.current.revealSelector(note.selector)
+                          }
+                        }}
                       >
                         <span className="tile-review-list-meta">
                           <span className={`tile-review-type is-${note.response ? 'response' : 'annotation'}`}>
@@ -1146,9 +1622,53 @@ export function TileReviewLayer({
                       </button>
                     )
                   })}
+                  {visibleQuestions.length === 0 && (
+                    questionFilter === 'unanswered' || otherQueued.length === 0
+                  ) && (
+                    <div className="tile-review-list-empty" role="status" aria-live="polite">
+                      No unanswered questions.
+                    </div>
+                  )}
                 </nav>
-                <div className="tile-review-drawer-detail">
-                  {selected && selectedDraft && selectedEditor ? (
+                <div ref={drawerDetailRef} className="tile-review-drawer-detail" tabIndex={-1}>
+                  {selectedQuestion && !selectedQuestion.pending && selectedQuestionDraft ? (
+                    <>
+                      <div className="tile-review-detail-heading">
+                        <span className="tile-review-type is-unanswered">Unanswered</span>
+                        <h3>{selectedQuestion.question.question}</h3>
+                        {resolvableSelector(selectedQuestion.question.selector) && (
+                          <button
+                            type="button"
+                            className="tile-review-show-context"
+                            onClick={() => surfaceRef.current.revealSelector(selectedQuestion.question.selector)}
+                          >
+                            Show in page
+                          </button>
+                        )}
+                      </div>
+                      <QuestionEditorFields
+                        question={selectedQuestion.question}
+                        draft={selectedQuestionDraft}
+                        busy={selectedQuestionBusy}
+                        onChange={(change) => changeQuestionDraft(selectedQuestion.question, change)}
+                      />
+                      <footer className="tile-review-detail-actions">
+                        <span className="tile-review-detail-spacer" />
+                        <button
+                          type="button"
+                          className="web-pane-action"
+                          disabled={
+                            selectedQuestionBusy ||
+                            !selectedQuestionDraft.answer.trim() ||
+                            !pendingQueue.addResponse
+                          }
+                          onClick={() => void queueQuestionAnswer(selectedQuestion.question)}
+                        >
+                          {selectedQuestionBusy ? 'Queueing…' : 'Queue answer'}
+                        </button>
+                      </footer>
+                    </>
+                  ) : selected && selectedDraft && selectedEditor ? (
                     <>
                       <div className="tile-review-detail-heading">
                         <span className={`tile-review-type is-${selected.response ? 'response' : 'annotation'}`}>
@@ -1156,6 +1676,15 @@ export function TileReviewLayer({
                         </span>
                         <h3>{selected.response?.question ?? selected.selector}</h3>
                         {!selected.response && <code>{selected.tag}</code>}
+                        {resolvableSelector(selected.selector) && (
+                          <button
+                            type="button"
+                            className="tile-review-show-context"
+                            onClick={() => surfaceRef.current.revealSelector(selected.selector)}
+                          >
+                            Show in page
+                          </button>
+                        )}
                       </div>
                       {selectedDraft.conflict && (
                         <div className="tile-review-conflict" role="alert">

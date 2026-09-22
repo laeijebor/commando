@@ -5,7 +5,9 @@ import {
   MAX_RESPONSE_NOTE,
   MAX_RESPONSE_QUESTION,
   MAX_RESPONSE_QUEUE_KEY,
+  MAX_PENDING_SNAPSHOT_BYTES,
   REDLINE_BINDING_NAME,
+  parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
   redlinePendingSnapshotForPage,
 } from './redline-response.js'
@@ -68,6 +70,43 @@ describe('parseRedlinePageResponse', () => {
   })
 })
 
+describe('parseRedlinePageQuestionSnapshot', () => {
+  it('accepts a bounded inventory with editor metadata', () => {
+    const snapshot = {
+      type: 'questions',
+      version: 1,
+      questions: [
+        {
+          question: 'Which plan?',
+          queueKey: 'plan',
+          selector: '#plan',
+          kind: 'choice',
+          options: ['Starter', 'Pro'],
+          multiple: false,
+        },
+        { question: 'Rate it', selector: '#rating', kind: 'rating', max: 5 },
+      ],
+    } as const
+    expect(parseRedlinePageQuestionSnapshot(snapshot)).toEqual(snapshot)
+  })
+
+  it('rejects duplicate identities and malformed editor metadata', () => {
+    expect(parseRedlinePageQuestionSnapshot({
+      type: 'questions',
+      version: 1,
+      questions: [
+        { question: 'One?', queueKey: 'same', selector: '#one', kind: 'text' },
+        { question: 'Two?', queueKey: 'same', selector: '#two', kind: 'text' },
+      ],
+    })).toBeNull()
+    expect(parseRedlinePageQuestionSnapshot({
+      type: 'questions',
+      version: 1,
+      questions: [{ question: 'Which?', selector: '#one', kind: 'choice' }],
+    })).toBeNull()
+  })
+})
+
 describe('redlinePendingSnapshotForPage', () => {
   it('exposes only sanitized responses for the exact current page', () => {
     const circular: Record<string, unknown> = {}
@@ -127,5 +166,28 @@ describe('redlinePendingSnapshotForPage', () => {
         },
       ],
     })
+  })
+
+  it('compacts optional data instead of rejecting an oversized pending snapshot', () => {
+    const largeData = { choice: 'x'.repeat(MAX_RESPONSE_DATA_JSON - 1_024) }
+    const snapshot = redlinePendingSnapshotForPage({
+      notes: [1, 2].map((id) => ({
+        id,
+        selector: `#choice-${id}`,
+        tag: 'redline-choice',
+        rect: { x: 0, y: 0, width: 0, height: 0 },
+        comment: `Choice ${id}: selected`,
+        pageUrl: 'https://example.com/review',
+        response: { question: `Choice ${id}?`, answer: 'selected', data: largeData },
+      })),
+      knownUpTo: 2,
+      dropped: 0,
+    }, 'https://example.com/review')
+
+    expect(snapshot.controls).toHaveLength(2)
+    expect(snapshot.controls[0]?.response.data).toEqual(largeData)
+    expect(snapshot.controls[1]?.response).not.toHaveProperty('data')
+    expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength)
+      .toBeLessThanOrEqual(MAX_PENDING_SNAPSHOT_BYTES)
   })
 })

@@ -10,7 +10,7 @@ export type PendingQueueApi = {
   update: (
     noteId: number,
     expectedRevision: number,
-    change: { answer?: string; note?: string },
+    change: { answer?: string; note?: string; response?: RedlinePageResponse },
   ) => Promise<WebPanePendingSnapshot>
   upload: (noteId: number, expectedRevision: number, file: File) => Promise<WebPanePendingSnapshot>
   removeAttachment: (

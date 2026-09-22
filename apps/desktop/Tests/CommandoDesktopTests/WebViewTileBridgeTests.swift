@@ -118,6 +118,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             "webview.reviewInput.v1",
             "webview.reviewHighlights.v1",
             "webview.pageResponses.v1",
+            "webview.revealSelector.v1",
             "webview.hitRegions.v1",
         ])
         XCTAssertEqual(payload?["maxWebViews"] as? Int, WebViewTileProtocol.maxTiles)
@@ -473,6 +474,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             "webPaneId": "w-abcd1234",
             "attachmentId": "page-1:1",
             "url": "https://example.com/",
+            "pageResponses": true,
         ]))
         let webView = try XCTUnwrap(
             overlay.subviews
@@ -492,9 +494,17 @@ final class WebViewTileBridgeTests: XCTestCase {
             "y": 2,
             "grade": "hover",
         ]))
-        let countBeforeCompletion = events.count
-
         tile.webView(webView, didStartProvisionalNavigation: nil)
+        let countAfterNavigation = events.count
+        let navigationEvent = events.lastObject as? [String: Any]
+        XCTAssertEqual(navigationEvent?["type"] as? String, "webview.navigationStarted")
+        let navigationPayload = navigationEvent?["payload"] as? [String: Any]
+        XCTAssertEqual(navigationPayload?["webPaneId"] as? String, "w-abcd1234")
+        XCTAssertEqual(navigationPayload?["attachmentId"] as? String, "page-1:1")
+        tile.receivePageResponse(
+            body: #"{"question":"Stale?","answer":"yes"}"#,
+            url: try XCTUnwrap(URL(string: "https://example.com/"))
+        )
         capture.completion?(.success([
             "ok": true,
             "selector": "#stale",
@@ -502,7 +512,7 @@ final class WebViewTileBridgeTests: XCTestCase {
             "rect": ["x": 1, "y": 2, "width": 3, "height": 4],
         ]))
 
-        XCTAssertEqual(events.count, countBeforeCompletion)
+        XCTAssertEqual(events.count, countAfterNavigation)
     }
 
     func testInspectionTimeoutExpiresNativeKeyAndSuppressesLateCompletion() async throws {
@@ -557,6 +567,9 @@ final class WebViewTileBridgeTests: XCTestCase {
         ]))
         XCTAssertEqual(events.count, countAfterTimeout)
 
+        // The real WKWebView may transition while this timeout-focused test is
+        // running; restore the ready state before exercising key reuse.
+        tile.webView(webView, didFinish: nil)
         bridge.receive(body: envelope(sequence: 4, type: "webview.inspectAtPoint", payload: [
             "webPaneId": "w-abcd1234",
             "attachmentId": "page-1:1",
@@ -625,6 +638,57 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertEqual(payload["requestId"] as? String, "r2")
         XCTAssertEqual(payload["ok"] as? Bool, true)
         XCTAssertEqual((payload["anchors"] as? [[String: Any]])?.count, 1)
+    }
+
+    func testRevealSelectorValidatesAndEvaluatesAgainstReadyDocument() throws {
+        let events = NSMutableArray()
+        let capture = ScriptCapture()
+        let (bridge, overlay) = makeBridge(events: events) { _, script, arguments, contentWorld, _ in
+            capture.callCount += 1
+            capture.script = script
+            capture.arguments = arguments
+            capture.contentWorld = contentWorld
+        }
+        connect(bridge)
+        bridge.receive(body: envelope(sequence: 2, type: "webview.attach", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "url": "https://example.com/",
+        ]))
+        let webView = try XCTUnwrap(
+            overlay.subviews
+                .compactMap { $0 as? WebViewTileHostView }
+                .first?
+                .subviews
+                .compactMap { $0 as? WKWebView }
+                .first
+        )
+        let tile = try XCTUnwrap(webView.navigationDelegate as? WebViewTile)
+
+        bridge.receive(body: envelope(sequence: 3, type: "webview.revealSelector", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "selector": "#target",
+        ]))
+        XCTAssertEqual(capture.callCount, 0)
+
+        tile.webView(webView, didFinish: nil)
+        bridge.receive(body: envelope(sequence: 4, type: "webview.revealSelector", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "selector": "#target",
+        ]))
+        XCTAssertEqual(capture.callCount, 1)
+        XCTAssertEqual(capture.script, WebViewTileProtocol.revealSelectorScript)
+        XCTAssertEqual(capture.arguments?["revealSelector"] as? String, "#target")
+        XCTAssertEqual(capture.contentWorld, .defaultClient)
+
+        bridge.receive(body: envelope(sequence: 5, type: "webview.revealSelector", payload: [
+            "webPaneId": "w-abcd1234",
+            "attachmentId": "page-1:1",
+            "selector": "redline:question",
+        ]))
+        XCTAssertEqual(capture.callCount, 1)
     }
 
     func testRejectsUnboundedAndNonPositivePageResultRectangles() throws {

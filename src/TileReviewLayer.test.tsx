@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
+import type { RedlinePageQuestionSnapshot, RedlinePageResponse } from '../shared/redline-response'
 import type { TileInspectResult } from '../shared/tile-inspect'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
@@ -29,6 +30,8 @@ function surface(overrides: Partial<TileReviewSurface> = {}): TileReviewSurface 
     inspect: (_x, _y, _grade, receive) => receive({ ok: false, error: 'not found' }),
     resolveSelectors: (_items, receive) => receive([]),
     subscribePending: () => () => undefined,
+    subscribeQuestions: () => () => undefined,
+    revealSelector: () => undefined,
     ...overrides,
   }
 }
@@ -250,5 +253,504 @@ describe('TileReviewLayer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview capture.png' }))
     expect(screen.getByRole('dialog', { name: 'Preview capture.png' }))
       .toHaveAttribute('data-native-terminal-occluder', '')
+  })
+
+  it('lists all open questions, filters unanswered ones, answers, and reveals context', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const revealSelector = vi.fn()
+    const answered: WebPanePendingNote = {
+      id: 1,
+      revision: 1,
+      pageUrl: 'https://example.com/review',
+      selector: '#plan',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Which plan?: Pro',
+      queueKey: 'plan',
+      response: { question: 'Which plan?', answer: 'Pro' },
+      attachments: [],
+    }
+    const newlyAnswered: WebPanePendingNote = {
+      ...answered,
+      id: 2,
+      selector: '#launch',
+      queueKey: 'launch',
+      comment: 'Ready to launch?: approve',
+      response: { question: 'Ready to launch?', answer: 'approve', data: { verdict: 'approve' } },
+    }
+    const addResponse = vi.fn(async () => ({
+      revision: 2,
+      notes: [answered, newlyAnswered],
+      knownUpTo: 2,
+      dropped: 0,
+    }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-questions"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse })}
+        surface={surface({
+          subscribePending: (listener) => {
+            publishPending = listener
+            return () => { publishPending = undefined }
+          },
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+          revealSelector,
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    act(() => {
+      publishQuestions?.('https://example.com/review', {
+        type: 'questions',
+        version: 1,
+        questions: [
+          {
+            question: 'Which plan?',
+            queueKey: 'plan',
+            selector: '#plan',
+            kind: 'choice',
+            options: ['Starter', 'Pro'],
+            multiple: false,
+          },
+          {
+            question: 'Ready to launch?',
+            queueKey: 'launch',
+            selector: '#launch',
+            kind: 'approve',
+            options: ['approve', 'reject', 'needs-changes'],
+          },
+        ],
+      })
+      publishPending?.({ revision: 1, notes: [answered], knownUpTo: 1, dropped: 0 })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    const dialog = screen.getByRole('dialog', { name: 'Answer queue' })
+    await waitFor(() => expect(dialog).toHaveFocus())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Answer queue · 2' })).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    expect(screen.getByRole('navigation', { name: 'Open questions and queued review items' })).toBeInTheDocument()
+    expect(screen.getAllByText('Which plan?')).not.toHaveLength(0)
+    expect(screen.getByText('Ready to launch?')).toBeInTheDocument()
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Pro')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unanswered · 1' }))
+    expect(screen.queryByText('Which plan?')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Ready to launch\?/ }))
+    expect(revealSelector).toHaveBeenCalledWith('#launch')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), {
+      target: { value: 'approve' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue answer' }))
+
+    await waitFor(() => expect(addResponse).toHaveBeenCalledWith(
+      'https://example.com/review',
+      expect.objectContaining({
+        question: 'Ready to launch?',
+        answer: 'approve',
+        queueKey: 'launch',
+        selector: '#launch',
+        data: { verdict: 'approve' },
+      }),
+    ))
+    await waitFor(() => expect(screen.getByText('No unanswered questions.')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Queue answer' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unanswered · 0' })).toHaveFocus()
+  })
+
+  it('clears question drafts when the page inventory moves to a new document', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    render(
+      <TileReviewLayer
+        webPaneId="w-question-navigation"
+        pageUrl="https://example.com/first"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse: vi.fn() })}
+        surface={surface({
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    const snapshot: RedlinePageQuestionSnapshot = {
+      type: 'questions',
+      version: 1,
+      questions: [{ question: 'Name it', queueKey: 'name', selector: '#name', kind: 'text' }],
+    }
+    act(() => publishQuestions?.('https://example.com/first', snapshot))
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), {
+      target: { value: 'First-page draft' },
+    })
+
+    act(() => publishQuestions?.('https://example.com/second', snapshot))
+
+    expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), {
+      target: { value: 'Incompatible draft' },
+    })
+    act(() => publishQuestions?.('https://example.com/second', {
+      type: 'questions',
+      version: 1,
+      questions: [{ question: 'Rate it', queueKey: 'name', selector: '#name', kind: 'rating', max: 3 }],
+    }))
+    expect(screen.getAllByRole('radio')).toHaveLength(3)
+    expect(screen.getAllByRole('radio').every((radio) => !(radio as HTMLInputElement).checked)).toBe(true)
+  })
+
+  it('revision-updates a keyless answered question and refreshes its structured metadata', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const answered: WebPanePendingNote = {
+      id: 1,
+      revision: 1,
+      pageUrl: 'https://example.com/review',
+      selector: '#plan',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Which plan?: Pro',
+      response: { question: 'Which plan?', answer: 'Pro' },
+      attachments: [],
+    }
+    const update = vi.fn(async () => ({
+      revision: 2,
+      notes: [{
+        ...answered,
+        revision: 2,
+        comment: 'Which plan?: Starter',
+        response: {
+          question: 'Which plan?',
+          answer: 'Starter',
+          data: { choice: 'Starter', options: ['Starter', 'Pro'], multiple: false },
+        },
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-structured-answer"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ update })}
+        surface={surface({
+          subscribePending: (listener) => {
+            publishPending = listener
+            return () => { publishPending = undefined }
+          },
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      publishQuestions?.('https://example.com/review', {
+        type: 'questions',
+        version: 1,
+          questions: [{
+            question: 'Which plan?',
+            selector: '#plan',
+          kind: 'choice',
+          options: ['Starter', 'Pro'],
+          multiple: false,
+        }],
+      })
+      publishPending?.({ revision: 1, notes: [answered], knownUpTo: 1, dropped: 0 })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 1' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), {
+      target: { value: 'Starter' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 1, {
+      response: expect.objectContaining({
+        question: 'Which plan?',
+        answer: 'Starter',
+        selector: '#plan',
+        data: { choice: 'Starter', options: ['Starter', 'Pro'], multiple: false },
+      }),
+    }))
+    expect(update).toHaveBeenCalledOnce()
+  })
+
+  it('preserves comma-containing option labels in multi-select answers', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    const addResponse = vi.fn(async (_pageUrl: string, _response: RedlinePageResponse) => EMPTY_SNAPSHOT)
+    const longOptionA = 'A'.repeat(1_024)
+    const longOptionB = 'B'.repeat(1_024)
+    render(
+      <TileReviewLayer
+        webPaneId="w-comma-options"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse })}
+        surface={surface({
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publishQuestions?.('https://example.com/review', {
+      type: 'questions',
+      version: 1,
+      questions: [{
+        question: 'Which signals?',
+        queueKey: 'signals',
+        selector: '#signals',
+        kind: 'choice',
+        options: ['Pulse, Crest', longOptionA, longOptionB],
+        multiple: true,
+      }],
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 1' }))
+    const commaOption = screen.getByRole('checkbox', { name: 'Pulse, Crest' })
+    fireEvent.click(commaOption)
+    fireEvent.click(screen.getByRole('checkbox', { name: longOptionA }))
+    fireEvent.click(screen.getByRole('checkbox', { name: longOptionB }))
+    expect(commaOption).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Queue answer' }))
+
+    await waitFor(() => expect(addResponse).toHaveBeenCalledOnce())
+    const [, response] = addResponse.mock.calls[0]
+    expect(response.answer).toHaveLength(1_024)
+    expect(response.answer).toMatch(/\.\.\.$/)
+    expect(response.data).toEqual({
+      choice: ['Pulse, Crest', longOptionA, longOptionB],
+      options: ['Pulse, Crest', longOptionA, longOptionB],
+      multiple: true,
+    })
+    await waitFor(() => expect(document.querySelector('.tile-review-drawer-detail')).toHaveFocus())
+  })
+
+  it('preserves a skipped multi-select answer while editing its note', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const answered: WebPanePendingNote = {
+      id: 1,
+      revision: 4,
+      pageUrl: 'https://example.com/review',
+      selector: '#signals',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Which signals?: (none - see note)',
+      response: {
+        question: 'Which signals?',
+        answer: '(none - see note)',
+        data: { options: ['Pulse, Crest', 'Orbit'], multiple: true },
+      },
+      attachments: [],
+    }
+    const update = vi.fn(async () => ({
+      revision: 5,
+      notes: [{
+        ...answered,
+        revision: 5,
+        response: {
+          ...answered.response!,
+          note: 'Skipped intentionally',
+          data: {
+            choice: [],
+            multiple: true,
+          },
+        },
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-skipped-multi"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ update })}
+        surface={surface({
+          subscribePending: (listener) => {
+            publishPending = listener
+            return () => { publishPending = undefined }
+          },
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      publishQuestions?.('https://example.com/review', {
+        type: 'questions',
+        version: 1,
+        questions: [{
+          question: 'Which signals?',
+          selector: '#signals',
+          kind: 'choice',
+          options: ['Pulse, Crest', 'Orbit'],
+          multiple: true,
+        }],
+      })
+      publishPending?.({ revision: 4, notes: [answered], knownUpTo: 1, dropped: 0 })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Optional note' }), {
+      target: { value: 'Skipped intentionally' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 4, {
+      response: expect.objectContaining({
+        answer: '(none - see note)',
+        note: 'Skipped intentionally',
+        data: {
+          choice: [],
+          options: ['Pulse, Crest', 'Orbit'],
+          multiple: true,
+        },
+      }),
+    }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send this' })).toBeEnabled())
+  })
+
+  it('edits compacted choice-only metadata without splitting comma labels', async () => {
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const longOption = 'L'.repeat(1_024)
+    const choices = ['Pulse, Crest', longOption]
+    const displayAnswer = `${choices.join(', ').slice(0, 1_021)}...`
+    const answered: WebPanePendingNote = {
+      id: 1,
+      revision: 2,
+      pageUrl: 'https://example.com/review',
+      selector: '#signals',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: `Which signals?: ${displayAnswer}`,
+      response: {
+        question: 'Which signals?',
+        answer: displayAnswer,
+        data: { choice: choices, multiple: true },
+      },
+      attachments: [],
+    }
+    const update = vi.fn(async () => ({
+      revision: 3,
+      notes: [{ ...answered, revision: 3 }],
+      knownUpTo: 1,
+      dropped: 0,
+    }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-compact-choice"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ update })}
+        surface={surface({
+          subscribePending: (listener) => {
+            publishPending = listener
+            return () => { publishPending = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publishPending?.({ revision: 2, notes: [answered], knownUpTo: 1, dropped: 0 }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review queue · 1' }))
+    expect(screen.getByRole('checkbox', { name: 'Pulse, Crest' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: longOption })).toBeChecked()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Optional note' }), {
+      target: { value: 'Keep the comma label' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 2, {
+      response: expect.objectContaining({
+        answer: displayAnswer,
+        note: 'Keep the comma label',
+        data: { choice: choices, multiple: true },
+      }),
+    }))
+  })
+
+  it('serializes question submissions while one answer is queueing', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let resolveFirst: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const addResponse = vi.fn(() => new Promise<WebPanePendingSnapshot>((resolve) => {
+      resolveFirst = resolve
+    }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-question-concurrency"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse })}
+        surface={surface({
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publishQuestions?.('https://example.com/review', {
+      type: 'questions',
+      version: 1,
+      questions: [
+        { question: 'First?', queueKey: 'first', selector: '#first', kind: 'text' },
+        { question: 'Second?', queueKey: 'second', selector: '#second', kind: 'text' },
+      ],
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), { target: { value: 'One' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue answer' }))
+    fireEvent.click(screen.getByRole('button', { name: /Second\?/ }))
+
+    expect(screen.getByRole('textbox', { name: 'Answer' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Queueing…' })).toBeDisabled()
+    expect(addResponse).toHaveBeenCalledOnce()
+
+    await act(async () => resolveFirst?.(EMPTY_SNAPSHOT))
   })
 })

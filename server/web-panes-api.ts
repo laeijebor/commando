@@ -5,6 +5,7 @@ import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
   MAX_RESPONSE_NOTE,
+  MAX_RESPONSE_PAYLOAD_BYTES,
   MAX_RESPONSE_QUESTION,
   MAX_RESPONSE_QUEUE_KEY,
   parseRedlinePageResponse,
@@ -18,7 +19,7 @@ import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from '.
 import { classifyWebPaneUrl, WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
-const MAX_REQUEST_BYTES = 16 * 1024
+const MAX_REQUEST_BYTES = (MAX_RESPONSE_PAYLOAD_BYTES * 4) + 4_096
 const PANE_ID = /^%\d+$/
 const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
@@ -257,7 +258,7 @@ function parseNoteResponse(value: unknown): WebPaneFeedbackNote['response'] {
     } catch {
       throw new HttpError(400, 'Note response is malformed')
     }
-    if (json === undefined || json.length > MAX_RESPONSE_DATA_JSON) {
+    if (json === undefined || Buffer.byteLength(json, 'utf8') > MAX_RESPONSE_DATA_JSON) {
       throw new HttpError(400, 'Note response is malformed')
     }
     response.data = JSON.parse(json) as unknown
@@ -567,9 +568,14 @@ export class WebPanesApi {
             if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) <= 0) {
               throw new HttpError(400, 'expectedRevision must be a positive integer')
             }
-            const change: { answer?: string; note?: string } = {}
+            const change: { answer?: string; note?: string; response?: RedlinePageResponse } = {}
             if (Object.prototype.hasOwnProperty.call(body, 'answer')) change.answer = body.answer as string
             if (Object.prototype.hasOwnProperty.call(body, 'note')) change.note = body.note as string
+            if (Object.prototype.hasOwnProperty.call(body, 'response')) {
+              const parsed = parseRedlinePageResponse(body.response)
+              if (!parsed) throw new HttpError(400, 'response is malformed')
+              change.response = parsed
+            }
             snapshot = pending.update(route.id, route.noteId, body.expectedRevision as number, change)
           } else {
             if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')

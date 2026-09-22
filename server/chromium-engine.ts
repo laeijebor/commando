@@ -22,14 +22,18 @@ import {
   type TileSelectionResult,
 } from '../shared/tile-selection.js'
 import {
+  EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
   MAX_RESPONSE_NOTE,
   MAX_RESPONSE_PAYLOAD_BYTES,
   MAX_RESPONSE_QUESTION,
   MAX_RESPONSE_QUEUE_KEY,
+  MAX_QUESTION_SNAPSHOT_BYTES,
   REDLINE_BINDING_NAME,
+  parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
+  type RedlinePageQuestionSnapshot,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
 import {
@@ -697,6 +701,10 @@ type TileTarget = {
   mainFrameUrl: string
   /** CDP frame id used to scope same-document navigation events to the main frame. */
   mainFrameId: string | null
+  /** Default execution contexts keyed to their owning frame for binding admission. */
+  executionContextFrames: Map<number, string>
+  /** Last accepted main-document question inventory. */
+  questionSnapshot: RedlinePageQuestionSnapshot
   /** True only while the main-frame document is accepted by the tile URL policy. */
   pendingSnapshotPageReady: boolean
   /** True once the current screencast delivered at least one real frame. */
@@ -722,6 +730,12 @@ export type ChromiumEngineOptions = {
   onTargetDown?: (webPaneId: string) => void
   /** Called when a tile page queues a component answer via the redline binding. */
   onPageResponse?: (webPaneId: string, response: RedlinePageResponse, pageUrl: string) => void
+  /** Called when a tile page publishes its current open-question inventory. */
+  onPageQuestions?: (
+    webPaneId: string,
+    snapshot: RedlinePageQuestionSnapshot,
+    pageUrl: string,
+  ) => void
   /** Budget for browser devtools HTTP calls; a wedged browser must fail, not hang. */
   httpTimeoutMs?: number
   /** Budget for CDP websocket handshakes; same rationale. */
@@ -1092,6 +1106,17 @@ export class ChromiumEngine {
     return anchors
   }
 
+  /** Scrolls a page-owned review control into context without exposing arbitrary script. */
+  async revealSelector(webPaneId: string, selector: string): Promise<void> {
+    const tile = this.tiles.get(webPaneId)
+    if (!tile) throw new WebPaneError(404, 'Tile has no live chromium target')
+    const expression = `(()=>{try{const element=document.querySelector(${JSON.stringify(selector)});` +
+      `if(!element)return false;const reduce=matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;` +
+      `element.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center',inline:'nearest'});` +
+      `element.focus?.({preventScroll:true});return true}catch{return false}})()`
+    await tile.cdp.send('Runtime.evaluate', { expression, returnByValue: true })
+  }
+
   /** Returns the text Chromium currently considers selected in this tile. */
   async readSelection(webPaneId: string): Promise<TileSelectionResult> {
     const tile = this.tiles.get(webPaneId)
@@ -1261,6 +1286,8 @@ export class ChromiumEngine {
       currentUrl: url,
       mainFrameUrl: 'about:blank',
       mainFrameId: null,
+      executionContextFrames: new Map(),
+      questionSnapshot: EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
       pendingSnapshotPageReady: false,
       gotRealFrame: false,
       fallbackTimer: null,
@@ -1295,6 +1322,12 @@ export class ChromiumEngine {
       const frame = params.frame as { id?: string; parentId?: string; url?: string } | undefined
       if (!frame || frame.parentId || typeof frame.url !== 'string') return
       if (typeof frame.id === 'string') tile.mainFrameId = frame.id
+      tile.questionSnapshot = EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT
+      this.options.onPageQuestions?.(
+        webPaneId,
+        EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
+        frame.url,
+      )
       this.handleMainFrameNavigation(tile, frame.url)
     })
     cdp.on('Page.navigatedWithinDocument', (params) => {
@@ -1304,6 +1337,7 @@ export class ChromiumEngine {
         typeof params.url !== 'string'
       ) return
       this.handleMainFrameNavigation(tile, params.url)
+      this.options.onPageQuestions?.(webPaneId, tile.questionSnapshot, params.url)
     })
     cdp.on('Page.domContentEventFired', () => {
       this.pushPendingSnapshot(tile)
@@ -1319,13 +1353,42 @@ export class ChromiumEngine {
     // window.__commandoRedlineQueue(json) and the payload surfaces here as
     // Runtime.bindingCalled. Installed unconditionally — inert unless a page
     // uses it — and validated as untrusted input before leaving the engine.
+    cdp.on('Runtime.executionContextCreated', (params) => {
+      const context = params.context as {
+        id?: number
+        auxData?: { frameId?: string; isDefault?: boolean }
+      } | undefined
+      if (
+        typeof context?.id === 'number' &&
+        context.auxData?.isDefault === true &&
+        typeof context.auxData.frameId === 'string'
+      ) {
+        tile.executionContextFrames.set(context.id, context.auxData.frameId)
+      }
+    })
+    cdp.on('Runtime.executionContextDestroyed', (params) => {
+      if (typeof params.executionContextId === 'number') {
+        tile.executionContextFrames.delete(params.executionContextId)
+      }
+    })
+    cdp.on('Runtime.executionContextsCleared', () => tile.executionContextFrames.clear())
     await cdp.send('Runtime.enable')
     await cdp.send('Runtime.addBinding', { name: REDLINE_BINDING_NAME })
     cdp.on('Runtime.bindingCalled', (params) => {
       if (params.name !== REDLINE_BINDING_NAME) return
+      if (
+        typeof params.executionContextId !== 'number' ||
+        tile.executionContextFrames.get(params.executionContextId) !== tile.mainFrameId
+      ) return
       const payload = params.payload
-      if (typeof payload !== 'string' || payload.length > MAX_RESPONSE_PAYLOAD_BYTES) {
-        console.warn(`redline: dropped oversized page-response envelope for ${webPaneId}`)
+      const payloadBytes = typeof payload === 'string'
+        ? Buffer.byteLength(payload, 'utf8')
+        : Number.POSITIVE_INFINITY
+      if (
+        typeof payload !== 'string' ||
+        payloadBytes > Math.max(MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES)
+      ) {
+        console.warn(`redline: dropped oversized page envelope for ${webPaneId}`)
         return
       }
       let value: unknown
@@ -1333,6 +1396,20 @@ export class ChromiumEngine {
         value = JSON.parse(payload)
       } catch {
         console.warn(`redline: dropped page-response payload with malformed JSON for ${webPaneId}`)
+        return
+      }
+      const questions = parseRedlinePageQuestionSnapshot(value)
+      if (questions) {
+        if (payloadBytes > MAX_QUESTION_SNAPSHOT_BYTES) {
+          console.warn(`redline: dropped oversized page-question envelope for ${webPaneId}`)
+          return
+        }
+        tile.questionSnapshot = questions
+        this.options.onPageQuestions?.(webPaneId, questions, tile.mainFrameUrl)
+        return
+      }
+      if (payloadBytes > MAX_RESPONSE_PAYLOAD_BYTES) {
+        console.warn(`redline: dropped oversized page-response envelope for ${webPaneId}`)
         return
       }
       const response = parseRedlinePageResponse(value)
