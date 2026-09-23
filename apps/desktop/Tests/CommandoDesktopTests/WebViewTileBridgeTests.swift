@@ -551,10 +551,19 @@ final class WebViewTileBridgeTests: XCTestCase {
         ]))
         let lateCompletion = capture.completion
 
-        try await Task.sleep(for: .milliseconds(30))
+        var timeoutEvent: [String: Any]?
+        for _ in 0..<100 {
+            timeoutEvent = events.compactMap { $0 as? [String: Any] }.first { event in
+                guard event["type"] as? String == "webview.inspectAtPoint.result",
+                      let payload = event["payload"] as? [String: Any] else { return false }
+                return payload["requestId"] as? String == "r-timeout"
+            }
+            if timeoutEvent != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
 
-        let timeoutEvent = try XCTUnwrap(events.lastObject as? [String: Any])
-        let timeoutPayload = try XCTUnwrap(timeoutEvent["payload"] as? [String: Any])
+        let resolvedTimeoutEvent = try XCTUnwrap(timeoutEvent)
+        let timeoutPayload = try XCTUnwrap(resolvedTimeoutEvent["payload"] as? [String: Any])
         let timeoutResult = try XCTUnwrap(timeoutPayload["result"] as? [String: Any])
         XCTAssertEqual(timeoutPayload["requestId"] as? String, "r-timeout")
         XCTAssertEqual(timeoutResult["ok"] as? Bool, false)
