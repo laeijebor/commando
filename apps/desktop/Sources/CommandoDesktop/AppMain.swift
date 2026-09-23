@@ -50,6 +50,25 @@ final class DesktopWindow: NSWindow {
                 return
             }
             if let terminalView = focusedTerminalView(),
+               let key = event.charactersIgnoringModifiers?.lowercased() {
+                let action: NSTextFinder.Action?
+                if modifiers == .command && key == "f" {
+                    action = .showFindInterface
+                } else if modifiers == .command && key == "g" {
+                    action = .nextMatch
+                } else if modifiers == [.command, .shift] && key == "g" {
+                    action = .previousMatch
+                } else {
+                    action = nil
+                }
+                if let action {
+                    let item = NSMenuItem()
+                    item.tag = action.rawValue
+                    terminalView.performTextFinderAction(item)
+                    return
+                }
+            }
+            if let terminalView = focusedTerminalView(),
                terminalView.handleOptionBackspace(event) ||
                terminalView.handleOptionArrow(event) ||
                terminalView.handleControlV(event) {
@@ -144,6 +163,14 @@ enum DesktopMainMenu {
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(.separator())
+        let find = editMenu.addItem(withTitle: "Find", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "f")
+        find.tag = NSTextFinder.Action.showFindInterface.rawValue
+        let next = editMenu.addItem(withTitle: "Find Next", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "g")
+        next.tag = NSTextFinder.Action.nextMatch.rawValue
+        let previous = editMenu.addItem(withTitle: "Find Previous", action: #selector(NSResponder.performTextFinderAction(_:)), keyEquivalent: "g")
+        previous.keyEquivalentModifierMask = [.command, .shift]
+        previous.tag = NSTextFinder.Action.previousMatch.rawValue
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 

@@ -133,7 +133,14 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(fileMenu.item(withTitle: "Close Pane")?.action, #selector(DesktopWindow.closePane(_:)))
 
         let editMenu = try XCTUnwrap(menu.items[2].submenu)
-        XCTAssertEqual(editMenu.items.map(\.title), ["Copy", "Paste"])
+        XCTAssertEqual(editMenu.items.filter { !$0.isSeparatorItem }.map(\.title), [
+            "Copy", "Paste", "Find", "Find Next", "Find Previous"
+        ])
+        XCTAssertEqual(editMenu.item(withTitle: "Find")?.tag, NSTextFinder.Action.showFindInterface.rawValue)
+        XCTAssertEqual(editMenu.item(withTitle: "Find")?.keyEquivalent, "f")
+        XCTAssertEqual(editMenu.item(withTitle: "Find Next")?.tag, NSTextFinder.Action.nextMatch.rawValue)
+        XCTAssertEqual(editMenu.item(withTitle: "Find Previous")?.tag, NSTextFinder.Action.previousMatch.rawValue)
+        XCTAssertEqual(editMenu.item(withTitle: "Find Previous")?.keyEquivalentModifierMask, [.command, .shift])
 
         let viewMenu = try XCTUnwrap(menu.items[3].submenu)
         let viewActions = viewMenu.items.filter { !$0.isSeparatorItem }
@@ -162,6 +169,30 @@ final class DesktopApplicationTests: XCTestCase {
             windowMenu.item(withTitle: "Bring All to Front")?.action,
             #selector(NSApplication.arrangeInFront(_:))
         )
+    }
+
+    func testCommandFindOpensFindBarOnlyForFocusedTerminal() throws {
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let first = HostedTerminalView(frame: NSRect(x: 0, y: 0, width: 250, height: 300))
+        let second = HostedTerminalView(frame: NSRect(x: 300, y: 0, width: 250, height: 300))
+        window.contentView?.addSubview(first)
+        window.contentView?.addSubview(second)
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        XCTAssertTrue(window.makeFirstResponder(second))
+        let commandF = try XCTUnwrap(keyEvent(key: "f", modifiers: .command, keyCode: 3))
+        window.sendEvent(commandF)
+
+        XCTAssertFalse(second.subviews.compactMap { $0 as? NSVisualEffectView }.isEmpty)
+        XCTAssertTrue(first.subviews.compactMap { $0 as? NSVisualEffectView }.isEmpty)
     }
 
     func testWindowRegistryTracksControllersByWindowAndPreservesOrder() {
