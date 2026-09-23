@@ -511,7 +511,7 @@ final class DesktopWebHostTests: XCTestCase {
         XCTAssertEqual(host.webView.configuration.userContentController.userScripts.count, 1)
     }
 
-    func testDesktopWindowForwardsCommandCopyToTheFocusedWebView() async throws {
+    func testDesktopWindowForwardsCommandCopyAndFindToTheFocusedWebView() async throws {
         let origin = URL(string: "http://127.0.0.1:5173")!
         let pasteboard = NSPasteboard(name: .init("CommandoDesktopTests.\(UUID().uuidString)"))
         let host = DesktopWebHost(
@@ -533,8 +533,13 @@ final class DesktopWebHostTests: XCTestCase {
             <canvas id="tile" tabindex="0"></canvas>
             <script>
               window.copyShortcut = null;
+              window.findShortcut = null;
               const tile = document.getElementById("tile");
               tile.addEventListener("keydown", (event) => {
+                if (event.metaKey && (event.key === "f" || event.key === "g")) {
+                  window.findShortcut = { trusted: event.isTrusted, key: event.key, shift: event.shiftKey };
+                  event.preventDefault();
+                }
                 if (event.metaKey && event.key === "c") {
                   window.copyShortcut = { trusted: event.isTrusted, target: event.target.id };
                   event.preventDefault();
@@ -606,6 +611,20 @@ final class DesktopWebHostTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(pasteboard.string(forType: .string), "browser-quality selection")
+        let commandF = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            characters: "f", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3
+        ))
+        window.sendEvent(commandF)
+        var find: [String: Any]?
+        for _ in 0..<100 {
+            find = try? await host.webView.evaluateJavaScript("window.findShortcut") as? [String: Any]
+            if find != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(find?["trusted"] as? Bool, true)
+        XCTAssertEqual(find?["key"] as? String, "f")
         pasteboard.clearContents()
     }
 

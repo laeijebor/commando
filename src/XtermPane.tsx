@@ -1,6 +1,7 @@
+import { SearchAddon } from '@xterm/addon-search'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { type FocusEvent, useEffect, useRef } from 'react'
+import { type FocusEvent, type KeyboardEvent, useEffect, useRef, useState } from 'react'
 
 import {
   MAX_TERMINAL_COLS,
@@ -35,6 +36,12 @@ export type XtermPaneProps = {
 }
 
 const RESIZE_DEBOUNCE_MS = 80
+const SEARCH_DECORATIONS = {
+  matchBackground: '#4b4766',
+  matchOverviewRuler: '#c4a7e7',
+  activeMatchBackground: '#7c639e',
+  activeMatchColorOverviewRuler: '#f6c177',
+}
 
 type ClipboardWriter = Pick<Clipboard, 'writeText'>
 
@@ -131,6 +138,14 @@ export function XtermPane({
   const sourceGridRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
+  const searchRef = useRef<SearchAddon | null>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState({ resultIndex: -1, resultCount: 0 })
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform)
+  const findOpenRef = useRef(findOpen)
+  findOpenRef.current = findOpen
   const connectedRef = useRef(connected)
   const inputRef = useRef(onInput)
   const keyRef = useRef(onKey)
@@ -159,6 +174,7 @@ export function XtermPane({
       cols: sourceDimension(cols, 2),
       rows: sourceDimension(rows, 1),
       cursorBlink: true,
+      allowProposedApi: true,
       cursorInactiveStyle: 'outline',
       disableStdin: !connectedRef.current,
       drawBoldTextInBrightColors: true,
@@ -172,6 +188,9 @@ export function XtermPane({
       scrollOnUserInput: true,
       theme: TERMINAL_THEME,
     })
+    const search = new SearchAddon()
+    terminal.loadAddon(search)
+    searchRef.current = search
     terminal.open(host)
     terminalRef.current = terminal
     const qaEnabled = new URLSearchParams(window.location.search).get('qa') === '1'
@@ -186,7 +205,10 @@ export function XtermPane({
     const dataSubscription = terminal.onData((data) => {
       if (connectedRef.current) inputRef.current(data)
     })
+    const searchSubscription = search.onDidChangeResults(setResults)
     const selectionSubscription = terminal.onSelectionChange(() => {
+      // Searching selects matches in the buffer; that must not replace the clipboard.
+      if (findOpenRef.current) return
       void copyTerminalSelection(terminal.getSelection(), navigator.clipboard).then((copied) => {
         if (copied) selectionCopiedRef.current()
       })
@@ -294,10 +316,12 @@ export function XtermPane({
     return () => {
       unregisterSink()
       dataSubscription.dispose()
+      searchSubscription.dispose()
       selectionSubscription.dispose()
       host.removeEventListener('paste', handlePaste, true)
       window.__commandoQaTerminals?.delete(paneId)
       terminalRef.current = null
+      searchRef.current = null
       terminal.dispose()
     }
   }, [paneId, registerSink])
@@ -310,6 +334,17 @@ export function XtermPane({
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
     textarea?.setAttribute('aria-label', ariaLabel)
   }, [ariaLabel])
+
+  useEffect(() => {
+    if (!findOpen) return
+    searchInputRef.current?.focus()
+  }, [findOpen])
+
+  useEffect(() => {
+    if (!findOpen) return
+    if (query) searchRef.current?.findNext(query, { incremental: true, decorations: SEARCH_DECORATIONS })
+    else searchRef.current?.clearDecorations()
+  }, [findOpen, query])
 
   useEffect(() => {
     const sourceGrid = sourceGridRef.current
@@ -359,18 +394,73 @@ export function XtermPane({
     if (event.target === event.currentTarget) terminalRef.current?.focus()
   }
 
+  const closeFind = () => {
+    searchRef.current?.clearDecorations()
+    setFindOpen(false)
+    terminalRef.current?.focus()
+  }
+
+  const handleFindKeys = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'Escape' && findOpen) {
+      event.preventDefault()
+      event.stopPropagation()
+      closeFind()
+      return
+    }
+    if (event.altKey || (isMac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)) return
+    const key = event.key.toLowerCase()
+    if (key === 'f' && !event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      setFindOpen(true)
+      searchInputRef.current?.focus()
+    } else if (key === 'g' && findOpen) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.shiftKey) searchRef.current?.findPrevious(query, { decorations: SEARCH_DECORATIONS })
+      else searchRef.current?.findNext(query, { decorations: SEARCH_DECORATIONS })
+    }
+  }
+
   return (
-    <div
-      ref={sourceGridRef}
-      className="terminal-source-grid"
-      role="application"
-      tabIndex={0}
-      aria-label={ariaLabel}
-      aria-disabled={!connected}
-      aria-keyshortcuts="PageUp PageDown"
-      onFocus={handleFocus}
-    >
-      <div ref={hostRef} className="xterm-host" />
+    <div className="terminal-find-shell" onKeyDownCapture={handleFindKeys}>
+      <div
+        ref={sourceGridRef}
+        className="terminal-source-grid"
+        role="application"
+        tabIndex={0}
+        aria-label={ariaLabel}
+        aria-disabled={!connected}
+        aria-keyshortcuts={`${isMac ? 'Meta+F' : 'Control+F'} PageUp PageDown`}
+        onFocus={handleFocus}
+      >
+        <div ref={hostRef} className="xterm-host" />
+      </div>
+      {findOpen && (
+        <div className="terminal-find-bar" role="search" aria-label={`Find in ${ariaLabel}`}>
+          <input
+            ref={searchInputRef}
+            type="search"
+            aria-label="Find in terminal"
+            placeholder="Find in terminal"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onFocus={onFocus}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              if (event.shiftKey) searchRef.current?.findPrevious(query, { decorations: SEARCH_DECORATIONS })
+              else searchRef.current?.findNext(query, { decorations: SEARCH_DECORATIONS })
+            }}
+          />
+          <span className="terminal-find-count" aria-live="polite">
+            {query ? `${results.resultIndex + 1}/${results.resultCount}` : ''}
+          </span>
+          <button type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled={!query} onClick={() => searchRef.current?.findPrevious(query, { decorations: SEARCH_DECORATIONS })}>↑</button>
+          <button type="button" aria-label="Next match" title="Next match (Enter)" disabled={!query} onClick={() => searchRef.current?.findNext(query, { decorations: SEARCH_DECORATIONS })}>↓</button>
+          <button type="button" aria-label="Close find" title="Close find (Escape)" onClick={closeFind}>×</button>
+        </div>
+      )}
     </div>
   )
 }

@@ -74,6 +74,17 @@ final class DesktopWindow: NSWindow {
                terminalView.handleControlV(event) {
                 return
             }
+            if (modifiers == .command || modifiers == [.command, .shift]),
+               let key = event.charactersIgnoringModifiers?.lowercased(),
+               (key == "f" && modifiers == .command) || key == "g",
+               focusedTerminalView() == nil,
+               focusedWebView() != nil,
+               let responder = firstResponder {
+                // The Edit menu's Find key equivalent otherwise takes Command-F/G
+                // before the xterm fallback's DOM shortcut handler sees it.
+                responder.keyDown(with: event)
+                return
+            }
             if modifiers == .command,
                event.charactersIgnoringModifiers?.lowercased() == "c",
                focusedTerminalView() == nil,

@@ -188,11 +188,19 @@ final class DesktopApplicationTests: XCTestCase {
         }
 
         XCTAssertTrue(window.makeFirstResponder(second))
+        second.feed(text: "needle one needle")
         let commandF = try XCTUnwrap(keyEvent(key: "f", modifiers: .command, keyCode: 3))
         window.sendEvent(commandF)
 
-        XCTAssertFalse(second.subviews.compactMap { $0 as? NSVisualEffectView }.isEmpty)
+        let findBar = try XCTUnwrap(second.subviews.compactMap { $0 as? NSVisualEffectView }.first)
         XCTAssertTrue(first.subviews.compactMap { $0 as? NSVisualEffectView }.isEmpty)
+        let stack = try XCTUnwrap(findBar.subviews.compactMap { $0 as? NSStackView }.first)
+        let field = try XCTUnwrap(stack.arrangedSubviews.compactMap { $0 as? NSSearchField }.first)
+        field.stringValue = "needle"
+        window.sendEvent(try XCTUnwrap(keyEvent(key: "g", modifiers: .command, keyCode: 5)))
+        XCTAssertEqual(second.getSelection(), "needle")
+        window.sendEvent(commandF)
+        XCTAssertEqual(second.subviews.compactMap { $0 as? NSVisualEffectView }.count, 1)
     }
 
     func testWindowRegistryTracksControllersByWindowAndPreservesOrder() {
