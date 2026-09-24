@@ -384,6 +384,27 @@ export type WebPaneFeedbackResponse = {
   data?: unknown
 }
 
+/**
+ * What a redline page question asks. A sent answer only stands for the live
+ * question while this still matches, so an agent re-asks by rewording it.
+ */
+export type RedlineQuestionShape = {
+  question: string
+  kind: 'choice' | 'approve' | 'rating' | 'text'
+  options?: string[]
+  multiple?: boolean
+  max?: number
+}
+
+/** The latest answer the owner sent for one page question. */
+export type WebPaneSentAnswer = {
+  queueKey?: string
+  selector?: string
+  shape: RedlineQuestionShape
+  response: WebPaneFeedbackResponse
+  sentAt: number
+}
+
 /** Durable image metadata shared by pending notes and delivered feedback. */
 export type WebPaneImageAttachment = {
   id: string
@@ -458,6 +479,8 @@ export type WebPanePendingNote = {
   queueKey?: string
   /** Present when the note came from an in-page component, not an annotation. */
   response?: WebPaneFeedbackResponse
+  /** The answered question, recorded as a sent answer once this note is sent. */
+  questionShape?: RedlineQuestionShape
   /** Daemon-owned attachments. Daemon-produced notes always include this. */
   attachments?: WebPaneImageAttachment[]
 }
@@ -476,6 +499,8 @@ export type WebPanePendingSnapshot = {
   knownUpTo: number
   /** Page answers the cap discarded since the last send, surfaced in the tile. */
   dropped: number
+  /** Answers already sent for the page this tile is showing, keyed by page. */
+  sent?: { page: string; answers: WebPaneSentAnswer[] }
 }
 
 /** Ephemeral review-feedback state for a tile — broadcast, never persisted. */

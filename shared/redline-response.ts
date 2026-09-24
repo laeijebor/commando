@@ -2,7 +2,9 @@ import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from './tile-
 import {
   MAX_PENDING_NOTES,
   MAX_WEB_PANE_URL_LENGTH,
+  type RedlineQuestionShape,
   type WebPanePendingSnapshot,
+  type WebPaneSentAnswer,
 } from './protocol.js'
 
 /** Name of the CDP binding the chromium engine installs in every tile page. */
@@ -36,6 +38,8 @@ export type RedlinePageResponse = {
   tag?: string
   text?: string
   rect?: { x: number; y: number; width: number; height: number }
+  /** The question being answered, so a sent answer can outlive the queue. */
+  shape?: RedlineQuestionShape
 }
 
 export type RedlinePagePendingSnapshot = {
@@ -45,16 +49,13 @@ export type RedlinePagePendingSnapshot = {
     selector?: string
     response: { question: string; answer: string; note?: string; data?: unknown }
   }>
+  /** Answers already sent for this page. Pages built before this ignore it. */
+  sent?: WebPaneSentAnswer[]
 }
 
-export type RedlinePageQuestion = {
-  question: string
+export type RedlinePageQuestion = RedlineQuestionShape & {
   selector: string
   queueKey?: string
-  kind: 'choice' | 'approve' | 'rating' | 'text'
-  options?: string[]
-  multiple?: boolean
-  max?: number
 }
 
 export type RedlinePageQuestionSnapshot = {
@@ -122,7 +123,41 @@ export function parseRedlinePageResponse(value: unknown): RedlinePageResponse | 
   ) {
     response.rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
   }
+  const shape = parseRedlineQuestionShape(record.shape)
+  if (shape) response.shape = shape
   return response
+}
+
+/** Validates what a question asks — its prompt, kind, and kind-specific options. */
+export function parseRedlineQuestionShape(value: unknown): RedlineQuestionShape | null {
+  if (typeof value !== 'object' || value === null) return null
+  const question = value as Record<string, unknown>
+  if (
+    !boundedString(question.question, MAX_RESPONSE_QUESTION) ||
+    (question.kind !== 'choice' && question.kind !== 'approve' &&
+      question.kind !== 'rating' && question.kind !== 'text')
+  ) return null
+  const shape: RedlineQuestionShape = { question: question.question, kind: question.kind }
+  if (question.kind === 'choice' || question.kind === 'approve') {
+    if (
+      !Array.isArray(question.options) ||
+      question.options.length === 0 ||
+      question.options.length > MAX_QUESTION_OPTIONS ||
+      !question.options.every((option) => boundedString(option, MAX_RESPONSE_ANSWER))
+    ) return null
+    shape.options = [...question.options]
+    if (question.kind === 'choice') shape.multiple = question.multiple === true
+  }
+  if (question.kind === 'rating') {
+    if (
+      typeof question.max !== 'number' ||
+      !Number.isInteger(question.max) ||
+      question.max < 2 ||
+      question.max > 10
+    ) return null
+    shape.max = question.max
+  }
+  return shape
 }
 
 /** Validates the ephemeral inventory of open controls published by a tile page. */
@@ -138,46 +173,83 @@ export function parseRedlinePageQuestionSnapshot(value: unknown): RedlinePageQue
   for (const value of record.questions) {
     if (typeof value !== 'object' || value === null) return null
     const question = value as Record<string, unknown>
+    const shape = parseRedlineQuestionShape(question)
     if (
-      !boundedString(question.question, MAX_RESPONSE_QUESTION) ||
+      !shape ||
       !boundedString(question.selector, MAX_INSPECT_SELECTOR) ||
-      (question.queueKey !== undefined && !boundedString(question.queueKey, MAX_RESPONSE_QUEUE_KEY)) ||
-      (question.kind !== 'choice' && question.kind !== 'approve' &&
-        question.kind !== 'rating' && question.kind !== 'text')
+      (question.queueKey !== undefined && !boundedString(question.queueKey, MAX_RESPONSE_QUEUE_KEY))
     ) return null
     const identity = typeof question.queueKey === 'string'
       ? `key:${question.queueKey}`
       : `selector:${question.selector}`
     if (identities.has(identity)) return null
     identities.add(identity)
-    const parsed: RedlinePageQuestion = {
-      question: question.question,
+    questions.push({
+      question: shape.question,
       selector: question.selector,
-      kind: question.kind,
+      kind: shape.kind,
       ...(typeof question.queueKey === 'string' ? { queueKey: question.queueKey } : {}),
-    }
-    if (question.kind === 'choice' || question.kind === 'approve') {
-      if (
-        !Array.isArray(question.options) ||
-        question.options.length === 0 ||
-        question.options.length > MAX_QUESTION_OPTIONS ||
-        !question.options.every((option) => boundedString(option, MAX_RESPONSE_ANSWER))
-      ) return null
-      parsed.options = [...question.options]
-      if (question.kind === 'choice') parsed.multiple = question.multiple === true
-    }
-    if (question.kind === 'rating') {
-      if (
-        typeof question.max !== 'number' ||
-        !Number.isInteger(question.max) ||
-        question.max < 2 ||
-        question.max > 10
-      ) return null
-      parsed.max = question.max
-    }
-    questions.push(parsed)
+      ...(shape.options ? { options: shape.options } : {}),
+      ...(shape.multiple !== undefined ? { multiple: shape.multiple } : {}),
+      ...(shape.max !== undefined ? { max: shape.max } : {}),
+    })
   }
   return { type: 'questions', version: 1, questions }
+}
+
+/** The shape half of a page question, dropping its identity. */
+export function questionShapeOf(question: RedlineQuestionShape): RedlineQuestionShape {
+  return {
+    question: question.question,
+    kind: question.kind,
+    ...(question.options ? { options: [...question.options] } : {}),
+    ...(question.multiple !== undefined ? { multiple: question.multiple } : {}),
+    ...(question.max !== undefined ? { max: question.max } : {}),
+  }
+}
+
+/** Same prompt, kind, and options — i.e. the agent has not re-asked it. */
+export function sameQuestionShape(a: RedlineQuestionShape, b: RedlineQuestionShape): boolean {
+  const aOptions = a.options ?? []
+  const bOptions = b.options ?? []
+  return a.question === b.question &&
+    a.kind === b.kind &&
+    (a.multiple === true) === (b.multiple === true) &&
+    a.max === b.max &&
+    aOptions.length === bOptions.length &&
+    aOptions.every((option, index) => option === bOptions[index])
+}
+
+/**
+ * Pages are the same when origin and path match. Query and hash are ignored so
+ * an agent's `?v=<n>` cache-bust reload still shows what was already sent.
+ */
+export function redlinePageKey(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return `${parsed.origin}${parsed.pathname}`
+    }
+  } catch {
+    // Fall through to the textual strip below.
+  }
+  return url.replace(/[?#].*$/, '')
+}
+
+/** Identity of a question within its page: its queue key, else its selector. */
+export function redlineQuestionIdentity(question: { queueKey?: string; selector?: string }): string {
+  return question.queueKey ? `key:${question.queueKey}` : `selector:${question.selector ?? ''}`
+}
+
+/** The sent answer still standing for a live question, if any. */
+export function sentAnswerForQuestion(
+  question: RedlinePageQuestion,
+  sent: readonly WebPaneSentAnswer[],
+): WebPaneSentAnswer | undefined {
+  const identity = redlineQuestionIdentity(question)
+  return sent.find((answer) => (
+    redlineQuestionIdentity(answer) === identity && sameQuestionShape(answer.shape, question)
+  ))
 }
 
 /** Builds the sanitized pending state visible to one exact page document. */
@@ -231,5 +303,69 @@ export function redlinePendingSnapshotForPage(
     }
     break
   }
-  return { version: 1, controls }
+  const sent = snapshot.sent && snapshot.sent.page === redlinePageKey(pageUrl)
+    ? pageSentAnswers(
+        snapshot.sent.answers,
+        MAX_PENDING_SNAPSHOT_BYTES - utf8Bytes(JSON.stringify({ version: 1, controls, sent: [] })),
+      )
+    : []
+  return sent.length > 0 ? { version: 1, controls, sent } : { version: 1, controls }
+}
+
+function plainJsonData(value: unknown): unknown {
+  if (value === undefined) return undefined
+  try {
+    const json = JSON.stringify(value)
+    if (json !== undefined && utf8Bytes(json) <= MAX_RESPONSE_DATA_JSON) return JSON.parse(json) as unknown
+  } catch {
+    // Data is best-effort and must never expose live objects to the page.
+  }
+  return undefined
+}
+
+/**
+ * Bounded, sanitized sent answers for page code, newest first. An answer that
+ * does not fit the byte budget is retried without its data, then skipped.
+ */
+export function pageSentAnswers(
+  answers: readonly WebPaneSentAnswer[],
+  budgetBytes: number,
+): WebPaneSentAnswer[] {
+  const result: WebPaneSentAnswer[] = []
+  let used = 0
+  for (const answer of [...answers].sort((a, b) => b.sentAt - a.sentAt)) {
+    if (result.length >= MAX_OPEN_QUESTIONS) break
+    const shape = parseRedlineQuestionShape(answer.shape)
+    const response = answer.response
+    if (
+      !shape ||
+      !response ||
+      !boundedString(response.question, MAX_RESPONSE_QUESTION) ||
+      !boundedString(response.answer, MAX_RESPONSE_ANSWER) ||
+      !finite(answer.sentAt)
+    ) continue
+    const compact: WebPaneSentAnswer = {
+      ...(boundedString(answer.queueKey, MAX_RESPONSE_QUEUE_KEY) ? { queueKey: answer.queueKey } : {}),
+      ...(boundedString(answer.selector, MAX_INSPECT_SELECTOR) ? { selector: answer.selector } : {}),
+      shape,
+      response: {
+        question: response.question,
+        answer: response.answer,
+        ...(boundedString(response.note, MAX_RESPONSE_NOTE) ? { note: response.note } : {}),
+      },
+      sentAt: answer.sentAt,
+    }
+    const data = plainJsonData(response.data)
+    const candidates = data === undefined
+      ? [compact]
+      : [{ ...compact, response: { ...compact.response, data } }, compact]
+    for (const candidate of candidates) {
+      const bytes = utf8Bytes(JSON.stringify(candidate)) + 1
+      if (used + bytes > budgetBytes) continue
+      result.push(candidate)
+      used += bytes
+      break
+    }
+  }
+  return result
 }
