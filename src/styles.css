@@ -204,7 +204,7 @@ pre {
   z-index: 30;
   min-width: 0;
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr) auto;
+  grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 0 10px;
@@ -474,13 +474,13 @@ kbd {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr) 280px;
+  grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr) 280px;
   overflow: hidden;
 }
 
 .cockpit-body.area-linear,
 .cockpit-body.area-notes {
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr);
 }
 
 .session-sidebar,
@@ -510,6 +510,36 @@ kbd {
   padding: 8px 8px 8px;
   border-right: 1px solid var(--border);
 }
+
+.session-sidebar-resizer {
+  position: absolute;
+  z-index: 12;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.session-sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+
+.session-sidebar-resizer:hover::after,
+.session-sidebar-resizer:focus-visible::after,
+.resizing-left-panel .session-sidebar-resizer::after {
+  background: var(--accent);
+}
+
+.session-sidebar-resizer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.resizing-left-panel, .resizing-left-panel * { cursor: col-resize !important; user-select: none !important; }
 
 .sidebar-header,
 .hud-header,
@@ -3598,7 +3628,7 @@ body.is-resizing-hud-pinned-note {
   }
 
   .cockpit-body.right-panel-hidden {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: var(--left-panel-width, 230px) minmax(0, 1fr);
   }
 
   .cockpit-body.left-panel-hidden.right-panel-hidden,
@@ -4007,11 +4037,11 @@ body.is-resizing-hud-pinned-note {
 
 @media (max-width: 1180px) {
   .cockpit-body {
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr);
   }
 
   .app-titlebar {
-    grid-template-columns: 220px minmax(0, 1fr) auto;
+    grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr) auto;
   }
 
   .agent-hud {
@@ -4089,6 +4119,8 @@ body.is-resizing-hud-pinned-note {
     transform: translateX(-105%);
     transition: transform 180ms ease-out;
   }
+
+  .session-sidebar-resizer { display: none; }
 
   .cockpit:has(.connection-banner) .session-sidebar {
     top: 78px;
