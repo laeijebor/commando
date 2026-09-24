@@ -41,6 +41,15 @@ const CONTROL_KEYS: Readonly<Partial<Record<string, SpecialKey>>> = {
   l: 'C-l',
 }
 
+// Legacy terminal input cannot distinguish Ctrl+Shift+S from Ctrl+S. Send the
+// modified key in CSI-u form so terminal apps can bind them separately.
+export function modifiedControlShiftS(event: TerminalKeyEvent): string | null {
+  return event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey &&
+    event.key.toLowerCase() === 's'
+    ? '\x1b[115;6u'
+    : null
+}
+
 export function semanticKeyForEvent(event: TerminalKeyEvent): SpecialKey | null {
   if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
     return CONTROL_KEYS[event.key.toLowerCase()] ?? null

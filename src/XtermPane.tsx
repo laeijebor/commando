@@ -13,7 +13,7 @@ import {
   type SpecialKey,
 } from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
-import { semanticKeyForEvent } from './terminalInput'
+import { modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
 import { sessionShortcutIndex } from './sessionShortcuts'
 
 export type XtermPaneProps = {
@@ -237,6 +237,12 @@ export function XtermPane({
         } else if (sourceGrid) {
           sourceGrid.scrollBy({ top: sourceGrid.clientHeight, behavior: 'auto' })
         }
+        return false
+      }
+      const modifiedKey = modifiedControlShiftS(event)
+      if (modifiedKey) {
+        event.preventDefault()
+        if (connectedRef.current) inputRef.current(modifiedKey)
         return false
       }
       const key = semanticKeyForEvent(event)

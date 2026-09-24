@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_PASTE_BYTES, type SpecialKey } from '../shared/protocol'
-import { dispatchBoundedPaste, semanticKeyForEvent } from './terminalInput'
+import { dispatchBoundedPaste, modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
 
 function keyEvent(
   key: string,
@@ -50,6 +50,16 @@ describe('terminal semantic key mapping', () => {
     expect(semanticKeyForEvent(keyEvent('k', { ctrlKey: true }))).toBeNull()
     expect(semanticKeyForEvent(keyEvent('ArrowUp', { altKey: true }))).toBeNull()
     expect(semanticKeyForEvent(keyEvent('Tab', { shiftKey: true }))).toBeNull()
+  })
+})
+
+describe('modified terminal input', () => {
+  it('preserves Ctrl+Shift+S without changing Ctrl+S or unrelated chords', () => {
+    expect(modifiedControlShiftS(keyEvent('S', { ctrlKey: true, shiftKey: true }))).toBe('\x1b[115;6u')
+    expect(modifiedControlShiftS(keyEvent('s', { ctrlKey: true, shiftKey: true }))).toBe('\x1b[115;6u')
+    expect(modifiedControlShiftS(keyEvent('s', { ctrlKey: true }))).toBeNull()
+    expect(modifiedControlShiftS(keyEvent('s', { ctrlKey: true, shiftKey: true, altKey: true }))).toBeNull()
+    expect(modifiedControlShiftS(keyEvent('a', { ctrlKey: true, shiftKey: true }))).toBeNull()
   })
 })
 
