@@ -1251,6 +1251,42 @@ describe('desktop resize authority', () => {
   })
 })
 
+describe('session sidebar width', () => {
+  it('resizes with pointer capture, saves the width, and restores it after remount', async () => {
+    const { unmount } = await renderAppWithSnapshot()
+    const handle = screen.getByRole('separator', { name: 'Resize session sidebar' })
+    const cockpit = document.querySelector<HTMLElement>('.cockpit')!
+    handle.setPointerCapture = vi.fn()
+    fireEvent.pointerDown(handle, { pointerId: 4, button: 0 })
+    expect(handle.setPointerCapture).toHaveBeenCalledWith(4)
+    fireEvent.pointerMove(handle, { pointerId: 4, clientX: 350 })
+    expect(cockpit.style.getPropertyValue('--left-panel-width')).toBe('350px')
+    fireEvent.pointerUp(handle, { pointerId: 4 })
+    expect(window.localStorage.getItem('commando.panel.left-width')).toBe('350')
+    unmount()
+
+    await renderAppWithSnapshot()
+    expect(document.querySelector<HTMLElement>('.cockpit')!.style.getPropertyValue('--left-panel-width')).toBe('350px')
+  })
+
+  it('supports keyboard adjustment, bounds, and reset', async () => {
+    await renderAppWithSnapshot()
+    const handle = screen.getByRole('separator', { name: 'Resize session sidebar' })
+    handle.setPointerCapture = vi.fn()
+    fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true })
+    expect(handle).toHaveAttribute('aria-valuenow', '270')
+    fireEvent.keyDown(handle, { key: 'Home' })
+    expect(handle).toHaveAttribute('aria-valuenow', '230')
+    fireEvent.pointerDown(handle, { pointerId: 7, button: 0 })
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 900 })
+    fireEvent.pointerUp(handle, { pointerId: 7 })
+    expect(handle).toHaveAttribute('aria-valuenow', '480')
+    fireEvent.doubleClick(handle)
+    expect(handle).toHaveAttribute('aria-valuenow', '230')
+    expect(window.localStorage.getItem('commando.panel.left-width')).toBe('230')
+  })
+})
+
 describe('responsive drawer native occlusion', () => {
   it('retains the scrim occluder until the closing drawer transition ends', async () => {
     await renderAppWithSnapshot()

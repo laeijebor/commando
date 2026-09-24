@@ -36,9 +36,11 @@ import {
 } from 'lucide-react'
 import {
 
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type KeyboardEvent,
+  type PointerEvent,
   type ReactNode,
   type TransitionEvent,
   lazy,
@@ -157,6 +159,10 @@ const PRESETS: Array<{
 ]
 
 const LEFT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.left-hidden'
+const LEFT_PANEL_WIDTH_STORAGE_KEY = 'commando.panel.left-width'
+const LEFT_PANEL_DEFAULT_WIDTH = 230
+const LEFT_PANEL_MIN_WIDTH = 180
+const LEFT_PANEL_MAX_WIDTH = 480
 const RIGHT_PANEL_HIDDEN_STORAGE_KEY = 'commando.panel.right-hidden'
 const HUD_TAB_STORAGE_KEY = 'commando.hud.tab'
 
@@ -204,6 +210,25 @@ function storePanelHidden(key: string, hidden: boolean): void {
     window.localStorage.setItem(key, String(hidden))
   } catch {
     // Panel visibility still works in memory when storage is unavailable.
+  }
+}
+
+function storedLeftPanelWidth(): number {
+  try {
+    const raw = window.localStorage.getItem(LEFT_PANEL_WIDTH_STORAGE_KEY)
+    if (raw === null) return LEFT_PANEL_DEFAULT_WIDTH
+    const value = Number(raw)
+    return Number.isFinite(value) ? Math.max(LEFT_PANEL_MIN_WIDTH, Math.min(LEFT_PANEL_MAX_WIDTH, value)) : LEFT_PANEL_DEFAULT_WIDTH
+  } catch {
+    return LEFT_PANEL_DEFAULT_WIDTH
+  }
+}
+
+function storeLeftPanelWidth(width: number): void {
+  try {
+    window.localStorage.setItem(LEFT_PANEL_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // The width remains adjustable when storage is unavailable.
   }
 }
 
@@ -902,6 +927,8 @@ export function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [drawerTransitionOcclusion, setDrawerTransitionOcclusion] = useState(false)
   const [leftPanelHidden, setLeftPanelHidden] = useState(() => storedPanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY))
+  const [leftPanelWidth, setLeftPanelWidth] = useState(storedLeftPanelWidth)
+  const [resizingLeftPanel, setResizingLeftPanel] = useState(false)
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
@@ -940,6 +967,9 @@ export function App() {
   const resizeRetryAttempts = useRef(0)
   const resizeRetryTimer = useRef<number | null>(null)
   const paneJumpHighlightTimer = useRef<number | null>(null)
+  const leftPanelResizePointer = useRef<number | null>(null)
+  const leftPanelResizeWidth = useRef(leftPanelWidth)
+  const cockpitBodyRef = useRef<HTMLDivElement | null>(null)
   const responsiveDrawersOpen = leftPanelOpen || rightPanelOpen
   const drawerOcclusionActive = responsiveDrawersOpen || drawerTransitionOcclusion
 
@@ -1046,6 +1076,36 @@ export function App() {
 
   useEffect(() => storePanelHidden(LEFT_PANEL_HIDDEN_STORAGE_KEY, leftPanelHidden), [leftPanelHidden])
   useEffect(() => storePanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY, rightPanelHidden), [rightPanelHidden])
+
+  const limitLeftPanelWidth = (width: number) => Math.max(
+    LEFT_PANEL_MIN_WIDTH,
+    Math.min(LEFT_PANEL_MAX_WIDTH, window.innerWidth - 320, Math.round(width)),
+  )
+
+  const moveLeftPanelResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (leftPanelResizePointer.current !== event.pointerId) return
+    const left = cockpitBodyRef.current?.getBoundingClientRect().left ?? 0
+    const width = limitLeftPanelWidth(event.clientX - left)
+    leftPanelResizeWidth.current = width
+    setLeftPanelWidth(width)
+  }
+
+  const finishLeftPanelResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (leftPanelResizePointer.current !== event.pointerId) return
+    leftPanelResizePointer.current = null
+    setResizingLeftPanel(false)
+    storeLeftPanelWidth(leftPanelResizeWidth.current)
+  }
+
+  const resizeLeftPanelWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home') return
+    event.preventDefault()
+    const width = event.key === 'Home'
+      ? LEFT_PANEL_DEFAULT_WIDTH
+      : limitLeftPanelWidth(leftPanelWidth + (event.key === 'ArrowRight' ? 1 : -1) * (event.shiftKey ? 40 : 10))
+    setLeftPanelWidth(width)
+    storeLeftPanelWidth(width)
+  }
 
   useEffect(() => {
     const bridge = getNativeTerminalBridge()
@@ -2308,7 +2368,10 @@ export function App() {
   }
 
   return (
-    <div className={`cockpit${maximizedPaneId ? ' has-maximized-pane' : ''}`}>
+    <div
+      className={`cockpit${maximizedPaneId ? ' has-maximized-pane' : ''}`}
+      style={{ '--left-panel-width': `${leftPanelWidth}px` } as CSSProperties}
+    >
       <header className="app-titlebar">
         <div className="brand-lockup">
           <span className="brand-mark"><Command aria-hidden="true" /></span>
@@ -2398,7 +2461,10 @@ export function App() {
         </div>
       ) : null}
 
-      <div className={`cockpit-body area-${area}${leftPanelHidden ? ' left-panel-hidden' : ''}${rightPanelHidden ? ' right-panel-hidden' : ''}`}>
+      <div
+        ref={cockpitBodyRef}
+        className={`cockpit-body area-${area}${leftPanelHidden ? ' left-panel-hidden' : ''}${rightPanelHidden ? ' right-panel-hidden' : ''}${resizingLeftPanel ? ' resizing-left-panel' : ''}`}
+      >
         <button
           type="button"
           className={`drawer-scrim${leftPanelOpen || rightPanelOpen ? ' visible' : ''}`}
@@ -2414,6 +2480,33 @@ export function App() {
           className={`session-sidebar${leftPanelOpen ? ' panel-open' : ''}`}
           onTransitionEnd={finishResponsiveDrawerTransition}
         >
+          <div
+            className="session-sidebar-resizer"
+            role="separator"
+            aria-label="Resize session sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={LEFT_PANEL_MIN_WIDTH}
+            aria-valuemax={LEFT_PANEL_MAX_WIDTH}
+            aria-valuenow={leftPanelWidth}
+            tabIndex={0}
+            title="Drag to resize; use Left and Right arrows from the keyboard. Double-click to reset."
+            onPointerDown={(event) => {
+              if (event.button !== 0) return
+              leftPanelResizePointer.current = event.pointerId
+              leftPanelResizeWidth.current = leftPanelWidth
+              event.currentTarget.setPointerCapture(event.pointerId)
+              setResizingLeftPanel(true)
+            }}
+            onPointerMove={moveLeftPanelResize}
+            onPointerUp={finishLeftPanelResize}
+            onPointerCancel={finishLeftPanelResize}
+            onLostPointerCapture={finishLeftPanelResize}
+            onKeyDown={resizeLeftPanelWithKeyboard}
+            onDoubleClick={() => {
+              setLeftPanelWidth(LEFT_PANEL_DEFAULT_WIDTH)
+              storeLeftPanelWidth(LEFT_PANEL_DEFAULT_WIDTH)
+            }}
+          />
           <div className="sidebar-header">
             <div>
               <span className="section-kicker">Machine</span>
