@@ -49,25 +49,29 @@ tiles. Out of scope: agent permission / AskUserQuestion answers
 
 ### 1. Sent-answer store — `server/web-pane-sent-answers.ts` (new)
 
-- `pageKey(url)`: `origin + pathname`; non-http(s)/unparseable URLs fall back
+- `redlinePageKey(url)` (shared): `origin + pathname`; non-http(s)/unparseable URLs fall back
   to the URL with query and hash stripped.
 - Record per question identity within a page (`key:<queueKey>` or
   `selector:<selector>`), latest only:
 
   ```ts
-  type SentAnswerRecord = {
+  type WebPaneSentAnswer = {
     queueKey?: string
     selector?: string
     shape: RedlineQuestionShape // question, kind, options?, multiple?, max?
-    response: { answer: string; note?: string; data?: unknown }
-    skipped?: true
+    response: { question: string; answer: string; note?: string; data?: unknown }
     sentAt: number
   }
   ```
 
+  A skip is recorded as the SDK's `(skipped)` stand-in answer, so it needs no
+  separate flag.
+
 - One JSON file per page under `~/.commando/sent-answers/`, named by a hash of
   the page key, written atomically (temp file + rename). No expiry — growth is
-  bounded by distinct questions because records are replaced, not appended.
+  bounded by distinct questions because records are replaced, not appended,
+  with a safety cap of 1,000 records per page (oldest dropped). Pages receive
+  at most the 200 newest within the page snapshot byte budget.
 - API: `record(pageUrl, records)`, `forPage(pageUrl)`. Directory injectable for
   tests, mirroring `FeedbackJournal`.
 
@@ -92,12 +96,13 @@ The daemon tracks each tile's **current page** and adds that page's records to
 the tile's pending snapshot as `sent: SentAnswerRecord[]`.
 
 - **Chromium tiles.** The engine already updates `mainFrameUrl` on navigation;
-  a new `onNavigate(webPaneId, url)` option sets the current page and
+  a new `onPageNavigated(webPaneId, url)` option sets the current page and
   rebroadcasts the pending snapshot. The engine builds the page-facing snapshot
   in-process, so the page is hydrated at navigation start.
 - **Native WebView tiles.** Questions never reach the daemon on this path, so
-  `NativeWebViewTile` calls a new `POST /api/web-panes/:id/page {url}` when the
-  bridge reports a navigation. The response (and the broadcast) is the updated
+  `NativeWebViewTile` calls a new owner-only
+  `POST /api/web-panes/:id/pending/page {url}` when the bridge reports a
+  navigation (it sits with the other pending routes rather than at `/page`). The response (and the broadcast) is the updated
   pending snapshot. A sent question may briefly render live on reload until
   this round trip completes.
 - **Fallback.** Until a tile reports, its current page is `pane.url`.
@@ -129,7 +134,7 @@ the tile's pending snapshot as `sent: SentAnswerRecord[]`.
 - `server/web-pane-pending.test.ts`: send records shaped responses only after
   enqueue succeeds; throwing enqueue records nothing; shapeless responses are
   not recorded.
-- `server/web-panes-api.test.ts`: `POST …/page` updates the current page and
+- `server/web-panes-api.test.ts`: `POST …/pending/page` updates the current page and
   returns a snapshot with that page's `sent`.
 - `server/chromium-engine.test.ts`: navigation reports the page; page snapshot
   carries `sent` matched by page key across `?v=` changes.
