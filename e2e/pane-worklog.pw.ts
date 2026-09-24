@@ -98,9 +98,18 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     runAgent([paths.sessionBriefCliPath, '--feature-flag', 'new-checkout'])
     const previewUrl = `${baseUrl}/checkout`
     runAgent([paths.sessionBriefCliPath, '--url', previewUrl, '--url-label', 'Checkout preview'])
+    const issueUrl = 'https://github.com/acme/app/issues/42'
+    runAgent([paths.sessionBriefCliPath, '--issue', issueUrl, '--url-label', 'Checkout bug #42'])
+    runAgent([paths.sessionBriefCliPath, '--deployment', `${baseUrl}/preview`, '--url-label', 'Preview deployment'])
+    runAgent([paths.sessionBriefCliPath, '--build', '1842', '--link', `${baseUrl}/build/1842`])
+    runAgent([paths.sessionBriefCliPath, '--release', 'v2.3.0'])
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
     await expect(first.getByRole('region', { name: 'Important terms for Worklog agent' })).toContainText('new-checkout')
     await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
+    await expect(first.getByRole('link', { name: /Checkout bug #42/ })).toHaveAttribute('href', issueUrl)
+    await expect(first.getByRole('link', { name: /Preview deployment/ })).toHaveAttribute('href', `${baseUrl}/preview`)
+    await expect(first.getByRole('link', { name: /1842/ })).toHaveAttribute('href', `${baseUrl}/build/1842`)
+    await expect(first.getByText('v2.3.0')).toBeVisible()
     const [previewPage] = await Promise.all([
       page.waitForEvent('popup'),
       first.getByRole('link', { name: /Checkout preview/ }).click(),
@@ -121,7 +130,9 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     runAgent([paths.sessionBriefCliPath, '--update', 'note', 'After move'])
     await expect(first.getByText('After move')).toBeVisible()
     runAgent([paths.sessionBriefCliPath, '--remove-feature-flag', 'new-checkout'])
+    runAgent([paths.sessionBriefCliPath, '--remove-issue', issueUrl])
     await expect(first.getByText('new-checkout')).toHaveCount(0)
+    await expect(first.getByText('Checkout bug #42')).toHaveCount(0)
     await stop(daemon)
     daemon = start(['--import', 'tsx', 'server/index.ts'])
     await expect.poll(async () => { try { return (await snapshot()).panes.length } catch { return 0 } }, { timeout: 20_000 }).toBe(2)
@@ -130,6 +141,9 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByText('Verify durable tasks')).toBeVisible()
     await expect(first.getByText('After move')).toBeVisible()
     await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
+    await expect(first.getByRole('link', { name: /Preview deployment/ })).toHaveAttribute('href', `${baseUrl}/preview`)
+    await expect(first.getByRole('link', { name: /1842/ })).toHaveAttribute('href', `${baseUrl}/build/1842`)
+    await expect(first.getByText('v2.3.0')).toBeVisible()
     await expect(first.getByRole('textbox', { name: 'Note for Worklog agent' })).toHaveValue('Retain my review note')
     await expect(first.getByRole('button', { name: 'Open screenshot review.png' })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('worklog-after-move-and-restart.png') })

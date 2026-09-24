@@ -48,6 +48,21 @@ describe('PaneWorklog', () => {
     expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'http://localhost:5273/checkout')
     expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('target', '_blank')
   })
+
+  it('renders issue and deployment links and linked or plain build/release identifiers', () => {
+    render(<PaneWorklog brief={{ ...brief, references: [
+      { kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment', value: 'https://preview.example.com/', label: 'Checkout preview' },
+      { kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842' },
+      { kind: 'release', value: 'v2.3.0' },
+    ] }} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('link', { name: /Bug #42/ })).toHaveAttribute('href', 'https://github.com/acme/app/issues/42')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'https://preview.example.com/')
+    expect(screen.getByRole('link', { name: /1842/ })).toHaveAttribute('href', 'https://ci.example.com/build/1842')
+    expect(screen.getByText('v2.3.0').closest('.pane-worklog-reference')).not.toHaveAttribute('href')
+    expect(screen.getByLabelText('Important terms for Tests')).toHaveTextContent('Release')
+  })
   it('migrates notes to durable ownership and retains them across session moves', () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({ note: 'Keep my note', minimized: false, visibilitySet: true }))

@@ -61,6 +61,24 @@ or use `kind: "url"` with an optional `label`. Use `action: "remove"` to unpin.
 Only HTTP(S) URLs without embedded credentials are accepted. Keep these
 references concise and session-relevant.
 
+Pin an issue/ticket link, deployment preview, or build/release identifier when
+it is relevant to the pane. Issue and deployment entries are clickable like
+URLs; build and release IDs may optionally link to a CI run or release page:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs --issue https://github.com/acme/app/issues/42 --url-label "Checkout bug #42"
+$HOME/.commando/hooks/commando-session-update.mjs --deployment https://preview.example.com/checkout --url-label "Checkout preview"
+$HOME/.commando/hooks/commando-session-update.mjs --build build-1842 --link https://ci.example.com/build/1842
+$HOME/.commando/hooks/commando-session-update.mjs --release v2.3.0
+```
+
+Use `--remove-issue URL`, `--remove-deployment URL`, `--remove-build ID`, or
+`--remove-release ID` when they are no longer relevant. In `--stdin` JSON,
+the corresponding `kind` values are `issue`, `deployment`, `build`, and
+`release`; `url` on a build/release object is the optional link, while
+`value` remains its identifier. For link kinds, `value` is the URL and
+`label` is optional.
+
 ## Publish screenshots
 
 Publish a screenshot round by naming its directory:
