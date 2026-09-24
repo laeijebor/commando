@@ -149,9 +149,10 @@ export type SessionBriefUpdate = {
 }
 
 export type SessionReference = {
-  kind: 'feature_flag' | 'url'
+  kind: 'feature_flag' | 'url' | 'issue' | 'deployment' | 'build' | 'release'
   value: string
   label?: string
+  url?: string
 }
 
 export type SessionBrief = {

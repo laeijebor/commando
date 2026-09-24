@@ -91,6 +91,28 @@ describe('SessionBriefStore', () => {
     expect(briefs.get('%1')?.references).toHaveLength(20)
   })
 
+  it('persists distinct issue, deployment, build and release references and replaces linked builds', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    for (const reference of [
+      { kind: 'issue' as const, value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment' as const, value: 'https://preview.example.com/', label: 'Preview' },
+      { kind: 'build' as const, value: '1842', url: 'https://ci.example.com/build/1842' },
+      { kind: 'release' as const, value: 'v2.3.0' },
+    ]) await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', ...reference } })
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842/retry' } })
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.references).toEqual([
+      { kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment', value: 'https://preview.example.com/', label: 'Preview' },
+      { kind: 'release', value: 'v2.3.0' },
+      { kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842/retry' },
+    ])
+    await replay.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'remove', kind: 'issue', value: 'https://github.com/acme/app/issues/42' } })
+    expect(replay.get('%1')?.references?.some((reference) => reference.kind === 'issue')).toBe(false)
+  })
+
   it('keeps tasks, authored history and screenshots across rename, move and daemon reload', async () => {
     const briefs = await store()
     await briefs.reconcilePanes([identity])

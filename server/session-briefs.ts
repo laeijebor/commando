@@ -37,7 +37,7 @@ export type SessionBriefPatch = {
     detail?: string
   }
   publishedScreenshots?: PaneScreenshotFolder
-  reference?: { action: 'upsert' | 'remove'; kind: SessionReference['kind']; value: string; label?: string }
+  reference?: { action: 'upsert' | 'remove'; kind: SessionReference['kind']; value: string; label?: string; url?: string }
 }
 
 const SESSION_ID = /^\$\d+$/
@@ -179,12 +179,24 @@ export function validReferenceUrl(value: string): boolean {
   }
 }
 
+export function referenceValueIsUrl(kind: unknown): kind is 'url' | 'issue' | 'deployment' {
+  return kind === 'url' || kind === 'issue' || kind === 'deployment'
+}
+
+export function referenceIsIdentifier(kind: unknown): kind is 'build' | 'release' {
+  return kind === 'build' || kind === 'release'
+}
+
 function parseReference(value: unknown): SessionReference | null {
-  if (!isRecord(value) || (value.kind !== 'feature_flag' && value.kind !== 'url')) return null
-  const name = cleanText(value.value, value.kind === 'url' ? 2_048 : 120)
+  if (!isRecord(value) || (value.kind !== 'feature_flag' && !referenceValueIsUrl(value.kind) && !referenceIsIdentifier(value.kind))) return null
+  const name = cleanText(value.value, referenceValueIsUrl(value.kind) ? 2_048 : 120)
   const label = value.label === undefined ? undefined : cleanText(value.label, 120)
-  if (!name || label === null || (value.kind === 'url' && !validReferenceUrl(name)) || (value.kind === 'feature_flag' && label !== undefined)) return null
-  return { kind: value.kind, value: name, ...(label ? { label } : {}) }
+  const url = value.url === undefined ? undefined : cleanText(value.url, 2_048)
+  if (!name || label === null || url === null ||
+    (referenceValueIsUrl(value.kind) && (!validReferenceUrl(name) || url !== undefined)) ||
+    (value.kind === 'feature_flag' && (label !== undefined || url !== undefined)) ||
+    (referenceIsIdentifier(value.kind) && (label !== undefined || (url !== undefined && !validReferenceUrl(url))))) return null
+  return { kind: value.kind, value: name, ...(label ? { label } : {}), ...(url ? { url } : {}) }
 }
 
 function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
@@ -614,7 +626,9 @@ export class SessionBriefStore {
       reference.kind !== patch.reference?.kind || reference.value !== patch.reference.value
     ))
     if (patch.reference?.action === 'upsert') {
-      references.push({ kind: patch.reference.kind, value: patch.reference.value, ...(patch.reference.label ? { label: patch.reference.label } : {}) })
+      references.push({ kind: patch.reference.kind, value: patch.reference.value,
+        ...(patch.reference.label ? { label: patch.reference.label } : {}),
+        ...(patch.reference.url ? { url: patch.reference.url } : {}) })
     }
     if (references.length > MAX_REFERENCES) throw new SessionReferenceLimitError('Too many session references (maximum 20)')
     const headline = patch.headline

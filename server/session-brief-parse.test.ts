@@ -50,4 +50,23 @@ describe('parseSessionBriefPatch references', () => {
     expect(() => parseSessionBriefPatch({ reference: { action: 'remove', kind: 'url', value: 'https://example.com/', label: 'No' } })).toThrow('reference is invalid')
     expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'feature_flag', value: 'flag', label: 'No' } })).toThrow('reference is invalid')
   })
+
+  it('accepts issue and deployment links and optionally linked build/release IDs', () => {
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' } }).reference)
+      .toEqual({ action: 'upsert', kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' })
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'deployment', value: 'https://preview.example.com', label: 'Preview' } }).reference)
+      .toEqual({ action: 'upsert', kind: 'deployment', value: 'https://preview.example.com/', label: 'Preview' })
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842' } }).reference)
+      .toEqual({ action: 'upsert', kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842' })
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'release', value: 'v2.3.0' } }).reference)
+      .toEqual({ action: 'upsert', kind: 'release', value: 'v2.3.0' })
+  })
+
+  it('rejects unsafe links and invalid kind-specific fields', () => {
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'issue', value: 'javascript:alert(1)' } })).toThrow('reference is invalid')
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'deployment', value: 'https://user:password@example.com' } })).toThrow('reference is invalid')
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'build', value: '1842', url: 'file:///tmp/build' } })).toThrow('reference is invalid')
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'release', value: 'v2', label: 'wrong' } })).toThrow('reference is invalid')
+    expect(() => parseSessionBriefPatch({ reference: { action: 'remove', kind: 'build', value: '1842', url: 'https://ci.example.com/' } })).toThrow('reference is invalid')
+  })
 })
