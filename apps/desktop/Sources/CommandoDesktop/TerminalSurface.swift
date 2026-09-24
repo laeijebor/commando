@@ -178,6 +178,18 @@ final class HostedTerminalView: TerminalView {
 
     override var tag: Int { hostOrderRank }
 
+    func handleModifiedControlShiftS(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers == [.control, .shift],
+              event.charactersIgnoringModifiers?.lowercased() == "s",
+              getTerminal().keyboardEnhancementFlags.isEmpty
+        else { return false }
+        // In legacy mode SwiftTerm sends 0x13 for both Ctrl+S and Ctrl+Shift+S.
+        // Preserve Shift for apps that bind the two keys differently.
+        send(Array("\u{1b}[115;6u".utf8))
+        return true
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }

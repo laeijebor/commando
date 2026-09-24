@@ -71,7 +71,8 @@ final class DesktopWindow: NSWindow {
             if let terminalView = focusedTerminalView(),
                terminalView.handleOptionBackspace(event) ||
                terminalView.handleOptionArrow(event) ||
-               terminalView.handleControlV(event) {
+               terminalView.handleControlV(event) ||
+               terminalView.handleModifiedControlShiftS(event) {
                 return
             }
             if (modifiers == .command || modifiers == [.command, .shift]),

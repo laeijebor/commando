@@ -693,6 +693,42 @@ final class TerminalPaneHostTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testTerminalDistinguishesControlShiftSFromControlS() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "modified-control-s"),
+            ariaLabel: "Terminal",
+            prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        let controlS = try XCTUnwrap(keyEvent(key: "s", modifiers: .control, keyCode: 1))
+        let controlShiftS = try XCTUnwrap(keyEvent(
+            key: "S", modifiers: [.control, .shift], keyCode: 1
+        ))
+
+        surface.view.keyDown(with: controlS)
+        window.sendEvent(controlShiftS)
+        XCTAssertEqual(inputs, [Data([0x13]), Data("\u{1b}[115;6u".utf8)])
+
+        inputs.removeAll()
+        surface.view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
+        XCTAssertFalse(surface.view.handleModifiedControlShiftS(controlShiftS))
+        surface.view.keyDown(with: controlShiftS)
+        XCTAssertEqual(inputs, [Data("\u{1b}[115;6u".utf8)])
+        surface.destroy()
+        window.contentView = nil
+        window.orderOut(nil)
+    }
+
     func testTerminalSendsOptionBackspaceAsWordDelete() throws {
         var inputs: [Data] = []
         let surface = TerminalSurface(
