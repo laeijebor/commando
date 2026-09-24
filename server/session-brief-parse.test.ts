@@ -28,3 +28,26 @@ describe('parseSessionBriefPatch screenshots', () => {
     expect(() => parseSessionBriefPatch({ screenshots: { dir: '/definitely/missing/commando-shots' } })).toThrow('must exist')
   })
 })
+
+describe('parseSessionBriefPatch references', () => {
+  it('accepts flag names and labeled HTTP(S) links', () => {
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'feature_flag', value: ' new-checkout ' } }))
+      .toEqual({ reference: { action: 'upsert', kind: 'feature_flag', value: 'new-checkout' } })
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'url', value: 'http://localhost:5273/checkout', label: 'Preview' } }))
+      .toEqual({ reference: { action: 'upsert', kind: 'url', value: 'http://localhost:5273/checkout', label: 'Preview' } })
+    expect(parseSessionBriefPatch({ reference: { action: 'remove', kind: 'url', value: 'https://example.com/' } }))
+      .toEqual({ reference: { action: 'remove', kind: 'url', value: 'https://example.com/' } })
+    expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'url', value: 'https://example.com' } }))
+      .toEqual({ reference: { action: 'upsert', kind: 'url', value: 'https://example.com/' } })
+  })
+
+  it.each(['javascript:alert(1)', 'file:///etc/passwd', 'https://user:secret@example.com/'])('rejects unsafe URL %s', (url) => {
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'url', value: url } })).toThrow('reference is invalid')
+  })
+
+  it('rejects malformed reference mutations', () => {
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'feature_flag', value: '' } })).toThrow()
+    expect(() => parseSessionBriefPatch({ reference: { action: 'remove', kind: 'url', value: 'https://example.com/', label: 'No' } })).toThrow('reference is invalid')
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'feature_flag', value: 'flag', label: 'No' } })).toThrow('reference is invalid')
+  })
+})

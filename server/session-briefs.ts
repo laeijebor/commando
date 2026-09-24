@@ -13,6 +13,7 @@ import type {
   SessionBriefUpdate,
   SessionBriefUpdateKind,
   PaneScreenshotFolder,
+  SessionReference,
 } from '../shared/protocol.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 
@@ -36,6 +37,7 @@ export type SessionBriefPatch = {
     detail?: string
   }
   publishedScreenshots?: PaneScreenshotFolder
+  reference?: { action: 'upsert' | 'remove'; kind: SessionReference['kind']; value: string; label?: string }
 }
 
 const SESSION_ID = /^\$\d+$/
@@ -43,6 +45,7 @@ const PANE_ID = /^%\d+$/
 const UPDATE_ID = /^[A-Za-z0-9:._-]{1,128}$/
 const MAX_BRIEFS = 64
 const MAX_UPDATES = 150
+const MAX_REFERENCES = 20
 const MAX_HEADLINE = 180
 const MAX_RECAP = 2_000
 const MAX_NEXT = 240
@@ -52,6 +55,8 @@ const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'ch
 const STATUS_KINDS = new Set<AgentStatusKind>(['working', 'needs_input', 'done', 'failed', 'stale', 'unknown'])
 const TASK_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed', 'cancelled'])
 const TASK_PRIORITIES = new Set<AgentTaskPriority>(['high', 'medium', 'low'])
+
+export class SessionReferenceLimitError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -164,6 +169,24 @@ function parseScreenshotFolder(value: unknown): PaneScreenshotFolder | null {
   }
 }
 
+export function validReferenceUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname)
+      && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function parseReference(value: unknown): SessionReference | null {
+  if (!isRecord(value) || (value.kind !== 'feature_flag' && value.kind !== 'url')) return null
+  const name = cleanText(value.value, value.kind === 'url' ? 2_048 : 120)
+  const label = value.label === undefined ? undefined : cleanText(value.label, 120)
+  if (!name || label === null || (value.kind === 'url' && !validReferenceUrl(name)) || (value.kind === 'feature_flag' && label !== undefined)) return null
+  return { kind: value.kind, value: name, ...(label ? { label } : {}) }
+}
+
 function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (!isRecord(value)) return null
   const sessionName = cleanText(value.sessionName, 128)
@@ -172,6 +195,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   const next = cleanOptionalText(value.next, MAX_NEXT)
   const taskValues = value.tasks === undefined ? [] : value.tasks
   const screenshotValues = value.screenshots === undefined ? [] : value.screenshots
+  const referenceValues = value.references === undefined ? [] : value.references
   if (
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
@@ -179,6 +203,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     typeof value.state !== 'string' || !STATUS_KINDS.has(value.state as AgentStatusKind) ||
     !Array.isArray(taskValues) || taskValues.length > 100 ||
     !Array.isArray(screenshotValues) || screenshotValues.length > 5 ||
+    !Array.isArray(referenceValues) || referenceValues.length > MAX_REFERENCES ||
     !Array.isArray(value.updates) || value.updates.length > MAX_UPDATES ||
     !safeInteger(value.updatedAt)
   ) return null
@@ -194,6 +219,10 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (screenshots.some((folder) => folder === null)) return null
   const validScreenshots = screenshots as PaneScreenshotFolder[]
   if (new Set(validScreenshots.map((folder) => folder.id)).size !== validScreenshots.length) return null
+  const references = referenceValues.map(parseReference)
+  if (references.some((reference) => reference === null)) return null
+  const validReferences = references as SessionReference[]
+  if (new Set(validReferences.map((reference) => `${reference.kind}:${reference.value}`)).size !== validReferences.length) return null
   return {
     sessionId: value.sessionId,
     sessionName,
@@ -203,6 +232,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     ...(recapMarkdown ? { recapMarkdown } : {}),
     ...(validTasks.length ? { tasks: validTasks } : {}),
     ...(validScreenshots.length ? { screenshots: validScreenshots } : {}),
+    ...(validReferences.length ? { references: validReferences } : {}),
     updates: validUpdates,
     ...(next ? { next } : {}),
     updatedAt: value.updatedAt,
@@ -268,6 +298,7 @@ function cloneBrief(brief: SessionBrief): SessionBrief {
     ...brief,
     ...(brief.tasks ? { tasks: brief.tasks.map((task) => ({ ...task })) } : {}),
     ...(brief.screenshots ? { screenshots: brief.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
+    ...(brief.references ? { references: brief.references.map((reference) => ({ ...reference })) } : {}),
     updates: brief.updates.map((update) => ({ ...update })),
   }
 }
@@ -510,6 +541,7 @@ export class SessionBriefStore {
             ? { tasks: current.tasks.map((task) => ({ ...task })) }
             : {}),
         ...(current?.screenshots?.length ? { screenshots: current.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
+        ...(current?.references?.length ? { references: current.references.map((reference) => ({ ...reference })) } : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
         updatedAt: Math.max(now, status.updatedAt),
@@ -578,6 +610,13 @@ export class SessionBriefStore {
         }
       : null
     const previousUpdates = current?.updates ?? []
+    const references = (current?.references ?? []).filter((reference) => (
+      reference.kind !== patch.reference?.kind || reference.value !== patch.reference.value
+    ))
+    if (patch.reference?.action === 'upsert') {
+      references.push({ kind: patch.reference.kind, value: patch.reference.value, ...(patch.reference.label ? { label: patch.reference.label } : {}) })
+    }
+    if (references.length > MAX_REFERENCES) throw new SessionReferenceLimitError('Too many session references (maximum 20)')
     const headline = patch.headline
       ?? current?.headline
       ?? patch.update?.text
@@ -603,6 +642,7 @@ export class SessionBriefStore {
             ? { recapMarkdown: current.recapMarkdown }
             : {}),
       ...(current?.tasks?.length ? { tasks: current.tasks.map((task) => ({ ...task })) } : {}),
+      ...(references.length ? { references } : {}),
       ...(published
         ? { screenshots: [published, ...(current?.screenshots ?? []).filter((folder) => folder.id !== published.id)].slice(0, 5) }
         : current?.screenshots?.length

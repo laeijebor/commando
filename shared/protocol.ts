@@ -148,6 +148,12 @@ export type SessionBriefUpdate = {
   createdAt: number
 }
 
+export type SessionReference = {
+  kind: 'feature_flag' | 'url'
+  value: string
+  label?: string
+}
+
 export type SessionBrief = {
   paneId: string
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
@@ -160,6 +166,7 @@ export type SessionBrief = {
   recapMarkdown?: string
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
+  references?: SessionReference[]
   updates: SessionBriefUpdate[]
   next?: string
   updatedAt: number
