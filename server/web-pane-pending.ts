@@ -13,9 +13,11 @@ import {
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_NOTE,
+  redlinePageKey,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
 import { defaultFeedbackJournalDir, JOURNAL_COMPACT_THRESHOLD } from './web-pane-feedback-journal.js'
+import type { SentAnswerStore } from './web-pane-sent-answers.js'
 import { WebPaneError } from './web-panes.js'
 
 const PENDING_SUFFIX = '.pending.jsonl'
@@ -307,6 +309,8 @@ type PaneState = {
   nextId: number
   revision: number
   url?: string
+  /** Page the tile is showing now, which picks the sent answers to include. */
+  viewedPage?: string
   /** Page answers the cap discarded since the last send. */
   dropped: number
 }
@@ -325,6 +329,7 @@ export class WebPanePendingStore {
   constructor(
     private readonly journal: PendingNotesJournal = new PendingNotesJournal(),
     private readonly releaseAttachment: ReleaseAttachment = () => undefined,
+    private readonly sentAnswers?: Pick<SentAnswerStore, 'forPage' | 'record'>,
   ) {}
 
   list(webPaneId: string): WebPanePendingNote[] {
@@ -333,7 +338,33 @@ export class WebPanePendingStore {
 
   snapshot(webPaneId: string): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
-    return { revision: state.revision, notes: [...state.notes], knownUpTo: state.nextId - 1, dropped: state.dropped }
+    const snapshot: WebPanePendingSnapshot = {
+      revision: state.revision,
+      notes: [...state.notes],
+      knownUpTo: state.nextId - 1,
+      dropped: state.dropped,
+    }
+    const page = state.viewedPage ?? state.url
+    if (this.sentAnswers && page !== undefined) {
+      snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(page) }
+    }
+    return snapshot
+  }
+
+  /**
+   * Records the page the tile is now showing, so its snapshot carries that
+   * page's sent answers. Only a move to a different page is a change.
+   */
+  setPage(webPaneId: string, url: string): WebPanePendingSnapshot {
+    const state = this.state(webPaneId)
+    const current = state.viewedPage ?? state.url
+    if (current === undefined || redlinePageKey(current) !== redlinePageKey(url)) {
+      state.revision += 1
+      this.journal.appendRevision(webPaneId, state.revision)
+      this.journal.compact(webPaneId)
+    }
+    state.viewedPage = url
+    return this.snapshot(webPaneId)
   }
 
   /**
@@ -367,6 +398,7 @@ export class WebPanePendingStore {
         comment: responseComment(responseValue),
         queueKey: response.queueKey,
         response: responseValue,
+        ...(response.shape !== undefined ? { questionShape: response.shape } : {}),
         attachments: [...(existing.attachments ?? [])],
       }
       state.revision += 1
@@ -388,6 +420,7 @@ export class WebPanePendingStore {
       comment: responseComment(responseValue),
       ...(response.queueKey !== undefined ? { queueKey: response.queueKey } : {}),
       response: responseValue,
+      ...(response.shape !== undefined ? { questionShape: response.shape } : {}),
       attachments: [],
     }
     const kept = [...state.notes]
@@ -493,6 +526,7 @@ export class WebPanePendingStore {
         updated.rect = input.rect ?? { x: 0, y: 0, width: 0, height: 0 }
         if (input.queueKey === undefined) delete updated.queueKey
         else updated.queueKey = input.queueKey
+        if (input.shape !== undefined) updated.questionShape = input.shape
         updated.response = response
         updated.comment = responseComment(response)
       }
@@ -659,6 +693,7 @@ export class WebPanePendingStore {
         deliveryKey,
         revision: _revision,
         queueKey: _queueKey,
+        questionShape: _questionShape,
         pageUrl: sourcePageUrl,
         attachments,
         ...note
@@ -682,6 +717,7 @@ export class WebPanePendingStore {
           })),
         } : {}),
       })))
+      this.recordSent(wanted, pageUrl)
       const sent = new Set(wanted.map((note) => note.id))
       state.notes = state.notes.filter((note) => !sent.has(note.id))
       state.dropped = 0
@@ -755,6 +791,34 @@ export class WebPanePendingStore {
     this.panes.delete(webPaneId)
     this.journal.remove(webPaneId)
     this.release(state.notes)
+  }
+
+  /**
+   * Remembers sent page answers so they keep showing as answered. Delivery has
+   * already succeeded, so a failure here costs only that hint, not the send.
+   */
+  private recordSent(notes: readonly WebPanePendingNote[], fallbackPageUrl: string): void {
+    if (!this.sentAnswers) return
+    const byPage = new Map<string, Parameters<SentAnswerStore['record']>[1][number][]>()
+    for (const note of notes) {
+      if (!note.response || !note.questionShape) continue
+      const page = note.pageUrl ?? fallbackPageUrl
+      const answers = byPage.get(page) ?? []
+      answers.push({
+        ...(note.queueKey !== undefined ? { queueKey: note.queueKey } : {}),
+        selector: note.selector,
+        shape: note.questionShape,
+        response: note.response,
+      })
+      byPage.set(page, answers)
+    }
+    for (const [page, answers] of byPage) {
+      try {
+        this.sentAnswers.record(page, answers)
+      } catch (error) {
+        console.warn('[web-pane-pending] could not record sent answers for', page, error)
+      }
+    }
   }
 
   private rememberUrl(webPaneId: string, state: PaneState, url: string): void {
