@@ -27,7 +27,7 @@
   const MAX_QUESTION_SNAPSHOT_BYTES = 256 * 1024
   // Dropped in this order, least important to the answer first, until the
   // payload fits under MAX_RESPONSE_PAYLOAD_BYTES.
-  const OPTIONAL_FIELD_DROP_ORDER = ['data', 'text', 'selector', 'rect']
+  const OPTIONAL_FIELD_DROP_ORDER = ['data', 'text', 'shape', 'selector', 'rect']
 
   // The daemon requires a non-empty answer (server/web-panes-api.ts), so the
   // two "I am not picking one of your options" replies carry a stand-in
@@ -108,6 +108,36 @@
     return parts.join(' > ')
   }
 
+  /** Mirrors shared/redline-response.ts questionShapeOf — keep in sync. */
+  const questionShape = (question) => {
+    const shape = { question: question.question, kind: question.kind }
+    if (Array.isArray(question.options)) shape.options = [...question.options]
+    if (question.multiple !== undefined) shape.multiple = question.multiple
+    if (question.max !== undefined) shape.max = question.max
+    return shape
+  }
+
+  /** Mirrors shared/redline-response.ts sameQuestionShape — keep in sync. */
+  const sameQuestionShape = (a, b) => {
+    const aOptions = a.options || []
+    const bOptions = b.options || []
+    return a.question === b.question &&
+      a.kind === b.kind &&
+      (a.multiple === true) === (b.multiple === true) &&
+      a.max === b.max &&
+      aOptions.length === bOptions.length &&
+      aOptions.every((option, index) => option === bOptions[index])
+  }
+
+  const sentLabel = (sentAt) => {
+    const minutes = Math.floor((Date.now() - sentAt) / 60_000)
+    if (!Number.isFinite(minutes) || minutes < 1) return 'Sent · just now'
+    if (minutes < 60) return `Sent · ${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `Sent · ${hours}h ago`
+    return `Sent · ${Math.floor(hours / 24)}d ago`
+  }
+
   const queueResponse = (input) => {
     if (!input || typeof input.question !== 'string' || typeof input.answer !== 'string') return false
     const payload = {
@@ -148,6 +178,8 @@
     if (typeof input.queueKey === 'string' && input.queueKey.length > 0) {
       payload.queueKey = input.queueKey.slice(0, 128)
     }
+    // What was asked, so the daemon can keep showing this answer once sent.
+    if (input.shape && typeof input.shape === 'object') payload.shape = questionShape(input.shape)
     const element = input.element instanceof Element ? input.element : null
     if (element) {
       const selector = cssPath(element)
@@ -372,6 +404,11 @@
   border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
   background: color-mix(in oklab, #2fbf71 14%, transparent);
   color: #2fbf71; font-weight: 650; font-size: .9rem;
+}
+:where(.redline-resolved-answer.redline-resolved-skipped) {
+  border-color: color-mix(in oklab, currentColor 22%, transparent);
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  color: inherit; opacity: .75;
 }
 :where(.redline-resolved-note) {
   margin: .6rem 0 0; padding: .5rem .7rem; border-radius: 9px;
@@ -624,6 +661,20 @@
     return snapshot.controls.find((control) => !control?.queueKey && control?.selector === selector) || null
   }
 
+  /** A sent answer still standing for this control: same identity, same question. */
+  const matchedSentAnswer = (host, snapshot) => {
+    if (!snapshot || !Array.isArray(snapshot.sent)) return null
+    const descriptor = host.questionDescriptor()
+    if (!descriptor) return null
+    return snapshot.sent.find((answer) => (
+      answer && answer.shape && answer.response && typeof answer.response.answer === 'string' &&
+      (descriptor.queueKey
+        ? answer.queueKey === descriptor.queueKey
+        : !answer.queueKey && answer.selector === descriptor.selector) &&
+      sameQuestionShape(answer.shape, descriptor)
+    )) || null
+  }
+
   const pendingBaseline = (response) => JSON.stringify([
     typeof response?.answer === 'string' ? response.answer.trim() : '',
     typeof response?.note === 'string' ? response.note.trim() : '',
@@ -813,12 +864,14 @@
       return queued
     }
     queue(answer, data) {
+      const descriptor = this.questionDescriptor()
       return queueResponse({
         question: this.prompt(),
         answer,
         note: this._noteInput?.value.trim() || undefined,
         data,
         queueKey: this.key(),
+        ...(descriptor ? { shape: descriptor } : {}),
         element: this,
       })
     }
@@ -873,11 +926,19 @@
     }
     questionEditor() { return { kind: 'text' } }
     applyPendingSnapshot(snapshot) {
+      const queued = matchedPendingControl(this, snapshot)
+      const sent = queued?.response ? null : matchedSentAnswer(this, snapshot)
+      // Reopen dismisses one particular send; a later send shows again.
+      if (sent && sent.sentAt !== this._reopenedSentAt) {
+        this.showSent(sent)
+        return
+      }
+      this.leaveSentView()
       const currentBaseline = this.currentBaseline()
       const wasClean = currentBaseline === (
         this._queuedBaseline === null ? this._localBaseline : this._queuedBaseline
       )
-      const control = matchedPendingControl(this, snapshot)
+      const control = queued
       if (!control?.response) {
         if (this._queuedBaseline !== null) this._localBaseline = currentBaseline
         this._queuedBaseline = null
@@ -936,50 +997,117 @@
     renderResolved() {
       // Author children (a redline-question's own fields) are detached rather
       // than dropped so Reopen can rebuild the live control exactly.
+      this._resolvedStash = this.stashChildren()
+      this.renderSettled({
+        answers: this.resolvedAnswers(),
+        note: this.getAttribute('note'),
+        when: this.getAttribute('answered-in') || 'Answered earlier',
+        reopenable: !this.hasAttribute('locked'),
+        onReopen: () => this.reopen(),
+      })
+    }
+    stashChildren() {
       const stash = document.createDocumentFragment()
       while (this.firstChild) stash.append(this.firstChild)
-      this._resolvedStash = stash
+      return stash
+    }
+    /** The settled look shared by agent-resolved and already-sent controls. */
+    renderSettled({ answers, skipped = false, note, when, reopenable, onReopen }) {
       this.dataset.redlineResolved = '1'
+      this.append(promptHeading(this))
 
-      const heading = promptHeading(this)
-      this.append(heading)
-
-      const answers = this.resolvedAnswers()
-      if (answers.length > 0) {
+      if (answers.length > 0 || skipped) {
         const list = document.createElement('div')
         list.className = 'redline-resolved-answers'
-        for (const answer of answers) {
+        for (const answer of skipped ? [] : answers) {
           const chip = document.createElement('span')
           chip.className = 'redline-resolved-answer'
           chip.textContent = `\u2713 ${answer}`
           list.append(chip)
         }
+        if (skipped) {
+          const chip = document.createElement('span')
+          chip.className = 'redline-resolved-answer redline-resolved-skipped'
+          chip.textContent = 'Skipped'
+          list.append(chip)
+        }
         this.append(list)
       }
 
-      const noteText = this.getAttribute('note')
-      if (noteText) {
-        const note = document.createElement('p')
-        note.className = 'redline-resolved-note'
-        note.textContent = noteText
-        this.append(note)
+      if (note) {
+        const noteElement = document.createElement('p')
+        noteElement.className = 'redline-resolved-note'
+        noteElement.textContent = note
+        this.append(noteElement)
       }
 
       const meta = document.createElement('div')
       meta.className = 'redline-resolved-meta'
-      const when = document.createElement('span')
-      when.className = 'redline-resolved-when'
-      when.textContent = this.getAttribute('answered-in') || 'Answered earlier'
-      meta.append(when)
-      if (!this.hasAttribute('locked')) {
+      const whenElement = document.createElement('span')
+      whenElement.className = 'redline-resolved-when'
+      whenElement.textContent = when
+      meta.append(whenElement)
+      if (reopenable) {
         const reopen = document.createElement('button')
         reopen.type = 'button'
         reopen.className = 'redline-reopen'
         reopen.textContent = this.getAttribute('reopen-label') || 'Reopen'
-        reopen.addEventListener('click', () => this.reopen())
+        reopen.addEventListener('click', onReopen)
         meta.append(reopen)
       }
       this.append(meta)
+    }
+    /**
+     * An answer the user already sent shows settled, like an agent-resolved
+     * control, until the agent rewrites the question. The live control is
+     * stashed, not rebuilt, so it stays in the question inventory.
+     */
+    showSent(sent) {
+      if (this._sentView?.sentAt === sent.sentAt) return
+      this.leaveSentView()
+      this._sentView = { sentAt: sent.sentAt, stash: this.stashChildren() }
+      this.dataset.redlineSent = '1'
+      const answer = sent.response.answer
+      const skipped = answer === SKIPPED_ANSWER
+      const answers = skipped || answer === NOTE_ONLY_ANSWER
+        ? []
+        : sent.shape.multiple
+          ? answer.split(', ').map((value) => value.trim()).filter(Boolean)
+          : [answer]
+      this.renderSettled({
+        answers,
+        skipped,
+        note: typeof sent.response.note === 'string' ? sent.response.note : '',
+        when: sentLabel(sent.sentAt),
+        reopenable: true,
+        onReopen: () => this.reopenSent(sent),
+      })
+    }
+    leaveSentView() {
+      const view = this._sentView
+      if (!view) return
+      this._sentView = null
+      delete this.dataset.redlineResolved
+      delete this.dataset.redlineSent
+      this.replaceChildren(view.stash)
+    }
+    /** Back to the live control, pre-filled with what was sent. View-local. */
+    reopenSent(sent) {
+      this._reopenedSentAt = sent.sentAt
+      this.leaveSentView()
+      const response = sent.response
+      if (response.answer !== SKIPPED_ANSWER) {
+        try {
+          this.hydrateResponse({ question: this.prompt(), answer: response.answer, note: response.note, data: response.data })
+        } catch (error) {
+          console.warn('redline: could not restore the sent answer', error)
+        }
+      }
+      if (this._noteInput) this._noteInput.value = typeof response.note === 'string' ? response.note : ''
+      this._queuedBaseline = null
+      this._localBaseline = this.currentBaseline()
+      renderPendingState(this)
+      this.dispatchEvent(new CustomEvent('redline-reopen', { bubbles: true }))
     }
     /** Restores the live control, pre-filled with the recorded answer. */
     reopen() {
