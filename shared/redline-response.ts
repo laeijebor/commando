@@ -303,13 +303,26 @@ export function redlinePendingSnapshotForPage(
     }
     break
   }
-  const sent = snapshot.sent && snapshot.sent.page === redlinePageKey(pageUrl)
+  return withPageSentAnswers(controls, snapshot.sent, pageUrl)
+}
+
+/**
+ * Completes a page snapshot with the sent answers for `pageUrl`'s page (origin
+ * + path, so `?v=` reloads keep them), in whatever byte budget the controls
+ * leave. Queued controls always win the space.
+ */
+export function withPageSentAnswers(
+  controls: RedlinePagePendingSnapshot['controls'],
+  sent: WebPanePendingSnapshot['sent'],
+  pageUrl: string,
+): RedlinePagePendingSnapshot {
+  const answers = sent && sent.page === redlinePageKey(pageUrl)
     ? pageSentAnswers(
-        snapshot.sent.answers,
+        sent.answers,
         MAX_PENDING_SNAPSHOT_BYTES - utf8Bytes(JSON.stringify({ version: 1, controls, sent: [] })),
       )
     : []
-  return sent.length > 0 ? { version: 1, controls, sent } : { version: 1, controls }
+  return answers.length > 0 ? { version: 1, controls, sent: answers } : { version: 1, controls }
 }
 
 function plainJsonData(value: unknown): unknown {

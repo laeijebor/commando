@@ -9,6 +9,7 @@ import {
   type WebPanePendingNote,
   type WebPanePendingSendIntent,
   type WebPanePendingSnapshot,
+  type WebPaneSentAnswer,
 } from '../shared/protocol.js'
 import {
   MAX_RESPONSE_ANSWER,
@@ -799,7 +800,7 @@ export class WebPanePendingStore {
    */
   private recordSent(notes: readonly WebPanePendingNote[], fallbackPageUrl: string): void {
     if (!this.sentAnswers) return
-    const byPage = new Map<string, Parameters<SentAnswerStore['record']>[1][number][]>()
+    const byPage = new Map<string, Array<Omit<WebPaneSentAnswer, 'sentAt'>>>()
     for (const note of notes) {
       if (!note.response || !note.questionShape) continue
       const page = note.pageUrl ?? fallbackPageUrl

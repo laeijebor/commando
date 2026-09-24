@@ -29,13 +29,11 @@ import {
   MAX_RESPONSE_PAYLOAD_BYTES,
   MAX_RESPONSE_QUESTION,
   MAX_RESPONSE_QUEUE_KEY,
-  MAX_PENDING_SNAPSHOT_BYTES,
   MAX_QUESTION_SNAPSHOT_BYTES,
   REDLINE_BINDING_NAME,
-  pageSentAnswers,
   parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
-  redlinePageKey,
+  withPageSentAnswers,
   type RedlinePagePendingSnapshot,
   type RedlinePageQuestionSnapshot,
   type RedlinePageResponse,
@@ -677,11 +675,7 @@ function pagePendingSnapshot(state: BufferedPendingState, pageUrl: string): Page
   const controls = state.controls
     .filter((control) => control.pageUrl === pageUrl)
     .map(({ pageUrl: _pageUrl, ...control }) => control)
-  // Sent answers match by page (origin + path), so a `?v=` reload keeps them.
-  const sent = state.sent && state.sent.page === redlinePageKey(pageUrl)
-    ? pageSentAnswers(state.sent.answers, MAX_PENDING_SNAPSHOT_BYTES)
-    : []
-  return sent.length > 0 ? { version: 1, controls, sent } : { version: 1, controls }
+  return withPageSentAnswers(controls, state.sent, pageUrl)
 }
 
 function pendingSnapshotExpression(snapshot: PagePendingSnapshot): string | null {

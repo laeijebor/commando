@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol.js'
-import { MAX_QUESTION_SNAPSHOT_BYTES, REDLINE_BINDING_NAME } from '../shared/redline-response.js'
+import { MAX_PENDING_SNAPSHOT_BYTES, MAX_QUESTION_SNAPSHOT_BYTES, REDLINE_BINDING_NAME } from '../shared/redline-response.js'
 import {
   ChromiumEngine,
   findChromiumBinary,
@@ -434,6 +434,31 @@ describe('ChromiumEngine', () => {
       version: 1,
       controls: [],
     })
+  })
+
+  it('gives queued controls the page budget before sent answers', async () => {
+    const note = 'n'.repeat(1_000)
+    const sent = {
+      page: 'http://localhost:5173/',
+      answers: Array.from({ length: 200 }, (_, index) => ({
+        queueKey: `q${index}`,
+        shape: { question: `Question ${index}?`, kind: 'text' as const },
+        response: { question: `Question ${index}?`, answer: 'a'.repeat(1_000), note, data: { blob: 'd'.repeat(20_000) } },
+        sentAt: index,
+      })),
+    }
+    const { stub, engine } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', { ...pendingSnapshot([responseNote(1, 'Pro')]), sent })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length > 0, 'bounded hydration')
+    const snapshot = snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1').at(-1) as CdpCall) as {
+      controls: unknown[]
+      sent?: unknown[]
+    }
+    expect(snapshot.controls).toHaveLength(1)
+    expect(snapshot.sent?.length).toBeGreaterThan(0)
+    expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(MAX_PENDING_SNAPSHOT_BYTES)
   })
 
   it('sanitizes and JSON-clones the page-facing pending snapshot', async () => {
