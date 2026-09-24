@@ -95,7 +95,18 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await mkdir(shots)
     await writeFile(join(shots, 'review.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64'))
     runAgent([paths.sessionBriefCliPath, '--headline', 'Ownership verified', '--update', 'decision', 'Retain the original handoff', '--screenshots', shots])
+    runAgent([paths.sessionBriefCliPath, '--feature-flag', 'new-checkout'])
+    const previewUrl = `${baseUrl}/checkout`
+    runAgent([paths.sessionBriefCliPath, '--url', previewUrl, '--url-label', 'Checkout preview'])
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
+    await expect(first.getByRole('region', { name: 'Important terms for Worklog agent' })).toContainText('new-checkout')
+    await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
+    const [previewPage] = await Promise.all([
+      page.waitForEvent('popup'),
+      first.getByRole('link', { name: /Checkout preview/ }).click(),
+    ])
+    await expect(previewPage).toHaveURL(previewUrl)
+    await previewPage.close()
     await expect(first.getByRole('button', { name: 'Open screenshot review.png' })).toBeVisible()
 
     tmux('rename-session', '-t', 'worklog', 'renamed')
@@ -109,6 +120,8 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByRole('textbox', { name: 'Note for Worklog agent' })).toHaveValue('Retain my review note')
     runAgent([paths.sessionBriefCliPath, '--update', 'note', 'After move'])
     await expect(first.getByText('After move')).toBeVisible()
+    runAgent([paths.sessionBriefCliPath, '--remove-feature-flag', 'new-checkout'])
+    await expect(first.getByText('new-checkout')).toHaveCount(0)
     await stop(daemon)
     daemon = start(['--import', 'tsx', 'server/index.ts'])
     await expect.poll(async () => { try { return (await snapshot()).panes.length } catch { return 0 } }, { timeout: 20_000 }).toBe(2)
@@ -116,6 +129,7 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
     await expect(first.getByText('Verify durable tasks')).toBeVisible()
     await expect(first.getByText('After move')).toBeVisible()
+    await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
     await expect(first.getByRole('textbox', { name: 'Note for Worklog agent' })).toHaveValue('Retain my review note')
     await expect(first.getByRole('button', { name: 'Open screenshot review.png' })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('worklog-after-move-and-restart.png') })

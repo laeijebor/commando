@@ -36,6 +36,18 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('shows flags and clickable labeled URLs above the scrollable activity', () => {
+    render(<PaneWorklog brief={{ ...brief, references: [
+      { kind: 'feature_flag', value: 'new-checkout' },
+      { kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout preview' },
+    ] }} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const section = screen.getByLabelText('Important terms for Tests')
+    expect(section).toHaveTextContent('new-checkout')
+    expect(section).toHaveTextContent('Feature flag')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'http://localhost:5273/checkout')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('target', '_blank')
+  })
   it('migrates notes to durable ownership and retains them across session moves', () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({ note: 'Keep my note', minimized: false, visibilitySet: true }))

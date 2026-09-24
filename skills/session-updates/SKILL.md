@@ -42,6 +42,25 @@ Use `--recap-markdown` for short Markdown prose and `--state` for one of
 `--clear-next` when the previous next action is complete and there is no new
 one yet.
 
+## Pin important terms
+
+When adding or editing flagged behavior, pin the flag name. Pin a useful route
+from the running stack when it helps the user return to the page without
+searching the conversation. URLs open as links in the pane worklog:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs --feature-flag new-checkout
+$HOME/.commando/hooks/commando-session-update.mjs --url http://localhost:5273/checkout --url-label "Checkout preview"
+```
+
+Publishing the same name or URL updates that entry instead of duplicating it.
+Remove a stale reference with `--remove-feature-flag NAME` or `--remove-url URL`.
+One reference action is accepted per call; it can accompany a headline or
+milestone. With `--stdin`, send `"reference": {"action":"upsert", "kind":"feature_flag", "value":"new-checkout"}`
+or use `kind: "url"` with an optional `label`. Use `action: "remove"` to unpin.
+Only HTTP(S) URLs without embedded credentials are accepted. Keep these
+references concise and session-relevant.
+
 ## Publish screenshots
 
 Publish a screenshot round by naming its directory:

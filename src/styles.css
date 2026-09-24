@@ -2229,6 +2229,7 @@ kbd {
 
 .pane-worklog-recap,
 .pane-worklog-note,
+.pane-worklog-references,
 .pane-worklog-plan,
 .pane-worklog-prs,
 .pane-worklog-screenshots,
@@ -2286,9 +2287,11 @@ kbd {
 .pane-worklog-section-toggle span { display: flex; align-items: center; gap: 6px; }
 .pane-worklog-section-toggle strong,
 .pane-worklog-prs > header strong,
+.pane-worklog-references > header strong,
 .pane-worklog-activity > header strong { color: var(--text-soft); font: 800 7px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
 .pane-worklog-section-toggle small,
 .pane-worklog-prs > header small,
+.pane-worklog-references > header small,
 .pane-worklog-activity > header small { color: var(--muted-dim); font: 600 7px/1 var(--mono); }
 .pane-worklog-section-toggle svg { width: 10px; height: 10px; }
 
@@ -2320,6 +2323,24 @@ kbd {
 .pane-worklog-task.is-cancelled { color: var(--muted-dim); opacity: .68; }
 
 .pane-worklog-prs > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.pane-worklog-references > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.pane-worklog-reference-list { display: grid; gap: 4px; }
+.pane-worklog-reference {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+}
+a.pane-worklog-reference:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.pane-worklog-reference-icon { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.pane-worklog-reference-icon svg { width: 10px; height: 10px; }
+.pane-worklog-reference strong { display: block; overflow: hidden; color: inherit; font: 700 8px/1.25 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.pane-worklog-reference small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-pr-list { display: grid; gap: 4px; }
 .pane-worklog-pr {
   min-width: 0;

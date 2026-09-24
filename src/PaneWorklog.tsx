@@ -11,6 +11,8 @@ import {
   Lightbulb,
   Images,
   GitPullRequest,
+  Flag,
+  Link,
   MessageSquareText,
   Minus,
   X,
@@ -258,7 +260,7 @@ export function PaneWorklog({
         <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
         <span className="pane-worklog-heading">
           <strong>{brief.headline}</strong>
-          <small>{empty ? 'Notes, pull requests, tasks and screenshots' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
+          <small>{empty ? 'Notes, important terms, pull requests and tasks' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
         </span>
         <button type="button" onClick={() => setMinimized(true)} aria-label={`Minimize worklog for ${paneLabel}`} title="Minimize worklog">
           <ChevronRight aria-hidden="true" />
@@ -297,6 +299,27 @@ export function PaneWorklog({
             onChange={(event) => setPreferences((current) => ({ ...current, note: event.target.value }))}
           />
         </section>
+
+        {brief.references?.length ? (
+          <section className="pane-worklog-references" aria-label={`Important terms for ${paneLabel}`}>
+            <header><strong>Important terms</strong><small>{brief.references.length}</small></header>
+            <div className="pane-worklog-reference-list">
+              {brief.references.map((reference) => (
+                reference.kind === 'url' ? (
+                  <a className="pane-worklog-reference" href={reference.value} target="_blank" rel="noreferrer" key={`${reference.kind}:${reference.value}`} title={reference.value}>
+                    <span className="pane-worklog-reference-icon"><Link aria-hidden="true" /></span>
+                    <span><strong>{reference.label ?? reference.value}</strong><small>{reference.value}</small></span>
+                  </a>
+                ) : (
+                  <div className="pane-worklog-reference" key={`${reference.kind}:${reference.value}`}>
+                    <span className="pane-worklog-reference-icon"><Flag aria-hidden="true" /></span>
+                    <span><strong>{reference.value}</strong><small>Feature flag</small></span>
+                  </div>
+                )
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {tasks.length ? (
           <section className="pane-worklog-plan" aria-label={`Plan for ${paneLabel}`}>

@@ -130,7 +130,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
-    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path).`,
+    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME, and useful running-stack routes with --url URL [--url-label LABEL]. Remove stale references with --remove-feature-flag NAME or --remove-url URL.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -652,7 +652,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--screenshots dir] [--stdin]')
+  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--screenshots dir] [--feature-flag name|--url URL [--url-label label]|--remove-feature-flag name|--remove-url URL] [--stdin]')
 }
 
 async function stdinJson() {
@@ -685,6 +685,17 @@ async function bodyFromArgs() {
     else if (flag === '--clear-next') body.next = null
     else if (flag === '--state') body.state = valueAfter(index++, flag)
     else if (flag === '--screenshots') body.screenshots = { dir: resolve(valueAfter(index++, flag)) }
+    else if (['--feature-flag', '--url', '--remove-feature-flag', '--remove-url'].includes(flag)) {
+      if (body.reference) throw new Error('Only one reference action is allowed per call')
+      body.reference = {
+        action: flag.startsWith('--remove-') ? 'remove' : 'upsert',
+        kind: flag.includes('url') ? 'url' : 'feature_flag',
+        value: valueAfter(index++, flag),
+      }
+    } else if (flag === '--url-label') {
+      if (body.reference?.kind !== 'url' || body.reference.action !== 'upsert') throw new Error('--url-label requires --url first')
+      body.reference.label = valueAfter(index++, flag)
+    }
     else if (flag === '--update') {
       const kind = valueAfter(index, flag)
       const text = args[index + 2]
