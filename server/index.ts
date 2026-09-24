@@ -38,6 +38,7 @@ import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
+import { SentAnswerStore } from './web-pane-sent-answers.js'
 import { RedlineApi } from './redline-api.js'
 import { defaultRedlineArtifactStatePath, RedlineArtifactRegistry } from './redline-artifacts.js'
 import { ChromiumEngine } from './chromium-engine.js'
@@ -511,6 +512,7 @@ async function main(): Promise<void> {
   webPanePending = new WebPanePendingStore(
     pendingJournal,
     releaseAttachment,
+    new SentAnswerStore(),
   )
   const chromiumEngine = new ChromiumEngine({
     classify: (url) => webPanes.classify(url),
@@ -528,6 +530,10 @@ async function main(): Promise<void> {
         webPaneId,
         webPanePending.addResponse(webPaneId, pageUrl, response),
       )
+    },
+    onPageNavigated: (webPaneId, pageUrl) => {
+      if (!webPanes.get(webPaneId)) return
+      webTileRelay.broadcastPending(webPaneId, webPanePending.setPage(webPaneId, pageUrl))
     },
     onPageQuestions: (webPaneId, snapshot, pageUrl) => {
       if (webPanes.get(webPaneId)) webTileRelay.broadcastQuestions(webPaneId, pageUrl, snapshot)

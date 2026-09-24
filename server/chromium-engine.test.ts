@@ -403,6 +403,39 @@ describe('ChromiumEngine', () => {
     await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'DOMContentLoaded pending hydration')
   })
 
+  it('reports accepted pages and hydrates sent answers across cache-bust reloads', async () => {
+    const sent = {
+      page: 'http://localhost:5173/plan.html',
+      answers: [{
+        queueKey: 'plan',
+        selector: '#plan',
+        shape: { question: 'Which plan?', kind: 'choice' as const, options: ['Free', 'Pro'], multiple: false },
+        response: { question: 'Which plan?', answer: 'Pro' },
+        sentAt: 3,
+      }],
+    }
+    const onPageNavigated = vi.fn()
+    const { stub, engine } = await createHarness({ onPageNavigated })
+    engine.updatePendingSnapshot('w-11111111', { ...pendingSnapshot([]), sent })
+
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/plan.html?v=1')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/plan.html?v=1' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length > 0, 'sent hydration')
+    expect(onPageNavigated).toHaveBeenCalledWith('w-11111111', 'http://localhost:5173/plan.html?v=1')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1').at(-1) as CdpCall)).toEqual({
+      version: 1,
+      controls: [],
+      sent: sent.answers,
+    })
+
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/other.html' } })
+    await until(() => onPageNavigated.mock.calls.length === 2, 'second page report')
+    expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1').at(-1) as CdpCall)).toEqual({
+      version: 1,
+      controls: [],
+    })
+  })
+
   it('sanitizes and JSON-clones the page-facing pending snapshot', async () => {
     const { stub, engine } = await createHarness()
     const data = { choice: 'Pro', nested: { enabled: true }, omitted: undefined }
