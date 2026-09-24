@@ -12,6 +12,7 @@ import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
+import { SentAnswerStore } from './web-pane-sent-answers.js'
 import { WebPaneService } from './web-panes.js'
 
 const AGENT_TOKEN = 'agent-hook-token-with-at-least-32-characters'
@@ -767,6 +768,43 @@ describe('pending note routes', () => {
       pageUrl,
       response: { question: '', answer: 'Pro' },
     }, ownerAuth)).status).toBe(400)
+  })
+
+  it('sends shaped answers and reports them for the page the tile is viewing', async () => {
+    const service = await createService()
+    const dir = mkdtempSync(join(tmpdir(), 'commando-sent-api-'))
+    const pending = new WebPanePendingStore(
+      new PendingNotesJournal({ dir }),
+      undefined,
+      new SentAnswerStore({ dir: join(dir, 'sent'), now: () => 7 }),
+    )
+    const { baseUrl, onPendingChanged } = await startApi(service, { pending })
+    const id = await openChromiumPane(service)
+    const pageUrl = 'https://example.com/review?v=1'
+    const shape = { question: 'Which plan?', kind: 'choice', options: ['Starter', 'Pro'], multiple: false }
+
+    await post(baseUrl, `/api/web-panes/${id}/pending/response`, {
+      pageUrl,
+      response: { question: 'Which plan?', answer: 'Pro', queueKey: 'plan', shape },
+    }, ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)
+
+    const route = `/api/web-panes/${id}/pending/page`
+    expect((await post(baseUrl, route, { url: 'https://example.com/review?v=2' }, agentAuth)).status).toBe(403)
+    expect((await post(baseUrl, route, { url: 'file:///etc/passwd' }, ownerAuth)).status).toBe(400)
+    const viewed = await post(baseUrl, route, { url: 'https://example.com/review?v=2' }, ownerAuth)
+    expect(viewed.status).toBe(200)
+    const body = await viewed.json() as { sent?: { page: string; answers: Array<{ queueKey?: string; response: { answer: string } }> } }
+    expect(body.sent).toMatchObject({
+      page: 'https://example.com/review',
+      answers: [{ queueKey: 'plan', response: { answer: 'Pro' } }],
+    })
+    expect(onPendingChanged).toHaveBeenLastCalledWith(id, expect.objectContaining({ sent: body.sent }))
+
+    const elsewhere = await (await post(baseUrl, route, { url: 'https://example.com/other' }, ownerAuth)).json() as {
+      sent?: { answers: unknown[] }
+    }
+    expect(elsewhere.sent?.answers).toEqual([])
   })
 
   it('owner queues, lists, and removes pending notes; broadcasts fire', async () => {
