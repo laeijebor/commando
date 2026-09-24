@@ -10,6 +10,23 @@ pane grid, right beside the tmux pane you are working in. When you have
 something worth *seeing* — a served HTML page, a dev server, a report —
 open it as a tile instead of only pasting a URL into chat.
 
+## Visual explanations in the tile
+
+When explaining something visually, use the `show-me` skill if it is present
+to choose the smallest useful diagram, tree, diff, or focused HTML view. If
+the result should be presented as a page, serve the visual as HTML and open it
+beside your terminal in a Commando browser tile; do not leave the user with
+only a chat snippet, URL, or separate browser window. Use the tile mechanics
+below rather than `show-me`'s generic `open` command.
+
+For a visual the user should review or annotate, also use the `redline` skill
+if it is present. Follow its artifact and presentation workflow: serve the
+page, open it in a **chromium** tile, inspect the actual tile via CDP, invite
+the user to toggle **Review this page**, and collect and apply their feedback.
+`show-me` guides what to show; `redline` guides how to present and iterate on
+it in Commando. If `redline` is unavailable, use the tile and feedback
+instructions below.
+
 ## When this applies
 
 All three must hold (otherwise just share the URL in your reply):
