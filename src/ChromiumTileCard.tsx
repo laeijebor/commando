@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WebPane, WebPanePendingSnapshot } from '../shared/protocol'
 import {
+  parsePendingSent,
   parseRedlinePageQuestionSnapshot,
   type RedlinePageQuestionSnapshot,
 } from '../shared/redline-response'
@@ -44,6 +45,7 @@ type TileSocketMessage = {
   notes?: unknown
   revision?: number
   dropped?: number
+  sent?: unknown
   knownUpTo?: number
   anchors?: unknown
   pageUrl?: string
@@ -318,6 +320,8 @@ export function ChromiumTileCard({
             knownUpTo: typeof message.knownUpTo === 'number' ? message.knownUpTo : 0,
             dropped: typeof message.dropped === 'number' ? message.dropped : 0,
           }
+          const sent = parsePendingSent(message.sent)
+          if (sent) snapshot.sent = sent
           for (const listener of pendingListeners.current) listener(snapshot)
           return
         }

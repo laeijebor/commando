@@ -4,9 +4,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { WebPaneSentAnswer } from '../shared/protocol.js'
 import {
-  MAX_RESPONSE_ANSWER,
-  MAX_RESPONSE_QUESTION,
-  parseRedlineQuestionShape,
+  isWebPaneSentAnswer,
   redlinePageKey,
   redlineQuestionIdentity,
 } from '../shared/redline-response.js'
@@ -77,7 +75,7 @@ export class SentAnswerStore {
     try {
       const file = JSON.parse(readFileSync(this.pathFor(page), 'utf8')) as Partial<PageFile>
       if (file.version === 1 && file.page === page && Array.isArray(file.answers)) {
-        answers = file.answers.filter(isSentAnswer)
+        answers = file.answers.filter(isWebPaneSentAnswer)
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -91,17 +89,4 @@ export class SentAnswerStore {
   private pathFor(page: string): string {
     return join(this.dir, `${createHash('sha256').update(page).digest('hex').slice(0, 32)}.json`)
   }
-}
-
-function isSentAnswer(value: unknown): value is WebPaneSentAnswer {
-  if (typeof value !== 'object' || value === null) return false
-  const answer = value as Partial<WebPaneSentAnswer>
-  const response = answer.response
-  return parseRedlineQuestionShape(answer.shape) !== null &&
-    typeof response === 'object' && response !== null &&
-    typeof response.question === 'string' && response.question.length <= MAX_RESPONSE_QUESTION &&
-    typeof response.answer === 'string' && response.answer.length > 0 &&
-    response.answer.length <= MAX_RESPONSE_ANSWER &&
-    typeof answer.sentAt === 'number' && Number.isFinite(answer.sentAt) &&
-    (typeof answer.queueKey === 'string' || typeof answer.selector === 'string')
 }

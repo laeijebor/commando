@@ -332,6 +332,38 @@ describe('NativeWebViewTile review integration', () => {
     ))
   })
 
+  it('reports each loaded page and presents its sent answers', async () => {
+    const { attachment, bridge, loaded } = nativeHarness()
+    const sentAnswer = {
+      queueKey: 'plan',
+      selector: '#plan',
+      shape: { question: 'Which plan?', kind: 'text' as const },
+      response: { question: 'Which plan?', answer: 'Pro' },
+      sentAt: 1,
+    }
+    const setPage = vi.fn(async (url: string) => ({
+      ...emptySnapshot,
+      revision: 2,
+      sent: { page: url.replace(/[?#].*$/, ''), answers: [sentAnswer] },
+    }))
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        pendingQueue={{ ...pendingQueue, setPage }}
+        onFallback={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalled())
+    act(() => loaded('https://example.com/review?v=2'))
+    await waitFor(() => expect(setPage).toHaveBeenCalledWith('https://example.com/review?v=2'))
+    await waitFor(() => expect(attachment.presentPendingSnapshot).toHaveBeenCalledWith(
+      'https://example.com/review?v=2',
+      { version: 1, controls: [], sent: [sentAnswer] },
+    ))
+  })
+
   it('filters delayed responses for the current document and ignores stale pending revisions', async () => {
     const { attachment, bridge, loaded, pageResponse } = nativeHarness()
     let resolveResponse!: (snapshot: WebPanePendingSnapshot) => void

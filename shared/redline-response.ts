@@ -369,3 +369,24 @@ export function pageSentAnswers(
   }
   return result
 }
+
+/** Structural check for a sent answer read back from disk or the wire. */
+export function isWebPaneSentAnswer(value: unknown): value is WebPaneSentAnswer {
+  if (typeof value !== 'object' || value === null) return false
+  const answer = value as Partial<WebPaneSentAnswer>
+  const response = answer.response
+  return parseRedlineQuestionShape(answer.shape) !== null &&
+    typeof response === 'object' && response !== null &&
+    boundedString(response.question, MAX_RESPONSE_QUESTION) &&
+    boundedString(response.answer, MAX_RESPONSE_ANSWER) &&
+    finite(answer.sentAt) &&
+    (boundedString(answer.queueKey, MAX_RESPONSE_QUEUE_KEY) || boundedString(answer.selector, MAX_INSPECT_SELECTOR))
+}
+
+/** Reads a snapshot's `sent` field, tolerating daemons that predate it. */
+export function parsePendingSent(value: unknown): WebPanePendingSnapshot['sent'] {
+  if (typeof value !== 'object' || value === null) return undefined
+  const sent = value as { page?: unknown; answers?: unknown }
+  if (typeof sent.page !== 'string' || !Array.isArray(sent.answers)) return undefined
+  return { page: sent.page, answers: sent.answers.filter(isWebPaneSentAnswer) }
+}

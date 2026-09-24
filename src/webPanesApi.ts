@@ -1,5 +1,5 @@
 import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
-import type { RedlinePageResponse } from '../shared/redline-response'
+import { parsePendingSent, type RedlinePageResponse } from '../shared/redline-response'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
@@ -53,6 +53,8 @@ export interface WebPanesApiClient {
   ): Promise<WebPanePendingSnapshot>
   pendingAttachmentUrl(webPaneId: string, attachmentId: string): string
   dismissPendingDropped(webPaneId: string): Promise<WebPanePendingSnapshot>
+  /** Tells the daemon which page the tile shows, returning that page's sent answers. */
+  setPendingPage(webPaneId: string, url: string): Promise<WebPanePendingSnapshot>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
   navigate(webPaneId: string, url: string): Promise<void>
 }
@@ -62,11 +64,13 @@ type ApiErrorBody = { error?: unknown }
 /** Normalizes a pending response body, tolerating an older daemon's shape. */
 function toSnapshot(body: unknown): WebPanePendingSnapshot {
   const raw = body as Partial<WebPanePendingSnapshot> | null
+  const sent = parsePendingSent(raw?.sent)
   return {
     ...(typeof raw?.revision === 'number' ? { revision: raw.revision } : {}),
     notes: Array.isArray(raw?.notes) ? (raw.notes as WebPanePendingNote[]) : [],
     knownUpTo: typeof raw?.knownUpTo === 'number' ? raw.knownUpTo : Number.POSITIVE_INFINITY,
     dropped: typeof raw?.dropped === 'number' ? raw.dropped : 0,
+    ...(sent ? { sent } : {}),
   }
 }
 
@@ -222,6 +226,12 @@ export function createWebPanesApi(
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/dropped`, {
         method: 'POST',
         body: JSON.stringify({}),
+      }))
+    },
+    setPendingPage: async (webPaneId, url) => {
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/page`, {
+        method: 'POST',
+        body: JSON.stringify({ url }),
       }))
     },
     move: async (webPaneId, anchor, placement) => {

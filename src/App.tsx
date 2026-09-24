@@ -2819,6 +2819,7 @@ export function App() {
                               options,
                             ),
                             dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
+                            setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
                           }}
                           onDragStart={(event) => {
                             setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
