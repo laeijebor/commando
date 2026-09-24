@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { MAX_PENDING_NOTES, type WebPanePendingNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot } from '../shared/protocol'
+import {
+  MAX_PENDING_NOTES,
+  type WebPanePendingNote,
+  type WebPanePendingSendIntent,
+  type WebPanePendingSnapshot,
+  type WebPaneSentAnswer,
+} from '../shared/protocol'
 import {
   MAX_SELECTOR_RESOLVE_BYTES,
   MAX_SELECTOR_RESOLVE_ITEMS,
@@ -16,7 +22,13 @@ import type {
   RedlinePageQuestionSnapshot,
   RedlinePageResponse,
 } from '../shared/redline-response'
-import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_DATA_JSON } from '../shared/redline-response'
+import {
+  MAX_RESPONSE_ANSWER,
+  MAX_RESPONSE_DATA_JSON,
+  questionShapeOf,
+  redlinePageKey,
+  sentAnswerForQuestion,
+} from '../shared/redline-response'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { createInspectThrottle } from './tileReview'
 import type { PendingSendTarget } from './webPanesApi'
@@ -149,6 +161,49 @@ function pendingForQuestion(
   ))
 }
 
+/** The sent answer still standing for a question on the page being reviewed. */
+function sentForQuestion(
+  question: RedlinePageQuestion,
+  sent: WebPanePendingSnapshot['sent'],
+  pageUrl: string,
+): WebPaneSentAnswer | undefined {
+  if (!sent || !pageUrl || sent.page !== redlinePageKey(pageUrl)) return undefined
+  return sentAnswerForQuestion(question, sent.answers)
+}
+
+// Mirrors the SDK's stand-in answers (server/static/redline-sdk.js).
+const SKIPPED_ANSWER = '(skipped)'
+const NOTE_ONLY_ANSWER = '(none — see note)'
+
+function sentAnswerLabel(sent: WebPaneSentAnswer): string {
+  if (sent.response.answer === SKIPPED_ANSWER) return 'Skipped'
+  if (sent.response.answer === NOTE_ONLY_ANSWER) return sent.response.note ?? 'Note only'
+  return sent.response.answer
+}
+
+function sentAgo(sentAt: number): string {
+  const minutes = Math.floor((Date.now() - sentAt) / 60_000)
+  if (!Number.isFinite(minutes) || minutes < 1) return 'Sent · just now'
+  if (minutes < 60) return `Sent · ${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `Sent · ${hours}h ago`
+  return `Sent · ${Math.floor(hours / 24)}d ago`
+}
+
+/** Pre-fills the question editor with a sent answer, as Reopen does in the page. */
+function draftFromSent(sent: WebPaneSentAnswer): QuestionDraft {
+  if (sent.response.answer === SKIPPED_ANSWER) return { answer: '', note: '', choices: [] }
+  const values = draftValues({
+    id: 0,
+    selector: sent.selector ?? '',
+    tag: 'redline',
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    comment: '',
+    response: sent.response,
+  })
+  return values.answer === NOTE_ONLY_ANSWER ? { ...values, answer: '' } : values
+}
+
 function responseForQuestion(question: RedlinePageQuestion, draft: QuestionDraft): RedlinePageResponse {
   const answer = question.kind === 'choice' && question.multiple
     ? displayAnswerForChoices(draft.choices, draft.answer)
@@ -172,6 +227,7 @@ function responseForQuestion(question: RedlinePageQuestion, draft: QuestionDraft
     selector: question.selector,
     tag: 'redline',
     text: question.question,
+    shape: questionShapeOf(question),
   }
 }
 
@@ -520,6 +576,9 @@ export function TileReviewLayer({
   const [questionsPageUrl, setQuestionsPageUrl] = useState(pageUrl ?? '')
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, QuestionDraft>>({})
   const [questionFilter, setQuestionFilter] = useState<'all' | 'unanswered'>('all')
+  const [sentAnswers, setSentAnswers] = useState<WebPanePendingSnapshot['sent']>()
+  /** Question key → the sent answer (by sentAt) the owner chose to change here. */
+  const [changingSent, setChangingSent] = useState<Record<string, number>>({})
   const [queueingQuestion, setQueueingQuestion] = useState<string | null>(null)
   const queueingQuestionRef = useRef<string | null>(null)
   const [hydrated, setHydrated] = useState(false)
@@ -626,6 +685,7 @@ export function TileReviewLayer({
     setDrafts(nextDrafts)
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
+    setSentAnswers(snapshot.sent)
     if (snapshot.notes.length === 0 && questionsRef.current.length === 0) setDrawerOpen(false)
     const noteIds = new Set(snapshot.notes.map((note) => note.id))
     setQueuedAnchors((current) => Object.fromEntries(
@@ -1163,13 +1223,18 @@ export function TileReviewLayer({
     }
   }
 
-  const questionItems = questions.map((question) => ({
-    question,
-    key: questionKey(question),
-    pending: pendingForQuestion(question, queued, questionsPageUrl),
-  }))
-  const answeredQuestions = questionItems.filter((item) => item.pending !== undefined)
-  const unansweredQuestions = questionItems.filter((item) => item.pending === undefined)
+  const questionItems = questions.map((question) => {
+    const pending = pendingForQuestion(question, queued, questionsPageUrl)
+    return {
+      question,
+      key: questionKey(question),
+      pending,
+      // A queued re-answer shadows what was sent before it.
+      sent: pending ? undefined : sentForQuestion(question, sentAnswers, questionsPageUrl),
+    }
+  })
+  const answeredQuestions = questionItems.filter((item) => item.pending !== undefined || item.sent !== undefined)
+  const unansweredQuestions = questionItems.filter((item) => item.pending === undefined && item.sent === undefined)
   const visibleQuestions = questionFilter === 'unanswered' ? unansweredQuestions : questionItems
   const matchedResponseIds = new Set(answeredQuestions.map((item) => item.pending?.id))
   const otherQueued = queued.filter((note) => !note.response || !matchedResponseIds.has(note.id))
@@ -1179,6 +1244,14 @@ export function TileReviewLayer({
   const selectedQuestionDraft = selectedQuestion
     ? questionDrafts[questionDraftKey(selectedQuestion.question)] ?? { answer: '', note: '', choices: [] }
     : undefined
+  const selectedSent = selectedQuestion?.sent &&
+    changingSent[selectedQuestion.key] !== selectedQuestion.sent.sentAt
+    ? selectedQuestion.sent
+    : undefined
+  const changeSentAnswer = (question: RedlinePageQuestion, sent: WebPaneSentAnswer) => {
+    setQuestionDrafts((current) => ({ ...current, [questionDraftKey(question)]: draftFromSent(sent) }))
+    setChangingSent((current) => ({ ...current, [questionKey(question)]: sent.sentAt }))
+  }
   const selectedQuestionBusy = queueingQuestion !== null
   const selected = selectedQuestion?.pending ?? (
     selectedId === null ? undefined : queued.find((note) => note.id === selectedId)
@@ -1443,7 +1516,7 @@ export function TileReviewLayer({
                     className={`tile-review-chip is-${'question' in item ? 'response' : item.response ? 'response' : 'annotation'}`}
                   >
                     {'question' in item
-                      ? item.pending?.response?.answer ?? 'Unanswered'
+                      ? item.pending?.response?.answer ?? (item.sent ? sentAnswerLabel(item.sent) : 'Unanswered')
                       : item.response ? item.response.answer : item.comment}
                   </span>
                 ))}
@@ -1567,7 +1640,7 @@ export function TileReviewLayer({
                   className="tile-review-drawer-list"
                   aria-label={questions.length > 0 ? 'Open questions and queued review items' : 'Queued review items'}
                 >
-                  {visibleQuestions.map(({ question, key, pending }) => (
+                  {visibleQuestions.map(({ question, key, pending, sent }) => (
                     <button
                       key={key}
                       type="button"
@@ -1582,13 +1655,14 @@ export function TileReviewLayer({
                       }}
                     >
                       <span className="tile-review-list-meta">
-                        <span className={`tile-review-type is-${pending ? 'answered' : 'unanswered'}`}>
-                          {pending ? 'Answered' : 'Unanswered'}
+                        <span className={`tile-review-type is-${pending ? 'answered' : sent ? 'sent' : 'unanswered'}`}>
+                          {pending ? 'Queued' : sent ? 'Sent' : 'Unanswered'}
                         </span>
                       </span>
                       <strong>{question.question}</strong>
                       <span className="tile-review-list-preview">
-                        {pending?.response?.answer ?? 'Click to answer and show in page'}
+                        {pending?.response?.answer ??
+                          (sent ? sentAnswerLabel(sent) : 'Click to answer and show in page')}
                       </span>
                     </button>
                   ))}
@@ -1631,10 +1705,50 @@ export function TileReviewLayer({
                   )}
                 </nav>
                 <div ref={drawerDetailRef} className="tile-review-drawer-detail" tabIndex={-1}>
-                  {selectedQuestion && !selectedQuestion.pending && selectedQuestionDraft ? (
+                  {selectedQuestion && !selectedQuestion.pending && selectedSent ? (
                     <>
                       <div className="tile-review-detail-heading">
-                        <span className="tile-review-type is-unanswered">Unanswered</span>
+                        <span className="tile-review-type is-sent">Sent</span>
+                        <h3>{selectedQuestion.question.question}</h3>
+                        {resolvableSelector(selectedQuestion.question.selector) && (
+                          <button
+                            type="button"
+                            className="tile-review-show-context"
+                            onClick={() => surfaceRef.current.revealSelector(selectedQuestion.question.selector)}
+                          >
+                            Show in page
+                          </button>
+                        )}
+                      </div>
+                      <dl className="tile-review-sent">
+                        <dt>Answer</dt>
+                        <dd>{sentAnswerLabel(selectedSent)}</dd>
+                        {selectedSent.response.note && selectedSent.response.answer !== NOTE_ONLY_ANSWER && (
+                          <>
+                            <dt>Note</dt>
+                            <dd>{selectedSent.response.note}</dd>
+                          </>
+                        )}
+                      </dl>
+                      <footer className="tile-review-detail-actions">
+                        <span className="tile-review-sent-when">{sentAgo(selectedSent.sentAt)}</span>
+                        <span className="tile-review-detail-spacer" />
+                        <button
+                          type="button"
+                          className="web-pane-action"
+                          disabled={!pendingQueue.addResponse}
+                          onClick={() => changeSentAnswer(selectedQuestion.question, selectedSent)}
+                        >
+                          Change answer
+                        </button>
+                      </footer>
+                    </>
+                  ) : selectedQuestion && !selectedQuestion.pending && selectedQuestionDraft ? (
+                    <>
+                      <div className="tile-review-detail-heading">
+                        <span className={`tile-review-type is-${selectedQuestion.sent ? 'sent' : 'unanswered'}`}>
+                          {selectedQuestion.sent ? 'Changing sent answer' : 'Unanswered'}
+                        </span>
                         <h3>{selectedQuestion.question.question}</h3>
                         {resolvableSelector(selectedQuestion.question.selector) && (
                           <button
