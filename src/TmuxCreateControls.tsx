@@ -25,6 +25,7 @@ export const TMUX_CWD_HISTORY_STORAGE_KEY = 'commando.tmux-create.cwd'
 export const WORKTREE_PREPARE_COMMANDS_STORAGE_KEY = 'commando.tmux-create.prepare-by-repo'
 const MAX_WORKING_DIRECTORY_HISTORY = 10
 const REPO_PROBE_DEBOUNCE_MS = 200
+const REPO_PROBE_TIMEOUT_MS = 10_000
 
 export type TmuxCreateControlsProps = {
   disabled?: boolean
@@ -153,10 +154,12 @@ export function TmuxCreateControls({
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [pending, setPending] = useState(false)
   const [probing, setProbing] = useState(false)
+  const [probeTimedOut, setProbeTimedOut] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const probeVersion = useRef(0)
-  const unavailable = disabled || pending || probing
+  const probeRepoRef = useRef(probeRepo)
+  probeRepoRef.current = probeRepo
   const availableDirectories = [
     ...groupDirectorySuggestions,
     ...workingDirectoryHistory.filter((directory) => !groupDirectorySuggestions.includes(directory)),
@@ -172,6 +175,7 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
+  const unavailable = disabled || pending || (probing && !repo)
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
@@ -210,30 +214,46 @@ export function TmuxCreateControls({
   }, [sessionCreateRequest])
 
   useEffect(() => {
-    if (!probeRepo || !workingDirectory.startsWith('/')) {
+    const probe = probeRepoRef.current
+    if (!probe || !workingDirectory.startsWith('/')) {
       probeVersion.current += 1
       setProbing(false)
+      setProbeTimedOut(false)
       return
     }
     const version = ++probeVersion.current
     setProbing(true)
+    setProbeTimedOut(false)
+    let timeout: number | undefined
     const timer = window.setTimeout(() => {
-      probeRepo(workingDirectory)
+      timeout = window.setTimeout(() => {
+        if (version === probeVersion.current) {
+          setProbing(false)
+          setProbeTimedOut(true)
+        }
+      }, REPO_PROBE_TIMEOUT_MS)
+      probe(workingDirectory)
         .then((info) => {
           if (version === probeVersion.current) {
             setRepoProbe({ directory: workingDirectory, info })
             setProbing(false)
+            setProbeTimedOut(false)
           }
         })
         .catch(() => {
           if (version === probeVersion.current) {
             setRepoProbe({ directory: workingDirectory, info: { isRepo: false } })
             setProbing(false)
+            setProbeTimedOut(false)
           }
         })
+        .finally(() => window.clearTimeout(timeout))
     }, sessionCreateRequest && workingDirectory === (sessionCreateRequest.repo?.root ?? sessionCreateRequest.suggestedDirectories[0]) ? 0 : REPO_PROBE_DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
-  }, [probeRepo, workingDirectory, sessionCreateRequest])
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(timeout)
+    }
+  }, [Boolean(probeRepo), workingDirectory, sessionCreateRequest?.id])
 
   useEffect(() => {
     onPendingChange?.(pending)
@@ -515,6 +535,12 @@ export function TmuxCreateControls({
 
         {worktreeBlock}
 
+        {probeTimedOut && (
+          <p className="tmux-create__message is-warning" role="status">
+            Repository check timed out. You can still create a session, but worktree details may be unavailable.
+          </p>
+        )}
+
         {error && (
           <p className="tmux-create__message is-error" role="alert">
             {error}
@@ -527,7 +553,7 @@ export function TmuxCreateControls({
         )}
 
         <button className="tmux-create__submit" type="submit" disabled={unavailable}>
-          {pending ? 'Creating...' : probing ? 'Checking repository...' : 'Create session'}
+          {pending ? 'Creating...' : probing && !repo ? 'Checking repository...' : 'Create session'}
         </button>
       </form>
     </div>
