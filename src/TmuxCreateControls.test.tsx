@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
@@ -377,6 +377,7 @@ describe('TmuxCreateControls worktrees', () => {
 
     expect(screen.getByLabelText(/Create a worktree and branch/)).toBeChecked()
     expect(screen.getByText('origin/main')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled()
   })
 
   it('disables submit and reports while the current directory is being probed', () => {
@@ -386,6 +387,46 @@ describe('TmuxCreateControls worktrees', () => {
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
 
     expect(screen.getByRole('button', { name: 'Checking repository...' })).toBeDisabled()
+  })
+
+  it('releases an unknown directory when its repository probe never responds', async () => {
+    vi.useFakeTimers()
+    try {
+      const probeRepo = vi.fn(() => new Promise<GitRepoInfo>(() => undefined))
+      render(<TmuxCreateControls onCreateSession={vi.fn()} probeRepo={probeRepo} />)
+
+      fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+      expect(screen.getByRole('button', { name: 'Checking repository...' })).toBeDisabled()
+      await act(async () => { vi.advanceTimersByTime(10_200) })
+
+      expect(probeRepo).toHaveBeenCalledWith(MAIN)
+      expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled()
+      expect(screen.getByText(/Repository check timed out/)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the current probe when a parent supplies a new callback during a render', async () => {
+    let resolveProbe: ((info: GitRepoInfo) => void) | undefined
+    const firstProbe = vi.fn(() => new Promise<GitRepoInfo>((resolve) => { resolveProbe = resolve }))
+    const secondProbe = vi.fn(async () => repo)
+    const request = { id: 1, groupId: `repo:${MAIN}`, groupName: 'Save-All', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'Save-All', defaultBranch: 'main' } }
+    const onCreateSession = vi.fn(async (): Promise<TmuxCreateResponse> => ({ created }))
+    const { rerender } = render(<TmuxCreateControls sessionCreateRequest={request} onCreateSession={onCreateSession} probeRepo={firstProbe} />)
+
+    await waitFor(() => expect(firstProbe).toHaveBeenCalledWith(MAIN))
+    rerender(<TmuxCreateControls sessionCreateRequest={request} onCreateSession={onCreateSession} probeRepo={secondProbe} />)
+    resolveProbe?.(repo)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    expect(secondProbe).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'new-session' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: MAIN,
+      worktree: { branch: 'new-session' },
+    })))
   })
 
   it('renders as an always-open panel in dialog mode', () => {
