@@ -5,9 +5,9 @@
  * window.__commandoRedlineQueue exists; elsewhere components render but
  * queueing is disabled.
  *
- * Discipline (matters for review UX): interacting with a control only updates
- * local state. Only the explicit queue button sends, exactly once per press,
- * and a queueKey makes re-answers replace the unsent previous answer.
+ * Selecting a built-in option queues it immediately; free-text and note-only
+ * answers use the queue button. A queueKey makes re-answers replace the unsent
+ * previous answer.
  */
 ;(() => {
   'use strict'
@@ -749,7 +749,7 @@
     return heading
   }
 
-  /** Shared base: light-DOM render on connect, one queue press per answer. */
+  /** Shared base: light-DOM render on connect and daemon-backed queue state. */
   class RedlineElement extends HTMLElement {
     connectedCallback() {
       if (this.dataset.redlineReady) {
@@ -1026,14 +1026,18 @@
       }
       const button = queueButton(this.getAttribute('button-label'))
       const note = noteInput()
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const chosen = [...this.querySelectorAll('input:checked')].map((input) => input.value)
-        if (chosen.length === 0) return this.queueNoteOnly({ choice: null, options, multiple })
-        this.queue(chosen.join(', '), {
+        if (chosen.length === 0) return false
+        return this.queue(chosen.join(', '), {
           choice: multiple ? chosen : chosen[0],
           options,
           multiple,
         })
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ choice: null, options, multiple })
       })
       this.append(list, note, button)
       this._multiple = multiple
@@ -1090,10 +1094,13 @@
       }
       const note = noteInput()
       const button = queueButton(this.getAttribute('button-label'))
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return this.queueNoteOnly({ verdict: null })
-        this.queue(selected.value, { verdict: selected.value })
+        return selected ? this.queue(selected.value, { verdict: selected.value }) : false
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ verdict: null })
       })
       this.append(list, note, button)
       enableRadioDeselect(list)
@@ -1144,10 +1151,13 @@
       }
       const button = queueButton(this.getAttribute('button-label'))
       const note = noteInput()
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return this.queueNoteOnly({ rating: null, max })
-        this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max })
+        return selected ? this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max }) : false
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ rating: null, max })
       })
       this.append(list, note, button)
       this._max = max
