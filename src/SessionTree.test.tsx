@@ -13,6 +13,9 @@ const sessionApi = vi.hoisted(() => ({
   savePreferences: vi.fn(),
   renameSession: vi.fn(),
   deleteSession: vi.fn(),
+  listArchives: vi.fn(),
+  archiveSession: vi.fn(),
+  restoreSession: vi.fn(),
   deleteWindow: vi.fn(),
 }))
 
@@ -27,6 +30,7 @@ beforeEach(() => {
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
   sessionApi.deleteWindow.mockResolvedValue(undefined)
+  sessionApi.listArchives.mockResolvedValue([])
 })
 
 function pane(id: string, index: number, title: string): TmuxPane {
@@ -774,6 +778,27 @@ describe('SessionTree', () => {
       await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true))
       expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/Uncommitted changes.*branch will be kept/s))
       expect(onSessionsChanged).toHaveBeenCalled()
+    })
+
+    it('archives a session and offers a restore action for its saved panes', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const archived = { id: 'archive-id', name: 'Coins everywhere', createdAt: Date.now(), windowCount: 2, paneCount: 3 }
+      sessionApi.listArchives.mockResolvedValueOnce([]).mockResolvedValueOnce([archived]).mockResolvedValueOnce([])
+      sessionApi.archiveSession.mockResolvedValue(undefined)
+      sessionApi.restoreSession.mockResolvedValue('$99')
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSessionsChanged = vi.fn()
+      renderTree({ onSessionsChanged })
+      fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive session' }))
+      await waitFor(() => expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2'))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('fresh shells'))
+      expect(await screen.findByRole('button', { name: 'Restore Coins everywhere' })).toBeInTheDocument()
+      expect(screen.getByText('2 windows / 3 panes')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Restore Coins everywhere' }))
+      await waitFor(() => expect(sessionApi.restoreSession).toHaveBeenCalledWith('archive-id'))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore Coins everywhere' })).not.toBeInTheDocument())
+      expect(onSessionsChanged).toHaveBeenCalledTimes(2)
     })
 
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {

@@ -100,3 +100,10 @@
 .session-pref-group > header .session-repo-path { margin-left: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 7px; letter-spacing: 0; text-transform: none; text-overflow: ellipsis; white-space: nowrap; }
 .session-branch { display: inline-flex; gap: 3px; align-items: center; margin-right: 5px; color: var(--cyan); }
 .session-branch svg { width: 9px; height: 9px; }
+.session-archive-row { display: flex; align-items: center; gap: 5px; padding: 6px 8px; border-top: 1px solid var(--surface-hover); background: var(--surface-raised); }
+.session-archive-row > span { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.session-archive-row strong { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.session-archive-row small { color: var(--muted-dim); font: 8px var(--mono); }
+.session-archive-row button { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 4px; color: var(--accent) !important; font-size: 9px; }
+.session-archive-row button:hover { background: var(--surface-hover); }
+.session-archive-row svg { width: 12px; height: 12px; }
