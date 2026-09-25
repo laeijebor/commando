@@ -27,4 +27,17 @@ describe('session management API client', () => {
       headers: expect.objectContaining({ Authorization: 'Bearer token' }),
     }))
   })
+
+  it('archives a session and restores a saved archive', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(Response.json({ sessionId: '$9' }))
+    const api = createSessionManagementApi('token', fetcher)
+    await api.archiveSession('$1')
+    await expect(api.restoreSession('archive-id')).resolves.toBe('$9')
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/session-management/sessions/%241/archive', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ confirmSessionId: '$1' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/session-management/archives/archive-id/restore', expect.objectContaining({ method: 'POST' }))
+  })
 })
