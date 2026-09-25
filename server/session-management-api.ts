@@ -11,6 +11,7 @@ import {
   validateTmuxWindowId,
 } from './tmux-session-actions.js'
 import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
+import { SessionArchives } from './session-archives.js'
 
 const API_ROOT = '/api/session-management'
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -18,10 +19,12 @@ const MAX_REQUEST_BYTES = 64 * 1024
 type SessionManagementDependencies = {
   preferences?: SessionPreferenceStore
   actions?: TmuxSessionActions
+  archives?: SessionArchives
   currentSessions: () => readonly { id: string; name: string }[]
   currentWindowIds: () => readonly string[]
   prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<() => Promise<void>>
   afterSessionDeleted?: (sessionId: string) => void
+  afterSessionRestored?: (sessionId: string) => void
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
 }
@@ -77,13 +80,13 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' } | null {
-  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete)$/.exec(pathname)
+function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'archive' } | null {
+  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|archive)$/.exec(pathname)
   if (!match) return null
   try {
     return {
       sessionId: validateTmuxSessionId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete',
+      action: match[2] as 'rename' | 'delete' | 'archive',
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux session id')
@@ -107,10 +110,12 @@ export function isSessionManagementPath(pathname: string): boolean {
 export class SessionManagementApi {
   private readonly preferences: SessionPreferenceStore
   private readonly actions: TmuxSessionActions
+  private readonly archives: SessionArchives
 
   constructor(private readonly dependencies: SessionManagementDependencies) {
     this.preferences = dependencies.preferences ?? new SessionPreferenceStore()
     this.actions = dependencies.actions ?? new TmuxSessionActions()
+    this.archives = dependencies.archives ?? new SessionArchives()
   }
 
   /**
@@ -123,6 +128,27 @@ export class SessionManagementApi {
     try {
       if (url.pathname === `${API_ROOT}/preferences`) {
         await this.handlePreferences(request, response)
+        return true
+      }
+
+      if (url.pathname === `${API_ROOT}/archives`) {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        writeJson(response, 200, { archives: await this.archives.list() })
+        return true
+      }
+      const restore = /^\/api\/session-management\/archives\/([^/]+)\/restore$/.exec(url.pathname)
+      if (restore) {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const id = decodeURIComponent(restore[1])
+        const archive = (await this.archives.list()).find((item) => item.id === id)
+        if (!archive) throw new HttpError(404, 'Session archive does not exist')
+        if (this.dependencies.currentSessions().some((session) => session.name === archive.name)) {
+          throw new HttpError(409, `A tmux session named “${archive.name}” already exists`)
+        }
+        const sessionId = await this.archives.restore(id)
+        this.dependencies.afterSessionRestored?.(sessionId)
+        await this.dependencies.onSessionsChanged?.()
+        writeJson(response, 200, { ok: true, sessionId })
         return true
       }
 
@@ -144,6 +170,18 @@ export class SessionManagementApi {
           await this.actions.rename(route.sessionId, name)
           await this.dependencies.onSessionsChanged?.()
           writeJson(response, 200, { ok: true, sessionId: route.sessionId, name })
+          return true
+        }
+
+        if (route.action === 'archive') {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = record(await readJson(request))
+          if (body.confirmSessionId !== route.sessionId) throw new HttpError(400, 'Archiving requires an exact confirmSessionId')
+          const name = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
+          const archive = await this.archives.archive(route.sessionId, name)
+          this.dependencies.afterSessionDeleted?.(route.sessionId)
+          await this.dependencies.onSessionsChanged?.()
+          writeJson(response, 200, { ok: true, archive })
           return true
         }
 
@@ -244,6 +282,8 @@ export class SessionManagementApi {
 
   private allowedMethods(pathname: string): string {
     if (pathname === `${API_ROOT}/preferences`) return 'GET, PUT'
+    if (pathname === `${API_ROOT}/archives`) return 'GET'
+    if (pathname.endsWith('/archive') || pathname.endsWith('/restore')) return 'POST'
     if (pathname.endsWith('/rename')) return 'POST'
     if (pathname.endsWith('/delete')) return 'DELETE'
     return 'GET'

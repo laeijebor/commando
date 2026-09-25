@@ -1266,6 +1266,11 @@ async function main(): Promise<void> {
         console.error('[commando] tmux Resurrect save failed after session deletion', error)
       })
     },
+    afterSessionRestored: () => {
+      void resurrectSaver.save().catch((error: unknown) => {
+        console.error('[commando] tmux Resurrect save failed after session restore', error)
+      })
+    },
     beforeWindowDeleted: async (windowId) => {
       await tmux.releaseWindowPaneResizes(windowId)
     },

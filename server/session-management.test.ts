@@ -13,6 +13,7 @@ import {
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 import { TmuxSessionActions, type TmuxProcessExecutor } from './tmux-session-actions.js'
+import { SessionArchives } from './session-archives.js'
 
 const directories: string[] = []
 const servers: Server[] = []
@@ -193,6 +194,30 @@ describe('tmux session actions', () => {
 })
 
 describe('session management API', () => {
+  it('archives an exact session id and restores only its archive', async () => {
+    const archives = {
+      list: vi.fn().mockResolvedValue([{ id: 'archive-id', name: 'work', createdAt: 1, windowCount: 1, paneCount: 2 }]),
+      archive: vi.fn().mockResolvedValue({ id: 'archive-id', name: 'work', createdAt: 1, windowCount: 1, paneCount: 2 }),
+      restore: vi.fn().mockResolvedValue('$9'),
+    } as unknown as SessionArchives
+    const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
+    const afterSessionRestored = vi.fn()
+    const api = new SessionManagementApi({ archives, currentSessions: () => [{ id: '$1', name: 'other' }], currentWindowIds: () => [], onSessionsChanged, afterSessionRestored })
+    const baseUrl = await startApi(api)
+    const route = `${baseUrl}/api/session-management/sessions/%241/archive`
+    const denied = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmSessionId: '$2' }) })
+    expect(denied.status).toBe(400)
+    expect(vi.mocked(archives.archive)).not.toHaveBeenCalled()
+    const archived = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmSessionId: '$1' }) })
+    expect(archived.status).toBe(200)
+    expect(vi.mocked(archives.archive)).toHaveBeenCalledWith('$1', 'other')
+    const restored = await fetch(`${baseUrl}/api/session-management/archives/archive-id/restore`, { method: 'POST' })
+    expect(restored.status).toBe(200)
+    await expect(restored.json()).resolves.toMatchObject({ sessionId: '$9' })
+    expect(afterSessionRestored).toHaveBeenCalledWith('$9')
+    expect(onSessionsChanged).toHaveBeenCalledTimes(2)
+  })
+
   it('enqueues a save after deleting a session, including the final session', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const afterSessionDeleted = vi.fn()
