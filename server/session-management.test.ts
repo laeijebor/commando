@@ -252,7 +252,7 @@ describe('session management API', () => {
   it('prepares linked worktree deletion before closing tmux, then removes it and refreshes', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const removeWorktree = vi.fn().mockResolvedValue(undefined)
-    const prepareSessionWorktreeDeletion = vi.fn().mockResolvedValue(removeWorktree)
+    const prepareSessionWorktreeDeletion = vi.fn().mockResolvedValue({ auxiliarySessions: [], remove: removeWorktree })
     const onSessionsChanged = vi.fn().mockResolvedValue(undefined)
     const api = new SessionManagementApi({
       actions: new TmuxSessionActions(execute, { COMMANDO_TMUX_SOCKET_NAME: 'qa' }),
@@ -275,6 +275,77 @@ describe('session management API', () => {
     expect(prepareSessionWorktreeDeletion.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[0])
     expect(execute.mock.invocationCallOrder[0]).toBeLessThan(removeWorktree.mock.invocationCallOrder[0])
     expect(removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(onSessionsChanged.mock.invocationCallOrder[0])
+  })
+
+  it('previews and closes only confirmed dependent sessions before deleting the worktree', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const remove = vi.fn().mockResolvedValue(undefined)
+    const prepare = vi.fn()
+      .mockResolvedValueOnce({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }], remove }) // preview
+      .mockResolvedValueOnce({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }], remove }) // refused delete
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, { COMMANDO_TMUX_SOCKET_NAME: 'qa' }),
+      currentSessions: () => [{ id: '$1', name: 'cleanup' }, { id: '$2', name: 'native_app-cleanup' }, { id: '$3', name: 'unrelated' }],
+      currentWindowIds: () => [], prepareSessionWorktreeDeletion: prepare,
+    })
+    const baseUrl = await startApi(api)
+    const route = `${baseUrl}/api/session-management/sessions/%241`
+    const preview = await fetch(`${route}/delete-preview`)
+    expect(preview.status).toBe(200)
+    await expect(preview.json()).resolves.toEqual({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }] })
+    const deleteRequest = (ids: string[]) => fetch(`${route}/delete`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: ids }),
+    })
+    const missingConsent = await deleteRequest([])
+    expect(missingConsent.status).toBe(409)
+    expect(execute).not.toHaveBeenCalled()
+    // A new preflight is required after the refused request.
+    prepare.mockResolvedValueOnce({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }], remove })
+      .mockResolvedValueOnce({ auxiliarySessions: [], remove })
+    const accepted = await deleteRequest(['$2'])
+    expect(accepted.status).toBe(200)
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      ['-L', 'qa', 'kill-session', '-t', '$2'],
+      ['-L', 'qa', 'kill-session', '-t', '$1'],
+    ])
+    expect(execute.mock.invocationCallOrder[1]).toBeLessThan(remove.mock.invocationCallOrder[0])
+  })
+
+  it('does not close any sessions when the helper set changes after confirmation', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'cleanup' }], currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue({ auxiliarySessions: [{ id: '$9', name: 'tilt-cleanup' }], remove: vi.fn() }),
+    })
+    const baseUrl = await startApi(api)
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: ['$2'] }),
+    })
+    expect(response.status).toBe(409)
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('keeps the main session and worktree when a helper cannot be closed', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockRejectedValue(new Error('helper refused to close'))
+    const remove = vi.fn()
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'cleanup' }], currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }], remove }),
+      onSessionsChanged: vi.fn().mockResolvedValue(undefined),
+    })
+    const baseUrl = await startApi(api)
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: ['$2'] }),
+    })
+    expect(response.status).toBe(502)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0][1]).toEqual(['kill-session', '-t', '$2'])
+    expect(remove).not.toHaveBeenCalled()
   })
 
   it('keeps the tmux session when linked worktree preparation fails', async () => {
@@ -327,7 +398,7 @@ describe('session management API', () => {
       currentSessions: () => [{ id: '$1', name: 'work' }],
       currentWindowIds: () => [],
       prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue(
-        vi.fn().mockRejectedValue(new Error('worktree contains locked files')),
+        { auxiliarySessions: [], remove: vi.fn().mockRejectedValue(new Error('worktree contains locked files')) },
       ),
       onSessionsChanged,
     })
@@ -353,7 +424,7 @@ describe('session management API', () => {
       actions: new TmuxSessionActions(execute, {}),
       currentSessions: () => [{ id: '$1', name: 'work' }],
       currentWindowIds: () => [],
-      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue({ auxiliarySessions: [], remove: vi.fn().mockResolvedValue(undefined) }),
       onSessionsChanged: vi.fn().mockRejectedValue(new Error('snapshot unavailable')),
     })
     const baseUrl = await startApi(api)

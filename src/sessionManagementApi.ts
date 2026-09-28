@@ -21,7 +21,8 @@ export interface SessionManagementApiClient {
   loadPreferences(): Promise<SessionTreePreferences>
   savePreferences(preferences: SessionTreePreferences): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
-  deleteSession(sessionId: string, deleteWorktree?: boolean): Promise<void>
+  previewWorktreeDeletion(sessionId: string): Promise<{ auxiliarySessions: { id: string; name: string }[] }>
+  deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[]): Promise<void>
   listArchives(): Promise<SessionArchiveSummary[]>
   archiveSession(sessionId: string): Promise<void>
   restoreSession(archiveId: string): Promise<string>
@@ -83,10 +84,13 @@ export function createSessionManagementApi(
         body: JSON.stringify({ name }),
       })
     },
-    async deleteSession(sessionId, deleteWorktree = false) {
+    async previewWorktreeDeletion(sessionId) {
+      return request<{ auxiliarySessions: { id: string; name: string }[] }>(`/sessions/${encodeURIComponent(sessionId)}/delete-preview`)
+    },
+    async deleteSession(sessionId, deleteWorktree = false, confirmAuxiliarySessionIds = []) {
       await request(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
         method: 'DELETE',
-        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree }),
+        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree, ...(deleteWorktree ? { confirmAuxiliarySessionIds } : {}) }),
       })
     },
     async listArchives() {

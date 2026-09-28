@@ -10,8 +10,21 @@ describe('session management API client', () => {
 
     expect(fetcher).toHaveBeenCalledWith('/api/session-management/sessions/%241/delete', expect.objectContaining({
       method: 'DELETE',
-      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true }),
+       body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: [] }),
       headers: expect.objectContaining({ Authorization: 'Bearer token' }),
+    }))
+  })
+
+  it('previews dependent sessions and confirms their exact ids for deletion', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ auxiliarySessions: [{ id: '$2', name: 'native_app-work' }] }))
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+    const api = createSessionManagementApi('token', fetcher)
+    await expect(api.previewWorktreeDeletion('$1')).resolves.toEqual({ auxiliarySessions: [{ id: '$2', name: 'native_app-work' }] })
+    await api.deleteSession('$1', true, ['$2'])
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/session-management/sessions/%241/delete-preview', expect.objectContaining({ credentials: 'same-origin' }))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/session-management/sessions/%241/delete', expect.objectContaining({
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: ['$2'] }),
     }))
   })
 
