@@ -215,6 +215,8 @@ export type PaneRepo = {
   name: string
   branch: string
   isWorktree: boolean
+  /** Exact checkout directory for a linked worktree (root remains the main checkout). */
+  worktreeRoot?: string
   defaultBranch?: string
 }
 

@@ -17,7 +17,7 @@ describe('PaneRepoResolver', () => {
     const resolver = new PaneRepoResolver(probe)
     const repos = await resolver.resolve([MAIN, MAIN, `${MAIN}-worktrees/coins`, '/tmp/plain'])
     expect(repos.get(MAIN)).toEqual({ root: MAIN, name: 'Save-All', branch: 'main', isWorktree: false, defaultBranch: 'main' })
-    expect(repos.get(`${MAIN}-worktrees/coins`)).toEqual({ root: MAIN, name: 'Save-All', branch: 'referral-coins-reward', isWorktree: true, defaultBranch: 'main' })
+    expect(repos.get(`${MAIN}-worktrees/coins`)).toEqual({ root: MAIN, worktreeRoot: `${MAIN}-worktrees/coins`, name: 'Save-All', branch: 'referral-coins-reward', isWorktree: true, defaultBranch: 'main' })
     expect(repos.get('/tmp/plain')).toBeUndefined()
     expect(probe).toHaveBeenCalledTimes(3)
   })

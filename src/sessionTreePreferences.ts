@@ -9,7 +9,7 @@ export const EMPTY_SESSION_TREE_PREFERENCES: SessionTreePreferences = {
 
 export const DEFAULT_GROUPING_MODE: SessionGroupingMode = 'repository'
 
-export type SessionTreeContainerKind = 'manual' | 'ungrouped' | 'repository' | 'no-repo'
+export type SessionTreeContainerKind = 'manual' | 'ungrouped' | 'repository' | 'no-repo' | 'auxiliary'
 
 export type SessionTreeContainer = {
   id: string

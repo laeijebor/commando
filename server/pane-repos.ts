@@ -18,6 +18,7 @@ function toPaneRepo(info: GitRepoInfo): PaneRepo | undefined {
     name: info.name,
     branch: info.branch ?? '',
     isWorktree: info.isWorktree ?? false,
+    ...(info.isWorktree && info.root ? { worktreeRoot: info.root } : {}),
     ...(info.defaultBranch ? { defaultBranch: info.defaultBranch } : {}),
   }
 }

@@ -49,7 +49,8 @@ export async function prepareSessionWorktreeDeletion(
     for (const id of users) {
       const name = sessions.find((session) => session.id === id)?.name
       const panesForSession = otherPanes.filter((pane) => pane.sessionId === id)
-      if (!name || !isAuxiliarySession(name, worktreePath) || panesForSession.some((pane) => !insideWorktree(pane))) {
+      if (!name || !isAuxiliarySession(name, worktreePath) || panesForSession.some((pane) =>
+        !insideWorktree(pane) || resolved[otherPanes.indexOf(pane)]?.root !== worktreePath)) {
         throw new SessionWorktreeConflictError(`Another tmux session${name ? ` (“${name}”)` : ''} is using this worktree; close it before deleting the worktree`)
       }
       auxiliarySessions.push({ id, name })

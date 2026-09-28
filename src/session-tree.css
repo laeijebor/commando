@@ -107,3 +107,8 @@
 .session-archive-row button { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 4px; color: var(--accent) !important; font-size: 9px; }
 .session-archive-row button:hover { background: var(--surface-hover); }
 .session-archive-row svg { width: 12px; height: 12px; }
+.session-pref-group.kind-auxiliary { border-style: dashed; }
+.session-pref-group.kind-auxiliary > header { color: var(--muted-dim); }
+.session-pref-group.kind-auxiliary .managed-session { background: var(--surface); }
+.session-pref-group.kind-auxiliary .managed-session-copy strong { color: var(--muted); }
+.session-tree-error { position: sticky; top: 0; z-index: 10; border: 1px solid var(--red); border-radius: 5px; background: var(--surface-raised) !important; }

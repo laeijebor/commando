@@ -328,6 +328,26 @@ describe('session management API', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('keeps the main session and worktree when a helper cannot be closed', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockRejectedValue(new Error('helper refused to close'))
+    const remove = vi.fn()
+    const api = new SessionManagementApi({
+      actions: new TmuxSessionActions(execute, {}),
+      currentSessions: () => [{ id: '$1', name: 'cleanup' }], currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue({ auxiliarySessions: [{ id: '$2', name: 'native_app-cleanup' }], remove }),
+      onSessionsChanged: vi.fn().mockResolvedValue(undefined),
+    })
+    const baseUrl = await startApi(api)
+    const response = await fetch(`${baseUrl}/api/session-management/sessions/%241/delete`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmSessionId: '$1', deleteWorktree: true, confirmAuxiliarySessionIds: ['$2'] }),
+    })
+    expect(response.status).toBe(502)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0][1]).toEqual(['kill-session', '-t', '$2'])
+    expect(remove).not.toHaveBeenCalled()
+  })
+
   it('keeps the tmux session when linked worktree preparation fails', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const api = new SessionManagementApi({
