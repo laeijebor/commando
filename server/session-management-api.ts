@@ -11,6 +11,7 @@ import {
   validateTmuxWindowId,
 } from './tmux-session-actions.js'
 import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
+import type { SessionWorktreeDeletionPlan } from './session-worktree-deletion.js'
 import { SessionArchives } from './session-archives.js'
 
 const API_ROOT = '/api/session-management'
@@ -22,7 +23,7 @@ type SessionManagementDependencies = {
   archives?: SessionArchives
   currentSessions: () => readonly { id: string; name: string }[]
   currentWindowIds: () => readonly string[]
-  prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<() => Promise<void>>
+  prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<SessionWorktreeDeletionPlan>
   afterSessionDeleted?: (sessionId: string) => void
   afterSessionRestored?: (sessionId: string) => void
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
@@ -80,13 +81,13 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'archive' } | null {
-  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|archive)$/.exec(pathname)
+function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'delete-preview' | 'archive' } | null {
+  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|delete-preview|archive)$/.exec(pathname)
   if (!match) return null
   try {
     return {
       sessionId: validateTmuxSessionId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete' | 'archive',
+      action: match[2] as 'rename' | 'delete' | 'delete-preview' | 'archive',
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux session id')
@@ -185,6 +186,21 @@ export class SessionManagementApi {
           return true
         }
 
+        const prepareWorktreeDeletion = async () => {
+          if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree deletion is not available')
+          try { return await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId) }
+          catch (error) {
+            if (error instanceof SessionWorktreeConflictError) throw new HttpError(409, error.message)
+            throw error
+          }
+        }
+        if (route.action === 'delete-preview') {
+          if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+          const plan = await prepareWorktreeDeletion()
+          writeJson(response, 200, { auxiliarySessions: plan.auxiliarySessions })
+          return true
+        }
+
         if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
         const body = record(await readJson(request))
         if (body.confirmSessionId !== route.sessionId) {
@@ -193,15 +209,23 @@ export class SessionManagementApi {
         if (body.deleteWorktree !== undefined && typeof body.deleteWorktree !== 'boolean') {
           throw new HttpError(400, 'deleteWorktree must be a boolean')
         }
-        let deleteWorktree: (() => Promise<void>) | undefined
+        let deleteWorktree: SessionWorktreeDeletionPlan | undefined
         if (body.deleteWorktree === true) {
-          if (!this.dependencies.prepareSessionWorktreeDeletion) {
-            throw new HttpError(501, 'Worktree deletion is not available')
+          deleteWorktree = await prepareWorktreeDeletion()
+          const confirmed = body.confirmAuxiliarySessionIds ?? []
+          if (!Array.isArray(confirmed) || confirmed.some((id) => typeof id !== 'string') ||
+            confirmed.length !== deleteWorktree.auxiliarySessions.length ||
+            deleteWorktree.auxiliarySessions.some(({ id }) => !confirmed.includes(id))) {
+            throw new HttpError(409, 'Sessions using this worktree changed; review the deletion confirmation and try again')
           }
+        }
+        if (deleteWorktree?.auxiliarySessions.length) {
           try {
-            deleteWorktree = await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId)
+            for (const session of deleteWorktree.auxiliarySessions) await this.actions.delete(session.id)
+            const remaining = await prepareWorktreeDeletion()
+            if (remaining.auxiliarySessions.length) throw new HttpError(409, 'Another session began using this worktree; the main session was kept')
           } catch (error) {
-            if (error instanceof SessionWorktreeConflictError) throw new HttpError(409, error.message)
+            await this.dependencies.onSessionsChanged?.()
             throw error
           }
         }
@@ -209,7 +233,7 @@ export class SessionManagementApi {
         this.dependencies.afterSessionDeleted?.(route.sessionId)
         let worktreeError: unknown
         try {
-          await deleteWorktree?.()
+          await deleteWorktree?.remove()
         } catch (error) {
           worktreeError = error
         }
@@ -284,6 +308,7 @@ export class SessionManagementApi {
     if (pathname === `${API_ROOT}/preferences`) return 'GET, PUT'
     if (pathname === `${API_ROOT}/archives`) return 'GET'
     if (pathname.endsWith('/archive') || pathname.endsWith('/restore')) return 'POST'
+    if (pathname.endsWith('/delete-preview')) return 'GET'
     if (pathname.endsWith('/rename')) return 'POST'
     if (pathname.endsWith('/delete')) return 'DELETE'
     return 'GET'
