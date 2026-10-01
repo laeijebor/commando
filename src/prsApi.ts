@@ -22,6 +22,8 @@ export type PrSummary = {
   reviews: PrReview[]
   requestedReviewers: string[]
   conflicting: boolean
+  mergeable?: string
+  mergeStateStatus?: string
   checks: PrChecks
   createdAt: string
   updatedAt: string
@@ -94,6 +96,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    merge: async (repo: string, number: number, headRefOid: string) =>
+      request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid }) }),
     list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean }) =>
       (await request<{ list: PrList }>(
         `?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}${options?.refresh ? '&refresh=1' : ''}`,

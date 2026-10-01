@@ -369,7 +369,7 @@
   cursor: pointer;
 }
 
-.pr-pop-btn:hover {
+.pr-pop-btn:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -378,6 +378,22 @@
   border-color: var(--accent);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.pr-pop-btn:disabled {
+  border-color: var(--border);
+  color: var(--text-dim);
+  background: var(--surface);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pr-pop-merge-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 8px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .pr-foot {
