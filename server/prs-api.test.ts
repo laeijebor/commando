@@ -11,6 +11,7 @@ const TARGET_ID = '123e4567-e89b-42d3-a456-426614174000'
 async function startApi(
   panePath: (paneId: string) => string | undefined,
   paneTargetId: (paneId: string) => string | undefined = () => undefined,
+  suppliedService?: PrService,
 ): Promise<string> {
   const gitRunner = vi.fn(async (args: string[]) => {
     if (args.join(' ') === 'rev-parse --show-toplevel') return '/workspace\n'
@@ -19,7 +20,7 @@ async function startApi(
     if (args.join(' ') === 'remote get-url origin') return 'git@github.com:acme/widgets.git\n'
     throw new Error(`Unexpected git command: ${args.join(' ')}`)
   })
-  const service = new PrService({
+  const service = suppliedService ?? new PrService({
     runner: vi.fn(async () => JSON.stringify({ data: { linked: { issueCount: 0, nodes: [] } } })),
     gitRunner,
     preferencesPath: '/nonexistent/prs.json',
@@ -46,6 +47,22 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('accepts only POST JSON for merging and forwards the expected head', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const merge = vi.spyOn(service, 'mergePullRequest').mockResolvedValue({ merged: true })
+    const base = await startApi(() => undefined, () => undefined, service)
+    expect((await fetch(`${base}/api/prs/merge`)).status).toBe(405)
+    expect((await fetch(`${base}/api/prs/merge`, { method: 'POST', body: '{}' })).status).toBe(415)
+    const headRefOid = 'a'.repeat(40)
+    const response = await fetch(`${base}/api/prs/merge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'acme/widgets', number: 12, headRefOid }),
+    })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ merged: true })
+    expect(merge).toHaveBeenCalledExactlyOnceWith('acme/widgets', 12, headRefOid)
+  })
+
   it('resolves the tracking repository for a daemon-known pane', async () => {
     const base = await startApi((paneId) => paneId === '%1' ? '/workspace/packages/app' : undefined)
     const response = await fetch(`${base}/api/prs/repo?paneId=%251`)

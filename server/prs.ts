@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
@@ -101,6 +102,8 @@ export type PrSummary = {
   reviews: PrReview[]
   requestedReviewers: string[]
   conflicting: boolean
+  mergeable?: string
+  mergeStateStatus?: string
   checks: PrChecks
   createdAt: string
   updatedAt: string
@@ -246,6 +249,13 @@ function invalidUpstream(): PrServiceError {
   return new PrServiceError(502, 'github_invalid_response', 'GitHub returned an invalid response')
 }
 
+function parseGhObject(output: string): JsonRecord {
+  let value: unknown
+  try { value = JSON.parse(output) } catch { throw invalidUpstream() }
+  if (!isRecord(value)) throw invalidUpstream()
+  return value
+}
+
 function requiredString(record: JsonRecord, key: string): string {
   const value = record[key]
   if (typeof value !== 'string') throw invalidUpstream()
@@ -373,7 +383,7 @@ fragment PrFields on PullRequest {
   number title url state isDraft body
   author { login }
   changedFiles
-  createdAt updatedAt headRefName baseRefName headRefOid baseRefOid
+  createdAt updatedAt headRefName baseRefName headRefOid baseRefOid mergeStateStatus
   ${PR_STATUS_FIELDS}
   reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
   latestReviews(first: 10) { nodes { author { login } state } }
@@ -526,6 +536,8 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     commitCount: typeof commitsConnection.totalCount === 'number' ? commitsConnection.totalCount : 0,
     reviews,
     requestedReviewers,
+    mergeable: typeof node.mergeable === 'string' ? node.mergeable : 'UNKNOWN',
+    mergeStateStatus: typeof node.mergeStateStatus === 'string' ? node.mergeStateStatus : 'UNKNOWN',
     createdAt: typeof node.createdAt === 'string' ? node.createdAt : '',
     updatedAt: requiredString(node, 'updatedAt'),
     headRefName: requiredString(node, 'headRefName'),
@@ -658,6 +670,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  private readonly merging = new Set<string>()
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
   private readonly preferences: PrPreferencesStore
@@ -687,6 +700,49 @@ export class PrService {
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
     this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
+  }
+
+  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown): Promise<{ merged: true }> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    if (typeof headInput !== 'string' || !/^[a-f0-9]{40}$/i.test(headInput)) {
+      throw new PrServiceError(400, 'invalid_request', 'A valid PR head commit is required')
+    }
+    const key = `${repo.toLowerCase()}::${number}`
+    if (this.merging.has(key)) throw new PrServiceError(409, 'merge_in_progress', 'This pull request is already being merged')
+    this.merging.add(key)
+    try {
+      const current = parseGhObject(await this.runner([
+        'pr', 'view', String(number), '--repo', repo,
+        '--json', 'state,isDraft,mergeable,mergeStateStatus,headRefOid',
+      ]))
+      const reason = prMergeDisabledReason({
+        state: typeof current.state === 'string' ? current.state : '',
+        isDraft: current.isDraft !== false,
+        mergeable: typeof current.mergeable === 'string' ? current.mergeable : undefined,
+        mergeStateStatus: typeof current.mergeStateStatus === 'string' ? current.mergeStateStatus : undefined,
+      })
+      if (reason) throw new PrServiceError(409, 'not_mergeable', reason)
+      if (current.headRefOid !== headInput) throw new PrServiceError(409, 'head_changed', 'The PR has new commits. Resync and try again.')
+      const settings = parseGhObject(await this.runner(['api', `repos/${repo}`]))
+      const method = settings.allow_merge_commit === true ? 'merge'
+        : settings.allow_squash_merge === true ? 'squash'
+        : settings.allow_rebase_merge === true ? 'rebase' : null
+      if (!method) throw new PrServiceError(409, 'not_mergeable', 'No merge method is enabled for this repository')
+      const result = parseGhObject(await this.runner([
+        'api', '--method', 'PUT', `repos/${repo}/pulls/${number}/merge`,
+        '-f', `sha=${headInput}`, '-f', `merge_method=${method}`,
+      ]))
+      if (result.merged !== true) throw new PrServiceError(409, 'merge_failed', typeof result.message === 'string' ? result.message : 'GitHub did not merge this pull request')
+      return { merged: true }
+    } finally {
+      this.merging.delete(key)
+      // A failed/ambiguous write can still have changed GitHub state.
+      for (const cacheKey of this.listCache.keys()) {
+        if (cacheKey.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(cacheKey)
+      }
+      this.paneListCache.clear()
+    }
   }
 
   async listPullRequests(
