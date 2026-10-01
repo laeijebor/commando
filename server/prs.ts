@@ -22,6 +22,18 @@ const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
 const PANE_PULL_REQUEST_PAGE_SIZE = 100
 
+const PR_STATUS_FIELDS = `
+  additions deletions reviewDecision mergeable
+  reviewThreads(first: 50) { totalCount nodes { isResolved } }
+  commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
+    state
+    contexts(first: 50) {
+      totalCount
+      nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+    }
+  } } } }
+`
+
 const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -40,6 +52,7 @@ query($targetQuery: String!) {
     nodes {
       ... on PullRequest {
         number title url state isDraft body createdAt updatedAt
+        ${PR_STATUS_FIELDS}
         repository { nameWithOwner }
       }
     }
@@ -111,7 +124,9 @@ export type PrList = {
   fetchedAt: number
 }
 
-export type PanePrSummary = {
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
+
+export type PanePrSummary = PrStatus & {
   repo: string
   number: number
   title: string
@@ -357,18 +372,11 @@ query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequested
 fragment PrFields on PullRequest {
   number title url state isDraft body
   author { login }
-  additions deletions changedFiles
-  reviewDecision mergeable createdAt updatedAt headRefName baseRefName headRefOid baseRefOid
-  reviewThreads(first: 50) { totalCount nodes { isResolved } }
+  changedFiles
+  createdAt updatedAt headRefName baseRefName headRefOid baseRefOid
+  ${PR_STATUS_FIELDS}
   reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
   latestReviews(first: 10) { nodes { author { login } state } }
-  commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
-    state
-    contexts(first: 50) {
-      totalCount
-      nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
-    }
-  } } } }
 }`.trim()
 }
 
@@ -397,6 +405,7 @@ function parsePanePullRequest(node: JsonRecord, targetId: string): PanePrSummary
   const stateValue = requiredString(node, 'state')
   return {
     repo,
+    ...parsePrStatus(node),
     number: requiredNumber(node, 'number'),
     title: requiredString(node, 'title'),
     url: requiredString(node, 'url'),
@@ -459,16 +468,28 @@ function parseReviewDecision(value: unknown): PrSummary['reviewDecision'] {
   return null
 }
 
+function parsePrStatus(node: JsonRecord): PrStatus {
+  const threads = objectField(node, 'reviewThreads')
+  const threadNodes = nodes(node, 'reviewThreads')
+  const threadTotal = typeof threads.totalCount === 'number' ? threads.totalCount : threadNodes.length
+  const commitNodes = nodes(node, 'commits')
+  const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
+  return {
+    additions: requiredNumber(node, 'additions'),
+    deletions: requiredNumber(node, 'deletions'),
+    unresolvedThreads: threadNodes.filter((thread) => thread.isResolved === false).length,
+    threadsTruncated: threadTotal > threadNodes.length,
+    reviewDecision: parseReviewDecision(node.reviewDecision),
+    conflicting: node.mergeable === 'CONFLICTING',
+    checks: parseChecks(commit),
+  }
+}
+
 function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
   const stateValue = requiredString(node, 'state')
   const state = stateValue === 'OPEN' ? 'open' : stateValue === 'MERGED' ? 'merged' : 'closed'
   const author = optionalObject(node, 'author')
   const authorLogin = author && typeof author.login === 'string' ? author.login : null
-
-  const threads = objectField(node, 'reviewThreads')
-  const threadNodes = nodes(node, 'reviewThreads')
-  const threadTotal = typeof threads.totalCount === 'number' ? threads.totalCount : threadNodes.length
-  const unresolvedThreads = threadNodes.filter((thread) => thread.isResolved === false).length
 
   const reviewRequestNodes = nodes(node, 'reviewRequests')
   const viewerReviewRequested = reviewRequestNodes.some((request) => {
@@ -490,8 +511,6 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
   })
 
   const commitsConnection = objectField(node, 'commits')
-  const commitNodes = nodes(node, 'commits')
-  const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
   const body = typeof node.body === 'string' ? node.body : ''
 
   return {
@@ -502,17 +521,11 @@ function parsePullRequest(node: JsonRecord, viewer: string): PrSummary {
     isDraft: requiredBoolean(node, 'isDraft'),
     author: authorLogin,
     bodyExcerpt: stripCommandoPrMarkers(body).trim().slice(0, BODY_EXCERPT_CHARS),
-    additions: requiredNumber(node, 'additions'),
-    deletions: requiredNumber(node, 'deletions'),
+    ...parsePrStatus(node),
     changedFiles: requiredNumber(node, 'changedFiles'),
     commitCount: typeof commitsConnection.totalCount === 'number' ? commitsConnection.totalCount : 0,
-    unresolvedThreads,
-    threadsTruncated: threadTotal > threadNodes.length,
-    reviewDecision: parseReviewDecision(node.reviewDecision),
     reviews,
     requestedReviewers,
-    conflicting: node.mergeable === 'CONFLICTING',
-    checks: parseChecks(commit),
     createdAt: typeof node.createdAt === 'string' ? node.createdAt : '',
     updatedAt: requiredString(node, 'updatedAt'),
     headRefName: requiredString(node, 'headRefName'),

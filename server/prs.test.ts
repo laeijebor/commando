@@ -117,6 +117,7 @@ describe('pane pull request history', () => {
           issueCount: 4,
           nodes: [
             {
+              ...pullRequestNode(),
               number: 12,
               title: 'First pane PR',
               url: 'https://github.com/acme/widgets/pull/12',
@@ -128,6 +129,7 @@ describe('pane pull request history', () => {
               repository: { nameWithOwner: 'acme/widgets' },
             },
             {
+              ...pullRequestNode(),
               number: 44,
               title: 'Second pane PR',
               url: 'https://github.com/acme/gadgets/pull/44',
@@ -167,6 +169,38 @@ describe('pane pull request history', () => {
     expect(runner).toHaveBeenCalledWith(expect.arrayContaining([
       '-f', `targetQuery=is:pr in:body ${targetId} sort:created-desc`,
     ]))
+  })
+})
+
+describe('pane PR status', () => {
+  it('matches HUD parsing for conflicts, truncated threads, reviews, and rerun checks', async () => {
+    const targetId = '123e4567-e89b-42d3-a456-426614174000'
+    const node = pullRequestNode({
+      body: `<!-- commando:v1 target=${targetId} relation=created -->`,
+      repository: { nameWithOwner: 'acme/widgets' },
+      additions: 1234, deletions: 56, mergeable: 'CONFLICTING', reviewDecision: 'CHANGES_REQUESTED',
+      reviewThreads: { totalCount: 60, nodes: [{ isResolved: false }, { isResolved: true }, { isResolved: false }] },
+      commits: { totalCount: 3, nodes: [{ commit: { statusCheckRollup: {
+        state: 'FAILURE', contexts: { totalCount: 4, nodes: [
+          { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
+          { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { __typename: 'StatusContext', context: 'lint', state: 'FAILURE' },
+          { __typename: 'CheckRun', name: 'build', status: 'IN_PROGRESS', conclusion: null },
+        ] },
+      } } }] },
+    })
+    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 1, nodes: [node] } } }))
+    const panePr = (await service.listPanePullRequests(targetId)).pullRequests[0]
+    const { service: hudService } = serviceWith(graphqlPayload([node]))
+    const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'threadsTruncated', 'reviewDecision'] as const) {
+      expect(panePr[field]).toEqual(hudPr[field])
+    }
+    expect(panePr).toMatchObject({
+      additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2,
+      threadsTruncated: true, reviewDecision: 'changes_requested',
+      checks: { state: 'fail', failed: 1, pending: 1, total: 3 },
+    })
   })
 })
 

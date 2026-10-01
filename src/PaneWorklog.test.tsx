@@ -77,7 +77,7 @@ describe('PaneWorklog', () => {
   it('shows linked PRs and missing-hook guidance without activity metadata', async () => {
     const prsApi = { pane: vi.fn().mockResolvedValue({
       targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
-      pullRequests: [{ repo: 'acme/app', number: 1, title: 'Linked work', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02' }],
+      pullRequests: [{ repo: 'acme/app', number: 1, title: 'Linked work', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02', additions: 10, deletions: 2, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null }],
     }) }
     render(<PaneWorklog brief={{ ...brief, tasks: [], updates: [] }} empty hookConnected={false} paneLabel="Tests" prsApi={prsApi} />)
     expect(await screen.findByLabelText('Open pull request')).toBeInTheDocument()
@@ -235,6 +235,7 @@ describe('PaneWorklog', () => {
       targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
       pullRequests: [{
         repo: 'acme/app', number: 1, title: 'Open PR', url: 'https://example.test/pr/1',
+        additions: 10, deletions: 2, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
         state: 'open' as const, isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02',
       }],
     }) }

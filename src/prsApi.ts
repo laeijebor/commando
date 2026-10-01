@@ -45,7 +45,8 @@ export type PrList = {
   mineTruncated: boolean
   fetchedAt: number
 }
-export type PanePrSummary = {
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
+export type PanePrSummary = PrStatus & {
   repo: string
   number: number
   title: string
