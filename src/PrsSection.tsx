@@ -236,6 +236,9 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
     openTimer.current = window.setTimeout(() => { openTimer.current = null; openNow() }, PR_HOVER_DELAY_MS)
   }
   const scheduleClose = () => {
+    // Disabling the focused merge button blurs it. Keep the result visible
+    // instead of closing the popover halfway through the request.
+    if (mergeInFlight.current) { cancelTimers(); return }
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
     if (closeTimer.current !== null) return
     closeTimer.current = window.setTimeout(() => { closeTimer.current = null; setPopover(null) }, PR_HOVER_CLOSE_DELAY_MS)

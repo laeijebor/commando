@@ -122,6 +122,10 @@ describe('PrsSection', () => {
     fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
     fireEvent.click(await screen.findByRole('button', { name: 'Merge PR' }))
     expect(await screen.findByRole('button', { name: 'Merging…' })).toBeDisabled()
+    fireEvent.blur(screen.getByRole('button', { name: 'Merging…' }))
+    fireEvent.mouseLeave(screen.getByRole('dialog'))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
+    expect(screen.getByRole('button', { name: 'Merging…' })).toBeInTheDocument()
     expect(requests.filter((request) => request.url.endsWith('/merge'))).toEqual([{
       url: '/api/prs/merge', method: 'POST',
       body: { repo: 'acme/widgets', number: 12, headRefOid: pr().headRefOid },
