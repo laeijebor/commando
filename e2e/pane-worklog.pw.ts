@@ -70,7 +70,13 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     // GitHub is the only mocked service; all worklog, hook, screenshot and tmux traffic is real.
     await page.route('**/api/prs/pane?*', (route) => route.fulfill({ json: { list: {
       targetId, totalCount: 1, truncated: false, fetchedAt: Date.now(),
-      pullRequests: [{ repo: 'example/worklog', number: 1, title: 'Linked PR before activity', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-09-14', updatedAt: '2026-09-14' }],
+      pullRequests: [{
+        repo: 'example/worklog', number: 1, title: 'Linked PR before activity', url: 'https://example.test/pr/1',
+        state: 'open', isDraft: false, createdAt: '2026-09-14', updatedAt: '2026-09-14',
+        additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2, threadsTruncated: true,
+        reviewDecision: 'changes_requested',
+        checks: { state: 'fail', failed: 2, pending: 0, total: 5, runs: [], truncated: false },
+      }],
     } } }))
     await page.goto(`${baseUrl}/#token=${token}`)
     const first = page.locator(`[data-pane-id="${paneId}"]`)
@@ -78,6 +84,23 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await first.getByRole('button', { name: 'Expand worklog for Worklog agent' }).click()
     await expect(first.getByRole('status')).toContainText('No agent hook data received')
     await expect(first.getByText('Linked PR before activity')).toBeVisible()
+    const prCard = first.locator('.pane-worklog-pr')
+    for (const label of ['+1,234', '−56', '✗ 2 failing', '2+ unresolved', 'changes requested', '⚠ conflicts']) {
+      await expect(prCard.getByText(label, { exact: true })).toBeVisible()
+    }
+    const layout = await prCard.evaluate((card) => {
+      const badges = [...card.querySelectorAll('.pr-chip')].map((chip) => chip.getBoundingClientRect())
+      const bounds = card.getBoundingClientRect()
+      return {
+        fits: badges.every((badge) => badge.left >= bounds.left && badge.right <= bounds.right),
+        rows: new Set(badges.map((badge) => Math.round(badge.top))).size,
+        overflow: card.scrollWidth > card.clientWidth,
+      }
+    })
+    expect(layout.fits).toBe(true)
+    expect(layout.rows).toBeGreaterThan(1)
+    expect(layout.overflow).toBe(false)
+    await first.locator('.pane-worklog').screenshot({ path: testInfo.outputPath('pane-pr-badges.png') })
     await first.getByRole('textbox', { name: 'Note for Worklog agent' }).fill('Retain my review note')
 
     const runAgent = (args: string[]) => execFileSync(process.execPath, args, { env: { ...env, TMUX_PANE: paneId }, encoding: 'utf8' })

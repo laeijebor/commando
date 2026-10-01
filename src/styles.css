@@ -2388,6 +2388,9 @@ a.pane-worklog-reference:hover { border-color: var(--border-strong); background:
 .pane-worklog-pr.is-merged .pane-worklog-pr-icon { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .pane-worklog-pr.is-closed .pane-worklog-pr-icon { color: var(--red); background: color-mix(in srgb, var(--red) 9%, transparent); }
 .pane-worklog-pr-icon svg { width: 10px; height: 10px; }
+.pane-worklog-pr-content { min-width: 0; }
+.pane-worklog-pr-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 5px; }
+.pane-worklog-pr-badges .pr-chip { padding: 1px 4px; font-size: 6px; white-space: nowrap; }
 .pane-worklog-pr strong { display: block; overflow: hidden; color: inherit; font: 700 8px/1.25 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-pr small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-pr-truncated { margin: 6px 0 0; color: var(--muted-dim); font: 500 6px/1.3 var(--sans); }

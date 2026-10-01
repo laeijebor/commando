@@ -1,6 +1,7 @@
 import { GitMerge, GitPullRequest, X } from 'lucide-react'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePanePrs } from './prStore'
+import { PrBadges } from './PrBadges'
 
 export function usePanePullRequests(
   paneId: string,
@@ -43,9 +44,12 @@ export function PanePullRequests({
             <span className="pane-worklog-pr-icon" aria-hidden="true">
               {pullRequest.state === 'merged' ? <GitMerge /> : pullRequest.state === 'closed' ? <X /> : <GitPullRequest />}
             </span>
-            <span>
+            <span className="pane-worklog-pr-content">
               <strong>{pullRequest.title}</strong>
               <small>{pullRequest.repo} #{pullRequest.number} · {pullRequest.isDraft ? 'draft' : pullRequest.state}</small>
+              <span className="pane-worklog-pr-badges">
+                <PrBadges pr={pullRequest} number={pullRequest.number} />
+              </span>
             </span>
           </a>
         ))}

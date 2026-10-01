@@ -11,6 +11,7 @@ import {
   type PrThreads,
 } from './prsApi'
 import { useRepoPrs } from './prStore'
+import { PrBadges } from './PrBadges'
 import './prs-section.css'
 
 export const PRS_POLL_INTERVAL_MS = 30_000
@@ -45,14 +46,6 @@ export function prsNeedAttention(list: PrList | null): boolean {
       (pr.viewerIsAuthor && (pr.checks?.state === 'fail' || pr.reviewDecision === 'changes_requested' || pr.conflicting))
     ),
   )
-}
-
-function ChecksChip({ checks }: { checks: PrSummary['checks'] }) {
-  if (!checks) return <span className="pr-chip dim">no checks</span>
-  const label = checks.state === 'fail'
-    ? (checks.failed > 0 ? `✗ ${checks.failed} failing` : '✗ checks')
-    : checks.state === 'pending' ? (checks.pending > 0 ? `● ${checks.pending} running` : '● running') : '✓ checks'
-  return <span className={`pr-chip ${checks.state}`}>{label}</span>
 }
 
 function fileName(path: string): string {
@@ -263,39 +256,18 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJu
         />
       ) : null}
       <div className="pr-meta">
-        {targetIsLive && onOpenDiff ? (
-          <button
-            type="button"
-            className="pr-chip pr-diffstat pr-diff-link"
-            aria-label={`Open diff for PR #${pr.number}: +${pr.additions} -${pr.deletions}`}
-            onClick={() => onOpenDiff(pr)}
-          >
-            <span className="plus">+{formatCount(pr.additions)}</span>
-            <span className="minus">−{formatCount(pr.deletions)}</span>
-          </button>
-        ) : (
-          <span className="pr-chip pr-diffstat">
-            <span className="plus">+{formatCount(pr.additions)}</span>
-            <span className="minus">−{formatCount(pr.deletions)}</span>
-          </span>
-        )}
-        <ChecksChip checks={pr.checks} />
-        {targetIsLive ? (
-          <button
-            type="button"
-            className="pr-chip pr-pane-link"
-            aria-label={`Jump to producing pane for PR #${pr.number}`}
-            onClick={() => onJumpToTarget?.(targetId)}
-          >
-            pane
-          </button>
-        ) : null}
-        {pr.unresolvedThreads > 0 ? (
-          <span className="pr-chip warn">{pr.unresolvedThreads}{pr.threadsTruncated ? '+' : ''} unresolved</span>
-        ) : null}
-        {pr.reviewDecision === 'changes_requested' ? <span className="pr-chip bad">changes requested</span> : null}
-        {pr.reviewDecision === 'approved' ? <span className="pr-chip ok">approved</span> : null}
-        {pr.conflicting ? <span className="pr-chip bad">⚠ conflicts</span> : null}
+        <PrBadges pr={pr} number={pr.number} onOpenDiff={targetIsLive && onOpenDiff ? () => onOpenDiff(pr) : undefined}>
+          {targetIsLive ? (
+            <button
+              type="button"
+              className="pr-chip pr-pane-link"
+              aria-label={`Jump to producing pane for PR #${pr.number}`}
+              onClick={() => onJumpToTarget?.(targetId)}
+            >
+              pane
+            </button>
+          ) : null}
+        </PrBadges>
       </div>
       <div className="pr-foot">
         {sessionName && targetId
