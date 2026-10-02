@@ -181,19 +181,26 @@ export function SimsView({ token }: { token: string }) {
     const controller = new AbortController()
     setUpdating(true)
     let busy = false
+    let followUp: number | undefined
+    let followUps = 0
     const refresh = async () => {
       if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
       busy = true
+      let stale = false
       try {
-        const next = await api.list(controller.signal)
-        if (!controller.signal.aborted) { cacheSims(next); setSims(next); setLoaded(true); setError('') }
+        const next = await api.listing(controller.signal)
+        if (controller.signal.aborted) return
+        cacheSims(next.sims); setSims(next.sims); setLoaded(true); setError('')
+        // A cached answer means the daemon is refreshing: ask again shortly rather than at the next poll.
+        stale = next.stale && followUps < 8
+        if (stale) { followUps += 1; followUp = window.setTimeout(() => void refresh(), 1_000) } else followUps = 0
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Simulators unavailable')
-      } finally { busy = false; if (!controller.signal.aborted) setUpdating(false) }
+      } finally { busy = false; if (!controller.signal.aborted) setUpdating(stale) }
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 5_000)
-    return () => { window.clearInterval(timer); controller.abort() }
+    return () => { window.clearInterval(timer); window.clearTimeout(followUp); controller.abort() }
   }, [api, visible, revision])
 
   const sessions = useMemo(() => {

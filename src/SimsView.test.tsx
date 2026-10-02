@@ -641,3 +641,18 @@ it('loads the listing and first snapshot without waiting for a poll when effects
   await intersect(true, observers.length - 1)
   expect(snapshotCalls().length).toBeGreaterThan(0)
 })
+
+it('asks again within a second when the daemon answered from cache, instead of waiting a full poll', async () => {
+  let stale = true
+  fetcher.mockImplementation(async (url) => url === '/api/sims'
+    ? new Response(JSON.stringify({ sims, stale }), { headers: { 'Content-Type': 'application/json' } })
+    : new Response('jpeg'))
+  render(<SimsView token="token" />)
+  await flush()
+  expect(listingCalls()).toHaveLength(1)
+  expect(screen.getByText('Updating…')).toBeInTheDocument()
+  stale = false
+  await tick(1_000)
+  expect(listingCalls()).toHaveLength(2)
+  expect(screen.queryByText('Updating…')).not.toBeInTheDocument()
+})

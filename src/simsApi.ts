@@ -108,6 +108,11 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
       return response.json()
     },
     list: async (signal?: AbortSignal): Promise<SimWallDevice[]> => (await (await request('', 'GET', signal)).json()).sims,
+    /** The listing plus whether the daemon answered from cache while refreshing. */
+    listing: async (signal?: AbortSignal): Promise<{ sims: SimWallDevice[]; stale: boolean }> => {
+      const payload = await (await request('', 'GET', signal)).json() as { sims: SimWallDevice[]; stale?: boolean }
+      return { sims: payload.sims, stale: payload.stale === true }
+    },
     snapshot: async (udid: string, signal: AbortSignal): Promise<Blob> => (await request(`/${encodeURIComponent(udid)}/snapshot.jpg`, 'GET', signal)).blob(),
     snapshotFrame: async (udid: string, signal: AbortSignal): Promise<{ blob: Blob; at: number }> => {
       const response = await request(`/${encodeURIComponent(udid)}/snapshot.jpg`, 'GET', signal)
