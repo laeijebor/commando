@@ -68,6 +68,7 @@ import type {
   WebPane,
   WebPaneEngine,
   WebPaneFeedbackInfo,
+  WebPaneNavigateRequest,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -921,6 +922,8 @@ export function App() {
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
+  const [webPaneNavigateRequests, setWebPaneNavigateRequests] = useState<Record<string, WebPaneNavigateRequest>>({})
+  const [webPaneReloads, setWebPaneReloads] = useState<Record<string, number>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [activeTabs, setActiveTabs] = useState<Record<string, string>>({})
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
@@ -1249,6 +1252,8 @@ export function App() {
       case 'web_panes':
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
+        setWebPaneNavigateRequests(message.navigateRequests ?? {})
+        setWebPaneReloads(message.reloads ?? {})
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
@@ -1990,6 +1995,15 @@ export function App() {
       await webPanesApi.navigate(webPaneId, url)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to change web pane URL')
+    }
+  }
+
+  const answerWebPaneNavigateRequest = async (webPaneId: string, requestId: string, accept: boolean) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.answerNavigateRequest(webPaneId, requestId, accept ? 'accept' : 'dismiss')
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to answer the navigate request')
     }
   }
 
@@ -2968,6 +2982,11 @@ export function App() {
                             setDropPreview(null)
                           }}
                           onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+                          navigateRequest={webPaneNavigateRequests[webPane.id]}
+                          onAnswerNavigateRequest={(requestId, accept) => (
+                            void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
+                          )}
+                          reloadRevision={webPaneReloads[webPane.id]}
                           maximized={maximizedPaneId === webPane.id}
                           onMaximize={() => {
                             clearLayoutTimers()

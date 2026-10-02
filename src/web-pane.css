@@ -430,6 +430,68 @@
   color: var(--accent);
 }
 
+/* The body and the navigate-request toast share the middle row, so the toast
+   floats over whatever the tile renders. */
+.web-pane > .web-pane-body {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.web-pane-navigate-request {
+  grid-row: 2;
+  grid-column: 1;
+  align-self: start;
+  justify-self: center;
+  z-index: 3;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  max-width: min(440px, calc(100% - 20px));
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  animation: web-pane-navigate-request-in 160ms ease-out;
+}
+
+.web-pane-navigate-request-lede {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.web-pane-navigate-request-lede strong {
+  color: var(--accent);
+}
+
+.web-pane-navigate-request-url {
+  margin: 0;
+  max-width: 100%;
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@keyframes web-pane-navigate-request-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .web-pane-navigate-request {
+    animation: none;
+  }
+}
+
 .web-pane-foot {
   display: flex;
   align-items: center;

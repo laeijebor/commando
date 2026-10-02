@@ -13,8 +13,8 @@ vi.mock('./SimLiveView', () => ({
 }))
 
 vi.mock('./ChromiumTileCard', () => ({
-  ChromiumTileCard: ({ reviewMode }: { reviewMode: boolean }) => (
-    <div data-testid="chromium-tile" data-review-mode={reviewMode} />
+  ChromiumTileCard: ({ reviewMode, reloadKey }: { reviewMode: boolean; reloadKey: number }) => (
+    <div data-testid="chromium-tile" data-review-mode={reviewMode} data-reload-key={reloadKey} />
   ),
 }))
 
@@ -166,6 +166,60 @@ describe('WebPaneCard url editing', () => {
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Web pane URL' }), { key: 'Escape' })
     expect(onNavigate).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: 'Web pane URL' })).toBeNull()
+  })
+})
+
+describe('WebPaneCard agent requests', () => {
+  const navigateRequest = {
+    id: 'nr-0000beef',
+    url: 'http://localhost:5173/next',
+    requestedBy: 'claude · gizmo',
+    requestedAt: 1,
+  }
+
+  it('shows an agent navigate request over the tile and answers it', () => {
+    const onAnswer = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        navigateRequest={navigateRequest}
+        onAnswerNavigateRequest={onAnswer}
+      />,
+    )
+
+    const toast = screen.getByRole('alertdialog', { name: "Agent wants to change this tile's URL" })
+    expect(toast).toHaveTextContent('claude · gizmo wants to open')
+    expect(toast).toHaveTextContent('http://localhost:5173/next')
+    expect(toast).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    expect(onAnswer).toHaveBeenCalledWith('nr-0000beef', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(onAnswer).toHaveBeenCalledWith('nr-0000beef', false)
+  })
+
+  it('reloads the tile when the daemon reload revision changes, not on mount', () => {
+    const props = { webPane, onClose: () => undefined, onConfirm: () => undefined }
+    const { container, rerender } = render(<WebPaneCard {...props} reloadRevision={4} />)
+    const first = container.querySelector('iframe')
+
+    rerender(<WebPaneCard {...props} reloadRevision={4} />)
+    expect(container.querySelector('iframe')).toBe(first)
+
+    rerender(<WebPaneCard {...props} reloadRevision={5} />)
+    expect(container.querySelector('iframe')).not.toBe(first)
+  })
+
+  it('leaves canvas chromium reloads to the daemon', () => {
+    const props = {
+      webPane: { ...webPane, engine: 'chromium' as const },
+      onClose: () => undefined,
+      onConfirm: () => undefined,
+    }
+    const { rerender } = render(<WebPaneCard {...props} reloadRevision={1} />)
+    rerender(<WebPaneCard {...props} reloadRevision={2} />)
+    expect(screen.getByTestId('chromium-tile')).toHaveAttribute('data-reload-key', '0')
   })
 })
 

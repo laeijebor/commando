@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneService } from './web-panes.js'
 
@@ -20,7 +21,7 @@ async function setup() {
     paneForId: (id) => id === '%12' || id === '%13' ? { id, sessionId: '$1', windowId: '@3', width: 180, height: 50 } : undefined,
     onChange: change,
     // Simulator routes never need a browser feedback queue or attachments.
-    feedback: {} as Dependencies['feedback'], pending: {} as Dependencies['pending'], attachmentStore: {} as Dependencies['attachmentStore'],
+    feedback: {} as Dependencies['feedback'], pending: {} as Dependencies['pending'], attachmentStore: {} as Dependencies['attachmentStore'], agentRequests: new WebPaneAgentRequests(),
   })
   const request = async (body: unknown, method = 'POST', path = '/api/web-panes', authorized = true) => {
     const incoming = new PassThrough() as unknown as IncomingMessage
