@@ -70,7 +70,13 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     // GitHub is the only mocked service; all worklog, hook, screenshot and tmux traffic is real.
     await page.route('**/api/prs/pane?*', (route) => route.fulfill({ json: { list: {
       targetId, totalCount: 1, truncated: false, fetchedAt: Date.now(),
-      pullRequests: [{ repo: 'example/worklog', number: 1, title: 'Linked PR before activity', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-09-14', updatedAt: '2026-09-14' }],
+      pullRequests: [{
+        repo: 'example/worklog', number: 1, title: 'Linked PR before activity', url: 'https://example.test/pr/1',
+        state: 'open', isDraft: false, createdAt: '2026-09-14', updatedAt: '2026-09-14',
+        additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2, threadsTruncated: true,
+        reviewDecision: 'changes_requested',
+        checks: { state: 'fail', failed: 2, pending: 0, total: 5, runs: [], truncated: false },
+      }],
     } } }))
     await page.goto(`${baseUrl}/#token=${token}`)
     const first = page.locator(`[data-pane-id="${paneId}"]`)
@@ -78,6 +84,23 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await first.getByRole('button', { name: 'Expand worklog for Worklog agent' }).click()
     await expect(first.getByRole('status')).toContainText('No agent hook data received')
     await expect(first.getByText('Linked PR before activity')).toBeVisible()
+    const prCard = first.locator('.pane-worklog-pr')
+    for (const label of ['+1,234', '−56', '✗ 2 failing', '2+ unresolved', 'changes requested', '⚠ conflicts']) {
+      await expect(prCard.getByText(label, { exact: true })).toBeVisible()
+    }
+    const layout = await prCard.evaluate((card) => {
+      const badges = [...card.querySelectorAll('.pr-chip')].map((chip) => chip.getBoundingClientRect())
+      const bounds = card.getBoundingClientRect()
+      return {
+        fits: badges.every((badge) => badge.left >= bounds.left && badge.right <= bounds.right),
+        rows: new Set(badges.map((badge) => Math.round(badge.top))).size,
+        overflow: card.scrollWidth > card.clientWidth,
+      }
+    })
+    expect(layout.fits).toBe(true)
+    expect(layout.rows).toBeGreaterThan(1)
+    expect(layout.overflow).toBe(false)
+    await first.locator('.pane-worklog').screenshot({ path: testInfo.outputPath('pane-pr-badges.png') })
     await first.getByRole('textbox', { name: 'Note for Worklog agent' }).fill('Retain my review note')
 
     const runAgent = (args: string[]) => execFileSync(process.execPath, args, { env: { ...env, TMUX_PANE: paneId }, encoding: 'utf8' })
@@ -95,7 +118,27 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await mkdir(shots)
     await writeFile(join(shots, 'review.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=', 'base64'))
     runAgent([paths.sessionBriefCliPath, '--headline', 'Ownership verified', '--update', 'decision', 'Retain the original handoff', '--screenshots', shots])
+    runAgent([paths.sessionBriefCliPath, '--feature-flag', 'new-checkout'])
+    const previewUrl = `${baseUrl}/checkout`
+    runAgent([paths.sessionBriefCliPath, '--url', previewUrl, '--url-label', 'Checkout preview'])
+    const issueUrl = 'https://github.com/acme/app/issues/42'
+    runAgent([paths.sessionBriefCliPath, '--issue', issueUrl, '--url-label', 'Checkout bug #42'])
+    runAgent([paths.sessionBriefCliPath, '--deployment', `${baseUrl}/preview`, '--url-label', 'Preview deployment'])
+    runAgent([paths.sessionBriefCliPath, '--build', '1842', '--link', `${baseUrl}/build/1842`])
+    runAgent([paths.sessionBriefCliPath, '--release', 'v2.3.0'])
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
+    await expect(first.getByRole('region', { name: 'Important terms for Worklog agent' })).toContainText('new-checkout')
+    await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
+    await expect(first.getByRole('link', { name: /Checkout bug #42/ })).toHaveAttribute('href', issueUrl)
+    await expect(first.getByRole('link', { name: /Preview deployment/ })).toHaveAttribute('href', `${baseUrl}/preview`)
+    await expect(first.getByRole('link', { name: /1842/ })).toHaveAttribute('href', `${baseUrl}/build/1842`)
+    await expect(first.getByText('v2.3.0')).toBeVisible()
+    const [previewPage] = await Promise.all([
+      page.waitForEvent('popup'),
+      first.getByRole('link', { name: /Checkout preview/ }).click(),
+    ])
+    await expect(previewPage).toHaveURL(previewUrl)
+    await previewPage.close()
     await expect(first.getByRole('button', { name: 'Open screenshot review.png' })).toBeVisible()
 
     tmux('rename-session', '-t', 'worklog', 'renamed')
@@ -109,6 +152,10 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByRole('textbox', { name: 'Note for Worklog agent' })).toHaveValue('Retain my review note')
     runAgent([paths.sessionBriefCliPath, '--update', 'note', 'After move'])
     await expect(first.getByText('After move')).toBeVisible()
+    runAgent([paths.sessionBriefCliPath, '--remove-feature-flag', 'new-checkout'])
+    runAgent([paths.sessionBriefCliPath, '--remove-issue', issueUrl])
+    await expect(first.getByText('new-checkout')).toHaveCount(0)
+    await expect(first.getByText('Checkout bug #42')).toHaveCount(0)
     await stop(daemon)
     daemon = start(['--import', 'tsx', 'server/index.ts'])
     await expect.poll(async () => { try { return (await snapshot()).panes.length } catch { return 0 } }, { timeout: 20_000 }).toBe(2)
@@ -116,6 +163,10 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
     await expect(first.getByText('Verify durable tasks')).toBeVisible()
     await expect(first.getByText('After move')).toBeVisible()
+    await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)
+    await expect(first.getByRole('link', { name: /Preview deployment/ })).toHaveAttribute('href', `${baseUrl}/preview`)
+    await expect(first.getByRole('link', { name: /1842/ })).toHaveAttribute('href', `${baseUrl}/build/1842`)
+    await expect(first.getByText('v2.3.0')).toBeVisible()
     await expect(first.getByRole('textbox', { name: 'Note for Worklog agent' })).toHaveValue('Retain my review note')
     await expect(first.getByRole('button', { name: 'Open screenshot review.png' })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('worklog-after-move-and-restart.png') })

@@ -5,9 +5,9 @@
  * window.__commandoRedlineQueue exists; elsewhere components render but
  * queueing is disabled.
  *
- * Discipline (matters for review UX): interacting with a control only updates
- * local state. Only the explicit queue button sends, exactly once per press,
- * and a queueKey makes re-answers replace the unsent previous answer.
+ * Selecting a built-in option queues it immediately; free-text and note-only
+ * answers use the queue button. A queueKey makes re-answers replace the unsent
+ * previous answer.
  */
 ;(() => {
   'use strict'
@@ -566,6 +566,72 @@
   :where(.redline-lightbox-next) { right: 1rem; }
   :where(.redline-lightbox-caption:not([hidden])) { padding-bottom: calc(4.4rem + env(safe-area-inset-bottom)); }
 }
+:where(redline-before-after, redline-file-tree, redline-milestones, redline-evidence,
+  redline-scenario, redline-tradeoffs, redline-risk, redline-code-diff, redline-scope,
+  redline-decision) {
+  --_ac: var(--redline-accent, #7c6cf6);
+  display: block; margin: 1.25rem 0; padding: 1rem 1.2rem;
+  border: 1px solid color-mix(in oklab, currentColor 18%, transparent);
+  border-radius: 14px; background: color-mix(in oklab, currentColor 4%, transparent);
+  line-height: 1.5; min-width: 0;
+}
+:where(.redline-plan-heading) { margin: 0 0 .8rem; font-size: 1.1rem; }
+:where(.redline-plan-label, .redline-plan-status) {
+  display: inline-block; margin: 0 .4rem .4rem 0; padding: .12rem .5rem;
+  border-radius: 999px; font-size: .78rem; font-weight: 650;
+  background: color-mix(in oklab, var(--_ac, #7c6cf6) 17%, transparent);
+}
+:where(redline-before-after, redline-tradeoffs) :where(.redline-plan-pair) {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem;
+}
+:where(redline-before-after [data-before], redline-before-after [data-after],
+  redline-tradeoffs [data-option]) {
+  min-width: 0; padding: .8rem; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, currentColor 15%, transparent);
+}
+:where(redline-file-tree ul) { list-style: none; padding-left: 1.25rem; margin: .2rem 0; }
+:where(redline-file-tree > ul) { padding-left: 0; }
+:where(redline-file-tree li) { margin: .25rem 0; overflow-wrap: anywhere; }
+:where(redline-file-tree summary) { cursor: pointer; }
+:where(.redline-file-summary) { margin: .5rem 0; opacity: .8; font-size: .86rem; }
+:where(.redline-diff-meta) { margin: 0 0 .6rem; opacity: .8; font-size: .86rem; overflow-wrap: anywhere; }
+:where(redline-milestones [data-milestone], redline-evidence [data-evidence],
+  redline-scenario [data-step], redline-risk [data-risk]) {
+  margin: .6rem 0; padding: .65rem .8rem;
+  border-left: 3px solid var(--_ac); background: color-mix(in oklab, currentColor 4%, transparent);
+}
+:where(redline-code-diff .redline-diff-controls) { display: flex; gap: .5rem; margin: .5rem 0; }
+:where(redline-code-diff button, redline-scope button, redline-decision button) {
+  cursor: pointer; border: 1px solid color-mix(in oklab, currentColor 25%, transparent);
+  border-radius: 8px; padding: .4rem .7rem; color: inherit; background: transparent; font: inherit;
+}
+:where(redline-code-diff button[aria-pressed="true"]) {
+  border-color: var(--_ac); background: color-mix(in oklab, var(--_ac) 20%, transparent);
+}
+:where(.redline-diff-view) { overflow: auto; font: .82rem/1.5 ui-monospace, SFMono-Regular, monospace; }
+:where(.redline-diff-row) { display: flex; min-width: max-content; white-space: pre; }
+:where(.redline-diff-row[data-kind="add"]) { background: rgb(47 191 113 / .14); }
+:where(.redline-diff-row[data-kind="delete"]) { background: rgb(232 95 95 / .15); }
+:where(.redline-diff-line-no) { width: 3.5em; flex: none; padding-right: .5em; opacity: .55; text-align: right; user-select: none; }
+:where(.redline-diff-code) { white-space: pre; padding: 0 .6em; }
+:where(.redline-diff-side) { display: grid; grid-template-columns: repeat(2, minmax(max-content, 1fr)); }
+:where(.redline-diff-side > *) { border-right: 1px solid color-mix(in oklab, currentColor 14%, transparent); }
+:where(.redline-diff-fold summary) { cursor: pointer; padding: .2rem .5rem; opacity: .75; }
+:where(redline-scope [data-optional][hidden]) { display: none; }
+:where(.redline-scope-control) { display: block; margin: .5rem 0; }
+:where(redline-scope textarea, redline-decision textarea) {
+  display: block; width: 100%; box-sizing: border-box; min-height: 2.6rem; margin-top: .8rem;
+  border-radius: 8px; padding: .5rem; font: inherit; color: inherit;
+  background: color-mix(in oklab, currentColor 6%, transparent);
+  border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
+}
+:where(redline-scope .redline-queue, redline-decision .redline-queue) {
+  margin-top: .8rem; color: #fff; border: 0; background: var(--_ac); font-weight: 650;
+}
+:where(redline-scope .redline-queue:disabled, redline-decision .redline-queue:disabled) { opacity: .5; cursor: not-allowed; }
+@media (max-width: 640px) {
+  :where(redline-before-after, redline-tradeoffs) :where(.redline-plan-pair) { grid-template-columns: 1fr; }
+}
 `
 
   const injectStyles = () => {
@@ -800,7 +866,7 @@
     return heading
   }
 
-  /** Shared base: light-DOM render on connect, one queue press per answer. */
+  /** Shared base: light-DOM render on connect and daemon-backed queue state. */
   class RedlineElement extends HTMLElement {
     connectedCallback() {
       if (this.dataset.redlineReady) {
@@ -1154,14 +1220,18 @@
       }
       const button = queueButton(this.getAttribute('button-label'))
       const note = noteInput()
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const chosen = [...this.querySelectorAll('input:checked')].map((input) => input.value)
-        if (chosen.length === 0) return this.queueNoteOnly({ choice: null, options, multiple })
-        this.queue(chosen.join(', '), {
+        if (chosen.length === 0) return false
+        return this.queue(chosen.join(', '), {
           choice: multiple ? chosen : chosen[0],
           options,
           multiple,
         })
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ choice: null, options, multiple })
       })
       this.append(list, note, button)
       this._multiple = multiple
@@ -1218,10 +1288,13 @@
       }
       const note = noteInput()
       const button = queueButton(this.getAttribute('button-label'))
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return this.queueNoteOnly({ verdict: null })
-        this.queue(selected.value, { verdict: selected.value })
+        return selected ? this.queue(selected.value, { verdict: selected.value }) : false
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ verdict: null })
       })
       this.append(list, note, button)
       enableRadioDeselect(list)
@@ -1272,10 +1345,13 @@
       }
       const button = queueButton(this.getAttribute('button-label'))
       const note = noteInput()
-      button.addEventListener('click', () => {
+      const queueSelection = () => {
         const selected = this.querySelector('input:checked')
-        if (!selected) return this.queueNoteOnly({ rating: null, max })
-        this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max })
+        return selected ? this.queue(`${selected.value}/${max}`, { rating: Number(selected.value), max }) : false
+      }
+      list.addEventListener('change', () => queueSelection())
+      button.addEventListener('click', () => {
+        if (!queueSelection()) this.queueNoteOnly({ rating: null, max })
       })
       this.append(list, note, button)
       this._max = max
@@ -1873,6 +1949,392 @@
     }
   }
 
+  // Plan components enhance authored light DOM. No author node is recreated:
+  // review anchors, nested markup and inline links keep their original IDs.
+  const directChildren = (host, selector) => [...host.children].filter((child) => child.matches(selector))
+  const planHeading = (host) => {
+    const title = host.getAttribute('heading')
+    if (!title) return
+    const heading = document.createElement('h3')
+    heading.className = 'redline-plan-heading'
+    heading.textContent = title
+    host.prepend(heading)
+  }
+  const badge = (text, className = 'redline-plan-label') => {
+    const element = document.createElement('span')
+    element.className = className
+    element.textContent = text
+    return element
+  }
+  const labelItems = (host, selector, attribute) => {
+    for (const item of host.querySelectorAll(selector)) {
+      const label = item.getAttribute(attribute)
+      if (label) item.prepend(badge(label))
+      const status = item.getAttribute('data-status')
+      if (status) item.prepend(badge(status, 'redline-plan-status'))
+    }
+  }
+
+  class RedlinePlanElement extends HTMLElement {
+    connectedCallback() {
+      if (this._redlinePlanReady) return
+      this._redlinePlanReady = true
+      const start = () => { if (this.isConnected) this.render() }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true })
+      else start()
+    }
+    render() { planHeading(this) }
+  }
+
+  const pairChildren = (host, children) => {
+    if (!children.length) return
+    const pair = document.createElement('div')
+    pair.className = 'redline-plan-pair'
+    children[0].before(pair)
+    pair.append(...children)
+  }
+
+  class RedlineBeforeAfter extends RedlinePlanElement {
+    render() {
+      super.render()
+      const before = directChildren(this, '[data-before]')
+      const after = directChildren(this, '[data-after]')
+      for (const item of before) item.prepend(badge(item.getAttribute('data-label') || 'Before'))
+      for (const item of after) item.prepend(badge(item.getAttribute('data-label') || 'After'))
+      pairChildren(this, [...before, ...after])
+    }
+  }
+
+  class RedlineTradeoffs extends RedlinePlanElement {
+    render() {
+      super.render()
+      const options = directChildren(this, '[data-option]')
+      for (const option of options) {
+        option.prepend(badge(option.getAttribute('data-label') || option.getAttribute('data-option')))
+        if (option.hasAttribute('data-recommended')) option.prepend(badge('Recommended', 'redline-plan-status'))
+      }
+      pairChildren(this, options)
+    }
+  }
+
+  class RedlineFileTree extends RedlinePlanElement {
+    render() {
+      super.render()
+      const files = [...this.querySelectorAll('li[data-path]')]
+      const statuses = ['add', 'modify', 'move', 'delete', 'existing', 'proposed']
+      const counts = Object.fromEntries(statuses.map((status) => [status, 0]))
+      const actualityCounts = { actual: 0, proposed: 0 }
+      for (const file of files) {
+        const status = file.getAttribute('data-status') || 'existing'
+        if (status in counts) counts[status] += 1
+        const actuality = file.hasAttribute('data-actual') || (status === 'existing' && !file.hasAttribute('data-proposed'))
+        actualityCounts[actuality ? 'actual' : 'proposed'] += 1
+        const marker = badge(`${status} · ${actuality ? 'actual' : 'proposed'}`, 'redline-plan-status')
+        const label = [...file.children].find((child) => !child.matches('ul, ol, details'))
+        if (label) label.before(marker)
+        else file.prepend(marker)
+        const target = file.getAttribute('data-diff')
+        if (target?.startsWith('#') && target.length > 1) {
+          const link = document.createElement('a')
+          link.href = target
+          link.textContent = 'View diff'
+          link.setAttribute('aria-label', `View diff for ${file.getAttribute('data-path')}`)
+          file.insertBefore(link, [...file.children].find((child) => child.matches('ul, ol, details')) || null)
+        }
+      }
+      for (const directory of this.querySelectorAll('li[data-dir]')) {
+        const list = [...directory.children].find((child) => child.matches('ul, ol'))
+        if (!list) continue // Authored <details> works as-is.
+        const details = document.createElement('details')
+        details.open = !directory.hasAttribute('data-collapsed')
+        const summary = document.createElement('summary')
+        const title = directory.getAttribute('data-dir')
+        // Keep an authored link/label (and its ID) in the disclosure heading.
+        for (const node of [...directory.childNodes]) {
+          if (node === details || node === list) continue
+          if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) continue
+          if (node.nodeType === Node.ELEMENT_NODE && node.matches('.redline-plan-status')) continue
+          summary.append(node)
+        }
+        if (!summary.textContent.trim()) summary.textContent = title
+        directory.insertBefore(details, list)
+        details.append(summary, list)
+      }
+      const summary = document.createElement('p')
+      summary.className = 'redline-file-summary'
+      summary.textContent = [
+        ...statuses.filter((status) => counts[status]).map((status) => `${counts[status]} ${status}`),
+        `${actualityCounts.actual} actual`, `${actualityCounts.proposed} proposed`,
+      ].join(' · ')
+      const heading = this.querySelector(':scope > .redline-plan-heading')
+      if (heading) heading.after(summary)
+      else this.prepend(summary)
+    }
+  }
+
+  class RedlineMilestones extends RedlinePlanElement {
+    render() {
+      super.render()
+      labelItems(this, '[data-milestone]', 'data-milestone')
+      for (const item of this.querySelectorAll('[data-milestone][data-depends-on]')) {
+        item.prepend(badge(`After: ${item.getAttribute('data-depends-on')}`, 'redline-plan-status'))
+      }
+    }
+  }
+  class RedlineEvidence extends RedlinePlanElement {
+    render() { super.render(); labelItems(this, '[data-evidence]', 'data-evidence') }
+  }
+  class RedlineScenario extends RedlinePlanElement {
+    render() { super.render(); labelItems(this, '[data-step]', 'data-step') }
+  }
+  class RedlineRisk extends RedlinePlanElement {
+    render() {
+      super.render()
+      labelItems(this, '[data-risk]', 'data-risk')
+      for (const risk of this.querySelectorAll('[data-risk]')) {
+        for (const field of ['likelihood', 'impact']) {
+          if (risk.hasAttribute(`data-${field}`)) risk.prepend(badge(`${field}: ${risk.getAttribute(`data-${field}`)}`))
+        }
+      }
+    }
+  }
+
+  const diffRow = (line, side) => {
+    const row = document.createElement('div')
+    row.className = 'redline-diff-row'
+    row.dataset.kind = line?.kind || 'context'
+    if (line?.hunkId) row.id = side ? `${line.hunkId}-${side}` : line.hunkId
+    const number = document.createElement('span')
+    number.className = 'redline-diff-line-no'
+    number.setAttribute('aria-hidden', 'true')
+    number.textContent = line ? String(side === 'old' || (!side && line.kind === 'delete') ? line.old ?? '' : line.new ?? '') : ''
+    const code = document.createElement('span')
+    code.className = 'redline-diff-code'
+    code.textContent = line ? `${side === 'old' ? line.kind === 'delete' ? '-' : ' ' : side === 'new' ? line.kind === 'add' ? '+' : ' ' : line.prefix}${line.text}` : ''
+    row.append(number, code)
+    return row
+  }
+
+  class RedlineCodeDiff extends RedlinePlanElement {
+    render() {
+      super.render()
+      const meta = document.createElement('p')
+      meta.className = 'redline-diff-meta'
+      const file = this.getAttribute('file')
+      const range = this.getAttribute('range')
+      const provenance = this.getAttribute('provenance') === 'actual' ? 'Actual change' : 'Proposed · not applied'
+      meta.textContent = [file, range, provenance].filter(Boolean).join(' · ')
+      const heading = this.querySelector(':scope > .redline-plan-heading')
+      if (heading) heading.after(meta)
+      else this.prepend(meta)
+      // Source is text, never HTML. A pre[data-diff-source] or individually
+      // numbered [data-line][data-kind] children are both supported.
+      const source = this.querySelector(':scope > [data-diff-source]')
+      const authored = [...this.querySelectorAll(':scope > [data-line][data-kind]')]
+      if (!source && !authored.length) return
+      const raw = authored.length
+        ? authored.map((node) => ({ kind: node.getAttribute('data-kind'), text: node.textContent, number: node.getAttribute('data-line') }))
+        : source.textContent.replace(/\n$/, '').split('\n').map((text) => ({ text }))
+      let oldNumber = 1
+      let newNumber = 1
+      let hunkIndex = 0
+      const lines = raw.map((entry) => {
+        const text = entry.text || ''
+        const hunk = !authored.length && /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text)
+        if (hunk) { oldNumber = Number(hunk[1]); newNumber = Number(hunk[2]) }
+        const prefix = text[0] || ' '
+        const kind = entry.kind || (hunk || text.startsWith('---') || text.startsWith('+++') || text.startsWith('diff ') || text.startsWith('\\ No newline') ? 'header' : prefix === '+' ? 'add' : prefix === '-' ? 'delete' : 'context')
+        const number = Number(entry.number)
+        const line = { kind, prefix: kind === 'header' ? '' : authored.length ? kind === 'add' ? '+' : kind === 'delete' ? '-' : ' ' : prefix,
+          text: authored.length ? text : kind === 'header' ? text : text.slice(1), old: null, new: null }
+        if (hunk && this.id) line.hunkId = `${this.id}-hunk-${++hunkIndex}`
+        if (kind === 'context') {
+          line.old = Number.isFinite(number) && entry.number !== null ? number : oldNumber++
+          line.new = Number.isFinite(number) && entry.number !== null ? number : newNumber++
+        }
+        if (kind === 'delete') line.old = Number.isFinite(number) && entry.number !== null ? number : oldNumber++
+        if (kind === 'add') line.new = Number.isFinite(number) && entry.number !== null ? number : newNumber++
+        return line
+      })
+      const controls = document.createElement('div')
+      controls.className = 'redline-diff-controls'
+      controls.setAttribute('role', 'group')
+      controls.setAttribute('aria-label', 'Diff layout')
+      const views = ['unified', 'side-by-side'].map((mode) => {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.textContent = mode === 'unified' ? 'Unified' : 'Side by side'
+        button.setAttribute('aria-pressed', 'false')
+        controls.append(button)
+        const view = document.createElement('div')
+        view.className = 'redline-diff-view'
+        view.id = nextName()
+        button.setAttribute('aria-controls', view.id)
+        view.setAttribute('aria-label', `${mode} code diff`)
+        return { mode, button, view }
+      })
+      const folded = (view, entries, render) => {
+        let index = 0
+        while (index < entries.length) {
+          if (entries[index].kind !== 'context') { view.append(render(entries[index])); index++; continue }
+          let end = index
+          while (end < entries.length && entries[end].kind === 'context') end++
+          const count = end - index
+          const append = (from, to, parent = view) => {
+            for (let n = from; n < to; n++) parent.append(render(entries[n]))
+          }
+          if (count > 8) {
+            append(index, index + 2)
+            const details = document.createElement('details')
+            details.className = 'redline-diff-fold'
+            const summary = document.createElement('summary')
+            summary.textContent = `Show ${count - 4} unchanged lines`
+            details.append(summary)
+            append(index + 2, end - 2, details)
+            view.append(details)
+            append(end - 2, end)
+          } else append(index, end)
+          index = end
+        }
+      }
+      folded(views[0].view, lines, (line) => diffRow(line))
+      const pairs = []
+      for (let i = 0; i < lines.length;) {
+        if (lines[i].kind === 'delete') {
+          const deleted = []
+          const added = []
+          while (lines[i]?.kind === 'delete') deleted.push(lines[i++])
+          while (lines[i]?.kind === 'add') added.push(lines[i++])
+          for (let n = 0; n < Math.max(deleted.length, added.length); n++) {
+            pairs.push({ kind: 'change', old: deleted[n] || null, new: added[n] || null })
+          }
+        } else {
+          const line = lines[i++]
+          pairs.push({ kind: line.kind, old: line.kind === 'add' ? null : line, new: line.kind === 'add' ? line : line })
+        }
+      }
+      folded(views[1].view, pairs, (pair) => {
+        const row = document.createElement('div')
+        row.className = 'redline-diff-side'
+        row.append(diffRow(pair.old, 'old'), diffRow(pair.new, 'new'))
+        return row
+      })
+      const select = (mode) => {
+        for (const entry of views) {
+          const active = entry.mode === mode
+          entry.button.setAttribute('aria-pressed', String(active))
+          entry.view.hidden = !active
+        }
+      }
+      for (const entry of views) entry.button.addEventListener('click', () => select(entry.mode))
+      if (source) source.hidden = true
+      for (const node of authored) node.hidden = true
+      this.append(controls, ...views.map((entry) => entry.view))
+      select(this.getAttribute('view') === 'side-by-side' ? 'side-by-side' : 'unified')
+    }
+  }
+
+  class RedlineDecision extends RedlineElement {
+    render() {
+      this.prepend(promptHeading(this))
+      const choices = [
+        ['recommended', `Accept recommended${this.getAttribute('recommended') ? ` — ${this.getAttribute('recommended')}` : ''}`],
+        ['alternative', `Accept alternative${this.getAttribute('alternative') ? ` — ${this.getAttribute('alternative')}` : ''}`],
+        ['investigate', 'Needs investigation'],
+      ]
+      const group = document.createElement('div')
+      group.className = 'redline-options redline-options-single'
+      group.setAttribute('role', 'radiogroup')
+      group.setAttribute('aria-label', this.prompt())
+      for (const [value, label] of choices) {
+        const option = document.createElement('label')
+        const input = document.createElement('input')
+        input.type = 'radio'; input.value = value
+        option.append(input, document.createTextNode(` ${label}`))
+        group.append(option)
+      }
+      // Radio inputs must share the same group name.
+      const name = nextName()
+      for (const input of group.querySelectorAll('input')) input.name = name
+      const note = noteInput()
+      note.placeholder = 'Optional rationale or investigation note'
+      const button = queueButton('Queue decision')
+      button.addEventListener('click', () => {
+        const value = group.querySelector('input:checked')?.value
+        if (value) this.queue(value, { choice: value, recommended: this.getAttribute('recommended') || null,
+          alternative: this.getAttribute('alternative') || null })
+        else this.queueNoteOnly({ choice: null })
+      })
+      this.append(group, note, button)
+      this.finishRender(button, note)
+    }
+    questionEditor() { return { kind: 'choice', options: ['recommended', 'alternative', 'investigate'], multiple: false } }
+    hydrate(response) {
+      for (const input of this.querySelectorAll('.redline-options input')) input.checked = input.value === response.answer
+    }
+    draft() {
+      const value = this.querySelector('.redline-options input:checked')?.value
+      return value ? { answer: value, note: this._noteInput.value } : null
+    }
+  }
+
+  class RedlineScope extends RedlineElement {
+    render() {
+      this.prepend(promptHeading(this))
+      const items = [...this.querySelectorAll('[data-scope-id][data-optional]')]
+      const controls = document.createElement('div')
+      controls.className = 'redline-scope-controls'
+      this._scopeItems = items.map((item) => {
+        const id = item.getAttribute('data-scope-id')
+        const label = document.createElement('label')
+        label.className = 'redline-scope-control'
+        const input = document.createElement('input')
+        input.type = 'checkbox'
+        input.checked = item.getAttribute('data-default') !== 'off'
+        if (item.id) input.setAttribute('aria-controls', item.id)
+        label.append(input, document.createTextNode(` ${item.getAttribute('data-label') || id}`))
+        controls.append(label)
+        const show = () => { item.hidden = !input.checked }
+        input.addEventListener('change', show)
+        show()
+        return { id, input }
+      })
+      const note = noteInput()
+      note.placeholder = 'Optional scope rationale'
+      const button = queueButton('Queue scope answer')
+      button.addEventListener('click', () => {
+        if (!this._scopeItems.length) return
+        const included = this._scopeItems.filter(({ input }) => input.checked).map(({ id }) => id)
+        const excluded = this._scopeItems.filter(({ input }) => !input.checked).map(({ id }) => id)
+        this.queue(`Include: ${included.join(', ') || 'none'}; exclude: ${excluded.join(', ') || 'none'}`,
+          { included, excluded, choice: included, multiple: true })
+      })
+      const heading = this.querySelector(':scope > .redline-prompt')
+      if (heading) heading.after(controls)
+      else this.prepend(controls)
+      this.append(note, button)
+      this.finishRender(button, note)
+    }
+    questionEditor() {
+      return this._scopeItems?.length ? { kind: 'choice', options: this._scopeItems.map(({ id }) => id).slice(0, MAX_QUESTION_OPTIONS), multiple: true } : null
+    }
+    hydrate(response) {
+      if (!Array.isArray(response.data?.included)) return
+      const included = new Set(response.data.included)
+      for (const { id, input } of this._scopeItems) {
+        input.checked = included.has(id)
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    }
+    draft() {
+      if (!this._scopeItems?.length) return null
+      const included = this._scopeItems.filter(({ input }) => input.checked).map(({ id }) => id)
+      const excluded = this._scopeItems.filter(({ input }) => !input.checked).map(({ id }) => id)
+      return { answer: `Include: ${included.join(', ') || 'none'}; exclude: ${excluded.join(', ') || 'none'}`,
+        note: this._noteInput.value }
+    }
+  }
+
   // Guard against redefinition: the registry throws if this script ends up on
   // a page twice (or is re-evaluated, as tests do), and the tag names are the
   // only externally-visible contract — same name, same behavior, no reason to fail.
@@ -1887,4 +2349,14 @@
   defineOnce('redline-lightbox', RedlineLightbox)
   defineOnce('redline-nav', RedlineNav)
   defineOnce('redline-tracks', RedlineTracks)
+  defineOnce('redline-before-after', RedlineBeforeAfter)
+  defineOnce('redline-file-tree', RedlineFileTree)
+  defineOnce('redline-milestones', RedlineMilestones)
+  defineOnce('redline-evidence', RedlineEvidence)
+  defineOnce('redline-scenario', RedlineScenario)
+  defineOnce('redline-tradeoffs', RedlineTradeoffs)
+  defineOnce('redline-risk', RedlineRisk)
+  defineOnce('redline-code-diff', RedlineCodeDiff)
+  defineOnce('redline-decision', RedlineDecision)
+  defineOnce('redline-scope', RedlineScope)
 })()

@@ -281,7 +281,7 @@ describe('open question inventory', () => {
 })
 
 describe('redline-choice', () => {
-  it('renders options and queues only on the explicit button', () => {
+  it('queues a selected option immediately and keeps the button for explicit updates', () => {
     const calls = loadSdk()
     document.body.innerHTML =
       '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
@@ -291,11 +291,11 @@ describe('redline-choice', () => {
     expect(host.querySelector('.redline-options')?.classList).toContain('redline-options-single')
     const button = host.querySelector('button') as HTMLButtonElement
     ;(radios[1] as HTMLInputElement).click()
-    expect(calls).toHaveLength(0) // selection alone must not queue
-    button.click()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
     expect(calls[0].data).toEqual({ choice: 'Pro', options: ['Starter', 'Pro'], multiple: false })
+    button.click()
+    expect(calls).toHaveLength(2)
     expect(button.textContent).toBe('Queue answer') // the daemon snapshot is authoritative
   })
 
@@ -316,7 +316,7 @@ describe('redline-choice', () => {
     ])
 
     ;(radios[0] as HTMLInputElement).click()
-    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       answer: 'Ten — Pulse, Crest, Kiln, Ridge (recommended)',
       data: {
@@ -325,6 +325,33 @@ describe('redline-choice', () => {
         multiple: false,
       },
     })
+  })
+
+  it('queues a changed option and leaves note edits for the manual button', () => {
+    const calls = loadSdk()
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const button = host.querySelector('button.redline-queue') as HTMLButtonElement
+    const note = host.querySelector('textarea[data-redline-note]') as HTMLTextAreaElement
+
+    ;(host.querySelector('input[value="Starter"]') as HTMLInputElement).click()
+    expect(calls.map((call) => call.answer)).toEqual(['Starter'])
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'plan', response: { question: 'Which plan?', answer: 'Starter', data: { choice: 'Starter' } } }],
+    })
+    expect(button.textContent).toBe('Queued ✓')
+
+    ;(host.querySelector('input[value="Pro"]') as HTMLInputElement).click()
+    expect(calls.map((call) => call.answer)).toEqual(['Starter', 'Pro'])
+    note.value = 'Keep the price visible'
+    note.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(calls).toHaveLength(2)
+    expect(button.textContent).toBe('Update queued answer')
+    button.click()
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).toMatchObject({ answer: 'Pro', note: 'Keep the price visible', queueKey: 'plan' })
   })
 
   it('blocks queueing with a visible reason when there is nothing to send', () => {
@@ -365,7 +392,7 @@ describe('redline-choice', () => {
   })
 
   it('reverts to a plain answer once an option is picked', () => {
-    loadSdk()
+    const calls = loadSdk()
     document.body.innerHTML =
       '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
     const host = document.querySelector('redline-choice') as HTMLElement
@@ -376,10 +403,12 @@ describe('redline-choice', () => {
     expect(button.textContent).toBe('Queue comment')
     ;(host.querySelectorAll('input[type="radio"]')[0] as HTMLInputElement).click()
     expect(button.textContent).toBe('Queue answer')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ answer: 'A', note: 'A thought' })
   })
 
   it('clears a radio when the selected option is clicked again', () => {
-    loadSdk()
+    const calls = loadSdk()
     document.body.innerHTML =
       '<redline-choice key="plan" prompt="Which plan?" options="A,B"></redline-choice>'
     const host = document.querySelector('redline-choice') as HTMLElement
@@ -391,11 +420,13 @@ describe('redline-choice', () => {
     radio.click()
     expect(radio.checked).toBe(true)
     expect(button.disabled).toBe(false)
+    expect(calls).toHaveLength(1)
 
     label.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     radio.click()
     expect(radio.checked).toBe(false) // back to "nothing chosen", so a comment can stand alone
     expect(button.disabled).toBe(true)
+    expect(calls).toHaveLength(1)
   })
 
   it('leaves keyboard selection alone', () => {
@@ -475,8 +506,12 @@ describe('redline-choice', () => {
     expect(host.querySelector('.redline-options')?.classList).toContain('redline-options-multiple')
     ;(boxes[0] as HTMLInputElement).click()
     ;(boxes[2] as HTMLInputElement).click()
-    ;(host.querySelector('button') as HTMLButtonElement).click()
-    expect(calls[0].answer).toBe('A, C')
+    expect(calls.map((call) => call.answer)).toEqual(['A', 'A, C'])
+    expect(calls[1].data).toEqual({ choice: ['A', 'C'], options: ['A', 'B', 'C'], multiple: true })
+    ;(boxes[0] as HTMLInputElement).click()
+    expect(calls[2].answer).toBe('C')
+    ;(boxes[2] as HTMLInputElement).click()
+    expect(calls).toHaveLength(3) // an empty selection is not a new answer
   })
 })
 
@@ -562,10 +597,10 @@ describe('redline-approve', () => {
     const reject = [...host.querySelectorAll('input[type="radio"]')].find(
       (input) => (input as HTMLInputElement).value === 'reject',
     ) as HTMLInputElement
-    reject.click()
     const note = host.querySelector('textarea') as HTMLTextAreaElement
     note.value = 'too loud'
-    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    reject.click()
+    expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Hero section ok?', answer: 'reject', note: 'too loud', queueKey: 'hero' })
     expect(calls[0].data).toEqual({ verdict: 'reject' })
   })
@@ -579,8 +614,9 @@ describe('redline-rating', () => {
     const radios = host.querySelectorAll('input[type="radio"]')
     expect(radios).toHaveLength(3)
     ;(radios[2] as HTMLInputElement).click()
-    ;(host.querySelector('button') as HTMLButtonElement).click()
+    expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Rate the vibe', answer: '3/3', queueKey: 'vibe' })
+    expect(calls[0].data).toEqual({ rating: 3, max: 3 })
   })
 })
 
@@ -1291,7 +1327,6 @@ describe('binding arrives after first paint', () => {
 
     const radios = host.querySelectorAll('input[type="radio"]')
     ;(radios[1] as HTMLInputElement).click()
-    button.click()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
   })

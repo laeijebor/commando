@@ -25,6 +25,8 @@ function pr(overrides: Partial<PrSummary> = {}): PrSummary {
     reviews: [],
     requestedReviewers: [],
     conflicting: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
     checks: null,
     createdAt: '2026-08-01T09:00:00Z',
     updatedAt: new Date().toISOString(),
@@ -48,6 +50,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 type Routes = {
+  merge?: (body: unknown) => Response | Promise<Response>
   list?: (url: string) => Response | Promise<Response>
   paneRepo?: (url: string) => Response | Promise<Response>
   threads?: (url: string) => Response
@@ -62,6 +65,7 @@ function stubFetch(routes: Routes = {}): void {
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined
     requests.push({ url, method, body })
+    if (url.includes('/api/prs/merge')) return routes.merge?.(body) ?? jsonResponse({ merged: true })
     if (url.includes('/api/prs/prefs')) {
       if (method === 'PUT' && routes.prefsPut) return routes.prefsPut(body)
       return jsonResponse({ prefs: { version: 1, pinnedRepos: ['acme/widgets'], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
@@ -92,6 +96,66 @@ afterEach(() => {
 })
 
 describe('PrsSection', () => {
+  it.each([
+    { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    { mergeable: 'UNKNOWN' }, { mergeStateStatus: 'BLOCKED' },
+    { mergeStateStatus: 'BEHIND' }, { isDraft: true },
+  ])('disables merging when GitHub reports %j', async (overrides) => {
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr(overrides)]) }) })
+    render(<PrsSection token="t" />)
+    fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
+    const button = await screen.findByRole('button', { name: 'Merge PR' })
+    expect(button).toBeDisabled()
+    expect(button.getAttribute('title')).toBeTruthy()
+    fireEvent.click(button)
+    expect(requests.some((request) => request.url.endsWith('/merge'))).toBe(false)
+  })
+
+  it('merges once with the displayed head and refreshes the PR list', async () => {
+    let finish!: (response: Response) => void
+    let merged = false
+    stubFetch({
+      list: () => jsonResponse({ list: listWith(merged ? [] : [pr()]) }),
+      merge: () => new Promise<Response>((resolve) => { finish = resolve }),
+    })
+    render(<PrsSection token="t" />)
+    fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
+    fireEvent.click(await screen.findByRole('button', { name: 'Merge PR' }))
+    expect(await screen.findByRole('button', { name: 'Merging…' })).toBeDisabled()
+    fireEvent.blur(screen.getByRole('button', { name: 'Merging…' }))
+    fireEvent.mouseLeave(screen.getByRole('dialog'))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
+    expect(screen.getByRole('button', { name: 'Merging…' })).toBeInTheDocument()
+    expect(requests.filter((request) => request.url.endsWith('/merge'))).toEqual([{
+      url: '/api/prs/merge', method: 'POST',
+      body: { repo: 'acme/widgets', number: 12, headRefOid: pr().headRefOid },
+    }])
+    merged = true
+    await act(async () => finish(jsonResponse({ merged: true })))
+    expect(await screen.findByText('No open pull requests')).toBeInTheDocument()
+    expect(requests.some((request) => request.url.includes('refresh=1'))).toBe(true)
+  })
+
+  it('shows GitHub errors in the popover and re-enables retry', async () => {
+    stubFetch({
+      list: () => jsonResponse({ list: listWith([pr()]) }),
+      merge: () => jsonResponse({ error: 'GitHub denied the merge', code: 'github_failed' }, 502),
+    })
+    render(<PrsSection token="t" />)
+    fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
+    fireEvent.click(await screen.findByRole('button', { name: 'Merge PR' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('GitHub denied the merge')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Merge PR' })).toBeEnabled())
+  })
+
+  it.each(['closed', 'merged'] as const)('does not offer merging for %s PRs', async (state) => {
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({ state })]) }) })
+    render(<PrsSection token="t" />)
+    fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
+    await screen.findByRole('dialog')
+    expect(screen.queryByRole('button', { name: 'Merge PR' })).not.toBeInTheDocument()
+  })
+
   it('groups your PRs and review requests, revealing the rest on demand', async () => {
     stubFetch({
       list: () => jsonResponse({

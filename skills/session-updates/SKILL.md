@@ -42,6 +42,43 @@ Use `--recap-markdown` for short Markdown prose and `--state` for one of
 `--clear-next` when the previous next action is complete and there is no new
 one yet.
 
+## Pin important terms
+
+When adding or editing flagged behavior, pin the flag name. Pin a useful route
+from the running stack when it helps the user return to the page without
+searching the conversation. URLs open as links in the pane worklog:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs --feature-flag new-checkout
+$HOME/.commando/hooks/commando-session-update.mjs --url http://localhost:5273/checkout --url-label "Checkout preview"
+```
+
+Publishing the same name or URL updates that entry instead of duplicating it.
+Remove a stale reference with `--remove-feature-flag NAME` or `--remove-url URL`.
+One reference action is accepted per call; it can accompany a headline or
+milestone. With `--stdin`, send `"reference": {"action":"upsert", "kind":"feature_flag", "value":"new-checkout"}`
+or use `kind: "url"` with an optional `label`. Use `action: "remove"` to unpin.
+Only HTTP(S) URLs without embedded credentials are accepted. Keep these
+references concise and session-relevant.
+
+Pin an issue/ticket link, deployment preview, or build/release identifier when
+it is relevant to the pane. Issue and deployment entries are clickable like
+URLs; build and release IDs may optionally link to a CI run or release page:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs --issue https://github.com/acme/app/issues/42 --url-label "Checkout bug #42"
+$HOME/.commando/hooks/commando-session-update.mjs --deployment https://preview.example.com/checkout --url-label "Checkout preview"
+$HOME/.commando/hooks/commando-session-update.mjs --build build-1842 --link https://ci.example.com/build/1842
+$HOME/.commando/hooks/commando-session-update.mjs --release v2.3.0
+```
+
+Use `--remove-issue URL`, `--remove-deployment URL`, `--remove-build ID`, or
+`--remove-release ID` when they are no longer relevant. In `--stdin` JSON,
+the corresponding `kind` values are `issue`, `deployment`, `build`, and
+`release`; `url` on a build/release object is the optional link, while
+`value` remains its identifier. For link kinds, `value` is the URL and
+`label` is optional.
+
 ## Publish screenshots
 
 Publish a screenshot round by naming its directory:

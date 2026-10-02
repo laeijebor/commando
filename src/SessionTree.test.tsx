@@ -13,6 +13,10 @@ const sessionApi = vi.hoisted(() => ({
   savePreferences: vi.fn(),
   renameSession: vi.fn(),
   deleteSession: vi.fn(),
+  previewWorktreeDeletion: vi.fn(),
+  listArchives: vi.fn(),
+  archiveSession: vi.fn(),
+  restoreSession: vi.fn(),
   deleteWindow: vi.fn(),
 }))
 
@@ -27,6 +31,8 @@ beforeEach(() => {
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
   sessionApi.deleteWindow.mockResolvedValue(undefined)
+  sessionApi.previewWorktreeDeletion.mockResolvedValue({ auxiliarySessions: [] })
+  sessionApi.listArchives.mockResolvedValue([])
 })
 
 function pane(id: string, index: number, title: string): TmuxPane {
@@ -771,9 +777,76 @@ describe('SessionTree', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Coins everywhere' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session and worktree' }))
 
-      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true))
+       await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true, []))
       expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/Uncommitted changes.*branch will be kept/s))
       expect(onSessionsChanged).toHaveBeenCalled()
+    })
+
+    it('separates same-worktree background sessions and names them in the delete confirmation', async () => {
+      const root = `${SAVE_ALL.root}-worktrees/cleanup`
+      const repo: PaneRepo = { ...SAVE_ALL, worktreeRoot: root, branch: 'cleanup', isWorktree: true }
+      const main = { id: '$10', name: 'Cleanup', attached: false, activeWindowId: '@10', windowIds: ['@10'] }
+      const helper = { id: '$11', name: 'native_app-cleanup', attached: false, activeWindowId: '@11', windowIds: ['@11'] }
+      const impostor = { id: '$12', name: 'native_app-unrelated', attached: false, activeWindowId: '@12', windowIds: ['@12'] }
+      const namedPanes = [
+        { ...pane('%10', 0, 'agent'), sessionId: main.id, windowId: '@10', path: root, repo },
+        { ...pane('%11', 0, 'tilt'), sessionId: helper.id, windowId: '@11', path: root, repo },
+        { ...pane('%12', 0, 'agent'), sessionId: impostor.id, windowId: '@12', path: root, repo },
+      ]
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'repository' })
+      sessionApi.previewWorktreeDeletion.mockResolvedValue({ auxiliarySessions: [{ id: '$11', name: helper.name }] })
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSelectSession = vi.fn()
+      renderTree({ sessions: [main, helper, impostor], panes: namedPanes, onSelectSession })
+      const background = await screen.findByRole('button', { name: 'Collapse Save-All' })
+      expect(background).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Expand Background sessions' })).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByRole('button', { name: 'Actions for native_app-cleanup' })).not.toBeInTheDocument()
+      fireEvent.keyDown(window, { key: '1', metaKey: true })
+      expect(onSelectSession).toHaveBeenCalledWith(main.id)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand Background sessions' }))
+      expect(screen.getByRole('button', { name: 'Actions for native_app-cleanup' })).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Actions for native_app-unrelated' })).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Cleanup' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session and worktree' }))
+      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith(main.id, true, [helper.id]))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('• native_app-cleanup'))
+    })
+
+    it('keeps generated sessions in the collapsible background section in manual mode', async () => {
+      const root = `${SAVE_ALL.root}-worktrees/cleanup`
+      const repo: PaneRepo = { ...SAVE_ALL, worktreeRoot: root, branch: 'cleanup', isWorktree: true }
+      const helper = { id: '$11', name: 'tilt-cleanup', attached: false, activeWindowId: '@11', windowIds: ['@11'] }
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groupingMode: 'manual', groups: [{ id: 'tools', name: 'Tools', sessionIds: [helper.id] }], ungroupedSessionIds: [] })
+      renderTree({ sessions: [helper], panes: [{ ...pane('%11', 0, 'tilt'), sessionId: helper.id, windowId: '@11', path: root, repo }] })
+      await screen.findByRole('button', { name: 'Expand Background sessions' })
+      expect(screen.getByRole('button', { name: 'Collapse Tools' }).closest('section')).not.toHaveTextContent(helper.name)
+      fireEvent.click(screen.getByRole('button', { name: 'Expand Background sessions' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for tilt-cleanup' }))
+      expect(screen.queryByRole('menuitem', { name: 'Delete session and worktree' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: 'Archive session' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Delete session' })).toBeInTheDocument()
+    })
+
+    it('archives a session and offers a restore action for its saved panes', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const archived = { id: 'archive-id', name: 'Coins everywhere', createdAt: Date.now(), windowCount: 2, paneCount: 3 }
+      sessionApi.listArchives.mockResolvedValueOnce([]).mockResolvedValueOnce([archived]).mockResolvedValueOnce([])
+      sessionApi.archiveSession.mockResolvedValue(undefined)
+      sessionApi.restoreSession.mockResolvedValue('$99')
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSessionsChanged = vi.fn()
+      renderTree({ onSessionsChanged })
+      fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive session' }))
+      await waitFor(() => expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2'))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('fresh shells'))
+      expect(await screen.findByRole('button', { name: 'Restore Coins everywhere' })).toBeInTheDocument()
+      expect(screen.getByText('2 windows / 3 panes')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Restore Coins everywhere' }))
+      await waitFor(() => expect(sessionApi.restoreSession).toHaveBeenCalledWith('archive-id'))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore Coins everywhere' })).not.toBeInTheDocument())
+      expect(onSessionsChanged).toHaveBeenCalledTimes(2)
     })
 
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {

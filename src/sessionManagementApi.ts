@@ -21,9 +21,15 @@ export interface SessionManagementApiClient {
   loadPreferences(): Promise<SessionTreePreferences>
   savePreferences(preferences: SessionTreePreferences): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
-  deleteSession(sessionId: string, deleteWorktree?: boolean): Promise<void>
+  previewWorktreeDeletion(sessionId: string): Promise<{ auxiliarySessions: { id: string; name: string }[] }>
+  deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[]): Promise<void>
+  listArchives(): Promise<SessionArchiveSummary[]>
+  archiveSession(sessionId: string): Promise<void>
+  restoreSession(archiveId: string): Promise<string>
   deleteWindow(windowId: string): Promise<void>
 }
+
+export type SessionArchiveSummary = { id: string; name: string; createdAt: number; windowCount: number; paneCount: number }
 
 type ApiErrorBody = { error?: unknown }
 
@@ -78,11 +84,27 @@ export function createSessionManagementApi(
         body: JSON.stringify({ name }),
       })
     },
-    async deleteSession(sessionId, deleteWorktree = false) {
+    async previewWorktreeDeletion(sessionId) {
+      return request<{ auxiliarySessions: { id: string; name: string }[] }>(`/sessions/${encodeURIComponent(sessionId)}/delete-preview`)
+    },
+    async deleteSession(sessionId, deleteWorktree = false, confirmAuxiliarySessionIds = []) {
       await request(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
         method: 'DELETE',
-        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree }),
+        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree, ...(deleteWorktree ? { confirmAuxiliarySessionIds } : {}) }),
       })
+    },
+    async listArchives() {
+      const result = await request<{ archives: SessionArchiveSummary[] }>('/archives')
+      return result.archives
+    },
+    async archiveSession(sessionId) {
+      await request(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
+        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId }),
+      })
+    },
+    async restoreSession(archiveId) {
+      const result = await request<{ sessionId: string }>(`/archives/${encodeURIComponent(archiveId)}/restore`, { method: 'POST' })
+      return result.sessionId
     },
     async deleteWindow(windowId) {
       await request(`/windows/${encodeURIComponent(windowId)}/delete`, {

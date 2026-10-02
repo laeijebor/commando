@@ -1,8 +1,9 @@
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderGit2, FolderPlus, FolderX, GitBranch, ListTree, Maximize2, MoreHorizontal, Pencil, Plus, Terminal, Trash2, X } from 'lucide-react'
+import { Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Columns2, FolderGit2, FolderPlus, FolderX, GitBranch, ListTree, Maximize2, MoreHorizontal, Pencil, Plus, RotateCcw, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
-import { createSessionManagementApi, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { isAuxiliarySession } from '../shared/auxiliary-session'
+import { createSessionManagementApi, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { DEFAULT_GROUPING_MODE, EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers, type SessionTreeContainer } from './sessionTreePreferences'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
@@ -89,9 +90,11 @@ export function SessionTree(props: Props) {
   const preferencesRef = useRef(preferences)
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
   const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
-  const [collapsedContainerIds, setCollapsedContainerIds] = useState<Set<string>>(() => new Set())
+  const [collapsedContainerIds, setCollapsedContainerIds] = useState<Set<string>>(() => new Set(['auxiliary']))
   const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null)
   const [error, setError] = useState('')
+  const [archives, setArchives] = useState<SessionArchiveSummary[]>([])
+  const [archivesExpanded, setArchivesExpanded] = useState(false)
   const sessionCreateRequestId = useRef(0)
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
@@ -110,6 +113,12 @@ export function SessionTree(props: Props) {
       props.onPreferencesChanged(next)
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
   }, [api, props.onPreferencesChanged, props.sessions.length])
+  useEffect(() => {
+    let active = true
+    api.listArchives().then((items) => { if (active) setArchives(items) })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load archives') })
+    return () => { active = false }
+  }, [api])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -131,8 +140,21 @@ export function SessionTree(props: Props) {
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to save session order'))
   }
 
-  const containers = sessionTreeContainers(preferences, props.sessions, { mode, panes: props.panes })
+  const auxiliarySessions = props.sessions.filter((session) => {
+    const repo = props.panes.find((pane) => pane.sessionId === session.id && pane.repo?.worktreeRoot)?.repo
+    const root = repo?.worktreeRoot
+    return Boolean(root && isAuxiliarySession(session.name, root) &&
+      props.panes.filter((pane) => pane.sessionId === session.id).every((pane) =>
+        pane.repo?.worktreeRoot === root && (pane.path === root || pane.path.startsWith(`${root}/`))))
+  })
+  const auxiliaryIds = new Set(auxiliarySessions.map((session) => session.id))
+  const containers: SessionTreeContainer[] = [
+    ...(auxiliarySessions.length ? [{ id: 'auxiliary', kind: 'auxiliary' as const, name: 'Background sessions', sessionIds: auxiliarySessions.map((session) => session.id), group: null }] : []),
+    ...sessionTreeContainers(preferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id)), { mode, panes: props.panes })
+      .map((container) => ({ ...container, sessionIds: container.sessionIds.filter((id) => !auxiliaryIds.has(id)) })),
+  ]
   const shortcutSessionIds = containers
+    .filter((container) => container.kind !== 'auxiliary')
     .flatMap((container) => container.sessionIds)
     .filter((sessionId) => sessionMap.has(sessionId))
 
@@ -245,12 +267,36 @@ export function SessionTree(props: Props) {
   const deleteSession = async (sessionId: string, deleteWorktree = false) => {
     const session = sessionMap.get(sessionId)
     const label = session?.name ?? sessionId
+    let auxiliary: { id: string; name: string }[] = []
+    if (deleteWorktree) {
+      try { auxiliary = (await api.previewWorktreeDeletion(sessionId)).auxiliarySessions }
+      catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to inspect sessions using this worktree'); return }
+    }
     const confirmation = deleteWorktree
-      ? `Delete tmux session “${label}” and its linked worktree?\n\nUncommitted changes in the worktree will be permanently deleted. The git branch will be kept.`
+      ? `Delete tmux session “${label}” and its linked worktree?${auxiliary.length ? `\n\nThe following background sessions using this worktree will also be closed:\n${auxiliary.map(({ name }) => `• ${name}`).join('\n')}` : ''}\n\nUncommitted changes in the worktree will be permanently deleted. The git branch will be kept.`
       : `Delete tmux session “${label}” and all of its windows and panes?`
     if (!window.confirm(confirmation)) return
-    try { await api.deleteSession(sessionId, deleteWorktree); props.onSessionsChanged() }
+    try { await api.deleteSession(sessionId, deleteWorktree, auxiliary.map(({ id }) => id)); props.onSessionsChanged() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to delete session') }
+  }
+
+  const archiveSession = async (sessionId: string) => {
+    const label = sessionMap.get(sessionId)?.name ?? sessionId
+    if (!window.confirm(`Archive tmux session “${label}”? Its running processes will stop. Restore will recreate its windows and panes as fresh shells in their saved directories; the worktree is kept.`)) return
+    try {
+      await api.archiveSession(sessionId)
+      setArchives(await api.listArchives())
+      setArchivesExpanded(true)
+      props.onSessionsChanged()
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to archive session') }
+  }
+
+  const restoreSession = async (archive: SessionArchiveSummary) => {
+    try {
+      await api.restoreSession(archive.id)
+      setArchives(await api.listArchives())
+      props.onSessionsChanged()
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to restore session') }
   }
 
   const deleteWindow = async (windowId: string) => {
@@ -285,7 +331,7 @@ export function SessionTree(props: Props) {
   return (
     <div className="managed-session-tree">
       <div className="session-tree-tools">
-        <span>{props.sessions.length} sessions</span>
+        <span title={auxiliarySessions.length ? `${auxiliarySessions.length} background sessions are listed separately` : undefined}>{props.sessions.length - auxiliarySessions.length} sessions{auxiliarySessions.length ? ` · ${auxiliarySessions.length} bg` : ''}</span>
         <span className="session-tree-tools-actions">
           {manual ? <button type="button" onClick={createGroup}><FolderPlus /> Group</button> : null}
           <span className="session-grouping-switch" role="group" aria-label="Group sessions by">
@@ -295,12 +341,21 @@ export function SessionTree(props: Props) {
         </span>
       </div>
       {error ? <button type="button" className="session-tree-error" onClick={() => setError('')}>{error}</button> : null}
+      {archives.length ? <section className="session-pref-group session-archives">
+        <header><button type="button" className="session-pref-toggle" aria-expanded={archivesExpanded} onClick={() => setArchivesExpanded((open) => !open)}>
+          {archivesExpanded ? <ChevronDown /> : <ChevronRight />}<Archive /><strong>Archived</strong><small>{archives.length}</small>
+        </button></header>
+        {archivesExpanded ? <div>{archives.map((archive) => <div className="session-archive-row" key={archive.id}>
+          <span title={new Date(archive.createdAt).toLocaleString()}><strong>{archive.name}</strong><small>{archive.windowCount} windows / {archive.paneCount} panes</small></span>
+          <button type="button" onClick={() => void restoreSession(archive)} aria-label={`Restore ${archive.name}`} title="Restore session as fresh shells"><RotateCcw /> Restore</button>
+        </div>)}</div> : null}
+      </section> : null}
       {containers.map((container) => {
         const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
         const collapsed = collapsedContainerIds.has(container.id)
         const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
         const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
-        const droppable = Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId)))
+        const droppable = container.kind !== 'auxiliary' && Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId)))
         return (
         <section
           className={`session-pref-group kind-${container.kind}`}
@@ -327,7 +382,7 @@ export function SessionTree(props: Props) {
               <small>{sessionCount}</small>
               {container.repo ? <span className="session-repo-path" title={container.repo.root}>{shortenHome(container.repo.root)}</span> : null}
             </button>
-            {props.creation && container.kind !== 'no-repo' ? <button type="button" onClick={(event) => createSessionInContainer(container, event.currentTarget)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
+            {props.creation && container.kind !== 'no-repo' && container.kind !== 'auxiliary' ? <button type="button" onClick={(event) => createSessionInContainer(container, event.currentTarget)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div id={groupBodyId} hidden={collapsed}>
@@ -343,7 +398,7 @@ export function SessionTree(props: Props) {
               const markedPanes = sessionPanes.filter((pane) => marks[pane.targetId])
               return [<article
                 className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
-                draggable
+                draggable={container.kind !== 'auxiliary'}
                 onDragStart={(event) => {
                   event.dataTransfer?.setData('text/plain', session.id)
                   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
@@ -360,7 +415,7 @@ export function SessionTree(props: Props) {
                 key={session.id}
               >
                 <div className="managed-session-row">
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
+                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{container.kind === 'auxiliary' ? 'Background · ' : ''}{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
                   {markedPanes.length ? <span className="session-mark-cluster">{markedPanes.map((pane) => { const mark = marks[pane.targetId]; const label = markLabel(mark, pane); return <button type="button" key={pane.targetId} className={`session-mark-dot tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</button> })}</span> : null}
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
@@ -387,7 +442,7 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button><button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
     </div>
   )
 }

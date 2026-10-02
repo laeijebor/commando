@@ -38,6 +38,7 @@ function pullRequestNode(overrides: Record<string, unknown> = {}): Record<string
     changedFiles: 4,
     reviewDecision: null,
     mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
     createdAt: '2026-08-01T09:00:00Z',
     updatedAt: '2026-08-05T12:00:00Z',
     headRefName: 'leo/thing',
@@ -83,6 +84,97 @@ function serviceWith(output: string | Error, options?: ConstructorParameters<typ
   return { service, runner }
 }
 
+describe('merging pull requests', () => {
+  const head = '2222222222222222222222222222222222222222'
+  const ready = { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: head }
+
+  it.each([
+    [{ allow_merge_commit: true }, 'merge'],
+    [{ allow_merge_commit: false, allow_squash_merge: true }, 'squash'],
+    [{ allow_merge_commit: false, allow_squash_merge: false, allow_rebase_merge: true }, 'rebase'],
+  ])('merges with an enabled repository method and the expected SHA', async (settings, method) => {
+    const runner = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify(ready))
+      .mockResolvedValueOnce(JSON.stringify(settings))
+      .mockResolvedValueOnce(JSON.stringify({ merged: true }))
+    const service = new PrService({ runner })
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).resolves.toEqual({ merged: true })
+    expect(runner).toHaveBeenNthCalledWith(1, ['pr', 'view', '12', '--repo', 'acme/widgets', '--json', 'state,isDraft,mergeable,mergeStateStatus,headRefOid'])
+    expect(runner).toHaveBeenLastCalledWith(['api', '--method', 'PUT', 'repos/acme/widgets/pulls/12/merge', '-f', `sha=${head}`, '-f', `merge_method=${method}`])
+  })
+
+  it.each([
+    { state: 'MERGED' }, { state: 'CLOSED' }, { isDraft: true },
+    { mergeable: 'CONFLICTING' }, { mergeable: 'UNKNOWN' },
+    { mergeStateStatus: 'BLOCKED' }, { mergeStateStatus: 'BEHIND' }, { mergeStateStatus: 'UNKNOWN' },
+  ])('refuses a fresh non-mergeable status %j without writing to GitHub', async (overrides) => {
+    const runner = vi.fn().mockResolvedValue(JSON.stringify({ ...ready, ...overrides }))
+    const service = new PrService({ runner })
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).rejects.toMatchObject({ status: 409, code: 'not_mergeable' })
+    expect(runner).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects changed heads and malformed input', async () => {
+    const runner = vi.fn().mockResolvedValue(JSON.stringify({ ...ready, headRefOid: '1'.repeat(40) }))
+    const service = new PrService({ runner })
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).rejects.toMatchObject({ code: 'head_changed' })
+    await expect(service.mergePullRequest('acme/widgets', 12, '--admin')).rejects.toMatchObject({ status: 400 })
+    expect(runner).toHaveBeenCalledTimes(1)
+  })
+
+  it('prevents duplicate concurrent merges', async () => {
+    let finish!: (value: string) => void
+    const runner = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
+      .mockResolvedValueOnce(JSON.stringify({ allow_merge_commit: true }))
+      .mockResolvedValueOnce(JSON.stringify({ merged: true }))
+    const service = new PrService({ runner })
+    const pending = service.mergePullRequest('acme/widgets', 12, head)
+    await expect(service.mergePullRequest('ACME/Widgets', 12, head)).rejects.toMatchObject({ code: 'merge_in_progress' })
+    finish(JSON.stringify(ready))
+    await expect(pending).resolves.toEqual({ merged: true })
+    expect(runner).toHaveBeenCalledTimes(3)
+  })
+
+  it.each(['null', '[]', 'not json'])('rejects malformed GitHub output %s', async (output) => {
+    const { service, runner } = serviceWith(output)
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).rejects.toMatchObject({ status: 502, code: 'github_invalid_response' })
+    expect(runner).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not write when the repository has no enabled merge methods', async () => {
+    const runner = vi.fn().mockResolvedValueOnce(JSON.stringify(ready)).mockResolvedValueOnce('{}')
+    await expect(new PrService({ runner }).mergePullRequest('acme/widgets', 12, head)).rejects.toMatchObject({ code: 'not_mergeable' })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces GitHub merge refusal and permits retry', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (args[0] === 'pr') return JSON.stringify(ready)
+      if (args.includes('PUT')) return JSON.stringify({ merged: false, message: 'Required checks failed' })
+      return JSON.stringify({ allow_merge_commit: true })
+    })
+    const service = new PrService({ runner })
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).rejects.toThrow('Required checks failed')
+    await expect(service.mergePullRequest('acme/widgets', 12, head)).rejects.toThrow('Required checks failed')
+    expect(runner).toHaveBeenCalledTimes(6)
+  })
+
+  it('invalidates cached lists after merging', async () => {
+    let merged = false
+    const runner = vi.fn(async (args: string[]) => {
+      if (args[1] === 'graphql') return graphqlPayload(merged ? [] : [pullRequestNode()])
+      if (args[0] === 'pr') return JSON.stringify(ready)
+      if (args.includes('PUT')) { merged = true; return JSON.stringify({ merged: true }) }
+      return JSON.stringify({ allow_merge_commit: true })
+    })
+    const service = new PrService({ runner })
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toHaveLength(1)
+    await service.mergePullRequest('acme/widgets', 12, head)
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toHaveLength(0)
+  })
+})
+
 describe('input validation', () => {
   it('accepts owner/name repos and rejects everything else', () => {
     expect(validateRepo('Save-All/Save-All')).toBe('Save-All/Save-All')
@@ -117,6 +209,7 @@ describe('pane pull request history', () => {
           issueCount: 4,
           nodes: [
             {
+              ...pullRequestNode(),
               number: 12,
               title: 'First pane PR',
               url: 'https://github.com/acme/widgets/pull/12',
@@ -128,6 +221,7 @@ describe('pane pull request history', () => {
               repository: { nameWithOwner: 'acme/widgets' },
             },
             {
+              ...pullRequestNode(),
               number: 44,
               title: 'Second pane PR',
               url: 'https://github.com/acme/gadgets/pull/44',
@@ -167,6 +261,38 @@ describe('pane pull request history', () => {
     expect(runner).toHaveBeenCalledWith(expect.arrayContaining([
       '-f', `targetQuery=is:pr in:body ${targetId} sort:created-desc`,
     ]))
+  })
+})
+
+describe('pane PR status', () => {
+  it('matches HUD parsing for conflicts, truncated threads, reviews, and rerun checks', async () => {
+    const targetId = '123e4567-e89b-42d3-a456-426614174000'
+    const node = pullRequestNode({
+      body: `<!-- commando:v1 target=${targetId} relation=created -->`,
+      repository: { nameWithOwner: 'acme/widgets' },
+      additions: 1234, deletions: 56, mergeable: 'CONFLICTING', reviewDecision: 'CHANGES_REQUESTED',
+      reviewThreads: { totalCount: 60, nodes: [{ isResolved: false }, { isResolved: true }, { isResolved: false }] },
+      commits: { totalCount: 3, nodes: [{ commit: { statusCheckRollup: {
+        state: 'FAILURE', contexts: { totalCount: 4, nodes: [
+          { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
+          { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+          { __typename: 'StatusContext', context: 'lint', state: 'FAILURE' },
+          { __typename: 'CheckRun', name: 'build', status: 'IN_PROGRESS', conclusion: null },
+        ] },
+      } } }] },
+    })
+    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 1, nodes: [node] } } }))
+    const panePr = (await service.listPanePullRequests(targetId)).pullRequests[0]
+    const { service: hudService } = serviceWith(graphqlPayload([node]))
+    const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'threadsTruncated', 'reviewDecision'] as const) {
+      expect(panePr[field]).toEqual(hudPr[field])
+    }
+    expect(panePr).toMatchObject({
+      additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2,
+      threadsTruncated: true, reviewDecision: 'changes_requested',
+      checks: { state: 'fail', failed: 1, pending: 1, total: 3 },
+    })
   })
 })
 

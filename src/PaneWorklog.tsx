@@ -7,10 +7,16 @@ import {
   Circle,
   CircleAlert,
   CircleDot,
+  CloudUpload,
   FileDiff,
   Lightbulb,
   Images,
   GitPullRequest,
+  Flag,
+  Link,
+  Package,
+  Tag,
+  Ticket,
   MessageSquareText,
   Minus,
   X,
@@ -19,7 +25,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentTaskStatus, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol'
+import type { AgentTaskStatus, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
 import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
 import type { PrsApiClient } from './prsApi'
 import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
@@ -108,6 +114,28 @@ function taskIcon(status: AgentTaskStatus): ReactNode {
     case 'in_progress': return <CircleDot aria-hidden="true" />
     case 'cancelled': return <X aria-hidden="true" />
     case 'pending': return <Circle aria-hidden="true" />
+  }
+}
+
+function referenceIcon(kind: SessionReference['kind']): ReactNode {
+  switch (kind) {
+    case 'feature_flag': return <Flag aria-hidden="true" />
+    case 'url': return <Link aria-hidden="true" />
+    case 'issue': return <Ticket aria-hidden="true" />
+    case 'deployment': return <CloudUpload aria-hidden="true" />
+    case 'build': return <Package aria-hidden="true" />
+    case 'release': return <Tag aria-hidden="true" />
+  }
+}
+
+function referenceCaption(reference: SessionReference): string {
+  switch (reference.kind) {
+    case 'feature_flag': return 'Feature flag'
+    case 'url': return reference.value
+    case 'issue': return `Issue / ticket · ${reference.value}`
+    case 'deployment': return `Deployment preview · ${reference.value}`
+    case 'build': return reference.url ? `Build · ${reference.url}` : 'Build'
+    case 'release': return reference.url ? `Release · ${reference.url}` : 'Release'
   }
 }
 
@@ -258,7 +286,7 @@ export function PaneWorklog({
         <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
         <span className="pane-worklog-heading">
           <strong>{brief.headline}</strong>
-          <small>{empty ? 'Notes, pull requests, tasks and screenshots' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
+          <small>{empty ? 'Notes, important terms, pull requests and tasks' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
         </span>
         <button type="button" onClick={() => setMinimized(true)} aria-label={`Minimize worklog for ${paneLabel}`} title="Minimize worklog">
           <ChevronRight aria-hidden="true" />
@@ -297,6 +325,27 @@ export function PaneWorklog({
             onChange={(event) => setPreferences((current) => ({ ...current, note: event.target.value }))}
           />
         </section>
+
+        {brief.references?.length ? (
+          <section className="pane-worklog-references" aria-label={`Important terms for ${paneLabel}`}>
+            <header><strong>Important terms</strong><small>{brief.references.length}</small></header>
+            <div className="pane-worklog-reference-list">
+              {brief.references.map((reference) => {
+                const href = reference.kind === 'url' || reference.kind === 'issue' || reference.kind === 'deployment'
+                  ? reference.value : reference.url
+                const content = <>
+                  <span className="pane-worklog-reference-icon">{referenceIcon(reference.kind)}</span>
+                  <span><strong>{reference.label ?? reference.value}</strong><small>{referenceCaption(reference)}</small></span>
+                </>
+                return href ? (
+                  <a className="pane-worklog-reference" href={href} target="_blank" rel="noreferrer" key={`${reference.kind}:${reference.value}`} title={href}>{content}</a>
+                ) : (
+                  <div className="pane-worklog-reference" key={`${reference.kind}:${reference.value}`}>{content}</div>
+                )
+              })}
+            </div>
+          </section>
+        ) : null}
 
         {tasks.length ? (
           <section className="pane-worklog-plan" aria-label={`Plan for ${paneLabel}`}>

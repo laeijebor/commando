@@ -264,6 +264,20 @@ note?, data?}` field — prefer it over parsing `comment`.
 Use controls for decisions the user can make faster by clicking than typing;
 use plain annotation for open-ended feedback (lavish's rule).
 
+## Plan components
+
+The SDK also enhances authored light-DOM plan markup: `<redline-before-after>`,
+`<redline-file-tree>`, `<redline-milestones>`, `<redline-evidence>`,
+`<redline-scenario>`, `<redline-tradeoffs>`, `<redline-risk>`,
+`<redline-code-diff>`, `<redline-decision>`, and `<redline-scope>`.
+Use them where they clarify a real plan, with stable section/item IDs for
+annotations and source-backed **actual** vs **proposed** claims. They fit
+narrow tiles; check the rendered tile rather than relying on desktop layout.
+Only decision and scope queue responses: selections and scope visibility
+remain local until the explicit queue button is pressed, then the user sends
+the queue. See `playbooks/plan.md` for copyable plan markup and
+`playbooks/code.md` for escaped diffs and linked file changes.
+
 ## Playbooks
 
 Read **every** playbook that matches what you're building before writing

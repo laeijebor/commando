@@ -5,6 +5,7 @@ import { isAbsolute } from 'node:path'
 
 import type { AgentStatusKind, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol.js'
 import type { SessionBriefPatch, SessionBriefStore } from './session-briefs.js'
+import { SessionReferenceLimitError, referenceIsIdentifier, referenceValueIsUrl, validReferenceUrl } from './session-briefs.js'
 import { PaneScreenshotError, type PaneScreenshotRegistry } from './pane-screenshots.js'
 
 const API_PATH = '/api/session-brief'
@@ -133,6 +134,22 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
     }
   }
   let screenshots: ParsedSessionBriefPatch['screenshots']
+  let reference: SessionBriefPatch['reference']
+  if (body.reference !== undefined) {
+    if (!isRecord(body.reference)) throw new HttpError(400, 'reference must be a JSON object')
+    const { action, kind } = body.reference
+    const value = optionalText(body.reference, 'value', referenceValueIsUrl(kind) ? 2_048 : 120, false)
+    const label = optionalText(body.reference, 'label', 120, false)
+    const url = optionalText(body.reference, 'url', 2_048, false)
+    if ((action !== 'upsert' && action !== 'remove') ||
+      (kind !== 'feature_flag' && !referenceValueIsUrl(kind) && !referenceIsIdentifier(kind)) || !value ||
+      (referenceValueIsUrl(kind) && (!validReferenceUrl(value) || url !== undefined)) ||
+      (kind === 'feature_flag' && (label !== undefined || url !== undefined)) ||
+      (referenceIsIdentifier(kind) && (label !== undefined || (url != null && !validReferenceUrl(url)))) ||
+      (action === 'remove' && (label !== undefined || url !== undefined))) throw new HttpError(400, 'reference is invalid')
+    reference = { action, kind, value: referenceValueIsUrl(kind) ? new URL(value).href : value,
+      ...(label ? { label } : {}), ...(url ? { url: new URL(url).href } : {}) }
+  }
   if (body.screenshots !== undefined) {
     if (!isRecord(body.screenshots)) throw new HttpError(400, 'screenshots must be a JSON object')
     const dir = body.screenshots.dir
@@ -148,7 +165,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
       throw new HttpError(400, 'screenshots.dir must exist and be a directory')
     }
   }
-  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !update && !screenshots) {
+  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !update && !screenshots && !reference) {
     throw new HttpError(400, 'At least one session brief field is required')
   }
   return {
@@ -158,6 +175,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
     ...(state ? { state: state as AgentStatusKind } : {}),
     ...(update ? { update } : {}),
     ...(screenshots ? { screenshots } : {}),
+    ...(reference ? { reference } : {}),
   }
 }
 
@@ -202,9 +220,10 @@ export class SessionBriefApi {
       writeJson(response, 200, { ok: true, brief })
       return true
     } catch (error) {
-      if (error instanceof HttpError || error instanceof PaneScreenshotError) {
-        if (error.status === 405) response.setHeader('Allow', 'POST')
-        writeJson(response, error.status, { error: error.message })
+      if (error instanceof HttpError || error instanceof PaneScreenshotError || error instanceof SessionReferenceLimitError) {
+        const status = error instanceof SessionReferenceLimitError ? 400 : error.status
+        if (status === 405) response.setHeader('Allow', 'POST')
+        writeJson(response, status, { error: error.message })
       } else {
         writeJson(response, 500, { error: 'Unable to record session brief' })
       }

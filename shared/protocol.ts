@@ -148,6 +148,13 @@ export type SessionBriefUpdate = {
   createdAt: number
 }
 
+export type SessionReference = {
+  kind: 'feature_flag' | 'url' | 'issue' | 'deployment' | 'build' | 'release'
+  value: string
+  label?: string
+  url?: string
+}
+
 export type SessionBrief = {
   paneId: string
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
@@ -160,6 +167,7 @@ export type SessionBrief = {
   recapMarkdown?: string
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
+  references?: SessionReference[]
   updates: SessionBriefUpdate[]
   next?: string
   updatedAt: number
@@ -207,6 +215,8 @@ export type PaneRepo = {
   name: string
   branch: string
   isWorktree: boolean
+  /** Exact checkout directory for a linked worktree (root remains the main checkout). */
+  worktreeRoot?: string
   defaultBranch?: string
 }
 

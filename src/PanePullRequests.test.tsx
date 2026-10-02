@@ -5,6 +5,12 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PanePullRequests } from './PanePullRequests'
+import type { PanePrSummary, PrStatus } from './prsApi'
+
+const status: PrStatus = {
+  additions: 100, deletions: 25, checks: null, conflicting: false,
+  unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
+}
 
 afterEach(() => {
   cleanup()
@@ -12,6 +18,30 @@ afterEach(() => {
 })
 
 describe('PanePullRequests', () => {
+  it.each([
+    ['fail', '✗ 2 failing', 'changes_requested', 'changes requested'],
+    ['pending', '● 3 running', 'approved', 'approved'],
+    ['pass', '✓ checks', null, null],
+  ] as const)('renders %s checks with diffstat and review/conflict badges', (state, label, decision, reviewLabel) => {
+    const pr: PanePrSummary = {
+      ...status, repo: 'acme/widgets', number: 12, title: 'Badge coverage',
+      url: 'https://github.com/acme/widgets/pull/12', state: 'open', isDraft: false,
+      createdAt: '', updatedAt: '', additions: 1234, deletions: 56,
+      conflicting: true, unresolvedThreads: 2, threadsTruncated: true, reviewDecision: decision,
+      checks: { state, failed: state === 'fail' ? 2 : 0, pending: state === 'pending' ? 3 : 0, total: 5, runs: [], truncated: false },
+    }
+    render(<PanePullRequests paneId="%12" api={{ pane: vi.fn() }} connected list={{
+      targetId: 'target', totalCount: 1, pullRequests: [pr], truncated: false, fetchedAt: 1,
+    }} />)
+    expect(screen.getByText('+1,234')).toBeInTheDocument()
+    expect(screen.getByText('−56')).toBeInTheDocument()
+    expect(screen.getByText(label)).toBeInTheDocument()
+    expect(screen.getByText('2+ unresolved')).toBeInTheDocument()
+    expect(screen.getByText('⚠ conflicts')).toBeInTheDocument()
+    if (reviewLabel) expect(screen.getByText(reviewLabel)).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('renders multiple linked pull requests with repository and state', async () => {
     const api = {
       pane: vi.fn(async () => ({
@@ -21,6 +51,7 @@ describe('PanePullRequests', () => {
         fetchedAt: 1,
         pullRequests: [
           {
+            ...status,
             repo: 'acme/gadgets',
             number: 44,
             title: 'Second pane PR',
@@ -31,6 +62,7 @@ describe('PanePullRequests', () => {
             updatedAt: '2026-08-21T10:00:00Z',
           },
           {
+            ...status,
             repo: 'acme/widgets',
             number: 12,
             title: 'First pane PR',
@@ -81,6 +113,7 @@ describe('PanePullRequests', () => {
           truncated: false,
           fetchedAt: 1,
           pullRequests: [{
+            ...status,
             repo: 'acme/widgets',
             number: 12,
             title: 'Stable pane PR',

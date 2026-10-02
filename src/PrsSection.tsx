@@ -11,6 +11,8 @@ import {
   type PrThreads,
 } from './prsApi'
 import { useRepoPrs } from './prStore'
+import { PrBadges } from './PrBadges'
+import { prMergeDisabledReason } from '../shared/pr-merge'
 import './prs-section.css'
 
 export const PRS_POLL_INTERVAL_MS = 30_000
@@ -47,19 +49,11 @@ export function prsNeedAttention(list: PrList | null): boolean {
   )
 }
 
-function ChecksChip({ checks }: { checks: PrSummary['checks'] }) {
-  if (!checks) return <span className="pr-chip dim">no checks</span>
-  const label = checks.state === 'fail'
-    ? (checks.failed > 0 ? `✗ ${checks.failed} failing` : '✗ checks')
-    : checks.state === 'pending' ? (checks.pending > 0 ? `● ${checks.pending} running` : '● running') : '✓ checks'
-  return <span className={`pr-chip ${checks.state}`}>{label}</span>
-}
-
 function fileName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, targetIsLive, onJumpToTarget }: {
+function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, targetIsLive, onJumpToTarget, merging, mergeError, onMerge }: {
   pr: PrSummary
   position: { top: number; left: number }
   threads: PrThreads | null
@@ -68,11 +62,15 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
   onLeave: () => void
   targetIsLive: boolean
   onJumpToTarget?: (targetId: string) => void
+  merging: boolean
+  mergeError: string
+  onMerge: () => void
 }) {
   const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
   const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
   const pendingReviewers = pr.requestedReviewers.filter((login) => !pr.reviews.some((review) => review.login === login))
   const checkRuns = pr.checks?.runs ?? []
+  const mergeDisabledReason = prMergeDisabledReason(pr)
   return createPortal(
     <div
       className="pr-pop"
@@ -82,6 +80,8 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
       aria-label={`Details for #${pr.number}`}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
+      onFocus={onEnter}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) onLeave() }}
     >
       <div className="pr-pop-head">
         <span className="pr-pop-num">#{pr.number}</span>
@@ -165,13 +165,23 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
         <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
         <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
         <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.url).catch(() => undefined) }}>Copy URL</button>
+        {pr.state === 'open' ? (
+          <button
+            type="button"
+            className="pr-pop-btn primary pr-merge-btn"
+            disabled={merging || Boolean(mergeDisabledReason)}
+            title={mergeDisabledReason ?? 'Merge this pull request on GitHub'}
+            onClick={onMerge}
+          >{merging ? 'Merging…' : 'Merge PR'}</button>
+        ) : null}
       </div>
+      {mergeError ? <p className="pr-pop-merge-error" role="alert">{mergeError}</p> : null}
     </div>,
     document.body,
   )
 }
 
-function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff }: {
+function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff, onMerged }: {
   pr: PrSummary
   viewer: string
   repo: string
@@ -180,7 +190,13 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJu
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
   onOpenDiff?: (pr: PrSummary) => void
+  onMerged: () => Promise<void>
 }) {
+  const [merged, setMerged] = useState(false)
+  const [merging, setMerging] = useState(false)
+  const [mergeError, setMergeError] = useState('')
+  const mergeInFlight = useRef(false)
+  const pr = merged ? { ...sourcePr, state: 'merged' as const } : sourcePr
   const stateLabel = pr.state === 'open' ? (pr.isDraft ? 'Draft' : 'Open') : pr.state === 'merged' ? 'Merged' : 'Closed'
   const stateClass = pr.state === 'open' ? (pr.isDraft ? 'draft' : 'open') : pr.state
   const attention = pr.state === 'open' && (pr.conflicting || (pr.viewerIsAuthor && pr.checks?.state === 'fail'))
@@ -220,11 +236,31 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJu
     openTimer.current = window.setTimeout(() => { openTimer.current = null; openNow() }, PR_HOVER_DELAY_MS)
   }
   const scheduleClose = () => {
+    // Disabling the focused merge button blurs it. Keep the result visible
+    // instead of closing the popover halfway through the request.
+    if (mergeInFlight.current) { cancelTimers(); return }
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
     if (closeTimer.current !== null) return
     closeTimer.current = window.setTimeout(() => { closeTimer.current = null; setPopover(null) }, PR_HOVER_CLOSE_DELAY_MS)
   }
   const keepOpen = () => cancelTimers()
+  const merge = async () => {
+    if (mergeInFlight.current || prMergeDisabledReason(pr)) return
+    mergeInFlight.current = true
+    setMerging(true)
+    setMergeError('')
+    try {
+      await api.merge(repo, pr.number, pr.headRefOid)
+      setMerged(true)
+      await onMerged()
+    } catch (cause) {
+      setMergeError(cause instanceof Error ? cause.message : 'Unable to merge pull request')
+      await onMerged()
+    } finally {
+      mergeInFlight.current = false
+      setMerging(false)
+    }
+  }
 
   useEffect(() => {
     if (!popover || pr.unresolvedThreads === 0 || threads || threadsFailed) return
@@ -260,42 +296,24 @@ function PrCard({ pr, viewer, repo, api, liveTargetIds, targetSessionNames, onJu
           onLeave={scheduleClose}
           targetIsLive={targetIsLive}
           onJumpToTarget={onJumpToTarget}
+          merging={merging}
+          mergeError={mergeError}
+          onMerge={() => { void merge() }}
         />
       ) : null}
       <div className="pr-meta">
-        {targetIsLive && onOpenDiff ? (
-          <button
-            type="button"
-            className="pr-chip pr-diffstat pr-diff-link"
-            aria-label={`Open diff for PR #${pr.number}: +${pr.additions} -${pr.deletions}`}
-            onClick={() => onOpenDiff(pr)}
-          >
-            <span className="plus">+{formatCount(pr.additions)}</span>
-            <span className="minus">−{formatCount(pr.deletions)}</span>
-          </button>
-        ) : (
-          <span className="pr-chip pr-diffstat">
-            <span className="plus">+{formatCount(pr.additions)}</span>
-            <span className="minus">−{formatCount(pr.deletions)}</span>
-          </span>
-        )}
-        <ChecksChip checks={pr.checks} />
-        {targetIsLive ? (
-          <button
-            type="button"
-            className="pr-chip pr-pane-link"
-            aria-label={`Jump to producing pane for PR #${pr.number}`}
-            onClick={() => onJumpToTarget?.(targetId)}
-          >
-            pane
-          </button>
-        ) : null}
-        {pr.unresolvedThreads > 0 ? (
-          <span className="pr-chip warn">{pr.unresolvedThreads}{pr.threadsTruncated ? '+' : ''} unresolved</span>
-        ) : null}
-        {pr.reviewDecision === 'changes_requested' ? <span className="pr-chip bad">changes requested</span> : null}
-        {pr.reviewDecision === 'approved' ? <span className="pr-chip ok">approved</span> : null}
-        {pr.conflicting ? <span className="pr-chip bad">⚠ conflicts</span> : null}
+        <PrBadges pr={pr} number={pr.number} onOpenDiff={targetIsLive && onOpenDiff ? () => onOpenDiff(pr) : undefined}>
+          {targetIsLive ? (
+            <button
+              type="button"
+              className="pr-chip pr-pane-link"
+              aria-label={`Jump to producing pane for PR #${pr.number}`}
+              onClick={() => onJumpToTarget?.(targetId)}
+            >
+              pane
+            </button>
+          ) : null}
+        </PrBadges>
       </div>
       <div className="pr-foot">
         {sessionName && targetId
@@ -568,19 +586,19 @@ export function PrsSection({
             {groups.yours.length > 0 ? (
               <section className="prs-group" aria-label="Your pull requests">
                 <header><strong>Yours</strong><small>{groups.yours.length}</small></header>
-                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {groups.needsReview.length > 0 ? (
               <section className="prs-group" aria-label="Pull requests awaiting your review">
                 <header><strong>Needs your review</strong><small>{groups.needsReview.length}</small></header>
-                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {showEveryone && groups.everyone.length > 0 ? (
               <section className="prs-group" aria-label="Everyone's pull requests">
                 <header><strong>Everyone&rsquo;s</strong><small>{groups.everyone.length}</small></header>
-                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} key={pr.number} />)}
+                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {list.mineTruncated ? (

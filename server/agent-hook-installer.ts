@@ -130,7 +130,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
-    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path).`,
+    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -652,7 +652,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--headline text] [--recap-markdown text] [--next text|--clear-next] [--state status] [--update kind text] [--detail text] [--screenshots dir] [--stdin]')
+  console.error('Usage: commando-session-update [--headline text] [--update kind text] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
 }
 
 async function stdinJson() {
@@ -685,7 +685,22 @@ async function bodyFromArgs() {
     else if (flag === '--clear-next') body.next = null
     else if (flag === '--state') body.state = valueAfter(index++, flag)
     else if (flag === '--screenshots') body.screenshots = { dir: resolve(valueAfter(index++, flag)) }
-    else if (flag === '--update') {
+    else if (['--feature-flag', '--url', '--issue', '--deployment', '--build', '--release',
+      '--remove-feature-flag', '--remove-url', '--remove-issue', '--remove-deployment', '--remove-build', '--remove-release'].includes(flag)) {
+      if (body.reference) throw new Error('Only one reference action is allowed per call')
+      const kind = flag.replace(/^--(?:remove-)?/, '')
+      body.reference = {
+        action: flag.startsWith('--remove-') ? 'remove' : 'upsert',
+        kind: kind === 'feature-flag' ? 'feature_flag' : kind,
+        value: valueAfter(index++, flag),
+      }
+    } else if (flag === '--url-label') {
+      if (!['url', 'issue', 'deployment'].includes(body.reference?.kind) || body.reference.action !== 'upsert') throw new Error('--url-label requires --url, --issue or --deployment first')
+      body.reference.label = valueAfter(index++, flag)
+    } else if (flag === '--link') {
+      if (!['build', 'release'].includes(body.reference?.kind) || body.reference.action !== 'upsert') throw new Error('--link requires --build or --release first')
+      body.reference.url = valueAfter(index++, flag)
+    } else if (flag === '--update') {
       const kind = valueAfter(index, flag)
       const text = args[index + 2]
       if (!text || text.startsWith('--')) throw new Error('--update requires a kind and text')

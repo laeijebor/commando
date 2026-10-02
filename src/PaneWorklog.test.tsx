@@ -36,6 +36,33 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('shows flags and clickable labeled URLs above the scrollable activity', () => {
+    render(<PaneWorklog brief={{ ...brief, references: [
+      { kind: 'feature_flag', value: 'new-checkout' },
+      { kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout preview' },
+    ] }} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const section = screen.getByLabelText('Important terms for Tests')
+    expect(section).toHaveTextContent('new-checkout')
+    expect(section).toHaveTextContent('Feature flag')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'http://localhost:5273/checkout')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('target', '_blank')
+  })
+
+  it('renders issue and deployment links and linked or plain build/release identifiers', () => {
+    render(<PaneWorklog brief={{ ...brief, references: [
+      { kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment', value: 'https://preview.example.com/', label: 'Checkout preview' },
+      { kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842' },
+      { kind: 'release', value: 'v2.3.0' },
+    ] }} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('link', { name: /Bug #42/ })).toHaveAttribute('href', 'https://github.com/acme/app/issues/42')
+    expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'https://preview.example.com/')
+    expect(screen.getByRole('link', { name: /1842/ })).toHaveAttribute('href', 'https://ci.example.com/build/1842')
+    expect(screen.getByText('v2.3.0').closest('.pane-worklog-reference')).not.toHaveAttribute('href')
+    expect(screen.getByLabelText('Important terms for Tests')).toHaveTextContent('Release')
+  })
   it('migrates notes to durable ownership and retains them across session moves', () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     window.localStorage.setItem('commando.pane-worklog.$1:%12', JSON.stringify({ note: 'Keep my note', minimized: false, visibilitySet: true }))
@@ -50,7 +77,7 @@ describe('PaneWorklog', () => {
   it('shows linked PRs and missing-hook guidance without activity metadata', async () => {
     const prsApi = { pane: vi.fn().mockResolvedValue({
       targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
-      pullRequests: [{ repo: 'acme/app', number: 1, title: 'Linked work', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02' }],
+      pullRequests: [{ repo: 'acme/app', number: 1, title: 'Linked work', url: 'https://example.test/pr/1', state: 'open', isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02', additions: 10, deletions: 2, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null }],
     }) }
     render(<PaneWorklog brief={{ ...brief, tasks: [], updates: [] }} empty hookConnected={false} paneLabel="Tests" prsApi={prsApi} />)
     expect(await screen.findByLabelText('Open pull request')).toBeInTheDocument()
@@ -208,6 +235,7 @@ describe('PaneWorklog', () => {
       targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
       pullRequests: [{
         repo: 'acme/app', number: 1, title: 'Open PR', url: 'https://example.test/pr/1',
+        additions: 10, deletions: 2, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
         state: 'open' as const, isDraft: false, createdAt: '2026-01-01', updatedAt: '2026-01-02',
       }],
     }) }

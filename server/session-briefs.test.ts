@@ -59,6 +59,60 @@ describe('SessionBriefStore', () => {
   const targetId = '550e8400-e29b-41d4-a716-446655440000'
   const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'original' }
 
+  it('upserts and removes references without losing them on lifecycle updates, reload or pane moves', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'feature_flag', value: 'new-checkout' } }, 100)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout' } }, 101)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout preview' } }, 102)
+    await briefs.syncFromStatuses('$1', 'original', [status('%1', 'working', 103, 'Running')], 103)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    await replay.reconcilePanes([{ ...identity, paneId: '%2', sessionId: '$2', sessionName: 'moved' }])
+    expect(replay.get('%2')?.references).toEqual([
+      { kind: 'feature_flag', value: 'new-checkout' },
+      { kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout preview' },
+    ])
+    await replay.applyAgentPatch('$2', 'moved', '%2', { reference: { action: 'remove', kind: 'feature_flag', value: 'new-checkout' } }, 104)
+    expect(replay.get('%2')?.references).toEqual([{ kind: 'url', value: 'http://localhost:5273/checkout', label: 'Checkout preview' }])
+    expect(replay.get('%1')).toBeNull()
+  })
+
+  it('bounds the pinned reference list without dropping existing entries', async () => {
+    const briefs = await store()
+    for (let index = 0; index < 20; index += 1) {
+      await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'feature_flag', value: `flag-${index}` } }, 100 + index)
+    }
+    await expect(briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'feature_flag', value: 'overflow' } }, 121))
+      .rejects.toThrow('Too many session references')
+    expect(briefs.get('%1')?.references).toHaveLength(20)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'remove', kind: 'feature_flag', value: 'flag-0' } }, 122)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'feature_flag', value: 'replacement' } }, 123)
+    expect(briefs.get('%1')?.references).toHaveLength(20)
+  })
+
+  it('persists distinct issue, deployment, build and release references and replaces linked builds', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    for (const reference of [
+      { kind: 'issue' as const, value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment' as const, value: 'https://preview.example.com/', label: 'Preview' },
+      { kind: 'build' as const, value: '1842', url: 'https://ci.example.com/build/1842' },
+      { kind: 'release' as const, value: 'v2.3.0' },
+    ]) await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', ...reference } })
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842/retry' } })
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.references).toEqual([
+      { kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' },
+      { kind: 'deployment', value: 'https://preview.example.com/', label: 'Preview' },
+      { kind: 'release', value: 'v2.3.0' },
+      { kind: 'build', value: '1842', url: 'https://ci.example.com/build/1842/retry' },
+    ])
+    await replay.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'remove', kind: 'issue', value: 'https://github.com/acme/app/issues/42' } })
+    expect(replay.get('%1')?.references?.some((reference) => reference.kind === 'issue')).toBe(false)
+  })
+
   it('keeps tasks, authored history and screenshots across rename, move and daemon reload', async () => {
     const briefs = await store()
     await briefs.reconcilePanes([identity])

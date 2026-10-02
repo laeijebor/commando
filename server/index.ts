@@ -1264,12 +1264,18 @@ async function main(): Promise<void> {
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
     prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
       currentPanes: async () => (await refreshSnapshotFresh()).panes,
+      currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
       worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
       removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
     }),
     afterSessionDeleted: () => {
       void resurrectSaver.save().catch((error: unknown) => {
         console.error('[commando] tmux Resurrect save failed after session deletion', error)
+      })
+    },
+    afterSessionRestored: () => {
+      void resurrectSaver.save().catch((error: unknown) => {
+        console.error('[commando] tmux Resurrect save failed after session restore', error)
       })
     },
     beforeWindowDeleted: async (windowId) => {
