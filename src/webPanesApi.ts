@@ -57,6 +57,7 @@ export interface WebPanesApiClient {
   setPendingPage(webPaneId: string, url: string): Promise<WebPanePendingSnapshot>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
   navigate(webPaneId: string, url: string): Promise<void>
+  answerNavigateRequest(webPaneId: string, requestId: string, decision: 'accept' | 'dismiss'): Promise<void>
 }
 
 type ApiErrorBody = { error?: unknown }
@@ -244,6 +245,12 @@ export function createWebPanesApi(
       await request(`/${encodeURIComponent(webPaneId)}/navigate`, {
         method: 'POST',
         body: JSON.stringify({ url }),
+      })
+    },
+    answerNavigateRequest: async (webPaneId, requestId, decision) => {
+      await request(`/${encodeURIComponent(webPaneId)}/navigate-requests/${encodeURIComponent(requestId)}`, {
+        method: 'POST',
+        body: JSON.stringify({ decision }),
       })
     },
   }

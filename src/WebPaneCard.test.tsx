@@ -169,6 +169,49 @@ describe('WebPaneCard url editing', () => {
   })
 })
 
+describe('WebPaneCard agent requests', () => {
+  const navigateRequest = {
+    id: 'nr-0000beef',
+    url: 'http://localhost:5173/next',
+    requestedBy: 'claude · gizmo',
+    requestedAt: 1,
+  }
+
+  it('shows an agent navigate request over the tile and answers it', () => {
+    const onAnswer = vi.fn()
+    render(
+      <WebPaneCard
+        webPane={webPane}
+        onClose={() => undefined}
+        onConfirm={() => undefined}
+        navigateRequest={navigateRequest}
+        onAnswerNavigateRequest={onAnswer}
+      />,
+    )
+
+    const toast = screen.getByRole('alertdialog', { name: "Agent wants to change this tile's URL" })
+    expect(toast).toHaveTextContent('claude · gizmo wants to open')
+    expect(toast).toHaveTextContent('http://localhost:5173/next')
+    expect(toast).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    expect(onAnswer).toHaveBeenCalledWith('nr-0000beef', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(onAnswer).toHaveBeenCalledWith('nr-0000beef', false)
+  })
+
+  it('reloads the tile when the daemon reload revision changes, not on mount', () => {
+    const props = { webPane, onClose: () => undefined, onConfirm: () => undefined }
+    const { container, rerender } = render(<WebPaneCard {...props} reloadRevision={4} />)
+    const first = container.querySelector('iframe')
+
+    rerender(<WebPaneCard {...props} reloadRevision={4} />)
+    expect(container.querySelector('iframe')).toBe(first)
+
+    rerender(<WebPaneCard {...props} reloadRevision={5} />)
+    expect(container.querySelector('iframe')).not.toBe(first)
+  })
+})
+
 describe('WebPaneCard maximize', () => {
   it('renders a maximize toggle that reflects and flips the state', () => {
     const onMaximize = vi.fn()

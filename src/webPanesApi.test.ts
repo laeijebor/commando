@@ -292,3 +292,17 @@ describe('webPanesApi.navigate', () => {
     expect(init.body).toBe(JSON.stringify({ url: 'http://localhost:4310/report' }))
   })
 })
+
+describe('webPanesApi.answerNavigateRequest', () => {
+  it('posts the owner decision for an agent navigate request', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+    const api = createWebPanesApi('tok', fetcher as unknown as typeof fetch)
+
+    await api.answerNavigateRequest('w-0badcafe', 'nr-0000beef', 'dismiss')
+
+    const [path, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(path).toBe('/api/web-panes/w-0badcafe/navigate-requests/nr-0000beef')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(JSON.stringify({ decision: 'dismiss' }))
+  })
+})

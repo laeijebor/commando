@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, PictureInPicture2 } from 'lucide-react'
 
-import type { ServerMessage, WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
+import type { ServerMessage, WebPane, WebPaneFeedbackInfo, WebPaneNavigateRequest } from '../shared/protocol'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import { getNativeWindowBridge } from './nativeWindowBridge'
 import { SessionTokenBroker } from './sessionTokenBroker'
@@ -16,6 +16,8 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
   const [authReady, setAuthReady] = useState(false)
   const [webPane, setWebPane] = useState<WebPane | null>(null)
   const [feedback, setFeedback] = useState<WebPaneFeedbackInfo | undefined>()
+  const [navigateRequest, setNavigateRequest] = useState<WebPaneNavigateRequest | undefined>()
+  const [reloadRevision, setReloadRevision] = useState<number | undefined>()
   const [receivedWebPanes, setReceivedWebPanes] = useState(false)
   const [actionError, setActionError] = useState('')
   const tokenBrokerRef = useRef<SessionTokenBroker | null>(null)
@@ -63,6 +65,8 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
     setReceivedWebPanes(true)
     setWebPane(message.webPanes.find((candidate) => candidate.id === webPaneId) ?? null)
     setFeedback(message.feedback?.[webPaneId])
+    setNavigateRequest(message.navigateRequests?.[webPaneId])
+    setReloadRevision(message.reloads?.[webPaneId])
   }
   const { connection } = useDaemon(token, sessionAuthenticated, handleServerMessage)
   const api = createWebPanesApi(token)
@@ -127,6 +131,12 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
           () => api.navigate(webPaneId, url),
           'Unable to change web pane URL',
         )}
+        navigateRequest={navigateRequest}
+        onAnswerNavigateRequest={(requestId, accept) => void run(
+          () => api.answerNavigateRequest(webPaneId, requestId, accept ? 'accept' : 'dismiss'),
+          'Unable to answer the navigate request',
+        )}
+        reloadRevision={reloadRevision}
         pendingQueue={{
           list: () => api.pendingNotes(webPaneId),
            add: (note) => api.addPendingNote(webPaneId, note),

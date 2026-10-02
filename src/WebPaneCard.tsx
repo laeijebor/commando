@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureInPicture2, RotateCw, ShieldAlert, Smartphone, Wrench, X } from 'lucide-react'
-import type { WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
+import type { WebPane, WebPaneFeedbackInfo, WebPaneNavigateRequest } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
@@ -105,6 +105,9 @@ export function WebPaneCard({
   onFocusDetached,
   onReattach,
   keepStreamingWhenHidden = false,
+  navigateRequest,
+  onAnswerNavigateRequest,
+  reloadRevision = 0,
 }: {
   webPane: WebPane
   simulatorActive?: boolean
@@ -134,8 +137,14 @@ export function WebPaneCard({
   onFocusDetached?: () => void
   onReattach?: () => void
   keepStreamingWhenHidden?: boolean
+  /** An agent's pending request to change this tile's URL. */
+  navigateRequest?: WebPaneNavigateRequest
+  onAnswerNavigateRequest?: (requestId: string, accept: boolean) => void
+  /** Daemon reload counter: each change after mount reloads the tile. */
+  reloadRevision?: number
 }) {
   const [reloadKey, setReloadKey] = useState(0)
+  const lastReloadRevision = useRef(reloadRevision)
   const [review, setReview] = useState(false)
   const [chromiumRenderer, setChromiumRenderer] = useState<ChromiumRenderer>(loadChromiumRenderer)
   const [nativeLoaded, setNativeLoaded] = useState(false)
@@ -176,6 +185,12 @@ export function WebPaneCard({
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
   }, [reloadKey, tier, webPane.status, webPane.url])
+
+  useEffect(() => {
+    if (reloadRevision === lastReloadRevision.current) return
+    lastReloadRevision.current = reloadRevision
+    setReloadKey((current) => current + 1)
+  }, [reloadRevision])
 
   useEffect(() => {
     if (!attributionVisible) return
@@ -521,6 +536,36 @@ export function WebPaneCard({
           ) : null}
         </div>
       )}
+
+      {navigateRequest && onAnswerNavigateRequest ? (
+        <div
+          className="web-pane-navigate-request"
+          role="alertdialog"
+          aria-label="Agent wants to change this tile's URL"
+          data-native-terminal-occluder=""
+        >
+          <p className="web-pane-navigate-request-lede">
+            <strong>{navigateRequest.requestedBy ?? 'An agent'}</strong> wants to open
+          </p>
+          <p className="web-pane-navigate-request-url" title={navigateRequest.url}>{navigateRequest.url}</p>
+          <div className="web-pane-confirm-actions">
+            <button
+              type="button"
+              className="web-pane-action"
+              onClick={() => onAnswerNavigateRequest(navigateRequest.id, true)}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              className="web-pane-action is-ghost"
+              onClick={() => onAnswerNavigateRequest(navigateRequest.id, false)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <footer className="web-pane-foot">
         <span>
