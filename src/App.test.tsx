@@ -416,6 +416,29 @@ describe('session update briefs', () => {
     expect(screen.getByLabelText('Worklog for api')).not.toHaveTextContent('An old owner')
   })
 
+  it('opens the claimed simulator beside its owning pane through the existing web tile API', async () => {
+    await renderAppWithSnapshot()
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', label: 'Work · Review', task: 'Review', sessionName: 'work', ports: [{ name: 'metro', port: 8101 }], idle: false }
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
+      state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
+    } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for api' }))
+    expect(screen.getByLabelText('Important terms for api')).toHaveTextContent('metro :8101')
+    expect(screen.getByLabelText('Worklog for api')).toHaveTextContent('No agent hook data received')
+    vi.mocked(fetch).mockResolvedValue(new Response('{"webPaneId":"w-test","status":"open"}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+    const url = new URL(`/api/sims/${simulator.udid}/view`, window.location.href)
+    url.searchParams.set('token', 'test-token')
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web-panes', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ url: url.toString(), anchor: pane.id }),
+    })))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/sims/${simulator.udid}/open`, expect.objectContaining({
+      method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer test-token' },
+    })))
+  })
+
   it('replays each worklog only into its source terminal pane', async () => {
     await renderAppWithSnapshot()
     const apiBrief: SessionBrief = {

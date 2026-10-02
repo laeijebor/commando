@@ -113,6 +113,7 @@ import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
+import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import { createNotesApi } from './notesApi'
@@ -287,6 +288,8 @@ type TerminalPaneProps = {
   gitApi: GitDiffApiClient
   prsApi?: PrsApiClient
   screenshotsApi?: PaneScreenshotsApiClient
+  simsApi?: SimsApiClient
+  onShowSimulator?: (udid: string) => void
   paneManagementApi?: PaneManagementApiClient
   revealInFinder?: boolean
   onOpenPath: () => Promise<void>
@@ -337,6 +340,8 @@ export function TerminalPaneCard({
   gitApi,
   prsApi,
   screenshotsApi,
+  simsApi,
+  onShowSimulator,
   paneManagementApi,
   revealInFinder = true,
   onOpenPath,
@@ -622,7 +627,9 @@ export function TerminalPaneCard({
         <PaneWorklog
           key={pane.targetId}
           brief={worklogBrief}
-          empty={!brief}
+          simsApi={simsApi}
+          onShowSimulator={onShowSimulator}
+          empty={!brief || brief.updatedAt === 0}
           hookConnected={status?.source === 'hook'}
           paneLabel={paneLabel}
           prsApi={prsApi}
@@ -1901,6 +1908,7 @@ export function App() {
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
   const gitDiffApi = createGitDiffApi(token)
+  const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
   const webPanesApi = createWebPanesApi(token)
 
@@ -2778,6 +2786,8 @@ export function App() {
                             gitApi={gitDiffApi}
                             prsApi={prsApi}
                             screenshotsApi={paneScreenshotsApi}
+                            simsApi={simsApi}
+                            onShowSimulator={(udid) => { void openWebPane(simsApi.viewUrl(udid), pane.id) }}
                             paneManagementApi={paneManagementApi}
                             revealInFinder={revealInFinder}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}

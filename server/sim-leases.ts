@@ -12,6 +12,8 @@ export type SimLease = SimPaneContext & {
   task: string
   label: string
   originalName: string
+  ports: Array<{ name: string; port: number }>
+  branchOverride?: string
   via: 'simslim' | 'simfleet'
   createdAt: number
   lastActiveAt: number
@@ -38,19 +40,41 @@ export function formatSimLabel(sessionName: string, task = ''): string {
   return Array.from(description ? `${session} · ${description}` : session).slice(0, 60).join('')
 }
 
-function parseInput(value: Record<string, unknown>): Pick<SimLease, 'udid' | 'task' | 'originalName' | 'via'> {
+function parseInput(value: Record<string, unknown>): Pick<SimLease, 'udid' | 'task' | 'originalName' | 'via' | 'ports' | 'branchOverride'> {
   const { udid, originalName, via, task = '' } = value
   if (typeof udid !== 'string' || !UDID.test(udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
   if (typeof originalName !== 'string' || !originalName || originalName.length > 1_024 || /[\u0000-\u001f\u007f-\u009f]/u.test(originalName)) {
     throw new SimLeaseError(400, 'originalName is invalid')
   }
   if (via !== 'simslim' && via !== 'simfleet') throw new SimLeaseError(400, 'via is invalid')
-  return { udid: udid.toUpperCase(), originalName, via, task: parseTask(task) }
+  return { udid: udid.toUpperCase(), originalName, via, task: parseTask(task),
+    ports: parsePorts(value.ports === undefined ? [] : value.ports), ...parseBranch(value.branchOverride) }
 }
 
 function parseTask(value: unknown): string {
   if (typeof value !== 'string' || value.length > 4_096) throw new SimLeaseError(400, 'task must be text of at most 4096 characters')
   return cleanSimText(value)
+}
+
+function parsePorts(value: unknown): SimLease['ports'] {
+  if (!Array.isArray(value) || value.length > 6) throw new SimLeaseError(400, 'ports must contain at most 6 named ports')
+  const names = new Set<string>()
+  return value.map((entry) => {
+    if (!entry || typeof entry.name !== 'string' || !/^[a-z0-9-]{1,24}$/.test(entry.name) ||
+      !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535 || names.has(entry.name)) {
+      throw new SimLeaseError(400, 'ports require unique lowercase names and integer ports from 1 to 65535')
+    }
+    names.add(entry.name)
+    return { name: entry.name, port: entry.port }
+  })
+}
+
+function parseBranch(value: unknown): Pick<SimLease, 'branchOverride'> {
+  if (value === undefined) return {}
+  if (typeof value !== 'string' || value.length > 200 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new SimLeaseError(400, 'branchOverride must be text of at most 200 characters without controls')
+  }
+  return { branchOverride: value }
 }
 
 function persistedRepo(value: unknown): PaneRepo | undefined {
@@ -213,6 +237,7 @@ export class SimLeaseApi {
     registry: SimLeaseRegistry
     paneExists: (paneId: string) => boolean
     paneContext: (paneId: string) => Promise<SimPaneContext | null>
+    onChange?: (paneId: string) => void | Promise<void>
   }) {
     if (dependencies.token.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
     this.tokenDigest = createHash('sha256').update(dependencies.token).digest()
@@ -251,9 +276,11 @@ export class SimLeaseApi {
           else { registry.unlock(paneId, body.operation); writeJson(response, 200, { ok: true }) }
         } else if (request.method === 'DELETE') {
           registry.delete(paneId, body.operation)
+          await this.dependencies.onChange?.(paneId)
           writeJson(response, 200, { ok: true })
         } else {
           const lease = request.method === 'PUT' ? registry.upsert(paneId, target, body) : registry.touch(paneId, target, body)
+          await this.dependencies.onChange?.(paneId)
           writeJson(response, 200, { lease })
         }
       }

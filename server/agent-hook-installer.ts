@@ -134,7 +134,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
-    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" so they are slim and labelled with the session and task. Release them with commando-sim.mjs release when done.`,
+    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. Run commando-sim.mjs update when purpose, ports, or branch change. Release them with commando-sim.mjs release when done.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -764,10 +764,11 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 const tokenPath = ${JSON.stringify(tokenPath)}
 ` + String.raw`
+const cleanText = (text) => text.replace(/\s+/gu, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/gu, '').replace(/\s+/gu, ' ').trim()
+
 export function formatLabel(sessionName, task = '') {
-  const clean = (text) => text.replace(/\s+/gu, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/gu, '').replace(/\s+/gu, ' ').trim()
-  const session = clean(sessionName)
-  const description = clean(task)
+  const session = cleanText(sessionName)
+  const description = cleanText(task)
   return Array.from(description ? session + ' · ' + description : session).slice(0, 60).join('')
 }
 
@@ -803,22 +804,36 @@ export function verifySlim(output, udid) {
 
 export async function runSimCommand(args, { request, run, exists, onPath }) {
   const [command, ...rest] = args
-  let task, requested
-  if (command === 'lease') {
+  let task, requested, branchOverride, clearPorts = false
+  const declaredPorts = []
+  if (command === 'lease' || command === 'update') {
     for (let i = 0; i < rest.length; i++) {
-      const flag = rest[i], value = rest[++i]
-      if (!['--task', '--device'].includes(flag) || value === undefined || value.startsWith('--')) {
-        throw new Error('Usage: commando-sim.mjs lease [--task text] [--device udid]')
+      const flag = rest[i]
+      if (flag === '--clear-ports') { clearPorts = true; continue }
+      const value = rest[++i]
+      if (!['--task', '--metro', '--backend', '--port', '--branch', ...(command === 'lease' ? ['--device'] : [])].includes(flag) ||
+          value === undefined || value.startsWith('--')) {
+        throw new Error('Usage: commando-sim.mjs lease|update [--task text] [--metro port] [--backend port] [--port name=port] [--branch name] [--clear-ports] (lease: --device udid)')
       }
       if (flag === '--task') task = value
-      else {
+      else if (flag === '--branch') {
+        if (value.length > 200 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) throw new Error('Branch must be at most 200 characters without controls')
+        branchOverride = value
+      } else if (flag === '--device') {
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error('--device must be a simulator UUID')
         requested = value
+      } else {
+        const pair = flag === '--port' ? value : flag.slice(2) + '=' + value
+        const match = /^([a-z0-9-]{1,24})=([0-9]+)$/.exec(pair)
+        const port = match ? Number(match[2]) : 0
+        if (!match || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Ports require a lowercase name and a port from 1 to 65535')
+        if (declaredPorts.some((entry) => entry.name === match[1])) throw new Error('Port names must be unique')
+        declaredPorts.push({ name: match[1], port })
       }
     }
   } else if (command === 'label' && rest.length === 1) task = rest[0]
   else if (!['release', 'list'].includes(command) || rest.length) {
-    throw new Error('Usage: commando-sim.mjs lease [--task text] [--device udid] | label "task" | release | list')
+    throw new Error('Usage: commando-sim.mjs lease | update | label "task" | release | list')
   }
   if (task !== undefined && task.length > 4096) throw new Error('Task must be at most 4096 characters')
   if (command === 'list') return (await request('GET', '')).leases
@@ -827,6 +842,31 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
   if (!existing && command !== 'lease') {
     if (command === 'release') return { ok: true }
     throw new Error('This pane has no simulator lease; run lease first')
+  }
+  const metadata = { ...(branchOverride !== undefined ? { branchOverride } : {}) }
+  if (clearPorts || declaredPorts.length) {
+    const ports = clearPorts ? [] : [...(existing?.ports ?? [])]
+    for (const entry of declaredPorts) {
+      const index = ports.findIndex((port) => port.name === entry.name)
+      if (index < 0) ports.push(entry)
+      else ports[index] = entry
+    }
+    if (ports.length > 6) throw new Error('At most 6 named ports are allowed; use --clear-ports to replace them')
+    metadata.ports = ports
+  }
+  const description = task ?? existing?.task ?? ''
+  const taskChanged = task !== undefined && cleanText(task) !== cleanText(existing?.task ?? '')
+  if (command === 'update' && !taskChanged) {
+    const { operation } = await request('POST', '/reservation', { udid: existing.udid })
+    let primaryError
+    try {
+      const result = await request('PATCH', '', { operation, ...metadata, ...(task !== undefined ? { task } : {}) })
+      return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }
+    } catch (error) { primaryError = error; throw error }
+    finally {
+      try { await request('DELETE', '/reservation', { operation }) }
+      catch (error) { if (!primaryError) throw error }
+    }
   }
   const device = existing ?? chooseDevice(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])), context.heldUdids, requested)
   const { udid } = device
@@ -852,11 +892,10 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
       await request('DELETE', '', { operation })
       return { ok: true }
     }
-    if (command === 'label' && current?.state !== 'Booted') {
+    if ((command === 'label' || command === 'update') && current?.state !== 'Booted') {
       throw new Error('Leased simulator is not Booted; run commando-sim.mjs lease again before labelling it')
     }
     if (existing && !current) throw new Error('Leased simulator no longer exists; run release, then lease again')
-    const description = task ?? existing?.task ?? ''
     const label = formatLabel(context.sessionName, description)
     let via = existing?.via
     if (!existing) {
@@ -871,7 +910,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     }
     verifySlim(await run('simslim', ['list', '--booted']), udid)
     await run('xcrun', ['simctl', 'rename', udid, label])
-    const body = { operation, task: description }
+    const body = { operation, task: description, ...metadata }
     const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
       ...body, udid, originalName: device.name, via,
     })

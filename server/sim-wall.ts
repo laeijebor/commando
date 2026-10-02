@@ -24,6 +24,35 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body))
 }
 
+function simulatorTilePage(udid: string, label: string): string {
+  const escaped = label.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>${escaped}</title>
+<style>html,body{height:100%;margin:0}body{display:flex;flex-direction:column}header{padding:8px;overflow-wrap:anywhere}img{display:block;min-height:0;flex:1;max-width:100%;object-fit:contain}</style>
+</head><body><header>${escaped}</header><img id="snapshot" alt="Simulator snapshot">
+<script>
+const frame = document.getElementById('snapshot');
+const endpoint = new URL('/api/sims/${udid}/snapshot.jpg', location.href);
+const token = new URL(location.href).searchParams.get('token');
+if (token) endpoint.searchParams.set('token', token);
+let pending = false;
+function refresh() {
+  if (document.visibilityState !== 'visible' || pending) return;
+  pending = true;
+  const next = new Image();
+  endpoint.searchParams.set('t', String(Date.now()));
+  next.onload = () => { if (document.visibilityState === 'visible') frame.src = next.src; pending = false; };
+  next.onerror = () => { pending = false; };
+  next.src = endpoint.href;
+}
+const timer = setInterval(refresh, 2000);
+document.addEventListener('visibilitychange', refresh);
+window.addEventListener('pagehide', () => clearInterval(timer));
+refresh();
+</script></body></html>`
+}
+
 export class SimWallApi {
   private readonly runner: SimWallRunner
   private readonly now: () => number
@@ -131,11 +160,23 @@ export class SimWallApi {
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
-    if (url.pathname !== '/api/sims' && !url.pathname.startsWith('/api/sims/')) return false
+    if (url.pathname !== '/api/sims' && !url.pathname.startsWith('/api/sims/') && !url.pathname.startsWith('/sims/')) return false
     try {
       if (url.pathname === '/api/sims') {
         if (request.method !== 'GET') throw new SimWallError(405, 'Method not allowed')
         json(response, 200, { sims: await this.list() })
+        return true
+      }
+      const view = /^\/(?:api\/)?sims\/([^/]+)\/view$/.exec(url.pathname)
+      if (view) {
+        if (!UDID.test(view[1])) throw new SimWallError(400, 'udid must be a simulator UUID')
+        if (request.method !== 'GET') throw new SimWallError(405, 'Method not allowed')
+        const udid = view[1].toUpperCase()
+        const lease = this.dependencies.registry.list(this.dependencies.paneExists).find((entry) => entry.udid === udid)
+        const page = simulatorTilePage(udid, lease?.label ?? udid)
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' })
+        response.end(page)
         return true
       }
       const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open)$/.exec(url.pathname)

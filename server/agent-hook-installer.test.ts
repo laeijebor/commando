@@ -243,6 +243,8 @@ describe('agent hook installer', () => {
     expect(output.system[1]).toContain('Append its exact HTML comment')
     expect(output.system[1]).toContain(paths.sessionBriefCliPath)
     expect(output.system[1]).toContain(paths.simCliPath)
+    expect(output.system[1]).toContain('--metro <port> --backend <port>')
+    expect(output.system[1]).toContain('update when purpose, ports, or branch change')
     expect(output.system[1]).toContain('slim and labelled with the session and task')
     expect(output.system[1]).toContain('Release them with commando-sim.mjs release when done.')
     expect(output.system[1]).toContain('unless requested by the user')
@@ -1541,6 +1543,67 @@ function simDependencies(
 }
 
 describe('generated simulator lease CLI', () => {
+  it('declares ports and branch at lease time and merges or clears ports on update without device actions', async () => {
+    const cli = await loadSimCli()
+    const initial = simDependencies()
+    await cli.runSimCommand(['lease', '--task', 'purpose', '--metro', '8101', '--backend', '3001', '--port', 'inspector=9000', '--branch', 'feature/test'], initial)
+    expect(initial.request).toHaveBeenCalledWith('PUT', '', expect.objectContaining({
+      task: 'purpose', branchOverride: 'feature/test',
+      ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }, { name: 'inspector', port: 9000 }],
+    }))
+    const deps = simDependencies({ ...fakeLease, ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }] } as typeof fakeLease)
+    await cli.runSimCommand(['update', '--metro', '8102', '--port', 'inspector=9000', '--branch', 'new-branch'], deps)
+    expect(deps.run).not.toHaveBeenCalled()
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', branchOverride: 'new-branch',
+      ports: [{ name: 'metro', port: 8102 }, { name: 'backend', port: 3001 }, { name: 'inspector', port: 9000 }] })
+    await cli.runSimCommand(['update', '--clear-ports', '--backend', '3002'], deps)
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', ports: [{ name: 'backend', port: 3002 }] })
+    await cli.runSimCommand(['update', '--clear-ports'], deps)
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', ports: [] })
+    expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+  })
+
+  it('renames on an actual purpose change, preserves omitted metadata and uses label boot checks', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(fakeLease)
+    await cli.runSimCommand(['update', '--task', ' previous   task '], deps)
+    expect(deps.run).not.toHaveBeenCalled()
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: ' previous   task ' })
+    await cli.runSimCommand(['update', '--task', 'review purpose'], deps)
+    expect(deps.run).toHaveBeenLastCalledWith('xcrun', ['simctl', 'rename', simUdid, 'Session name · review purpose'])
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'review purpose' })
+    const shutdown = simDependencies(fakeLease, fakeDevices)
+    await expect(cli.runSimCommand(['update', '--task', 'changed'], shutdown)).rejects.toThrow('not Booted')
+    expect(shutdown.request).not.toHaveBeenCalledWith('PATCH', '', expect.anything())
+    expect(shutdown.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+    await expect(cli.runSimCommand(['update', '--metro', '8101'], simDependencies())).rejects.toThrow('no simulator lease')
+  })
+
+  it('rejects invalid metadata before device mutation and unlocks failed metadata updates', async () => {
+    const cli = await loadSimCli()
+    for (const args of [
+      ['--metro', '0'], ['--backend', '65536'], ['--metro', '1.5'], ['--metro', '1x'],
+      ['--port', 'Metro=8101'], ['--port', 'bad_name=8101'], ['--port', 'metro='],
+      ['--metro', '8101', '--port', 'metro=8102'], ['--branch', 'a'.repeat(201)], ['--branch', 'bad\nbranch'],
+      Array.from({ length: 7 }, (_, i) => ['--port', `port-${i}=8101`]).flat(),
+    ]) {
+      for (const command of ['lease', 'update']) {
+        const deps = simDependencies(fakeLease)
+        await expect(cli.runSimCommand([command, ...args], deps)).rejects.toThrow()
+        expect(deps.run).not.toHaveBeenCalled()
+        expect(deps.request.mock.calls.some(([, suffix]) => suffix === '/reservation')).toBe(false)
+      }
+    }
+    const deps = simDependencies(fakeLease)
+    const request = deps.request.getMockImplementation()!
+    deps.request.mockImplementation(async (method, suffix, body) => {
+      if (method === 'PATCH') throw new Error('update failed')
+      return request(method, suffix, body)
+    })
+    await expect(cli.runSimCommand(['update', '--branch', 'changed'], deps)).rejects.toThrow('update failed')
+    expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+  })
+
   it('chooses a free Shutdown iPhone only on the newest available numeric iOS runtime', async () => {
     const cli = await loadSimCli()
     const listing = { devices: {

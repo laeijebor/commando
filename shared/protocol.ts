@@ -155,6 +155,16 @@ export type SessionReference = {
   url?: string
 }
 
+export type SimulatorClaim = {
+  udid: string
+  label: string
+  task: string
+  sessionName: string
+  branch?: string
+  ports: Array<{ name: string; port: number }>
+  idle: boolean
+}
+
 export type SessionBrief = {
   paneId: string
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
@@ -168,6 +178,8 @@ export type SessionBrief = {
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
   references?: SessionReference[]
+  /** Derived from the current lease; never persisted as a reference. */
+  simulator?: SimulatorClaim
   updates: SessionBriefUpdate[]
   next?: string
   updatedAt: number

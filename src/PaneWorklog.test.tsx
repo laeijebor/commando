@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -36,6 +36,37 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('renders a simulator first, counts it with references and handles both actions', async () => {
+    const simulator = { udid: 'sim-uuid', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
+    const simsApi = { open: vi.fn().mockResolvedValue(undefined) }
+    const onShowSimulator = vi.fn()
+    render(<PaneWorklog brief={{ ...brief, simulator, references: [{ kind: 'feature_flag', value: 'checkout' }] }} paneLabel="Tests" simsApi={simsApi} onShowSimulator={onShowSimulator} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const section = screen.getByLabelText('Important terms for Tests')
+    expect(section.querySelector('header small')).toHaveTextContent('2')
+    expect(section.querySelector('.pane-worklog-reference-list')?.firstElementChild).toHaveTextContent(simulator.task)
+    expect(section).toHaveTextContent('feature/checkout')
+    expect(section).toHaveTextContent('metro :8101')
+    expect(section).toHaveTextContent('backend :3001')
+    expect(section).toHaveTextContent('idle')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
+    await waitFor(() => expect(simsApi.open).toHaveBeenCalledWith(simulator.udid))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+    expect(onShowSimulator).toHaveBeenCalledWith(simulator.udid)
+  })
+
+  it('shows claims without references or activity, reports open failures and removes released claims', async () => {
+    const simulator = { udid: 'sim-uuid', label: 'Session', task: 'Review', sessionName: 'Session', ports: [], idle: false }
+    const simsApi = { open: vi.fn().mockRejectedValue(new Error('Simulator is not booted')) }
+    const view = render(<PaneWorklog brief={{ ...brief, references: [], tasks: [], updates: [], simulator }} empty paneLabel="Tests" simsApi={simsApi} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByLabelText('Important terms for Tests').querySelector('header small')).toHaveTextContent('1')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Simulator is not booted')
+    view.rerender(<PaneWorklog brief={{ ...brief, references: [], tasks: [], updates: [] }} empty paneLabel="Tests" />)
+    expect(screen.queryByLabelText('Important terms for Tests')).toBeNull()
+  })
+
   it('shows flags and clickable labeled URLs above the scrollable activity', () => {
     render(<PaneWorklog brief={{ ...brief, references: [
       { kind: 'feature_flag', value: 'new-checkout' },

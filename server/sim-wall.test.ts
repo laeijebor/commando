@@ -1,5 +1,6 @@
 import { readFile, writeFile, access } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { runInNewContext } from 'node:vm'
 import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { SimLeaseRegistry, SIM_LEASE_IDLE_MS } from './sim-leases.js'
@@ -36,13 +37,75 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
   const chunks: Buffer[] = []
   response.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
   response.writeHead = vi.fn().mockReturnValue(response)
-  const handled = await api.handle(request, response, new URL(`http://localhost/api/sims${path}`))
+  const handled = await api.handle(request, response, new URL(path.startsWith('/sims/') ? `http://localhost${path}` : `http://localhost/api/sims${path}`))
   return { handled, status: vi.mocked(response.writeHead).mock.calls[0]?.[0],
     headers: vi.mocked(response.writeHead).mock.calls[0]?.[1], data: Buffer.concat(chunks),
     json: () => JSON.parse(Buffer.concat(chunks).toString()) }
 }
 
 describe('SimWallApi', () => {
+  it('serves a self-contained escaped tile at both paths without invoking device tools', async () => {
+    const { api, registry, runner } = setup()
+    registry.upsert('%1', { sessionId: '$1', sessionName: '<script>&"Session' }, { udid: A, originalName: 'iPhone', task: 'Review', via: 'simslim' })
+    for (const path of [`/sims/${A}/view`, `/${A}/view?token=secret`]) {
+      const result = await call(api, path)
+      expect(result.status).toBe(200)
+      expect(result.headers).toMatchObject({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' })
+      const page = result.data.toString()
+      expect(page).toContain('&lt;script&gt;&amp;&quot;Session · Review')
+      expect(page).not.toContain('<script>&"Session')
+      expect(page).not.toContain('secret')
+      expect(page).not.toMatch(/<script[^>]+src=|<link|<img[^>]+src=/)
+    }
+    expect((await call(api, '/sims/bad/view')).status).toBe(400)
+    expect((await call(api, `/sims/${A}/view`, 'POST')).status).toBe(405)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it('refreshes visible tiles every two seconds, preloads frames, retains failures and carries browser auth', async () => {
+    const { api } = setup()
+    const page = (await call(api, `/sims/${A}/view`)).data.toString()
+    const script = /<script>([\s\S]*?)<\/script>/.exec(page)![1]
+    for (const token of ['', 'token/value &']) {
+      const frame = { src: 'previous' }
+      const images: Array<{ src: string; onload: () => void; onerror: () => void }> = []
+      const listeners = new Map<string, () => void>()
+      const document = { visibilityState: 'visible', getElementById: () => frame, addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) }
+      let tick!: () => void
+      const clearInterval = vi.fn()
+      runInNewContext(script, {
+        document, URL, location: { href: `http://localhost/sims/${A}/view${token ? '?token=' + encodeURIComponent(token) : ''}` },
+        window: { addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) },
+        Image: function () { const image = { src: '', onload: () => undefined, onerror: () => undefined }; images.push(image); return image },
+        setInterval: (fn: () => void, ms: number) => { expect(ms).toBe(2000); tick = fn; return 42 }, clearInterval,
+      })
+      expect(images).toHaveLength(1)
+      const url = new URL(images[0].src)
+      expect(url.pathname).toBe(`/api/sims/${A}/snapshot.jpg`)
+      expect(url.searchParams.get('token')).toBe(token || null)
+      expect(frame.src).toBe('previous')
+      tick()
+      expect(images).toHaveLength(1)
+      images[0].onload()
+      expect(frame.src).toBe(images[0].src)
+      tick()
+      expect(images).toHaveLength(2)
+      images[1].onerror()
+      expect(frame.src).toBe(images[0].src)
+      document.visibilityState = 'hidden'
+      tick()
+      expect(images).toHaveLength(2)
+      document.visibilityState = 'visible'
+      listeners.get('visibilitychange')!()
+      expect(images).toHaveLength(3)
+      document.visibilityState = 'hidden'
+      images[2].onload()
+      expect(frame.src).toBe(images[0].src)
+      listeners.get('pagehide')!()
+      expect(clearInterval).toHaveBeenCalledWith(42)
+    }
+  })
+
   it('joins booted iOS devices with leases, runtime, model, exact slim counts and idle flags', async () => {
     const { api, registry, advance } = setup()
     const repo = { root: '/repo', name: 'repo', branch: 'feature', isWorktree: true }
@@ -193,8 +256,9 @@ describe('SimWallApi', () => {
 
   it('wires the wall behind the common browser auth gate, after the agent lease API', async () => {
     const source = await readFile(new URL('./index.ts', import.meta.url), 'utf8')
-    const browserGate = source.indexOf("if (url.pathname.startsWith('/api/'))")
+    const browserGate = source.indexOf("if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/sims/'))")
     const wall = source.indexOf('if (await simWallApi.handle')
+    expect(browserGate).toBeGreaterThan(0)
     expect(wall).toBeGreaterThan(browserGate)
     expect(source.slice(browserGate, wall)).toContain('await requestIsAuthorized(request, url)')
     expect(source.indexOf('await simLeaseApi.handle')).toBeLessThan(browserGate)

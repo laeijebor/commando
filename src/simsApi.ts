@@ -13,9 +13,17 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
     return response
   }
   return {
+    // The /api alias also reaches the daemon through the development proxy.
+    viewUrl: (udid: string): string => {
+      const url = new URL(`/api/sims/${encodeURIComponent(udid)}/view`, window.location.href)
+      if (token) url.searchParams.set('token', token)
+      return url.toString()
+    },
     list: async (signal?: AbortSignal): Promise<SimWallDevice[]> => (await (await request('', 'GET', signal)).json()).sims,
     snapshot: async (udid: string, signal: AbortSignal): Promise<Blob> => (await request(`/${encodeURIComponent(udid)}/snapshot.jpg`, 'GET', signal)).blob(),
     slim: async (udid: string): Promise<void> => { await request(`/${encodeURIComponent(udid)}/slim`, 'POST') },
     open: async (udid: string): Promise<void> => { await request(`/${encodeURIComponent(udid)}/open`, 'POST') },
   }
 }
+
+export type SimsApiClient = ReturnType<typeof createSimsApi>
