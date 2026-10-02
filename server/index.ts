@@ -69,6 +69,7 @@ import {
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
+import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
@@ -198,6 +199,15 @@ function requestHasValidToken(
   digest: Buffer,
 ): boolean {
   if (matchesToken(url.searchParams.get('token'), digest)) return true
+  // Browser WebSockets cannot set Authorization; simulator tiles carry the same
+  // bearer token in a subprotocol so it never becomes a persisted URL.
+  const protocols = request.headers['sec-websocket-protocol']
+  if (typeof protocols === 'string') {
+    for (const protocol of protocols.split(',').map((entry) => entry.trim())) {
+      if (!protocol.startsWith('commando-auth.')) continue
+      try { if (matchesToken(decodeURIComponent(protocol.slice(14)), digest)) return true } catch { /* malformed token */ }
+    }
+  }
   const authorization = request.headers.authorization
   if (!authorization) return false
   const match = /^Bearer\s+([^\s]+)$/i.exec(authorization)
@@ -1439,6 +1449,7 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
+  const simLive = new SimLiveService()
   const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists })
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
@@ -2104,8 +2115,9 @@ async function main(): Promise<void> {
           return
         }
         const url = requestUrl(request)
+        const liveUdid = url ? simLiveUdid(url.pathname) : null
         const webTileId = url ? webTilePathId(url.pathname) : null
-        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId)) {
+        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId && !liveUdid)) {
           rejectUpgrade(socket, 404, 'Not Found')
           return
         }
@@ -2133,6 +2145,10 @@ async function main(): Promise<void> {
         }
         if (!(await requestIsAuthorized(request, url))) {
           rejectUpgrade(socket, 401, 'Unauthorized')
+          return
+        }
+        if (liveUdid) {
+          simLive.handleUpgrade(request, socket, head, liveUdid)
           return
         }
         webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -2183,6 +2199,7 @@ async function main(): Promise<void> {
     for (const client of clients) client.socket.terminate()
     companion?.close()
     pushNotifier?.close()
+    simLive.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void tmux.releaseAllPaneResizes().finally(() => {

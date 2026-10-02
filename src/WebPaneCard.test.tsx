@@ -8,6 +8,10 @@ import type { WebPane } from '../shared/protocol'
 import { resetNativeWebViewBridge } from './nativeWebViewBridge'
 import { CHROMIUM_RENDERER_STORAGE_KEY, WebPaneCard } from './WebPaneCard'
 
+vi.mock('./SimLiveView', () => ({
+  SimLiveView: ({ udid, token, active }: { udid: string; token: string; active: boolean }) => <div data-testid="sim-live" data-udid={udid} data-token={token} data-active={String(active)} />,
+}))
+
 vi.mock('./ChromiumTileCard', () => ({
   ChromiumTileCard: ({ reviewMode }: { reviewMode: boolean }) => (
     <div data-testid="chromium-tile" data-review-mode={reviewMode} />
@@ -393,5 +397,25 @@ describe('WebPaneCard Chromium renderer experiment', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+
+describe('simulator tile', () => {
+  it('renders built-in live content with session auth, focus, placement controls and close, without a browser engine', () => {
+    const onActivate = vi.fn(), onClose = vi.fn(), onMaximize = vi.fn()
+    const webPane: WebPane = { id: 'w-11111111', url: '', content: { kind: 'simulator', udid: 'AAAAAAAA-1111-1111-1111-111111111111' }, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', engine: 'webkit', status: 'open', openedBy: 'user', createdAt: 0 }
+    const { container, rerender } = render(<WebPaneCard webPane={webPane} wsToken="owner" simulatorActive onActivateSimulator={onActivate} onClose={onClose} onConfirm={vi.fn()} onMaximize={onMaximize} onDragStart={vi.fn()} />)
+    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-udid', webPane.content!.udid)
+    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-token', 'owner')
+    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-active', 'true')
+    expect(container.querySelector('iframe')).toBeNull()
+    expect(screen.queryByTestId('native-webview-tile')).toBeNull()
+    expect(container.querySelector('header')).toHaveAttribute('draggable', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Focus simulator tile' })); expect(onActivate).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' })); expect(onMaximize).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Close simulator tile' })); expect(onClose).toHaveBeenCalledOnce()
+    rerender(<WebPaneCard webPane={webPane} simulatorActive={false} onClose={onClose} onConfirm={vi.fn()} />)
+    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-active', 'false')
   })
 })

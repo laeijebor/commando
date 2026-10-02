@@ -393,7 +393,7 @@ export function PaneWorklog({
                   <span className="pane-worklog-reference-icon"><Smartphone aria-hidden="true" /></span>
                   <div>
                     <strong title={simulator.task || simulator.sessionName}>{simulator.task || simulator.sessionName}</strong>
-                    <small title={simulator.label}>{simulator.label}</small>
+                    <small title={simulator.originalName}>{simulator.originalName}</small>
                     <div className="pane-worklog-simulator-chips">
                       {simulator.branch !== undefined ? <small>{simulator.branch}</small> : null}
                       {simulator.ports.map((port) => <small key={port.name}>{port.name} :{port.port}</small>)}

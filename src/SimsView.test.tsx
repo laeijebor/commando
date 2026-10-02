@@ -5,8 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
 
+vi.mock('./SimLiveView', () => ({
+  SimLiveView: ({ udid, token }: { udid: string; token: string }) => <div data-testid="live-view" data-udid={udid} data-token={token} />,
+}))
+
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
 const B = 'BBBBBBBB-2222-2222-2222-222222222222'
+const VIEW_STORAGE_KEY = 'commando.sims-view'
 const repo = { root: '/repo', name: 'widgets', branch: 'feature', isWorktree: true }
 const device = (overrides: Partial<SimWallDevice> = {}): SimWallDevice => ({
   udid: A, name: 'Device name', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'unslimmed',
@@ -39,6 +44,7 @@ const snapshotCalls = () => fetcher.mock.calls.filter(([url]) => String(url).end
 const listingCalls = () => fetcher.mock.calls.filter(([url]) => url === '/api/sims')
 
 beforeEach(() => {
+  window.localStorage.clear()
   vi.useFakeTimers()
   sims = [device()]
   visibility = 'visible'
@@ -66,6 +72,180 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('SimsView', () => {
+  const filters = () => within(screen.getByRole('group', { name: 'Filter simulators by session' }))
+  const grouping = () => within(screen.getByRole('group', { name: 'Group by' }))
+  const sizes = () => within(screen.getByRole('group', { name: 'Size' }))
+  const mixedSims = () => [
+    device({ udid: B, name: 'Stray phone', slim: 'slim', lease: null }),
+    device(),
+    device({ udid: 'C', lease: { ...device().lease!, sessionName: 'Build UI', paneId: '%2' } }),
+    device({ udid: 'D', lease: { ...device().lease!, paneId: '%3', repo: { ...repo, root: '/tools', name: 'tools' } } }),
+  ]
+
+  it('derives one filter pill per leased session across panes and repositories, with counts and All selected', async () => {
+    sims = mixedSims()
+    render(<SimsView token="" />)
+    await flush()
+    const pills = filters().getAllByRole('button')
+    expect(pills.map((pill) => pill.textContent)).toEqual(['All', 'Build UI (1)', 'Review UI (2)', 'No lease (1)'])
+    expect(pills.map((pill) => pill.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false'])
+    for (const pill of pills) {
+      expect(pill).toHaveAttribute('type', 'button')
+      expect(pill.tabIndex).toBe(0)
+    }
+    pills[1].focus()
+    expect(pills[1]).toHaveFocus()
+  })
+
+  it('filters to a session or No lease while header counts and available pills describe all sims', async () => {
+    sims = mixedSims()
+    render(<SimsView token="" />)
+    await flush()
+    fireEvent.click(filters().getByRole('button', { name: 'Review UI (2)' }))
+    expect(screen.getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['Review UI', 'Review UI'])
+    expect(filters().getByRole('button', { name: 'Review UI (2)' })).toHaveAttribute('aria-pressed', 'true')
+    expect(filters().getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText('4 booted')).toBeVisible()
+    expect(screen.getByText('3 unslimmed')).toBeVisible()
+    expect(filters().getAllByRole('button')).toHaveLength(4)
+    fireEvent.click(grouping().getByRole('button', { name: 'Session' }))
+    expect(screen.getAllByRole('heading', { level: 3 }).map((node) => node.textContent)).toEqual(['Review UI'])
+    fireEvent.click(grouping().getByRole('button', { name: 'None' }))
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    fireEvent.click(filters().getByRole('button', { name: 'No lease (1)' }))
+    expect(screen.getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['Stray phone'])
+    expect(filters().getByRole('button', { name: 'Review UI (2)' })).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(filters().getByRole('button', { name: 'All' }))
+    expect(screen.getAllByRole('article')).toHaveLength(4)
+  })
+
+  it.each(['session', 'no-lease'])('falls back to All when the selected %s disappears and stays on All if it returns', async (selection) => {
+    sims = mixedSims()
+    const original = sims
+    render(<SimsView token="" />)
+    await flush()
+    fireEvent.click(filters().getByRole('button', { name: selection === 'session' ? 'Review UI (2)' : 'No lease (1)' }))
+    sims = original.filter((sim) => selection === 'session' ? sim.lease?.sessionName !== 'Review UI' : sim.lease)
+    await tick(5000)
+    expect(filters().getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(filters().queryByRole('button', { name: selection === 'session' ? 'Review UI (2)' : 'No lease (1)' })).toBeNull()
+    expect(screen.getAllByRole('article')).toHaveLength(sims.length)
+    sims = original
+    await tick(5000)
+    expect(filters().getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getAllByRole('article')).toHaveLength(4)
+  })
+
+  it('switches between repository groups, session groups, and a flat grid with leased sims first', async () => {
+    sims = mixedSims()
+    render(<SimsView token="" />)
+    await flush()
+    const headings = () => screen.queryAllByRole('heading', { level: 3 }).map((node) => node.textContent)
+    expect(grouping().getByRole('button', { name: 'Repo' })).toHaveAttribute('aria-pressed', 'true')
+    expect(headings()).toEqual(['tools', 'widgets', 'No lease'])
+    fireEvent.click(grouping().getByRole('button', { name: 'Session' }))
+    expect(headings()).toEqual(['Build UI', 'Review UI', 'No lease'])
+    expect(within(screen.getByRole('region', { name: 'Review UI' })).getAllByRole('article')).toHaveLength(2)
+    expect(grouping().getByRole('button', { name: 'Repo' })).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(grouping().getByRole('button', { name: 'None' }))
+    expect(grouping().getByRole('button', { name: 'None' })).toHaveAttribute('aria-pressed', 'true')
+    expect(headings()).toEqual([])
+    const wall = screen.getByRole('region', { name: 'Simulators' })
+    expect(wall.querySelectorAll('.sims-grid')).toHaveLength(1)
+    expect(screen.getAllByRole('article').map((card) => card.getAttribute('aria-label'))).toEqual(['Review UI', 'Build UI', 'Review UI', 'Stray phone'])
+    fireEvent.click(grouping().getByRole('button', { name: 'Repo' }))
+    expect(headings()).toEqual(['tools', 'widgets', 'No lease'])
+  })
+
+  it('defaults to M and applies the selected size class for S, L and M', async () => {
+    render(<SimsView token="" />)
+    await flush()
+    const wall = screen.getByRole('region', { name: 'Simulators' })
+    expect(wall).toHaveClass('sims-size-m')
+    for (const size of ['S', 'L', 'M']) {
+      fireEvent.click(sizes().getByRole('button', { name: size }))
+      expect(wall).toHaveClass(`sims-size-${size.toLowerCase()}`)
+      expect(sizes().getAllByRole('button').filter((button) => button.getAttribute('aria-pressed') === 'true')).toEqual([sizes().getByRole('button', { name: size })])
+    }
+  })
+
+  it('persists grouping and size together and restores them on remount, without persisting the filter', async () => {
+    sims = mixedSims()
+    const { unmount } = render(<SimsView token="" />)
+    await flush()
+    fireEvent.click(grouping().getByRole('button', { name: 'Session' }))
+    fireEvent.click(sizes().getByRole('button', { name: 'L' }))
+    fireEvent.click(filters().getByRole('button', { name: 'Review UI (2)' }))
+    expect(JSON.parse(window.localStorage.getItem(VIEW_STORAGE_KEY)!)).toEqual({ groupBy: 'session', size: 'l' })
+    expect(window.localStorage.length).toBe(1)
+    unmount()
+    render(<SimsView token="" />)
+    await flush()
+    expect(grouping().getByRole('button', { name: 'Session' })).toHaveAttribute('aria-pressed', 'true')
+    expect(sizes().getByRole('button', { name: 'L' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('region', { name: 'Simulators' })).toHaveClass('sims-size-l')
+    expect(filters().getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getAllByRole('article')).toHaveLength(4)
+  })
+
+  it.each([
+    ['{broken', 'Repo', 'M'],
+    ['null', 'Repo', 'M'],
+    ['[]', 'Repo', 'M'],
+    ['"session"', 'Repo', 'M'],
+    ['{}', 'Repo', 'M'],
+    ['{"groupBy":"invalid","size":240}', 'Repo', 'M'],
+    ['{"groupBy":"none"}', 'None', 'M'],
+    ['{"groupBy":null,"size":"s"}', 'Repo', 'S'],
+  ])('uses sensible defaults for stored preferences %s', async (stored, groupBy, size) => {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, stored)
+    render(<SimsView token="" />)
+    await flush()
+    expect(grouping().getByRole('button', { name: groupBy })).toHaveAttribute('aria-pressed', 'true')
+    expect(sizes().getByRole('button', { name: size })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('continues to work when storage reads and writes throw', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Storage blocked') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage blocked') })
+    render(<SimsView token="" />)
+    await flush()
+    expect(grouping().getByRole('button', { name: 'Repo' })).toHaveAttribute('aria-pressed', 'true')
+    expect(sizes().getByRole('button', { name: 'M' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(grouping().getByRole('button', { name: 'None' }))
+    fireEvent.click(sizes().getByRole('button', { name: 'L' }))
+    expect(grouping().getByRole('button', { name: 'None' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('region', { name: 'Simulators' })).toHaveClass('sims-size-l')
+  })
+
+  it('unmounts filtered-out cards, aborts their snapshots and stops polling until they render and intersect again', async () => {
+    sims.push(device({ udid: B, name: 'Stray phone', lease: null }))
+    render(<SimsView token="" />)
+    await flush()
+    await intersect(true, 0)
+    await intersect(true, 1)
+    await loaded(0) // Leave the stray's image decode pending.
+    const straySignal = snapshotCalls()[1][1]!.signal!
+    fireEvent.click(filters().getByRole('button', { name: 'Review UI (1)' }))
+    await flush()
+    expect(screen.queryByRole('article', { name: 'Stray phone' })).toBeNull()
+    expect(observers[1].disconnect).toHaveBeenCalled()
+    expect(straySignal.aborted).toBe(true)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:snapshot-2')
+    const before = snapshotCalls().length
+    await tick(6000)
+    expect(snapshotCalls().slice(before).map(([url]) => url)).toEqual([`/api/sims/${A}/snapshot.jpg`])
+    fireEvent.click(filters().getByRole('button', { name: 'No lease (1)' }))
+    await flush()
+    expect(observers[0].disconnect).toHaveBeenCalled()
+    expect(snapshotCalls().at(-1)![1]!.signal!.aborted).toBe(true)
+    const filteredCount = snapshotCalls().length
+    await tick(4000)
+    expect(snapshotCalls()).toHaveLength(filteredCount)
+    await intersect(true, 2)
+    expect(snapshotCalls().at(-1)![0]).toBe(`/api/sims/${B}/snapshot.jpg`)
+  })
+
   it('renders counts, repo groups then No lease, lease labels, task and state/model chips', async () => {
     sims.push(device({ udid: B, name: 'Stray phone', slim: 'slim', lease: null }))
     render(<SimsView token="browser-token" />)
@@ -233,4 +413,27 @@ describe('SimsView', () => {
     await tick(3000)
     expect(screen.getAllByRole('alert')).toHaveLength(2)
   })
+})
+
+
+it('opens one focused wall overlay, pauses only its card, switches sims, and closes with Escape or the close button', async () => {
+  sims.push(device({ udid: B, name: 'Stray phone', lease: null }))
+  render(<SimsView token="owner" />); await flush(); await intersect(true, 0); await intersect(true, 1)
+  await loaded(0); await loaded(1)
+  const trigger = screen.getByRole('button', { name: 'View Review UI live' })
+  trigger.focus(); fireEvent.click(trigger); await flush()
+  expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-udid', A)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-token', 'owner')
+  const before = snapshotCalls().length; await tick(2000)
+  expect(snapshotCalls().slice(before).map(([url]) => url)).toEqual([`/api/sims/${B}/snapshot.jpg`])
+  fireEvent.click(screen.getByRole('button', { name: 'View Stray phone live' })); await flush()
+  expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-udid', B)
+  fireEvent.keyDown(document, { key: 'Escape' }); await flush()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button', { name: 'View Stray phone live' })).toHaveFocus()
+  fireEvent.click(trigger); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(trigger).toHaveFocus()
 })

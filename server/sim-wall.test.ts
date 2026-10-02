@@ -1,6 +1,5 @@
 import { readFile, writeFile, access } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { runInNewContext } from 'node:vm'
 import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { SimLeaseRegistry, SIM_LEASE_IDLE_MS } from './sim-leases.js'
@@ -45,82 +44,11 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
 }
 
 describe('SimWallApi', () => {
-  it('serves a self-contained escaped tile at both paths without invoking device tools', async () => {
-    const { api, registry, runner } = setup()
-    registry.upsert('%1', { sessionId: '$1', sessionName: '<script>&"Session' }, { udid: A, originalName: 'iPhone', task: 'Review', via: 'simslim' })
-    for (const path of [`/sims/${A}/view`, `/${A}/view?token=secret`]) {
-      const result = await call(api, path)
-      expect(result.status).toBe(200)
-      expect(result.headers).toMatchObject({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' })
-      const page = result.data.toString()
-      expect(page).toContain('&lt;script&gt;&amp;&quot;Session · Review')
-      expect(page).not.toContain('<script>&"Session')
-      expect(page).not.toContain('secret')
-      expect(page).toContain('background:#0c0a14')
-      expect(page).toContain('color:#f5f3fa')
-      expect(page).toContain('color:#8f87a6')
-      expect(page).toContain('font-family:Inter,system-ui')
-      expect(page).toContain('align-items:center;justify-content:center')
-      expect(page).toContain('min-height:0')
-      expect(page).toContain('object-fit:contain')
-      expect(page).toContain('snapshot · refreshes every 2s')
-      expect(page).not.toMatch(/<script[^>]+src=|<link|<img[^>]+src=/)
-    }
-    expect((await call(api, '/sims/bad/view')).status).toBe(400)
-    expect((await call(api, `/sims/${A}/view`, 'POST')).status).toBe(405)
+  it('removes the token-in-URL snapshot page', async () => {
+    const { api, runner } = setup()
+    expect((await call(api, `/${A}/view?token=secret`)).status).toBe(404)
+    expect((await call(api, `/sims/${A}/view`)).handled).toBe(false)
     expect(runner).not.toHaveBeenCalled()
-  })
-
-  it('refreshes visible tiles every two seconds, preloads frames, retains failures and carries browser auth', async () => {
-    const { api } = setup()
-    const page = (await call(api, `/sims/${A}/view`)).data.toString()
-    const script = /<script>([\s\S]*?)<\/script>/.exec(page)![1]
-    for (const token of ['', 'token/value &']) {
-      const frame = { src: 'previous' }
-      const images: Array<{ src: string; onload: () => void; onerror: () => void }> = []
-      const listeners = new Map<string, () => void>()
-      const document = { visibilityState: 'visible', getElementById: () => frame, addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) }
-      let tick!: () => void
-      const clearInterval = vi.fn()
-      const location = { href: `http://localhost/sims/${A}/view?keep=1${token ? '&token=' + encodeURIComponent(token) : ''}#view` }
-      const history = { state: { tile: true }, replaceState: vi.fn((_state: unknown, _title: string, url: string) => { location.href = url }) }
-      runInNewContext(script, {
-        document, URL, location, history,
-        window: { addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) },
-        Image: function () { const image = { src: '', onload: () => undefined, onerror: () => undefined }; images.push(image); return image },
-        setInterval: (fn: () => void, ms: number) => { expect(ms).toBe(2000); tick = fn; return 42 }, clearInterval,
-      })
-      expect(new URL(location.href).searchParams.has('token')).toBe(false)
-      expect(new URL(location.href).searchParams.get('keep')).toBe('1')
-      expect(new URL(location.href).hash).toBe('#view')
-      if (token) expect(history.replaceState).toHaveBeenCalledWith(history.state, '', location.href)
-      else expect(history.replaceState).not.toHaveBeenCalled()
-      expect(images).toHaveLength(1)
-      const url = new URL(images[0].src)
-      expect(url.pathname).toBe(`/api/sims/${A}/snapshot.jpg`)
-      expect(url.searchParams.get('token')).toBe(token || null)
-      expect(frame.src).toBe('previous')
-      tick()
-      expect(images).toHaveLength(1)
-      images[0].onload()
-      expect(frame.src).toBe(images[0].src)
-      tick()
-      expect(images).toHaveLength(2)
-      expect(new URL(images[1].src).searchParams.get('token')).toBe(token || null)
-      images[1].onerror()
-      expect(frame.src).toBe(images[0].src)
-      document.visibilityState = 'hidden'
-      tick()
-      expect(images).toHaveLength(2)
-      document.visibilityState = 'visible'
-      listeners.get('visibilitychange')!()
-      expect(images).toHaveLength(3)
-      document.visibilityState = 'hidden'
-      images[2].onload()
-      expect(frame.src).toBe(images[0].src)
-      listeners.get('pagehide')!()
-      expect(clearInterval).toHaveBeenCalledWith(42)
-    }
   })
 
   it('joins booted iOS devices with leases, runtime, model, exact slim counts and idle flags', async () => {

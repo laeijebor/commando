@@ -20,6 +20,7 @@ const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const TMUX_SOCKET_HASH = /^[0-9a-f]{64}$/
 const MAX_ALLOWED_ORIGINS = 64
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
+const SIM_UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 const LAYOUT_STATES = ['pending', 'settled'] as const
 
@@ -114,7 +115,7 @@ function layoutSplitApplied(
 function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): PersistedWebPane | null {
   if (!isRecord(value)) return null
   const {
-    id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
+    content, id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
     engine, openedBy, openerLabel,
     status, createdAt, tmuxSocketHash,
   } = value
@@ -137,11 +138,14 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   ) {
     return null
   }
-  const decision = classifyWebPaneUrl(url, allowedOrigins)
+  const simulator = isRecord(content) && content.kind === 'simulator' && typeof content.udid === 'string' && SIM_UDID.test(content.udid)
+  if (content !== undefined && !simulator) return null
+  const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(url, allowedOrigins)
   if (decision.kind === 'invalid') return null
   return {
     id,
     url: decision.url,
+    ...(simulator ? { content: { kind: 'simulator' as const, udid: (content as { udid: string }).udid.toUpperCase() } } : {}),
     sessionId,
     windowId,
     anchorPaneId,
@@ -150,10 +154,10 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
       ? { layoutState: layoutState as typeof LAYOUT_STATES[number] }
       : {}),
     ...(parsedAnchorSize !== undefined ? { anchorSize: parsedAnchorSize } : {}),
-    engine: (engine as WebPaneEngine | undefined) ?? 'webkit',
+    engine: simulator ? 'webkit' : (engine as WebPaneEngine | undefined) ?? 'webkit',
     openedBy,
     ...(openerLabel !== undefined ? { openerLabel } : {}),
-    status,
+    status: simulator ? 'open' : status,
     createdAt,
     ...(typeof tmuxSocketHash === 'string' && TMUX_SOCKET_HASH.test(tmuxSocketHash)
       ? { tmuxSocketHash }
@@ -236,6 +240,7 @@ function defaultMigrationStatePath(
 }
 
 export type OpenWebPaneInput = {
+  content?: { kind: 'simulator'; udid: string }
   url: string
   anchorPaneId: string
   sessionId: string
@@ -324,7 +329,13 @@ export class WebPaneService {
   }
 
   open(input: OpenWebPaneInput): WebPane {
-    const decision = classifyWebPaneUrl(input.url, this.allowedOrigins)
+    const simulator = input.content
+    if (simulator && (simulator.kind !== 'simulator' || !SIM_UDID.test(simulator.udid))) throw new WebPaneError(400, 'Invalid simulator udid')
+    if (simulator) {
+      const existing = this.list().find((pane) => pane.content?.udid === simulator.udid.toUpperCase())
+      if (existing) return existing
+    }
+    const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
     if (!PANE_ID.test(input.anchorPaneId)) throw new WebPaneError(400, 'Invalid anchor pane id')
     if (this.panes.size >= MAX_WEB_PANES) {
@@ -340,12 +351,13 @@ export class WebPaneService {
       : input.anchorSize
         ? resolveAutoPlacement(input.anchorSize)
         : 'right'
-    const engine = input.engine ?? 'webkit'
+    const engine = simulator ? 'webkit' : input.engine ?? 'webkit'
     if (!ENGINES.includes(engine)) throw new WebPaneError(400, 'Invalid engine')
 
     const pane: WebPane = {
       id: `w-${randomUUID().replaceAll('-', '').slice(0, 8)}`,
       url: decision.url,
+      ...(simulator ? { content: { kind: 'simulator' as const, udid: simulator.udid.toUpperCase() } } : {}),
       sessionId: input.sessionId,
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
@@ -379,6 +391,7 @@ export class WebPaneService {
   repend(id: string, url: string): WebPane | undefined {
     const pane = this.panes.get(id)
     if (!pane) return undefined
+    if (pane.content) throw new WebPaneError(409, 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
     const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
@@ -458,6 +471,7 @@ export class WebPaneService {
   ): WebPane {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    if (pane.content) throw new WebPaneError(409, 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
     const navigated: WebPane = {
