@@ -14,10 +14,16 @@ export type SimLease = SimPaneContext & {
   originalName: string
   ports: Array<{ name: string; port: number }>
   branchOverride?: string
-  via: 'simslim' | 'simfleet'
+  via: 'simslim' | 'simfleet' | 'adopted'
+  adopted?: boolean
   createdAt: number
   lastActiveAt: number
 }
+export type EndedSimLease = Pick<SimLease, 'udid' | 'sessionName' | 'task' | 'label' | 'originalName' | 'repo' | 'paneId' | 'via' | 'adopted' | 'ports'> & {
+  endedAt: number
+  reason: 'pane-closed' | 'released'
+}
+const ENDED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000
 export const SIM_LEASE_IDLE_MS = 30 * 60 * 1_000
 const UDID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PANE_ID = /^%\d+$/
@@ -40,14 +46,15 @@ export function formatSimLabel(sessionName: string, task = ''): string {
   return Array.from(description ? `${session} · ${description}` : session).slice(0, 60).join('')
 }
 
-function parseInput(value: Record<string, unknown>): Pick<SimLease, 'udid' | 'task' | 'originalName' | 'via' | 'ports' | 'branchOverride'> {
+function parseInput(value: Record<string, unknown>): Pick<SimLease, 'udid' | 'task' | 'originalName' | 'via' | 'adopted' | 'ports' | 'branchOverride'> {
   const { udid, originalName, via, task = '' } = value
   if (typeof udid !== 'string' || !UDID.test(udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
   if (typeof originalName !== 'string' || !originalName || originalName.length > 1_024 || /[\u0000-\u001f\u007f-\u009f]/u.test(originalName)) {
     throw new SimLeaseError(400, 'originalName is invalid')
   }
-  if (via !== 'simslim' && via !== 'simfleet') throw new SimLeaseError(400, 'via is invalid')
-  return { udid: udid.toUpperCase(), originalName, via, task: parseTask(task),
+  if (via !== 'simslim' && via !== 'simfleet' && via !== 'adopted') throw new SimLeaseError(400, 'via is invalid')
+  if (value.adopted !== undefined && (typeof value.adopted !== 'boolean' || value.adopted !== (via === 'adopted'))) throw new SimLeaseError(400, 'adopted must match via')
+  return { udid: udid.toUpperCase(), originalName, via, adopted: via === 'adopted', task: parseTask(task),
     ports: parsePorts(value.ports === undefined ? [] : value.ports), ...parseBranch(value.branchOverride) }
 }
 
@@ -92,6 +99,7 @@ function persistedRepo(value: unknown): PaneRepo | undefined {
 /** Metadata only: this registry never invokes simulator tools. */
 export class SimLeaseRegistry {
   private leases: SimLease[] = []
+  private ended: EndedSimLease[] = []
   private readonly reservations = new Map<string, { udid: string; operation: string; at: number }>()
   private readonly now: () => number
   private readonly statePath: string | undefined
@@ -115,30 +123,66 @@ export class SimLeaseRegistry {
             lastActiveAt: Math.min(value.lastActiveAt, this.now()) })
         } catch { /* Ignore malformed entries. */ }
       }
+      for (const value of Array.isArray(parsed.ended) ? parsed.ended : []) {
+        try {
+          const input = parseInput(value)
+          if (!PANE_ID.test(value.paneId) || typeof value.sessionName !== 'string' ||
+            !Number.isFinite(value.endedAt) || !['pane-closed', 'released'].includes(value.reason) ||
+            this.leases.some((entry) => entry.udid === input.udid) || this.ended.some((entry) => entry.udid === input.udid)) continue
+          const repo = persistedRepo(value.repo)
+          this.ended.push({ udid: input.udid, sessionName: value.sessionName, task: input.task,
+            label: formatSimLabel(value.sessionName, input.task), originalName: input.originalName,
+            ...(repo ? { repo } : {}), paneId: value.paneId, via: input.via, adopted: input.adopted,
+            ports: input.ports, endedAt: Math.min(value.endedAt, this.now()), reason: value.reason })
+        } catch { /* Ignore malformed entries. */ }
+      }
+      this.ended = this.boundedEnded(this.ended)
     } catch { /* Missing or corrupt state starts empty. */ }
   }
 
   list(paneExists: (paneId: string) => boolean): Array<SimLease & { idle: boolean }> {
     const live = this.leases.filter((entry) => paneExists(entry.paneId))
-    if (live.length !== this.leases.length) this.commit(live)
+    if (live.length !== this.leases.length) this.commit(live, [...this.ended,
+      ...this.leases.filter((entry) => !live.includes(entry)).map((entry) => this.end(entry, 'pane-closed'))])
     for (const [paneId, reservation] of this.reservations) {
       if (!paneExists(paneId) || this.now() - reservation.at >= SIM_LEASE_IDLE_MS) this.reservations.delete(paneId)
     }
     return this.leases.map((entry) => ({ ...entry, idle: this.now() - entry.lastActiveAt >= SIM_LEASE_IDLE_MS }))
   }
 
+  listEnded(): EndedSimLease[] {
+    return this.boundedEnded(this.ended).map((entry) => ({ ...entry }))
+  }
+
+  pruneEnded(bootedUdids: string[]): void {
+    const booted = new Set(bootedUdids.map((udid) => udid.toUpperCase()))
+    const ended = this.boundedEnded(this.ended.filter((entry) => booted.has(entry.udid)))
+    if (ended.length !== this.ended.length) this.commit(this.leases, ended)
+  }
+
+  private boundedEnded(ended: EndedSimLease[]): EndedSimLease[] {
+    return ended.filter((entry) => this.now() - entry.endedAt < ENDED_MAX_AGE_MS)
+      .sort((a, b) => b.endedAt - a.endedAt).slice(0, 50)
+  }
+
+  private end(entry: SimLease, reason: EndedSimLease['reason']): EndedSimLease {
+    const { udid, sessionName, task, label, originalName, repo, paneId, via, adopted, ports } = entry
+    return { udid, sessionName, task, label, originalName, repo, paneId, via, adopted, ports, endedAt: this.now(), reason }
+  }
+
   context(paneId: string, target: SimPaneContext, paneExists: (paneId: string) => boolean) {
     const leases = this.list(paneExists)
-    return { ...target, lease: leases.find((entry) => entry.paneId === paneId) ?? null,
+    return { ...target, ended: this.listEnded(), lease: leases.find((entry) => entry.paneId === paneId) ?? null,
       heldUdids: [...new Set([...leases.filter((entry) => entry.paneId !== paneId).map((entry) => entry.udid),
         ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid)])] }
   }
 
-  reserve(paneId: string, udid: unknown): string {
+  reserve(paneId: string, udid: unknown, requireUnleased = false): string {
     if (typeof udid !== 'string' || !UDID.test(udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
     const canonicalUdid = udid.toUpperCase()
     if (this.reservations.has(paneId)) throw new SimLeaseError(409, 'This pane already has a simulator operation in progress')
     const existing = this.leases.find((entry) => entry.paneId === paneId)
+    if (existing && requireUnleased) throw new SimLeaseError(409, 'Release this pane’s existing lease before adopting a simulator')
     if (existing && existing.udid !== canonicalUdid) throw new SimLeaseError(409, 'Release this pane’s existing lease first')
     this.assertFree(paneId, canonicalUdid)
     const operation = randomUUID()
@@ -161,9 +205,10 @@ export class SimLeaseRegistry {
     const existing = this.leases.find((entry) => entry.paneId === paneId)
     if (existing && existing.udid !== input.udid) throw new SimLeaseError(409, 'Release this pane’s existing lease first')
     const entry: SimLease = { ...input, ...target, ...(existing?.repo ? { repo: existing.repo } : {}), paneId, label: formatSimLabel(target.sessionName, input.task),
-      originalName: existing?.originalName ?? input.originalName, via: existing?.via ?? input.via,
+      originalName: existing?.originalName ?? this.listEnded().find((entry) => entry.udid === input.udid)?.originalName ?? input.originalName, via: existing?.via ?? input.via,
+      adopted: existing?.adopted ?? input.adopted,
       createdAt: existing?.createdAt ?? this.now(), lastActiveAt: this.now() }
-    this.commit([...this.leases.filter((lease) => lease.paneId !== paneId), entry])
+    this.commit([...this.leases.filter((lease) => lease.paneId !== paneId), entry], this.ended.filter((ended) => ended.udid !== input.udid))
     return { ...entry }
   }
 
@@ -176,7 +221,9 @@ export class SimLeaseRegistry {
 
   delete(paneId: string, operation?: unknown): void {
     this.assertOperation(paneId, operation)
-    this.commit(this.leases.filter((entry) => entry.paneId !== paneId))
+    const existing = this.leases.find((entry) => entry.paneId === paneId)
+    this.commit(this.leases.filter((entry) => entry.paneId !== paneId), existing
+      ? [...this.ended.filter((entry) => entry.udid !== existing.udid), this.end(existing, 'released')] : this.ended)
   }
 
   private assertOperation(paneId: string, operation: unknown): void {
@@ -192,14 +239,16 @@ export class SimLeaseRegistry {
     }
   }
 
-  private commit(leases: SimLease[]): void {
+  private commit(leases: SimLease[], ended = this.ended): void {
+    ended = this.boundedEnded(ended)
     if (this.statePath) {
       mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
       const temporary = `${this.statePath}.${process.pid}.tmp`
-      writeFileSync(temporary, JSON.stringify({ version: 1, leases }, null, 2), { mode: 0o600 })
+      writeFileSync(temporary, JSON.stringify({ version: 1, leases, ended }, null, 2), { mode: 0o600 })
       renameSync(temporary, this.statePath)
     }
     this.leases = leases
+    this.ended = ended
   }
 }
 
@@ -260,7 +309,7 @@ export class SimLeaseApi {
       const { registry, paneExists, paneContext } = this.dependencies
       registry.list(paneExists)
       if (path === '/api/sim-leases' && request.method === 'GET') {
-        writeJson(response, 200, { leases: registry.list(paneExists) })
+        writeJson(response, 200, { leases: registry.list(paneExists), ended: registry.listEnded() })
         return true
       }
       const paneId = request.headers['x-commando-pane']
@@ -272,7 +321,7 @@ export class SimLeaseApi {
         const body = await readJson(request)
         if (!paneExists(paneId)) throw new SimLeaseError(404, 'Tmux pane does not exist')
         if (path.endsWith('/reservation')) {
-          if (request.method === 'POST') writeJson(response, 200, { operation: registry.reserve(paneId, body.udid) })
+          if (request.method === 'POST') writeJson(response, 200, { operation: registry.reserve(paneId, body.udid, body.requireUnleased === true) })
           else { registry.unlock(paneId, body.operation); writeJson(response, 200, { ok: true }) }
         } else if (request.method === 'DELETE') {
           registry.delete(paneId, body.operation)

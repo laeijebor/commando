@@ -1597,7 +1597,7 @@ function simDependencies(
   const request = vi.fn(async (method: string, suffix: string, body?: Record<string, unknown>) => {
     if (suffix === '/context') return context
     if (suffix === '/reservation') return method === 'POST' ? { operation: 'operation-id' } : { ok: true }
-    if (method === 'GET') return { leases: lease ? [lease] : [] }
+    if (method === 'GET') return { leases: lease ? [lease] : [], ended: [] }
     if (method === 'PUT' || method === 'PATCH') return { lease: { ...fakeLease, ...body, label: 'Session name' + (body?.task ? ' · ' + body.task : '') } }
     return { ok: true }
   })
@@ -1610,6 +1610,105 @@ function simDependencies(
 }
 
 describe('generated simulator lease CLI', () => {
+  it('adopts a booted unslimmed simulator with metadata and reuses its ended original name', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(null, { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [
+      { ...fakeDevice, name: 'Former session · old task', state: 'Booted' },
+    ] } })
+    Object.assign(deps.context, { ended: [{ udid: simUdid, originalName: 'Stock iPhone' }] })
+    const result = await cli.runSimCommand(['adopt', simUdid, '--task', 'review', '--metro', '8101', '--backend', '3101', '--port', 'inspector=9000', '--branch', 'feature'], deps)
+    expect(result).toEqual({ udid: simUdid, label: 'Session name · review', originalName: 'Stock iPhone' })
+    expect(deps.request).toHaveBeenCalledWith('POST', '/reservation', { udid: simUdid, requireUnleased: true })
+    expect(deps.request).toHaveBeenCalledWith('PUT', '', expect.objectContaining({ udid: simUdid, originalName: 'Stock iPhone', via: 'adopted', adopted: true,
+      task: 'review', branchOverride: 'feature', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3101 }, { name: 'inspector', port: 9000 }] }))
+    expect(deps.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['xcrun', ['simctl', 'list', 'devices', '--json']],
+      ['xcrun', ['simctl', 'rename', simUdid, 'Session name · review']],
+    ])
+    expect(deps.exists).not.toHaveBeenCalled()
+    expect(deps.onPath).not.toHaveBeenCalled()
+  })
+
+  it('uses the current name when adopting without ended history and restores it on a recording failure', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(null, { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, name: 'Running phone', state: 'Booted' }] } })
+    await cli.runSimCommand(['adopt', simUdid], deps)
+    expect(deps.request).toHaveBeenCalledWith('PUT', '', expect.objectContaining({ originalName: 'Running phone', task: '', adopted: true }))
+    const request = deps.request.getMockImplementation()!
+    deps.request.mockImplementation(async (method, suffix, body) => {
+      if (method === 'PUT') throw new Error('record failed')
+      return request(method, suffix, body)
+    })
+    Object.assign(deps.context, { ended: [{ udid: simUdid, originalName: 'Stock phone' }] })
+    deps.run.mockClear()
+    await expect(cli.runSimCommand(['adopt', simUdid], deps)).rejects.toThrow('record failed')
+    expect(deps.run.mock.calls.filter(([, args]) => args[1] !== 'list')).toEqual([
+      ['xcrun', ['simctl', 'rename', simUdid, 'Session name']], ['xcrun', ['simctl', 'rename', simUdid, 'Running phone']],
+    ])
+    expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+  })
+
+  it('rejects adoption for an occupied pane, a held or nonbooted device, and reservation races', async () => {
+    const cli = await loadSimCli()
+    const occupied = simDependencies(fakeLease)
+    await expect(cli.runSimCommand(['adopt', simUdid], occupied)).rejects.toThrow('Release this pane')
+    expect(occupied.run).not.toHaveBeenCalled()
+    for (const deps of [simDependencies(), simDependencies(null, { devices: {} })]) {
+      await expect(cli.runSimCommand(['adopt', simUdid], deps)).rejects.toThrow('must exist and be Booted')
+      expect(deps.request).not.toHaveBeenCalledWith('POST', '/reservation', expect.anything())
+    }
+    const held = simDependencies(null, { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, state: 'Booted' }] } })
+    held.context.heldUdids.push(simUdid)
+    await expect(cli.runSimCommand(['adopt', simUdid], held)).rejects.toThrow('another pane')
+    held.context.heldUdids = []
+    const request = held.request.getMockImplementation()!
+    held.request.mockImplementation(async (method, suffix, body) => {
+      if (method === 'POST') throw new Error('reservation race')
+      return request(method, suffix, body)
+    })
+    await expect(cli.runSimCommand(['adopt', simUdid], held)).rejects.toThrow('reservation race')
+    expect(held.run.mock.calls.every(([, args]) => args[1] === 'list')).toBe(true)
+    for (const args of [['adopt'], ['adopt', 'bad'], ['adopt', simUdid, '--device', simUdid], ['adopt', simUdid, '--clear-ports']]) {
+      await expect(cli.runSimCommand(args, simDependencies())).rejects.toThrow()
+    }
+  })
+
+  it('rechecks Booted state under reservation before adopting', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(null, { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, state: 'Booted' }] } })
+    const run = deps.run.getMockImplementation()!
+    let lists = 0
+    deps.run.mockImplementation(async (file, args, cwd) => {
+      if (args[1] === 'list' && ++lists === 2) return JSON.stringify(fakeDevices)
+      return run(file, args, cwd)
+    })
+    await expect(cli.runSimCommand(['adopt', simUdid], deps)).rejects.toThrow('must exist and be Booted')
+    expect(deps.run.mock.calls.every(([, args]) => args[1] === 'list')).toBe(true)
+    expect(deps.request).not.toHaveBeenCalledWith('PUT', '', expect.anything())
+    expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+  })
+
+  it('releases adopted sims without shutdown, skips slim verification on reuse, and refuses implicit boot', async () => {
+    const cli = await loadSimCli()
+    const lease = { ...fakeLease, via: 'adopted', adopted: true }
+    const release = simDependencies(lease)
+    await cli.runSimCommand(['release'], release)
+    expect(release.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['xcrun', ['simctl', 'rename', simUdid, 'iPhone 17']],
+    ])
+    expect(release.request).toHaveBeenCalledWith('DELETE', '', { operation: 'operation-id' })
+    const reuse = simDependencies(lease)
+    await cli.runSimCommand(['lease', '--task', 'updated'], reuse)
+    expect(reuse.run.mock.calls.every(([file]) => file === 'xcrun')).toBe(true)
+    for (const listing of [fakeDevices, { devices: {} }]) {
+      const deps = simDependencies(lease, listing)
+      await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow('run release, then lease again')
+      expect(deps.run.mock.calls).toEqual([['xcrun', ['simctl', 'list', 'devices', '--json']]])
+      expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+      await expect(cli.runSimCommand(['release'], deps)).resolves.toEqual({ ok: true })
+    }
+  })
+
   it('declares ports and branch at lease time and merges or clears ports on update without device actions', async () => {
     const cli = await loadSimCli()
     const initial = simDependencies()
@@ -1942,7 +2041,7 @@ describe('generated simulator lease CLI', () => {
   it('lists without invoking tools, handles missing leases and rejects malformed arguments', async () => {
     const cli = await loadSimCli()
     const deps = simDependencies()
-    expect(await cli.runSimCommand(['list'], deps)).toEqual([])
+    expect(await cli.runSimCommand(['list'], deps)).toEqual({ leases: [], ended: [] })
     expect(deps.run).not.toHaveBeenCalled()
     expect(await cli.runSimCommand(['release'], deps)).toEqual({ ok: true })
     await expect(cli.runSimCommand(['label', 'task'], deps)).rejects.toThrow('no simulator lease')
@@ -1961,7 +2060,7 @@ describe('generated simulator lease CLI', () => {
     await writeFile(transportPath, `import { writeFile } from 'node:fs/promises'
       globalThis.fetch = async (url, options) => {
         await writeFile(${JSON.stringify(capturePath)}, JSON.stringify({ url, headers: options.headers }))
-        return { ok: true, json: async () => ({ leases: ${JSON.stringify([fakeLease])} }) }
+        return { ok: true, json: async () => ({ leases: ${JSON.stringify([fakeLease])}, ended: [{ udid: ${JSON.stringify(secondSimUdid)}, reason: 'released' }] }) }
       }
     `)
     const result = await new Promise<{ code: number | null; output: string; error: string }>((resolve, reject) => {
@@ -1977,7 +2076,7 @@ describe('generated simulator lease CLI', () => {
     })
     expect(result.code).toBe(0)
     expect(result.error).toBe('')
-    expect(JSON.parse(result.output)).toEqual([fakeLease])
+    expect(JSON.parse(result.output)).toEqual({ leases: [fakeLease], ended: [{ udid: secondSimUdid, reason: 'released' }] })
     expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
       url: 'http://127.0.0.1:4410/api/sim-leases', headers: {
         Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Commando-Pane': '%42',

@@ -58,7 +58,10 @@ describe('SimLeaseRegistry', () => {
     expect(replay.list(() => true)).toEqual([{ ...registry.list(() => true)[0] }])
     expect((await stat(statePath)).mode & 0o777).toBe(0o600)
     expect(replay.list(() => false)).toEqual([])
-    expect(JSON.parse(await readFile(statePath, 'utf8')).leases).toEqual([])
+    const endedState = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(endedState.leases).toEqual([])
+    expect(endedState.ended).toEqual([expect.objectContaining({ udid: UDID, reason: 'pane-closed', endedAt: 101, originalName: input.originalName, ports: [], adopted: false })])
+    expect(new SimLeaseRegistry({ statePath, now: () => 102 }).listEnded()).toEqual(replay.listEnded())
     await writeFile(statePath, 'broken')
     expect(new SimLeaseRegistry({ statePath }).list(() => true)).toEqual([])
   })
@@ -91,6 +94,87 @@ describe('SimLeaseRegistry', () => {
     const legacy = new SimLeaseRegistry({ statePath }).list(() => true)[0]
     expect(legacy.ports).toEqual([])
     expect(legacy.branchOverride).toBeUndefined()
+  })
+
+  it('remembers releases, reuses the original name across adoption, and removes ended ownership', () => {
+    const registry = new SimLeaseRegistry({ now: () => 123 })
+    registry.upsert('%1', target, { ...input, ports: [{ name: 'metro', port: 8101 }] })
+    registry.list(() => false)
+    expect(registry.context('%2', target, () => true)).toMatchObject({ lease: null, heldUdids: [],
+      ended: [{ udid: UDID, paneId: '%1', sessionName: target.sessionName, task: input.task,
+        label: formatSimLabel(target.sessionName, input.task), originalName: input.originalName, repo: target.repo,
+        ports: [{ name: 'metro', port: 8101 }], via: 'simslim', adopted: false, reason: 'pane-closed', endedAt: 123 }] })
+    registry.upsert('%2', target, { ...input, originalName: 'Old session · old task', via: 'adopted', adopted: true })
+    expect(registry.listEnded()).toEqual([])
+    expect(registry.list(() => true)[0]).toMatchObject({ originalName: input.originalName, via: 'adopted', adopted: true })
+    expect(() => registry.reserve('%2', UDID, true)).toThrow('before adopting')
+    registry.touch('%2', target, { task: 'review' })
+    registry.delete('%2')
+    expect(registry.listEnded()).toEqual([expect.objectContaining({ reason: 'released', task: 'review', via: 'adopted', adopted: true })])
+    registry.upsert('%3', target, input)
+    expect(registry.listEnded()).toEqual([])
+  })
+
+  it('caps ended records at 50, prunes shut-down devices and expires records after seven days', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-ended-leases-'))
+    directories.push(directory)
+    const statePath = join(directory, 'state.json')
+    let now = 0
+    const registry = new SimLeaseRegistry({ statePath, now: () => now })
+    const udids = Array.from({ length: 52 }, (_, i) => `${i.toString(16).padStart(8, '0')}-1111-1111-1111-111111111111`.toUpperCase())
+    for (const udid of udids) {
+      now++
+      registry.upsert('%1', target, { ...input, udid })
+      registry.delete('%1')
+    }
+    expect(registry.listEnded()).toHaveLength(50)
+    expect(registry.listEnded().map((entry) => entry.udid)).not.toContain(udids[0])
+    registry.pruneEnded([udids[50].toLowerCase(), udids[51]])
+    expect(registry.listEnded().map((entry) => entry.udid)).toEqual([udids[51], udids[50]])
+    expect(JSON.parse(await readFile(statePath, 'utf8')).ended).toHaveLength(2)
+    now = 51 + 7 * 24 * 60 * 60 * 1000
+    registry.pruneEnded(udids)
+    expect(registry.listEnded().map((entry) => entry.udid)).toEqual([udids[51]])
+    now++
+    registry.pruneEnded(udids)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).ended).toEqual([])
+  })
+
+  it('keeps ended history and active ownership unchanged if persistence fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-ended-failure-'))
+    directories.push(directory)
+    const stateDirectory = join(directory, 'state')
+    const statePath = join(stateDirectory, 'leases.json')
+    const registry = new SimLeaseRegistry({ statePath, now: () => 100 })
+    registry.upsert('%1', target, input)
+    registry.delete('%1')
+    const ended = registry.listEnded()
+    await rm(stateDirectory, { recursive: true })
+    await writeFile(stateDirectory, 'blocks state writes')
+    expect(() => registry.upsert('%2', target, { ...input, via: 'adopted', adopted: true })).toThrow()
+    expect(registry.list(() => true)).toEqual([])
+    expect(registry.listEnded()).toEqual(ended)
+    expect(() => registry.pruneEnded([])).toThrow()
+    expect(registry.listEnded()).toEqual(ended)
+  })
+
+  it('loads legacy files and ignores malformed ended records or records overlapping active leases', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-ended-load-'))
+    directories.push(directory)
+    const statePath = join(directory, 'state.json')
+    const registry = new SimLeaseRegistry({ statePath, now: () => 100 })
+    registry.upsert('%1', target, input)
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    delete state.ended
+    delete state.leases[0].adopted
+    await writeFile(statePath, JSON.stringify(state))
+    expect(new SimLeaseRegistry({ statePath, now: () => 101 }).listEnded()).toEqual([])
+    registry.delete('%1')
+    const ended = registry.listEnded()[0]
+    state.ended = [ended, { ...ended, udid: OTHER, reason: 'invalid' }, { ...ended, udid: OTHER, endedAt: 'bad' },
+      { ...ended, udid: OTHER, via: 'adopted', adopted: true }, { ...ended, udid: OTHER }]
+    await writeFile(statePath, JSON.stringify(state))
+    expect(new SimLeaseRegistry({ statePath, now: () => 101 }).listEnded()).toEqual([expect.objectContaining({ udid: OTHER, via: 'adopted', adopted: true })])
   })
 
   it('reserves before device operations, prevents races and expires abandoned reservations', () => {
@@ -137,9 +221,10 @@ describe('SimLeaseApi', () => {
 
   it('authenticates, resolves daemon context, upserts, touches, lists and deletes', async () => {
     const { api } = setup()
-    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, heldUdids: [] })
+    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, ended: [], heldUdids: [] })
     const created = await call(api, 'PUT', '', { ...input, sessionName: 'spoofed', paneId: '%2', label: 'spoofed' })
     expect(created.status).toBe(200)
+    expect((await call(api, 'POST', '/reservation', { udid: UDID, requireUnleased: true })).status).toBe(409)
     expect(created.body.lease).toMatchObject({ paneId: '%1', sessionName: target.sessionName, label: target.sessionName + ' · ' + input.task })
     const context = await call(api, 'GET', '/context', undefined, { 'x-commando-pane': '%2' })
     expect(context.body.heldUdids).toEqual([UDID])
@@ -147,7 +232,8 @@ describe('SimLeaseApi', () => {
     expect((await call(api, 'PATCH', '', { task: 'ready: review' })).body.lease.label).toBe('Commando session · ready: review')
     expect((await call(api, 'GET')).body.leases).toHaveLength(1)
     expect((await call(api, 'DELETE', '', {})).status).toBe(200)
-    expect((await call(api, 'GET')).body.leases).toEqual([])
+    expect((await call(api, 'GET')).body).toMatchObject({ leases: [], ended: [expect.objectContaining({ reason: 'released' })] })
+    expect((await call(api, 'GET', '/context')).body.ended).toHaveLength(1)
   })
 
   it('publishes lease, metadata updates, labels and release through the brief callback only after successful changes', async () => {

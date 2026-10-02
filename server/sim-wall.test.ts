@@ -54,6 +54,30 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
 }
 
 describe('SimWallApi', () => {
+  it('joins closed and released leases onto booted sims, removes reclaimed history and prunes shutdown history', async () => {
+    const { api, registry, runner, devices, advance } = setup()
+    const input = { originalName: 'iPhone 17', task: 'review', via: 'adopted', adopted: true }
+    const target = { sessionId: '$1', sessionName: 'Former session', repo: { root: '/repo', name: 'repo', branch: 'main', isWorktree: false } }
+    registry.upsert('%9', target, { ...input, udid: A })
+    registry.upsert('%1', target, { ...input, udid: B })
+    registry.delete('%1')
+    registry.list((pane) => pane !== '%9')
+    registry.upsert('%9', target, { ...input, udid: D })
+    const sims = await api.list()
+    expect(sims.find((sim) => sim.udid === A)).toMatchObject({ lease: null, endedLease: {
+      sessionName: 'Former session', task: 'review', label: 'Former session · review', repo: target.repo, endedAt: 0, reason: 'pane-closed',
+    } })
+    expect(sims.find((sim) => sim.udid === B)).toMatchObject({ lease: null, endedLease: { reason: 'released' } })
+    expect(sims.find((sim) => sim.udid === C)).toMatchObject({ lease: null, endedLease: null })
+    expect(registry.listEnded().map((entry) => entry.udid).sort()).toEqual([A, B])
+    registry.upsert('%2', target, { ...input, udid: A })
+    devices.find((device) => device.udid === B)!.state = 'Shutdown'
+    advance(2500)
+    await vi.waitFor(async () => expect((await api.list()).find((sim) => sim.udid === A)).toMatchObject({ lease: { paneId: '%2' }, endedLease: null }))
+    expect(registry.listEnded()).toEqual([])
+    expect(runner.mock.calls.every(([, args]) => args.includes('list'))).toBe(true)
+  })
+
   it('returns stale listings immediately, single-flights the background refresh, and keeps stale data on failure', async () => {
     const baseline = setup()
     const gate = deferred()
@@ -175,9 +199,9 @@ describe('SimWallApi', () => {
     expect(result.status).toBe(200)
     expect(result.json().sims).toEqual([
       { udid: A, name: 'Renamed sim', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'slim',
-        lease: { sessionName: 'Work', task: 'Review', label: 'Work · Review', repo, paneId: '%1', idle: true } },
-      { udid: B, name: 'Renamed sim', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'unslimmed', lease: null },
-      { udid: C, name: 'Renamed sim', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'unslimmed', lease: null },
+        lease: { sessionName: 'Work', task: 'Review', label: 'Work · Review', repo, paneId: '%1', idle: true }, endedLease: null },
+      { udid: B, name: 'Renamed sim', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'unslimmed', lease: null, endedLease: { sessionName: 'Gone', task: '', label: 'Gone', endedAt: SIM_LEASE_IDLE_MS, reason: 'pane-closed' } },
+      { udid: C, name: 'Renamed sim', runtime: 'iOS 26.5', deviceModel: 'iPhone 17 Pro', slim: 'unslimmed', lease: null, endedLease: null },
     ])
   })
 
