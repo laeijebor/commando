@@ -85,8 +85,10 @@ export class SimWallApi {
     await this.listingRead
     const cached = this.listing
     if (cached) {
-      if (this.now() - cached.at >= CACHE_MS) void this.refreshListing().catch(() => { /* Keep the last listing. */ })
-      return { sims: cached.devices, listedAt: cached.at, stale: true }
+      // `stale` tells the client a refresh is in flight, so it can ask again soon instead of waiting a full poll.
+      const stale = this.now() - cached.at >= CACHE_MS
+      if (stale) void this.refreshListing().catch(() => { /* Keep the last listing. */ })
+      return { sims: cached.devices, listedAt: cached.at, stale }
     }
     const sims = await this.refreshListing()
     return { sims, listedAt: this.listing!.at, stale: false }
