@@ -614,8 +614,11 @@
 :where(.redline-diff-row[data-kind="delete"]) { background: rgb(232 95 95 / .15); }
 :where(.redline-diff-line-no) { width: 3.5em; flex: none; padding-right: .5em; opacity: .55; text-align: right; user-select: none; }
 :where(.redline-diff-code) { white-space: pre; padding: 0 .6em; }
-:where(.redline-diff-side) { display: grid; grid-template-columns: repeat(2, minmax(max-content, 1fr)); }
-:where(.redline-diff-side > *) { border-right: 1px solid color-mix(in oklab, currentColor 14%, transparent); }
+/* Every pair is its own grid, so the split stays a fixed 50/50 and long lines
+   wrap instead of widening one row's columns out of line with the rest. */
+:where(.redline-diff-side) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:where(.redline-diff-side > *) { min-width: 0; border-right: 1px solid color-mix(in oklab, currentColor 14%, transparent); }
+:where(.redline-diff-side .redline-diff-code) { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 :where(.redline-diff-fold summary) { cursor: pointer; padding: .2rem .5rem; opacity: .75; }
 :where(redline-scope [data-optional][hidden]) { display: none; }
 :where(.redline-scope-control) { display: block; margin: .5rem 0; }
