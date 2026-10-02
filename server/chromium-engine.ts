@@ -33,6 +33,8 @@ import {
   REDLINE_BINDING_NAME,
   parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
+  withPageSentAnswers,
+  type RedlinePagePendingSnapshot,
   type RedlinePageQuestionSnapshot,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
@@ -607,6 +609,13 @@ function sameOrigin(a: string, b: string): boolean {
 type PagePendingSnapshot = {
   version: 1
   controls: PagePendingControl[]
+  sent?: RedlinePagePendingSnapshot['sent']
+}
+
+/** Page-facing state retained per tile, independent of targets and viewers. */
+type BufferedPendingState = {
+  controls: BufferedPendingControl[]
+  sent?: WebPanePendingSnapshot['sent']
 }
 
 type BufferedPendingControl = PagePendingControl & { pageUrl?: string }
@@ -662,13 +671,11 @@ function bufferedPendingControls(snapshot: WebPanePendingSnapshot): BufferedPend
 }
 
 /** Builds the full replacement visible to one exact, accepted main-frame URL. */
-function pagePendingSnapshot(controls: readonly BufferedPendingControl[], pageUrl: string): PagePendingSnapshot {
-  return {
-    version: 1,
-    controls: controls
-      .filter((control) => control.pageUrl === pageUrl)
-      .map(({ pageUrl: _pageUrl, ...control }) => control),
-  }
+function pagePendingSnapshot(state: BufferedPendingState, pageUrl: string): PagePendingSnapshot {
+  const controls = state.controls
+    .filter((control) => control.pageUrl === pageUrl)
+    .map(({ pageUrl: _pageUrl, ...control }) => control)
+  return withPageSentAnswers(controls, state.sent, pageUrl)
 }
 
 function pendingSnapshotExpression(snapshot: PagePendingSnapshot): string | null {
@@ -730,6 +737,11 @@ export type ChromiumEngineOptions = {
   onTargetDown?: (webPaneId: string) => void
   /** Called when a tile page queues a component answer via the redline binding. */
   onPageResponse?: (webPaneId: string, response: RedlinePageResponse, pageUrl: string) => void
+  /**
+   * Called when a tile's main frame lands on an accepted page, before that
+   * page is hydrated, so the daemon can supply the page's sent answers.
+   */
+  onPageNavigated?: (webPaneId: string, pageUrl: string) => void
   /** Called when a tile page publishes its current open-question inventory. */
   onPageQuestions?: (
     webPaneId: string,
@@ -769,7 +781,7 @@ export class ChromiumEngine {
   /** Last viewport per tile — buffered so a viewport sent before the target exists still applies. */
   private readonly viewports = new Map<string, TileViewport>()
   /** Latest sanitized controls, retained independently of targets/viewers. */
-  private readonly pendingSnapshots = new Map<string, BufferedPendingControl[]>()
+  private readonly pendingSnapshots = new Map<string, BufferedPendingState>()
   private disposed = false
 
   constructor(private readonly options: ChromiumEngineOptions) {
@@ -805,7 +817,10 @@ export class ChromiumEngine {
 
   /** Buffers and, when safe, publishes the page-facing pending-control snapshot. */
   updatePendingSnapshot(webPaneId: string, snapshot: WebPanePendingSnapshot): void {
-    this.pendingSnapshots.set(webPaneId, bufferedPendingControls(snapshot))
+    this.pendingSnapshots.set(webPaneId, {
+      controls: bufferedPendingControls(snapshot),
+      ...(snapshot.sent ? { sent: snapshot.sent } : {}),
+    })
     const tile = this.tiles.get(webPaneId)
     if (tile) this.pushPendingSnapshot(tile)
   }
@@ -1443,7 +1458,7 @@ export class ChromiumEngine {
     }
     if (url === tile.currentUrl) {
       tile.pendingSnapshotPageReady = true
-      this.pushPendingSnapshot(tile)
+      this.acceptPage(tile, url)
       return
     }
     const decision = this.options.classify(url)
@@ -1452,7 +1467,7 @@ export class ChromiumEngine {
     if (decision.kind === 'open' || sameOrigin(url, tile.currentUrl)) {
       tile.currentUrl = url
       tile.pendingSnapshotPageReady = true
-      this.pushPendingSnapshot(tile)
+      this.acceptPage(tile, url)
       return
     }
     this.pushPendingSnapshot(tile)
@@ -1461,11 +1476,18 @@ export class ChromiumEngine {
     this.options.onExternalNavigation(tile.webPaneId, url)
   }
 
+  private acceptPage(tile: TileTarget, url: string): void {
+    // The daemon answers synchronously with updatePendingSnapshot, which
+    // pushes; push again anyway for callers without a daemon listener.
+    this.options.onPageNavigated?.(tile.webPaneId, url)
+    this.pushPendingSnapshot(tile)
+  }
+
   private pushPendingSnapshot(tile: TileTarget): void {
-    const controls = this.pendingSnapshots.get(tile.webPaneId)
-    if (!controls) return
+    const state = this.pendingSnapshots.get(tile.webPaneId)
+    if (!state) return
     const snapshot = tile.pendingSnapshotPageReady
-      ? pagePendingSnapshot(controls, tile.mainFrameUrl)
+      ? pagePendingSnapshot(state, tile.mainFrameUrl)
       : EMPTY_PAGE_PENDING_SNAPSHOT
     const expression = pendingSnapshotExpression(snapshot) ?? EMPTY_PENDING_SNAPSHOT_EXPRESSION
     // Snapshot publication is auxiliary state hydration. A transient execution

@@ -7,10 +7,16 @@ import {
   MAX_RESPONSE_QUEUE_KEY,
   MAX_PENDING_SNAPSHOT_BYTES,
   REDLINE_BINDING_NAME,
+  pageSentAnswers,
   parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
+  redlinePageKey,
   redlinePendingSnapshotForPage,
+  sameQuestionShape,
+  sentAnswerForQuestion,
+  type RedlinePageQuestion,
 } from './redline-response.js'
+import type { WebPaneSentAnswer } from './protocol.js'
 
 describe('parseRedlinePageResponse', () => {
   const valid = { question: 'Which plan?', answer: 'Pro' }
@@ -189,5 +195,90 @@ describe('redlinePendingSnapshotForPage', () => {
     expect(snapshot.controls[1]?.response).not.toHaveProperty('data')
     expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength)
       .toBeLessThanOrEqual(MAX_PENDING_SNAPSHOT_BYTES)
+  })
+})
+
+describe('sent answers', () => {
+  const plan: RedlinePageQuestion = {
+    question: 'Which plan?',
+    selector: '#plan',
+    queueKey: 'plan',
+    kind: 'choice',
+    options: ['Free', 'Pro'],
+    multiple: false,
+  }
+  const sentPlan: WebPaneSentAnswer = {
+    queueKey: 'plan',
+    selector: '#plan',
+    shape: { question: 'Which plan?', kind: 'choice', options: ['Free', 'Pro'], multiple: false },
+    response: { question: 'Which plan?', answer: 'Pro', data: { choice: 'Pro' } },
+    sentAt: 10,
+  }
+
+  it('keeps a validated shape on page responses and drops a malformed one', () => {
+    expect(parseRedlinePageResponse({
+      question: 'Which plan?',
+      answer: 'Pro',
+      shape: { question: 'Which plan?', kind: 'choice', options: ['Free', 'Pro'], multiple: false },
+    })?.shape).toEqual({ question: 'Which plan?', kind: 'choice', options: ['Free', 'Pro'], multiple: false })
+    const malformed = parseRedlinePageResponse({
+      question: 'Which plan?',
+      answer: 'Pro',
+      shape: { question: 'Which plan?', kind: 'choice', options: [] },
+    })
+    expect(malformed).not.toBeNull()
+    expect(malformed?.shape).toBeUndefined()
+  })
+
+  it('keys pages by origin and path, ignoring query and hash', () => {
+    expect(redlinePageKey('http://127.0.0.1:4000/plan.html?v=3#top')).toBe('http://127.0.0.1:4000/plan.html')
+    expect(redlinePageKey('http://127.0.0.1:4000/plan.html?v=2')).toBe(redlinePageKey('http://127.0.0.1:4000/plan.html'))
+    expect(redlinePageKey('file:///tmp/plan.html?v=1')).toBe('file:///tmp/plan.html')
+  })
+
+  it('treats rewording, new options, or a different kind as a re-ask', () => {
+    expect(sameQuestionShape(sentPlan.shape, plan)).toBe(true)
+    expect(sameQuestionShape(sentPlan.shape, { ...plan, question: 'Which plan now?' })).toBe(false)
+    expect(sameQuestionShape(sentPlan.shape, { ...plan, options: ['Free', 'Pro', 'Team'] })).toBe(false)
+    expect(sameQuestionShape(sentPlan.shape, { ...plan, multiple: true })).toBe(false)
+    expect(sameQuestionShape(
+      { question: 'Rate it', kind: 'rating', max: 5 },
+      { question: 'Rate it', kind: 'rating', max: 10 },
+    )).toBe(false)
+  })
+
+  it('matches a sent answer by identity and shape', () => {
+    expect(sentAnswerForQuestion(plan, [sentPlan])).toBe(sentPlan)
+    expect(sentAnswerForQuestion({ ...plan, queueKey: 'other' }, [sentPlan])).toBeUndefined()
+    expect(sentAnswerForQuestion({ ...plan, question: 'Reworded?' }, [sentPlan])).toBeUndefined()
+    const keyless = { ...sentPlan, queueKey: undefined }
+    expect(sentAnswerForQuestion({ ...plan, queueKey: undefined }, [keyless])).toBe(keyless)
+  })
+
+  it('hands the page only the sent answers for its own page key', () => {
+    const snapshot = {
+      notes: [],
+      knownUpTo: 0,
+      dropped: 0,
+      sent: { page: 'https://example.com/review', answers: [sentPlan] },
+    }
+    expect(redlinePendingSnapshotForPage(snapshot, 'https://example.com/review?v=4')).toEqual({
+      version: 1,
+      controls: [],
+      sent: [sentPlan],
+    })
+    expect(redlinePendingSnapshotForPage(snapshot, 'https://example.com/other')).toEqual({
+      version: 1,
+      controls: [],
+    })
+  })
+
+  it('bounds page sent answers newest first, dropping data before the answer', () => {
+    const older = { ...sentPlan, queueKey: 'older', sentAt: 1 }
+    const big = { ...sentPlan, queueKey: 'big', sentAt: 20, response: { ...sentPlan.response, data: { blob: 'x'.repeat(2_000) } } }
+    const bounded = pageSentAnswers([older, big], 800)
+    expect(bounded.map((answer) => answer.queueKey)).toEqual(['big', 'older'])
+    expect(bounded[0].response.data).toBeUndefined()
+    expect(pageSentAnswers([{ ...sentPlan, shape: { question: '', kind: 'text' } }], 10_000)).toEqual([])
   })
 })

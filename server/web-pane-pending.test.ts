@@ -13,6 +13,7 @@ import {
 import type { RedlinePageResponse } from '../shared/redline-response.js'
 import { JOURNAL_COMPACT_THRESHOLD } from './web-pane-feedback-journal.js'
 import { PendingNotesJournal, WebPanePendingStore, type PendingNoteInput } from './web-pane-pending.js'
+import { SentAnswerStore } from './web-pane-sent-answers.js'
 import { WebPaneError } from './web-panes.js'
 
 const PAGE_URL = 'http://127.0.0.1:5173/'
@@ -825,5 +826,82 @@ describe('WebPanePendingStore snapshots', () => {
     const snapshot = store.acknowledgeDropped('w-11111111')
     expect(snapshot.dropped).toBe(0)
     expect(snapshot.notes).toHaveLength(MAX_PENDING_NOTES)
+  })
+})
+
+describe('WebPanePendingStore sent answers', () => {
+  const shape = { question: 'Ship it?', kind: 'approve' as const, options: ['Yes', 'No'] }
+
+  function stores(now = () => 42) {
+    const sent = new SentAnswerStore({ dir: makeDir(), now })
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }), undefined, sent)
+    return { sent, store }
+  }
+
+  it('records shaped answers once they are sent and shows them in the snapshot', () => {
+    const { store } = stores()
+    store.addResponse('w-1', PAGE_URL, { ...response('Yes', 'ship'), selector: '#ship', shape })
+    store.addResponse('w-1', PAGE_URL, response('Unshaped', 'legacy'))
+    let enqueued: WebPaneFeedbackNote[] = []
+    const snapshot = store.send('w-1', PAGE_URL, 1, (notes) => { enqueued = notes })
+    expect(enqueued).toHaveLength(2)
+    expect(enqueued.every((note) => !('questionShape' in note))).toBe(true)
+    expect(snapshot.notes).toEqual([])
+    expect(snapshot.sent).toEqual({
+      page: 'http://127.0.0.1:5173/',
+      answers: [{
+        queueKey: 'ship',
+        selector: '#ship',
+        shape,
+        response: { question: 'Ship it?', answer: 'Yes' },
+        sentAt: 42,
+      }],
+    })
+  })
+
+  it('records nothing when delivery throws', () => {
+    const { store, sent } = stores()
+    store.addResponse('w-1', PAGE_URL, { ...response('Yes', 'ship'), shape })
+    expect(() => store.send('w-1', PAGE_URL, 1, () => { throw new WebPaneError(429, 'full') })).toThrow('full')
+    expect(sent.forPage(PAGE_URL)).toEqual([])
+    expect(store.snapshot('w-1').notes).toHaveLength(1)
+  })
+
+  it('still completes the send when recording fails', () => {
+    const failing = { forPage: () => [], record: () => { throw new Error('disk full') } }
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }), undefined, failing)
+    store.addResponse('w-1', PAGE_URL, { ...response('Yes', 'ship'), shape })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let delivered = 0
+    expect(store.send('w-1', PAGE_URL, 1, (notes) => { delivered = notes.length }).notes).toEqual([])
+    expect(delivered).toBe(1)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('keeps the shape through an edited response', () => {
+    const { store } = stores()
+    const { notes: [queued] } = store.addResponse('w-1', PAGE_URL, { ...response('Yes', 'ship'), shape })
+    store.update('w-1', queued.id, queued.revision ?? 1, { answer: 'No' })
+    expect(store.snapshot('w-1').notes[0].questionShape).toEqual(shape)
+  })
+
+  it('follows the viewed page and bumps the revision only when the page changes', () => {
+    const { store, sent } = stores()
+    sent.record(OTHER_PAGE_URL, [{ queueKey: 'k', shape, response: { question: 'Ship it?', answer: 'No' } }])
+    store.addResponse('w-1', PAGE_URL, response('Yes'))
+    const before = store.snapshot('w-1')
+    expect(before.sent?.answers).toEqual([])
+    const moved = store.setPage('w-1', `${OTHER_PAGE_URL}?v=2`)
+    expect(moved.revision).toBe((before.revision ?? 0) + 1)
+    expect(moved.sent?.page).toBe(OTHER_PAGE_URL)
+    expect(moved.sent?.answers.map((answer) => answer.response.answer)).toEqual(['No'])
+    expect(store.setPage('w-1', `${OTHER_PAGE_URL}?v=3`).revision).toBe(moved.revision)
+  })
+
+  it('omits sent answers when no store is configured', () => {
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }))
+    store.addResponse('w-1', PAGE_URL, { ...response('Yes', 'ship'), shape })
+    expect(store.snapshot('w-1').sent).toBeUndefined()
   })
 })

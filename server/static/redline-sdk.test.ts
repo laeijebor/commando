@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { sameQuestionShape } from '../../shared/redline-response.js'
 
 const source = readFileSync(join(__dirname, 'redline-sdk.js'), 'utf8')
 
@@ -56,6 +57,14 @@ if (typeof (globalThis as unknown as { CSS?: { escape?: (v: string) => string } 
 
 type QueueCall = { question: string; answer: string; note?: string; data?: unknown; queueKey?: string; selector?: string; tag?: string; rect?: unknown }
 
+type SentAnswer = {
+  queueKey?: string
+  selector?: string
+  shape: { question: string; kind: string; options?: string[]; multiple?: boolean; max?: number }
+  response: { question: string; answer: string; note?: string; data?: unknown }
+  sentAt: number
+}
+
 type PendingSnapshot = {
   version: 1
   controls: Array<{
@@ -63,6 +72,7 @@ type PendingSnapshot = {
     selector?: string
     response: { question: string; answer: string; note?: string; data?: unknown }
   }>
+  sent?: SentAnswer[]
 }
 
 function publishSnapshot(snapshot: PendingSnapshot): void {
@@ -1319,5 +1329,185 @@ describe('binding arrives after first paint', () => {
     ;(radios[1] as HTMLInputElement).click()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ question: 'Which plan?', answer: 'Pro', queueKey: 'plan' })
+  })
+})
+
+describe('sent answers', () => {
+  const planShape = { question: 'Which plan?', kind: 'choice', options: ['Starter', 'Pro'], multiple: false }
+  const sentPlan = (overrides: Partial<SentAnswer> = {}): SentAnswer => ({
+    queueKey: 'plan',
+    shape: planShape,
+    response: { question: 'Which plan?', answer: 'Pro', note: 'cheaper', data: { choice: 'Pro' } },
+    sentAt: Date.now() - 2 * 60 * 60_000,
+    ...overrides,
+  })
+  const choice = '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro"></redline-choice>'
+
+  it('queues the question shape with the answer', () => {
+    const calls = loadSdk()
+    document.body.innerHTML = choice
+    const host = document.querySelector('redline-choice') as HTMLElement
+    ;(host.querySelectorAll('input[type="radio"]')[1] as HTMLInputElement).click()
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect((calls[0] as QueueCall & { shape?: unknown }).shape).toEqual(planShape)
+  })
+
+  it('renders a matching sent answer as settled, with when it was sent', () => {
+    loadSdk()
+    publishSnapshot({ version: 1, controls: [], sent: [sentPlan()] })
+    document.body.innerHTML = choice
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.dataset.redlineResolved).toBe('1')
+    expect(host.dataset.redlineSent).toBe('1')
+    expect([...host.querySelectorAll('.redline-resolved-answer')].map((chip) => chip.textContent)).toEqual(['✓ Pro'])
+    expect(host.querySelector('.redline-resolved-note')?.textContent).toBe('cheaper')
+    expect(host.querySelector('.redline-resolved-when')?.textContent).toBe('Sent · 2h ago')
+    expect(host.querySelector('input[type="radio"]')).toBeNull()
+  })
+
+  it('keeps a sent control in the open-question inventory', async () => {
+    loadSdk()
+    publishSnapshot({ version: 1, controls: [], sent: [sentPlan()] })
+    document.body.innerHTML = choice
+    await Promise.resolve()
+    const inventory = (window as any).__commandoRedlineQuestionSnapshot as { questions: Array<{ queueKey?: string }> }
+    expect(inventory.questions.map((question) => question.queueKey)).toEqual(['plan'])
+  })
+
+  it('shows a skip and multi-select sends the way they were answered', () => {
+    loadSdk()
+    publishSnapshot({
+      version: 1,
+      controls: [],
+      sent: [
+        sentPlan({ response: { question: 'Which plan?', answer: '(skipped)' } }),
+        {
+          queueKey: 'extras',
+          shape: { question: 'Extras?', kind: 'choice', options: ['A', 'B', 'C'], multiple: true },
+          response: { question: 'Extras?', answer: 'A, C' },
+          sentAt: Date.now(),
+        },
+      ],
+    })
+    document.body.innerHTML = choice +
+      '<redline-choice key="extras" prompt="Extras?" options="A,B,C" multiple></redline-choice>'
+    const [plan, extras] = [...document.querySelectorAll('redline-choice')] as HTMLElement[]
+    expect([...plan.querySelectorAll('.redline-resolved-answer')].map((chip) => chip.textContent)).toEqual(['Skipped'])
+    expect([...extras.querySelectorAll('.redline-resolved-answer')].map((chip) => chip.textContent)).toEqual(['✓ A', '✓ C'])
+    expect(extras.querySelector('.redline-resolved-when')?.textContent).toBe('Sent · just now')
+  })
+
+  it('stays live when the agent rewords the question or changes its options', () => {
+    loadSdk()
+    publishSnapshot({
+      version: 1,
+      controls: [],
+      sent: [sentPlan(), sentPlan({ queueKey: 'tier', shape: { ...planShape, question: 'Which tier?' } })],
+    })
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro,Team"></redline-choice>' +
+      '<redline-choice key="tier" prompt="Which tier now?" options="Starter,Pro"></redline-choice>'
+    for (const host of document.querySelectorAll('redline-choice')) {
+      expect((host as HTMLElement).dataset.redlineSent).toBeUndefined()
+      expect(host.querySelector('input[type="radio"]')).not.toBeNull()
+    }
+  })
+
+  it('lets the agent\'s own resolved markup win', () => {
+    loadSdk()
+    publishSnapshot({ version: 1, controls: [], sent: [sentPlan()] })
+    document.body.innerHTML =
+      '<redline-choice key="plan" prompt="Which plan?" options="Starter,Pro" resolved answer="Starter" answered-in="Round 2"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.dataset.redlineSent).toBeUndefined()
+    expect(host.querySelector('.redline-resolved-when')?.textContent).toBe('Round 2')
+    expect(host.querySelector('.redline-resolved-answer')?.textContent).toBe('✓ Starter')
+  })
+
+  it('prefers a queued re-answer over the sent one', () => {
+    loadSdk()
+    publishSnapshot({
+      version: 1,
+      controls: [{ queueKey: 'plan', response: { question: 'Which plan?', answer: 'Starter' } }],
+      sent: [sentPlan()],
+    })
+    document.body.innerHTML = choice
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.dataset.redlineSent).toBeUndefined()
+    expect((host.querySelector('input:checked') as HTMLInputElement).value).toBe('Starter')
+    expect((host.querySelector('button.redline-queue') as HTMLButtonElement).textContent).toBe('Queued ✓')
+  })
+
+  it('reopens into the live control pre-filled, only for this view', () => {
+    const calls = loadSdk()
+    const snapshot: PendingSnapshot = { version: 1, controls: [], sent: [sentPlan()] }
+    publishSnapshot(snapshot)
+    document.body.innerHTML = choice
+    const host = document.querySelector('redline-choice') as HTMLElement
+    ;(host.querySelector('button.redline-reopen') as HTMLButtonElement).click()
+    expect(host.dataset.redlineSent).toBeUndefined()
+    expect((host.querySelector('input:checked') as HTMLInputElement).value).toBe('Pro')
+    expect((host.querySelector('.redline-comment') as HTMLTextAreaElement).value).toBe('cheaper')
+
+    // The same send does not snap it shut again while the user is re-answering.
+    publishSnapshot(snapshot)
+    expect(host.dataset.redlineSent).toBeUndefined()
+
+    ;(host.querySelectorAll('input[type="radio"]')[0] as HTMLInputElement).click()
+    ;(host.querySelector('button.redline-queue') as HTMLButtonElement).click()
+    expect(calls.at(-1)).toMatchObject({ answer: 'Starter', queueKey: 'plan' })
+
+    // A newer send of the re-answer settles it again.
+    publishSnapshot({
+      version: 1,
+      controls: [],
+      sent: [sentPlan({ response: { question: 'Which plan?', answer: 'Starter' }, sentAt: Date.now() })],
+    })
+    expect(host.dataset.redlineSent).toBe('1')
+    expect(host.querySelector('.redline-resolved-answer')?.textContent).toBe('✓ Starter')
+  })
+
+  it('matches unkeyed controls by selector', () => {
+    loadSdk()
+    publishSnapshot({
+      version: 1,
+      controls: [],
+      sent: [{
+        selector: '#ship',
+        shape: { question: 'Ship it?', kind: 'text' },
+        response: { question: 'Ship it?', answer: 'Yes' },
+        sentAt: Date.now(),
+      }],
+    })
+    document.body.innerHTML = '<redline-ask id="ship" prompt="Ship it?"></redline-ask><redline-ask id="other" prompt="Ship it?"></redline-ask>'
+    expect((document.getElementById('ship') as HTMLElement).dataset.redlineSent).toBe('1')
+    expect((document.getElementById('other') as HTMLElement).dataset.redlineSent).toBeUndefined()
+  })
+
+  it('mirrors the shared question-shape comparison', () => {
+    loadSdk()
+    const base = { question: 'Q?', kind: 'choice', options: ['A', 'B'], multiple: false }
+    const variants = [
+      base,
+      { ...base, question: 'Q2?' },
+      { ...base, options: ['B', 'A'] },
+      { ...base, options: ['A'] },
+      { ...base, multiple: true },
+      { question: 'Q?', kind: 'choice', options: ['A', 'B'] },
+      { question: 'Q?', kind: 'rating', max: 5 },
+      { question: 'Q?', kind: 'rating', max: 10 },
+      { question: 'Q?', kind: 'text' },
+    ]
+    document.body.innerHTML = '<redline-choice key="k" prompt="Q?" options="A,B"></redline-choice>'
+    const host = document.querySelector('redline-choice') as HTMLElement
+    for (const variant of variants) {
+      publishSnapshot({
+        version: 1,
+        controls: [],
+        sent: [{ queueKey: 'k', shape: variant, response: { question: 'Q?', answer: 'A' }, sentAt: Date.now() }],
+      })
+      const expected = sameQuestionShape(variant as never, base as never)
+      expect(host.dataset.redlineSent === '1', JSON.stringify(variant)).toBe(expected)
+    }
   })
 })

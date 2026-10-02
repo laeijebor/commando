@@ -134,7 +134,8 @@ export class WebTileRelay {
     // Hydrate the viewer's pill queue immediately — answers queued while no
     // viewer was connected (or while another session was focused) must
     // reappear without waiting for the stream to come up.
-    if ((pending.notes.length > 0 || pending.dropped > 0) && socket.readyState === WebSocket.OPEN) {
+    const hasSent = (pending.sent?.answers.length ?? 0) > 0
+    if ((pending.notes.length > 0 || pending.dropped > 0 || hasSent) && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'pending', ...pending }))
     }
     const questions = this.questions.get(webPaneId)

@@ -1,4 +1,5 @@
 import type { WebPanePendingSnapshot } from '../shared/protocol'
+import { parsePendingSent } from '../shared/redline-response'
 
 type PendingSocketMessage = {
   type?: string
@@ -6,6 +7,7 @@ type PendingSocketMessage = {
   notes?: unknown
   knownUpTo?: unknown
   dropped?: unknown
+  sent?: unknown
 }
 
 const RECONNECT_BASE_MS = 250
@@ -52,11 +54,13 @@ export function subscribeWebTilePending(
         typeof message.knownUpTo !== 'number' ||
         typeof message.dropped !== 'number'
       ) return
+      const sent = parsePendingSent(message.sent)
       listener({
         ...(typeof message.revision === 'number' ? { revision: message.revision } : {}),
         notes: message.notes,
         knownUpTo: message.knownUpTo,
         dropped: message.dropped,
+        ...(sent ? { sent } : {}),
       })
     }
     const opened = () => {

@@ -25,4 +25,6 @@ export type PendingQueueApi = {
     options?: PendingSendOptions,
   ) => Promise<WebPanePendingSnapshot>
   dismissDropped: () => Promise<WebPanePendingSnapshot>
+  /** Reports the page the tile shows; the snapshot carries that page's sent answers. */
+  setPage?: (url: string) => Promise<WebPanePendingSnapshot>
 }

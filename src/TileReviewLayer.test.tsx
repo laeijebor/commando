@@ -370,6 +370,97 @@ describe('TileReviewLayer', () => {
     expect(screen.getByRole('button', { name: 'Unanswered · 0' })).toHaveFocus()
   })
 
+  it('shows sent answers as answered, read-only until the owner changes one', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const planShape = { question: 'Which plan?', kind: 'choice' as const, options: ['Starter', 'Pro'], multiple: false }
+    const sentSnapshot: WebPanePendingSnapshot = {
+      revision: 3,
+      notes: [],
+      knownUpTo: 2,
+      dropped: 0,
+      sent: {
+        page: 'https://example.com/review',
+        answers: [
+          {
+            queueKey: 'plan',
+            selector: '#plan',
+            shape: planShape,
+            response: { question: 'Which plan?', answer: 'Pro', note: 'cheaper', data: { choice: 'Pro' } },
+            sentAt: Date.now() - 5 * 60_000,
+          },
+          {
+            queueKey: 'launch',
+            selector: '#launch',
+            shape: { question: 'Ready to launch? (old wording)', kind: 'text' },
+            response: { question: 'Ready to launch? (old wording)', answer: 'yes' },
+            sentAt: Date.now(),
+          },
+        ],
+      },
+    }
+    const addResponse = vi.fn(async (_pageUrl: string, _response: RedlinePageResponse) => sentSnapshot)
+    render(
+      <TileReviewLayer
+        webPaneId="w-sent"
+        pageUrl="https://example.com/review?v=2"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse })}
+        surface={surface({
+          subscribePending: (listener) => {
+            publishPending = listener
+            return () => { publishPending = undefined }
+          },
+          subscribeQuestions: (listener) => {
+            publishQuestions = listener
+            return () => { publishQuestions = undefined }
+          },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      publishQuestions?.('https://example.com/review?v=2', {
+        type: 'questions',
+        version: 1,
+        questions: [
+          { ...planShape, queueKey: 'plan', selector: '#plan' },
+          { question: 'Ready to launch?', queueKey: 'launch', selector: '#launch', kind: 'text' },
+        ],
+      })
+      publishPending?.(sentSnapshot)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    // The reworded launch question is a re-ask, so only the plan counts as answered.
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Which plan\?/ }))
+    const detail = screen.getByRole('button', { name: 'Change answer' }).closest('.tile-review-drawer-detail') as HTMLElement
+    expect(detail).toHaveTextContent('Sent')
+    expect(detail).toHaveTextContent('Pro')
+    expect(detail).toHaveTextContent('cheaper')
+    expect(detail).toHaveTextContent('Sent · 5m ago')
+    expect(screen.queryByRole('combobox', { name: 'Answer' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unanswered · 1' }))
+    expect(screen.queryByRole('button', { name: /Which plan\?/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    fireEvent.click(screen.getByRole('button', { name: /Which plan\?/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change answer' }))
+    expect(screen.getByText('Changing sent answer')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Pro')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Starter' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Queue answer' }))
+    await waitFor(() => expect(addResponse).toHaveBeenCalledWith(
+      'https://example.com/review?v=2',
+      expect.objectContaining({ answer: 'Starter', queueKey: 'plan', shape: planShape }),
+    ))
+  })
+
   it('clears question drafts when the page inventory moves to a new document', async () => {
     let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
     render(

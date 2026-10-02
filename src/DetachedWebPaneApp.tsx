@@ -157,6 +157,7 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
             options,
           ),
           dismissDropped: () => api.dismissPendingDropped(webPaneId),
+          setPage: (url) => api.setPendingPage(webPaneId, url),
         }}
       />
       {actionError && <div className="detached-web-pane-error" role="alert">{actionError}</div>}

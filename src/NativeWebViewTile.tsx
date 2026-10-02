@@ -61,6 +61,7 @@ export function NativeWebViewTile({
     pageUrl: string,
     snapshot: RedlinePageQuestionSnapshot,
   ) => void>())
+  const pendingListenersRef = useRef(new Set<(snapshot: WebPanePendingSnapshot) => void>())
   const latestQuestionsRef = useRef<{ pageUrl: string; snapshot: RedlinePageQuestionSnapshot } | null>(null)
   const documentNavigationRef = useRef(false)
   const loadedRef = useRef(onLoaded)
@@ -160,10 +161,12 @@ export function NativeWebViewTile({
   useEffect(() => {
     if (!attachment?.supportsPageResponses) return
     let cancelled = false
-    void pendingQueueRef.current?.list().then((snapshot) => {
-      if (!cancelled) {
-        presentPendingSnapshot(attachment, snapshot, pageUrl)
-      }
+    const queue = pendingQueueRef.current
+    // Reporting the page also fetches its sent answers; older hosts just list.
+    void (queue?.setPage ? queue.setPage(pageUrl) : queue?.list())?.then((snapshot) => {
+      if (cancelled) return
+      presentPendingSnapshot(attachment, snapshot, pageUrl)
+      for (const listener of pendingListenersRef.current) listener(snapshot)
     }).catch(() => undefined)
     return () => {
       cancelled = true
@@ -213,14 +216,21 @@ export function NativeWebViewTile({
       }
       void attachment.resolveSelectors(items).then(receive, reject)
     },
-    subscribePending: (listener) => connected
-      ? subscribeWebTilePending(webPane.id, wsToken, (snapshot) => {
-          if (attachment?.supportsPageResponses) {
-            presentPendingSnapshot(attachment, snapshot, pageUrlRef.current)
-          }
-          listener(snapshot)
-        })
-      : () => undefined,
+    subscribePending: (listener) => {
+      pendingListenersRef.current.add(listener)
+      const unsubscribe = connected
+        ? subscribeWebTilePending(webPane.id, wsToken, (snapshot) => {
+            if (attachment?.supportsPageResponses) {
+              presentPendingSnapshot(attachment, snapshot, pageUrlRef.current)
+            }
+            listener(snapshot)
+          })
+        : () => undefined
+      return () => {
+        pendingListenersRef.current.delete(listener)
+        unsubscribe()
+      }
+    },
     subscribeQuestions: (listener) => {
       questionListenersRef.current.add(listener)
       const latest = latestQuestionsRef.current

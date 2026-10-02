@@ -307,6 +307,20 @@ describe('web tile relay pending broadcast', () => {
     expect(engine.subscribeScreencast).not.toHaveBeenCalled()
   })
 
+  it('hydrates a connecting socket with sent answers even when nothing is queued', async () => {
+    const sent = {
+      page: 'http://127.0.0.1:4000/plan.html',
+      answers: [{
+        queueKey: 'plan',
+        shape: { question: 'Which plan?', kind: 'text' as const },
+        response: { question: 'Which plan?', answer: 'Pro' },
+        sentAt: 1,
+      }],
+    }
+    const { socket, messages } = await startRelay({}, () => ({ ...emptySnapshot(), sent }))
+    expect(await messageOfType(socket, messages, 'pending')).toMatchObject({ notes: [], sent })
+  })
+
   it('does not send an empty pending message on connect', async () => {
     const { engine, messages } = await startRelay()
     const updatePendingSnapshot = vi.mocked(engine.updatePendingSnapshot)

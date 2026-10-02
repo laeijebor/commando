@@ -523,6 +523,18 @@ export class WebPanesApi {
           return true
         }
 
+        if (route.page === true) {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = await readJson(request)
+          if (typeof body.url !== 'string') throw new HttpError(400, 'url must be an http or https URL')
+          const decision = classifyWebPaneUrl(body.url, new Set())
+          if (decision.kind === 'invalid') throw new HttpError(400, `url ${decision.reason}`)
+          const snapshot = pending.setPage(route.id, decision.url)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
+          return true
+        }
+
         if (route.dismissDropped === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
           const snapshot = pending.acknowledgeDropped(route.id)
@@ -737,7 +749,7 @@ export class WebPanesApi {
     | { kind: 'collection' }
     | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
-    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean } {
+    | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
     const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
     if (attachment) {
@@ -757,13 +769,14 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|send-build|dropped|response|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
       if (match[3] === 'send-build') return { kind: 'pane', id: match[1], action: 'pending', sendBuild: true }
       if (match[3] === 'dropped') return { kind: 'pane', id: match[1], action: 'pending', dismissDropped: true }
       if (match[3] === 'response') return { kind: 'pane', id: match[1], action: 'pending', response: true }
+      if (match[3] === 'page') return { kind: 'pane', id: match[1], action: 'pending', page: true }
       if (match[3] !== undefined) return { kind: 'pane', id: match[1], action: 'pending', noteId: Number(match[3]) }
       return { kind: 'pane', id: match[1], action: 'pending' }
     }

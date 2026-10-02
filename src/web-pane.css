@@ -1017,6 +1017,39 @@
   color: var(--amber, #e0a458);
 }
 
+.tile-review-type.is-sent {
+  background: color-mix(in srgb, var(--text-soft, #b8b0c8) 10%, transparent);
+  color: var(--text-soft, #b8b0c8);
+}
+
+.tile-review-sent {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  font-size: 11px;
+}
+
+.tile-review-sent dt {
+  color: var(--text-faint, #6e667e);
+  font: 700 9px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+
+.tile-review-sent dd {
+  margin: 0;
+  color: var(--text, #e8e3f0);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tile-review-sent-when {
+  color: var(--text-faint, #6e667e);
+  font: 700 9px var(--mono);
+}
+
 .tile-review-list-empty {
   padding: 14px 10px;
   color: var(--text-faint, #6e667e);

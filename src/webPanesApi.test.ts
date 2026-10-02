@@ -65,6 +65,32 @@ describe('pending note routes', () => {
     expect(JSON.parse(String(calls[4][1].body))).toEqual({})
   })
 
+  it('reports the viewed page and keeps only well-formed sent answers', async () => {
+    const good = {
+      queueKey: 'plan',
+      shape: { question: 'Which plan?', kind: 'text' },
+      response: { question: 'Which plan?', answer: 'Pro' },
+      sentAt: 1,
+    }
+    const fetcher = vi.fn(async () => jsonResponse(200, {
+      ok: true,
+      notes: [],
+      knownUpTo: 0,
+      dropped: 0,
+      sent: { page: 'https://example.com/review', answers: [good, { queueKey: 'bad' }] },
+    }))
+    const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+    expect(await api.setPendingPage('w-11111111', 'https://example.com/review?v=2')).toEqual({
+      notes: [],
+      knownUpTo: 0,
+      dropped: 0,
+      sent: { page: 'https://example.com/review', answers: [good] },
+    })
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit]
+    expect(`${init.method} ${url}`).toBe('POST /api/web-panes/w-11111111/pending/page')
+    expect(JSON.parse(String(init.body))).toEqual({ url: 'https://example.com/review?v=2' })
+  })
+
   it('updates an answer and note using the expected revision', async () => {
     const fetcher = vi.fn(async () => jsonResponse(200, { revision: 4, notes: [], knownUpTo: 1, dropped: 0 }))
     const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)

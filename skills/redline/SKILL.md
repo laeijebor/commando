@@ -252,6 +252,11 @@ Discipline the agent must know:
   **Reopen** button that restores the live control pre-filled. Add `locked` to
   drop the Reopen button. Multi-select answers keep the queued `"A, C"` form
   and render one chip per value.
+- Until you do, Commando already shows a sent answer as settled ("Sent · 2h
+  ago" + Reopen) in the page and the answer queue, across reloads and `?v=`
+  cache-busts, matched by `key` (else selector) and the exact prompt and
+  options. To ask again, change the prompt or options — an unchanged question
+  keeps showing the old answer.
 
 Notes that carry a component answer have a `response: {question, answer,
 note?, data?}` field — prefer it over parsing `comment`.
