@@ -71,6 +71,8 @@ type WebPanesApiDependencies = {
   onConfirmed?: (pane: WebPane) => void
   /** Fired after a tile is deleted so engine targets can be torn down. */
   onClosed?: (webPaneId: string) => void
+  /** Fired after a reload request (chromium tiles reload their headless page here). */
+  onReload?: (pane: WebPane) => void
   /** Agent navigate requests awaiting the owner, and agent-triggered reloads. */
   agentRequests: WebPaneAgentRequests
 }
@@ -756,6 +758,7 @@ export class WebPanesApi {
         if (pane.content) throw new HttpError(409, 'Simulator tiles cannot be reloaded')
         if (pane.status !== 'open') throw new HttpError(409, 'Web pane is awaiting the owner\'s confirmation')
         this.dependencies.agentRequests.reload(route.id)
+        this.dependencies.onReload?.(pane)
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true, webPaneId: route.id })
         return true

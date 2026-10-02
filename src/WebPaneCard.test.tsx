@@ -13,8 +13,8 @@ vi.mock('./SimLiveView', () => ({
 }))
 
 vi.mock('./ChromiumTileCard', () => ({
-  ChromiumTileCard: ({ reviewMode }: { reviewMode: boolean }) => (
-    <div data-testid="chromium-tile" data-review-mode={reviewMode} />
+  ChromiumTileCard: ({ reviewMode, reloadKey }: { reviewMode: boolean; reloadKey: number }) => (
+    <div data-testid="chromium-tile" data-review-mode={reviewMode} data-reload-key={reloadKey} />
   ),
 }))
 
@@ -209,6 +209,17 @@ describe('WebPaneCard agent requests', () => {
 
     rerender(<WebPaneCard {...props} reloadRevision={5} />)
     expect(container.querySelector('iframe')).not.toBe(first)
+  })
+
+  it('leaves canvas chromium reloads to the daemon', () => {
+    const props = {
+      webPane: { ...webPane, engine: 'chromium' as const },
+      onClose: () => undefined,
+      onConfirm: () => undefined,
+    }
+    const { rerender } = render(<WebPaneCard {...props} reloadRevision={1} />)
+    rerender(<WebPaneCard {...props} reloadRevision={2} />)
+    expect(screen.getByTestId('chromium-tile')).toHaveAttribute('data-reload-key', '0')
   })
 })
 

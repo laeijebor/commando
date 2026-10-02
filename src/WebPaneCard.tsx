@@ -187,12 +187,6 @@ export function WebPaneCard({
   }, [reloadKey, tier, webPane.status, webPane.url])
 
   useEffect(() => {
-    if (reloadRevision === lastReloadRevision.current) return
-    lastReloadRevision.current = reloadRevision
-    setReloadKey((current) => current + 1)
-  }, [reloadRevision])
-
-  useEffect(() => {
     if (!attributionVisible) return
     const remaining = Math.max(1_000, webPane.createdAt + ATTRIBUTION_VISIBLE_MS - Date.now())
     const timer = window.setTimeout(() => setAttributionVisible(false), remaining)
@@ -210,6 +204,15 @@ export function WebPaneCard({
     setNativeLoaded(false)
     if (renderer === 'native') setReview(false)
   }
+
+  useEffect(() => {
+    if (reloadRevision === lastReloadRevision.current) return
+    lastReloadRevision.current = reloadRevision
+    // The daemon reloads a chromium tile's headless page itself, and the
+    // canvas renderer streams that page, so only other renderers reload here.
+    if (chromium && !nativeChromium) return
+    setReloadKey((current) => current + 1)
+  }, [reloadRevision])
 
   useEffect(() => {
     if (nativeChromium) setNativeLoaded(false)

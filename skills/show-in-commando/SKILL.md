@@ -103,8 +103,9 @@ curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPane
 ```
 
 Every connected Commando client reloads whatever renders the tile: native
-webview, canvas stream or iframe. Prefer this over a navigate when only the
-content changed.
+webview, canvas stream or iframe. A chromium tile's headless page (the one
+`/cdp` reaches) reloads too, so CDP checks see the new content. Prefer this
+over a navigate when only the content changed.
 
 ## Choosing an engine — debugging a page WITH the user
 

@@ -653,7 +653,8 @@ describe('web panes API', () => {
 
   it('bumps the reload counter for an agent reload without asking', async () => {
     const service = await createService()
-    const { baseUrl, onChange, agentRequests } = await startApi(service)
+    const onReload = vi.fn()
+    const { baseUrl, onChange, agentRequests } = await startApi(service, { onReload })
     const opened = service.open({
       url: 'http://localhost:5173/',
       anchorPaneId: '%12',
@@ -665,6 +666,7 @@ describe('web panes API', () => {
     const response = await post(baseUrl, `/api/web-panes/${opened.id}/reload`, {}, agentAuth)
     expect(response.status).toBe(200)
     expect(agentRequests.reloads()).toEqual({ [opened.id]: 1 })
+    expect(onReload).toHaveBeenCalledWith(expect.objectContaining({ id: opened.id }))
     expect(onChange).toHaveBeenCalledTimes(1)
     expect((await post(baseUrl, '/api/web-panes/w-00000000/reload', {}, agentAuth)).status).toBe(404)
   })
