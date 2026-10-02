@@ -46,7 +46,6 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
   sim: SimWallDevice; api: SimsApi; visible: boolean; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
 }) {
   const card = useRef<HTMLElement>(null)
-  const snapshotBusy = useRef(false)
   const actionBusy = useRef(false)
   const [intersecting, setIntersecting] = useState(false)
   const [image, setImage] = useState<CachedSimSnapshot | undefined>(() => simsCache.snapshots.get(sim.udid))
@@ -80,9 +79,11 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
   useEffect(() => {
     if (!visible || !intersecting) return
     const controller = new AbortController()
+    // Scoped to this effect run: an aborted run must not block the next run's first fetch.
+    let busy = false
     const refresh = async () => {
-      if (snapshotBusy.current || controller.signal.aborted || document.visibilityState !== 'visible') return
-      snapshotBusy.current = true
+      if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
+      busy = true
       let next: string | undefined
       try {
         const { blob, at } = await api.snapshotFrame(sim.udid, controller.signal)
@@ -103,7 +104,7 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
         if (!controller.signal.aborted) setSnapshotError(cause instanceof Error ? cause.message : 'Snapshot unavailable')
       } finally {
         if (next) URL.revokeObjectURL(next)
-        snapshotBusy.current = false
+        busy = false
       }
     }
     void refresh()
@@ -169,7 +170,6 @@ export function SimsView({ token }: { token: string }) {
   const [updating, setUpdating] = useState(visible)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
-  const listingBusy = useRef(false)
   useEffect(() => {
     const change = () => setVisible(document.visibilityState === 'visible')
     document.addEventListener('visibilitychange', change)
@@ -179,15 +179,16 @@ export function SimsView({ token }: { token: string }) {
     if (!visible) { setUpdating(false); return }
     const controller = new AbortController()
     setUpdating(true)
+    let busy = false
     const refresh = async () => {
-      if (listingBusy.current || controller.signal.aborted || document.visibilityState !== 'visible') return
-      listingBusy.current = true
+      if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
+      busy = true
       try {
         const next = await api.list(controller.signal)
         if (!controller.signal.aborted) { cacheSims(next); setSims(next); setLoaded(true); setError('') }
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Simulators unavailable')
-      } finally { listingBusy.current = false; if (!controller.signal.aborted) setUpdating(false) }
+      } finally { busy = false; if (!controller.signal.aborted) setUpdating(false) }
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 5_000)

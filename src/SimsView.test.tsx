@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
@@ -537,4 +538,15 @@ it('opens one focused wall overlay, pauses only its card, switches sims, and clo
   fireEvent.click(trigger); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(trigger).toHaveFocus()
+
+})
+
+it('loads the listing and first snapshot without waiting for a poll when effects re-run', async () => {
+  // StrictMode mounts, cancels, and remounts effects: the cancelled fetch must not block the next one.
+  render(<StrictMode><SimsView token="token" /></StrictMode>)
+  await flush()
+  expect(screen.queryByText('Loading simulators…')).not.toBeInTheDocument()
+  expect(screen.getByText('Review UI')).toBeInTheDocument()
+  await intersect(true, observers.length - 1)
+  expect(snapshotCalls().length).toBeGreaterThan(0)
 })
