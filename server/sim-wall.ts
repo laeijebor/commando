@@ -167,15 +167,19 @@ export class SimWallApi {
         if (device.state !== 'Booted' || !UDID.test(device.udid)) continue
         const udid = device.udid.toUpperCase()
         const lease = leases.find((entry) => entry.udid === udid)
+        const ended = !lease ? this.dependencies.registry.listEnded().find((entry) => entry.udid === udid) : undefined
         devices.push({ udid, name: device.name,
           runtime: `iOS ${runtimeId.split('.iOS-')[1].replaceAll('-', '.')}`,
           deviceModel: device.deviceTypeIdentifier?.split('.').at(-1)?.replaceAll('-', ' ') ?? lease?.originalName ?? device.name,
           slim: slimText === null ? 'unknown' : slimStates.get(udid) ?? 'unknown',
           lease: lease ? { sessionName: lease.sessionName, task: lease.task, label: lease.label,
             repo: lease.repo, paneId: lease.paneId, idle: lease.idle } : null,
+          endedLease: ended ? { sessionName: ended.sessionName, task: ended.task, label: ended.label,
+            repo: ended.repo, endedAt: ended.endedAt, reason: ended.reason } : null,
         })
       }
     }
+    this.dependencies.registry.pruneEnded(devices.map((device) => device.udid))
     for (const key of this.images.keys()) if (!devices.some((device) => device.udid === key)) this.images.delete(key)
     const listedAt = this.now()
     this.listing = { at: listedAt, devices }

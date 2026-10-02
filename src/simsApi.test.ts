@@ -1,8 +1,25 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createSimsApi } from './simsApi'
+import { createSimsApi, readCachedSims, simsCache } from './simsApi'
 
 describe('simulator claim actions', () => {
+  it('hydrates ended history and legacy listings while ignoring malformed ended metadata', () => {
+    const sim = { udid: 'sim', name: 'Phone', deviceModel: 'iPhone', runtime: 'iOS 26', slim: 'slim', lease: null }
+    const endedLease = { sessionName: 'Previous', task: '', label: 'Previous', endedAt: 123, reason: 'released' }
+    for (const listing of [[sim], [{ ...sim, endedLease }]]) {
+      simsCache.listing = undefined
+      window.localStorage.setItem('commando.sims-listing', JSON.stringify(listing))
+      expect(readCachedSims()).toEqual(listing)
+    }
+    for (const invalid of ['bad', { ...endedLease, endedAt: '123' }, { ...endedLease, reason: 'bad' }, { ...endedLease, task: null }]) {
+      simsCache.listing = undefined
+      window.localStorage.setItem('commando.sims-listing', JSON.stringify([{ ...sim, endedLease: invalid }]))
+      expect(readCachedSims()).toBeUndefined()
+    }
+    simsCache.listing = undefined
+    window.localStorage.clear()
+  })
+
   it('carries the server capture timestamp with the JPEG and preserves the live view Blob method', async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response('jpeg', { headers: { 'X-Commando-Snapshot-At': '12345' } }))
     const api = createSimsApi('token', fetcher)

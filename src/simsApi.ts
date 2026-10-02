@@ -7,6 +7,54 @@ export const simsCache = {
   snapshots: new Map<string, CachedSimSnapshot>(),
 }
 
+// Each eligible card joins the queue; only its first member owns the timer/fetch.
+const snapshotPollers = new Map<string, Map<symbol, () => () => void>>()
+const pollingCleanup = new Map<string, () => void>()
+const snapshotSubscribers = new Map<string, Set<(frame: CachedSimSnapshot) => void>>()
+
+export function subscribeSimSnapshot(udid: string, listener: (frame: CachedSimSnapshot) => void): () => void {
+  const listeners = snapshotSubscribers.get(udid) ?? new Set()
+  listeners.add(listener)
+  snapshotSubscribers.set(udid, listeners)
+  const frame = simsCache.snapshots.get(udid)
+  if (frame) listener(frame)
+  return () => {
+    listeners.delete(listener)
+    if (!listeners.size) snapshotSubscribers.delete(udid)
+  }
+}
+
+export function cacheSimSnapshot(udid: string, frame: CachedSimSnapshot): void {
+  const previous = simsCache.snapshots.get(udid)
+  simsCache.snapshots.set(udid, frame)
+  for (const listener of snapshotSubscribers.get(udid) ?? []) listener(frame)
+  if (previous && previous.url !== frame.url) URL.revokeObjectURL(previous.url)
+}
+
+export function claimSimSnapshotPolling(udid: string, start: () => () => void): () => void {
+  const members = snapshotPollers.get(udid) ?? new Map()
+  const id = Symbol()
+  members.set(id, start)
+  snapshotPollers.set(udid, members)
+  if (members.size === 1) pollingCleanup.set(udid, start())
+  return () => {
+    const owned = members.keys().next().value === id
+    members.delete(id)
+    if (owned) {
+      pollingCleanup.get(udid)?.()
+      pollingCleanup.delete(udid)
+      // A regroup can remove both copies in the same commit. Wait for those
+      // cleanups before transferring ownership to avoid a fetch that is aborted immediately.
+      queueMicrotask(() => {
+        if (snapshotPollers.get(udid) !== members || pollingCleanup.has(udid)) return
+        const next = members.values().next().value
+        if (next) pollingCleanup.set(udid, next())
+      })
+    }
+    if (!members.size) snapshotPollers.delete(udid)
+  }
+}
+
 export function readCachedSims(): SimWallDevice[] | undefined {
   if (simsCache.listing) return simsCache.listing
   try {
@@ -14,6 +62,10 @@ export function readCachedSims(): SimWallDevice[] | undefined {
     if (Array.isArray(stored) && stored.every((sim) => sim && typeof sim.udid === 'string'
       && typeof sim.name === 'string' && typeof sim.deviceModel === 'string'
       && typeof sim.runtime === 'string' && ['slim', 'unslimmed', 'unknown'].includes(sim.slim)
+      && (sim.endedLease === undefined || sim.endedLease === null || (typeof sim.endedLease === 'object'
+        && typeof sim.endedLease.sessionName === 'string' && typeof sim.endedLease.task === 'string'
+        && typeof sim.endedLease.label === 'string' && Number.isFinite(sim.endedLease.endedAt)
+        && ['pane-closed', 'released'].includes(sim.endedLease.reason)))
       && (sim.lease === null || (sim.lease && typeof sim.lease.sessionName === 'string')))) {
       simsCache.listing = stored
     }

@@ -82,6 +82,97 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('SimsView', () => {
+  it('duplicates ended sims in former and No lease groups, counts each device once and includes history in filters', async () => {
+    vi.setSystemTime(60 * 60 * 1000)
+    sims.push(device({ udid: B, name: 'Ended phone', lease: null, endedLease: {
+      sessionName: 'Review UI', task: 'Old purpose', label: 'Review UI · Old purpose', repo,
+      endedAt: Date.now() - 12 * 60 * 1000, reason: 'pane-closed',
+    } }))
+    render(<SimsView token="" />); await flush()
+    expect(screen.getByText('2 booted')).toBeVisible()
+    expect(screen.getByText('2 unslimmed')).toBeVisible()
+    expect(screen.getByText('1 leased · 1 ended')).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'widgets' })).getAllByRole('article')).toHaveLength(2)
+    expect(within(screen.getByRole('region', { name: 'No lease' })).getAllByRole('article')).toHaveLength(1)
+    expect(screen.getAllByRole('article')).toHaveLength(3)
+    expect(screen.getByText('lease ended')).toBeVisible()
+    expect(screen.getByText('ended 12m ago')).toBeVisible()
+    expect(screen.getByText('last: Review UI · Old purpose')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Session' }))
+    expect(within(screen.getByRole('region', { name: 'Review UI' })).getAllByRole('article')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Review UI (2)' }))
+    expect(screen.getAllByRole('article')).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button', { name: 'No lease (1)' }))
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(screen.getByText('1 ended')).toBeVisible()
+    expect(screen.getByText('last: Review UI · Old purpose')).toBeVisible()
+    expect(screen.queryByText('1 leased · 1 ended')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    fireEvent.click(screen.getByRole('button', { name: 'None' }))
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(screen.getByText('lease ended')).toBeVisible()
+    expect(screen.getByText('last: Review UI · Old purpose')).toBeVisible()
+  })
+
+  it('omits an empty historical task, shows ended-only session counts and preserves the current active lease', async () => {
+    const endedLease = { sessionName: 'Former', task: '', label: 'Former', repo, endedAt: Date.now(), reason: 'released' as const }
+    sims = [device({ lease: null, endedLease }), device({ udid: B, endedLease })]
+    render(<SimsView token="" />); await flush()
+    expect(screen.getByRole('button', { name: 'Former (1)' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Review UI (1)' })).toBeVisible()
+    expect(screen.getByText('last: Former')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Former (1)' }))
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(screen.getByText('1 ended')).toBeVisible()
+    expect(screen.queryByText('Check spacing')).toBeNull()
+  })
+
+  it('shares one snapshot fetch and URL between ended copies and hands polling to the visible card', async () => {
+    sims = [device({ lease: null, endedLease: { sessionName: 'Former', task: 'review', label: 'Former · review', repo, endedAt: Date.now(), reason: 'pane-closed' } })]
+    render(<SimsView token="" />); await flush()
+    await intersect(true, 0); await intersect(true, 1)
+    expect(snapshotCalls()).toHaveLength(1)
+    await loaded()
+    expect(screen.getAllByRole('img').map((image) => image.getAttribute('src'))).toEqual(['blob:snapshot-1', 'blob:snapshot-1'])
+    await tick(2000)
+    expect(snapshotCalls()).toHaveLength(2)
+    await loaded()
+    expect(screen.getAllByRole('img').map((image) => image.getAttribute('src'))).toEqual(['blob:snapshot-2', 'blob:snapshot-2'])
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1)
+    await intersect(false, 0)
+    const afterHandoff = snapshotCalls().length
+    expect(afterHandoff).toBe(3)
+    await loaded()
+    await tick(2000)
+    expect(snapshotCalls()).toHaveLength(afterHandoff + 1)
+    await loaded()
+    await intersect(false, 1)
+    const beforeOffscreen = snapshotCalls().length
+    await tick(4000)
+    expect(snapshotCalls()).toHaveLength(beforeOffscreen)
+    await intersect(true, 1)
+    expect(snapshotCalls()).toHaveLength(beforeOffscreen + 1)
+    await loaded()
+    const beforeHidden = snapshotCalls().length
+    await changeVisibility('hidden'); await tick(4000)
+    expect(snapshotCalls()).toHaveLength(beforeHidden)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('aborts the polling owner on unmount and starts one fetch when regrouping ended copies', async () => {
+    sims = [device({ lease: null, endedLease: { sessionName: 'Former', task: '', label: 'Former', repo, endedAt: Date.now(), reason: 'released' } })]
+    render(<StrictMode><SimsView token="" /></StrictMode>); await flush()
+    const active = observers.map((observer, index) => ({ observer, index })).filter(({ observer }) => !observer.disconnect.mock.calls.length)
+    await intersect(true, active[0].index); await intersect(true, active[1].index)
+    expect(snapshotCalls()).toHaveLength(1)
+    await loaded()
+    fireEvent.click(screen.getByRole('button', { name: 'None' })); await flush()
+    expect(snapshotCalls()[0][1]?.signal?.aborted).toBe(true)
+    await intersect(true, observers.length - 1)
+    expect(snapshotCalls()).toHaveLength(2)
+    expect(screen.getByRole('img')).toHaveAttribute('src', 'blob:snapshot-1')
+  })
+
   const filters = () => within(screen.getByRole('group', { name: 'Filter simulators by session' }))
   const grouping = () => within(screen.getByRole('group', { name: 'Group by' }))
   const sizes = () => within(screen.getByRole('group', { name: 'Size' }))

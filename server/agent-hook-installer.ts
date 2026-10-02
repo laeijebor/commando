@@ -134,7 +134,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
-    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done.`,
+    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -814,14 +814,20 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
   const [command, ...rest] = args
   let task, requested, branchOverride, clearPorts = false
   const declaredPorts = []
-  if (command === 'lease' || command === 'update') {
+  if (command === 'lease' || command === 'update' || command === 'adopt') {
+    if (command === 'adopt') {
+      requested = rest.shift()
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requested ?? '')) throw new Error('adopt requires a simulator UUID')
+    }
     for (let i = 0; i < rest.length; i++) {
       const flag = rest[i]
-      if (flag === '--clear-ports') { clearPorts = true; continue }
+      if (flag === '--clear-ports' && command !== 'adopt') { clearPorts = true; continue }
       const value = rest[++i]
       if (!['--task', '--metro', '--backend', '--port', '--branch', ...(command === 'lease' ? ['--device'] : [])].includes(flag) ||
           value === undefined || value.startsWith('--')) {
-        throw new Error('Usage: commando-sim.mjs lease|update [--task text] [--metro port] [--backend port] [--port name=port] [--branch name] [--clear-ports] (lease: --device udid)')
+        throw new Error('Usage: commando-sim.mjs ' + (command === 'adopt' ? 'adopt <udid>' : 'lease|update') +
+          ' [--task text] [--metro port] [--backend port] [--port name=port] [--branch name]' +
+          (command === 'adopt' ? '' : ' [--clear-ports] (lease: --device udid)'))
       }
       if (flag === '--task') task = value
       else if (flag === '--branch') {
@@ -841,13 +847,14 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     }
   } else if (command === 'label' && rest.length === 1) task = rest[0]
   else if (!['release', 'list'].includes(command) || rest.length) {
-    throw new Error('Usage: commando-sim.mjs lease | update | label "task" | release | list')
+    throw new Error('Usage: commando-sim.mjs lease | adopt <udid> | update | label "task" | release | list')
   }
   if (task !== undefined && task.length > 4096) throw new Error('Task must be at most 4096 characters')
-  if (command === 'list') return (await request('GET', '')).leases
+  if (command === 'list') return request('GET', '')
   const context = await request('GET', '/context')
   const existing = context.lease
-  if (!existing && command !== 'lease') {
+  if (command === 'adopt' && existing) throw new Error('Release this pane’s existing lease before adopting a simulator')
+  if (!existing && command !== 'lease' && command !== 'adopt') {
     if (command === 'release') return { ok: true }
     throw new Error('This pane has no simulator lease; run lease first')
   }
@@ -876,19 +883,28 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
       catch (error) { if (!primaryError) throw error }
     }
   }
-  const device = existing ?? chooseDevice(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])), context.heldUdids, requested)
+  let adoptedDevice
+  if (command === 'adopt') {
+    const listing = JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json']))
+    adoptedDevice = Object.entries(listing.devices ?? {}).filter(([runtime]) => /\.iOS-\d/.test(runtime))
+      .flatMap(([, devices]) => devices).find((device) => device.udid.toUpperCase() === requested.toUpperCase())
+    if (!adoptedDevice || adoptedDevice.state !== 'Booted') throw new Error('Requested iOS simulator must exist and be Booted to adopt it')
+    if (context.heldUdids.some((id) => id.toUpperCase() === requested.toUpperCase())) throw new Error('Simulator is held by another pane')
+    adoptedDevice = { ...adoptedDevice, udid: adoptedDevice.udid.toUpperCase() }
+  }
+  const device = existing ?? adoptedDevice ?? chooseDevice(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])), context.heldUdids, requested)
   const { udid } = device
-  const { operation } = await request('POST', '/reservation', { udid })
+  const { operation } = await request('POST', '/reservation', { udid, ...(command === 'adopt' ? { requireUnleased: true } : {}) })
   let primaryError
   try {
-    const current = existing
+    const current = existing || command === 'adopt'
       ? Object.values(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])).devices ?? {})
         .flat().find((entry) => entry.udid.toUpperCase() === udid.toUpperCase())
       : device
     if (command === 'release') {
       if (current) {
         await run('xcrun', ['simctl', 'rename', udid, existing.originalName])
-        if (current.state !== 'Shutdown') await run('xcrun', ['simctl', 'shutdown', udid])
+        if (!existing.adopted && existing.via !== 'adopted' && current.state !== 'Shutdown') await run('xcrun', ['simctl', 'shutdown', udid])
       }
       if (existing.via === 'simfleet') {
         try { await run('simfleet', ['release', udid], existing.repo?.root) }
@@ -900,6 +916,10 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
       await request('DELETE', '', { operation })
       return { ok: true }
     }
+    if ((existing?.adopted || existing?.via === 'adopted') && current?.state !== 'Booted') {
+      throw new Error('Adopted simulator is no longer Booted; run release, then lease again')
+    }
+    if (command === 'adopt' && current?.state !== 'Booted') throw new Error('Requested iOS simulator must exist and be Booted to adopt it')
     if ((command === 'label' || command === 'update') && current?.state !== 'Booted') {
       throw new Error('Leased simulator is not Booted; run commando-sim.mjs lease again before labelling it')
     }
@@ -907,9 +927,9 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     const label = formatLabel(context.sessionName, description)
     let via = existing?.via
     if (!existing) {
-      via = context.repo?.root && await exists(join(context.repo.root, '.sim-fleet', 'project.json')) && await onPath('simfleet') ? 'simfleet' : 'simslim'
+      via = command === 'adopt' ? 'adopted' : context.repo?.root && await exists(join(context.repo.root, '.sim-fleet', 'project.json')) && await onPath('simfleet') ? 'simfleet' : 'simslim'
     }
-    if (!existing || current.state !== 'Booted') {
+    if (via !== 'adopted' && (!existing || current.state !== 'Booted')) {
       if (via === 'simfleet') {
         const root = existing?.repo?.root ?? context.repo?.root
         await run('simfleet', ['sim', 'boot', udid], root)
@@ -917,19 +937,20 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
       } else await run('simslim', ['on', udid])
     }
     try {
-      verifySlim(await run('simslim', ['list', '--booted']), udid)
+      if (via !== 'adopted') verifySlim(await run('simslim', ['list', '--booted']), udid)
       await run('xcrun', ['simctl', 'rename', udid, label])
       const body = { operation, task: description, ...metadata }
       const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
-        ...body, udid, originalName: device.name, via,
+        ...body, udid, originalName: (context.ended ?? []).find((entry) => entry.udid === udid)?.originalName ?? current.name, via,
+        ...(via === 'adopted' ? { adopted: true } : {}),
       })
       return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }
     } catch (error) {
-      // A new lease that was never recorded must not leave a booted, renamed simulator behind.
+      // Roll back an unrecorded claim; adopted devices keep running.
       if (!existing) {
         for (const undo of [
-          () => run('xcrun', ['simctl', 'rename', udid, device.name]),
-          () => run('xcrun', ['simctl', 'shutdown', udid]),
+          () => run('xcrun', ['simctl', 'rename', udid, current.name]),
+          ...(via !== 'adopted' ? [() => run('xcrun', ['simctl', 'shutdown', udid])] : []),
           ...(via === 'simfleet' ? [() => run('simfleet', ['release', udid], context.repo?.root)] : []),
         ]) { try { await undo() } catch { /* Best effort; the original error is reported. */ } }
       }
