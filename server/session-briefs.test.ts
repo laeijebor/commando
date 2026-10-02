@@ -59,6 +59,22 @@ describe('SessionBriefStore', () => {
   const targetId = '550e8400-e29b-41d4-a716-446655440000'
   const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'original' }
 
+  it('keeps a single session term per pane, replaced when the conversation changes', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'feature_flag', value: 'new-checkout' } }, 100)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'session', value: 'claudep --resume aaaaaaaa-1' } }, 101)
+    await briefs.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'upsert', kind: 'session', value: 'claudep --resume bbbbbbbb-2' } }, 102)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.get('%1')?.references).toEqual([
+      { kind: 'feature_flag', value: 'new-checkout' },
+      { kind: 'session', value: 'claudep --resume bbbbbbbb-2' },
+    ])
+    await replay.applyAgentPatch('$1', 'original', '%1', { reference: { action: 'remove', kind: 'session', value: 'claudep --resume bbbbbbbb-2' } }, 103)
+    expect(replay.get('%1')?.references).toEqual([{ kind: 'feature_flag', value: 'new-checkout' }])
+  })
+
   it('upserts and removes references without losing them on lifecycle updates, reload or pane moves', async () => {
     const briefs = await store()
     await briefs.reconcilePanes([identity])

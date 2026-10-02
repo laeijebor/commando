@@ -8,6 +8,7 @@ import {
   CircleAlert,
   CircleDot,
   CloudUpload,
+  Copy,
   FileDiff,
   Lightbulb,
   Images,
@@ -15,6 +16,7 @@ import {
   Flag,
   Link,
   Package,
+  RotateCcw,
   Tag,
   Ticket,
   MessageSquareText,
@@ -125,6 +127,7 @@ function referenceIcon(kind: SessionReference['kind']): ReactNode {
     case 'deployment': return <CloudUpload aria-hidden="true" />
     case 'build': return <Package aria-hidden="true" />
     case 'release': return <Tag aria-hidden="true" />
+    case 'session': return <RotateCcw aria-hidden="true" />
   }
 }
 
@@ -136,7 +139,50 @@ function referenceCaption(reference: SessionReference): string {
     case 'deployment': return `Deployment preview · ${reference.value}`
     case 'build': return reference.url ? `Build · ${reference.url}` : 'Build'
     case 'release': return reference.url ? `Release · ${reference.url}` : 'Release'
+    case 'session': return 'Resume session · click to type into the pane'
   }
+}
+
+function SessionReferenceRow({
+  command,
+  connected,
+  onTypeCommand,
+}: {
+  command: string
+  connected: boolean
+  onTypeCommand?: (command: string) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1_500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <div className="pane-worklog-reference pane-worklog-reference-session">
+      <button
+        type="button"
+        className="pane-worklog-reference-main"
+        disabled={!connected || !onTypeCommand}
+        title="Type this command into the pane (Enter is not pressed)"
+        onClick={() => onTypeCommand?.(command)}
+      >
+        <span className="pane-worklog-reference-icon">{referenceIcon('session')}</span>
+        <span><strong>Resume session</strong><small>{command}</small></span>
+      </button>
+      <button type="button" className="pane-worklog-reference-copy" aria-label="Copy resume command" title="Copy to clipboard" onClick={() => void copy()}>
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </button>
+    </div>
+  )
 }
 
 export function PaneWorklog({
@@ -147,6 +193,7 @@ export function PaneWorklog({
   paneManagementApi = { revealPaneScreenshot: async () => { throw new Error('Pane management API unavailable') } },
   revealInFinder = true,
   onOpenScreenshot = () => undefined,
+  onTypeCommand,
   connected = true,
   empty = false,
   hookConnected = true,
@@ -158,6 +205,8 @@ export function PaneWorklog({
   paneManagementApi?: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
   revealInFinder?: boolean
   onOpenScreenshot?: OpenPaneScreenshot
+  /** Types text into the pane's terminal without pressing Enter. */
+  onTypeCommand?: (command: string) => void
   connected?: boolean
   empty?: boolean
   hookConnected?: boolean
@@ -331,6 +380,9 @@ export function PaneWorklog({
             <header><strong>Important terms</strong><small>{brief.references.length}</small></header>
             <div className="pane-worklog-reference-list">
               {brief.references.map((reference) => {
+                if (reference.kind === 'session') {
+                  return <SessionReferenceRow key={`${reference.kind}:${reference.value}`} command={reference.value} connected={connected} onTypeCommand={onTypeCommand} />
+                }
                 const href = reference.kind === 'url' || reference.kind === 'issue' || reference.kind === 'deployment'
                   ? reference.value : reference.url
                 const content = <>

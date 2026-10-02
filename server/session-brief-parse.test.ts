@@ -51,6 +51,17 @@ describe('parseSessionBriefPatch references', () => {
     expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'feature_flag', value: 'flag', label: 'No' } })).toThrow('reference is invalid')
   })
 
+  it('accepts plain resume commands and rejects anything a shell could chain or expand', () => {
+    for (const value of ['opencode --yolo -s ses_f08700672ffenN8gLm9kPx2xb6', 'claudew --resume d227943a-841a-4dfa-94c7-afe2e0774487']) {
+      expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'session', value } }).reference)
+        .toEqual({ action: 'upsert', kind: 'session', value })
+    }
+    for (const value of ['claudep --resume x; rm -rf /', 'claudep --resume $(id)', 'a && b', 'a | b', 'a `b`', "a 'b'", 'a\nb', '-s x', `a ${'b'.repeat(300)}`]) {
+      expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'session', value } })).toThrow()
+    }
+    expect(() => parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'session', value: 'claudep --resume x', label: 'No' } })).toThrow('reference is invalid')
+  })
+
   it('accepts issue and deployment links and optionally linked build/release IDs', () => {
     expect(parseSessionBriefPatch({ reference: { action: 'upsert', kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' } }).reference)
       .toEqual({ action: 'upsert', kind: 'issue', value: 'https://github.com/acme/app/issues/42', label: 'Bug #42' })

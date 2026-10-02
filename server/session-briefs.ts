@@ -187,15 +187,41 @@ export function referenceIsIdentifier(kind: unknown): kind is 'build' | 'release
   return kind === 'build' || kind === 'release'
 }
 
+export const SESSION_COMMAND_MAX = 300
+
+/**
+ * A session term holds the command that resumes the agent conversation. Clicking it types the
+ * text into the pane, so accept only plain argv-style words: no shell metacharacters, quotes,
+ * newlines or control characters.
+ */
+const SESSION_COMMAND = /^[A-Za-z][\w.-]*(?: [\w.:/=@+,-]+)*$/
+
+export function validSessionCommand(value: string): boolean {
+  return value.length <= SESSION_COMMAND_MAX && SESSION_COMMAND.test(value)
+}
+
+export function referenceValueLimit(kind: unknown): number {
+  if (referenceValueIsUrl(kind)) return 2_048
+  return kind === 'session' ? SESSION_COMMAND_MAX : 120
+}
+
+export function referenceFieldsValid(kind: unknown, value: string, label: unknown, url: unknown): boolean {
+  if (referenceValueIsUrl(kind)) return validReferenceUrl(value) && url === undefined
+  if (kind === 'feature_flag') return label === undefined && url === undefined
+  if (kind === 'session') return label === undefined && url === undefined && validSessionCommand(value)
+  return label === undefined && (url == null || (typeof url === 'string' && validReferenceUrl(url)))
+}
+
+export function referenceKindIsValid(kind: unknown): kind is SessionReference['kind'] {
+  return kind === 'feature_flag' || kind === 'session' || referenceValueIsUrl(kind) || referenceIsIdentifier(kind)
+}
+
 function parseReference(value: unknown): SessionReference | null {
-  if (!isRecord(value) || (value.kind !== 'feature_flag' && !referenceValueIsUrl(value.kind) && !referenceIsIdentifier(value.kind))) return null
-  const name = cleanText(value.value, referenceValueIsUrl(value.kind) ? 2_048 : 120)
+  if (!isRecord(value) || !referenceKindIsValid(value.kind)) return null
+  const name = cleanText(value.value, referenceValueLimit(value.kind))
   const label = value.label === undefined ? undefined : cleanText(value.label, 120)
   const url = value.url === undefined ? undefined : cleanText(value.url, 2_048)
-  if (!name || label === null || url === null ||
-    (referenceValueIsUrl(value.kind) && (!validReferenceUrl(name) || url !== undefined)) ||
-    (value.kind === 'feature_flag' && (label !== undefined || url !== undefined)) ||
-    (referenceIsIdentifier(value.kind) && (label !== undefined || (url !== undefined && !validReferenceUrl(url))))) return null
+  if (!name || label === null || url === null || !referenceFieldsValid(value.kind, name, label, url)) return null
   return { kind: value.kind, value: name, ...(label ? { label } : {}), ...(url ? { url } : {}) }
 }
 
@@ -622,8 +648,11 @@ export class SessionBriefStore {
         }
       : null
     const previousUpdates = current?.updates ?? []
+    // A pane has one live conversation, so a new session term replaces the previous one.
+    const replacesSession = patch.reference?.action === 'upsert' && patch.reference.kind === 'session'
     const references = (current?.references ?? []).filter((reference) => (
-      reference.kind !== patch.reference?.kind || reference.value !== patch.reference.value
+      reference.kind !== patch.reference?.kind ||
+      (!replacesSession && reference.value !== patch.reference.value)
     ))
     if (patch.reference?.action === 'upsert') {
       references.push({ kind: patch.reference.kind, value: patch.reference.value,

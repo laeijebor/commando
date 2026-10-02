@@ -133,8 +133,8 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
-    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
-    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" so they are slim and labelled with the session and task. Release them with commando-sim.mjs release when done.`,
+    `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
+    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" so they are slim and labelled with the session and task. Release them with node ${JSON.stringify(simCliPath)} release when done.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -435,6 +435,13 @@ function planUpdateFor(input) {
   return {}
 }
 
+// The profile launcher matches the config dir in use: ~/.claudew -> claudew, ~/.claudep -> claudep.
+function resumeContext(sessionId) {
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9-]{8,80}$/.test(sessionId)) return ''
+  const profile = /^\\.(claude[wp])$/.exec((process.env.CLAUDE_CONFIG_DIR ?? '').split('/').filter(Boolean).pop() ?? '')?.[1] ?? 'claude'
+  return '\\nResume command for this conversation: ' + profile + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
+}
+
 async function main() {
   try {
     const pane = process.env.TMUX_PANE
@@ -453,7 +460,8 @@ async function main() {
     if (event === 'UserPromptSubmit' && isTaskNotification(input.prompt)) return
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: {
-        hookEventName: event, additionalContext: ${JSON.stringify(instructions)},
+        hookEventName: event,
+        additionalContext: ${JSON.stringify(instructions)} + (event === 'SessionStart' ? resumeContext(input.session_id) : ''),
       } }) + '\\n')
     }
     const toolState = event === 'PreToolUse'
@@ -656,7 +664,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--headline text] [--update kind text] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
+  console.error('Usage: commando-session-update [--headline text] [--update kind text] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
 }
 
 async function stdinJson() {
@@ -689,8 +697,8 @@ async function bodyFromArgs() {
     else if (flag === '--clear-next') body.next = null
     else if (flag === '--state') body.state = valueAfter(index++, flag)
     else if (flag === '--screenshots') body.screenshots = { dir: resolve(valueAfter(index++, flag)) }
-    else if (['--feature-flag', '--url', '--issue', '--deployment', '--build', '--release',
-      '--remove-feature-flag', '--remove-url', '--remove-issue', '--remove-deployment', '--remove-build', '--remove-release'].includes(flag)) {
+    else if (['--feature-flag', '--url', '--issue', '--deployment', '--build', '--release', '--session',
+      '--remove-feature-flag', '--remove-url', '--remove-issue', '--remove-deployment', '--remove-build', '--remove-release', '--remove-session'].includes(flag)) {
       if (body.reference) throw new Error('Only one reference action is allowed per call')
       const kind = flag.replace(/^--(?:remove-)?/, '')
       body.reference = {
@@ -786,9 +794,9 @@ export function chooseDevice(listing, heldUdids, requested) {
   })
   const devices = requested ? runtimes.flatMap(([, entries]) => entries) : (runtimes[0]?.[1] ?? [])
   const device = devices.find((entry) => entry.isAvailable === true &&
-    (requested ? entry.udid.toUpperCase() === requested.toUpperCase() : entry.state === 'Shutdown') &&
-    (requested || entry.name.startsWith('iPhone')) && !held.has(entry.udid.toUpperCase()))
-  if (!device) throw new Error(requested ? 'Requested iOS simulator is unavailable or held by another pane' :
+    entry.state === 'Shutdown' && (requested ? entry.udid.toUpperCase() === requested.toUpperCase() : entry.name.startsWith('iPhone')) &&
+    !held.has(entry.udid.toUpperCase()))
+  if (!device) throw new Error(requested ? 'Requested iOS simulator is unavailable, not Shutdown, or held by another pane' :
     'No free Shutdown iPhone simulator on the newest available iOS runtime')
   return { ...device, udid: device.udid.toUpperCase() }
 }
@@ -869,13 +877,25 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
         await run('simfleet', ['claim', udid, label], root)
       } else await run('simslim', ['on', udid])
     }
-    verifySlim(await run('simslim', ['list', '--booted']), udid)
-    await run('xcrun', ['simctl', 'rename', udid, label])
-    const body = { operation, task: description }
-    const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
-      ...body, udid, originalName: device.name, via,
-    })
-    return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }
+    try {
+      verifySlim(await run('simslim', ['list', '--booted']), udid)
+      await run('xcrun', ['simctl', 'rename', udid, label])
+      const body = { operation, task: description }
+      const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
+        ...body, udid, originalName: device.name, via,
+      })
+      return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }
+    } catch (error) {
+      // A new lease that was never recorded must not leave a booted, renamed simulator behind.
+      if (!existing) {
+        for (const undo of [
+          () => run('xcrun', ['simctl', 'rename', udid, device.name]),
+          () => run('xcrun', ['simctl', 'shutdown', udid]),
+          ...(via === 'simfleet' ? [() => run('simfleet', ['release', udid], context.repo?.root)] : []),
+        ]) { try { await undo() } catch { /* Best effort; the original error is reported. */ } }
+      }
+      throw error
+    }
   } catch (error) {
     primaryError = error
     throw error
@@ -1392,9 +1412,11 @@ function enqueueInteraction(directory, event, client) {
 }
 
 export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({
-  'experimental.chat.system.transform': async (_input, output) => {
+  'experimental.chat.system.transform': async (input, output) => {
     if (!/^%\\d+$/.test(process.env.TMUX_PANE ?? '')) return
+    const sessionId = typeof input?.sessionID === 'string' && /^ses_[A-Za-z0-9]{8,80}$/.test(input.sessionID) ? input.sessionID : ''
     const instructions = ${JSON.stringify(instructions)}
+      + (sessionId ? '\\nResume command for this conversation: opencode --yolo -s ' + sessionId + ' (pin it once with the --session flag)' : '')
     if (!output.system.includes(instructions)) output.system.push(instructions)
   },
   event: ({ event }) => {
