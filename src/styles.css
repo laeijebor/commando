@@ -2389,6 +2389,11 @@ a.pane-worklog-reference:hover { border-color: var(--border-strong); background:
 .pane-worklog-reference-icon svg { width: 10px; height: 10px; }
 .pane-worklog-reference strong { display: block; overflow: hidden; color: inherit; font: 700 8px/1.25 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-reference small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.pane-worklog-simulator-chips, .pane-worklog-simulator-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.pane-worklog-simulator-chips small { margin: 0; padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; }
+.pane-worklog-simulator-actions button { padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text-soft); background: var(--surface-soft); font: 600 6px/1 var(--mono); }
+.pane-worklog-simulator-actions button:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.pane-worklog-simulator-actions button:disabled { opacity: .5; }
 .pane-worklog-pr-list { display: grid; gap: 4px; }
 .pane-worklog-pr {
   min-width: 0;

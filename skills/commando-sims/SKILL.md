@@ -8,7 +8,7 @@ description: Lease, label, and release slim iOS simulators for a Commando agent 
 Before using an iOS simulator, run this in your current agent pane:
 
 ```sh
-$HOME/.commando/hooks/commando-sim.mjs lease --task "what you are doing"
+$HOME/.commando/hooks/commando-sim.mjs lease --task "what you are doing" --metro 8101 --backend 3101
 ```
 
 Use the returned JSON `udid` for all simulator work. A pane reuses its existing
@@ -33,7 +33,22 @@ $HOME/.commando/hooks/commando-sim.mjs list
 Never drive a device held by another pane. Idle is only a flag; it does not
 transfer ownership or permit taking someone else's device.
 
-Relabel when the task changes, and when a result is ready for user review:
+Declare the ports you use at lease time: `--metro <port>` and `--backend <port>`
+are shorthand for `--port metro=<port>` and `--port backend=<port>`. Add other
+ports with repeatable `--port <name>=<port>` (at most six unique lowercase names).
+Commando shows your purpose, live repository branch, and ports in Important terms.
+
+Run `update` when the purpose, ports, or branch change. It requires an existing
+lease and preserves fields you omit. Named ports replace matching names and keep
+other ports; `--clear-ports` resets the list before adding supplied ports.
+`--branch <name>` overrides the live pane branch.
+
+```sh
+$HOME/.commando/hooks/commando-sim.mjs update --task "checking empty state" --metro 8102
+$HOME/.commando/hooks/commando-sim.mjs update --branch "feature/empty-state" --clear-ports --backend 3102
+```
+
+`label` still relabels the task, including when a result is ready for user review:
 
 ```sh
 $HOME/.commando/hooks/commando-sim.mjs label "checking empty state"

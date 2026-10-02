@@ -63,6 +63,36 @@ describe('SimLeaseRegistry', () => {
     expect(new SimLeaseRegistry({ statePath }).list(() => true)).toEqual([])
   })
 
+  it('validates metadata, preserves omitted PATCH fields and reloads legacy leases', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-metadata-'))
+    directories.push(directory)
+    const statePath = join(directory, 'state.json')
+    const registry = new SimLeaseRegistry({ statePath })
+    const ports = [{ name: 'metro', port: 1 }, { name: 'backend', port: 65535 }]
+    registry.upsert('%1', target, { ...input, ports, branchOverride: 'feature/review' })
+    registry.touch('%1', target, { task: 'new purpose' })
+    expect(registry.list(() => true)[0]).toMatchObject({ task: 'new purpose', ports, branchOverride: 'feature/review' })
+    expect(new SimLeaseRegistry({ statePath }).list(() => true)[0]).toMatchObject({ ports, branchOverride: 'feature/review' })
+    for (const invalid of [null, {}, [{ name: 'Metro', port: 1 }], [{ name: 'a'.repeat(25), port: 1 }],
+      [{ name: '', port: 1 }], [{ name: 'bad_name', port: 1 }], [{ name: 'metro', port: '8101' }],
+      [{ name: 'metro', port: 0 }], [{ name: 'metro', port: 65536 }], [{ name: 'metro', port: 1.5 }],
+      [ports[0], ports[0]], Array.from({ length: 7 }, (_, i) => ({ name: `port-${i}`, port: i + 1 }))]) {
+      expect(() => registry.touch('%1', target, { ports: invalid })).toThrow('ports')
+    }
+    for (const branchOverride of [null, 123, 'a'.repeat(201), 'bad\nbranch', 'bad\u0085branch']) {
+      expect(() => registry.touch('%1', target, { branchOverride })).toThrow('branchOverride')
+    }
+    registry.touch('%1', target, { ports: [] })
+    expect(registry.list(() => true)[0]).toMatchObject({ ports: [], branchOverride: 'feature/review', task: 'new purpose' })
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    delete state.leases[0].ports
+    delete state.leases[0].branchOverride
+    await writeFile(statePath, JSON.stringify(state))
+    const legacy = new SimLeaseRegistry({ statePath }).list(() => true)[0]
+    expect(legacy.ports).toEqual([])
+    expect(legacy.branchOverride).toBeUndefined()
+  })
+
   it('reserves before device operations, prevents races and expires abandoned reservations', () => {
     let now = 10
     const registry = new SimLeaseRegistry({ now: () => now })
@@ -88,8 +118,9 @@ describe('SimLeaseApi', () => {
   function setup() {
     const registry = new SimLeaseRegistry({ now: () => 123 })
     const paneExists = (paneId: string) => paneId === '%1' || paneId === '%2'
-    const api = new SimLeaseApi({ token, registry, paneExists, paneContext: async (pane) => paneExists(pane) ? target : null })
-    return { api, registry }
+    const onChange = vi.fn()
+    const api = new SimLeaseApi({ token, registry, paneExists, onChange, paneContext: async (pane) => paneExists(pane) ? target : null })
+    return { api, registry, onChange }
   }
   async function call(api: SimLeaseApi, method: string, suffix = '', body?: unknown, headers: Record<string, string> = {}) {
     const request = Readable.from(body === undefined ? [] : [JSON.stringify(body)]) as IncomingMessage
@@ -117,6 +148,20 @@ describe('SimLeaseApi', () => {
     expect((await call(api, 'GET')).body.leases).toHaveLength(1)
     expect((await call(api, 'DELETE', '', {})).status).toBe(200)
     expect((await call(api, 'GET')).body.leases).toEqual([])
+  })
+
+  it('publishes lease, metadata updates, labels and release through the brief callback only after successful changes', async () => {
+    const { api, onChange } = setup()
+    await call(api, 'PUT', '', { ...input, ports: [{ name: 'metro', port: 8101 }], branchOverride: 'review' })
+    const patched = await call(api, 'PATCH', '', { ports: [{ name: 'backend', port: 3001 }] })
+    expect(patched.body.lease).toMatchObject({ task: input.task, branchOverride: 'review', ports: [{ name: 'backend', port: 3001 }] })
+    await call(api, 'PATCH', '', { task: 'ready: review' })
+    await call(api, 'DELETE', '', {})
+    expect(onChange.mock.calls).toEqual([['%1'], ['%1'], ['%1'], ['%1']])
+    await call(api, 'PATCH', '', {})
+    await call(api, 'PUT', '', { ...input, ports: [{ name: 'metro', port: 0 }] })
+    await call(api, 'POST', '/reservation', { udid: UDID })
+    expect(onChange).toHaveBeenCalledTimes(4)
   })
 
   it('rejects invalid auth, methods, panes, inputs and oversized bodies', async () => {

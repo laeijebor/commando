@@ -21,6 +21,7 @@ import {
   Ticket,
   MessageSquareText,
   Minus,
+  Smartphone,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -33,6 +34,7 @@ import type { PrsApiClient } from './prsApi'
 import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
 import type { PaneManagementApiClient } from './paneManagementApi'
 import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
+import type { SimsApiClient } from './simsApi'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -193,6 +195,8 @@ export function PaneWorklog({
   paneManagementApi = { revealPaneScreenshot: async () => { throw new Error('Pane management API unavailable') } },
   revealInFinder = true,
   onOpenScreenshot = () => undefined,
+  simsApi,
+  onShowSimulator,
   onTypeCommand,
   connected = true,
   empty = false,
@@ -205,6 +209,8 @@ export function PaneWorklog({
   paneManagementApi?: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
   revealInFinder?: boolean
   onOpenScreenshot?: OpenPaneScreenshot
+  simsApi?: Pick<SimsApiClient, 'open'>
+  onShowSimulator?: (udid: string) => void
   /** Types text into the pane's terminal without pressing Enter. */
   onTypeCommand?: (command: string) => void
   connected?: boolean
@@ -212,6 +218,8 @@ export function PaneWorklog({
   hookConnected?: boolean
 }) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
+  const [simPending, setSimPending] = useState(false)
+  const [simError, setSimError] = useState('')
   const [compact, setCompact] = useState(false)
   const [following, setFollowing] = useState(true)
   const [unread, setUnread] = useState(0)
@@ -234,6 +242,7 @@ export function PaneWorklog({
         : previewCount
     })()
   ), 0)
+  const simulator = brief.simulator
   const tasks = brief.tasks ?? []
   const activeTasks = tasks.filter((task) => task.status !== 'cancelled')
   const completedTasks = activeTasks.filter((task) => task.status === 'completed').length
@@ -375,11 +384,39 @@ export function PaneWorklog({
           />
         </section>
 
-        {brief.references?.length ? (
+        {(brief.references?.length || simulator) ? (
           <section className="pane-worklog-references" aria-label={`Important terms for ${paneLabel}`}>
-            <header><strong>Important terms</strong><small>{brief.references.length}</small></header>
+            <header><strong>Important terms</strong><small>{(brief.references?.length ?? 0) + (simulator ? 1 : 0)}</small></header>
             <div className="pane-worklog-reference-list">
-              {brief.references.map((reference) => {
+              {simulator ? (
+                <div className="pane-worklog-reference pane-worklog-simulator">
+                  <span className="pane-worklog-reference-icon"><Smartphone aria-hidden="true" /></span>
+                  <div>
+                    <strong title={simulator.task || simulator.sessionName}>{simulator.task || simulator.sessionName}</strong>
+                    <small title={simulator.label}>{simulator.label}</small>
+                    <div className="pane-worklog-simulator-chips">
+                      {simulator.branch !== undefined ? <small>{simulator.branch}</small> : null}
+                      {simulator.ports.map((port) => <small key={port.name}>{port.name} :{port.port}</small>)}
+                      {simulator.idle ? <small>idle</small> : null}
+                    </div>
+                    <div className="pane-worklog-simulator-actions">
+                      <button type="button" disabled={!connected || !simsApi || simPending} onClick={async () => {
+                        setSimPending(true)
+                        setSimError('')
+                        try {
+                          const result = await simsApi?.open(simulator.udid)
+                          if (result?.raised === false) setSimError(result.reason || 'Simulator activated, but could not raise the device window.')
+                        }
+                        catch (error) { setSimError(error instanceof Error ? error.message : 'Unable to open Simulator') }
+                        finally { setSimPending(false) }
+                      }}>Open Simulator</button>
+                      <button type="button" disabled={!connected || !onShowSimulator} onClick={() => onShowSimulator?.(simulator.udid)}>Show beside pane</button>
+                    </div>
+                    {simError ? <small role="alert">{simError}</small> : null}
+                  </div>
+                </div>
+              ) : null}
+              {brief.references?.map((reference) => {
                 if (reference.kind === 'session') {
                   return <SessionReferenceRow key={`${reference.kind}:${reference.value}`} command={reference.value} connected={connected} onTypeCommand={onTypeCommand} />
                 }

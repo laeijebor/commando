@@ -69,6 +69,8 @@ import {
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
+import { SimWallApi } from './sim-wall.js'
+import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -607,6 +609,8 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port) })
+
   const publishedBriefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
   const briefTargetIds = new Map<string, string>()
 
@@ -614,7 +618,27 @@ async function main(): Promise<void> {
     broadcast({ type: 'pane_mark', mark })
   }
 
-  const publishSessionBrief = (brief: SessionBrief): void => {
+  // Keep asynchronous repo joins in publication order, including initial snapshots.
+  let briefPublication = Promise.resolve()
+  const queueBriefPublication = (action: () => Promise<void>): Promise<void> => {
+    briefPublication = briefPublication.then(action)
+      .catch((error: unknown) => console.error('[commando] failed to publish session brief', error))
+    return briefPublication
+  }
+
+  const clientBriefDependencies = () => ({
+    panes: snapshot.panes,
+    leases: () => simLeaseRegistry.list(paneExists),
+    resolveRepos: (paths: string[]) => paneRepos.resolve(paths),
+  })
+  const clientSessionBrief = async (brief: SessionBrief): Promise<SessionBrief> => (
+    await assembleClientSessionBriefs([brief], clientBriefDependencies(), false)
+  )[0]
+  const clientSessionBriefs = (): Promise<SessionBrief[]> => (
+    assembleClientSessionBriefs(sessionBriefs.values(), clientBriefDependencies())
+  )
+
+  const publishSessionBrief = (brief: SessionBrief): Promise<void> => {
     const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
     const previousTargetId = briefTargetIds.get(brief.paneId)
     const previous = previousTargetId === undefined || previousTargetId === pane?.targetId
@@ -629,7 +653,9 @@ async function main(): Promise<void> {
           console.error('[commando] failed to record pane mark activity', error)
         })
     }
-    broadcast({ type: 'session_brief', brief })
+    return queueBriefPublication(async () => {
+      broadcast({ type: 'session_brief', brief: await clientSessionBrief(brief) })
+    })
   }
 
   const invalidateCompanionOutputRefresh = (paneId: string): void => {
@@ -1155,7 +1181,9 @@ async function main(): Promise<void> {
           })),
         )
         if (briefsChanged) {
-          broadcast({ type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
+          await queueBriefPublication(async () => {
+            broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+          })
         }
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
@@ -1411,10 +1439,16 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
+  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists })
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
-    registry: new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port) }),
+    registry: simLeaseRegistry,
     paneExists,
+    onChange: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      if (pane && session) return publishSessionBrief(withSimulatorClaim(sessionBriefs.get(paneId), pane, session.name))
+    },
     paneContext: async (paneId) => {
       const pane = paneForId(paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1885,7 +1919,9 @@ async function main(): Promise<void> {
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
     send(client, { type: 'snapshot', snapshot })
     send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
-    send(client, { type: 'session_brief_snapshot', briefs: sessionBriefs.values() })
+    void queueBriefPublication(async () => {
+      send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+    })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
@@ -2003,12 +2039,13 @@ async function main(): Promise<void> {
         return
       }
 
-      if (url.pathname.startsWith('/api/')) {
+      if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/sims/')) {
         if (!(await requestIsAuthorized(request, url))) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (await simWallApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
