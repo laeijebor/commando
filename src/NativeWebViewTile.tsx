@@ -129,6 +129,9 @@ export function NativeWebViewTile({
             if (current?.supportsPageResponses) {
               presentPendingSnapshot(current, snapshot, pageUrlRef.current)
             }
+            // The drawer must not depend on the review socket to learn what
+            // the page just queued — hand it the daemon's reply directly.
+            for (const listener of pendingListenersRef.current) listener(snapshot)
           }).catch(() => undefined)
         }
         if (event.type === 'webview.pageQuestions') {

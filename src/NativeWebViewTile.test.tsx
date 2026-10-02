@@ -364,6 +364,41 @@ describe('NativeWebViewTile review integration', () => {
     ))
   })
 
+  it('shows page-queued answers in the drawer even when the review socket is silent', async () => {
+    const { bridge, loaded, pageResponse } = nativeHarness()
+    const queuedSnapshot: WebPanePendingSnapshot = {
+      revision: 1,
+      notes: [{
+        id: 1,
+        revision: 1,
+        selector: '#plan',
+        tag: 'redline-choice',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+        comment: 'Which plan?: Pro',
+        pageUrl: 'https://example.com/review',
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro' },
+        attachments: [],
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }
+    render(
+      <NativeWebViewTile
+        bridge={bridge}
+        webPane={webPane}
+        reloadKey={0}
+        connected={false}
+        pendingQueue={{ ...pendingQueue, addResponse: async () => queuedSnapshot }}
+        onFallback={() => undefined}
+      />,
+    )
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalled())
+    act(() => loaded('https://example.com/review'))
+    act(() => pageResponse('https://example.com/review', { question: 'Which plan?', answer: 'Pro', queueKey: 'plan' }))
+    expect(await screen.findByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
   it('filters delayed responses for the current document and ignores stale pending revisions', async () => {
     const { attachment, bridge, loaded, pageResponse } = nativeHarness()
     let resolveResponse!: (snapshot: WebPanePendingSnapshot) => void

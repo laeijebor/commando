@@ -152,6 +152,7 @@ describe('TileReviewLayer', () => {
 
   it('hydrates and reconciles pushed queue snapshots through the surface contract', async () => {
     let publish: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const update = vi.fn(async () => ({ notes: [annotation(4, 3, 'Local draft')], knownUpTo: 4, dropped: 0, revision: 3 }))
     const reviewSurface = surface({
       subscribePending: (listener) => {
         publish = listener
@@ -165,7 +166,7 @@ describe('TileReviewLayer', () => {
         active={false}
         containerRef={{ current: document.createElement('div') }}
         inputRef={{ current: document.createElement('div') }}
-        pendingQueue={queue()}
+        pendingQueue={queue({ update })}
         surface={reviewSurface}
       />,
     )
@@ -184,8 +185,40 @@ describe('TileReviewLayer', () => {
       dropped: 0,
       revision: 2,
     }))
-    expect(screen.getByRole('alert')).toHaveTextContent(/changed after you started editing/i)
+    // The owner's typed text is never discarded: it rebases onto the new revision.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Local draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(4, 2, { answer: 'Local draft' }))
+  })
+
+  it('refreshes and retries a save at the daemon revision when the note was stale', async () => {
+    const stale = Object.assign(new Error('Pending note revision is stale'), { status: 409 })
+    const update = vi.fn()
+      .mockRejectedValueOnce(stale)
+      .mockResolvedValueOnce({ notes: [annotation(4, 3, 'Local draft')], knownUpTo: 4, dropped: 0, revision: 3 })
+    const list = vi.fn()
+      .mockResolvedValueOnce({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 })
+      .mockResolvedValueOnce({ notes: [annotation(4, 2, 'Changed elsewhere')], knownUpTo: 4, dropped: 0, revision: 2 })
+    render(
+      <TileReviewLayer
+        webPaneId="w-retry"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list, update })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    expect(update).toHaveBeenNthCalledWith(1, 4, 1, { answer: 'Local draft' })
+    expect(update).toHaveBeenNthCalledWith(2, 4, 2, { answer: 'Local draft' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('occludes native surfaces only for opaque review UI, not highlight hit targets', async () => {
