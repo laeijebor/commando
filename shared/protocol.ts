@@ -257,6 +257,12 @@ export type SimWallDevice = {
   lease: SimWallLease | null
 }
 
+export type SimWallListing = {
+  sims: SimWallDevice[]
+  listedAt: number
+  stale: boolean
+}
+
 export type TmuxPane = PaneTerminalState & {
   id: string
   targetId: string

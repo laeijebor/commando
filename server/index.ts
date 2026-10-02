@@ -71,7 +71,7 @@ import {
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
-import { SimWallApi } from './sim-wall.js'
+import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
@@ -1460,7 +1460,7 @@ async function main(): Promise<void> {
     onChange: publishSessionBrief,
   })
   const simLive = new SimLiveService()
-  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists })
+  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
     registry: simLeaseRegistry,
