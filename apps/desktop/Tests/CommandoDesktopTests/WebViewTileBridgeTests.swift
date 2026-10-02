@@ -100,6 +100,14 @@ final class WebViewTileBridgeTests: XCTestCase {
         ]))
     }
 
+    func testSamePageIgnoresHashAndQueryButNotPath() {
+        XCTAssertTrue(WebViewTileProtocol.samePage("https://example.com/review#reach", "https://example.com/review#composer"))
+        XCTAssertTrue(WebViewTileProtocol.samePage("https://example.com/review", "https://example.com/review?v=2"))
+        XCTAssertFalse(WebViewTileProtocol.samePage("https://example.com/review", "https://example.com/other"))
+        XCTAssertFalse(WebViewTileProtocol.samePage("https://example.com/review", "https://example.org/review"))
+        XCTAssertFalse(WebViewTileProtocol.samePage(nil, "https://example.com/review"))
+    }
+
     func testConnectRespondsWithCapabilities() {
         let events = NSMutableArray()
         let (bridge, _) = makeBridge(events: events)
