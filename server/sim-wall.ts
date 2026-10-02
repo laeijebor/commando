@@ -46,47 +46,6 @@ const RAISE_SIMULATOR = `on run argv
   end try
 end run`
 
-function simulatorTilePage(udid: string, label: string): string {
-  const escaped = label.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>${escaped}</title>
-<style>
-html,body{height:100%;margin:0;background:#0c0a14;color:#f5f3fa;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-body{display:flex;flex-direction:column;overflow:hidden}
-header{flex:none;padding:10px 12px;font-size:12px;overflow-wrap:anywhere}
-header strong{display:block;font-weight:600}header small{display:block;margin-top:4px;color:#8f87a6;font-size:10px}
-main{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 8px 8px}
-img{display:block;width:100%;height:100%;min-height:0;object-fit:contain}
-</style>
-</head><body><header><strong>${escaped}</strong><small>snapshot · refreshes every 2s</small></header><main><img id="snapshot" alt="Simulator snapshot"></main>
-<script>
-const frame = document.getElementById('snapshot');
-const endpoint = new URL('/api/sims/${udid}/snapshot.jpg', location.href);
-const pageUrl = new URL(location.href);
-const token = pageUrl.searchParams.get('token');
-if (pageUrl.searchParams.has('token')) {
-  pageUrl.searchParams.delete('token');
-  history.replaceState(history.state, '', pageUrl.href);
-}
-if (token) endpoint.searchParams.set('token', token);
-let pending = false;
-function refresh() {
-  if (document.visibilityState !== 'visible' || pending) return;
-  pending = true;
-  const next = new Image();
-  endpoint.searchParams.set('t', String(Date.now()));
-  next.onload = () => { if (document.visibilityState === 'visible') frame.src = next.src; pending = false; };
-  next.onerror = () => { pending = false; };
-  next.src = endpoint.href;
-}
-const timer = setInterval(refresh, 2000);
-document.addEventListener('visibilitychange', refresh);
-window.addEventListener('pagehide', () => clearInterval(timer));
-refresh();
-</script></body></html>`
-}
-
 export class SimWallApi {
   private readonly runner: SimWallRunner
   private readonly now: () => number
@@ -218,23 +177,11 @@ export class SimWallApi {
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
-    if (url.pathname !== '/api/sims' && !url.pathname.startsWith('/api/sims/') && !url.pathname.startsWith('/sims/')) return false
+    if (url.pathname !== '/api/sims' && !url.pathname.startsWith('/api/sims/')) return false
     try {
       if (url.pathname === '/api/sims') {
         if (request.method !== 'GET') throw new SimWallError(405, 'Method not allowed')
         json(response, 200, { sims: await this.list() })
-        return true
-      }
-      const view = /^\/(?:api\/)?sims\/([^/]+)\/view$/.exec(url.pathname)
-      if (view) {
-        if (!UDID.test(view[1])) throw new SimWallError(400, 'udid must be a simulator UUID')
-        if (request.method !== 'GET') throw new SimWallError(405, 'Method not allowed')
-        const udid = view[1].toUpperCase()
-        const lease = this.dependencies.registry.list(this.dependencies.paneExists).find((entry) => entry.udid === udid)
-        const page = simulatorTilePage(udid, lease?.label ?? udid)
-        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
-          'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' })
-        response.end(page)
         return true
       }
       const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open)$/.exec(url.pathname)

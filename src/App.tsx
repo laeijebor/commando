@@ -918,6 +918,7 @@ export function App() {
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
+  const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -1935,8 +1936,32 @@ export function App() {
     }
   }
 
+  const showSimulator = async (udid: string, anchorPaneId: string) => {
+    setPaneActionError('')
+    try {
+      const existing = webPanes.find((tile) => tile.content?.udid === udid.toUpperCase())
+      const id = existing?.id ?? (await simsApi.show(udid, anchorPaneId)).webPaneId
+      if (existing) {
+        setArea('workspace')
+        setSelectedSessionId(existing.sessionId)
+        setActiveTabs((current) => ({ ...current, [existing.sessionId]: existing.windowId }))
+      }
+      setPendingPaneFocus(null)
+      setMaximizedPaneId(null)
+      setActiveSimulatorTileId(id)
+      window.requestAnimationFrame(() => {
+        const tile = document.querySelector<HTMLElement>(`[data-web-pane-id="${id}"]`)
+        tile?.scrollIntoView?.({ block: 'nearest' })
+        tile?.querySelector<HTMLCanvasElement>('canvas:not([hidden])')?.focus()
+      })
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to show simulator')
+    }
+  }
+
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
+    if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
     // Drop the tile locally right away; the daemon broadcast confirms it.
     setWebPanes((current) => current.filter((webPane) => webPane.id !== webPaneId))
     try {
@@ -2788,7 +2813,7 @@ export function App() {
                             prsApi={prsApi}
                             screenshotsApi={paneScreenshotsApi}
                             simsApi={simsApi}
-                            onShowSimulator={(udid) => { void openWebPane(simsApi.viewUrl(udid), pane.id) }}
+                            onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }}
                             paneManagementApi={paneManagementApi}
                             revealInFinder={revealInFinder}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
@@ -2868,6 +2893,8 @@ export function App() {
                         <WebPaneCard
                           key={webPane.id}
                           webPane={webPane}
+                          simulatorActive={activeSimulatorTileId === webPane.id}
+                          onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
                           onClose={() => void closeWebPane(webPane.id)}
                           onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
                           wsToken={token}

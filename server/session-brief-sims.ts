@@ -17,7 +17,7 @@ export function withSimulatorClaim(
   if (!lease) return content
   const branch = lease.branchOverride ?? repo?.branch
   return { ...content, simulator: {
-    udid: lease.udid, label: lease.label, task: lease.task, sessionName: lease.sessionName,
+    udid: lease.udid, originalName: lease.originalName, label: lease.label, task: lease.task, sessionName: lease.sessionName,
     ...(branch !== undefined ? { branch } : {}), ports: lease.ports.map((port) => ({ ...port })), idle: lease.idle,
   } }
 }

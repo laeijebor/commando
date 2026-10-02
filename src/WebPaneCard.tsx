@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureInPicture2, RotateCw, ShieldAlert, Wrench, X } from 'lucide-react'
+import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureInPicture2, RotateCw, ShieldAlert, Smartphone, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneFeedbackInfo } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
+import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
@@ -84,6 +85,8 @@ function originLabel(url: string): string {
  */
 export function WebPaneCard({
   webPane,
+  simulatorActive = false,
+  onActivateSimulator,
   onClose,
   onConfirm,
   wsToken = '',
@@ -104,6 +107,8 @@ export function WebPaneCard({
   keepStreamingWhenHidden = false,
 }: {
   webPane: WebPane
+  simulatorActive?: boolean
+  onActivateSimulator?: () => void
   onClose: () => void
   onConfirm: (allowOrigin: boolean) => void
   /** Session token for the chromium tile stream (empty with cookie auth). */
@@ -144,7 +149,7 @@ export function WebPaneCard({
   // Chromium panes may opt into the same surface locally for the fidelity
   // experiment while retaining their daemon-side engine and CDP endpoint.
   const nativeBridge = useRef<NativeWebViewBridge | null>(
-    !chromium && isLocalWebPaneUrl(webPane.url) ? null : getNativeWebViewBridge(),
+    webPane.content || (!chromium && isLocalWebPaneUrl(webPane.url)) ? null : getNativeWebViewBridge(),
   ).current
   const [tier, setTier] = useState<'undecided' | 'native' | 'iframe'>(
     nativeBridge ? 'undecided' : 'iframe',
@@ -164,7 +169,7 @@ export function WebPaneCard({
   }, [nativeBridge])
 
   useEffect(() => {
-    if (webPane.status !== 'open' || tier !== 'iframe' || chromium) return
+    if (webPane.content || webPane.status !== 'open' || tier !== 'iframe' || chromium) return
     setPhase('loading')
     const watchdog = window.setTimeout(() => {
       if (phaseRef.current === 'loading') setPhase('stalled')
@@ -203,6 +208,24 @@ export function WebPaneCard({
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
   }, [nativeChromium, nativeLoaded, webPane.url])
+
+  if (webPane.content?.kind === 'simulator') return (
+    <article className="web-pane" data-web-pane-id={webPane.id} onPointerDownCapture={onActivateSimulator}>
+      <header className="web-pane-head" draggable={onDragStart ? 'true' : 'false'} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+        <Smartphone className="web-pane-glyph" aria-hidden="true" />
+        <button type="button" className="web-pane-url is-editable" onClick={onActivateSimulator} aria-label="Focus simulator tile">
+          <span className="web-pane-host">Simulator</span>
+          <span className="web-pane-path">{webPane.content.udid}</span>
+        </button>
+        <span className="web-pane-meta"><span className="web-pane-chip">simulator</span></span>
+        <span className="web-pane-actions">
+          {onMaximize ? <button type="button" className="web-pane-button" onClick={onMaximize} aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}>{maximized ? <Minimize2 /> : <Maximize2 />}</button> : null}
+          <button type="button" className="web-pane-button" onClick={onClose} aria-label="Close simulator tile"><X /></button>
+        </span>
+      </header>
+      <SimLiveView udid={webPane.content.udid} token={wsToken} active={simulatorActive} connected={connected} />
+    </article>
+  )
 
   return (
     <article className="web-pane" data-web-pane-id={webPane.id}>

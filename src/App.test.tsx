@@ -93,6 +93,13 @@ vi.mock('./ResizablePaneLayout', () => ({
     <div data-testid="pane-layout" data-layout-key={layoutKey}>{[...panes.values()]}</div>
   ),
 }))
+vi.mock('./SimLiveView', () => ({
+  SimLiveView: ({ udid, active }: { udid: string; active: boolean }) => {
+    const canvas = useRef<HTMLCanvasElement>(null)
+    useEffect(() => { if (active) canvas.current?.focus() }, [active])
+    return <canvas ref={canvas} tabIndex={0} data-testid={`sim-${udid}`} data-active={String(active)} />
+  },
+}))
 vi.mock('./NativeWebViewTile', () => ({ NativeWebViewTile: () => null }))
 vi.mock('./PaneGitStats', () => ({ PaneGitStats: () => null }))
 vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
@@ -418,7 +425,7 @@ describe('session update briefs', () => {
 
   it('opens the claimed simulator beside its owning pane through the existing web tile API', async () => {
     await renderAppWithSnapshot()
-    const simulator = { udid: '11111111-1111-1111-1111-111111111111', label: 'Work · Review', task: 'Review', sessionName: 'work', ports: [{ name: 'metro', port: 8101 }], idle: false }
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Work · Review', task: 'Review', sessionName: 'work', ports: [{ name: 'metro', port: 8101 }], idle: false }
     act(() => daemonMessage?.({ type: 'session_brief', brief: {
       paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
       state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
@@ -428,11 +435,18 @@ describe('session update briefs', () => {
     expect(screen.getByLabelText('Worklog for api')).toHaveTextContent('No agent hook data received')
     vi.mocked(fetch).mockResolvedValue(new Response('{"webPaneId":"w-test","status":"open"}', { status: 200 }))
     fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
-    const url = new URL(`/api/sims/${simulator.udid}/view`, window.location.href)
-    url.searchParams.set('token', 'test-token')
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web-panes', expect.objectContaining({
-      method: 'POST', body: JSON.stringify({ url: url.toString(), anchor: pane.id }),
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+      body: JSON.stringify({ content: { kind: 'simulator', udid: simulator.udid }, anchor: pane.id }),
     })))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...openWebPane, id: 'w-test', url: '', content: { kind: 'simulator', udid: simulator.udid } }] }))
+    const live = await screen.findByTestId(`sim-${simulator.udid}`)
+    expect(live).toHaveAttribute('data-active', 'true')
+    const opens = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/web-panes').length
+    act(() => live.blur())
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+    await waitFor(() => expect(live).toHaveFocus())
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/web-panes')).toHaveLength(opens)
     fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/sims/${simulator.udid}/open`, expect.objectContaining({
       method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer test-token' },

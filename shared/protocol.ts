@@ -156,6 +156,7 @@ export type SessionReference = {
 }
 
 export type SimulatorClaim = {
+  originalName?: string
   udid: string
   label: string
   task: string
@@ -395,6 +396,8 @@ export type WebPaneEngine = 'webkit' | 'chromium'
  * stripped from any LayoutSpec before it is sent to the daemon.
  */
 export type WebPane = {
+  /** Built-in content bypasses browser engines and URL navigation. */
+  content?: { kind: 'simulator'; udid: string }
   id: string
   url: string
   sessionId: string

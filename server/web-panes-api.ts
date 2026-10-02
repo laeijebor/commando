@@ -794,8 +794,13 @@ export class WebPanesApi {
   }
 
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
-    const { url, anchor, placement, engine } = body
-    if (typeof url !== 'string') throw new HttpError(400, 'url must be a string')
+    const { url, anchor, placement, engine, content } = body
+    let simulator: { kind: 'simulator'; udid: string } | undefined
+    if (content !== undefined) {
+      if (!content || typeof content !== 'object' || Array.isArray(content) || (content as { kind?: unknown }).kind !== 'simulator' || typeof (content as { udid?: unknown }).udid !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test((content as { udid: string }).udid)) throw new HttpError(400, 'Invalid simulator content')
+      simulator = { kind: 'simulator', udid: (content as { udid: string }).udid.toUpperCase() }
+    }
+    if (!simulator && typeof url !== 'string') throw new HttpError(400, 'url must be a string')
     if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {
       throw new HttpError(400, 'anchor must be a tmux pane id (use $TMUX_PANE)')
     }
@@ -815,13 +820,14 @@ export class WebPanesApi {
     if (!anchorPane) throw new HttpError(404, 'Anchor tmux pane does not exist')
 
     return this.dependencies.service.open({
-      url,
+      url: simulator ? '' : url as string,
+      ...(simulator ? { content: simulator } : {}),
       anchorPaneId: anchorPane.id,
       sessionId: anchorPane.sessionId,
       windowId: anchorPane.windowId,
       placement: placement as WebPanePlacement | undefined,
       anchorSize: { cols: anchorPane.width, rows: anchorPane.height },
-      engine: engine as WebPaneEngine | undefined,
+      engine: simulator ? 'webkit' : engine as WebPaneEngine | undefined,
       openedBy: caller === 'owner' ? 'user' : 'agent',
       openerLabel: caller === 'agent'
         ? this.dependencies.agentLabel?.(anchorPane.id)

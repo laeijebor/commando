@@ -37,7 +37,7 @@ afterEach(() => {
 
 describe('PaneWorklog', () => {
   it('renders a simulator first, counts it with references and handles both actions', async () => {
-    const simulator = { udid: 'sim-uuid', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
+    const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
     const simsApi = { open: vi.fn().mockResolvedValue({ ok: true, raised: true }) }
     const onShowSimulator = vi.fn()
     render(<PaneWorklog brief={{ ...brief, simulator, references: [{ kind: 'feature_flag', value: 'checkout' }] }} paneLabel="Tests" simsApi={simsApi} onShowSimulator={onShowSimulator} />)
@@ -47,7 +47,7 @@ describe('PaneWorklog', () => {
     expect(section.querySelector('.pane-worklog-reference-list')?.firstElementChild).toHaveTextContent(simulator.task)
     const claim = section.querySelector('.pane-worklog-simulator')!
     expect(claim.querySelector('strong')).toHaveTextContent(/^Check checkout$/)
-    expect(claim.querySelector('strong + small')).toHaveTextContent(/^Session · Check checkout$/)
+    expect(claim.querySelector('strong + small')).toHaveTextContent(/^iPhone 17 Pro$/)
     expect(section).toHaveTextContent('feature/checkout')
     expect(section).toHaveTextContent('metro :8101')
     expect(section).toHaveTextContent('backend :3001')
@@ -59,13 +59,13 @@ describe('PaneWorklog', () => {
   })
 
   it('uses the session as the title without a task and shows the activation/raise reason next to the button', async () => {
-    const simulator = { udid: 'sim-uuid', label: 'Session simulator', task: '', sessionName: 'Session', ports: [], idle: false }
+    const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session simulator', task: '', sessionName: 'Session', ports: [], idle: false }
     const simsApi = { open: vi.fn().mockResolvedValueOnce({ ok: true, raised: false, reason: 'Simulator activated, but Accessibility permission was denied.' }).mockResolvedValueOnce({ ok: true, raised: true }) }
     render(<PaneWorklog brief={{ ...brief, simulator }} paneLabel="Tests" simsApi={simsApi} />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
     const claim = screen.getByLabelText('Important terms for Tests').querySelector('.pane-worklog-simulator')!
     expect(claim.querySelector('strong')).toHaveTextContent(/^Session$/)
-    expect(claim.querySelector('strong + small')).toHaveTextContent(/^Session simulator$/)
+    expect(claim.querySelector('strong + small')).toHaveTextContent(/^iPhone 17 Pro$/)
     fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Simulator activated, but Accessibility permission was denied.')
     expect(screen.getByRole('alert').closest('.pane-worklog-simulator')).toBe(claim)
@@ -75,7 +75,7 @@ describe('PaneWorklog', () => {
   })
 
   it('shows claims without references or activity, reports open failures and removes released claims', async () => {
-    const simulator = { udid: 'sim-uuid', label: 'Session', task: 'Review', sessionName: 'Session', ports: [], idle: false }
+    const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session', task: 'Review', sessionName: 'Session', ports: [], idle: false }
     const simsApi = { open: vi.fn().mockRejectedValue(new Error('Simulator is not booted')) }
     const view = render(<PaneWorklog brief={{ ...brief, references: [], tasks: [], updates: [], simulator }} empty paneLabel="Tests" simsApi={simsApi} />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))

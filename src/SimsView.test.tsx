@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
 
+vi.mock('./SimLiveView', () => ({
+  SimLiveView: ({ udid, token }: { udid: string; token: string }) => <div data-testid="live-view" data-udid={udid} data-token={token} />,
+}))
+
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
 const B = 'BBBBBBBB-2222-2222-2222-222222222222'
 const repo = { root: '/repo', name: 'widgets', branch: 'feature', isWorktree: true }
@@ -233,4 +237,27 @@ describe('SimsView', () => {
     await tick(3000)
     expect(screen.getAllByRole('alert')).toHaveLength(2)
   })
+})
+
+
+it('opens one focused wall overlay, pauses only its card, switches sims, and closes with Escape or the close button', async () => {
+  sims.push(device({ udid: B, name: 'Stray phone', lease: null }))
+  render(<SimsView token="owner" />); await flush(); await intersect(true, 0); await intersect(true, 1)
+  await loaded(0); await loaded(1)
+  const trigger = screen.getByRole('button', { name: 'View Review UI live' })
+  trigger.focus(); fireEvent.click(trigger); await flush()
+  expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-udid', A)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-token', 'owner')
+  const before = snapshotCalls().length; await tick(2000)
+  expect(snapshotCalls().slice(before).map(([url]) => url)).toEqual([`/api/sims/${B}/snapshot.jpg`])
+  fireEvent.click(screen.getByRole('button', { name: 'View Stray phone live' })); await flush()
+  expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  expect(screen.getByTestId('live-view')).toHaveAttribute('data-udid', B)
+  fireEvent.keyDown(document, { key: 'Escape' }); await flush()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button', { name: 'View Stray phone live' })).toHaveFocus()
+  fireEvent.click(trigger); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(trigger).toHaveFocus()
 })

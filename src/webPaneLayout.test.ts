@@ -148,3 +148,11 @@ describe('insertWebPaneLeaves', () => {
     expect(leafIds).toHaveLength(4)
   })
 })
+
+
+it('places simulator content using the same anchored tile geometry as URL content', () => {
+  const tree = parseWindowLayout(TWO_PANE_LAYOUT)!
+  const browser = webPane({ placement: 'right' })
+  const simulator = { ...browser, url: '', content: { kind: 'simulator' as const, udid: 'AAAAAAAA-1111-1111-1111-111111111111' } }
+  expect(insertWebPaneLeaves(tree, [simulator])).toEqual(insertWebPaneLeaves(tree, [browser]))
+})

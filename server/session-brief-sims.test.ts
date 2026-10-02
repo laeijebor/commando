@@ -16,7 +16,7 @@ describe('client simulator claims', () => {
     registry.upsert('%1', target, input)
     const claim = () => registry.list(() => true)[0]
     const joined = withSimulatorClaim(brief, pane, 'Session', claim(), { ...target.repo, branch: 'live-branch' })
-    expect(joined.simulator).toEqual({ udid: input.udid, label: 'Session · Check checkout', task: input.task, sessionName: 'Session', branch: 'live-branch', ports: input.ports, idle: false })
+    expect(joined.simulator).toEqual({ udid: input.udid, originalName: input.originalName, label: 'Session · Check checkout', task: input.task, sessionName: 'Session', branch: 'live-branch', ports: input.ports, idle: false })
     expect(brief.simulator).toBeUndefined()
     expect(joined.references).toEqual(brief.references)
     expect(parseSessionBrief(joined)).toEqual(brief)

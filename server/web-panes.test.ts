@@ -669,3 +669,32 @@ describe('WebPaneService', () => {
     expect(navigated.openerLabel).toBeUndefined()
   })
 })
+
+
+describe('persisted simulator tiles', () => {
+  const udid = 'AAAAAAAA-1111-1111-1111-111111111111'
+  it('deduplicates by udid, preserves its anchor across restart and reuses move/close behavior', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const tile = service.open({ ...anchor, url: '', content: { kind: 'simulator', udid: udid.toLowerCase() }, anchorSize: { cols: 180, rows: 50 } })
+    expect(tile).toMatchObject({ content: { kind: 'simulator', udid }, url: '', status: 'open', placement: 'right', layoutState: 'pending' })
+    expect(service.open({ ...anchor, anchorPaneId: '%13', url: '', content: { kind: 'simulator', udid } })).toEqual(tile)
+    expect(service.list()).toHaveLength(1)
+    await service.flush()
+    const stored = await readFile(path, 'utf8'); expect(stored).not.toContain('token'); expect(stored).not.toContain('/view')
+    const restarted = track(new WebPaneService(path)); await restarted.load()
+    expect(restarted.list()).toEqual([tile])
+    expect(restarted.move(tile.id, { ...anchor, anchorPaneId: '%13', placement: 'below' })).toMatchObject({ anchorPaneId: '%13', placement: 'below' })
+    expect(() => restarted.navigate(tile.id, 'http://localhost/')).toThrow('Simulator tiles cannot navigate')
+    expect(restarted.close(tile.id)).toBe(true); await restarted.flush()
+    const closed = track(new WebPaneService(path)); await closed.load(); expect(closed.list()).toEqual([])
+  })
+  it('rejects invalid simulator identities and restores legacy URL tiles alongside simulator tiles', async () => {
+    const path = await temporaryStatePath(); const service = track(new WebPaneService(path))
+    expect(() => service.open({ ...anchor, url: '', content: { kind: 'simulator', udid: 'bad' } })).toThrow('Invalid simulator')
+    const browser = service.open({ ...anchor, url: 'http://localhost/plan' })
+    const simulator = service.open({ ...anchor, url: '', content: { kind: 'simulator', udid } })
+    await service.flush(); const restarted = track(new WebPaneService(path)); await restarted.load()
+    expect(restarted.list()).toEqual([browser, simulator])
+  })
+})

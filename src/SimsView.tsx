@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SimWallDevice } from '../shared/protocol'
 import { createSimsApi } from './simsApi'
 import './sims-view.css'
+import { SimLiveView } from './SimLiveView'
 
 type SimsApi = ReturnType<typeof createSimsApi>
 
@@ -19,8 +20,8 @@ function loadImage(url: string, signal: AbortSignal): Promise<void> {
   })
 }
 
-function SimCard({ sim, api, visible, onSlimmed }: {
-  sim: SimWallDevice; api: SimsApi; visible: boolean; onSlimmed: () => void
+function SimCard({ sim, api, visible, onSlimmed, onLive }: {
+  sim: SimWallDevice; api: SimsApi; visible: boolean; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
 }) {
   const card = useRef<HTMLElement>(null)
   const snapshotBusy = useRef(false)
@@ -82,8 +83,10 @@ function SimCard({ sim, api, visible, onSlimmed }: {
   }
 
   return <article className="sims-card" ref={card} aria-label={name}>
-    {image ? <img className="sims-snapshot" src={image} alt={`${name} snapshot`} />
-      : <div className="sims-snapshot sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</div>}
+    <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}>
+      {image ? <img src={image} alt={`${name} snapshot`} />
+        : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
+    </button>
     <div className="sims-name">{name}</div>
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : 'No lease')}</div>
     <div className="sims-meta">
@@ -103,6 +106,15 @@ function SimCard({ sim, api, visible, onSlimmed }: {
 export function SimsView({ token }: { token: string }) {
   const api = useMemo(() => createSimsApi(token), [token])
   const [visible, setVisible] = useState(document.visibilityState === 'visible')
+  const [liveUdid, setLiveUdid] = useState<string | null>(null)
+  const liveTrigger = useRef<HTMLElement | null>(null)
+  const closeLive = () => { setLiveUdid(null); liveTrigger.current?.focus() }
+  useEffect(() => {
+    if (!liveUdid) return
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); closeLive() } }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [liveUdid])
   const [sims, setSims] = useState<SimWallDevice[]>([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
@@ -151,9 +163,17 @@ export function SimsView({ token }: { token: string }) {
     {error ? <p className="sims-error" role="alert">{error}</p> : null}
     {!loaded && !error ? <p className="sims-empty" role="status">Loading simulators…</p> : null}
     {loaded && !sims.length ? <p className="sims-empty">No booted iOS simulators.</p> : null}
+    {liveUdid ? <div className="sims-live-overlay">
+      <section className="sims-live-dialog" role="dialog" aria-modal="true" aria-label="Live simulator">
+        <header><strong>{sims.find((sim) => sim.udid === liveUdid)?.lease?.sessionName ?? sims.find((sim) => sim.udid === liveUdid)?.name ?? 'Simulator'}</strong>
+          <div className="sims-actions"><button type="button" autoFocus onClick={closeLive}>Close live view</button></div>
+        </header>
+        <SimLiveView key={liveUdid} udid={liveUdid} token={token} api={api} />
+      </section>
+    </div> : null}
     {ordered.map(([key, group]) => <section className="sims-group" key={key} aria-label={group.name}>
       <header className="sims-repo"><h3>{group.name}</h3><span>{group.sims.length} {key === 'no-lease' ? 'unleased' : 'leased'}</span></header>
-      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} visible={visible} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
+      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
 }

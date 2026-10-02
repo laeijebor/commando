@@ -1,0 +1,13 @@
+.sim-live { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface-deep); color: var(--text); }
+.sim-live-toolbar { flex: none; align-items: center; margin: 0; padding: 8px; }
+.sim-live-screen { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 6px; overflow: hidden; }
+.sim-live-screen canvas, .sim-live-screen img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.sim-live-screen canvas { touch-action: none; outline: 2px solid transparent; outline-offset: 2px; }
+.sim-live-screen canvas[hidden] { display: none; }
+.sim-live-screen canvas.is-focused { outline-color: var(--accent); }
+.sim-live > .sims-error { flex: none; margin: 4px 8px 8px; }
+.sims-live-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--surface-deep); }
+.sims-live-dialog { display: flex; flex-direction: column; height: 100%; width: min(100%, 720px); min-height: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.sims-live-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 8px; background: var(--surface-raised); }
+button.sims-snapshot { border: 0; padding: 0; cursor: pointer; overflow: hidden; }
+button.sims-snapshot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
