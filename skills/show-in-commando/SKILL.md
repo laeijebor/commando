@@ -60,6 +60,52 @@ Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine
   their confirmation. Never try to confirm it yourself — confirmation is
   owner-only by design.
 
+## Change a tile's URL, or reload it
+
+Keep the tile and change what it shows. Never close and reopen a tile to
+change its URL, and never drive the user's view with CDP `Page.navigate`.
+CDP reaches the daemon's headless page, and the user often watches the tile
+through a native webview that CDP cannot touch.
+
+To ask for a new URL:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/navigate?wait=60" \
+  -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")" \
+  -H 'Content-Type: application/json' \
+  --data '{"url":"http://127.0.0.1:41300/next-page"}'
+# → {"ok":true,"webPaneId":"w-…","requestId":"nr-…","url":"…","decision":"accepted"}
+```
+
+- A navigate from an agent is only a request. The user sees a toast over the
+  tile with your URL and chooses **Open** or **Dismiss**.
+- `?wait=<seconds>` (0–60) holds the call until they decide. Without it you
+  get `decision: "pending"` (HTTP 202) straight away.
+- To check later, `GET /api/web-panes/<webPaneId>/navigate-requests/<requestId>?wait=60`
+  with the same header.
+- `decision` values:
+  - `accepted`: the tile now shows the URL.
+  - `dismissed`: the user said no. Do not re-ask in a loop; ask in your
+    terminal if you still need it.
+  - `pending`: they haven't decided yet.
+  - `superseded`: a newer request for the tile replaced this one.
+  - `closed`: the tile is gone.
+- Opening the toast also approves an external origin, so there is no second
+  confirm card.
+
+To reload the tile with no prompt, for example after you rebuild or edit the
+page:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/reload" \
+  -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")" \
+  -H 'Content-Type: application/json' --data '{}'
+```
+
+Every connected Commando client reloads whatever renders the tile: native
+webview, canvas stream or iframe. Prefer this over a navigate when only the
+content changed.
+
 ## Choosing an engine — debugging a page WITH the user
 
 Default (`webkit`, omit the field) is right for *showing* things: it is the
@@ -79,10 +125,12 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/cdp"
 
 - `target` is a raw CDP websocket for that one page — connect chrome-devtools
   MCP (`--browser-url http://127.0.0.1:<port>`) or any CDP client to it.
-  Everything you do (navigate, evaluate, Network.enable) happens on the page
-  the user is watching. Localhost pages only unless the owner has confirmed
-  the origin; navigating the page to an unconfirmed external origin blanks
-  it and asks the owner — do not fight this, ask the user instead.
+  Use it to inspect and debug (evaluate, Network.enable, screenshots,
+  traces). To change or reload what the user sees, use `/navigate` and
+  `/reload` above, not CDP navigation: with the native renderer the user is
+  not looking at this headless page at all. Localhost pages only unless the
+  owner has confirmed the origin; a CDP navigation to an unconfirmed external
+  origin blanks the page and asks the owner — do not fight this.
 - `devtoolsFrontendUrl` is a full DevTools UI for the same page — the user
   can open it themselves with the tile's 🛠 button, or you can open it as a
   second tile beside the page when the user asks to see the network tab.

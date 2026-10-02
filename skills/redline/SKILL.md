@@ -324,7 +324,7 @@ endpoint and inspect the page at the viewport the user is actually seeing:
 4. Exercise the narrow layout and any interaction the review depends on. A
    responsive document is not enough if the embedded product mockup itself
    collapses poorly.
-5. Fix and reload the same tile until these checks pass. If fidelity cannot be
+5. Fix and reload the same tile (its `/reload` endpoint) until these checks pass. If fidelity cannot be
    verified, say exactly what evidence is missing instead of calling it ready.
 
 Then tell the user, in one short message: what you built, which design source
@@ -362,12 +362,13 @@ Send).
    Each attachment has `{name, contentType, size, path}`. Fetch every needed
    `path` with the agent hook bearer token before the next poll acknowledges
    that batch and releases its image bytes.
-3. Make revisions visible: for an authored artifact, reload the tile over its
-   CDP endpoint — `Page.navigate` to the same URL with a `?v=<n>` cache-bust
-   — rather than deleting and reopening the tile. For a dev-served page,
-   hot reload usually handles it. (Artifact responses are `no-store`, so a
-   plain tile reload already shows edits — the cache-bust is harmless, not
-   required.)
+3. Make revisions visible: for an authored artifact, `POST` the tile's
+   `/reload` endpoint (show-in-commando, "Change a tile's URL, or reload it")
+   rather than deleting and reopening the tile or navigating over CDP.
+   Artifact responses are `no-store`, so a reload shows edits without a
+   cache-bust. For a dev-served page, hot reload usually handles it. To move
+   the tile to a different page, use `/navigate`; the user approves the
+   change from a toast over the tile.
 4. A note may be a component answer instead of an annotation — it carries a
    `response: {question, answer, note?, data?}` field. Acknowledge it in your
    terminal reply the same way you acknowledge annotation notes.
