@@ -261,6 +261,13 @@ Discipline the agent must know:
 Notes that carry a component answer have a `response: {question, answer,
 note?, data?}` field — prefer it over parsing `comment`.
 
+Commando never discards an answer the user entered, so a batch can carry more
+than one answer for the same question (same `queueKey`, or same selector when
+unkeyed): the user changed their mind, or answered again from another view.
+Treat the **last one in the batch** as the decision and the earlier ones as
+context — do not ask the user to pick between them. Navigating within a page
+(`#section` links, `?v=` reloads) does not re-ask anything.
+
 Use controls for decisions the user can make faster by clicking than typing;
 use plain annotation for open-ended feedback (lavish's rule).
 
