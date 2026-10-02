@@ -613,6 +613,8 @@ export function TileReviewLayer({
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
   const latestSnapshotRevisionRef = useRef<number | undefined>(undefined)
+  /** Ids the owner is removing on purpose — their drafts must not be requeued. */
+  const removingIdsRef = useRef(new Set<number>())
   const pushedRef = useRef(false)
   const hoverGeneration = useRef(0)
   const clickGeneration = useRef(0)
@@ -668,9 +670,21 @@ export function TileReviewLayer({
           }
         : serverDraft
     }
+    // A note that vanished (sent or removed from another view) takes its
+    // unsaved draft with it unless we put the text back in the queue.
+    const previousNotes = queuedRef.current
+    const orphans = Object.entries(currentDrafts)
+      .map(([id, draft]) => ({ id: Number(id), draft }))
+      .filter(({ id, draft }) => (
+        draft.dirty && !(id in nextDrafts) && !removingIdsRef.current.has(id)
+      ))
     draftsRef.current = nextDrafts
     queuedRef.current = snapshot.notes
     setDrafts(nextDrafts)
+    for (const { id, draft } of orphans) {
+      const note = previousNotes.find((candidate) => candidate.id === id)
+      if (note) void requeueDraft(note, draft)
+    }
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
     setSentAnswers(snapshot.sent)
@@ -692,6 +706,30 @@ export function TileReviewLayer({
   }
   const applySnapshotRef = useRef(applySnapshot)
   applySnapshotRef.current = applySnapshot
+
+  /** Puts a draft whose note disappeared back in the queue as a new note. */
+  const requeueDraft = async (note: WebPanePendingNote, draft: PendingDraft) => {
+    const queue = pendingQueueRef.current
+    const notePageUrl = note.pageUrl ?? pageUrl
+    try {
+      const snapshot = note.response
+        ? queue.addResponse
+          ? await queue.addResponse(notePageUrl ?? '', responseForPendingNote(note, draft))
+          : undefined
+        : await queue.add({
+            selector: note.selector,
+            tag: note.tag,
+            ...(note.text !== undefined ? { text: note.text } : {}),
+            rect: note.rect,
+            comment: draft.answer,
+            ...(notePageUrl ? { pageUrl: notePageUrl } : {}),
+          })
+      if (snapshot) applySnapshotRef.current(snapshot)
+      else setQueueError(`"${itemLabel(note)}" was sent elsewhere; your unsaved edit could not be requeued.`)
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not requeue your unsaved edit')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -1084,12 +1122,14 @@ export function TileReviewLayer({
   const removeOne = async (noteId: number) => {
     if (sendingAllRef.current) return
     markBusy(noteId, true)
+    removingIdsRef.current.add(noteId)
     try {
       applySnapshot(await pendingQueueRef.current.remove(noteId))
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not remove the item')
     } finally {
+      removingIdsRef.current.delete(noteId)
       markBusy(noteId, false)
     }
   }

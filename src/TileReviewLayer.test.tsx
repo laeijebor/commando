@@ -192,6 +192,81 @@ describe('TileReviewLayer', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith(4, 2, { answer: 'Local draft' }))
   })
 
+  it('requeues a dirty draft when its note vanishes from a newer snapshot', async () => {
+    let publish: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const add = vi.fn(async () => ({ notes: [annotation(5, 1, 'Local draft')], knownUpTo: 5, dropped: 0, revision: 3 }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-vanish"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ add })}
+        surface={surface({ subscribePending: (listener) => { publish = listener; return () => undefined } })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publish?.({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+
+    // Sent or removed from another view: the note is gone, the typed text must not be.
+    act(() => publish?.({ notes: [], knownUpTo: 4, dropped: 0, revision: 2 }))
+    await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({
+      selector: '#target',
+      comment: 'Local draft',
+      pageUrl: 'https://example.com/review',
+    })))
+    // The queue emptied for a moment (drawer collapses), then holds the requeued note.
+    expect(await screen.findByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
+  it('does not resurrect a dirty draft the owner removed on purpose', async () => {
+    const add = vi.fn(async () => EMPTY_SNAPSHOT)
+    const remove = vi.fn(async () => ({ notes: [], knownUpTo: 4, dropped: 0, revision: 2 }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-remove"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list: async () => ({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }), add, remove })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Changed my mind' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from queue' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(4))
+    await act(async () => { await Promise.resolve() })
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('reports a draft that could not be saved before Send all instead of silently sending nothing', async () => {
+    const update = vi.fn(async () => { throw new Error('disk full') })
+    const send = vi.fn(async () => EMPTY_SNAPSHOT)
+    render(
+      <TileReviewLayer
+        webPaneId="w-savefail"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list: async () => ({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }), update, send })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/disk full/))
+    expect(send).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Local draft')
+  })
+
   it('refreshes and retries a save at the daemon revision when the note was stale', async () => {
     const stale = Object.assign(new Error('Pending note revision is stale'), { status: 409 })
     const update = vi.fn()

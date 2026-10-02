@@ -106,6 +106,8 @@ final class WebViewTileBridgeTests: XCTestCase {
         XCTAssertFalse(WebViewTileProtocol.samePage("https://example.com/review", "https://example.com/other"))
         XCTAssertFalse(WebViewTileProtocol.samePage("https://example.com/review", "https://example.org/review"))
         XCTAssertFalse(WebViewTileProtocol.samePage(nil, "https://example.com/review"))
+        XCTAssertTrue(WebViewTileProtocol.samePage("https://example.com:443/review", "https://example.com/review"))
+        XCTAssertFalse(WebViewTileProtocol.samePage("http://example.com:8080/review", "http://example.com/review"))
     }
 
     func testConnectRespondsWithCapabilities() {

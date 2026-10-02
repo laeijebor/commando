@@ -38,9 +38,16 @@ enum WebViewTileProtocol {
         else {
             return false
         }
+        let defaultPort: (URLComponents) -> Int? = { components in
+            switch components.scheme?.lowercased() {
+            case "https": return components.port ?? 443
+            case "http": return components.port ?? 80
+            default: return components.port
+            }
+        }
         return left.scheme?.lowercased() == right.scheme?.lowercased() &&
             left.host?.lowercased() == right.host?.lowercased() &&
-            left.port == right.port &&
+            defaultPort(left) == defaultPort(right) &&
             left.path == right.path
     }
     static let maxRequestIdLength = 64
