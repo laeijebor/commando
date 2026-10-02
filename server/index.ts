@@ -69,6 +69,7 @@ import {
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
+import { SimWallApi } from './sim-wall.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -1411,9 +1412,11 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
+  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port) })
+  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists })
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
-    registry: new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port) }),
+    registry: simLeaseRegistry,
     paneExists,
     paneContext: async (paneId) => {
       const pane = paneForId(paneId)
@@ -2009,6 +2012,7 @@ async function main(): Promise<void> {
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (await simWallApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return

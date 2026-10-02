@@ -29,6 +29,7 @@ import {
   Server,
   ShieldCheck,
   SidebarOpen,
+  Smartphone,
   Terminal,
   UserRound,
   WifiOff,
@@ -146,6 +147,7 @@ const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 export const PANE_JUMP_HIGHLIGHT_MS = 1600
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
+const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
 
 const PRESETS: Array<{
   id: GroupLayoutPreset
@@ -749,7 +751,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'linear' | 'notes'
+type CommandoArea = 'workspace' | 'linear' | 'notes' | 'sims'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -2535,6 +2537,10 @@ export function App() {
               <NotebookPen aria-hidden="true" />
               <span>Notes</span>
             </button>
+            <button type="button" className={area === 'sims' ? 'active' : ''} aria-current={area === 'sims' ? 'page' : undefined} onClick={() => { setArea('sims'); setLeftPanelOpen(false) }}>
+              <Smartphone aria-hidden="true" />
+              <span>Simulators</span>
+            </button>
           </nav>
 
           <div className="tree-heading">
@@ -2955,6 +2961,11 @@ export function App() {
             ) : null}
           </div>
           </> : area === 'linear' ? <LinearSection token={token} /> : null}
+          {area === 'sims' ? (
+            <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
+              <SimsView token={token} />
+            </Suspense>
+          ) : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection

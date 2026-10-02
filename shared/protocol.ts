@@ -220,6 +220,24 @@ export type PaneRepo = {
   defaultBranch?: string
 }
 
+export type SimWallLease = {
+  sessionName: string
+  task: string
+  label: string
+  repo?: PaneRepo
+  paneId: string
+  idle: boolean
+}
+
+export type SimWallDevice = {
+  udid: string
+  name: string
+  runtime: string
+  deviceModel: string
+  slim: 'slim' | 'unslimmed' | 'unknown'
+  lease: SimWallLease | null
+}
+
 export type TmuxPane = PaneTerminalState & {
   id: string
   targetId: string
