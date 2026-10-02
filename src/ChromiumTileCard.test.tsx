@@ -282,8 +282,10 @@ describe('ChromiumTileCard pending queue drawer', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled())
   })
 
-  it('preserves a dirty draft and requires reload when a newer snapshot changes the item', async () => {
-    renderTile({ list: async () => pendingSnapshot([responseNote(1)]) })
+  it('keeps a dirty draft editable at the new revision when a newer snapshot changes the item', async () => {
+    const update = vi.fn(async () => pendingSnapshot([responseNote(1, 'Team', 3)], 3))
+    const send = vi.fn(async () => pendingSnapshot([], 4))
+    renderTile({ list: async () => pendingSnapshot([responseNote(1)]), update, send })
     fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
     fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
 
@@ -294,11 +296,33 @@ describe('ChromiumTileCard pending queue drawer', () => {
       })
     })
 
-    expect(screen.getByRole('alert')).toHaveTextContent(/changed after you started editing/i)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Team')
-    expect(screen.getByRole('button', { name: 'Send this' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Reload draft' }))
-    expect(screen.getByRole('combobox', { name: 'Answer' })).toHaveValue('Starter')
+    expect(screen.getByRole('button', { name: 'Send this' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Send this' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(1, 2, { answer: 'Team', note: '' }))
+    await waitFor(() => expect(send).toHaveBeenCalledWith([{ id: 1, revision: 3 }]))
+  })
+
+  it('refreshes and retries a single-item send when the daemon reports it stale', async () => {
+    let revision = 1
+    const list = vi.fn(async () => pendingSnapshot([responseNote(1, 'Pro', revision)], revision))
+    const stale = Object.assign(new Error('Pending note revision is stale'), { status: 409 })
+    const send = vi.fn(async () => {
+      if (send.mock.calls.length === 1) {
+        revision = 2
+        throw stale
+      }
+      return pendingSnapshot([], 3)
+    })
+    renderTile({ list, send })
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send this' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    expect(send).toHaveBeenNthCalledWith(1, [{ id: 1, revision: 1 }])
+    expect(send).toHaveBeenNthCalledWith(2, [{ id: 1, revision: 2 }])
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('saves a dirty item before selectively sending only that item', async () => {
@@ -343,10 +367,9 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Updated annotation' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
 
-    await waitFor(() => expect(send).toHaveBeenCalledWith([
-      { id: 1, revision: 2 },
-      { id: 2, revision: 2 },
-    ]))
+    // The whole daemon queue goes, not just the items this drawer has seen.
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect(send).toHaveBeenCalledWith()
     expect(update).toHaveBeenCalledTimes(2)
     expect(update.mock.invocationCallOrder[1]).toBeLessThan(send.mock.invocationCallOrder[0])
   })
@@ -367,13 +390,35 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send all + Build' }))
 
     await waitFor(() => expect(send).toHaveBeenCalledWith(
-      [{ id: 1, revision: 2 }],
+      undefined,
       { intent: 'build', expectedQueueRevision: 2 },
     ))
     expect(update.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0])
   })
 
-  it('does not send a build handoff when a new queue item arrives during draft saves', async () => {
+  it('refreshes and retries a build handoff when the queue revision is stale', async () => {
+    let revision = 1
+    const initial = responseNote(1)
+    const list = vi.fn(async () => pendingSnapshot([initial], revision))
+    const stale = Object.assign(new Error('Pending queue revision is stale'), { status: 409 })
+    const send = vi.fn(async () => {
+      if (send.mock.calls.length === 1) {
+        revision = 5
+        throw stale
+      }
+      return pendingSnapshot([], 6)
+    })
+    renderTile({ list, send })
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send all + Build' }))
+
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    expect(send).toHaveBeenNthCalledWith(1, undefined, { intent: 'build', expectedQueueRevision: 1 })
+    expect(send).toHaveBeenNthCalledWith(2, undefined, { intent: 'build', expectedQueueRevision: 5 })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('includes a queue item that arrives during draft saves in the build handoff', async () => {
     const first = responseNote(1)
     const second = annotationNote(2, 'Arrived during save')
     const update = vi.fn(async () => pendingSnapshot([
@@ -387,12 +432,11 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send all + Build' }))
 
-    await waitFor(() => expect(update).toHaveBeenCalled())
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/nothing was sent/i))
-    expect(send).not.toHaveBeenCalled()
+    await waitFor(() => expect(send).toHaveBeenCalledWith(undefined, { intent: 'build', expectedQueueRevision: 2 }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('sends nothing when another captured item changes during the save-all pass', async () => {
+  it('still sends the whole queue when another item changed during the save-all pass', async () => {
     const first = responseNote(1)
     const second = annotationNote(2, 'Original annotation')
     const update = vi.fn(async () => pendingSnapshot([
@@ -406,9 +450,9 @@ describe('ChromiumTileCard pending queue drawer', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Answer' }), { target: { value: 'Team' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
 
-    await waitFor(() => expect(update).toHaveBeenCalled())
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/nothing was sent/i))
-    expect(send).not.toHaveBeenCalled()
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect(send).toHaveBeenCalledWith()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('disables drawer and collapsed send-all controls during an unresolved upload', async () => {

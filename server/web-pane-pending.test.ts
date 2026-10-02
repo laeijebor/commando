@@ -905,3 +905,29 @@ describe('WebPanePendingStore sent answers', () => {
     expect(store.snapshot('w-1').sent).toBeUndefined()
   })
 })
+
+describe('WebPanePendingStore page identity', () => {
+  it('replaces an unsent keyed answer when only the URL hash differs', () => {
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }))
+    store.addResponse('w-1', `${PAGE_URL}#reach`, response('Starter', 'plan'))
+    const snapshot = store.addResponse('w-1', `${PAGE_URL}#composer`, response('Pro', 'plan'))
+    expect(snapshot.notes).toHaveLength(1)
+    expect(snapshot.notes[0]).toMatchObject({ queueKey: 'plan', revision: 2, response: { answer: 'Pro' } })
+    expect(snapshot.notes[0].pageUrl).toBe(`${PAGE_URL}#composer`)
+  })
+
+  it('still keeps keyed answers from different pages apart', () => {
+    const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }))
+    store.addResponse('w-1', PAGE_URL, response('Starter', 'plan'))
+    expect(store.addResponse('w-1', OTHER_PAGE_URL, response('Pro', 'plan')).notes).toHaveLength(2)
+  })
+
+  it('adopts a closed tile\'s leftovers when its URL differs only by hash', () => {
+    const dir = makeDir()
+    const closed = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    closed.addNote('w-old', `${PAGE_URL}#uses`, manualNote('left behind'))
+    const fresh = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+    const snapshot = fresh.adopt('w-new', `${PAGE_URL}?v=2`, new Set(['w-new']))
+    expect(snapshot.notes.map((note) => note.comment)).toEqual(['left behind'])
+  })
+})

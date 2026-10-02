@@ -461,6 +461,19 @@ describe('ChromiumEngine', () => {
     expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(MAX_PENDING_SNAPSHOT_BYTES)
   })
 
+  it('keeps queued controls visible across hash navigation within the page', async () => {
+    const { stub, engine } = await createHarness()
+    engine.updatePendingSnapshot('w-11111111', pendingSnapshot([responseNote(1, 'Pro', undefined, 'http://localhost:5173/#reach')]))
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 1, 'hydration')
+    expect((snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[0]) as { controls: unknown[] }).controls).toHaveLength(1)
+
+    stub.emit('T1', 'Page.navigatedWithinDocument', { frameId: 'F1', url: 'http://localhost:5173/#composer' })
+    await until(() => pagePendingEvaluations(stub, 'T1').length === 2, 'hash hydration')
+    expect((snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1')[1]) as { controls: unknown[] }).controls).toHaveLength(1)
+  })
+
   it('sanitizes and JSON-clones the page-facing pending snapshot', async () => {
     const { stub, engine } = await createHarness()
     const data = { choice: 'Pro', nested: { enabled: true }, omitted: undefined }

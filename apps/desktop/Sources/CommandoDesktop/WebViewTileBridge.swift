@@ -28,6 +28,28 @@ enum WebViewTileProtocol {
         "webview.hitRegions.v1",
     ]
     static let maxURLLength = 2_048
+
+    /// Same page when scheme, host, port and path match. A hash or query change
+    /// is navigation within the page, so queued review state must survive it.
+    static func samePage(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b,
+              let left = URLComponents(string: a),
+              let right = URLComponents(string: b)
+        else {
+            return false
+        }
+        let defaultPort: (URLComponents) -> Int? = { components in
+            switch components.scheme?.lowercased() {
+            case "https": return components.port ?? 443
+            case "http": return components.port ?? 80
+            default: return components.port
+            }
+        }
+        return left.scheme?.lowercased() == right.scheme?.lowercased() &&
+            left.host?.lowercased() == right.host?.lowercased() &&
+            defaultPort(left) == defaultPort(right) &&
+            left.path == right.path
+    }
     static let maxRequestIdLength = 64
     static let maxInspectionCoordinate = 100_000.0
     static let maxSelectorLength = 1_024
@@ -401,7 +423,7 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
               let pendingSnapshot,
               let currentURL = webView.url,
               pageResponseAdmission?.allowsNavigation(to: currentURL) == true,
-              boundedCurrentURL() == pendingSnapshot.url
+              WebViewTileProtocol.samePage(boundedCurrentURL(), pendingSnapshot.url)
         else {
             return
         }
@@ -540,8 +562,12 @@ final class WebViewTile: NSObject, WKNavigationDelegate, WKUIDelegate {
         else {
             return
         }
+        let previousURL = loadedDocumentURL
         loadedDocumentURL = url
-        if let currentURL = webView.url,
+        // A hash change stays on the same page: its queued state still applies,
+        // so only a move to a different page blanks the controls first.
+        if !WebViewTileProtocol.samePage(previousURL, url),
+           let currentURL = webView.url,
            pageResponseAdmission?.allowsNavigation(to: currentURL) == true {
             scriptEvaluator(
                 webView,

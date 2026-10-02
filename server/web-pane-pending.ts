@@ -379,7 +379,9 @@ export class WebPanePendingStore {
     this.rememberUrl(webPaneId, state, url)
     const existing = response.queueKey === undefined
       ? undefined
-      : state.notes.find((note) => note.queueKey === response.queueKey && note.pageUrl === url)
+      : state.notes.find((note) => (
+          note.queueKey === response.queueKey && samePage(note.pageUrl, url)
+        ))
     const responseValue = {
       question: response.question,
       answer: response.answer,
@@ -743,7 +745,7 @@ export class WebPanePendingStore {
     this.rememberUrl(webPaneId, state, url)
     const orphans = this.journal
       .listOrphans(new Set([...liveIds, webPaneId]))
-      .filter((orphan) => orphan.url === url)
+      .filter((orphan) => samePage(orphan.url, url))
     if (orphans.length === 0) return this.snapshot(webPaneId)
 
     const deliveryKeys = new Set(state.notes.map((note) => nonEmptyDeliveryKey(note.deliveryKey)).filter(Boolean))
@@ -847,6 +849,11 @@ export class WebPanePendingStore {
     const ids = notes.flatMap((note) => (note.attachments ?? []).map((attachment) => attachment.id))
     for (const id of ids) this.releaseAttachment(id)
   }
+}
+
+/** Same page when origin and path match; the hash (and query) are navigation within it. */
+function samePage(a: string | undefined, b: string): boolean {
+  return a !== undefined && redlinePageKey(a) === redlinePageKey(b)
 }
 
 function responseComment(response: { question: string; answer: string; note?: string }): string {

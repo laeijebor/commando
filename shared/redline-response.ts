@@ -259,7 +259,11 @@ export function redlinePendingSnapshotForPage(
 ): RedlinePagePendingSnapshot {
   const controls: RedlinePagePendingSnapshot['controls'] = []
   for (const note of snapshot.notes) {
-    if (controls.length >= MAX_PENDING_NOTES || note.pageUrl !== pageUrl) continue
+    if (
+      controls.length >= MAX_PENDING_NOTES ||
+      note.pageUrl === undefined ||
+      redlinePageKey(note.pageUrl) !== redlinePageKey(pageUrl)
+    ) continue
     const response = note.response
     if (
       !response ||

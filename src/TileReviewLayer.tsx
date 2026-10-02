@@ -31,7 +31,6 @@ import {
 } from '../shared/redline-response'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { createInspectThrottle } from './tileReview'
-import type { PendingSendTarget } from './webPanesApi'
 
 const INSPECT_HINT_MS = 2_000
 const REVIEW_CARD_WIDTH = 240
@@ -96,12 +95,10 @@ type PendingDraft = {
   baseChoices: string[]
   baseRevision: number
   dirty: boolean
-  conflict: boolean
 }
 
 type DraftReconcile = {
   reset?: ReadonlySet<number>
-  rebase?: ReadonlySet<number>
 }
 
 type PendingEditor =
@@ -111,6 +108,11 @@ type PendingEditor =
   | { kind: 'text' }
 
 type QuestionDraft = { answer: string; note: string; choices: string[] }
+
+/** The daemon rejected a revision we held; our view is behind, not wrong. */
+function isStaleRevision(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { status?: unknown }).status === 409
+}
 
 function sameChoices(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((choice, index) => choice === right[index])
@@ -154,7 +156,7 @@ function pendingForQuestion(
 ): WebPanePendingNote | undefined {
   return notes.find((note) => (
     note.response !== undefined &&
-    (note.pageUrl === undefined || note.pageUrl === pageUrl) &&
+    (note.pageUrl === undefined || redlinePageKey(note.pageUrl) === redlinePageKey(pageUrl)) &&
     (question.queueKey
       ? note.queueKey === question.queueKey
       : note.queueKey === undefined && note.selector === question.selector)
@@ -307,7 +309,6 @@ function draftFor(note: WebPanePendingNote): PendingDraft {
     baseChoices: [...values.choices],
     baseRevision: note.revision ?? 1,
     dirty: false,
-    conflict: false,
   }
 }
 
@@ -612,7 +613,8 @@ export function TileReviewLayer({
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
   const latestSnapshotRevisionRef = useRef<number | undefined>(undefined)
-  const attachmentMutationIdsRef = useRef(new Set<number>())
+  /** Ids the owner is removing on purpose — their drafts must not be requeued. */
+  const removingIdsRef = useRef(new Set<number>())
   const pushedRef = useRef(false)
   const hoverGeneration = useRef(0)
   const clickGeneration = useRef(0)
@@ -652,37 +654,37 @@ export function TileReviewLayer({
         continue
       }
       const serverDraft = draftFor(note)
-      if (reconcile.rebase?.has(note.id)) {
-        nextDrafts[note.id] = current.dirty
-          ? {
-              ...current,
-              baseAnswer: serverDraft.baseAnswer,
-              baseNote: serverDraft.baseNote,
-              baseChoices: serverDraft.baseChoices,
-              baseRevision: serverDraft.baseRevision,
-              dirty:
-                current.answer !== serverDraft.baseAnswer ||
-                current.note !== serverDraft.baseNote ||
-                !sameChoices(current.choices, serverDraft.baseChoices),
-              conflict: current.conflict,
-            }
-          : serverDraft
-        continue
-      }
-      if (current.dirty) {
-        nextDrafts[note.id] = {
-          ...current,
-          conflict: current.conflict || (
-            note.revision !== undefined && note.revision !== current.baseRevision
-          ),
-        }
-      } else {
-        nextDrafts[note.id] = serverDraft
-      }
+      // Text the owner typed is never discarded: a dirty draft rebases onto
+      // whatever the daemon now holds (both sides of a "conflict" are the owner).
+      nextDrafts[note.id] = current.dirty
+        ? {
+            ...current,
+            baseAnswer: serverDraft.baseAnswer,
+            baseNote: serverDraft.baseNote,
+            baseChoices: serverDraft.baseChoices,
+            baseRevision: serverDraft.baseRevision,
+            dirty:
+              current.answer !== serverDraft.baseAnswer ||
+              current.note !== serverDraft.baseNote ||
+              !sameChoices(current.choices, serverDraft.baseChoices),
+          }
+        : serverDraft
     }
+    // A note that vanished (sent or removed from another view) takes its
+    // unsaved draft with it unless we put the text back in the queue.
+    const previousNotes = queuedRef.current
+    const orphans = Object.entries(currentDrafts)
+      .map(([id, draft]) => ({ id: Number(id), draft }))
+      .filter(({ id, draft }) => (
+        draft.dirty && !(id in nextDrafts) && !removingIdsRef.current.has(id)
+      ))
     draftsRef.current = nextDrafts
     queuedRef.current = snapshot.notes
     setDrafts(nextDrafts)
+    for (const { id, draft } of orphans) {
+      const note = previousNotes.find((candidate) => candidate.id === id)
+      if (note) void requeueDraft(note, draft)
+    }
     setQueued(snapshot.notes)
     setDropped(snapshot.dropped)
     setSentAnswers(snapshot.sent)
@@ -704,6 +706,30 @@ export function TileReviewLayer({
   }
   const applySnapshotRef = useRef(applySnapshot)
   applySnapshotRef.current = applySnapshot
+
+  /** Puts a draft whose note disappeared back in the queue as a new note. */
+  const requeueDraft = async (note: WebPanePendingNote, draft: PendingDraft) => {
+    const queue = pendingQueueRef.current
+    const notePageUrl = note.pageUrl ?? pageUrl
+    try {
+      const snapshot = note.response
+        ? queue.addResponse
+          ? await queue.addResponse(notePageUrl ?? '', responseForPendingNote(note, draft))
+          : undefined
+        : await queue.add({
+            selector: note.selector,
+            tag: note.tag,
+            ...(note.text !== undefined ? { text: note.text } : {}),
+            rect: note.rect,
+            comment: draft.answer,
+            ...(notePageUrl ? { pageUrl: notePageUrl } : {}),
+          })
+      if (snapshot) applySnapshotRef.current(snapshot)
+      else setQueueError(`"${itemLabel(note)}" was sent elsewhere; your unsaved edit could not be requeued.`)
+    } catch (error) {
+      setQueueError(error instanceof Error ? error.message : 'Could not requeue your unsaved edit')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -735,16 +761,13 @@ export function TileReviewLayer({
 
   useEffect(() => surface.subscribePending((snapshot) => {
     pushedRef.current = true
-    const attachmentMutations = attachmentMutationIdsRef.current
-    applySnapshotRef.current(
-      snapshot,
-      attachmentMutations.size > 0 ? { rebase: new Set(attachmentMutations) } : undefined,
-    )
+    applySnapshotRef.current(snapshot)
     setHydrated(true)
   }), [surface])
 
   useEffect(() => surface.subscribeQuestions((nextPageUrl, snapshot) => {
-    const pageChanged = questionsPageUrlRef.current !== nextPageUrl
+    // A hash or query change is navigation within the page, not a new page.
+    const pageChanged = redlinePageKey(questionsPageUrlRef.current) !== redlinePageKey(nextPageUrl)
     questionsPageUrlRef.current = nextPageUrl
     setQuestionsPageUrl(nextPageUrl)
     setQuestions(snapshot.questions)
@@ -952,17 +975,7 @@ export function TileReviewLayer({
       nextDraft.answer !== nextDraft.baseAnswer ||
       nextDraft.note !== nextDraft.baseNote ||
       !sameChoices(nextDraft.choices, nextDraft.baseChoices)
-    if (!nextDraft.dirty) nextDraft.conflict = false
     const nextDrafts = { ...draftsRef.current, [noteId]: nextDraft }
-    draftsRef.current = nextDrafts
-    setDrafts(nextDrafts)
-    setQueueError('')
-  }
-
-  const resetDraft = (noteId: number) => {
-    const serverNote = queuedRef.current.find((note) => note.id === noteId)
-    if (!serverNote) return
-    const nextDrafts = { ...draftsRef.current, [noteId]: draftFor(serverNote) }
     draftsRef.current = nextDrafts
     setDrafts(nextDrafts)
     setQueueError('')
@@ -976,14 +989,20 @@ export function TileReviewLayer({
     setBusyIds(next)
   }
 
-  const saveDraft = async (noteId: number): Promise<boolean> => {
+  /** Pulls the daemon's current queue; dirty drafts rebase onto it. */
+  const refreshQueue = async (): Promise<void> => {
+    applySnapshot(await pendingQueueRef.current.list())
+  }
+
+  /**
+   * Saves a dirty draft at the daemon's revision. If the daemon moved on (the
+   * page re-answered, another view edited), refresh and retry once with the
+   * owner's text on top — it is never thrown away for being out of date.
+   */
+  const saveDraft = async (noteId: number, retry = true): Promise<boolean> => {
     const draft = draftsRef.current[noteId]
     const serverNote = queuedRef.current.find((note) => note.id === noteId)
     if (!draft || !serverNote || !draft.dirty) return Boolean(serverNote)
-    if (draft.conflict) {
-      setQueueError('This draft changed on the server. Reload it before saving or sending.')
-      return false
-    }
     try {
       const currentQuestion = questionsRef.current.find((question) => (
         pendingForQuestion(question, [serverNote], questionsPageUrlRef.current)?.id === noteId
@@ -1006,14 +1025,15 @@ export function TileReviewLayer({
               : { answer: draft.answer, note: draft.note }
             : { answer: draft.answer },
       )
-      const accepted = applySnapshot(snapshot, { reset: new Set([noteId]) })
-      if (!accepted) {
-        setQueueError('A newer queue snapshot arrived while saving. Reload the draft before sending.')
-        return false
-      }
+      // A newer snapshot may already have arrived; the save still landed.
+      applySnapshot(snapshot, { reset: new Set([noteId]) })
       setQueueError('')
       return true
     } catch (error) {
+      if (retry && isStaleRevision(error)) {
+        await refreshQueue()
+        return saveDraft(noteId, false)
+      }
       setQueueError(error instanceof Error ? error.message : 'Could not save changes')
       return false
     }
@@ -1034,15 +1054,21 @@ export function TileReviewLayer({
     markBusy(noteId, true)
     try {
       if (!(await saveDraft(noteId))) return
-      const latest = queuedRef.current.find((note) => note.id === noteId)
-      if (!latest) {
-        setQueueError('This item changed before it could be sent. Reload the queue and try again.')
-        return
+      const sendLatest = async () => {
+        const latest = queuedRef.current.find((note) => note.id === noteId)
+        if (!latest) throw new Error('This item is no longer queued.')
+        return pendingQueueRef.current.send([{ id: latest.id, revision: latest.revision ?? 1 }])
       }
-      applySnapshot(await pendingQueueRef.current.send([{
-        id: latest.id,
-        revision: latest.revision ?? 1,
-      }]))
+      let snapshot: WebPanePendingSnapshot
+      try {
+        snapshot = await sendLatest()
+      } catch (error) {
+        if (!isStaleRevision(error)) throw error
+        // The daemon's copy moved (e.g. re-picked in the page): send that one.
+        await refreshQueue()
+        snapshot = await sendLatest()
+      }
+      applySnapshot(snapshot)
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not send this item')
@@ -1051,63 +1077,38 @@ export function TileReviewLayer({
     }
   }
 
+  /**
+   * Sends the daemon's whole queue — not just the items this view has seen —
+   * after saving the owner's dirty drafts on top. A build handoff asserts the
+   * queue revision so nothing slips in unseen; if it did, refresh and retry.
+   */
   const sendAll = async (intent?: WebPanePendingSendIntent) => {
     if (sendingAllRef.current || busyIdsRef.current.size > 0) return
-    const visible = queuedRef.current.map((note) => ({ id: note.id, revision: note.revision ?? 1 }))
-    const ids = visible.map((note) => note.id)
-    if (ids.length === 0) return
-    const expectedRevisions = new Map(visible.map((note) => [note.id, note.revision]))
+    if (queuedRef.current.length === 0) return
     sendingAllRef.current = true
     setSendingAllMode(intent ?? 'send')
     setQueueError('')
     try {
-      for (const noteId of ids) {
-        const draft = draftsRef.current[noteId]
-        if (draft?.conflict) {
-          setQueueError('Resolve or reload conflicted drafts before sending the queue.')
-          return
-        }
-        if (draft?.dirty) {
-          if (!(await saveDraft(noteId))) return
-          const saved = queuedRef.current.find((note) => note.id === noteId)
-          if (!saved) {
-            setQueueError('The queue changed while saving. Nothing was sent.')
-            return
+      for (const note of [...queuedRef.current]) {
+        if (draftsRef.current[note.id]?.dirty && !(await saveDraft(note.id))) return
+      }
+      let snapshot: WebPanePendingSnapshot | undefined
+      for (let attempt = 0; snapshot === undefined; attempt += 1) {
+        try {
+          if (intent === undefined) {
+            snapshot = await pendingQueueRef.current.send()
+          } else {
+            const expectedQueueRevision = latestSnapshotRevisionRef.current
+            if (expectedQueueRevision === undefined) {
+              setQueueError('The daemon did not provide a queue revision. Update Commando before sending for build.')
+              return
+            }
+            snapshot = await pendingQueueRef.current.send(undefined, { intent, expectedQueueRevision })
           }
-          expectedRevisions.set(noteId, saved.revision ?? 1)
+        } catch (error) {
+          if (attempt >= 2 || !isStaleRevision(error)) throw error
+          await refreshQueue()
         }
-      }
-      if (queuedRef.current.length !== ids.length) {
-        setQueueError('The queue changed while saving. Nothing was sent.')
-        return
-      }
-      const targets: PendingSendTarget[] = []
-      for (const noteId of ids) {
-        const note = queuedRef.current.find((candidate) => candidate.id === noteId)
-        const draft = draftsRef.current[noteId]
-        if (
-          !note ||
-          draft?.conflict ||
-          (note.revision ?? 1) !== expectedRevisions.get(noteId)
-        ) {
-          setQueueError('The queue changed while saving. Nothing was sent.')
-          return
-        }
-        targets.push({ id: note.id, revision: note.revision ?? 1 })
-      }
-      const expectedQueueRevision = latestSnapshotRevisionRef.current
-      let snapshot: WebPanePendingSnapshot
-      if (intent === undefined) {
-        snapshot = await pendingQueueRef.current.send(targets)
-      } else {
-        if (expectedQueueRevision === undefined) {
-          setQueueError('The daemon did not provide a queue revision. Update Commando before sending for build.')
-          return
-        }
-        snapshot = await pendingQueueRef.current.send(targets, {
-          intent,
-          expectedQueueRevision,
-        })
       }
       applySnapshot(snapshot)
     } catch (error) {
@@ -1121,12 +1122,14 @@ export function TileReviewLayer({
   const removeOne = async (noteId: number) => {
     if (sendingAllRef.current) return
     markBusy(noteId, true)
+    removingIdsRef.current.add(noteId)
     try {
       applySnapshot(await pendingQueueRef.current.remove(noteId))
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not remove the item')
     } finally {
+      removingIdsRef.current.delete(noteId)
       markBusy(noteId, false)
     }
   }
@@ -1178,22 +1181,13 @@ export function TileReviewLayer({
     }
     const note = queuedRef.current.find((candidate) => candidate.id === noteId)
     if (!note) return
-    if (draftsRef.current[noteId]?.conflict) {
-      setQueueError('Reload the conflicted draft before changing its attachments.')
-      return
-    }
     markBusy(noteId, true)
-    attachmentMutationIdsRef.current.add(noteId)
     try {
-      applySnapshot(
-        await pendingQueueRef.current.upload(noteId, note.revision ?? 1, file),
-        { rebase: new Set([noteId]) },
-      )
+      applySnapshot(await pendingQueueRef.current.upload(noteId, note.revision ?? 1, file))
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not upload the attachment')
     } finally {
-      attachmentMutationIdsRef.current.delete(noteId)
       markBusy(noteId, false)
     }
   }
@@ -1202,23 +1196,14 @@ export function TileReviewLayer({
     if (sendingAllRef.current) return
     const note = queuedRef.current.find((candidate) => candidate.id === noteId)
     if (!note) return
-    if (draftsRef.current[noteId]?.conflict) {
-      setQueueError('Reload the conflicted draft before changing its attachments.')
-      return
-    }
     markBusy(noteId, true)
-    attachmentMutationIdsRef.current.add(noteId)
     try {
-      applySnapshot(
-        await pendingQueueRef.current.removeAttachment(noteId, note.revision ?? 1, attachmentId),
-        { rebase: new Set([noteId]) },
-      )
+      applySnapshot(await pendingQueueRef.current.removeAttachment(noteId, note.revision ?? 1, attachmentId))
       if (preview?.id === attachmentId) setPreview(null)
       setQueueError('')
     } catch (error) {
       setQueueError(error instanceof Error ? error.message : 'Could not remove the attachment')
     } finally {
-      attachmentMutationIdsRef.current.delete(noteId)
       markBusy(noteId, false)
     }
   }
@@ -1420,12 +1405,6 @@ export function TileReviewLayer({
             </div>
             <button type="button" aria-label="Close queued item editor" onClick={() => setPopoverId(null)}>×</button>
           </header>
-          {popoverDraft.conflict && (
-            <div className="tile-review-conflict" role="alert">
-              <span>This item changed after you started editing.</span>
-              <button type="button" onClick={() => resetDraft(popoverNote.id)}>Reload draft</button>
-            </div>
-          )}
           <PendingEditorFields
             note={popoverNote}
             draft={popoverDraft}
@@ -1454,7 +1433,7 @@ export function TileReviewLayer({
             <button
               type="button"
               className="web-pane-action is-ghost"
-              disabled={!popoverDraft.dirty || popoverDraft.conflict || popoverBusy || !popoverDraft.answer}
+              disabled={!popoverDraft.dirty || popoverBusy || !popoverDraft.answer}
               onClick={() => void saveOne(popoverNote.id)}
             >
               {popoverBusy ? 'Working…' : 'Save'}
@@ -1462,7 +1441,7 @@ export function TileReviewLayer({
             <button
               type="button"
               className="web-pane-action"
-              disabled={popoverDraft.conflict || popoverBusy || !popoverDraft.answer}
+              disabled={popoverBusy || !popoverDraft.answer}
               onClick={() => void sendOne(popoverNote.id)}
             >
               {popoverBusy ? 'Working…' : 'Send this'}
@@ -1800,12 +1779,6 @@ export function TileReviewLayer({
                           </button>
                         )}
                       </div>
-                      {selectedDraft.conflict && (
-                        <div className="tile-review-conflict" role="alert">
-                          <span>This item changed after you started editing. Reload the server version before continuing.</span>
-                          <button type="button" onClick={() => resetDraft(selected.id)}>Reload draft</button>
-                        </div>
-                      )}
                       <PendingEditorFields
                         note={selected}
                         draft={selectedDraft}
@@ -1816,12 +1789,12 @@ export function TileReviewLayer({
                       <div className="tile-review-attachments">
                         <div className="tile-review-section-head">
                           <strong>Attachments</strong>
-                          <label className={`tile-review-add-image${selectedBusy || selectedDraft.conflict ? ' is-disabled' : ''}`}>
+                          <label className={`tile-review-add-image${selectedBusy ? ' is-disabled' : ''}`}>
                             <span>Add image</span>
                             <input
                               type="file"
                               accept="image/png,image/jpeg,image/gif,image/webp"
-                              disabled={selectedBusy || selectedDraft.conflict}
+                              disabled={selectedBusy}
                               aria-label="Add image attachment"
                               onChange={(event) => {
                                 const file = event.target.files?.[0]
@@ -1847,7 +1820,7 @@ export function TileReviewLayer({
                                 <button
                                   type="button"
                                   className="tile-review-attachment-remove"
-                                  disabled={selectedBusy || selectedDraft.conflict}
+                                  disabled={selectedBusy}
                                   aria-label={`Remove ${attachment.name}`}
                                   onClick={() => void removeAttachment(selected.id, attachment.id)}
                                 >
@@ -1871,7 +1844,7 @@ export function TileReviewLayer({
                         <button
                           type="button"
                           className="web-pane-action is-ghost"
-                          disabled={!selectedDraft.dirty || selectedDraft.conflict || selectedBusy || !selectedDraft.answer}
+                          disabled={!selectedDraft.dirty || selectedBusy || !selectedDraft.answer}
                           onClick={() => void saveOne(selected.id)}
                         >
                           {selectedBusy ? 'Working…' : 'Save changes'}
@@ -1879,7 +1852,7 @@ export function TileReviewLayer({
                         <button
                           type="button"
                           className="web-pane-action"
-                          disabled={selectedDraft.conflict || selectedBusy || !selectedDraft.answer}
+                          disabled={selectedBusy || !selectedDraft.answer}
                           onClick={() => void sendOne(selected.id)}
                         >
                           {selectedBusy ? 'Working…' : 'Send this'}

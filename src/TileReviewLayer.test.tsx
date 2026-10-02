@@ -152,6 +152,7 @@ describe('TileReviewLayer', () => {
 
   it('hydrates and reconciles pushed queue snapshots through the surface contract', async () => {
     let publish: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const update = vi.fn(async () => ({ notes: [annotation(4, 3, 'Local draft')], knownUpTo: 4, dropped: 0, revision: 3 }))
     const reviewSurface = surface({
       subscribePending: (listener) => {
         publish = listener
@@ -165,7 +166,7 @@ describe('TileReviewLayer', () => {
         active={false}
         containerRef={{ current: document.createElement('div') }}
         inputRef={{ current: document.createElement('div') }}
-        pendingQueue={queue()}
+        pendingQueue={queue({ update })}
         surface={reviewSurface}
       />,
     )
@@ -184,8 +185,115 @@ describe('TileReviewLayer', () => {
       dropped: 0,
       revision: 2,
     }))
-    expect(screen.getByRole('alert')).toHaveTextContent(/changed after you started editing/i)
+    // The owner's typed text is never discarded: it rebases onto the new revision.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Local draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith(4, 2, { answer: 'Local draft' }))
+  })
+
+  it('requeues a dirty draft when its note vanishes from a newer snapshot', async () => {
+    let publish: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const add = vi.fn(async () => ({ notes: [annotation(5, 1, 'Local draft')], knownUpTo: 5, dropped: 0, revision: 3 }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-vanish"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ add })}
+        surface={surface({ subscribePending: (listener) => { publish = listener; return () => undefined } })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publish?.({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+
+    // Sent or removed from another view: the note is gone, the typed text must not be.
+    act(() => publish?.({ notes: [], knownUpTo: 4, dropped: 0, revision: 2 }))
+    await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({
+      selector: '#target',
+      comment: 'Local draft',
+      pageUrl: 'https://example.com/review',
+    })))
+    // The queue emptied for a moment (drawer collapses), then holds the requeued note.
+    expect(await screen.findByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
+  it('does not resurrect a dirty draft the owner removed on purpose', async () => {
+    const add = vi.fn(async () => EMPTY_SNAPSHOT)
+    const remove = vi.fn(async () => ({ notes: [], knownUpTo: 4, dropped: 0, revision: 2 }))
+    render(
+      <TileReviewLayer
+        webPaneId="w-remove"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list: async () => ({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }), add, remove })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Changed my mind' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from queue' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(4))
+    await act(async () => { await Promise.resolve() })
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('reports a draft that could not be saved before Send all instead of silently sending nothing', async () => {
+    const update = vi.fn(async () => { throw new Error('disk full') })
+    const send = vi.fn(async () => EMPTY_SNAPSHOT)
+    render(
+      <TileReviewLayer
+        webPaneId="w-savefail"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list: async () => ({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 }), update, send })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/disk full/))
+    expect(send).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Comment' })).toHaveValue('Local draft')
+  })
+
+  it('refreshes and retries a save at the daemon revision when the note was stale', async () => {
+    const stale = Object.assign(new Error('Pending note revision is stale'), { status: 409 })
+    const update = vi.fn()
+      .mockRejectedValueOnce(stale)
+      .mockResolvedValueOnce({ notes: [annotation(4, 3, 'Local draft')], knownUpTo: 4, dropped: 0, revision: 3 })
+    const list = vi.fn()
+      .mockResolvedValueOnce({ notes: [annotation(4)], knownUpTo: 4, dropped: 0, revision: 1 })
+      .mockResolvedValueOnce({ notes: [annotation(4, 2, 'Changed elsewhere')], knownUpTo: 4, dropped: 0, revision: 2 })
+    render(
+      <TileReviewLayer
+        webPaneId="w-retry"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ list, update })}
+        surface={surface()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Review queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: 'Local draft' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    expect(update).toHaveBeenNthCalledWith(1, 4, 1, { answer: 'Local draft' })
+    expect(update).toHaveBeenNthCalledWith(2, 4, 2, { answer: 'Local draft' })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('occludes native surfaces only for opaque review UI, not highlight hit targets', async () => {
@@ -459,6 +567,60 @@ describe('TileReviewLayer', () => {
       'https://example.com/review?v=2',
       expect.objectContaining({ answer: 'Starter', queueKey: 'plan', shape: planShape }),
     ))
+  })
+
+  it('keeps answers and typed drafts when the page only changes its hash', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const queuedPlan: WebPanePendingNote = {
+      id: 1,
+      revision: 1,
+      pageUrl: 'https://example.com/review',
+      selector: '#plan',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Which plan?: Pro',
+      queueKey: 'plan',
+      response: { question: 'Which plan?', answer: 'Pro' },
+      attachments: [],
+    }
+    const questions: RedlinePageQuestionSnapshot = {
+      type: 'questions',
+      version: 1,
+      questions: [
+        { question: 'Which plan?', queueKey: 'plan', selector: '#plan', kind: 'choice', options: ['Starter', 'Pro'], multiple: false },
+        { question: 'Project name?', queueKey: 'name', selector: '#name', kind: 'text' },
+      ],
+    }
+    render(
+      <TileReviewLayer
+        webPaneId="w-hash"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse: async () => EMPTY_SNAPSHOT })}
+        surface={surface({
+          subscribePending: (listener) => { publishPending = listener; return () => undefined },
+          subscribeQuestions: (listener) => { publishQuestions = listener; return () => undefined },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      publishQuestions?.('https://example.com/review#reach', questions)
+      publishPending?.({ revision: 1, notes: [queuedPlan], knownUpTo: 1, dropped: 0 })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Project name\?/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), { target: { value: 'Half-typed' } })
+
+    act(() => publishQuestions?.('https://example.com/review#composer', questions))
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('Half-typed')
   })
 
   it('clears question drafts when the page inventory moves to a new document', async () => {

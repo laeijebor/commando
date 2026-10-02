@@ -626,9 +626,6 @@
   cursor: pointer;
 }
 
-.tile-review-pending-popover .tile-review-conflict {
-  margin: 0;
-}
 
 .tile-review-popover-attachments {
   color: var(--text-faint, #6e667e);
@@ -899,32 +896,12 @@
 }
 
 .tile-review-drawer-warning,
-.tile-review-conflict {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--amber, #e0a458) 28%, transparent);
-  background: color-mix(in srgb, var(--amber, #e0a458) 8%, transparent);
-  color: var(--amber, #e0a458);
-  font-size: 10px;
-}
 
 .tile-review-drawer-warning {
   grid-row: 2;
 }
 
 .tile-review-drawer-warning button,
-.tile-review-conflict button {
-  flex: none;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: 700 9px var(--mono);
-  text-decoration: underline;
-  cursor: pointer;
-}
 
 .tile-review-drawer-body {
   grid-row: 3;
@@ -1093,11 +1070,6 @@
   padding: 4px 8px;
 }
 
-.tile-review-conflict {
-  margin-bottom: 9px;
-  border: 1px solid color-mix(in srgb, var(--amber, #e0a458) 35%, transparent);
-  border-radius: 6px;
-}
 
 .tile-review-editor {
   min-width: 0;

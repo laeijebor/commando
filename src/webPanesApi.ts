@@ -79,7 +79,7 @@ function apiError(status: number, body: unknown): Error {
     typeof body === 'object' && body !== null && typeof (body as ApiErrorBody).error === 'string'
       ? (body as { error: string }).error
       : `Web pane request failed (${status})`
-  return new Error(message)
+  return Object.assign(new Error(message), { status })
 }
 
 export function createWebPanesApi(
