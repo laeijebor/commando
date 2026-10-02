@@ -292,6 +292,24 @@ describe('agent hook installer', () => {
     await expect(readdir(outside)).resolves.toEqual([])
   })
 
+  it('ignores profile variables that point outside an overridden HOME', async () => {
+    const realHome = await mkdtemp(join(tmpdir(), 'commando-hook-real-home-'))
+    const isolatedHome = await mkdtemp(join(tmpdir(), 'commando-hook-isolated-home-'))
+    cleanup.push(() => rm(realHome, { recursive: true, force: true }))
+    cleanup.push(() => rm(isolatedHome, { recursive: true, force: true }))
+    vi.stubEnv('HOME', isolatedHome)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(realHome, '.claudep'))
+    vi.stubEnv('CODEX_HOME', join(realHome, '.codex'))
+    vi.stubEnv(AGENT_HOOK_TOKEN_PATH_ENV, join(realHome, '.commando', 'agent-hook-token'))
+
+    const installed = await new AgentHookInstaller().install()
+
+    expect(installed.claudeSettingsPath).toBe(join(isolatedHome, '.claude', 'settings.json'))
+    expect(installed.codexConfigPath).toBe(join(isolatedHome, '.codex', 'config.toml'))
+    expect(installed.tokenPath).toBe(join(isolatedHome, '.commando', 'agent-hook-token'))
+    await expect(readdir(realHome)).resolves.toEqual([])
+  })
+
   it('honors CLAUDE_CONFIG_DIR for explicit Claude profiles', async () => {
     const home = await temporaryHome()
     const profile = join(home, '.claudep')

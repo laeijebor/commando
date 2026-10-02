@@ -1836,19 +1836,23 @@ export class AgentHookInstaller {
     const home = options.home ?? process.env.HOME
     if (!home) throw new Error('HOME is required to install agent hooks')
     const resolvedHome = resolve(home)
-    const configuredClaudeDirectory = options.home === undefined
-      ? process.env.CLAUDE_CONFIG_DIR
-      : undefined
+    // Profile variables inherited from another HOME (an isolated test daemon, a
+    // sandboxed install) must not redirect writes into that other home's config.
+    const inherited = (value: string | undefined): string | undefined =>
+      options.home === undefined && value !== undefined
+        && (value.trim().length === 0 || isWithin(resolvedHome, resolve(value)))
+        ? value
+        : undefined
+    const configuredClaudeDirectory = inherited(process.env.CLAUDE_CONFIG_DIR)
     if (configuredClaudeDirectory !== undefined && configuredClaudeDirectory.trim().length === 0) {
       throw new Error('CLAUDE_CONFIG_DIR must not be empty')
     }
     this.home = resolvedHome
-    const configuredCodexHome = options.home === undefined ? process.env.CODEX_HOME : undefined
+    const configuredCodexHome = inherited(process.env.CODEX_HOME)
     if (configuredCodexHome !== undefined && configuredCodexHome.trim().length === 0) {
       throw new Error('CODEX_HOME must not be empty')
     }
-    const configuredTokenPath = options.tokenPath
-      ?? (options.home === undefined ? process.env[AGENT_HOOK_TOKEN_PATH_ENV] : undefined)
+    const configuredTokenPath = options.tokenPath ?? inherited(process.env[AGENT_HOOK_TOKEN_PATH_ENV])
     this.paths = {
       tokenPath: resolve(
         configuredTokenPath
