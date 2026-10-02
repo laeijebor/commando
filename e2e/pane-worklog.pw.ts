@@ -126,6 +126,10 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     runAgent([paths.sessionBriefCliPath, '--deployment', `${baseUrl}/preview`, '--url-label', 'Preview deployment'])
     runAgent([paths.sessionBriefCliPath, '--build', '1842', '--link', `${baseUrl}/build/1842`])
     runAgent([paths.sessionBriefCliPath, '--release', 'v2.3.0'])
+    const resumeCommand = 'claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487'
+    runAgent([paths.sessionBriefCliPath, '--session', resumeCommand])
+    await first.getByRole('button', { name: /Resume session/ }).click()
+    await expect.poll(() => tmux('capture-pane', '-p', '-t', paneId)).toContain(resumeCommand)
     await expect(first.getByText('Retain the original handoff')).toBeVisible()
     await expect(first.getByRole('region', { name: 'Important terms for Worklog agent' })).toContainText('new-checkout')
     await expect(first.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', previewUrl)

@@ -149,7 +149,7 @@ export type SessionBriefUpdate = {
 }
 
 export type SessionReference = {
-  kind: 'feature_flag' | 'url' | 'issue' | 'deployment' | 'build' | 'release'
+  kind: 'feature_flag' | 'url' | 'issue' | 'deployment' | 'build' | 'release' | 'session'
   value: string
   label?: string
   url?: string

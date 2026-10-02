@@ -79,6 +79,25 @@ the corresponding `kind` values are `issue`, `deployment`, `build`, and
 `value` remains its identifier. For link kinds, `value` is the URL and
 `label` is optional.
 
+### Pin the resume command
+
+Pin the command that restarts this conversation so the user can resume it from
+the worklog after a restart or a tmux restore. The agent bridge prints the exact
+command at session start ("Resume command for this conversation: ..."); pin it
+verbatim, once per conversation. A new `--session` replaces the previous one:
+
+```bash
+$HOME/.commando/hooks/commando-session-update.mjs --session "opencode --yolo -s ses_f08700672ffenN8gLm9kPx2xb6"
+$HOME/.commando/hooks/commando-session-update.mjs --session "claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487"
+```
+
+Claude uses `claudew` or `claudep` to match the config dir in use
+(`CLAUDE_CONFIG_DIR` ending `.claudew` / `.claudep`), opencode always runs with
+`--yolo`, and Codex is `codex resume <id>`. Clicking the term types the command
+into the pane without pressing Enter; a separate button copies it. Only plain
+words are accepted (no quotes, `;`, `&`, `|`, `$`, backticks or newlines), up to
+300 characters. Remove it with `--remove-session COMMAND`.
+
 ## Publish screenshots
 
 Publish a screenshot round by naming its directory:
