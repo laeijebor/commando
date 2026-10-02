@@ -243,6 +243,45 @@ describe('agent hook installer', () => {
     expect(output.system[1]).toContain('unless requested by the user')
   })
 
+  it('hands opencode its exact resume command once the session id is known', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    vi.stubEnv('TMUX_PANE', '%42')
+    const hooks = await loadOpenCodePlugin(paths.openCodePluginPath)
+    const output = { system: ['base'] }
+    await hooks['experimental.chat.system.transform']({}, output)
+    expect(output.system[1]).not.toContain('Resume command')
+    await hooks['experimental.chat.system.transform']({ sessionID: 'ses_f08700672ffenN8gLm9kPx2xb6' }, output)
+    expect(output.system.at(-1)).toContain('Resume command for this conversation: opencode --yolo -s ses_f08700672ffenN8gLm9kPx2xb6')
+    await hooks['experimental.chat.system.transform']({ sessionID: 'ses_x; rm -rf /' }, output)
+    expect(output.system.at(-1)).not.toContain('rm -rf')
+  })
+
+  it.each([
+    ['/Users/leo/.claudep', 'claudep'],
+    ['/Users/leo/.claudew/', 'claudew'],
+    ['/Users/leo/.claude', 'claude'],
+    [undefined, 'claude'],
+  ])('tells Claude its resume command for config dir %s on session start only', async (configDir, launcher) => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const settings = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    const run = async (event: string) => {
+      const command = settings.hooks[event][0].hooks[0]
+      const env: NodeJS.ProcessEnv = { ...process.env, COMMANDO_PORT: '1', TMUX_PANE: '%42' }
+      if (configDir) env.CLAUDE_CONFIG_DIR = configDir
+      else delete env.CLAUDE_CONFIG_DIR
+      const child = spawn(command.command, command.args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
+      let stdout = ''
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      child.stdin.end(JSON.stringify({ hook_event_name: event, session_id: 'd227943a-841a-4dfa-94c7-afe2e0774487', prompt: 'hi' }))
+      await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
+      return JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    }
+    expect(await run('SessionStart')).toContain(`Resume command for this conversation: ${launcher} --resume d227943a-841a-4dfa-94c7-afe2e0774487`)
+    expect(await run('UserPromptSubmit')).not.toContain('Resume command')
+  })
+
   it('emits Claude context through the installed startup/prompt command without changing permission output', async () => {
     const home = await temporaryHome()
     const paths = await new AgentHookInstaller({ home }).install()
@@ -422,6 +461,34 @@ describe('agent hook installer', () => {
       child.on('exit', resolve)
     })
     expect(cliExit).toBe(2)
+  })
+
+  it('maps --session and --remove-session to session reference patches', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const bodies: unknown[] = []
+    const server = createServer((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += chunk })
+      request.on('end', () => { bodies.push(JSON.parse(raw)); response.writeHead(200); response.end('{}') })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    const run = (...args: string[]) => new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, [paths.sessionBriefCliPath, ...args], {
+        env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%1' },
+        stdio: 'ignore',
+      })
+      child.on('exit', resolve)
+    })
+    expect(await run('--session', 'claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487')).toBe(0)
+    expect(await run('--remove-session', 'claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487')).toBe(0)
+    expect(bodies).toEqual([
+      { reference: { action: 'upsert', kind: 'session', value: 'claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487' } },
+      { reference: { action: 'remove', kind: 'session', value: 'claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487' } },
+    ])
   })
 
   it('installs the Codex notify bridge into config.toml', async () => {

@@ -629,6 +629,7 @@ export function TerminalPaneCard({
           paneManagementApi={paneManagementApi}
           revealInFinder={revealInFinder}
           onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
+          onTypeCommand={onInput}
         />
       </div>
       <footer className="pane-footer">

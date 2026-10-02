@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -47,6 +47,26 @@ describe('PaneWorklog', () => {
     expect(section).toHaveTextContent('Feature flag')
     expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('href', 'http://localhost:5273/checkout')
     expect(screen.getByRole('link', { name: /Checkout preview/ })).toHaveAttribute('target', '_blank')
+  })
+
+  it('types the resume command without Enter and copies it separately', async () => {
+    const onTypeCommand = vi.fn()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    const command = 'opencode --yolo -s ses_f08700672ffenN8gLm9kPx2xb6'
+    render(<PaneWorklog brief={{ ...brief, references: [{ kind: 'session', value: command }] }} paneLabel="Tests" onTypeCommand={onTypeCommand} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`Resume session.*${command}`) }))
+    expect(onTypeCommand).toHaveBeenCalledWith(command)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy resume command' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(command))
+    expect(onTypeCommand).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the resume click while offline', () => {
+    render(<PaneWorklog brief={{ ...brief, references: [{ kind: 'session', value: 'claudep --resume x1234567' }] }} paneLabel="Tests" connected={false} onTypeCommand={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('button', { name: /Resume session/ })).toBeDisabled()
   })
 
   it('renders issue and deployment links and linked or plain build/release identifiers', () => {
