@@ -5,6 +5,22 @@ import './sims-view.css'
 import { SimLiveView } from './SimLiveView'
 
 type SimsApi = ReturnType<typeof createSimsApi>
+type ViewPreferences = { groupBy: 'repo' | 'session' | 'none'; size: 's' | 'm' | 'l' }
+const VIEW_STORAGE_KEY = 'commando.sims-view'
+const DEFAULT_VIEW: ViewPreferences = { groupBy: 'repo', size: 'm' }
+
+function readViewPreferences(): ViewPreferences {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(VIEW_STORAGE_KEY) ?? 'null')
+    if (!stored || typeof stored !== 'object') return DEFAULT_VIEW
+    const groupBy = 'groupBy' in stored ? stored.groupBy : undefined
+    const size = 'size' in stored ? stored.size : undefined
+    return {
+      groupBy: groupBy === 'repo' || groupBy === 'session' || groupBy === 'none' ? groupBy : DEFAULT_VIEW.groupBy,
+      size: size === 's' || size === 'm' || size === 'l' ? size : DEFAULT_VIEW.size,
+    }
+  } catch { return DEFAULT_VIEW }
+}
 
 // Decode offscreen before replacing the displayed image. Abort also releases a pending decode.
 function loadImage(url: string, signal: AbortSignal): Promise<void> {
@@ -105,6 +121,12 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
 
 export function SimsView({ token }: { token: string }) {
   const api = useMemo(() => createSimsApi(token), [token])
+  const [view, setView] = useState(readViewPreferences)
+  const [sessionFilter, setSessionFilter] = useState('all')
+  const updateView = (next: ViewPreferences) => {
+    setView(next)
+    try { window.localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify(next)) } catch { /* Storage may be unavailable. */ }
+  }
   const [visible, setVisible] = useState(document.visibilityState === 'visible')
   const [liveUdid, setLiveUdid] = useState<string | null>(null)
   const liveTrigger = useRef<HTMLElement | null>(null)
@@ -143,22 +165,64 @@ export function SimsView({ token }: { token: string }) {
     return () => { window.clearInterval(timer); controller.abort() }
   }, [api, visible, revision])
 
-  const groups = new Map<string, { name: string; sims: SimWallDevice[] }>()
-  for (const sim of sims.filter((device) => device.lease)) {
-    const key = sim.lease!.repo?.root ?? ''
-    const group = groups.get(key) ?? { name: sim.lease!.repo?.name ?? 'Unknown repository', sims: [] }
-    group.sims.push(sim)
-    groups.set(key, group)
-  }
-  const ordered = [...groups.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name))
+  const sessions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const sim of sims) {
+      if (sim.lease) counts.set(sim.lease.sessionName, (counts.get(sim.lease.sessionName) ?? 0) + 1)
+    }
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [sims])
   const unleased = sims.filter((sim) => !sim.lease)
-  if (unleased.length) ordered.push(['no-lease', { name: 'No lease', sims: unleased }])
+  const filterExists = sessionFilter === 'all' || (sessionFilter === 'no-lease'
+    ? unleased.length > 0 : sessions.some(([name]) => `session:${name}` === sessionFilter))
+  const activeFilter = filterExists ? sessionFilter : 'all'
+  useEffect(() => {
+    if (!filterExists) setSessionFilter('all')
+  }, [filterExists])
+  const filtered = sims.filter((sim) => activeFilter === 'all' || (activeFilter === 'no-lease'
+    ? !sim.lease : sim.lease && `session:${sim.lease.sessionName}` === activeFilter))
+  const leased = filtered.filter((sim) => sim.lease)
+  const filteredUnleased = filtered.filter((sim) => !sim.lease)
+  type SimGroup = { key: string; name?: string; sims: SimWallDevice[] }
+  let ordered: SimGroup[]
+  if (view.groupBy === 'none') {
+    ordered = filtered.length ? [{ key: 'flat', sims: [...leased, ...filteredUnleased] }] : []
+  } else {
+    const groups = new Map<string, SimGroup>()
+    for (const sim of leased) {
+      const lease = sim.lease!
+      const key = view.groupBy === 'session' ? `session:${lease.sessionName}` : `repo:${lease.repo?.root ?? ''}`
+      const name = view.groupBy === 'session' ? lease.sessionName : lease.repo?.name ?? 'Unknown repository'
+      const group = groups.get(key) ?? { key, name, sims: [] }
+      group.sims.push(sim)
+      groups.set(key, group)
+    }
+    ordered = [...groups.values()].sort((a, b) => a.name!.localeCompare(b.name!))
+    if (filteredUnleased.length) ordered.push({ key: 'no-lease', name: 'No lease', sims: filteredUnleased })
+  }
 
-  return <section className="sims-view" aria-label="Simulators">
+  return <section className={`sims-view sims-size-${view.size}`} aria-label="Simulators">
     <header className="sims-bar">
       <h2>Simulators</h2>
       <span className="sims-pill">{sims.length} booted</span>
       <span className="sims-pill warn">{sims.filter((sim) => sim.slim === 'unslimmed').length} unslimmed</span>
+      <div className="sims-filters" role="group" aria-label="Filter simulators by session">
+        <button type="button" className="sims-pill" aria-pressed={activeFilter === 'all'} onClick={() => setSessionFilter('all')}>All</button>
+        {sessions.map(([name, count]) => <button type="button" className="sims-pill" key={name} aria-pressed={activeFilter === `session:${name}`} onClick={() => setSessionFilter(`session:${name}`)}>{name} ({count})</button>)}
+        {unleased.length ? <button type="button" className="sims-pill" aria-pressed={activeFilter === 'no-lease'} onClick={() => setSessionFilter('no-lease')}>No lease ({unleased.length})</button> : null}
+      </div>
+      <div className="sims-layout-control" role="group" aria-label="Group by">
+        <span>Group by</span>
+        <div className="sims-segmented">
+          {(['repo', 'session', 'none'] as const).map((groupBy) => <button type="button" key={groupBy} aria-pressed={view.groupBy === groupBy} onClick={() => updateView({ ...view, groupBy })}>{groupBy === 'repo' ? 'Repo' : groupBy === 'session' ? 'Session' : 'None'}</button>)}
+        </div>
+      </div>
+      <div className="sims-layout-control" role="group" aria-label="Size">
+        <span>Size</span>
+        <div className="sims-segmented">
+          {(['s', 'm', 'l'] as const).map((size) => <button type="button" key={size} aria-pressed={view.size === size} onClick={() => updateView({ ...view, size })}>{size.toUpperCase()}</button>)}
+        </div>
+      </div>
     </header>
     {error ? <p className="sims-error" role="alert">{error}</p> : null}
     {!loaded && !error ? <p className="sims-empty" role="status">Loading simulators…</p> : null}
@@ -171,8 +235,8 @@ export function SimsView({ token }: { token: string }) {
         <SimLiveView key={liveUdid} udid={liveUdid} token={token} api={api} />
       </section>
     </div> : null}
-    {ordered.map(([key, group]) => <section className="sims-group" key={key} aria-label={group.name}>
-      <header className="sims-repo"><h3>{group.name}</h3><span>{group.sims.length} {key === 'no-lease' ? 'unleased' : 'leased'}</span></header>
+    {ordered.map((group) => <section className="sims-group" key={group.key} aria-label={group.name}>
+      {group.name !== undefined ? <header className="sims-repo"><h3>{group.name}</h3><span>{group.sims.length} {group.key === 'no-lease' ? 'unleased' : 'leased'}</span></header> : null}
       <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
