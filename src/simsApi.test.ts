@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSimsApi } from './simsApi'
 
 describe('simulator claim actions', () => {
+  it('carries the server capture timestamp with the JPEG and preserves the live view Blob method', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response('jpeg', { headers: { 'X-Commando-Snapshot-At': '12345' } }))
+    const api = createSimsApi('token', fetcher)
+    const signal = new AbortController().signal
+    const frame = await api.snapshotFrame('sim/udid', signal)
+    expect(frame.at).toBe(12345)
+    expect(frame.blob.size).toBe(4)
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/snapshot.jpg', expect.objectContaining({ signal, headers: { Authorization: 'Bearer token' } }))
+    expect((await api.snapshot('sim/udid', signal)).size).toBe(4)
+  })
+
   it('uses the existing authenticated open endpoint and propagates errors', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{"ok":true,"raised":false,"reason":"No window matched"}'))
       .mockResolvedValueOnce(new Response('{"error":"Simulator is not booted"}', { status: 404 }))

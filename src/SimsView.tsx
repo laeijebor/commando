@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SimWallDevice } from '../shared/protocol'
-import { createSimsApi } from './simsApi'
+import { cacheSims, createSimsApi, readCachedSims, simsCache, type CachedSimSnapshot } from './simsApi'
 import './sims-view.css'
 import { SimLiveView } from './SimLiveView'
 
@@ -8,6 +8,12 @@ type SimsApi = ReturnType<typeof createSimsApi>
 type ViewPreferences = { groupBy: 'repo' | 'session' | 'none'; size: 's' | 'm' | 'l' }
 const VIEW_STORAGE_KEY = 'commando.sims-view'
 const DEFAULT_VIEW: ViewPreferences = { groupBy: 'repo', size: 'm' }
+
+function snapshotAge(at: number, now: number): string | undefined {
+  const seconds = Math.floor((now - at) / 1000)
+  if (now - at <= 15_000) return
+  return seconds < 60 ? `${seconds}s ago` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3600)}h ago`
+}
 
 function readViewPreferences(): ViewPreferences {
   try {
@@ -43,7 +49,9 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
   const snapshotBusy = useRef(false)
   const actionBusy = useRef(false)
   const [intersecting, setIntersecting] = useState(false)
-  const [image, setImage] = useState<string>()
+  const [image, setImage] = useState<CachedSimSnapshot | undefined>(() => simsCache.snapshots.get(sim.udid))
+  const displayed = useRef(image)
+  const [now, setNow] = useState(Date.now)
   const [snapshotError, setSnapshotError] = useState('')
   const [error, setError] = useState('')
   const [action, setAction] = useState<'slim' | 'open' | null>(null)
@@ -55,7 +63,19 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
     return () => observer.disconnect()
   }, [])
 
-  useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
+  useEffect(() => {
+    displayed.current = image
+    return () => {
+      if (image && simsCache.snapshots.get(sim.udid)?.url !== image.url) URL.revokeObjectURL(image.url)
+    }
+  }, [image, sim.udid])
+
+  useEffect(() => {
+    if (!visible || !image) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [visible, image])
 
   useEffect(() => {
     if (!visible || !intersecting) return
@@ -65,13 +85,19 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
       snapshotBusy.current = true
       let next: string | undefined
       try {
-        const blob = await api.snapshot(sim.udid, controller.signal)
+        const { blob, at } = await api.snapshotFrame(sim.udid, controller.signal)
         if (controller.signal.aborted) return
+        const cached = simsCache.snapshots.get(sim.udid)
+        if (cached && cached.at >= at) { setSnapshotError(''); return }
         next = URL.createObjectURL(blob)
         await loadImage(next, controller.signal)
-        if (controller.signal.aborted) return
-        setImage(next)
-        next = undefined // Ownership passes to the image effect.
+        if (controller.signal.aborted || !simsCache.listing?.some((device) => device.udid === sim.udid)) return
+        const frame = { url: next, at }
+        const previous = simsCache.snapshots.get(sim.udid)
+        if (previous && previous.url !== displayed.current?.url) URL.revokeObjectURL(previous.url)
+        simsCache.snapshots.set(sim.udid, frame)
+        setImage(frame)
+        next = undefined // The module cache owns loaded URLs across remounts.
         setSnapshotError('')
       } catch (cause) {
         if (!controller.signal.aborted) setSnapshotError(cause instanceof Error ? cause.message : 'Snapshot unavailable')
@@ -100,8 +126,9 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
 
   return <article className="sims-card" ref={card} aria-label={name}>
     <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}>
-      {image ? <img src={image} alt={`${name} snapshot`} />
+      {image ? <img src={image.url} alt={`${name} snapshot`} />
         : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
+      {image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
     </button>
     <div className="sims-name">{name}</div>
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : 'No lease')}</div>
@@ -137,8 +164,9 @@ export function SimsView({ token }: { token: string }) {
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
   }, [liveUdid])
-  const [sims, setSims] = useState<SimWallDevice[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const [sims, setSims] = useState<SimWallDevice[]>(() => readCachedSims() ?? [])
+  const [loaded, setLoaded] = useState(() => readCachedSims() !== undefined)
+  const [updating, setUpdating] = useState(visible)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
   const listingBusy = useRef(false)
@@ -148,17 +176,18 @@ export function SimsView({ token }: { token: string }) {
     return () => document.removeEventListener('visibilitychange', change)
   }, [])
   useEffect(() => {
-    if (!visible) return
+    if (!visible) { setUpdating(false); return }
     const controller = new AbortController()
+    setUpdating(true)
     const refresh = async () => {
       if (listingBusy.current || controller.signal.aborted || document.visibilityState !== 'visible') return
       listingBusy.current = true
       try {
         const next = await api.list(controller.signal)
-        if (!controller.signal.aborted) { setSims(next); setLoaded(true); setError('') }
+        if (!controller.signal.aborted) { cacheSims(next); setSims(next); setLoaded(true); setError('') }
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Simulators unavailable')
-      } finally { listingBusy.current = false }
+      } finally { listingBusy.current = false; if (!controller.signal.aborted) setUpdating(false) }
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 5_000)
@@ -206,6 +235,7 @@ export function SimsView({ token }: { token: string }) {
       <h2>Simulators</h2>
       <span className="sims-pill">{sims.length} booted</span>
       <span className="sims-pill warn">{sims.filter((sim) => sim.slim === 'unslimmed').length} unslimmed</span>
+      {loaded && updating ? <span className="sims-updating" role="status">Updating…</span> : null}
       <div className="sims-filters" role="group" aria-label="Filter simulators by session">
         <button type="button" className="sims-pill" aria-pressed={activeFilter === 'all'} onClick={() => setSessionFilter('all')}>All</button>
         {sessions.map(([name, count]) => <button type="button" className="sims-pill" key={name} aria-pressed={activeFilter === `session:${name}`} onClick={() => setSessionFilter(`session:${name}`)}>{name} ({count})</button>)}

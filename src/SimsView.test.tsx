@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
+import { simsCache } from './simsApi'
 
 vi.mock('./SimLiveView', () => ({
   SimLiveView: ({ udid, token }: { udid: string; token: string }) => <div data-testid="live-view" data-udid={udid} data-token={token} />,
@@ -22,7 +23,13 @@ let visibility: DocumentVisibilityState
 let fetcher: ReturnType<typeof vi.fn<typeof fetch>>
 let preloads: HTMLImageElement[]
 let observers: Array<{ callback: IntersectionObserverCallback; node?: Element; disconnect: ReturnType<typeof vi.fn> }>
-async function flush() { await act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }) }
+async function flush() {
+  await act(async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    // localStorage writes enqueue jsdom's zero-delay storage notification.
+    await vi.advanceTimersByTimeAsync(0)
+  })
+}
 async function tick(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }); await flush() }
 async function intersect(value = true, index = 0) {
   act(() => {
@@ -44,6 +51,8 @@ const snapshotCalls = () => fetcher.mock.calls.filter(([url]) => String(url).end
 const listingCalls = () => fetcher.mock.calls.filter(([url]) => url === '/api/sims')
 
 beforeEach(() => {
+  simsCache.listing = undefined
+  simsCache.snapshots.clear()
   window.localStorage.clear()
   vi.useFakeTimers()
   sims = [device()]
@@ -81,6 +90,98 @@ describe('SimsView', () => {
     device({ udid: 'C', lease: { ...device().lease!, sessionName: 'Build UI', paneId: '%2' } }),
     device({ udid: 'D', lease: { ...device().lease!, paneId: '%3', repo: { ...repo, root: '/tools', name: 'tools' } } }),
   ]
+
+  it('paints cached counts and snapshots immediately on remount and keeps frames through filter, group and size changes', async () => {
+    sims.push(device({ udid: B, name: 'Stray phone', lease: null }))
+    const first = render(<SimsView token="" />)
+    await flush()
+    await intersect(true, 0); await intersect(true, 1)
+    await loaded(0); await loaded(1)
+    first.unmount()
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    fetcher.mockImplementation(() => new Promise(() => {}))
+    render(<SimsView token="" />)
+    expect(screen.getByText('2 booted')).toBeVisible()
+    expect(screen.getByText('Updating…')).toBeVisible()
+    expect(screen.queryByText('Loading simulators…')).toBeNull()
+    expect(screen.getAllByRole('img').map((img) => img.getAttribute('src'))).toEqual(['blob:snapshot-1', 'blob:snapshot-2'])
+    fireEvent.click(filters().getByRole('button', { name: 'Review UI (1)' }))
+    fireEvent.click(filters().getByRole('button', { name: 'All' }))
+    fireEvent.click(grouping().getByRole('button', { name: 'None' }))
+    fireEvent.click(sizes().getByRole('button', { name: 'L' }))
+    expect(screen.getAllByRole('img').map((img) => img.getAttribute('src'))).toEqual(['blob:snapshot-1', 'blob:snapshot-2'])
+    expect(screen.queryByText('Waiting for snapshot…')).toBeNull()
+    expect(snapshotCalls()).toHaveLength(2)
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  })
+
+  it('paints the saved listing after page reload before a delayed fetch completes, then replaces it', async () => {
+    const first = render(<SimsView token="" />)
+    await flush()
+    first.unmount()
+    simsCache.listing = undefined // A reload loses module state but preserves localStorage.
+    let finish!: (response: Response) => void
+    fetcher.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    render(<SimsView token="" />)
+    expect(screen.getByText('1 booted')).toBeVisible()
+    expect(screen.getByRole('article', { name: 'Review UI' })).toBeVisible()
+    expect(screen.getByText('Updating…')).toBeVisible()
+    expect(screen.queryByText('Loading simulators…')).toBeNull()
+    finish(new Response(JSON.stringify({ sims: [] })))
+    await flush()
+    expect(screen.getByText('No booted iOS simulators.')).toBeVisible()
+    expect(screen.queryByText('Updating…')).toBeNull()
+  })
+
+  it('shows capture age after 15 seconds and removes the chip only when a newer image has loaded', async () => {
+    vi.setSystemTime(120_000)
+    const normal = fetcher.getMockImplementation()!
+    let captureAt = 0
+    fetcher.mockImplementation(async (url, options) => String(url).endsWith('/snapshot.jpg')
+      ? new Response('jpeg', { headers: { 'X-Commando-Snapshot-At': String(captureAt) } }) : normal(url, options))
+    render(<SimsView token="" />)
+    await flush(); await intersect(); await loaded()
+    expect(screen.getByText('2m ago')).toBeVisible()
+    await tick(2000)
+    expect(preloads).toHaveLength(1) // Receiving the same cached frame needs no new URL or decode.
+    captureAt = Date.now()
+    await tick(2000)
+    expect(screen.getByText('2m ago')).toBeVisible()
+    await loaded()
+    expect(screen.queryByText('2m ago')).toBeNull()
+    await intersect(false)
+    await tick(13_000)
+    expect(screen.queryByText('15s ago')).toBeNull()
+    await tick(1000)
+    expect(screen.getByText('16s ago')).toBeVisible()
+    await changeVisibility('hidden')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('revokes URLs for removed devices, including frames belonging to filtered-out cards', async () => {
+    sims.push(device({ udid: B, name: 'Stray phone', lease: null }))
+    render(<SimsView token="" />)
+    await flush(); await intersect(true, 0); await intersect(true, 1)
+    await loaded(0); await loaded(1)
+    fireEvent.click(filters().getByRole('button', { name: 'Review UI (1)' }))
+    sims = sims.filter((sim) => sim.udid !== B)
+    await tick(5000)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:snapshot-2')
+    expect(simsCache.snapshots.has(B)).toBe(false)
+    expect(simsCache.snapshots.has(A)).toBe(true)
+    sims = []
+    await tick(5000)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:snapshot-1')
+    expect(simsCache.snapshots.size).toBe(0)
+  })
+
+  it.each(['{broken', '[null]', '[{"udid":"bad"}]', '{}'])('ignores a malformed saved listing: %s', async (stored) => {
+    window.localStorage.setItem('commando.sims-listing', stored)
+    render(<SimsView token="" />)
+    expect(screen.getByText('Loading simulators…')).toBeVisible()
+    await flush()
+    expect(screen.getByText('1 booted')).toBeVisible()
+  })
 
   it('derives one filter pill per leased session across panes and repositories, with counts and All selected', async () => {
     sims = mixedSims()
@@ -177,7 +278,7 @@ describe('SimsView', () => {
     fireEvent.click(sizes().getByRole('button', { name: 'L' }))
     fireEvent.click(filters().getByRole('button', { name: 'Review UI (2)' }))
     expect(JSON.parse(window.localStorage.getItem(VIEW_STORAGE_KEY)!)).toEqual({ groupBy: 'session', size: 'l' })
-    expect(window.localStorage.length).toBe(1)
+    expect(window.localStorage.length).toBe(2)
     unmount()
     render(<SimsView token="" />)
     await flush()
@@ -312,7 +413,7 @@ describe('SimsView', () => {
     await tick(6000)
     expect(snapshotCalls()).toHaveLength(2)
     unmount()
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:snapshot-2')
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith('blob:snapshot-2')
     expect(observers[0].disconnect).toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
