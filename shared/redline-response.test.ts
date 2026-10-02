@@ -282,3 +282,24 @@ describe('sent answers', () => {
     expect(pageSentAnswers([{ ...sentPlan, shape: { question: '', kind: 'text' } }], 10_000)).toEqual([])
   })
 })
+
+describe('redlinePendingSnapshotForPage page identity', () => {
+  it('shows controls queued under another hash of the same page', () => {
+    const snapshot = {
+      notes: [{
+        id: 1,
+        selector: '#plan',
+        tag: 'redline-choice',
+        rect: { x: 0, y: 0, width: 0, height: 0 },
+        comment: 'Which plan?: Pro',
+        pageUrl: 'https://example.com/review#reach',
+        queueKey: 'plan',
+        response: { question: 'Which plan?', answer: 'Pro' },
+      }],
+      knownUpTo: 1,
+      dropped: 0,
+    }
+    expect(redlinePendingSnapshotForPage(snapshot, 'https://example.com/review#composer').controls).toHaveLength(1)
+    expect(redlinePendingSnapshotForPage(snapshot, 'https://example.com/other').controls).toHaveLength(0)
+  })
+})

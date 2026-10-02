@@ -33,6 +33,7 @@ import {
   REDLINE_BINDING_NAME,
   parseRedlinePageQuestionSnapshot,
   parseRedlinePageResponse,
+  redlinePageKey,
   withPageSentAnswers,
   type RedlinePagePendingSnapshot,
   type RedlinePageQuestionSnapshot,
@@ -672,8 +673,10 @@ function bufferedPendingControls(snapshot: WebPanePendingSnapshot): BufferedPend
 
 /** Builds the full replacement visible to one exact, accepted main-frame URL. */
 function pagePendingSnapshot(state: BufferedPendingState, pageUrl: string): PagePendingSnapshot {
+  // A hash or query change is navigation within the page, not a new page.
+  const page = redlinePageKey(pageUrl)
   const controls = state.controls
-    .filter((control) => control.pageUrl === pageUrl)
+    .filter((control) => control.pageUrl !== undefined && redlinePageKey(control.pageUrl) === page)
     .map(({ pageUrl: _pageUrl, ...control }) => control)
   return withPageSentAnswers(controls, state.sent, pageUrl)
 }
