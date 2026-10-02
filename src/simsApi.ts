@@ -1,4 +1,4 @@
-import type { SimWallDevice } from '../shared/protocol'
+import type { SimOpenResult, SimWallDevice } from '../shared/protocol'
 
 export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
   const request = async (path: string, method: 'GET' | 'POST', signal?: AbortSignal) => {
@@ -22,7 +22,7 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
     list: async (signal?: AbortSignal): Promise<SimWallDevice[]> => (await (await request('', 'GET', signal)).json()).sims,
     snapshot: async (udid: string, signal: AbortSignal): Promise<Blob> => (await request(`/${encodeURIComponent(udid)}/snapshot.jpg`, 'GET', signal)).blob(),
     slim: async (udid: string): Promise<void> => { await request(`/${encodeURIComponent(udid)}/slim`, 'POST') },
-    open: async (udid: string): Promise<void> => { await request(`/${encodeURIComponent(udid)}/open`, 'POST') },
+    open: async (udid: string): Promise<SimOpenResult> => (await request(`/${encodeURIComponent(udid)}/open`, 'POST')).json(),
   }
 }
 

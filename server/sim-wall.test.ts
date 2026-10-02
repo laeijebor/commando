@@ -23,6 +23,7 @@ function setup(override?: SimWallRunner) {
       'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [...devices, { udid: 'DDDDDDDD-4444-4444-4444-444444444444', state: 'Shutdown' }],
       'com.apple.CoreSimulator.SimRuntime.tvOS-26-5': [{ ...devices[0] }],
     } })
+    if (command === 'osascript') return 'not-running'
     if (command === 'simslim' && args[0] === 'list') return `${A}  Renamed sim  iOS 26.5  booted · 170/170 slim\n${B}  iPhone 17  iOS 26.5  booted · 0/0 slim\n${C}  iPhone 17  iOS 26.5  booted · 20/170 slim`
     if (args.includes('screenshot')) await writeFile(args.at(-1)!, 'jpeg bytes')
     return ''
@@ -55,6 +56,14 @@ describe('SimWallApi', () => {
       expect(page).toContain('&lt;script&gt;&amp;&quot;Session · Review')
       expect(page).not.toContain('<script>&"Session')
       expect(page).not.toContain('secret')
+      expect(page).toContain('background:#0c0a14')
+      expect(page).toContain('color:#f5f3fa')
+      expect(page).toContain('color:#8f87a6')
+      expect(page).toContain('font-family:Inter,system-ui')
+      expect(page).toContain('align-items:center;justify-content:center')
+      expect(page).toContain('min-height:0')
+      expect(page).toContain('object-fit:contain')
+      expect(page).toContain('snapshot · refreshes every 2s')
       expect(page).not.toMatch(/<script[^>]+src=|<link|<img[^>]+src=/)
     }
     expect((await call(api, '/sims/bad/view')).status).toBe(400)
@@ -73,12 +82,19 @@ describe('SimWallApi', () => {
       const document = { visibilityState: 'visible', getElementById: () => frame, addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) }
       let tick!: () => void
       const clearInterval = vi.fn()
+      const location = { href: `http://localhost/sims/${A}/view?keep=1${token ? '&token=' + encodeURIComponent(token) : ''}#view` }
+      const history = { state: { tile: true }, replaceState: vi.fn((_state: unknown, _title: string, url: string) => { location.href = url }) }
       runInNewContext(script, {
-        document, URL, location: { href: `http://localhost/sims/${A}/view${token ? '?token=' + encodeURIComponent(token) : ''}` },
+        document, URL, location, history,
         window: { addEventListener: (name: string, fn: () => void) => listeners.set(name, fn) },
         Image: function () { const image = { src: '', onload: () => undefined, onerror: () => undefined }; images.push(image); return image },
         setInterval: (fn: () => void, ms: number) => { expect(ms).toBe(2000); tick = fn; return 42 }, clearInterval,
       })
+      expect(new URL(location.href).searchParams.has('token')).toBe(false)
+      expect(new URL(location.href).searchParams.get('keep')).toBe('1')
+      expect(new URL(location.href).hash).toBe('#view')
+      if (token) expect(history.replaceState).toHaveBeenCalledWith(history.state, '', location.href)
+      else expect(history.replaceState).not.toHaveBeenCalled()
       expect(images).toHaveLength(1)
       const url = new URL(images[0].src)
       expect(url.pathname).toBe(`/api/sims/${A}/snapshot.jpg`)
@@ -90,6 +106,7 @@ describe('SimWallApi', () => {
       expect(frame.src).toBe(images[0].src)
       tick()
       expect(images).toHaveLength(2)
+      expect(new URL(images[1].src).searchParams.get('token')).toBe(token || null)
       images[1].onerror()
       expect(frame.src).toBe(images[0].src)
       document.visibilityState = 'hidden'
@@ -201,6 +218,59 @@ describe('SimWallApi', () => {
     gates[2].resolve()
     expect((await Promise.all(requests)).map((result) => result.status).sort()).toEqual([200, 200, 500])
     expect(peak).toBe(2)
+  })
+
+  it('activates an already running Simulator and raises the current device name via script argv', async () => {
+    const baseline = setup()
+    // Populate the wall cache, then rename the device to prove opening resolves the name afresh.
+    const { api, runner } = setup(async (command, args) => command === 'osascript' ? 'raised\n' : baseline.runner(command, args))
+    await api.list()
+    baseline.devices[0].name = 'Session "review"; do shell script "bad"'
+    const result = await call(api, `/${A}/open`, 'POST')
+    expect(result.json()).toEqual({ ok: true, raised: true })
+    expect(runner.mock.calls.filter(([command, args]) => command === 'xcrun' && args[1] === 'list')).toHaveLength(2)
+    const scripts = runner.mock.calls.filter(([command]) => command === 'osascript')
+    expect(scripts).toHaveLength(1)
+    const args = scripts[0][1]
+    expect(args[0]).toBe('-e')
+    expect(args[1]).toContain('on run argv')
+    expect(args[1]).toContain('tell application "Simulator" to activate')
+    expect(args[1]).toContain('(name of simulatorWindow) starts with deviceName')
+    expect(args[1]).toContain('perform action "AXRaise" of simulatorWindow')
+    expect(args[1]).not.toContain(baseline.devices[0].name)
+    expect(args.slice(2)).toEqual(['--', baseline.devices[0].name])
+    expect(runner.mock.calls.some(([command]) => command === 'open')).toBe(false)
+  })
+
+  it('falls back to launch arguments only when Simulator is not running', async () => {
+    const { api, runner } = setup()
+    const result = await call(api, `/${A}/open`, 'POST')
+    expect(result.json()).toEqual({ ok: true })
+    expect(runner).toHaveBeenLastCalledWith('open', ['-a', 'Simulator', '--args', '-CurrentDeviceUDID', A])
+    expect(runner.mock.calls.filter(([command]) => command === 'osascript')).toHaveLength(1)
+  })
+
+  it.each(['Accessibility permission denied', 'No Simulator window matched this device'])('returns a visible reason after activation when raising fails: %s', async (reason) => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => command === 'osascript' ? `not-raised\n${reason}` : baseline.runner(command, args))
+    const result = await call(api, `/${A}/open`, 'POST')
+    expect(result.status).toBe(200)
+    expect(result.json()).toEqual({ ok: true, raised: false, reason })
+    expect(runner.mock.calls.some(([command]) => command === 'open')).toBe(false)
+    const script = runner.mock.calls.find(([command]) => command === 'osascript')![1][1]
+    expect(script.indexOf('tell application "Simulator" to activate')).toBeLessThan(script.indexOf('tell application "System Events"'))
+  })
+
+  it('still activates Simulator and returns a reason when osascript itself fails', async () => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => {
+      if (command === 'osascript') throw new Error('Automation is not permitted')
+      return baseline.runner(command, args)
+    })
+    const result = await call(api, `/${A}/open`, 'POST')
+    expect(result.status).toBe(200)
+    expect(result.json()).toMatchObject({ ok: true, raised: false, reason: expect.stringContaining('Automation is not permitted') })
+    expect(runner).toHaveBeenLastCalledWith('open', ['-a', 'Simulator'])
   })
 
   it('returns 409 during slimming, invalidates caches afterward, and opens with argument arrays', async () => {

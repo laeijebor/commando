@@ -38,13 +38,16 @@ afterEach(() => {
 describe('PaneWorklog', () => {
   it('renders a simulator first, counts it with references and handles both actions', async () => {
     const simulator = { udid: 'sim-uuid', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
-    const simsApi = { open: vi.fn().mockResolvedValue(undefined) }
+    const simsApi = { open: vi.fn().mockResolvedValue({ ok: true, raised: true }) }
     const onShowSimulator = vi.fn()
     render(<PaneWorklog brief={{ ...brief, simulator, references: [{ kind: 'feature_flag', value: 'checkout' }] }} paneLabel="Tests" simsApi={simsApi} onShowSimulator={onShowSimulator} />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
     const section = screen.getByLabelText('Important terms for Tests')
     expect(section.querySelector('header small')).toHaveTextContent('2')
     expect(section.querySelector('.pane-worklog-reference-list')?.firstElementChild).toHaveTextContent(simulator.task)
+    const claim = section.querySelector('.pane-worklog-simulator')!
+    expect(claim.querySelector('strong')).toHaveTextContent(/^Check checkout$/)
+    expect(claim.querySelector('strong + small')).toHaveTextContent(/^Session · Check checkout$/)
     expect(section).toHaveTextContent('feature/checkout')
     expect(section).toHaveTextContent('metro :8101')
     expect(section).toHaveTextContent('backend :3001')
@@ -53,6 +56,22 @@ describe('PaneWorklog', () => {
     await waitFor(() => expect(simsApi.open).toHaveBeenCalledWith(simulator.udid))
     fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
     expect(onShowSimulator).toHaveBeenCalledWith(simulator.udid)
+  })
+
+  it('uses the session as the title without a task and shows the activation/raise reason next to the button', async () => {
+    const simulator = { udid: 'sim-uuid', label: 'Session simulator', task: '', sessionName: 'Session', ports: [], idle: false }
+    const simsApi = { open: vi.fn().mockResolvedValueOnce({ ok: true, raised: false, reason: 'Simulator activated, but Accessibility permission was denied.' }).mockResolvedValueOnce({ ok: true, raised: true }) }
+    render(<PaneWorklog brief={{ ...brief, simulator }} paneLabel="Tests" simsApi={simsApi} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const claim = screen.getByLabelText('Important terms for Tests').querySelector('.pane-worklog-simulator')!
+    expect(claim.querySelector('strong')).toHaveTextContent(/^Session$/)
+    expect(claim.querySelector('strong + small')).toHaveTextContent(/^Session simulator$/)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Simulator activated, but Accessibility permission was denied.')
+    expect(screen.getByRole('alert').closest('.pane-worklog-simulator')).toBe(claim)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open Simulator' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Open Simulator' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   })
 
   it('shows claims without references or activity, reports open failures and removes released claims', async () => {

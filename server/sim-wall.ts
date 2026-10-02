@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import type { SimWallDevice } from '../shared/protocol.js'
+import type { SimOpenResult, SimWallDevice } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
 
 export type SimWallRunner = (command: string, args: string[]) => Promise<string>
@@ -24,17 +24,51 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body))
 }
 
+const RAISE_SIMULATOR = `on run argv
+  set deviceName to item 1 of argv
+  if application "Simulator" is not running then return "not-running"
+  tell application "Simulator" to activate
+  try
+    tell application "System Events"
+      tell process "Simulator"
+        set frontmost to true
+        repeat with simulatorWindow in windows
+          if (name of simulatorWindow) starts with deviceName then
+            perform action "AXRaise" of simulatorWindow
+            return "raised"
+          end if
+        end repeat
+      end tell
+    end tell
+    return "not-raised" & linefeed & "Simulator activated, but no window matched this device."
+  on error reason
+    return "not-raised" & linefeed & "Simulator activated, but could not raise the device window: " & reason
+  end try
+end run`
+
 function simulatorTilePage(udid: string, label: string): string {
   const escaped = label.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>${escaped}</title>
-<style>html,body{height:100%;margin:0}body{display:flex;flex-direction:column}header{padding:8px;overflow-wrap:anywhere}img{display:block;min-height:0;flex:1;max-width:100%;object-fit:contain}</style>
-</head><body><header>${escaped}</header><img id="snapshot" alt="Simulator snapshot">
+<style>
+html,body{height:100%;margin:0;background:#0c0a14;color:#f5f3fa;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{display:flex;flex-direction:column;overflow:hidden}
+header{flex:none;padding:10px 12px;font-size:12px;overflow-wrap:anywhere}
+header strong{display:block;font-weight:600}header small{display:block;margin-top:4px;color:#8f87a6;font-size:10px}
+main{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 8px 8px}
+img{display:block;width:100%;height:100%;min-height:0;object-fit:contain}
+</style>
+</head><body><header><strong>${escaped}</strong><small>snapshot · refreshes every 2s</small></header><main><img id="snapshot" alt="Simulator snapshot"></main>
 <script>
 const frame = document.getElementById('snapshot');
 const endpoint = new URL('/api/sims/${udid}/snapshot.jpg', location.href);
-const token = new URL(location.href).searchParams.get('token');
+const pageUrl = new URL(location.href);
+const token = pageUrl.searchParams.get('token');
+if (pageUrl.searchParams.has('token')) {
+  pageUrl.searchParams.delete('token');
+  history.replaceState(history.state, '', pageUrl.href);
+}
 if (token) endpoint.searchParams.set('token', token);
 let pending = false;
 function refresh() {
@@ -125,6 +159,30 @@ export class SimWallApi {
     if (!(await this.list()).some((device) => device.udid === udid)) throw new SimWallError(404, 'Simulator is not booted')
   }
 
+  private async openSimulator(udid: string): Promise<SimOpenResult> {
+    // Look up the current name after any lease relabel, without the wall's listing cache.
+    const listing = JSON.parse(await this.runner('xcrun', ['simctl', 'list', 'devices', '--json'])) as {
+      devices: Record<string, Array<{ udid: string; name: string; state: string }>>
+    }
+    const device = Object.entries(listing.devices).filter(([runtime]) => runtime.includes('.iOS-'))
+      .flatMap(([, devices]) => devices).find((entry) => entry.udid.toUpperCase() === udid)
+    if (!device || device.state !== 'Booted') throw new SimWallError(404, 'Simulator is not booted')
+    let result: string
+    try {
+      result = (await this.runner('osascript', ['-e', RAISE_SIMULATOR, '--', device.name])).trim()
+    } catch (error) {
+      // A script/runtime failure must still bring Simulator forward.
+      await this.runner('open', ['-a', 'Simulator'])
+      return { ok: true, raised: false, reason: `Simulator activated, but could not raise the device window: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    if (result === 'not-running') {
+      await this.runner('open', ['-a', 'Simulator', '--args', '-CurrentDeviceUDID', udid])
+      return { ok: true }
+    }
+    if (result === 'raised') return { ok: true, raised: true }
+    return { ok: true, raised: false, reason: result.replace(/^not-raised\s*/, '') || 'Simulator activated, but could not raise the device window.' }
+  }
+
   private async capture(udid: string): Promise<Buffer> {
     // A released slot transfers directly to the next waiter, keeping the cap at two.
     if (this.activeCaptures >= 2) await new Promise<void>((resolve) => this.captureQueue.push(resolve))
@@ -202,9 +260,7 @@ export class SimWallApi {
           this.images.delete(udid)
         }
       } else {
-        await this.booted(udid)
-        await this.runner('open', ['-a', 'Simulator', '--args', '-CurrentDeviceUDID', udid])
-        json(response, 200, { ok: true })
+        json(response, 200, await this.openSimulator(udid))
       }
     } catch (error) {
       json(response, error instanceof SimWallError ? error.status : 500, {

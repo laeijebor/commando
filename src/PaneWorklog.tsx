@@ -343,8 +343,8 @@ export function PaneWorklog({
                 <div className="pane-worklog-reference pane-worklog-simulator">
                   <span className="pane-worklog-reference-icon"><Smartphone aria-hidden="true" /></span>
                   <div>
-                    <strong title={simulator.label}>{simulator.label}</strong>
-                    <small title={simulator.task}>{simulator.task || simulator.sessionName}</small>
+                    <strong title={simulator.task || simulator.sessionName}>{simulator.task || simulator.sessionName}</strong>
+                    <small title={simulator.label}>{simulator.label}</small>
                     <div className="pane-worklog-simulator-chips">
                       {simulator.branch !== undefined ? <small>{simulator.branch}</small> : null}
                       {simulator.ports.map((port) => <small key={port.name}>{port.name} :{port.port}</small>)}
@@ -354,7 +354,10 @@ export function PaneWorklog({
                       <button type="button" disabled={!connected || !simsApi || simPending} onClick={async () => {
                         setSimPending(true)
                         setSimError('')
-                        try { await simsApi?.open(simulator.udid) }
+                        try {
+                          const result = await simsApi?.open(simulator.udid)
+                          if (result?.raised === false) setSimError(result.reason || 'Simulator activated, but could not raise the device window.')
+                        }
                         catch (error) { setSimError(error instanceof Error ? error.message : 'Unable to open Simulator') }
                         finally { setSimPending(false) }
                       }}>Open Simulator</button>

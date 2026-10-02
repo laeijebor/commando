@@ -4,10 +4,10 @@ import { createSimsApi } from './simsApi'
 
 describe('simulator claim actions', () => {
   it('uses the existing authenticated open endpoint and propagates errors', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{}'))
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{"ok":true,"raised":false,"reason":"No window matched"}'))
       .mockResolvedValueOnce(new Response('{"error":"Simulator is not booted"}', { status: 404 }))
     const api = createSimsApi('owner-token', fetcher)
-    await api.open('sim/udid')
+    await expect(api.open('sim/udid')).resolves.toEqual({ ok: true, raised: false, reason: 'No window matched' })
     expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/open', expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer owner-token' } }))
     await expect(api.open('sim/udid')).rejects.toThrow('Simulator is not booted')
   })

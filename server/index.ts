@@ -70,7 +70,7 @@ import {
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimWallApi } from './sim-wall.js'
-import { withSimulatorClaim } from './session-brief-sims.js'
+import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -626,21 +626,17 @@ async function main(): Promise<void> {
     return briefPublication
   }
 
-  const clientSessionBrief = async (brief: SessionBrief): Promise<SessionBrief> => {
-    const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
-    if (!pane) return brief
-    const repo = (await paneRepos.resolve([pane.path])).get(pane.path)
-    const lease = simLeaseRegistry.list(paneExists).find((entry) => entry.paneId === pane.id)
-    return withSimulatorClaim(brief, pane, brief.sessionName, lease, repo)
-  }
-  const clientSessionBriefs = async (): Promise<SessionBrief[]> => {
-    const briefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
-    for (const lease of simLeaseRegistry.list(paneExists)) {
-      const pane = snapshot.panes.find((candidate) => candidate.id === lease.paneId)
-      if (pane && !briefs.has(pane.id)) briefs.set(pane.id, withSimulatorClaim(null, pane, lease.sessionName))
-    }
-    return Promise.all([...briefs.values()].map(clientSessionBrief))
-  }
+  const clientBriefDependencies = () => ({
+    panes: snapshot.panes,
+    leases: () => simLeaseRegistry.list(paneExists),
+    resolveRepos: (paths: string[]) => paneRepos.resolve(paths),
+  })
+  const clientSessionBrief = async (brief: SessionBrief): Promise<SessionBrief> => (
+    await assembleClientSessionBriefs([brief], clientBriefDependencies(), false)
+  )[0]
+  const clientSessionBriefs = (): Promise<SessionBrief[]> => (
+    assembleClientSessionBriefs(sessionBriefs.values(), clientBriefDependencies())
+  )
 
   const publishSessionBrief = (brief: SessionBrief): Promise<void> => {
     const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)

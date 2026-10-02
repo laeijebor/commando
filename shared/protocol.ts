@@ -241,6 +241,12 @@ export type SimWallLease = {
   idle: boolean
 }
 
+export type SimOpenResult = {
+  ok: true
+  raised?: boolean
+  reason?: string
+}
+
 export type SimWallDevice = {
   udid: string
   name: string
