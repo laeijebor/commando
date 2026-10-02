@@ -1500,7 +1500,12 @@ const fakeDevices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': 
 const fakeSlim = `${simUdid}  iPhone 17  iOS 26.5   booted · 170/170 slim\n`
 const fakeLease = { udid: simUdid, originalName: 'iPhone 17', task: 'previous task', label: 'Session · previous task', via: 'simslim', repo: { root: '/original-main' } }
 
-function simDependencies(lease: typeof fakeLease | null = null) {
+function simDependencies(
+  lease: typeof fakeLease | null = null,
+  listing: { devices: Record<string, typeof fakeDevice[]> } = lease
+    ? { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, state: 'Booted' }] } }
+    : fakeDevices,
+) {
   const context = { sessionName: ' Session\n name ', repo: { root: '/main' }, lease, heldUdids: [] as string[] }
   const request = vi.fn(async (method: string, suffix: string, body?: Record<string, unknown>) => {
     if (suffix === '/context') return context
@@ -1510,7 +1515,7 @@ function simDependencies(lease: typeof fakeLease | null = null) {
     return { ok: true }
   })
   const run = vi.fn(async (file: string, args: string[], _cwd?: string) => {
-    if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(fakeDevices)
+    if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(listing)
     if (file === 'simslim' && args[0] === 'list') return fakeSlim
     return ''
   })
@@ -1590,6 +1595,7 @@ describe('generated simulator lease CLI', () => {
     const release = simDependencies({ ...fakeLease, via: 'simfleet' })
     await cli.runSimCommand(['release'], release)
     expect(release.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'list', 'devices', '--json']],
       ['xcrun', ['simctl', 'rename', simUdid, 'iPhone 17']], ['xcrun', ['simctl', 'shutdown', simUdid]],
       ['simfleet', ['release', simUdid], '/original-main'],
     ])
@@ -1607,6 +1613,7 @@ describe('generated simulator lease CLI', () => {
     const deps = simDependencies(fakeLease)
     await cli.runSimCommand(['lease'], deps)
     expect(deps.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'list', 'devices', '--json']],
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · previous task']],
     ])
     expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'previous task' })
@@ -1652,6 +1659,7 @@ describe('generated simulator lease CLI', () => {
     for (const command of ['rename', 'shutdown', 'release']) {
       const deps = simDependencies({ ...fakeLease, via: 'simfleet' })
       deps.run.mockImplementation(async (_file, args) => {
+        if (args[1] === 'list') return JSON.stringify({ devices: { ios: [{ ...fakeDevice, state: 'Booted' }] } })
         if (args.includes(command)) throw new Error(command + ' failed')
         return ''
       })
@@ -1659,6 +1667,108 @@ describe('generated simulator lease CLI', () => {
       expect(deps.request.mock.calls.some(([method, suffix]) => method === 'DELETE' && suffix === '')).toBe(false)
       expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
     }
+  })
+
+  it('releases an already Shutdown device and a missing device without getting stuck', async () => {
+    const cli = await loadSimCli()
+    for (const missing of [false, true]) {
+      const deps = simDependencies(fakeLease, missing ? { devices: {} } : fakeDevices)
+      await expect(cli.runSimCommand(['release'], deps)).resolves.toEqual({ ok: true })
+      expect(deps.run.mock.calls).toEqual([
+        ['xcrun', ['simctl', 'list', 'devices', '--json']],
+        ...(missing ? [] : [['xcrun', ['simctl', 'rename', simUdid, 'iPhone 17']]]),
+      ])
+      expect(deps.request).toHaveBeenCalledWith('DELETE', '', { operation: 'operation-id' })
+      expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+      deps.context.lease = null
+      deps.run.mockClear()
+      await expect(cli.runSimCommand(['release'], deps)).resolves.toEqual({ ok: true })
+      expect(deps.run).not.toHaveBeenCalled()
+    }
+  })
+
+  it('deletes a simfleet lease when release reports nothing claimed, including a deleted simulator', async () => {
+    const cli = await loadSimCli()
+    for (const missing of [false, true]) {
+      for (const stderr of ['Nothing is claimed', 'Device is not currently claimed', 'No active claim for device']) {
+        const deps = simDependencies({ ...fakeLease, via: 'simfleet' }, missing ? { devices: {} } : fakeDevices)
+        deps.run.mockImplementation(async (file, args) => {
+          if (args[1] === 'list') return JSON.stringify(missing ? { devices: {} } : fakeDevices)
+          if (file === 'simfleet') throw Object.assign(new Error('Command failed'), { stderr })
+          return ''
+        })
+        await expect(cli.runSimCommand(['release'], deps)).resolves.toEqual({ ok: true })
+        expect(deps.run).toHaveBeenLastCalledWith('simfleet', ['release', simUdid], '/original-main')
+        expect(deps.request).toHaveBeenCalledWith('DELETE', '', { operation: 'operation-id' })
+        expect(deps.run.mock.invocationCallOrder.at(-1)).toBeLessThan(deps.request.mock.invocationCallOrder[2])
+      }
+    }
+  })
+
+  it('reboots an existing Shutdown lease via its recorded boot path before verifying and touching', async () => {
+    const cli = await loadSimCli()
+    for (const via of ['simslim', 'simfleet']) {
+      const deps = simDependencies({ ...fakeLease, via }, fakeDevices)
+      const label = 'Session name · recovered task'
+      await expect(cli.runSimCommand(['lease', '--task', 'recovered task'], deps)).resolves.toEqual({
+        udid: simUdid, label, originalName: 'iPhone 17',
+      })
+      expect(deps.run.mock.calls).toEqual([
+        ['xcrun', ['simctl', 'list', 'devices', '--json']],
+        ...(via === 'simfleet' ? [
+          ['simfleet', ['sim', 'boot', simUdid], '/original-main'],
+          ['simfleet', ['claim', simUdid, label], '/original-main'],
+        ] : [['simslim', ['on', simUdid]]]),
+        ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, label]],
+      ])
+      expect(deps.exists).not.toHaveBeenCalled()
+      expect(deps.onPath).not.toHaveBeenCalled()
+      expect(deps.request.mock.calls.slice(2)).toEqual([
+        ['PATCH', '', { operation: 'operation-id', task: 'recovered task' }],
+        ['DELETE', '/reservation', { operation: 'operation-id' }],
+      ])
+      expect(deps.run.mock.invocationCallOrder.at(-1)).toBeLessThan(deps.request.mock.invocationCallOrder[2])
+    }
+    const unchangedTask = simDependencies(fakeLease, fakeDevices)
+    await cli.runSimCommand(['lease'], unchangedTask)
+    expect(unchangedTask.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'previous task' })
+  })
+
+  it('tells label callers to lease again when the leased device is not Booted', async () => {
+    const cli = await loadSimCli()
+    for (const listing of [fakeDevices, { devices: {} }]) {
+      const deps = simDependencies(fakeLease, listing)
+      await expect(cli.runSimCommand(['label', 'ready: review'], deps)).rejects.toThrow('run commando-sim.mjs lease again')
+      expect(deps.run.mock.calls).toEqual([['xcrun', ['simctl', 'list', 'devices', '--json']]])
+      expect(deps.request.mock.calls.slice(2)).toEqual([['DELETE', '/reservation', { operation: 'operation-id' }]])
+    }
+  })
+
+  it('keeps an existing lease when recovery boot or slim verification fails', async () => {
+    const cli = await loadSimCli()
+    for (const via of ['simslim', 'simfleet']) {
+      for (const bootFails of [true, false]) {
+        const deps = simDependencies({ ...fakeLease, via }, fakeDevices)
+        deps.run.mockImplementation(async (file, args) => {
+          if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(fakeDevices)
+          if (bootFails && (args[0] === 'on' || args[0] === 'sim')) throw new Error('boot failed')
+          return fakeSlim.replace('170/170', '169/170')
+        })
+        await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(bootFails ? 'boot failed' : 'fully slim')
+        expect(deps.run.mock.calls.some(([, args]) => args.includes('rename'))).toBe(false)
+        expect(deps.request.mock.calls.some(([method]) => method === 'PUT' || method === 'PATCH')).toBe(false)
+        expect(deps.request.mock.calls.some(([method, suffix]) => method === 'DELETE' && suffix === '')).toBe(false)
+        expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+      }
+    }
+  })
+
+  it('directs lease callers to release a stale lease when its device no longer exists', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(fakeLease, { devices: {} })
+    await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow('run release, then lease again')
+    expect(deps.run.mock.calls).toEqual([['xcrun', ['simctl', 'list', 'devices', '--json']]])
+    expect(deps.request.mock.calls.slice(2)).toEqual([['DELETE', '/reservation', { operation: 'operation-id' }]])
   })
 
   it('lists without invoking tools, handles missing leases and rejects malformed arguments', async () => {

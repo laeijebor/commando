@@ -833,21 +833,40 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
   const { operation } = await request('POST', '/reservation', { udid })
   let primaryError
   try {
+    const current = existing
+      ? Object.values(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])).devices ?? {})
+        .flat().find((entry) => entry.udid.toUpperCase() === udid.toUpperCase())
+      : device
     if (command === 'release') {
-      await run('xcrun', ['simctl', 'rename', udid, existing.originalName])
-      await run('xcrun', ['simctl', 'shutdown', udid])
-      if (existing.via === 'simfleet') await run('simfleet', ['release', udid], existing.repo?.root)
+      if (current) {
+        await run('xcrun', ['simctl', 'rename', udid, existing.originalName])
+        if (current.state !== 'Shutdown') await run('xcrun', ['simctl', 'shutdown', udid])
+      }
+      if (existing.via === 'simfleet') {
+        try { await run('simfleet', ['release', udid], existing.repo?.root) }
+        catch (error) {
+          const message = String(error?.message ?? error) + '\n' + String(error?.stderr ?? '')
+          if (!/\b(?:not (?:currently )?claimed|unclaimed|nothing (?:is )?claimed|no (?:active )?claims?|already released)\b/i.test(message)) throw error
+        }
+      }
       await request('DELETE', '', { operation })
       return { ok: true }
     }
+    if (command === 'label' && current?.state !== 'Booted') {
+      throw new Error('Leased simulator is not Booted; run commando-sim.mjs lease again before labelling it')
+    }
+    if (existing && !current) throw new Error('Leased simulator no longer exists; run release, then lease again')
     const description = task ?? existing?.task ?? ''
     const label = formatLabel(context.sessionName, description)
     let via = existing?.via
     if (!existing) {
       via = context.repo?.root && await exists(join(context.repo.root, '.sim-fleet', 'project.json')) && await onPath('simfleet') ? 'simfleet' : 'simslim'
+    }
+    if (!existing || current.state !== 'Booted') {
       if (via === 'simfleet') {
-        await run('simfleet', ['sim', 'boot', udid], context.repo.root)
-        await run('simfleet', ['claim', udid, label], context.repo.root)
+        const root = existing?.repo?.root ?? context.repo?.root
+        await run('simfleet', ['sim', 'boot', udid], root)
+        await run('simfleet', ['claim', udid, label], root)
       } else await run('simslim', ['on', udid])
     }
     verifySlim(await run('simslim', ['list', '--booted']), udid)
