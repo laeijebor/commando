@@ -154,7 +154,7 @@ function pendingForQuestion(
 ): WebPanePendingNote | undefined {
   return notes.find((note) => (
     note.response !== undefined &&
-    (note.pageUrl === undefined || note.pageUrl === pageUrl) &&
+    (note.pageUrl === undefined || redlinePageKey(note.pageUrl) === redlinePageKey(pageUrl)) &&
     (question.queueKey
       ? note.queueKey === question.queueKey
       : note.queueKey === undefined && note.selector === question.selector)
@@ -744,7 +744,8 @@ export function TileReviewLayer({
   }), [surface])
 
   useEffect(() => surface.subscribeQuestions((nextPageUrl, snapshot) => {
-    const pageChanged = questionsPageUrlRef.current !== nextPageUrl
+    // A hash or query change is navigation within the page, not a new page.
+    const pageChanged = redlinePageKey(questionsPageUrlRef.current) !== redlinePageKey(nextPageUrl)
     questionsPageUrlRef.current = nextPageUrl
     setQuestionsPageUrl(nextPageUrl)
     setQuestions(snapshot.questions)

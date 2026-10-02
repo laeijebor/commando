@@ -461,6 +461,60 @@ describe('TileReviewLayer', () => {
     ))
   })
 
+  it('keeps answers and typed drafts when the page only changes its hash', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    let publishPending: ((snapshot: WebPanePendingSnapshot) => void) | undefined
+    const queuedPlan: WebPanePendingNote = {
+      id: 1,
+      revision: 1,
+      pageUrl: 'https://example.com/review',
+      selector: '#plan',
+      tag: 'redline-choice',
+      rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Which plan?: Pro',
+      queueKey: 'plan',
+      response: { question: 'Which plan?', answer: 'Pro' },
+      attachments: [],
+    }
+    const questions: RedlinePageQuestionSnapshot = {
+      type: 'questions',
+      version: 1,
+      questions: [
+        { question: 'Which plan?', queueKey: 'plan', selector: '#plan', kind: 'choice', options: ['Starter', 'Pro'], multiple: false },
+        { question: 'Project name?', queueKey: 'name', selector: '#name', kind: 'text' },
+      ],
+    }
+    render(
+      <TileReviewLayer
+        webPaneId="w-hash"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse: async () => EMPTY_SNAPSHOT })}
+        surface={surface({
+          subscribePending: (listener) => { publishPending = listener; return () => undefined },
+          subscribeQuestions: (listener) => { publishQuestions = listener; return () => undefined },
+        })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      publishQuestions?.('https://example.com/review#reach', questions)
+      publishPending?.({ revision: 1, notes: [queuedPlan], knownUpTo: 1, dropped: 0 })
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 2' }))
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Project name\?/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), { target: { value: 'Half-typed' } })
+
+    act(() => publishQuestions?.('https://example.com/review#composer', questions))
+    expect(screen.getByText(/1 unanswered · 1 answered/)).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('Half-typed')
+  })
+
   it('clears question drafts when the page inventory moves to a new document', async () => {
     let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
     render(
