@@ -9,8 +9,10 @@ import {
   CLAUDE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
   mergeCodexNotify,
+  generatedSimCli,
   repairAgentStatusHooks,
 } from './agent-hook-installer.js'
+import { formatSimLabel } from './sim-leases.js'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
 import { SANDBOXED_AGENT_PROFILE_ENV } from './test-env-sandbox.js'
 
@@ -240,6 +242,9 @@ describe('agent hook installer', () => {
     expect(output.system[1]).toContain(paths.prMarkerCliPath)
     expect(output.system[1]).toContain('Append its exact HTML comment')
     expect(output.system[1]).toContain(paths.sessionBriefCliPath)
+    expect(output.system[1]).toContain(paths.simCliPath)
+    expect(output.system[1]).toContain('slim and labelled with the session and task')
+    expect(output.system[1]).toContain('Release them with commando-sim.mjs release when done.')
     expect(output.system[1]).toContain('unless requested by the user')
   })
 
@@ -386,6 +391,7 @@ describe('agent hook installer', () => {
     const openCodePlugin = await readFile(paths.openCodePluginPath, 'utf8')
     const sessionBriefCli = await readFile(paths.sessionBriefCliPath, 'utf8')
     const prMarkerCli = await readFile(paths.prMarkerCliPath, 'utf8')
+    const simCli = await readFile(paths.simCliPath, 'utf8')
 
     expect(claudeBridge).toContain('/api/agent-status/hooks/claude')
     expect(claudeBridge).toContain('X-Commando-Pane')
@@ -403,6 +409,11 @@ describe('agent hook installer', () => {
     expect(sessionBriefCli).toContain('X-Commando-Pane')
     expect(sessionBriefCli).toContain("flag === '--screenshots'")
     expect(sessionBriefCli).toContain('resolve(valueAfter(index++, flag))')
+    expect(simCli).toContain('/api/sim-leases')
+    expect(simCli).toContain('X-Commando-Pane')
+    expect(simCli).not.toContain(token)
+    expect(paths.simCliPath).toBe(join(home, '.commando', 'hooks', 'commando-sim.mjs'))
+    expect((await stat(paths.simCliPath)).mode & 0o777).toBe(0o700)
     expect(prMarkerCli).toContain('/api/pane-target-marker')
     expect(prMarkerCli).toContain('X-Commando-Pane')
     for (const event of OPENCODE_HOOK_EVENTS) expect(openCodePlugin).toContain(event)
@@ -1461,5 +1472,238 @@ describe('agent hook repair', () => {
     expect(repair).toEqual({ repaired: true, staleBridgePaths: [join(home, 'gone.mjs')] })
     const repaired = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
     expect(repaired.hooks.Stop.at(-1).hooks[0].args[0]).toBe(paths.claudeBridgePath)
+  })
+})
+
+type SimCliDependencies = {
+  request: (method: string, suffix: string, body?: Record<string, unknown>) => Promise<unknown>
+  run: (file: string, args: string[], cwd?: string) => Promise<string>
+  exists: (path: string) => Promise<boolean>
+  onPath: (name: string) => Promise<boolean>
+}
+type SimCliModule = {
+  formatLabel: (session: string, task?: string) => string
+  chooseDevice: (listing: unknown, held: string[], requested?: string) => { udid: string; name: string }
+  verifySlim: (output: string, udid: string) => void
+  runSimCommand: (args: string[], dependencies: SimCliDependencies) => Promise<unknown>
+}
+
+async function loadSimCli(): Promise<SimCliModule> {
+  const source = generatedSimCli('/test/token').replace(/^#![^\n]*\n/, '')
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`) as Promise<SimCliModule>
+}
+
+const simUdid = '11111111-1111-1111-1111-111111111111'
+const secondSimUdid = '22222222-2222-2222-2222-222222222222'
+const fakeDevice = { udid: simUdid, name: 'iPhone 17', state: 'Shutdown', isAvailable: true }
+const fakeDevices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [fakeDevice] } }
+const fakeSlim = `${simUdid}  iPhone 17  iOS 26.5   booted · 170/170 slim\n`
+const fakeLease = { udid: simUdid, originalName: 'iPhone 17', task: 'previous task', label: 'Session · previous task', via: 'simslim', repo: { root: '/original-main' } }
+
+function simDependencies(lease: typeof fakeLease | null = null) {
+  const context = { sessionName: ' Session\n name ', repo: { root: '/main' }, lease, heldUdids: [] as string[] }
+  const request = vi.fn(async (method: string, suffix: string, body?: Record<string, unknown>) => {
+    if (suffix === '/context') return context
+    if (suffix === '/reservation') return method === 'POST' ? { operation: 'operation-id' } : { ok: true }
+    if (method === 'GET') return { leases: lease ? [lease] : [] }
+    if (method === 'PUT' || method === 'PATCH') return { lease: { ...fakeLease, ...body, label: 'Session name' + (body?.task ? ' · ' + body.task : '') } }
+    return { ok: true }
+  })
+  const run = vi.fn(async (file: string, args: string[], _cwd?: string) => {
+    if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(fakeDevices)
+    if (file === 'simslim' && args[0] === 'list') return fakeSlim
+    return ''
+  })
+  return { context, request, run, exists: vi.fn(async (_path: string) => false), onPath: vi.fn(async (_name: string) => false) }
+}
+
+describe('generated simulator lease CLI', () => {
+  it('chooses a free Shutdown iPhone only on the newest available numeric iOS runtime', async () => {
+    const cli = await loadSimCli()
+    const listing = { devices: {
+      'com.apple.CoreSimulator.SimRuntime.iOS-26-9': [fakeDevice],
+      'com.apple.CoreSimulator.SimRuntime.iOS-26-10': [
+        { ...fakeDevice, udid: secondSimUdid },
+        { ...fakeDevice, udid: '33333333-3333-3333-3333-333333333333', state: 'Booted' },
+        { ...fakeDevice, udid: '44444444-4444-4444-4444-444444444444', name: 'iPad Pro' },
+      ],
+      'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [{ ...fakeDevice, isAvailable: false }],
+      'com.apple.CoreSimulator.SimRuntime.tvOS-28-0': [fakeDevice],
+    } }
+    expect(cli.chooseDevice(listing, []).udid).toBe(secondSimUdid)
+    expect(() => cli.chooseDevice(listing, [secondSimUdid])).toThrow('newest available')
+    expect(cli.chooseDevice(listing, [], simUdid).udid).toBe(simUdid)
+    expect(() => cli.chooseDevice(listing, [simUdid], simUdid)).toThrow('held by another pane')
+    expect(() => cli.chooseDevice({ devices: {} }, [])).toThrow('No free')
+    expect(cli.chooseDevice({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, name: 'iPad Pro' }] } }, [], simUdid).udid).toBe(simUdid)
+  })
+
+  it('formats labels and verifies the exact UDID, boot state and complete slim counts', async () => {
+    const cli = await loadSimCli()
+    expect(cli.formatLabel(' Session\n name\u0000 ', ' check\t state\u0001 ')).toBe('Session name · check state')
+    expect(cli.formatLabel('Session')).toBe('Session')
+    for (const text of ['c \u0000 d', 't\n\t f', '😀'.repeat(80), '  ']) {
+      expect(cli.formatLabel('a \u0001 b', text)).toBe(formatSimLabel('a \u0001 b', text))
+    }
+    expect(Array.from(cli.formatLabel('😀'.repeat(100)))).toHaveLength(60)
+    expect(() => cli.verifySlim(fakeSlim, simUdid.toLowerCase())).not.toThrow()
+    for (const output of ['', fakeSlim.replace('170/170', '169/170'), fakeSlim.replace('170/170', '0/0'),
+      fakeSlim.replace('booted', 'shutdown'), fakeSlim.replace(simUdid, secondSimUdid)]) {
+      expect(() => cli.verifySlim(output, simUdid)).toThrow('not booted and fully slim')
+    }
+  })
+
+  it('boots via simslim, verifies before renaming and registering, and prints lease metadata', async () => {
+    const cli = await loadSimCli()
+    const dependencies = simDependencies()
+    expect(await cli.runSimCommand(['lease', '--task', 'check empty state'], dependencies)).toEqual({
+      udid: simUdid, label: 'Session name · check empty state', originalName: 'iPhone 17',
+    })
+    expect(dependencies.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]],
+      ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · check empty state']],
+    ])
+    expect(dependencies.request.mock.calls).toEqual([
+      ['GET', '/context'], ['POST', '/reservation', { udid: simUdid }],
+      ['PUT', '', { operation: 'operation-id', udid: simUdid, originalName: 'iPhone 17', via: 'simslim', task: 'check empty state' }],
+      ['DELETE', '/reservation', { operation: 'operation-id' }],
+    ])
+    const calls = dependencies.run.mock.invocationCallOrder
+    expect(dependencies.request.mock.invocationCallOrder[1]).toBeLessThan(calls[1])
+    expect(calls[2]).toBeLessThan(calls[3])
+    expect(calls[3]).toBeLessThan(dependencies.request.mock.invocationCallOrder[2])
+  })
+
+  it('uses simfleet only with a main-checkout project and executable, then releases through the original repo', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies()
+    deps.exists.mockResolvedValue(true)
+    deps.onPath.mockResolvedValue(true)
+    await cli.runSimCommand(['lease', '--device', simUdid], deps)
+    expect(deps.exists).toHaveBeenCalledWith('/main/.sim-fleet/project.json')
+    expect(deps.onPath).toHaveBeenCalledWith('simfleet')
+    expect(deps.run.mock.calls.slice(1)).toEqual([
+      ['simfleet', ['sim', 'boot', simUdid], '/main'], ['simfleet', ['claim', simUdid, 'Session name'], '/main'],
+      ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name']],
+    ])
+    expect(deps.request).toHaveBeenCalledWith('PUT', '', expect.objectContaining({ via: 'simfleet' }))
+    const release = simDependencies({ ...fakeLease, via: 'simfleet' })
+    await cli.runSimCommand(['release'], release)
+    expect(release.run.mock.calls).toEqual([
+      ['xcrun', ['simctl', 'rename', simUdid, 'iPhone 17']], ['xcrun', ['simctl', 'shutdown', simUdid]],
+      ['simfleet', ['release', simUdid], '/original-main'],
+    ])
+    expect(release.request.mock.calls.slice(2)).toEqual([
+      ['DELETE', '', { operation: 'operation-id' }], ['DELETE', '/reservation', { operation: 'operation-id' }],
+    ])
+    const fallback = simDependencies()
+    fallback.exists.mockResolvedValue(true)
+    await cli.runSimCommand(['lease'], fallback)
+    expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid])
+  })
+
+  it('reuses and touches a lease without booting, relabels when tasks change and preserves the original name', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies(fakeLease)
+    await cli.runSimCommand(['lease'], deps)
+    expect(deps.run.mock.calls).toEqual([
+      ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · previous task']],
+    ])
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'previous task' })
+    await cli.runSimCommand(['label', 'ready: check empty state'], deps)
+    expect(deps.run).toHaveBeenLastCalledWith('xcrun', ['simctl', 'rename', simUdid, 'Session name · ready: check empty state'])
+    await cli.runSimCommand(['lease', '--task', 'new task'], deps)
+    expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+    expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'new task' })
+  })
+
+  it('does not rename or register if boot/slim verification fails, and unlocks for retry', async () => {
+    const cli = await loadSimCli()
+    for (const failingCommand of ['on', 'list']) {
+      const deps = simDependencies()
+      deps.run.mockImplementation(async (file, args) => {
+        if (file === 'xcrun') return JSON.stringify(fakeDevices)
+        if (args[0] === failingCommand && failingCommand === 'on') throw new Error('boot failed')
+        return fakeSlim.replace('170/170', '169/170')
+      })
+      await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(failingCommand === 'on' ? 'boot failed' : 'fully slim')
+      expect(deps.run.mock.calls.some(([, args]) => args.includes('rename'))).toBe(false)
+      expect(deps.request.mock.calls.some(([method]) => method === 'PUT' || method === 'PATCH')).toBe(false)
+      expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+    }
+  })
+
+  it('fails before any device mutation on a reservation conflict and reuses an existing lease over --device', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies()
+    deps.request.mockImplementation(async (_method, suffix) => {
+      if (suffix === '/context') return deps.context
+      throw new Error('Simulator is held by another pane')
+    })
+    await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow('held by another pane')
+    expect(deps.run).toHaveBeenCalledTimes(1)
+    const existing = simDependencies(fakeLease)
+    await cli.runSimCommand(['lease', '--device', secondSimUdid], existing)
+    expect(existing.run).toHaveBeenLastCalledWith('xcrun', ['simctl', 'rename', simUdid, 'Session name · previous task'])
+  })
+
+  it('retains the registry lease if restore, shutdown or fleet release fails', async () => {
+    const cli = await loadSimCli()
+    for (const command of ['rename', 'shutdown', 'release']) {
+      const deps = simDependencies({ ...fakeLease, via: 'simfleet' })
+      deps.run.mockImplementation(async (_file, args) => {
+        if (args.includes(command)) throw new Error(command + ' failed')
+        return ''
+      })
+      await expect(cli.runSimCommand(['release'], deps)).rejects.toThrow(command + ' failed')
+      expect(deps.request.mock.calls.some(([method, suffix]) => method === 'DELETE' && suffix === '')).toBe(false)
+      expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+    }
+  })
+
+  it('lists without invoking tools, handles missing leases and rejects malformed arguments', async () => {
+    const cli = await loadSimCli()
+    const deps = simDependencies()
+    expect(await cli.runSimCommand(['list'], deps)).toEqual([])
+    expect(deps.run).not.toHaveBeenCalled()
+    expect(await cli.runSimCommand(['release'], deps)).toEqual({ ok: true })
+    await expect(cli.runSimCommand(['label', 'task'], deps)).rejects.toThrow('no simulator lease')
+    await expect(cli.runSimCommand(['lease', '--device', 'bad'], deps)).rejects.toThrow('simulator UUID')
+    for (const args of [[], ['lease', '--device'], ['lease', '--wrong', 'value'], ['label'], ['list', 'extra']]) {
+      await expect(cli.runSimCommand(args, deps)).rejects.toThrow('Usage:')
+    }
+  })
+
+  it('runs the installed CLI with the hook token, port and pane headers using a fake transport', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const token = (await readFile(paths.tokenPath, 'utf8')).trim()
+    const capturePath = join(home, 'request.json')
+    const transportPath = join(home, 'fake-transport.mjs')
+    await writeFile(transportPath, `import { writeFile } from 'node:fs/promises'
+      globalThis.fetch = async (url, options) => {
+        await writeFile(${JSON.stringify(capturePath)}, JSON.stringify({ url, headers: options.headers }))
+        return { ok: true, json: async () => ({ leases: ${JSON.stringify([fakeLease])} }) }
+      }
+    `)
+    const result = await new Promise<{ code: number | null; output: string; error: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', transportPath, paths.simCliPath, 'list'], {
+        env: { ...process.env, TMUX_PANE: '%42', COMMANDO_PORT: '4410', PATH: '' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let output = '', error = ''
+      child.stdout.on('data', (chunk) => { output += chunk })
+      child.stderr.on('data', (chunk) => { error += chunk })
+      child.on('error', reject)
+      child.on('exit', (code) => resolve({ code, output, error }))
+    })
+    expect(result.code).toBe(0)
+    expect(result.error).toBe('')
+    expect(JSON.parse(result.output)).toEqual([fakeLease])
+    expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
+      url: 'http://127.0.0.1:4410/api/sim-leases', headers: {
+        Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Commando-Pane': '%42',
+      },
+    })
   })
 })

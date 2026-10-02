@@ -42,6 +42,7 @@ const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
+const SIM_CLI_FILENAME = 'commando-sim.mjs'
 const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 
 type JsonObject = Record<string, unknown>
@@ -54,6 +55,7 @@ export type AgentHookInstallerOptions = {
   home?: string
   openCodePluginPath?: string
   prMarkerCliPath?: string
+  simCliPath?: string
   sessionBriefCliPath?: string
   tokenPath?: string
 }
@@ -72,6 +74,7 @@ export type AgentHookInstallResult = {
   codexNotifyWarning?: string
   openCodePluginPath: string
   prMarkerCliPath: string
+  simCliPath: string
   sessionBriefCliPath: string
   tokenPath: string
 }
@@ -125,12 +128,13 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
   }
 }
 
-function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string): string {
+function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string): string {
   return [
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
+    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" so they are slim and labelled with the session and task. Release them with commando-sim.mjs release when done.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -746,6 +750,162 @@ try {
   usage()
   process.exitCode = 1
 }
+`
+}
+
+// Export the generated script's injectable functions so tests exercise the exact installed logic.
+export function generatedSimCli(tokenPath: string): string {
+  return `#!/usr/bin/env node
+import { execFile } from 'node:child_process'
+import { constants, realpathSync } from 'node:fs'
+import { access, readFile } from 'node:fs/promises'
+import { delimiter, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
+const tokenPath = ${JSON.stringify(tokenPath)}
+` + String.raw`
+export function formatLabel(sessionName, task = '') {
+  const clean = (text) => text.replace(/\s+/gu, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/gu, '').replace(/\s+/gu, ' ').trim()
+  const session = clean(sessionName)
+  const description = clean(task)
+  return Array.from(description ? session + ' · ' + description : session).slice(0, 60).join('')
+}
+
+export function chooseDevice(listing, heldUdids, requested) {
+  const held = new Set(heldUdids.map((id) => id.toUpperCase()))
+  const runtimes = Object.entries(listing.devices ?? {}).filter(([runtime, devices]) =>
+    /\.iOS-\d/.test(runtime) && devices.some((device) => device.isAvailable === true))
+  const version = (runtime) => runtime.match(/iOS-(\d+(?:-\d+)*)/)[1].split('-').map(Number)
+  runtimes.sort(([left], [right]) => {
+    const a = version(left), b = version(right)
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const diff = (b[i] ?? 0) - (a[i] ?? 0)
+      if (diff) return diff
+    }
+    return left.localeCompare(right)
+  })
+  const devices = requested ? runtimes.flatMap(([, entries]) => entries) : (runtimes[0]?.[1] ?? [])
+  const device = devices.find((entry) => entry.isAvailable === true &&
+    (requested ? entry.udid.toUpperCase() === requested.toUpperCase() : entry.state === 'Shutdown') &&
+    (requested || entry.name.startsWith('iPhone')) && !held.has(entry.udid.toUpperCase()))
+  if (!device) throw new Error(requested ? 'Requested iOS simulator is unavailable or held by another pane' :
+    'No free Shutdown iPhone simulator on the newest available iOS runtime')
+  return { ...device, udid: device.udid.toUpperCase() }
+}
+
+export function verifySlim(output, udid) {
+  const line = output.split(/\r?\n/).find((entry) => entry.trim().split(/\s+/)[0]?.toUpperCase() === udid.toUpperCase())
+  const match = line && /\bbooted\s*·\s*(\d+)\/(\d+)\s+slim\s*$/.exec(line)
+  if (!match || Number(match[1]) === 0 || Number(match[1]) !== Number(match[2])) {
+    throw new Error('Simulator ' + udid + ' is not booted and fully slim; no new lease recorded. Check simslim list --booted.')
+  }
+}
+
+export async function runSimCommand(args, { request, run, exists, onPath }) {
+  const [command, ...rest] = args
+  let task, requested
+  if (command === 'lease') {
+    for (let i = 0; i < rest.length; i++) {
+      const flag = rest[i], value = rest[++i]
+      if (!['--task', '--device'].includes(flag) || value === undefined || value.startsWith('--')) {
+        throw new Error('Usage: commando-sim.mjs lease [--task text] [--device udid]')
+      }
+      if (flag === '--task') task = value
+      else {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error('--device must be a simulator UUID')
+        requested = value
+      }
+    }
+  } else if (command === 'label' && rest.length === 1) task = rest[0]
+  else if (!['release', 'list'].includes(command) || rest.length) {
+    throw new Error('Usage: commando-sim.mjs lease [--task text] [--device udid] | label "task" | release | list')
+  }
+  if (task !== undefined && task.length > 4096) throw new Error('Task must be at most 4096 characters')
+  if (command === 'list') return (await request('GET', '')).leases
+  const context = await request('GET', '/context')
+  const existing = context.lease
+  if (!existing && command !== 'lease') {
+    if (command === 'release') return { ok: true }
+    throw new Error('This pane has no simulator lease; run lease first')
+  }
+  const device = existing ?? chooseDevice(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])), context.heldUdids, requested)
+  const { udid } = device
+  const { operation } = await request('POST', '/reservation', { udid })
+  let primaryError
+  try {
+    if (command === 'release') {
+      await run('xcrun', ['simctl', 'rename', udid, existing.originalName])
+      await run('xcrun', ['simctl', 'shutdown', udid])
+      if (existing.via === 'simfleet') await run('simfleet', ['release', udid], existing.repo?.root)
+      await request('DELETE', '', { operation })
+      return { ok: true }
+    }
+    const description = task ?? existing?.task ?? ''
+    const label = formatLabel(context.sessionName, description)
+    let via = existing?.via
+    if (!existing) {
+      via = context.repo?.root && await exists(join(context.repo.root, '.sim-fleet', 'project.json')) && await onPath('simfleet') ? 'simfleet' : 'simslim'
+      if (via === 'simfleet') {
+        await run('simfleet', ['sim', 'boot', udid], context.repo.root)
+        await run('simfleet', ['claim', udid, label], context.repo.root)
+      } else await run('simslim', ['on', udid])
+    }
+    verifySlim(await run('simslim', ['list', '--booted']), udid)
+    await run('xcrun', ['simctl', 'rename', udid, label])
+    const body = { operation, task: description }
+    const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
+      ...body, udid, originalName: device.name, via,
+    })
+    return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    try { await request('DELETE', '/reservation', { operation }) }
+    catch (error) { if (!primaryError) throw error }
+  }
+}
+
+async function main() {
+  try {
+    const paneId = process.env.TMUX_PANE
+    if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
+    const port = Number.parseInt(process.env.COMMANDO_PORT ?? '4310', 10)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('COMMANDO_PORT is invalid')
+    const token = (await readFile(tokenPath, 'utf8')).trim()
+    const request = async (method, suffix, body) => {
+      const response = await fetch('http://127.0.0.1:' + port + '/api/sim-leases' + suffix, {
+        method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', 'X-Commando-Pane': paneId },
+        ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(3_000),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(result.error ?? ('Commando returned ' + response.status))
+      return result
+    }
+    const execute = promisify(execFile)
+    const deadline = Date.now() + 20 * 60 * 1000
+    const run = async (file, args, cwd) => {
+      const timeout = Math.min(11 * 60 * 1000, deadline - Date.now())
+      if (timeout <= 0) throw new Error('Simulator operation timed out; retry the command')
+      const { stdout } = await execute(file, args, { cwd, timeout, maxBuffer: 4 * 1024 * 1024 })
+      return stdout
+    }
+    const exists = async (path, mode) => { try { await access(path, mode); return true } catch { return false } }
+    const onPath = async (name) => {
+      for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+        if (await exists(join(directory, name), constants.X_OK)) return true
+      }
+      return false
+    }
+    console.log(JSON.stringify(await runSimCommand(process.argv.slice(2), { request, run, exists, onPath })))
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  }
+}
+
+if (process.argv[1] && import.meta.url.startsWith('file:') &&
+    import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main()
 `
 }
 
@@ -1703,6 +1863,9 @@ export class AgentHookInstaller {
         options.prMarkerCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', PR_MARKER_CLI_FILENAME),
       ),
+      simCliPath: resolve(
+        options.simCliPath ?? resolve(resolvedHome, '.commando', 'hooks', SIM_CLI_FILENAME),
+      ),
       sessionBriefCliPath: resolve(
         options.sessionBriefCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', SESSION_BRIEF_CLI_FILENAME),
@@ -1772,7 +1935,7 @@ export class AgentHookInstaller {
   }
 
   private async installGeneratedScripts(): Promise<void> {
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
     await chmod(dirname(this.paths.claudeBridgePath), 0o700)
@@ -1791,6 +1954,7 @@ export class AgentHookInstaller {
       generatedSessionBriefCli(this.paths.tokenPath),
       0o700,
     )
+    await writeAtomically(this.paths.simCliPath, generatedSimCli(this.paths.tokenPath), 0o700)
     await writeAtomically(
       this.paths.prMarkerCliPath,
       generatedPrMarkerCli(this.paths.tokenPath),
