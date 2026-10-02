@@ -559,6 +559,21 @@ export type WebPaneFeedbackInfo = {
   lastDrainAt?: number
 }
 
+/**
+ * An agent's request to change a tile's URL, waiting for the owner to accept
+ * or dismiss it. Ephemeral: broadcast, never persisted. At most one per tile —
+ * a newer request supersedes the older one.
+ */
+export type WebPaneNavigateRequest = {
+  id: string
+  url: string
+  /** Label of the requesting agent, e.g. "claude · gizmo". */
+  requestedBy?: string
+  requestedAt: number
+}
+
+export type WebPaneNavigateDecision = 'pending' | 'accepted' | 'dismissed' | 'superseded' | 'closed'
+
 export type PaneLayoutCapacity = {
   paneId: string
   cols: number
@@ -609,7 +624,14 @@ export type ServerMessage =
       requestId: string
       reason: 'load' | 'save'
     }
-  | { type: 'web_panes'; webPanes: WebPane[]; feedback?: Record<string, WebPaneFeedbackInfo> }
+  | {
+      type: 'web_panes'
+      webPanes: WebPane[]
+      feedback?: Record<string, WebPaneFeedbackInfo>
+      navigateRequests?: Record<string, WebPaneNavigateRequest>
+      /** Per-tile reload counter: a change asks viewers to reload what they render. */
+      reloads?: Record<string, number>
+    }
   | {
       type: 'agent_request_answered'
       paneId: string

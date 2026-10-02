@@ -13,6 +13,7 @@ import {
 } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
+import { MAX_NAVIGATE_WAIT_MS, type WebPaneAgentRequests } from './web-pane-agent-requests.js'
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
 import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from './web-pane-pending.js'
@@ -70,6 +71,8 @@ type WebPanesApiDependencies = {
   onConfirmed?: (pane: WebPane) => void
   /** Fired after a tile is deleted so engine targets can be torn down. */
   onClosed?: (webPaneId: string) => void
+  /** Agent navigate requests awaiting the owner, and agent-triggered reloads. */
+  agentRequests: WebPaneAgentRequests
 }
 
 class HttpError extends Error {
@@ -114,6 +117,15 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
     throw new HttpError(400, 'Request body must be a JSON object')
   }
   return value as Record<string, unknown>
+}
+
+/** The `?wait=<seconds>` long-poll budget in milliseconds (default 0). */
+function parseWait(url: URL): number {
+  const wait = Number(url.searchParams.get('wait') ?? '0')
+  if (!Number.isFinite(wait) || wait < 0 || wait > MAX_NAVIGATE_WAIT_MS / 1_000) {
+    throw new HttpError(400, `wait must be between 0 and ${MAX_NAVIGATE_WAIT_MS / 1_000} seconds`)
+  }
+  return wait * 1_000
 }
 
 async function readAttachment(request: IncomingMessage): Promise<Buffer> {
@@ -664,12 +676,23 @@ export class WebPanesApi {
         if (typeof body.url !== 'string') throw new HttpError(400, 'url must be a string')
         const existing = this.dependencies.service.get(route.id)
         if (!existing) throw new HttpError(404, 'Web pane does not exist')
-        const pane = this.dependencies.service.navigate(route.id, body.url, {
-          openedBy: caller === 'owner' ? 'user' : 'agent',
-          openerLabel: caller === 'agent'
-            ? this.dependencies.agentLabel?.(existing.anchorPaneId)
-            : undefined,
-        })
+        if (caller === 'agent') {
+          // Agents only ask: the owner accepts or dismisses the change from a
+          // toast over the tile.
+          if (existing.content) throw new HttpError(409, 'Simulator tiles cannot navigate to a URL')
+          const decision = this.dependencies.service.classify(body.url)
+          if (decision.kind === 'invalid') throw new HttpError(400, decision.reason)
+          const wait = parseWait(url)
+          const navigateRequest = this.dependencies.agentRequests.requestNavigate(
+            route.id,
+            decision.url,
+            this.dependencies.agentLabel?.(existing.anchorPaneId),
+          )
+          this.dependencies.onChange()
+          await this.writeNavigateDecision(request, response, route.id, navigateRequest.id, wait)
+          return true
+        }
+        const pane = this.dependencies.service.navigate(route.id, body.url, { openedBy: 'user' })
         if (pane.status === 'open') this.dependencies.onConfirmed?.(pane)
         this.dependencies.onChange()
         writeJson(response, 200, {
@@ -678,6 +701,63 @@ export class WebPanesApi {
           status: pane.status,
           url: pane.url,
         })
+        return true
+      }
+
+      if (route.action === 'navigate-request') {
+        const found = this.dependencies.agentRequests.lookup(route.requestId)
+        if (!found || found.webPaneId !== route.id) throw new HttpError(404, 'Navigate request does not exist')
+        if (request.method === 'GET') {
+          await this.writeNavigateDecision(request, response, route.id, route.requestId, parseWait(url))
+          return true
+        }
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can answer a navigate request')
+        const { decision } = await readJson(request)
+        if (decision !== 'accept' && decision !== 'dismiss') {
+          throw new HttpError(400, 'decision must be accept or dismiss')
+        }
+        if (found.decision !== 'pending') throw new HttpError(409, `Navigate request was already ${found.decision}`)
+        if (decision === 'dismiss') {
+          this.dependencies.agentRequests.settle(route.requestId, 'dismissed')
+          this.dependencies.onChange()
+          writeJson(response, 200, { ok: true, webPaneId: route.id, requestId: route.requestId, decision: 'dismissed' })
+          return true
+        }
+        if (!this.dependencies.service.get(route.id)) throw new HttpError(404, 'Web pane does not exist')
+        // Accepting the toast is the owner's confirmation of this exact URL, so
+        // an external origin opens without a second confirm card.
+        const navigated = this.dependencies.service.navigate(route.id, found.request.url, {
+          openedBy: 'agent',
+          openerLabel: found.request.requestedBy,
+        })
+        const pane = navigated.status === 'pending'
+          ? this.dependencies.service.confirm(route.id, false)
+          : navigated
+        this.dependencies.agentRequests.settle(route.requestId, 'accepted')
+        this.dependencies.onConfirmed?.(pane)
+        this.dependencies.onChange()
+        writeJson(response, 200, {
+          ok: true,
+          webPaneId: route.id,
+          requestId: route.requestId,
+          decision: 'accepted',
+          status: pane.status,
+          url: pane.url,
+        })
+        return true
+      }
+
+      if (route.action === 'reload') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
+        const pane = this.dependencies.service.get(route.id)
+        if (!pane) throw new HttpError(404, 'Web pane does not exist')
+        if (pane.content) throw new HttpError(409, 'Simulator tiles cannot be reloaded')
+        if (pane.status !== 'open') throw new HttpError(409, 'Web pane is awaiting the owner\'s confirmation')
+        this.dependencies.agentRequests.reload(route.id)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true, webPaneId: route.id })
         return true
       }
 
@@ -701,6 +781,8 @@ export class WebPanesApi {
               ? 'GET, POST'
               : url.pathname.endsWith('/cdp') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
+              : url.pathname.includes('/navigate-requests/') ? 'GET, POST'
+              : url.pathname.endsWith('/navigate') || url.pathname.endsWith('/reload') ? 'POST'
               : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
               : url.pathname.endsWith('/pending/send') ||
@@ -732,6 +814,32 @@ export class WebPanesApi {
     if (snapshot.notes.length > 0) this.dependencies.onPendingChanged?.(pane.id, snapshot)
   }
 
+  /** Replies with a navigate request's decision, long-polling up to waitMs while it is pending. */
+  private async writeNavigateDecision(
+    request: IncomingMessage,
+    response: ServerResponse,
+    webPaneId: string,
+    requestId: string,
+    waitMs: number,
+  ): Promise<void> {
+    const controller = new AbortController()
+    const onClose = (): void => controller.abort()
+    request.on('close', onClose)
+    try {
+      const decision = await this.dependencies.agentRequests.wait(requestId, waitMs, controller.signal)
+      const found = this.dependencies.agentRequests.lookup(requestId)
+      writeJson(response, decision === 'pending' ? 202 : 200, {
+        ok: true,
+        webPaneId,
+        requestId,
+        url: found?.request.url,
+        decision,
+      })
+    } finally {
+      request.off('close', onClose)
+    }
+  }
+
   private async authenticate(request: IncomingMessage, url: URL): Promise<'owner' | 'agent'> {
     if (await this.dependencies.ownerAuthorized(request, url)) return 'owner'
     const candidate = bearerToken(request)
@@ -747,8 +855,9 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
-    | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
+    | { kind: 'pane'; id: string; action: 'navigate-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
     const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
@@ -756,7 +865,12 @@ export class WebPanesApi {
       if (!WEB_PANE_ID.test(attachment[1])) throw new HttpError(404, 'Not found')
       return { kind: 'pane', id: attachment[1], action: 'attachment', attachmentId: attachment[2] }
     }
-    const pendingAttachment = /^\/api\/web-panes\/([^/]+)\/pending\/(\d+)\/attachments(?:\/([^/]+))?$/.exec(pathname)
+    const navigateRequest = /^\/api\/web-panes\/([^/]+)\/navigate-requests\/(nr-[0-9a-f]{8})$/.exec(pathname)
+    if (navigateRequest) {
+      if (!WEB_PANE_ID.test(navigateRequest[1])) throw new HttpError(404, 'Not found')
+      return { kind: 'pane', id: navigateRequest[1], action: 'navigate-request', requestId: navigateRequest[2] }
+    }
+    const pendingAttachment =/^\/api\/web-panes\/([^/]+)\/pending\/(\d+)\/attachments(?:\/([^/]+))?$/.exec(pathname)
     if (pendingAttachment) {
       if (!WEB_PANE_ID.test(pendingAttachment[1])) throw new HttpError(404, 'Not found')
       return {
@@ -769,7 +883,7 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
@@ -789,7 +903,9 @@ export class WebPanesApi {
           ? 'feedback'
           : match[2] === 'move'
             ? 'move'
-            : match[2] === 'navigate' ? 'navigate' : 'delete'
+            : match[2] === 'navigate'
+              ? 'navigate'
+              : match[2] === 'reload' ? 'reload' : 'delete'
     return { kind: 'pane', id: match[1], action }
   }
 

@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { MAX_PENDING_NOTES, REDLINE_BUILD_HANDOFF_INSTRUCTION } from '../shared/protocol.js'
 import { MAX_RESPONSE_DATA_JSON, MAX_RESPONSE_NOTE } from '../shared/redline-response.js'
 import { WebPanesApi } from './web-panes-api.js'
+import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
@@ -47,6 +48,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
   feedback: WebPaneFeedbackStore
   pending: WebPanePendingStore
   attachmentStore: WebPaneAttachmentStore
+  agentRequests: WebPaneAgentRequests
 }> {
   const onChange = vi.fn()
   const onPendingChanged = vi.fn()
@@ -72,6 +74,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     new PendingNotesJournal({ dir: journalDir }),
     releaseAttachment,
   )
+  const agentRequests = overrides.agentRequests ?? new WebPaneAgentRequests()
   const api = new WebPanesApi({
     service,
     agentToken: AGENT_TOKEN,
@@ -87,6 +90,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     feedback,
     pending,
     attachmentStore,
+    agentRequests,
   })
   const server = createServer((request, response) => {
     void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
@@ -103,6 +107,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     feedback,
     pending,
     attachmentStore,
+    agentRequests,
   }
 }
 
@@ -516,7 +521,59 @@ describe('web panes API', () => {
     expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 42 }, ownerAuth)).status).toBe(400)
   })
 
-  it('attributes an agent-driven navigate to the agent, not the tile owner', async () => {
+  it('turns an agent navigate into a request the owner accepts', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl, onChange, agentRequests } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const requested = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate`,
+      { url: 'http://localhost:5173/next' },
+      agentAuth,
+    )
+    expect(requested.status).toBe(202)
+    const body = await requested.json() as { requestId: string }
+    expect(body).toMatchObject({ ok: true, webPaneId: opened.id, decision: 'pending', url: 'http://localhost:5173/next' })
+    expect(service.get(opened.id)?.url).toBe('http://localhost:5173/')
+    expect(agentRequests.navigateRequests()[opened.id]).toMatchObject({
+      id: body.requestId,
+      url: 'http://localhost:5173/next',
+      requestedBy: 'claude · gizmo',
+    })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onConfirmed).not.toHaveBeenCalled()
+
+    const waiting = fetch(`${baseUrl}/api/web-panes/${opened.id}/navigate-requests/${body.requestId}?wait=5`, { headers: agentAuth })
+    const accepted = await post(
+      baseUrl,
+      `/api/web-panes/${opened.id}/navigate-requests/${body.requestId}`,
+      { decision: 'accept' },
+      ownerAuth,
+    )
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toMatchObject({ decision: 'accepted', status: 'open', url: 'http://localhost:5173/next' })
+    const settled = await waiting
+    expect(settled.status).toBe(200)
+    expect(await settled.json()).toMatchObject({ decision: 'accepted' })
+    expect(service.get(opened.id)).toMatchObject({
+      url: 'http://localhost:5173/next',
+      status: 'open',
+      openedBy: 'agent',
+      openerLabel: 'claude · gizmo',
+    })
+    expect(onConfirmed).toHaveBeenCalledTimes(1)
+    expect(agentRequests.navigateRequests()).toEqual({})
+  })
+
+  it('opens an accepted external URL without a second confirmation', async () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)
     const opened = service.open({
@@ -526,19 +583,90 @@ describe('web panes API', () => {
       windowId: '@3',
       openedBy: 'user',
     })
+    const requested = await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'https://reactnative.dev/docs' }, agentAuth)
+    const { requestId } = await requested.json() as { requestId: string }
 
-    const response = await post(
-      baseUrl,
-      `/api/web-panes/${opened.id}/navigate`,
-      { url: 'https://reactnative.dev/docs' },
-      agentAuth,
-    )
-    expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({ status: 'pending' })
-    expect(service.get(opened.id)).toMatchObject({
-      openedBy: 'agent',
-      openerLabel: 'claude · gizmo',
+    const accepted = await post(baseUrl, `/api/web-panes/${opened.id}/navigate-requests/${requestId}`, { decision: 'accept' }, ownerAuth)
+    expect(await accepted.json()).toMatchObject({ status: 'open', url: 'https://reactnative.dev/docs' })
+    expect(service.classify('https://reactnative.dev/other').kind).toBe('confirm')
+  })
+
+  it('leaves the tile alone when the owner dismisses an agent navigate', async () => {
+    const service = await createService()
+    const onConfirmed = vi.fn()
+    const { baseUrl } = await startApi(service, { onConfirmed })
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
     })
+    const requested = await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:5173/next' }, agentAuth)
+    const { requestId } = await requested.json() as { requestId: string }
+
+    const dismissed = await post(baseUrl, `/api/web-panes/${opened.id}/navigate-requests/${requestId}`, { decision: 'dismiss' }, ownerAuth)
+    expect(await dismissed.json()).toMatchObject({ decision: 'dismissed' })
+    expect(service.get(opened.id)?.url).toBe('http://localhost:5173/')
+    expect(onConfirmed).not.toHaveBeenCalled()
+
+    const again = await post(baseUrl, `/api/web-panes/${opened.id}/navigate-requests/${requestId}`, { decision: 'accept' }, ownerAuth)
+    expect(again.status).toBe(409)
+    const status = await fetch(`${baseUrl}/api/web-panes/${opened.id}/navigate-requests/${requestId}`, { headers: agentAuth })
+    expect(await status.json()).toMatchObject({ decision: 'dismissed' })
+  })
+
+  it('supersedes an older agent request and only lets the owner answer', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+    const first = await (await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:5173/a' }, agentAuth)).json() as { requestId: string }
+    const second = await (await post(baseUrl, `/api/web-panes/${opened.id}/navigate?wait=0.05`, { url: 'http://localhost:5173/b' }, agentAuth)).json() as { requestId: string; decision: string }
+    expect(second.decision).toBe('pending')
+
+    const status = await fetch(`${baseUrl}/api/web-panes/${opened.id}/navigate-requests/${first.requestId}`, { headers: agentAuth })
+    expect(await status.json()).toMatchObject({ decision: 'superseded' })
+    const selfApproved = await post(baseUrl, `/api/web-panes/${opened.id}/navigate-requests/${second.requestId}`, { decision: 'accept' }, agentAuth)
+    expect(selfApproved.status).toBe(403)
+  })
+
+  it('rejects invalid agent navigate targets up front', async () => {
+    const service = await createService()
+    const { baseUrl } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'file:///etc/passwd' }, agentAuth)).status).toBe(400)
+    expect((await post(baseUrl, `/api/web-panes/${opened.id}/navigate?wait=61`, { url: 'http://localhost:1/' }, agentAuth)).status).toBe(400)
+    expect((await fetch(`${baseUrl}/api/web-panes/${opened.id}/navigate-requests/nr-00000000`, { headers: agentAuth })).status).toBe(404)
+  })
+
+  it('bumps the reload counter for an agent reload without asking', async () => {
+    const service = await createService()
+    const { baseUrl, onChange, agentRequests } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+
+    const response = await post(baseUrl, `/api/web-panes/${opened.id}/reload`, {}, agentAuth)
+    expect(response.status).toBe(200)
+    expect(agentRequests.reloads()).toEqual({ [opened.id]: 1 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect((await post(baseUrl, '/api/web-panes/w-00000000/reload', {}, agentAuth)).status).toBe(404)
   })
 
   it('attributes an owner-driven navigate to the user', async () => {

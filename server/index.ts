@@ -35,6 +35,7 @@ import { WorkspaceStore } from './workspaces.js'
 import { WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
+import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
 import { FEEDBACK_JOURNAL_TTL_MS, FeedbackJournal } from './web-pane-feedback-journal.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { PendingNotesJournal, WebPanePendingStore } from './web-pane-pending.js'
@@ -499,6 +500,7 @@ async function main(): Promise<void> {
     console.error('[commando] failed to load persisted web panes', error)
   })
   const webPaneAttachments = new WebPaneAttachmentStore()
+  const webPaneAgentRequests = new WebPaneAgentRequests()
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
@@ -557,6 +559,13 @@ async function main(): Promise<void> {
     service: webPanes,
     pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
+  const webPanesMessage = (): ServerMessage => ({
+    type: 'web_panes',
+    webPanes: webPanes.list(),
+    feedback: webPaneFeedback.info(),
+    navigateRequests: webPaneAgentRequests.navigateRequests(),
+    reloads: webPaneAgentRequests.reloads(),
+  })
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -574,7 +583,8 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    broadcast({ type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
+    webPaneAgentRequests.retain(liveIds)
+    broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
   const linear = new LinearService()
@@ -1480,6 +1490,7 @@ async function main(): Promise<void> {
     feedback: webPaneFeedback,
     pending: webPanePending,
     attachmentStore: webPaneAttachments,
+    agentRequests: webPaneAgentRequests,
     onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
@@ -1929,7 +1940,7 @@ async function main(): Promise<void> {
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
     send(client, { type: 'snapshot', snapshot })
-    send(client, { type: 'web_panes', webPanes: webPanes.list(), feedback: webPaneFeedback.info() })
+    send(client, webPanesMessage())
     void queueBriefPublication(async () => {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
     })
