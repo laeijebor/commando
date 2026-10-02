@@ -636,6 +636,33 @@ describe('web panes API', () => {
     expect(selfApproved.status).toBe(403)
   })
 
+  it('refuses to accept a request superseded while the answer was in flight', async () => {
+    const service = await createService()
+    const { baseUrl, agentRequests } = await startApi(service)
+    const opened = service.open({
+      url: 'http://localhost:5173/',
+      anchorPaneId: '%12',
+      sessionId: '$1',
+      windowId: '@3',
+      openedBy: 'user',
+    })
+    const { requestId } = await (await post(baseUrl, `/api/web-panes/${opened.id}/navigate`, { url: 'http://localhost:5173/a' }, agentAuth)).json() as { requestId: string }
+    const lookup = agentRequests.lookup.bind(agentRequests)
+    // Supersede the request right after the handler's initial lookup, as a
+    // newer agent request would while the owner's body is still arriving.
+    agentRequests.lookup = (id) => {
+      const found = lookup(id)
+      agentRequests.lookup = lookup
+      agentRequests.requestNavigate(opened.id, 'http://localhost:5173/b')
+      return found
+    }
+
+    const accepted = await post(baseUrl, `/api/web-panes/${opened.id}/navigate-requests/${requestId}`, { decision: 'accept' }, ownerAuth)
+    expect(accepted.status).toBe(409)
+    expect(await accepted.json()).toMatchObject({ error: 'Navigate request was already superseded' })
+    expect(service.get(opened.id)?.url).toBe('http://localhost:5173/')
+  })
+
   it('rejects invalid agent navigate targets up front', async () => {
     const service = await createService()
     const { baseUrl } = await startApi(service)

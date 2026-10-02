@@ -719,14 +719,21 @@ export class WebPanesApi {
         if (decision !== 'accept' && decision !== 'dismiss') {
           throw new HttpError(400, 'decision must be accept or dismiss')
         }
-        if (found.decision !== 'pending') throw new HttpError(409, `Navigate request was already ${found.decision}`)
+        if (decision === 'accept' && !this.dependencies.service.get(route.id)) {
+          throw new HttpError(404, 'Web pane does not exist')
+        }
+        // Settle before acting: the request may have been superseded or
+        // dismissed while this body was in flight, and from here on nothing
+        // awaits, so a successful settle owns the outcome.
+        if (!this.dependencies.agentRequests.settle(route.requestId, decision === 'accept' ? 'accepted' : 'dismissed')) {
+          const current = this.dependencies.agentRequests.lookup(route.requestId)?.decision
+          throw new HttpError(409, `Navigate request was already ${current ?? 'closed'}`)
+        }
         if (decision === 'dismiss') {
-          this.dependencies.agentRequests.settle(route.requestId, 'dismissed')
           this.dependencies.onChange()
           writeJson(response, 200, { ok: true, webPaneId: route.id, requestId: route.requestId, decision: 'dismissed' })
           return true
         }
-        if (!this.dependencies.service.get(route.id)) throw new HttpError(404, 'Web pane does not exist')
         // Accepting the toast is the owner's confirmation of this exact URL, so
         // an external origin opens without a second confirm card.
         const navigated = this.dependencies.service.navigate(route.id, found.request.url, {
@@ -736,7 +743,6 @@ export class WebPanesApi {
         const pane = navigated.status === 'pending'
           ? this.dependencies.service.confirm(route.id, false)
           : navigated
-        this.dependencies.agentRequests.settle(route.requestId, 'accepted')
         this.dependencies.onConfirmed?.(pane)
         this.dependencies.onChange()
         writeJson(response, 200, {
