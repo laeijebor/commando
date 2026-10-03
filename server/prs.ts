@@ -1010,7 +1010,7 @@ export class PrService {
         const batch = ids.slice(next, next += PULL_REQUEST_DETAIL_BATCH_SIZE)
         const result = parseGhObject(await this.ghRead([
           'api', 'graphql',
-          '-f', `query=query { nodes(ids: ${JSON.stringify(batch)}) { ... on PullRequest { id ...PrFields } } }\n${PR_DETAIL_FRAGMENT}`,
+          '-f', `query=query { ${RATE_LIMIT_FIELD} nodes(ids: ${JSON.stringify(batch)}) { ... on PullRequest { id ...PrFields } } }\n${PR_DETAIL_FRAGMENT}`,
         ]))
         if (Array.isArray(result.errors) && result.errors.length > 0) {
           throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the pull request detail query')

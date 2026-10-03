@@ -984,6 +984,28 @@ describe('GitHub rate limit backpressure', () => {
     expect(runner).toHaveBeenCalledTimes(2)
   })
 
+  it('pauses batched detail hydration once the budget runs low', async () => {
+    const now = Date.parse('2026-10-03T10:00:00Z')
+    const records = Array.from({ length: 30 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
+    const discovery = graphqlPayload(records.map(({ id }) => ({ id })), 733)
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      if (query.includes('fragment PrFields on PullRequest { id }')) return discovery
+      if (query.includes('repository(owner:')) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
+      expect(query).toContain('rateLimit { remaining resetAt }')
+      const ids = JSON.parse(/nodes\(ids: (\[[^\]]*\])/.exec(query)![1]!) as string[]
+      return JSON.stringify({ data: {
+        rateLimit: { remaining: 100, resetAt: '2026-10-03T10:20:00Z' },
+        nodes: ids.map((id) => records.find((record) => record.id === id)),
+      } })
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', now: () => now })
+
+    await expect(service.listPullRequests('acme/widgets', 'open', { scope: 'everyone' })).rejects.toMatchObject({ code: 'rate_limited' })
+    // Discovery, the timed-out full query, and one detail batch per worker before the pause.
+    expect(runner.mock.calls.length).toBeLessThan(2 + 6)
+  })
+
   it('asks GitHub for the remaining budget in polled list queries', async () => {
     const { service, runner } = serviceWith(graphqlPayload([pullRequestNode()]))
     await service.listPullRequests('acme/widgets', 'open')
