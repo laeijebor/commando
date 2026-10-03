@@ -18,8 +18,9 @@ import type {
 import { isCommandoTargetId } from '../shared/pane-target.js'
 
 type StateFile = {
-  version: 3
+  version: 4
   briefs: Record<string, SessionBrief>
+  detached: Record<string, SessionBrief>
 }
 
 type LegacySessionBrief = Omit<SessionBrief, 'paneId' | 'targetId'>
@@ -43,7 +44,7 @@ export type SessionBriefPatch = {
 const SESSION_ID = /^\$\d+$/
 const PANE_ID = /^%\d+$/
 const UPDATE_ID = /^[A-Za-z0-9:._-]{1,128}$/
-const MAX_BRIEFS = 64
+const MAX_BRIEFS = 512
 const MAX_UPDATES = 150
 const MAX_REFERENCES = 20
 const MAX_HEADLINE = 180
@@ -307,7 +308,7 @@ function migrateLegacyBrief(brief: LegacySessionBrief): SessionBrief[] {
 }
 
 function parseState(value: unknown): StateFile {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3) || !isRecord(value.briefs)) {
+  if (!isRecord(value) || ![1, 2, 3, 4].includes(value.version as number) || !isRecord(value.briefs)) {
     throw new Error('Session brief state file has an invalid structure')
   }
   const briefs: Record<string, SessionBrief> = Object.create(null)
@@ -328,7 +329,16 @@ function parseState(value: unknown): StateFile {
       briefs[paneId] = brief
     }
   }
-  return { version: 3, briefs }
+  const detached: Record<string, SessionBrief> = Object.create(null)
+  if (value.version === 4) {
+    if (!isRecord(value.detached)) throw new Error('Session brief detached history has an invalid structure')
+    for (const [targetId, candidate] of Object.entries(value.detached)) {
+      const brief = parseSessionBrief(candidate)
+      if (!brief || brief.targetId !== targetId) throw new Error(`Invalid detached worklog for ${targetId}`)
+      detached[targetId] = brief
+    }
+  }
+  return { version: 4, briefs, detached }
 }
 
 function cloneBrief(brief: SessionBrief): SessionBrief {
@@ -466,6 +476,7 @@ export function defaultSessionBriefStatePath(): string {
 export class SessionBriefStore {
   readonly statePath: string
   private readonly briefs = new Map<string, SessionBrief>()
+  private readonly detached = new Map<string, SessionBrief>()
   private livePanes = new Map<string, BriefPaneIdentity>()
   private writes: Promise<void> = Promise.resolve()
 
@@ -478,10 +489,14 @@ export class SessionBriefStore {
     try {
       const state = parseState(JSON.parse(await readFile(this.statePath, 'utf8')) as unknown)
       this.briefs.clear()
+      this.detached.clear()
       for (const brief of Object.values(state.briefs)
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, MAX_BRIEFS)) {
         this.briefs.set(brief.paneId, { ...brief, updates: dedupeUpdates(brief.updates) })
+      }
+      for (const brief of Object.values(state.detached).sort((left, right) => right.updatedAt - left.updatedAt).slice(0, MAX_BRIEFS)) {
+        this.detached.set(brief.targetId!, { ...brief, updates: dedupeUpdates(brief.updates) })
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
@@ -503,13 +518,13 @@ export class SessionBriefStore {
       .map(cloneBrief)
   }
 
-  /** Rebind before pruning: a pane can move out of a session that just disappeared. */
+  /** Rebind by durable identity; absence during resurrection must not erase disk history. */
   async reconcilePanes(panes: readonly BriefPaneIdentity[]): Promise<boolean> {
     this.livePanes = new Map(panes.map((pane) => [pane.paneId, pane]))
     // No-server discovery is indistinguishable from an empty server. Keep disk history
     // until a populated snapshot can establish ownership, rather than erasing it.
     if (panes.length === 0) return false
-    const byTarget = new Map([...this.briefs.values()].filter((brief) => brief.targetId).map((brief) => [brief.targetId, brief]))
+    const byTarget = new Map([...this.detached.values(), ...this.briefs.values()].filter((brief) => brief.targetId).map((brief) => [brief.targetId, brief]))
     const retained = new Map<string, SessionBrief>()
     for (const pane of panes) {
       const legacy = this.briefs.get(pane.paneId)
@@ -528,8 +543,14 @@ export class SessionBriefStore {
       brief !== this.briefs.get(id)
     ))
     if (!changed) return false
+    const attachedTargets = new Set([...retained.values()].map((brief) => brief.targetId))
+    for (const brief of this.briefs.values()) {
+      if (brief.targetId && !attachedTargets.has(brief.targetId)) this.detached.set(brief.targetId, brief)
+    }
+    for (const targetId of attachedTargets) if (targetId) this.detached.delete(targetId)
     this.briefs.clear()
     for (const [id, brief] of retained) this.briefs.set(id, brief)
+    this.prune()
     await this.persist()
     return true
   }
@@ -552,9 +573,11 @@ export class SessionBriefStore {
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
     const changed: SessionBrief[] = []
-    const livePaneIds = new Set(statuses.map((status) => status.paneId))
+    const livePaneIds = new Set(statuses.filter((status) => status.source === 'hook').map((status) => status.paneId))
     for (const status of statuses) {
-      if (!PANE_ID.test(status.paneId)) continue
+      // Shell/title inference after a restore is not new agent work. Keep the saved handoff
+      // until a provider actually sends fresh hooks instead of replacing it with a guess.
+      if (!PANE_ID.test(status.paneId) || status.source !== 'hook') continue
       const current = this.currentBrief(status.paneId, sessionId)
       const targetId = this.livePanes.get(status.paneId)?.targetId ?? current?.targetId
       const statusEvent = statusUpdate(status)
@@ -715,20 +738,25 @@ export class SessionBriefStore {
     let changed = false
     for (const [paneId, brief] of this.briefs) {
       if (retained.has(brief.sessionId)) continue
+      if (brief.targetId) this.detached.set(brief.targetId, brief)
       this.briefs.delete(paneId)
       changed = true
     }
-    if (changed) await this.persist()
+    if (changed) { this.prune(); await this.persist() }
     return changed
   }
 
   private prune(): void {
-    if (this.briefs.size <= MAX_BRIEFS) return
-    const retained = [...this.briefs.values()]
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, MAX_BRIEFS)
-    this.briefs.clear()
-    for (const brief of retained) this.briefs.set(brief.paneId, brief)
+    if (this.briefs.size > MAX_BRIEFS) {
+      const retained = [...this.briefs.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, MAX_BRIEFS)
+      this.briefs.clear()
+      for (const brief of retained) this.briefs.set(brief.paneId, brief)
+    }
+    if (this.detached.size > MAX_BRIEFS) {
+      const retained = [...this.detached.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, MAX_BRIEFS)
+      this.detached.clear()
+      for (const brief of retained) this.detached.set(brief.targetId!, brief)
+    }
   }
 
   private persist(): Promise<void> {
@@ -745,7 +773,8 @@ export class SessionBriefStore {
     try {
       handle = await open(temporaryPath, 'wx', 0o600)
       const briefs = Object.fromEntries([...this.briefs].map(([paneId, brief]) => [paneId, brief]))
-      await handle.writeFile(`${JSON.stringify({ version: 3, briefs }, null, 2)}\n`, 'utf8')
+      const detached = Object.fromEntries(this.detached)
+      await handle.writeFile(`${JSON.stringify({ version: 4, briefs, detached }, null, 2)}\n`, 'utf8')
       await handle.sync()
       await handle.close()
       handle = null

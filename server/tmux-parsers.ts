@@ -7,6 +7,7 @@ import type {
 } from '../shared/protocol.js'
 import { parseWindowLayout } from '../shared/window-layout.js'
 import type { PaneTargetObservation } from './tmux-pane-targets.js'
+import type { PaneIdentityObservation } from './tmux-pane-identity-store.js'
 
 export const TMUX_FIELD_SEPARATOR = '\u001f'
 
@@ -71,6 +72,32 @@ export const PANE_FORMAT = [
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
 const PANE_ID = /^%\d+$/
+
+// Capture ownership, cwd and restored coordinates in the same tmux command. Two separate
+// list-panes calls could accidentally combine identities across a server restart or pane move.
+export const PANE_IDENTITY_DISCOVERY_FORMAT = [
+  PANE_FORMAT, '#{pid}:#{start_time}', '#{session_name}', '#{window_index}',
+].join(TMUX_FIELD_SEPARATOR)
+
+export function parsePaneIdentityDiscovery(output: string): {
+  paneOutput: string; serverId: string; identities: PaneIdentityObservation[]
+} {
+  const fields = rows(output, 14 + PANE_TERMINAL_STATE_FIELDS.length)
+  if (fields.length !== output.split(/\r?\n/).filter(Boolean).length) throw new Error('Incomplete tmux pane identity snapshot')
+  const serverId = fields[0]?.at(-3) ?? ''
+  if (!/^\d+:\d+$/.test(serverId) || fields.some((row) => row.at(-3) !== serverId)) {
+    throw new Error('Invalid tmux server identity snapshot')
+  }
+  const identities = fields.map((row) => {
+    const paneIndex = integer(row[1])
+    const windowIndex = integer(row.at(-1) ?? '')
+    if (!PANE_ID.test(row[0]) || paneIndex === null || windowIndex === null || !row.at(-2) || !row[6].startsWith('/')) {
+      throw new Error('Incomplete tmux pane identity snapshot')
+    }
+    return { paneId: row[0], storedValue: row.at(-4) ?? '', sessionName: row.at(-2)!, windowIndex, paneIndex, path: row[6] }
+  })
+  return { serverId, identities, paneOutput: fields.map((row) => row.slice(0, -3).join(TMUX_FIELD_SEPARATOR)).join('\n') }
+}
 
 function rows(output: string, fieldCount: number): string[][] {
   return output

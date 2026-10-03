@@ -24,9 +24,17 @@ export class TmuxPaneTargets {
   ) {}
 
   async reconcile(observations: readonly PaneTargetObservation[]): Promise<ReadonlyMap<string, string>> {
-    const parsed = observations.map(({ paneId, storedValue }) => ({
-      paneId,
-      targetId: parseStoredPaneTarget(storedValue, paneId),
+    // Linked windows/grouped sessions list the same physical pane more than once.
+    // Count target ownership by physical pane, not by its session aliases.
+    const byPane = new Map<string, Set<string>>()
+    for (const { paneId, storedValue } of observations) {
+      const targets = byPane.get(paneId) ?? new Set<string>()
+      const target = parseStoredPaneTarget(storedValue, paneId)
+      if (target) targets.add(target)
+      byPane.set(paneId, targets)
+    }
+    const parsed = [...byPane].map(([paneId, targets]) => ({
+      paneId, targetId: targets.size === 1 ? [...targets][0] : null,
     }))
     const counts = new Map<string, number>()
     for (const { targetId } of parsed) {

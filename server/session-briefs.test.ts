@@ -178,6 +178,42 @@ describe('SessionBriefStore', () => {
     expect(await briefs.reconcilePanes([{ ...identity, sessionName: 'renamed' }])).toBe(false)
   })
 
+  it('retains detached history across partial restoration, recycled IDs and another daemon restart', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.syncFromStatuses('$1', 'original', [status('%1', 'working', 100, 'Working', 'Retain plan')], 100)
+    await briefs.applyAgentPatch('$1', 'original', '%1', {
+      headline: 'Saved handoff', recapMarkdown: 'Saved recap', next: 'Resume review',
+      update: { kind: 'decision', text: 'Saved decision' },
+      reference: { action: 'upsert', kind: 'session', value: 'opencode --session ses_original' },
+    }, 101)
+    const unrelated = { ...identity, targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }
+    await briefs.reconcilePanes([unrelated])
+    expect(briefs.get('%1')).toBeNull()
+    expect(briefs.values()).toEqual([])
+    await briefs.applyAgentPatch('$1', 'original', '%1', { headline: 'Different owner' }, 102)
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    await replay.reconcilePanes([unrelated, { ...identity, paneId: '%8', sessionId: '$4' }])
+    expect(replay.get('%1')?.headline).toBe('Different owner')
+    expect(replay.get('%8')).toMatchObject({
+      targetId, headline: 'Saved handoff', recapMarkdown: 'Saved recap', next: 'Resume review',
+      tasks: [{ content: 'Retain plan' }], references: [{ value: 'opencode --session ses_original' }],
+    })
+    expect(replay.get('%8')?.updates.map((update) => update.text)).toContain('Saved decision')
+    expect(replay.get('%8')?.updates.every((update) => update.paneId === '%8')).toBe(true)
+  })
+
+  it('keeps a restored hook headline and plan until fresh provider hooks arrive', async () => {
+    const briefs = await store()
+    await briefs.reconcilePanes([identity])
+    await briefs.syncFromStatuses('$1', 'original', [status('%1', 'working', 100, 'Working', 'Keep the plan')], 100)
+    await briefs.syncFromStatuses('$1', 'original', [{ ...status('%1', 'working', 200, 'Guessed from title', 'Wrong plan'), source: 'heuristic' }], 200)
+    expect(briefs.get('%1')).toMatchObject({ state: 'stale', headline: 'Ship session updates', tasks: [{ content: 'Keep the plan' }] })
+    await briefs.syncFromStatuses('$1', 'original', [status('%1', 'working', 300, 'Resumed', 'Continue the plan')], 300)
+    expect(briefs.get('%1')).toMatchObject({ state: 'working', tasks: [{ content: 'Continue the plan' }] })
+  })
+
   it('isolates alternate socket persistence while preserving the default and explicit paths', () => {
     vi.stubEnv('COMMANDO_SESSION_BRIEFS_PATH', '')
     vi.stubEnv('COMMANDO_TMUX_SOCKET_PATH', '')
@@ -512,7 +548,7 @@ describe('SessionBriefStore', () => {
     expect(briefs.get('%2')).not.toHaveProperty('next')
   })
 
-  it('loads v2 briefs and writes the richer v3 format without losing history', async () => {
+  it('loads v2 briefs and writes v4 without losing history', async () => {
     const briefs = await store()
     await mkdir(dirname(briefs.statePath), { recursive: true })
     await writeFile(briefs.statePath, JSON.stringify({
@@ -542,7 +578,7 @@ describe('SessionBriefStore', () => {
       'Migration verified',
       'Legacy update',
     ])
-    expect(JSON.parse(await readFile(briefs.statePath, 'utf8'))).toMatchObject({ version: 3 })
+    expect(JSON.parse(await readFile(briefs.statePath, 'utf8'))).toMatchObject({ version: 4, detached: {} })
   })
 
   it('rejects oversized or malformed persisted records', () => {

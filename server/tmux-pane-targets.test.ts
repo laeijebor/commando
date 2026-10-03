@@ -49,4 +49,14 @@ describe('tmux pane targets', () => {
     expect(parseStoredPaneTarget(`v1:%42:${TARGET}`, '%43')).toBeNull()
     expect(parseStoredPaneTarget('v1:%42:%99', '%42')).toBeNull()
   })
+
+  it('does not mistake linked-session aliases for duplicate target owners', async () => {
+    const persist = vi.fn()
+    const targets = await new TmuxPaneTargets(persist).reconcile([
+      { paneId: '%42', storedValue: `v1:%42:${TARGET}` },
+      { paneId: '%42', storedValue: `v1:%42:${TARGET}` },
+    ])
+    expect([...targets]).toEqual([['%42', TARGET]])
+    expect(persist).not.toHaveBeenCalled()
+  })
 })
