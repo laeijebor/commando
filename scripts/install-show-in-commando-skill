@@ -33,6 +33,12 @@ for skill_dir in "${skill_dirs[@]}"; do
   [ -f "$skill_dir/SKILL.md" ] || continue
   for root in "${destination_roots[@]}"; do
     mkdir -p "$root/$name"
+    # A destination symlinked back to the canonical copy is already current;
+    # cp would refuse to copy a file onto itself and abort the whole run.
+    if [ "$(cd "$root/$name" && pwd -P)" = "$(cd "$skill_dir" && pwd -P)" ]; then
+      echo "linked    $root/$name"
+      continue
+    fi
     cp -R "$skill_dir"/. "$root/$name/"
     echo "installed $root/$name"
   done
