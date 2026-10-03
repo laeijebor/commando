@@ -117,6 +117,17 @@ describe('SimsView', () => {
     expect(screen.getByText('pool')).not.toHaveAttribute('title')
   })
 
+  it('attaches the hover preview only to the hovered copy of an ended sim shown in two groups', async () => {
+    sims.push(device({ udid: B, name: 'Ended phone', lease: null, endedLease: { sessionName: 'Old session', task: '', label: 'Old session', repo, endedAt: Date.now() - 60_000, reason: 'released' } }))
+    render(<SimsView token="" />); await flush()
+    const copies = screen.getAllByRole('article').filter((card) => card.querySelector(`[aria-label$="live view"]`) && /Old session|Ended phone/.test(card.textContent ?? ''))
+    expect(copies).toHaveLength(2)
+    act(() => { fireEvent(copies[1].querySelector('.sims-snapshot')!, Object.assign(new MouseEvent('pointerover', { bubbles: true }), { pointerType: 'mouse' })) })
+    await tick(1_000)
+    expect(screen.getAllByTestId('live-preview')).toHaveLength(1)
+    expect(within(copies[1]).getByTestId('live-preview')).toBeInTheDocument()
+  })
+
   it('duplicates ended sims in former and No lease groups, counts each device once and includes history in filters', async () => {
     vi.setSystemTime(60 * 60 * 1000)
     sims.push(device({ udid: B, name: 'Ended phone', lease: null, endedLease: {
