@@ -36,6 +36,10 @@ const flush = async () => { await act(async () => { for (let i = 0; i < 10; i++)
 const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }); await flush() }
 function meta(socket = Socket.instances.at(-1)!) { socket.message(JSON.stringify({ type: 'meta', width: 390, height: 844 })) }
 function binary(tag: number, payload: number[], socket = Socket.instances.at(-1)!) { socket.message(new Uint8Array([tag, ...payload]).buffer) }
+function video(width = 195, height = 422) {
+  binary(1, [1, 100, 0, 31])
+  act(() => Decoder.instances.at(-1)!.init.output({ displayWidth: width, displayHeight: height, close: vi.fn() } as unknown as VideoFrame))
+}
 function changeVisibility(value: DocumentVisibilityState) { visibility = value; fireEvent(document, new Event('visibilitychange')) }
 function pointer(canvas: HTMLElement, type: string, x: number, y: number, keys: { altKey?: boolean; shiftKey?: boolean } = {}) {
   const event = new MouseEvent(type === 'pointerleave' ? 'pointerout' : type, { bubbles: true, clientX: x, clientY: y, button: 0, ...keys })
@@ -93,8 +97,8 @@ describe('SimLiveView', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:frame-2'); expect(images[1].onload).toBeNull()
   })
 
-  it('maps pointer coordinates to points, captures, coalesces moves and sends up on cancel/leave/blur/unmount', () => {
-    const { container, unmount } = render(<SimLiveView udid={U} token="" />); meta()
+  it.each([false, true])('maps points, captures, coalesces moves and releases on cancel/leave/focus loss/unmount (preview=%s)', (preview) => {
+    const { container, unmount } = render(<SimLiveView udid={U} token="" preview={preview} />); meta(); if (preview) video()
     const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
     pointer(canvas, 'pointerdown', 107.5, 231)
     expect(canvas.setPointerCapture).toHaveBeenCalledWith(7)
@@ -108,12 +112,12 @@ describe('SimLiveView', () => {
     expect(canvas.releasePointerCapture).toHaveBeenCalledWith(7)
     pointer(canvas, 'pointerdown', 10, 20); pointer(canvas, 'pointermove', 15, 25); pointer(canvas, 'pointerleave', 15, 25)
     expect(ws.envelopes().at(-1).type).toBe('touch1-up'); expect(rafs.size).toBe(0)
-    pointer(canvas, 'pointerdown', 10, 20); fireEvent.blur(canvas); expect(ws.envelopes().at(-1).type).toBe('touch1-up')
+    pointer(canvas, 'pointerdown', 10, 20); if (preview) fireEvent(canvas, new Event('lostpointercapture', { bubbles: true })); else fireEvent.blur(canvas); expect(ws.envelopes().at(-1).type).toBe('touch1-up')
     pointer(canvas, 'pointerdown', 10, 20); unmount(); expect(ws.envelopes().at(-1).type).toBe('touch1-up')
   })
 
-  it('pinches with Option, pans both fingers with Shift, previews the fingers and flags home-indicator swipes', () => {
-    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+  it.each([false, true])('pinches/rotates with Option, pans with Shift, shows fingers and flags edge swipes (preview=%s)', (preview) => {
+    const { container } = render(<SimLiveView udid={U} token="" preview={preview} />); meta(); if (preview) video()
     const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
     const frame = () => act(() => { for (const callback of rafs.values()) callback(0); rafs.clear() })
     const fingers = () => [...container.querySelectorAll<HTMLElement>('.sim-live-finger')].map((finger) => [finger.style.left, finger.style.top, finger.classList.contains('is-pressed')])
@@ -161,8 +165,60 @@ describe('SimLiveView', () => {
     const onStreaming = vi.fn()
     const { container, unmount } = render(<SimLiveView udid={U} token="" preview onStreaming={onStreaming} />)
     expect(onStreaming).not.toHaveBeenCalled(); expect(container.querySelector('canvas')).not.toBeVisible()
-    meta(); expect(onStreaming.mock.calls).toEqual([[true]])
+    meta(); expect(onStreaming).not.toHaveBeenCalled(); expect(container.querySelector('canvas')).not.toBeVisible()
+    binary(4, [255, 216]); Object.defineProperties(images[0], { naturalWidth: { value: 195 }, naturalHeight: { value: 422 } }); fireEvent.load(images[0])
+    expect(onStreaming).not.toHaveBeenCalled(); expect(container.querySelector('canvas')).not.toBeVisible()
+    video(); expect(onStreaming.mock.calls).toEqual([[true]]); expect(container.querySelector('canvas')).toBeVisible()
     unmount(); expect(onStreaming.mock.calls).toEqual([[true], [false]])
+  })
+
+  it.each([
+    { width: 300, height: 900, x: 100, y: 215, expected: { x: 150, y: 325 } },
+    { width: 600, height: 900, x: 35, y: 150, expected: { x: 150, y: 300 } },
+  ])('maps top-aligned cover crops for a $width × $height device in a 9/19.5 card', ({ width, height, x, y, expected }) => {
+    vi.mocked(HTMLCanvasElement.prototype.getBoundingClientRect).mockReturnValue({ left: 10, top: 20, width: 180, height: 390 } as DOMRect)
+    const { container } = render(<SimLiveView udid={U} token="" preview />)
+    const ws = Socket.instances[0]
+    ws.message(JSON.stringify({ type: 'meta', width, height })); video(width / 2, height / 2)
+    const canvas = container.querySelector('canvas')!
+    pointer(canvas, 'pointerdown', x, y)
+    expect(ws.envelopes()).toEqual([{ type: 'touch1-down', ...expected }])
+    const marker = container.querySelector<HTMLElement>('.sim-live-finger')!
+    expect(marker.style.left).toBe(`${x}px`); expect(marker.style.top).toBe(`${y}px`)
+    pointer(canvas, 'pointerup', x, y)
+    expect(ws.envelopes().at(-1)).toEqual({ type: 'touch1-up', ...expected })
+  })
+
+  it('scrolls a streaming preview without taking focus, handling keys/paste or showing full-view controls', () => {
+    const { container } = render(<><button>Keep focus</button><SimLiveView udid={U} token="" preview /></>)
+    const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
+    const focused = screen.getByRole('button', { name: 'Keep focus' }); focused.focus()
+    meta(); pointer(canvas, 'pointerdown', 60, 120); fireEvent.wheel(canvas, { deltaY: 50 })
+    expect(ws.envelopes()).toEqual([])
+    video(); pointer(canvas, 'pointerdown', 60, 120); pointer(canvas, 'pointerup', 60, 120)
+    expect(focused).toHaveFocus(); expect(canvas).not.toHaveAttribute('tabindex')
+    expect(fireEvent.wheel(canvas, { deltaX: 2, deltaY: -50 })).toBe(false)
+    expect(fireEvent.keyDown(canvas, { key: 'H', code: 'KeyH', metaKey: true, shiftKey: true })).toBe(true)
+    expect(fireEvent.keyUp(canvas, { key: 'Alt' })).toBe(true)
+    expect(fireEvent.paste(canvas, { clipboardData: { getData: () => 'text' } })).toBe(true)
+    expect(ws.envelopes()).toEqual([{ type: 'touch1-down', x: 100, y: 200 }, { type: 'touch1-up', x: 100, y: 200 }, { type: 'scroll', deltaX: 2, deltaY: -50 }])
+    expect(container.querySelector('.sim-live-toolbar')).toBeNull(); expect(container.querySelector('.sim-live-hint')).toBeNull()
+    act(() => ws.onerror?.()); fireEvent.wheel(canvas, { deltaY: 50 })
+    expect(ws.envelopes()).toHaveLength(3); expect(container.querySelector('canvas')).toBeNull()
+  })
+
+  it('releases a captured preview drag ending outside the card and releases on stream failure', () => {
+    const { container } = render(<SimLiveView udid={U} token="" preview />); meta(); video()
+    const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
+    pointer(canvas, 'pointerdown', 60, 120)
+    pointer(canvas, 'pointermove', 300, 500)
+    // Browsers retarget an outside release to the canvas while it holds pointer capture.
+    pointer(canvas, 'pointerup', 300, 500)
+    expect(ws.envelopes()).toEqual([{ type: 'touch1-down', x: 100, y: 200 }, { type: 'touch1-up', x: 390, y: 844 }])
+    expect(capture.size).toBe(0); expect(rafs.size).toBe(0); expect(container.querySelector('.sim-live-finger')).toBeNull()
+    pointer(canvas, 'pointerdown', 60, 120, { altKey: true }); act(() => ws.onerror?.())
+    expect(ws.envelopes().at(-1)).toEqual({ type: 'touch2-up', x1: 100, y1: 200, x2: 290, y2: 644 })
+    expect(capture.size).toBe(0)
   })
 
   it('sends wheel, focused code/modifier keys and toolbar buttons; Escape releases focus', async () => {

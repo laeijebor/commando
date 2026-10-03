@@ -11,7 +11,7 @@ const preview = vi.hoisted(() => ({ onStreaming: undefined as ((streaming: boole
 vi.mock('./SimLiveView', () => ({
   SimLiveView: ({ udid, token, preview: isPreview, onStreaming }: { udid: string; token: string; preview?: boolean; onStreaming?: (streaming: boolean) => void }) => {
     if (isPreview) preview.onStreaming = onStreaming
-    return <span data-testid={isPreview ? 'live-preview' : 'live-view'} data-udid={udid} data-token={token} />
+    return isPreview ? <canvas data-testid="live-preview" data-udid={udid} data-token={token} /> : <span data-testid="live-view" data-udid={udid} data-token={token} />
   },
 }))
 
@@ -478,7 +478,7 @@ describe('SimsView', () => {
     sims.push(device({ udid: B, name: 'Stray phone', slim: 'slim', lease: null }))
     render(<SimsView token="browser-token" />)
     await flush()
-    const snapshot = (name: string) => within(screen.getByRole('article', { name })).getByRole('button', { name: `View ${name} live` })
+    const snapshot = (name: string) => within(screen.getByRole('article', { name })).getByRole('button', { name: `View ${name} live` }).parentElement!
     const hover = (name: string, type: 'pointerenter' | 'pointerleave') => act(() => { fireEvent(snapshot(name), Object.assign(new MouseEvent(type === 'pointerenter' ? 'pointerover' : 'pointerout', { bubbles: true }), { pointerType: 'mouse' })) })
     const previews = () => screen.queryAllByTestId('live-preview').map((node) => node.dataset.udid)
     hover('Review UI', 'pointerenter')
@@ -499,6 +499,32 @@ describe('SimsView', () => {
     expect(previews()).toEqual([B])
     hover('Stray phone', 'pointerleave'); await tick(29_999); expect(previews()).toEqual([B])
     await tick(1); expect(previews()).toEqual([])
+  })
+
+  it('keeps snapshot and expand controls outside the canvas and only expands streaming cards through the separate button', async () => {
+    render(<SimsView token="owner" />); await flush(); await intersect(); await loaded()
+    const trigger = screen.getByRole('button', { name: 'View Review UI live' })
+    const expand = screen.getByRole('button', { name: 'Open Review UI live view' })
+    const snapshot = trigger.parentElement!
+    expect(trigger.tagName).toBe('BUTTON'); trigger.focus(); expect(trigger).toHaveFocus()
+    fireEvent.click(trigger); expect(screen.getByRole('dialog')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
+    act(() => fireEvent(snapshot, Object.assign(new MouseEvent('pointerover', { bubbles: true }), { pointerType: 'mouse' })))
+    await tick(1_000)
+    const canvas = screen.getByTestId('live-preview')
+    expect(canvas.closest('button')).toBeNull(); expect(expand.closest('button')).toBe(expand)
+    expect(trigger).toContainElement(screen.getByRole('img', { name: 'Review UI snapshot' }))
+    // Attaching alone does not suppress the snapshot action; the stream may fail to start.
+    fireEvent.click(trigger); expect(screen.getByRole('dialog')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
+    act(() => preview.onStreaming?.(true))
+    fireEvent.click(screen.getByTestId('live-preview')); fireEvent.click(trigger)
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(within(snapshot).getByText('live')).toBeVisible()
+    fireEvent.click(expand); expect(screen.getByRole('dialog')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close live view' })); await flush()
+    expect(expand).toHaveFocus()
+    act(() => preview.onStreaming?.(false)); fireEvent.click(trigger)
+    expect(screen.getByRole('dialog')).toBeVisible()
   })
 
   it('renders counts, repo groups then No lease, lease labels, task and state/model chips', async () => {
