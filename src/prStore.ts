@@ -4,6 +4,8 @@ import type { PanePrList, PrList, PrScope, PrsApiClient, PrStateFilter } from '.
 
 export const PR_FOREGROUND_INTERVAL_MS = 30_000
 export const PR_BACKGROUND_INTERVAL_MS = 5 * 60_000
+// The repo-wide list is the costliest query on busy repos.
+export const PR_EVERYONE_INTERVAL_MS = 10 * 60_000
 
 type StoreApi = Pick<PrsApiClient, 'pane' | 'list'>
 
@@ -20,7 +22,9 @@ type Entry<T> = {
   listeners: Set<() => void>
   foreground: number
   background: number
+  interval: number
   lastFetchedAt: number
+  retryAt: number
   inFlight: Promise<void> | null
   load: (refresh: boolean) => Promise<T>
 }
@@ -62,7 +66,7 @@ class PrStore {
   private paneEntry(paneId: string): Entry<PanePrList> {
     let entry = this.panes.get(paneId)
     if (!entry) {
-      entry = this.createEntry(() => this.api.pane(paneId), EMPTY_PANE)
+      entry = this.createEntry(() => this.api.pane(paneId), EMPTY_PANE, PR_FOREGROUND_INTERVAL_MS)
       this.panes.set(paneId, entry)
     }
     return entry
@@ -72,7 +76,11 @@ class PrStore {
     const key = this.repoKey(repo, filter, scope)
     let entry = this.repos.get(key)
     if (!entry) {
-      entry = this.createEntry((refresh) => this.api.list(repo, filter, { scope, ...(refresh ? { refresh: true } : {}) }), EMPTY_REPO)
+      entry = this.createEntry(
+        (refresh) => this.api.list(repo, filter, { scope, ...(refresh ? { refresh: true } : {}) }),
+        EMPTY_REPO,
+        scope === 'everyone' ? PR_EVERYONE_INTERVAL_MS : PR_FOREGROUND_INTERVAL_MS,
+      )
       this.repos.set(key, entry)
     }
     return entry
@@ -82,8 +90,8 @@ class PrStore {
     return `${repo}\0${filter}\0${scope}`
   }
 
-  private createEntry<T>(load: (refresh: boolean) => Promise<T>, empty: PrStoreSnapshot<T>): Entry<T> {
-    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, lastFetchedAt: 0, inFlight: null, load }
+  private createEntry<T>(load: (refresh: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number): Entry<T> {
+    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null, load }
   }
 
   private subscribe<T>(entry: Entry<T>, background: boolean, listener: () => void): () => void {
@@ -108,8 +116,11 @@ class PrStore {
     const operation = entry.load(force)
       .then((list) => {
         entry.snapshot = { list, loading: false, polling: false, error: '', errorCode: '' }
+        entry.retryAt = 0
       })
       .catch((cause: unknown) => {
+        const retryAt = (cause as { retryAt?: unknown })?.retryAt
+        entry.retryAt = typeof retryAt === 'number' ? retryAt : 0
         entry.snapshot = {
           ...entry.snapshot,
           loading: false,
@@ -139,8 +150,8 @@ class PrStore {
     if (document.visibilityState === 'hidden') return
     const now = Date.now()
     for (const entry of this.activeEntries()) {
-      const interval = entry.foreground > 0 ? PR_FOREGROUND_INTERVAL_MS : PR_BACKGROUND_INTERVAL_MS
-      if (entry.foreground + entry.background > 0 && now - entry.lastFetchedAt >= interval) {
+      const interval = entry.foreground > 0 ? entry.interval : Math.max(entry.interval, PR_BACKGROUND_INTERVAL_MS)
+      if (entry.foreground + entry.background > 0 && now - entry.lastFetchedAt >= interval && now >= entry.retryAt) {
         void this.refresh(entry, false)
       }
     }

@@ -23,6 +23,12 @@ const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
 const PANE_PULL_REQUEST_PAGE_SIZE = 100
+// Polling shares the gh user's GraphQL budget with agents and scripts, so it
+// stops early to leave them headroom and backs off when GitHub pushes back.
+const LOW_RATE_LIMIT_POINTS = 500
+const RATE_LIMIT_BACKOFF_MS = 60_000
+const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
+const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt }'
 
 const PR_STATUS_FIELDS = `
   additions deletions reviewDecision mergeable
@@ -49,6 +55,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 }`.trim()
 const PANE_PULL_REQUESTS_QUERY = `
 query($targetQuery: String!) {
+  ${RATE_LIMIT_FIELD}
   linked: search(query: $targetQuery, type: ISSUE, first: ${PANE_PULL_REQUEST_PAGE_SIZE}) {
     issueCount
     nodes {
@@ -178,6 +185,7 @@ export class PrServiceError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly retryAt?: number,
   ) {
     super(message)
     this.name = 'PrServiceError'
@@ -235,6 +243,9 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
   if (/gh auth login|not logged in|authentication required|HTTP 401|Bad credentials/i.test(stderr)) {
     return new PrServiceError(401, 'auth_required', 'gh is not authenticated — run `gh auth login` on the daemon host')
   }
+  if (/rate limit|abuse detection|HTTP 429/i.test(stderr)) {
+    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached')
+  }
   if (/Could not resolve to a Repository/i.test(stderr)) {
     return new PrServiceError(404, 'repo_not_found', 'Repository was not found')
   }
@@ -244,6 +255,11 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function rateLimited(retryAt: number): PrServiceError {
+  const time = new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return new PrServiceError(429, 'rate_limited', `GitHub rate limit is low — PR sync resumes at ${time}`, retryAt)
 }
 
 function invalidUpstream(): PrServiceError {
@@ -364,6 +380,7 @@ function statesArgument(filter: PrStateFilter): string {
 function pullRequestQuery(filter: PrStateFilter, scope: PrScope): string {
   return `
 query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequestedQuery: String!) {
+  ${RATE_LIMIT_FIELD}
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequests(first: ${PULL_REQUEST_PAGE_SIZE}, ${statesArgument(filter)}orderBy: {field: UPDATED_AT, direction: DESC}) {
@@ -687,6 +704,8 @@ export class PrService {
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
+  private pausedUntil = 0
+  private backoffMs = 0
 
   constructor(options?: {
     runner?: GhRunner
@@ -749,6 +768,41 @@ export class PrService {
     }
   }
 
+  // Every polled GitHub read goes through here; user actions such as merge do not.
+  private async ghRead(args: string[]): Promise<string> {
+    if (this.now() < this.pausedUntil) throw rateLimited(this.pausedUntil)
+    let output: string
+    try {
+      output = await this.runner(args)
+    } catch (error) {
+      if (error instanceof PrServiceError && error.code === 'rate_limited') throw this.backOff()
+      throw error
+    }
+    let payload: unknown
+    try {
+      payload = JSON.parse(output)
+    } catch {
+      return output
+    }
+    if (!isRecord(payload)) return output
+    if (Array.isArray(payload.errors) && payload.errors.some((error) => isRecord(error) && error.type === 'RATE_LIMITED')) {
+      throw this.backOff()
+    }
+    this.backoffMs = 0
+    const rateLimit = isRecord(payload.data) && isRecord(payload.data.rateLimit) ? payload.data.rateLimit : null
+    if (rateLimit && typeof rateLimit.remaining === 'number' && rateLimit.remaining < LOW_RATE_LIMIT_POINTS) {
+      const resetAt = typeof rateLimit.resetAt === 'string' ? Date.parse(rateLimit.resetAt) : NaN
+      if (Number.isFinite(resetAt)) this.pausedUntil = Math.max(this.pausedUntil, resetAt)
+    }
+    return output
+  }
+
+  private backOff(): PrServiceError {
+    this.backoffMs = Math.min(Math.max(this.backoffMs * 2, RATE_LIMIT_BACKOFF_MS), MAX_RATE_LIMIT_BACKOFF_MS)
+    this.pausedUntil = Math.max(this.pausedUntil, this.now() + this.backoffMs)
+    return rateLimited(this.pausedUntil)
+  }
+
   async listPullRequests(
     repoInput: unknown,
     filterInput: unknown,
@@ -798,7 +852,7 @@ export class PrService {
   }
 
   private async fetchPanePullRequests(targetId: string): Promise<PanePrList> {
-    const output = await this.runner([
+    const output = await this.ghRead([
       'api', 'graphql',
       '-f', `query=${PANE_PULL_REQUESTS_QUERY}`,
       '-f', `targetQuery=${paneTargetSearchQuery(targetId)}`,
@@ -880,7 +934,7 @@ export class PrService {
       output = await this.fetchBatchedPullRequests(args)
     } else {
       try {
-        output = await this.runner(args)
+        output = await this.ghRead(args)
       } catch (error) {
         if (!(error instanceof PrServiceError)
           || !(/HTTP 50[24]/.test(error.message) || error.code === 'github_timeout')) throw error
@@ -937,7 +991,7 @@ export class PrService {
     const discoveryArgs = args.map((arg) => arg.startsWith('query=')
       ? arg.replace(PR_DETAIL_FRAGMENT, 'fragment PrFields on PullRequest { id }')
       : arg)
-    const payload = parseGhObject(await this.runner(discoveryArgs))
+    const payload = parseGhObject(await this.ghRead(discoveryArgs))
     if (Array.isArray(payload.errors) && payload.errors.length > 0) return JSON.stringify(payload)
     const data = objectField(payload, 'data')
     const repository = optionalObject(data, 'repository')
@@ -954,7 +1008,7 @@ export class PrService {
     await Promise.all(Array.from({ length: Math.min(3, Math.ceil(ids.length / PULL_REQUEST_DETAIL_BATCH_SIZE)) }, async () => {
       while (next < ids.length) {
         const batch = ids.slice(next, next += PULL_REQUEST_DETAIL_BATCH_SIZE)
-        const result = parseGhObject(await this.runner([
+        const result = parseGhObject(await this.ghRead([
           'api', 'graphql',
           '-f', `query=query { nodes(ids: ${JSON.stringify(batch)}) { ... on PullRequest { id ...PrFields } } }\n${PR_DETAIL_FRAGMENT}`,
         ]))
@@ -996,7 +1050,7 @@ export class PrService {
 
   private async fetchUnresolvedThreads(repo: string, number: number): Promise<PrThreads> {
     const [owner, name] = repo.split('/', 2) as [string, string]
-    const output = await this.runner([
+    const output = await this.ghRead([
       'api', 'graphql',
       '-f', `query=${THREADS_QUERY}`,
       '-f', `owner=${owner}`,

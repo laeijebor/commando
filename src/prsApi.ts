@@ -87,10 +87,10 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
         ...init?.headers,
       },
     })
-    const result = await response.json().catch(() => ({})) as { error?: string; code?: string }
+    const result = await response.json().catch(() => ({})) as { error?: string; code?: string; retryAt?: number }
     if (!response.ok) {
       const error = new Error(result.error ?? `PR request failed (${response.status})`)
-      ;(error as Error & { code?: string }).code = result.code
+      Object.assign(error, { code: result.code, retryAt: result.retryAt })
       throw error
     }
     return result as T
