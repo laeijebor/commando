@@ -48,7 +48,11 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     if (child.exitCode !== null || child.signalCode !== null) return
     const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
     child.kill('SIGTERM')
-    await exited
+    const timeout = setTimeout(() => {
+      // Bound cleanup/restart of this test's own process, even with pending HTTP connections.
+      child.kill('SIGKILL')
+    }, 5_000)
+    try { await exited } finally { clearTimeout(timeout) }
   }
   const tmux = (...args: string[]) => execFileSync('tmux', ['-L', socket, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   const snapshot = async (): Promise<CommandoSnapshot> => {

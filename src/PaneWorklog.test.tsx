@@ -36,6 +36,17 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it('shows saved history as inactive until fresh hooks reconnect', () => {
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Saved worklog restored')
+    expect(screen.getByLabelText('Worklog for Tests')).toHaveClass('state-stale')
+    expect(screen.getByText('Map current behavior')).toBeInTheDocument()
+    view.rerender(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Worklog for Tests')).toHaveClass(`state-${brief.state}`)
+  })
+
   it('renders a simulator first, counts it with references and handles both actions', async () => {
     const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
     const simsApi = { open: vi.fn().mockResolvedValue({ ok: true, raised: true }) }

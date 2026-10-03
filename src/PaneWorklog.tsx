@@ -218,6 +218,7 @@ export function PaneWorklog({
   hookConnected?: boolean
 }) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
+  const displayState = !hookConnected && !empty ? 'stale' : brief.state
   const [simPending, setSimPending] = useState(false)
   const [simError, setSimError] = useState('')
   const [compact, setCompact] = useState(false)
@@ -304,7 +305,7 @@ export function PaneWorklog({
 
   if (preferences.minimized || compact) {
     return (
-      <aside className={`pane-worklog is-minimized state-${brief.state}`} aria-label={`Minimized worklog for ${paneLabel}`}>
+      <aside className={`pane-worklog is-minimized state-${displayState}`} aria-label={`Minimized worklog for ${paneLabel}`}>
         <button
           type="button"
           className="pane-worklog-restore"
@@ -314,7 +315,7 @@ export function PaneWorklog({
           title={`${brief.headline}${compact ? ' · Expand the pane to open the worklog' : ''}${unread ? ` · ${unread} new` : ''}`}
         >
           <ChevronLeft aria-hidden="true" />
-          <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
+          <span className={`pane-worklog-state ${displayState}`} aria-hidden="true" />
           {preferences.note.trim() ? (
             <span className="pane-worklog-note-indicator" title="Personal note saved" aria-label="Personal note saved">
               <MessageSquareText aria-hidden="true" />
@@ -339,9 +340,9 @@ export function PaneWorklog({
   }
 
   return (
-    <aside className={`pane-worklog state-${brief.state}`} aria-label={`Worklog for ${paneLabel}`}>
+    <aside className={`pane-worklog state-${displayState}`} aria-label={`Worklog for ${paneLabel}`}>
       <header className="pane-worklog-header">
-        <span className={`pane-worklog-state ${brief.state}`} aria-hidden="true" />
+        <span className={`pane-worklog-state ${displayState}`} aria-hidden="true" />
         <span className="pane-worklog-heading">
           <strong>{brief.headline}</strong>
           <small>{empty ? 'Notes, important terms, pull requests and tasks' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
@@ -360,7 +361,8 @@ export function PaneWorklog({
         {(!hookConnected || empty) ? (
           <div className="pane-worklog-recap" role="status">
             {!connected ? 'Disconnected from Commando. Saved notes and history remain available.'
-              : !hookConnected ? <>No agent hook data received for this pane. Notes and linked PRs still work. For automatic tasks and activity, run <code>npm run hooks:install</code> in Commando, then restart the agent when convenient.</>
+              : !hookConnected && !empty ? 'Saved worklog restored. No agent is connected yet; resume the agent to continue receiving tasks and activity.'
+                : !hookConnected ? <>No agent hook data received for this pane. Notes and linked PRs still work. For automatic tasks and activity, run <code>npm run hooks:install</code> in Commando, then restart the agent when convenient.</>
                 : 'Agent connected. Tasks and activity will appear when work begins.'}
             {empty ? <p>Publish screenshot folders with <code>commando-session-update.mjs --screenshots /absolute/path</code>.</p> : null}
           </div>
