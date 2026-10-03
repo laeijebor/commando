@@ -16,7 +16,8 @@ class Socket {
   close = vi.fn(() => { this.readyState = 3 })
   constructor(readonly url: string, readonly protocols: string[]) { Socket.instances.push(this) }
   message(data: unknown) { act(() => this.onmessage?.({ data })) }
-  envelopes() { return this.send.mock.calls.map(([data]) => JSON.parse(data)) }
+  /** Parsed envelopes; coordinates are rounded to absorb floating-point scaling noise. */
+  envelopes() { return this.send.mock.calls.map(([data]) => JSON.parse(data, (_key, value) => typeof value === 'number' ? Math.round(value * 1e6) / 1e6 : value)) }
 }
 class Decoder {
   static instances: Decoder[] = []
@@ -36,8 +37,8 @@ const advance = async (ms: number) => { await act(async () => { await vi.advance
 function meta(socket = Socket.instances.at(-1)!) { socket.message(JSON.stringify({ type: 'meta', width: 390, height: 844 })) }
 function binary(tag: number, payload: number[], socket = Socket.instances.at(-1)!) { socket.message(new Uint8Array([tag, ...payload]).buffer) }
 function changeVisibility(value: DocumentVisibilityState) { visibility = value; fireEvent(document, new Event('visibilitychange')) }
-function pointer(canvas: HTMLElement, type: string, x: number, y: number) {
-  const event = new MouseEvent(type === 'pointerleave' ? 'pointerout' : type, { bubbles: true, clientX: x, clientY: y, button: 0 })
+function pointer(canvas: HTMLElement, type: string, x: number, y: number, keys: { altKey?: boolean; shiftKey?: boolean } = {}) {
+  const event = new MouseEvent(type === 'pointerleave' ? 'pointerout' : type, { bubbles: true, clientX: x, clientY: y, button: 0, ...keys })
   Object.defineProperty(event, 'pointerId', { value: 7 })
   fireEvent(canvas, event)
 }
@@ -109,6 +110,44 @@ describe('SimLiveView', () => {
     expect(ws.envelopes().at(-1).type).toBe('touch1-up'); expect(rafs.size).toBe(0)
     pointer(canvas, 'pointerdown', 10, 20); fireEvent.blur(canvas); expect(ws.envelopes().at(-1).type).toBe('touch1-up')
     pointer(canvas, 'pointerdown', 10, 20); unmount(); expect(ws.envelopes().at(-1).type).toBe('touch1-up')
+  })
+
+  it('pinches with Option, pans both fingers with Shift, previews the fingers and flags home-indicator swipes', () => {
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
+    const frame = () => act(() => { for (const callback of rafs.values()) callback(0); rafs.clear() })
+    const fingers = () => [...container.querySelectorAll<HTMLElement>('.sim-live-finger')].map((finger) => [finger.style.left, finger.style.top, finger.classList.contains('is-pressed')])
+    pointer(canvas, 'pointermove', 60, 120, { altKey: true })
+    expect(ws.envelopes()).toEqual([]); expect(fingers()).toEqual([['60px', '120px', false], ['155px', '342px', false]])
+    pointer(canvas, 'pointermove', 60, 120); expect(fingers()).toEqual([])
+    pointer(canvas, 'pointerdown', 60, 120, { altKey: true })
+    expect(ws.envelopes()[0]).toEqual({ type: 'touch2-down', x1: 100, y1: 200, x2: 290, y2: 644 })
+    expect(fingers().every(([, , pressed]) => pressed)).toBe(true)
+    pointer(canvas, 'pointermove', 85, 170, { altKey: true }); frame()
+    expect(ws.envelopes()[1]).toEqual({ type: 'touch2-move', x1: 150, y1: 300, x2: 240, y2: 544 })
+    pointer(canvas, 'pointermove', 90, 180, { altKey: true, shiftKey: true }); frame()
+    expect(ws.envelopes()[2]).toEqual({ type: 'touch2-move', x1: 160, y1: 320, x2: 250, y2: 564 })
+    pointer(canvas, 'pointerup', 90, 180, { altKey: true, shiftKey: true })
+    expect(ws.envelopes()[3]).toEqual({ type: 'touch2-up', x1: 160, y1: 320, x2: 250, y2: 564 }); expect(fingers()).toEqual([])
+    pointer(canvas, 'pointerdown', 107.5, 438); pointer(canvas, 'pointermove', 107.5, 231); frame(); pointer(canvas, 'pointerup', 107.5, 231)
+    expect(ws.envelopes().slice(4)).toEqual([{ type: 'touch1-down', x: 195, y: 836, edge: 'bottom' }, { type: 'touch1-move', x: 195, y: 422, edge: 'bottom' }, { type: 'touch1-up', x: 195, y: 422, edge: 'bottom' }])
+  })
+
+  it('pastes host text, maps Simulator shortcuts, sends the extra buttons and saves a screenshot', () => {
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!; const ws = Socket.instances[0]
+    act(() => canvas.focus())
+    expect(fireEvent.keyDown(canvas, { key: 'v', code: 'KeyV', metaKey: true })).toBe(true)
+    fireEvent.paste(canvas, { clipboardData: { getData: () => 'héllo' } })
+    fireEvent.keyDown(canvas, { key: 'Alt', code: 'AltLeft', altKey: true })
+    fireEvent.keyDown(canvas, { key: 'H', code: 'KeyH', metaKey: true, shiftKey: true }); fireEvent.keyDown(canvas, { key: 'l', code: 'KeyL', metaKey: true })
+    for (const label of ['Switcher', 'Vol −', 'Vol +']) fireEvent.click(screen.getByText(label))
+    expect(ws.envelopes()).toEqual([{ type: 'paste', text: 'héllo', press: true }, ...['home', 'lock', 'app-switcher', 'volume-down', 'volume-up'].map((button) => ({ type: 'button', button }))])
+    const toBlob = vi.fn((done: BlobCallback) => done(new Blob(['png'])))
+    Object.defineProperty(canvas, 'toBlob', { value: toBlob })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    fireEvent.click(screen.getByText('Screenshot'))
+    expect(toBlob).toHaveBeenCalled(); expect(click).toHaveBeenCalled()
   })
 
   it('sends wheel, focused code/modifier keys and toolbar buttons; Escape releases focus', async () => {
