@@ -36,7 +36,8 @@ async function home() {
   return directory
 }
 
-function run(shell: string, port: number, directory: string) {
+/** `shell` is the interpreter plus its flags, e.g. ['bash'] or ['bash', '-O', 'xpg_echo']. */
+function run(shell: string[], port: number, directory: string) {
   const env = {
     ...process.env,
     COMMANDO_PORT: String(port),
@@ -44,18 +45,22 @@ function run(shell: string, port: number, directory: string) {
     COMMANDO_FEEDBACK_CURSOR_DIR: join(directory, 'cursors'),
   }
   return new Promise<{ code: number; stdout: string }>((resolve) => {
-    execFile(shell, [script, 'w-test', '--wait', '1'], { env }, (error, stdout) => {
+    execFile(shell[0]!, [...shell.slice(1), script, 'w-test', '--wait', '1'], { env }, (error, stdout) => {
       resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout })
     })
   })
 }
 
 describe('commando-feedback', () => {
-  // A note's comment holds JSON escapes such as \n. macOS /bin/sh is bash with xpg_echo on, so `echo "$body"` turned
-  // them into raw newlines and the printed body was no longer valid JSON. Agents run the script either way.
+  // A note's comment holds JSON escapes such as \n. macOS /bin/sh is bash with xpg_echo on, so running the script with
+  // `sh` made `echo "$body"` turn them into raw newlines and the printed body was no longer valid JSON. `bash -O
+  // xpg_echo` reproduces that on any platform (Linux /bin/sh is often dash, which can't run the script at all).
   const body = JSON.stringify({ ok: true, cursor: 7, notes: [{ id: 7, comment: 'Needs changes\n\nNote: see "notes" \\ here' }] })
 
-  it.each(['bash', 'sh'])('prints the daemon body unchanged when run with %s', async (shell) => {
+  it.each([
+    { name: 'bash', shell: ['bash'] },
+    { name: 'bash with xpg_echo (macOS sh)', shell: ['bash', '-O', 'xpg_echo'] },
+  ])('prints the daemon body unchanged under $name', async ({ shell }) => {
     const { port } = await daemon(200, body)
     const directory = await home()
     const result = await run(shell, port, directory)
@@ -67,8 +72,8 @@ describe('commando-feedback', () => {
   it('acknowledges the previous cursor on the next poll', async () => {
     const { port, urls } = await daemon(200, body)
     const directory = await home()
-    await run('bash', port, directory)
-    await run('bash', port, directory)
+    await run(['bash'], port, directory)
+    await run(['bash'], port, directory)
     expect(urls[0]).not.toContain('cursor=')
     expect(urls[1]).toContain('cursor=7')
   })
@@ -76,9 +81,9 @@ describe('commando-feedback', () => {
   it('exits 4 and forgets the cursor once the tile is gone', async () => {
     const directory = await home()
     const ok = await daemon(200, body)
-    await run('sh', ok.port, directory)
+    await run(['bash'], ok.port, directory)
     const gone = await daemon(404, JSON.stringify({ ok: false }))
-    const result = await run('sh', gone.port, directory)
+    const result = await run(['bash'], gone.port, directory)
     expect(result.code).toBe(4)
     await expect(readFile(join(directory, 'cursors', 'w-test'), 'utf8')).rejects.toThrow()
   })
