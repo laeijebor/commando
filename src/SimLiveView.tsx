@@ -6,6 +6,8 @@ import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screen
 import { useSimRecording } from './useSimRecording'
 import { useSimInspector } from './useSimInspector'
 import { SimInspectorBox, SimInspectorPanel } from './SimInspector'
+import { SimLogsPanel } from './SimLogsPanel'
+import { SimPermissionsPanel } from './SimPermissionsPanel'
 import './sims-view.css'
 import './sim-live.css'
 
@@ -54,6 +56,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const pending = useRef(new Set<string>())
   const [busy, setBusy] = useState(new Set<string>())
   const [popover, setPopover] = useState<'more' | 'url' | null>(null)
+  const [panel, setPanel] = useState<'logs' | 'permissions' | null>(null)
   const [url, setUrl] = useState('')
   const [schemes, setSchemes] = useState<string[]>([])
   const schemesId = useId()
@@ -268,6 +271,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
 
   const streaming = ready && !snapshot && (!preview || painted)
   const inspector = useSimInspector(api, udid, active && streaming && !preview)
+  useEffect(() => { if (!active || !connected || preview) setPanel(null) }, [active, connected, preview, udid])
   const recording = useSimRecording(canvas, active && streaming && !preview, udid, setReason)
   useEffect(() => {
     const target = canvas.current
@@ -362,6 +366,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   }
   const inputEnabled = active && streaming
   const toggleInspect = () => {
+    setPanel(null)
     releasePointer(); hover.current = null; setFingers({ pressed: false, points: [] })
     inspector.setEnabled(!inspector.enabled)
   }
@@ -522,6 +527,9 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           if (body.action === 'heal' && !window.confirm("This restarts the simulator's home screen")) return
           closePopover(); void deviceAction(body)
         }}>{label}</button>)}
+        {(['logs', 'permissions'] as const).map((value) => <button key={value} type="button" role="menuitem" disabled={!active || !connected} onClick={() => {
+          inspector.close(); inspector.setEnabled(false); setPanel(value); closePopover()
+        }}>{value === 'logs' ? 'Logs' : 'Permissions'}</button>)}
         <p>Network conditions need an app relaunch and affect URLSession traffic.</p>
         <button type="button" role="menuitem" disabled={!connected || busy.has('open')} onClick={() => {
           closePopover(); void perform('open', async () => {
@@ -541,6 +549,8 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       {inspector.enabled && inspector.element ? <SimInspectorBox element={inspector.element} size={nativeSize} canvasSize={canvasSize} orientation={orientation} /> : null}
     </div>
     {inspector.enabled && inspector.selected ? <SimInspectorPanel element={inspector.selected} source={inspector.source} onClose={inspector.close} /> : null}
+    {panel === 'logs' && active && connected && !preview ? <SimLogsPanel key={udid} api={api} udid={udid} token={token} onClose={() => setPanel(null)} /> : null}
+    {panel === 'permissions' && active && connected && !preview ? <SimPermissionsPanel key={udid} api={api} udid={udid} onClose={() => setPanel(null)} /> : null}
     </div>
     {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
     {reason ? <p className="sims-error" role="status">{reason}</p> : null}
