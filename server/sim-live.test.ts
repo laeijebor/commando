@@ -56,11 +56,14 @@ describe('live simulator sessions', () => {
   it('validates input, injects point size, drops only moves under backpressure and drains acks', async () => {
     const { connect, children, layout } = setup(); const viewer = connect(); await layout()
     viewer.gesture({ type: 'touch1-down', x: 30, y: 40, width: 999, height: 999 })
-    viewer.gesture({ type: 'paste', text: 'bad' }); viewer.gesture({ type: 'touch1-move', x: '3', y: 2 })
+    viewer.gesture({ type: 'copy' }); viewer.gesture({ type: 'paste', text: '' }); viewer.gesture({ type: 'paste', text: 'x', press: 'yes' }); viewer.gesture({ type: 'touch1-move', x: '3', y: 2 })
     viewer.emit('message', Buffer.from('{broken'), false); viewer.emit('message', Buffer.from('{"type":"scroll","deltaY":1e999}'), false)
     viewer.emit('message', Buffer.from('{"type":"button","button":"home"}'), true)
     expect(children[2].writes).toHaveLength(1)
     expect(JSON.parse(children[2].writes[0])).toEqual({ type: 'touch1-down', x: 30, y: 40, width: 390, height: 844 })
+    viewer.gesture({ type: 'paste', text: '--héllo', press: true })
+    expect(JSON.parse(children[2].writes[1])).toEqual({ type: 'paste', text: '--héllo', press: true, width: 390, height: 844 })
+    children[2].writes.pop()
     vi.spyOn(children[2].stdin, 'writableNeedDrain', 'get').mockReturnValue(true)
     viewer.gesture({ type: 'touch1-move', x: 31, y: 41 }); viewer.gesture({ type: 'touch2-move', x1: 1, y1: 1, x2: 2, y2: 2 })
     viewer.gesture({ type: 'touch1-up', x: 31, y: 41 }); viewer.gesture({ type: 'key', code: 'KeyA', modifiers: ['command'] })
@@ -113,7 +116,8 @@ describe('gesture and endpoint validation', () => {
   it('allows precisely the supported gesture types and rejects invalid fields', () => {
     expect(simGesture({ type: 'touch2-down', x1: 1, y1: 2, x2: 3, y2: 4 }, 390, 844)).toMatchObject({ width: 390, height: 844 })
     for (const value of [null, [], { type: 'force_idr' }, { type: 'touch1-up', x: 1 }, { type: 'scroll', deltaX: Infinity }, { type: 'scroll', deltaY: '3' }, { type: 'key', code: 'KeyA', modifiers: ['bad'] }, { type: 'type', text: 1 }, { type: 'button', button: 'siri' }]) expect(simGesture(value, 390, 844)).toBeNull()
-    for (const value of [{ type: 'scroll', deltaY: 3 }, { type: 'type', text: 'hello' }, { type: 'button', button: 'lock' }]) expect(simGesture(value, 390, 844)).not.toBeNull()
+    expect(simGesture({ type: 'scroll', deltaY: 3 }, 390, 844)).toBeNull()
+    for (const value of [{ type: 'type', text: 'hello' }, { type: 'button', button: 'lock' }]) expect(simGesture(value, 390, 844)).not.toBeNull()
   })
   it('routes the API endpoint and its development proxy alias without query auth', () => {
     expect(simLiveUdid(`/api/sims/${A.toLowerCase()}/live`)).toBe(A)

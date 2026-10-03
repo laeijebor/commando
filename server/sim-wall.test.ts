@@ -6,6 +6,7 @@ import { PassThrough, Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SimLeaseRegistry, SIM_LEASE_IDLE_MS } from './sim-leases.js'
 import { SimWallApi, type SimWallRunner } from './sim-wall.js'
+import { SIM_ORIENTATIONS, SIM_TEXT_SIZES } from '../shared/sim-actions.js'
 
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
 const B = 'BBBBBBBB-2222-2222-2222-222222222222'
@@ -40,8 +41,8 @@ function setup(override?: SimWallRunner, cacheDirectory?: string) {
   const api = new SimWallApi({ registry, paneExists: (pane) => pane !== '%9', runner, now: () => now, cacheDirectory })
   return { api, registry, runner, devices, advance: (ms: number) => { now += ms } }
 }
-async function call(api: SimWallApi, path = '', method = 'GET') {
-  const request = Readable.from([]) as IncomingMessage
+async function call(api: SimWallApi, path = '', method = 'GET', body?: unknown) {
+  const request = Readable.from(body === undefined ? [] : [typeof body === 'string' ? body : JSON.stringify(body)]) as IncomingMessage
   request.method = method
   const response = new PassThrough() as unknown as ServerResponse
   const chunks: Buffer[] = []
@@ -54,6 +55,269 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
 }
 
 describe('SimWallApi', () => {
+  const element = { role: 'AXButton', label: 'General', identifier: 'com.apple.settings.general', value: null, title: null,
+    frame: { x: 20, y: 293.33, width: 400, height: 52 } }
+  function inspection(output: string, source?: SimWallRunner) {
+    const baseline = setup()
+    const result = setup(async (command, args, options) => command === 'baguette' ? output
+      : command === 'argent' && source ? source(command, args, options) : baseline.runner(command, args))
+    result.registry.upsert('%1', { sessionId: '$1', sessionName: 'Work' }, {
+      udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: 'backend', port: 3000 }, { name: 'metro', port: 8082 }],
+    })
+    return result
+  }
+
+  it('hit-tests device points with argv, a five-second deadline, and only accessibility details', async () => {
+    const { api, runner } = inspection(JSON.stringify({ ...element, children: [], focused: false }))
+    const response = await call(api, `/${A.toLowerCase()}/inspect?x=20.5&y=293.33`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: true, element })
+    expect(runner).toHaveBeenLastCalledWith('baguette', ['describe-ui', '--udid', A, '--x', '20.5', '--y', '293.33'], { timeout: 5000 })
+  })
+
+  it.each(['x=NaN&y=1', 'x=Infinity&y=1', 'x=-1&y=1', 'x=10001&y=1', 'x=1&y=10001', 'x=1', 'x=&y=1', 'x=1&y=abc', 'x=1&x=2&y=1'])('rejects invalid inspect coordinates before running anything: %s', async (query) => {
+    const { api, runner } = setup()
+    for (const path of ['inspect', 'inspect/source']) expect((await call(api, `/${A}/${path}?${query}`)).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each(['inspect', 'inspect/source'])('validates the inspect UUID and method: %s', async (path) => {
+    const { api, runner } = setup()
+    expect((await call(api, `/bad/${path}?x=1&y=2`)).status).toBe(400)
+    expect((await call(api, `/${A}/${path}?x=1&y=2`, 'POST')).status).toBe(405)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each(['null', `[baguette] [ax] diagnostic\n${JSON.stringify(element)}\n`])('accepts a null hit and diagnostics around JSON', async (output) => {
+    const { api } = inspection(output)
+    expect((await call(api, `/${A}/inspect?x=0&y=10000`)).json()).toEqual({ ok: true, element: output === 'null' ? null : element })
+  })
+
+  it.each(['not JSON', '{}', '[]', JSON.stringify({ ...element, frame: { x: 0, y: 0, width: -1, height: 52 } })])('reports malformed accessibility output clearly: %s', async (output) => {
+    const { api } = inspection(output)
+    const response = await call(api, `/${A}/inspect?x=1&y=2`)
+    expect(response.status).toBe(500)
+    expect(response.json().error).toMatch(/Invalid .*response from baguette describe-ui/)
+  })
+
+  it('reports accessibility command errors and enforces the hit-test deadline', async () => {
+    const baseline = setup()
+    const hung = setup(async (command, args) => command === 'baguette' ? new Promise(() => {}) : baseline.runner(command, args))
+    await hung.api.list()
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/inspect?x=1&y=2`)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await request).status).toBe(504)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+    const failing = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('exec failed'), { stderr: '[baguette] access denied\n' })
+      return baseline.runner(command, args)
+    })
+    expect((await call(failing.api, `/${A}/inspect?x=1&y=2`)).json().error).toBe('baguette failed: [baguette] access denied')
+  })
+
+  it('resolves the current lease Metro port, connects before inspecting, and parses nested source records in order', async () => {
+    const components = [{ componentName: 'Button', source: { fileName: '/app/Button.tsx', lineNumber: 12, columnNumber: 3 }, codeFragment: '<Button />' },
+      { name: 'Screen', file: '/app/Screen.tsx', line: 5 }]
+    const { api, runner, registry } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{"ok":true}' : JSON.stringify({ result: { components } }))
+    const response = await call(api, `/${A}/inspect/source?x=20.5&y=30`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: true, components: [{ name: 'Button', file: '/app/Button.tsx', line: 12, column: 3, code: '<Button />' }, { name: 'Screen', file: '/app/Screen.tsx', line: 5 }] })
+    expect(runner.mock.calls).toEqual([
+      ['argent', ['run', 'debugger-connect', '--device_id', A, '--port', '8082', '--json'], { timeout: 15_000 }],
+      ['argent', ['run', 'debugger-inspect-element', '--device_id', A, '--port', '8082', '--x', '20.5', '--y', '30', '--json'], { timeout: 15_000 }],
+    ])
+    registry.upsert('%1', { sessionId: '$1', sessionName: 'Work' }, { udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: 'metro', port: 9000 }] })
+    await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(runner.mock.calls.at(-1)![1]).toContain('9000')
+  })
+
+  it.each([
+    '[{"name":"Button","file":"Button.tsx","line":1}]',
+    '{"componentName":"Button","location":{"filePath":"Button.tsx","line":1}}',
+    JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ components: [{ name: 'Button', file: 'Button.tsx', line: 1 }] }) }] }),
+  ])('parses defensive Argent object, array and tool-text shapes: %s', async (raw) => {
+    const { api } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{}' : raw)
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toEqual({ ok: true, components: [{ name: 'Button', file: 'Button.tsx', line: 1 }] })
+  })
+
+  it.each(['unknown output', '{"unexpected":true}', '[{"name":"Button","line":"bad","file":42}]'])('keeps unrecognised source output as raw text: %s', async (raw) => {
+    const { api } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{}' : raw)
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toEqual({ ok: true, components: [], raw })
+  })
+
+  it.each(['absent', 'backend-only', 'closed', 'released'])('returns no-metro-port for a %s lease without shelling out', async (state) => {
+    const { api, registry, runner } = setup()
+    if (state !== 'absent') registry.upsert(state === 'closed' ? '%9' : '%1', { sessionId: '$1', sessionName: 'Work' }, {
+      udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: state === 'backend-only' ? 'backend' : 'metro', port: 8082 }],
+    })
+    if (state === 'released') registry.delete('%1')
+    const response = await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: false, reason: 'no-metro-port' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['connect', 'ENOENT', 'argent-missing'], ['inspect', 'ENOENT', 'argent-missing'],
+    ['connect', 'offline', 'not-connected'], ['inspect', 'not connected to Metro', 'not-connected'], ['inspect', 'bad inspection', 'failed'],
+  ])('returns an expected source failure for %s: %s', async (stage, message, reason) => {
+    const { api, runner } = inspection('', async (_command, args) => {
+      if (args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element')) throw Object.assign(new Error(message), { code: message })
+      return '{}'
+    })
+    const response = await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toMatchObject({ ok: false, reason })
+    expect(runner).toHaveBeenCalledTimes(stage === 'connect' ? 1 : 2)
+    if (reason !== 'argent-missing') expect(response.json()).toMatchObject({ message: expect.any(String), port: 8082 })
+  })
+
+  it.each(['connect', 'inspect'])('handles unsuccessful Argent JSON and a timeout during %s', async (stage) => {
+    const { api } = inspection('', async (_command, args) => args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element') ? '{"success":false,"message":"tool failed"}' : '{}')
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toMatchObject({ ok: false, reason: stage === 'connect' ? 'not-connected' : 'failed' })
+    const hung = inspection('', async (_command, args) => args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element') ? new Promise(() => {}) : '{}')
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/inspect/source?x=1&y=2`)
+      await vi.advanceTimersByTimeAsync(15_000)
+      const response = await request
+      expect(response.status).toBe(200)
+      expect(response.json()).toMatchObject({ ok: false, message: expect.stringContaining('15 seconds') })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each([
+    ...SIM_ORIENTATIONS.map((value): [unknown, string, string[]] => [{ action: 'orientation', value }, 'baguette', ['orientation', '--udid', A, value]]),
+    [{ action: 'appearance', value: 'light' }, 'baguette', ['interface', 'appearance', '--udid', A, 'light']],
+    [{ action: 'appearance', value: 'dark' }, 'baguette', ['interface', 'appearance', '--udid', A, 'dark']],
+    [{ action: 'shake' }, 'baguette', ['shake', '--udid', A]],
+    [{ action: 'heal' }, 'baguette', ['heal', '--udid', A]],
+    [{ action: 'status-bar', mode: 'clean' }, 'baguette', ['status-bar', 'override', '--udid', A, '--time', '9:41', '--battery-state', 'charged', '--battery-level', '100', '--cellular-mode', 'active', '--cellular-bars', '4', '--wifi-mode', 'active', '--wifi-bars', '3', '--data-network', 'wifi']],
+    [{ action: 'status-bar', mode: 'clear' }, 'baguette', ['status-bar', 'clear', '--udid', A]],
+    [{ action: 'open-url', url: 'myapp://profile/42?q=";$(bad)`' }, 'baguette', ['openurl', '--udid', A, '--', 'myapp://profile/42?q=";$(bad)`']],
+    [{ action: 'open-url', url: 'mailto:someone@example.com' }, 'baguette', ['openurl', '--udid', A, '--', 'mailto:someone@example.com']],
+    ...SIM_TEXT_SIZES.map((value): [unknown, string, string[]] => [{ action: 'text-size', value }, 'baguette', ['interface', 'text-size', '--udid', A, value]]),
+    [{ action: 'text-size', step: 1 }, 'baguette', ['interface', 'text-size', '--udid', A, 'increment']],
+    [{ action: 'text-size', step: -1 }, 'baguette', ['interface', 'text-size', '--udid', A, 'decrement']],
+    ...[true, false].flatMap((enabled): Array<[unknown, string, string[]]> => [
+      [{ action: 'contrast', enabled }, 'baguette', ['interface', 'contrast', '--udid', A, enabled ? 'enabled' : 'disabled']],
+      [{ action: 'reduce-motion', enabled }, 'xcrun', ['simctl', 'spawn', A, 'defaults', 'write', 'com.apple.Accessibility', 'ReduceMotionEnabled', '-bool', String(enabled)]],
+    ]),
+    [{ action: 'network', profile: 'off' }, 'baguette', ['network', 'clear', '--udid', A]],
+    [{ action: 'network', profile: 'offline' }, 'baguette', ['network', 'set', '--udid', A, '--offline']],
+    [{ action: 'network', profile: '3g' }, 'baguette', ['network', 'set', '--udid', A, '--profile', '3g']],
+    [{ action: 'network', profile: 'lte' }, 'baguette', ['network', 'set', '--udid', A, '--profile', 'lte']],
+    [{ action: 'network', profile: 'lossy' }, 'baguette', ['network', 'set', '--udid', A, '--latency', '200', '--loss', '10']],
+  ])('dispatches validated action %j with argv and a command deadline', async (body, command, args) => {
+    const { api, runner } = setup()
+    const result = await call(api, `/${A.toLowerCase()}/action`, 'POST', body)
+    expect(result.status).toBe(200)
+    expect(result.json()).toMatchObject({ ok: true })
+    expect(runner).toHaveBeenLastCalledWith(command, args, { timeout: 10_000 })
+  })
+
+  it.each(['light', 'dark', 'unknown'])('reads appearance before toggling from %s', async (current) => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => command === 'baguette' ? `${current}\n` : baseline.runner(command, args))
+    const result = await call(api, `/${A}/action`, 'POST', { action: 'appearance', value: 'toggle' })
+    const calls = runner.mock.calls.filter(([command]) => command === 'baguette')
+    expect(calls[0]).toEqual(['baguette', ['interface', 'appearance', '--udid', A], { timeout: 10_000 }])
+    if (current === 'unknown') { expect(result.status).toBe(500); expect(calls).toHaveLength(1) }
+    else {
+      const value = current === 'light' ? 'dark' : 'light'
+      expect(result.json()).toEqual({ ok: true, value })
+      expect(calls[1][1]).toEqual(['interface', 'appearance', '--udid', A, value])
+    }
+  })
+
+  it.each([
+    null, [], 42, 'malformed', {}, { action: 'rotate' }, { action: 'shake', args: ['--bad'] }, { action: 'heal', extra: true },
+    { action: 'appearance' }, { action: 'appearance', value: 'system' }, { action: 'appearance', value: true },
+    { action: 'orientation' }, { action: 'orientation', value: 'landscape' }, { action: 'orientation', value: 90 },
+    { action: 'orientation', value: ['portrait'] }, { action: 'orientation', value: 'portrait', extra: true },
+    { action: 'status-bar', mode: 'override' }, { action: 'status-bar', mode: ['clean'] },
+    { action: 'text-size' }, { action: 'text-size', value: 'huge' }, { action: 'text-size', value: 1 },
+    { action: 'text-size', step: '1' }, { action: 'text-size', step: 0 }, { action: 'text-size', value: 'large', step: 1 },
+    { action: 'contrast', enabled: 'true' }, { action: 'reduce-motion', enabled: 1 }, { action: 'reduce-motion' },
+    { action: 'network', profile: 'unknown' }, { action: 'network', profile: '3g', latency: 100 },
+    { action: 'open-url', url: 123 }, { action: 'open-url', url: '' }, { action: 'open-url', url: 'noscheme' },
+    { action: 'open-url', url: '--help' }, { action: 'open-url', url: '-bad://host' }, { action: 'open-url', url: 'https://[' },
+    { action: 'open-url', url: 'myapp://a\u0000b' }, { action: 'open-url', url: `myapp:${'x'.repeat(2043)}` },
+    { action: 'shake', padding: 'x'.repeat(16 * 1024) },
+  ])('rejects malformed or unexpected action parameters: %j', async (body) => {
+    const { api, runner } = setup()
+    expect((await call(api, `/${A}/action`, 'POST', body)).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it('validates new endpoint UUIDs, methods and boot state, and accepts the URL length boundary', async () => {
+    const { api, runner, devices } = setup()
+    expect((await call(api, '/bad/action', 'POST', { action: 'shake' })).status).toBe(400)
+    expect((await call(api, `/${A}/action`)).status).toBe(405)
+    expect((await call(api, `/${A}/schemes`, 'POST')).status).toBe(405)
+    expect((await call(api, '/bad/schemes')).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+    expect((await call(api, `/${A}/action`, 'POST', { action: 'open-url', url: `myapp:${'x'.repeat(2042)}` })).status).toBe(200)
+    const stopped = setup()
+    stopped.devices[0].state = 'Shutdown'
+    expect((await call(stopped.api, `/${A}/action`, 'POST', { action: 'shake' })).status).toBe(404)
+    expect((await call(stopped.api, `/${A}/schemes`)).status).toBe(404)
+    expect(stopped.runner.mock.calls.some(([command]) => command === 'baguette')).toBe(false)
+    expect(devices[0].state).toBe('Booted')
+  })
+
+  it('summarises stderr and reports timeouts without leaving a pending deadline', async () => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('exec failed'), { stderr: `permission denied\n${'x'.repeat(1000)}` })
+      return baseline.runner(command, args)
+    })
+    const failure = await call(api, `/${A}/action`, 'POST', { action: 'shake' })
+    expect(failure.status).toBe(500)
+    expect(failure.json().error).toMatch(/^baguette failed: permission denied /)
+    expect(failure.json().error.length).toBeLessThan(530)
+    const hung = setup(async (command, args) => command === 'baguette' ? new Promise(() => {}) : baseline.runner(command, args))
+    await hung.api.list()
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/action`, 'POST', { action: 'shake' })
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await request
+      expect(result.status).toBe(504)
+      expect(result.json().error).toContain('timed out after 10 seconds')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each([{ killed: true }, { code: 'ETIMEDOUT' }])('reports native subprocess timeouts: %j', async (error) => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('killed'), error)
+      return baseline.runner(command, args)
+    })
+    expect((await call(api, `/${A}/action`, 'POST', { action: 'shake' })).status).toBe(504)
+  })
+
+  it('returns unique URL scheme suggestions from Baguette JSON', async () => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => command === 'baguette' ? JSON.stringify([
+      { scheme: 'myapp', url: 'myapp://', app: 'App', bundleId: 'com.app' }, { scheme: 'https' }, { scheme: 'myapp' },
+    ]) : baseline.runner(command, args))
+    const result = await call(api, `/${A}/schemes`)
+    expect(result.json()).toEqual({ schemes: ['https', 'myapp'] })
+    expect(runner).toHaveBeenLastCalledWith('baguette', ['schemes', '--udid', A, '--json'], { timeout: 10_000 })
+  })
+
+  it.each(['bad json', '{}', '[{"scheme":"--help"}]'])('surfaces invalid schemes output: %s', async (output) => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => command === 'baguette' ? output : baseline.runner(command, args))
+    expect((await call(api, `/${A}/schemes`)).status).toBe(500)
+  })
+
   it('marks booted pool cards and counts only Shutdown members not leased or reserved, including cached payloads', async () => {
     const directory = await cacheDirectory()
     const { api, registry, runner } = setup(undefined, directory)
