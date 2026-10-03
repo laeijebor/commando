@@ -47,6 +47,23 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('defaults to mine and forwards explicit scopes', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const list = vi.spyOn(service, 'listPullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPullRequests']>>)
+    const base = await startApi(() => undefined, () => undefined, service)
+    expect((await fetch(`${base}/api/prs?repo=acme%2Fwidgets&state=open`)).status).toBe(200)
+    expect(list).toHaveBeenLastCalledWith('acme/widgets', 'open', { refresh: false, scope: 'mine' })
+    expect((await fetch(`${base}/api/prs?repo=acme%2Fwidgets&state=open&scope=everyone&refresh=1`)).status).toBe(200)
+    expect(list).toHaveBeenLastCalledWith('acme/widgets', 'open', { refresh: true, scope: 'everyone' })
+  })
+
+  it('rejects unsupported scopes', async () => {
+    const base = await startApi(() => undefined)
+    const response = await fetch(`${base}/api/prs?repo=acme%2Fwidgets&scope=other`)
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' })
+  })
+
   it('accepts only POST JSON for merging and forwards the expected head', async () => {
     const service = new PrService({ runner: vi.fn() })
     const merge = vi.spyOn(service, 'mergePullRequest').mockResolvedValue({ merged: true })

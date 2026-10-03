@@ -98,9 +98,9 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
   return {
     merge: async (repo: string, number: number, headRefOid: string) =>
       request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid }) }),
-    list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean }) =>
+    list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean; scope?: PrScope }) =>
       (await request<{ list: PrList }>(
-        `?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}${options?.refresh ? '&refresh=1' : ''}`,
+        `?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(options?.scope ?? 'mine')}${options?.refresh ? '&refresh=1' : ''}`,
       )).list,
     threads: async (repo: string, number: number) =>
       (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,

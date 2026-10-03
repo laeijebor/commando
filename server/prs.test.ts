@@ -357,6 +357,85 @@ describe('pane repository resolution', () => {
 })
 
 describe('pull request listing', () => {
+  it('fetches only authored and review-requested details for mine, with independent scope caches', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      const repoFields = query.split('authored: search')[0]
+      const mine = !repoFields.includes('nodes { ...PrFields }')
+      const payload = JSON.parse(graphqlPayload(mine ? [] : [pullRequestNode({ number: 99, author: { login: 'other' } })], 733, 'leo', {
+        authored: { nodes: [pullRequestNode()] },
+        reviewRequested: { nodes: [pullRequestNode({ number: 13, author: { login: 'other' } })] },
+      }))
+      if (mine) delete payload.data.repository.pullRequests.nodes
+      return JSON.stringify(payload)
+    })
+    const service = new PrService({ runner })
+    const mine = await service.listPullRequests('acme/widgets', 'open', { scope: 'mine' })
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([13, 12])
+    expect(mine.pullRequests[0].viewerReviewRequested).toBe(true)
+    expect(mine.totalCount).toBe(733)
+    const everyone = await service.listPullRequests('acme/widgets', 'open', { scope: 'everyone' })
+    expect(everyone.pullRequests.map((pr) => pr.number)).toEqual([99, 13, 12])
+    expect(await service.listPullRequests('acme/widgets', 'open', { scope: 'mine' })).toBe(mine)
+    expect(runner).toHaveBeenCalledTimes(2)
+    await expect(service.listPullRequests('acme/widgets', 'open', { scope: 'bad' as 'mine' })).rejects.toMatchObject({ status: 400 })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    new PrServiceError(502, 'github_failed', 'GitHub request failed: gh: HTTP 502'),
+    new PrServiceError(502, 'github_failed', 'GitHub request failed: gh: upstream timeout (HTTP 504)'),
+    new PrServiceError(504, 'github_timeout', 'GitHub request timed out'),
+  ])('hydrates full pages in bounded batches after upstream timeout: %s', async (failure) => {
+    const records = Array.from({ length: 32 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
+    const discovery = graphqlPayload(records.slice(0, 30).map(({ id }) => ({ id })), 733, 'leo', {
+      authored: { nodes: [records[0], records[30]].map(({ id }) => ({ id })), issueCount: 2 },
+      reviewRequested: { nodes: [records[31]].map(({ id }) => ({ id })), issueCount: 40 },
+    })
+    let active = 0
+    let maxActive = 0
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      if (query.includes('fragment PrFields on PullRequest { id }')) return discovery
+      if (query.includes('repository(owner:')) throw failure
+      const ids = JSON.parse(query.match(/nodes\(ids: (\[[^\]]*\])/)![1]) as string[]
+      expect(ids.length).toBeLessThanOrEqual(5)
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      active--
+      return JSON.stringify({ data: { nodes: records.filter((record) => ids.includes(record.id as string)) } })
+    })
+    const service = new PrService({ runner })
+    const list = await service.listPullRequests('acme/widgets', 'open')
+    expect(list.totalCount).toBe(733)
+    expect(list.pullRequests).toHaveLength(32)
+    expect(list.pullRequests[0]).toMatchObject({ number: 32, additions: 100, commitCount: 3 })
+    expect(list.truncated).toBe(true)
+    expect(list.mineTruncated).toBe(true)
+    expect(maxActive).toBe(3)
+    expect(runner).toHaveBeenCalledTimes(9) // failed query + discovery + seven unique detail batches
+    await service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    expect(runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('repository(owner:') && !arg.includes('fragment PrFields on PullRequest { id }')))).toHaveLength(1)
+    expect(runner).toHaveBeenCalledTimes(17)
+  })
+
+  it.each([
+    { errors: [{ message: 'detail query failed' }], data: { nodes: [] } },
+    { data: { nodes: [] } },
+    { data: { nodes: [null] } },
+  ])('does not return or cache incomplete batched details: %j', async (details) => {
+    const runner = vi.fn()
+      .mockRejectedValueOnce(new PrServiceError(502, 'github_failed', 'gh: HTTP 502'))
+      .mockResolvedValueOnce(graphqlPayload([{ id: 'PR_12' }]))
+      .mockResolvedValueOnce(JSON.stringify(details))
+      .mockResolvedValueOnce(graphqlPayload([pullRequestNode()]))
+    const service = new PrService({ runner })
+    await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ status: 502 })
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toHaveLength(1)
+    expect(runner).toHaveBeenCalledTimes(4)
+  })
+
   it('runs a single gh graphql call and normalizes the summary fields', async () => {
     const { service, runner } = serviceWith(graphqlPayload([pullRequestNode()]))
     const list = await service.listPullRequests('acme/widgets', 'open')

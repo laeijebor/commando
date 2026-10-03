@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from 'react'
 
-import type { PanePrList, PrList, PrsApiClient, PrStateFilter } from './prsApi'
+import type { PanePrList, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
 
 export const PR_FOREGROUND_INTERVAL_MS = 30_000
 export const PR_BACKGROUND_INTERVAL_MS = 5 * 60_000
@@ -41,8 +41,8 @@ class PrStore {
     return this.panes.get(paneId)?.snapshot ?? EMPTY_PANE
   }
 
-  repoSnapshot(repo: string, filter: PrStateFilter): PrStoreSnapshot<PrList> {
-    return this.repos.get(this.repoKey(repo, filter))?.snapshot ?? EMPTY_REPO
+  repoSnapshot(repo: string, filter: PrStateFilter, scope: PrScope): PrStoreSnapshot<PrList> {
+    return this.repos.get(this.repoKey(repo, filter, scope))?.snapshot ?? EMPTY_REPO
   }
 
   subscribePane(paneId: string, background: boolean, listener: () => void): () => void {
@@ -50,13 +50,13 @@ class PrStore {
     return this.subscribe(entry, background, listener)
   }
 
-  subscribeRepo(repo: string, filter: PrStateFilter, listener: () => void): () => void {
-    const entry = this.repoEntry(repo, filter)
+  subscribeRepo(repo: string, filter: PrStateFilter, scope: PrScope, listener: () => void): () => void {
+    const entry = this.repoEntry(repo, filter, scope)
     return this.subscribe(entry, false, listener)
   }
 
-  refreshRepo(repo: string, filter: PrStateFilter): Promise<void> {
-    return this.refresh(this.repoEntry(repo, filter), true)
+  refreshRepo(repo: string, filter: PrStateFilter, scope: PrScope): Promise<void> {
+    return this.refresh(this.repoEntry(repo, filter, scope), true)
   }
 
   private paneEntry(paneId: string): Entry<PanePrList> {
@@ -68,18 +68,18 @@ class PrStore {
     return entry
   }
 
-  private repoEntry(repo: string, filter: PrStateFilter): Entry<PrList> {
-    const key = this.repoKey(repo, filter)
+  private repoEntry(repo: string, filter: PrStateFilter, scope: PrScope): Entry<PrList> {
+    const key = this.repoKey(repo, filter, scope)
     let entry = this.repos.get(key)
     if (!entry) {
-      entry = this.createEntry((refresh) => this.api.list(repo, filter, refresh ? { refresh: true } : undefined), EMPTY_REPO)
+      entry = this.createEntry((refresh) => this.api.list(repo, filter, { scope, ...(refresh ? { refresh: true } : {}) }), EMPTY_REPO)
       this.repos.set(key, entry)
     }
     return entry
   }
 
-  private repoKey(repo: string, filter: PrStateFilter): string {
-    return `${repo}\0${filter}`
+  private repoKey(repo: string, filter: PrStateFilter, scope: PrScope): string {
+    return `${repo}\0${filter}\0${scope}`
   }
 
   private createEntry<T>(load: (refresh: boolean) => Promise<T>, empty: PrStoreSnapshot<T>): Entry<T> {
@@ -190,15 +190,15 @@ export function useRepoPrs(
   repo: string,
   filter: PrStateFilter,
   api: Pick<PrsApiClient, 'list'>,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, scope = 'mine' }: { enabled?: boolean; scope?: PrScope } = {},
 ): PrStoreSnapshot<PrList> & { refresh: () => Promise<void> } {
   const store = useMemo(() => storeFor(api as StoreApi), [api])
   const active = enabled && Boolean(repo)
   const subscribe = useCallback((listener: () => void) => (
-    active ? store.subscribeRepo(repo, filter, listener) : () => undefined
-  ), [active, filter, repo, store])
-  const getSnapshot = useCallback(() => repo ? store.repoSnapshot(repo, filter) : EMPTY_REPO, [filter, repo, store])
+    active ? store.subscribeRepo(repo, filter, scope, listener) : () => undefined
+  ), [active, filter, repo, scope, store])
+  const getSnapshot = useCallback(() => repo ? store.repoSnapshot(repo, filter, scope) : EMPTY_REPO, [filter, repo, scope, store])
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-  const refresh = useCallback(() => active ? store.refreshRepo(repo, filter) : Promise.resolve(), [active, filter, repo, store])
+  const refresh = useCallback(() => active ? store.refreshRepo(repo, filter, scope) : Promise.resolve(), [active, filter, repo, scope, store])
   return useMemo(() => ({ ...snapshot, refresh }), [refresh, snapshot])
 }

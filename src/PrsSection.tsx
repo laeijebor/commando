@@ -370,7 +370,7 @@ export function PrsSection({
   const [repoDraft, setRepoDraft] = useState('')
   repoRef.current = repo
   const paneContext = currentPaneId && currentPanePath ? `${currentPaneId}\u0000${currentPanePath}` : ''
-  const repoState = useRepoPrs(repo, filter, api, { enabled: ready && active })
+  const repoState = useRepoPrs(repo, filter, api, { enabled: ready && active, scope })
   const { list, polling, error: listError, errorCode } = repoState
   const loading = !ready || repoState.loading
   const error = localError || listError
@@ -613,7 +613,7 @@ export function PrsSection({
               <div className="prs-empty">
                 <GitPullRequestArrow aria-hidden="true" />
                 <strong>No {filter === 'all' ? '' : `${filter} `}pull requests</strong>
-                <p>Nothing in {list.repo} right now.</p>
+                <p>{showEveryone ? `Nothing in ${list.repo} right now.` : `None authored by you or awaiting your review in ${list.repo} right now.`}</p>
               </div>
             ) : showEveryone && list.truncated ? (
               <p className="prs-truncated">Showing {list.pullRequests.length} of {formatCount(list.totalCount)} — the rest are on GitHub.</p>

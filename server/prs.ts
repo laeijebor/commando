@@ -18,6 +18,7 @@ const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
 const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
+const PULL_REQUEST_DETAIL_BATCH_SIZE = 5
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
@@ -360,14 +361,14 @@ function statesArgument(filter: PrStateFilter): string {
 // The repo-wide page only holds the ${PULL_REQUEST_PAGE_SIZE} most recently
 // updated PRs, so on a busy repo the viewer's own PRs fall out of it. The two
 // aliased searches fetch those directly and get merged into the list.
-function pullRequestQuery(filter: PrStateFilter): string {
+function pullRequestQuery(filter: PrStateFilter, scope: PrScope): string {
   return `
 query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequestedQuery: String!) {
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequests(first: ${PULL_REQUEST_PAGE_SIZE}, ${statesArgument(filter)}orderBy: {field: UPDATED_AT, direction: DESC}) {
       totalCount
-      nodes { ...PrFields }
+      ${scope === 'everyone' ? 'nodes { ...PrFields }' : ''}
     }
   }
   authored: search(query: $authoredQuery, type: ISSUE, first: ${PULL_REQUEST_PAGE_SIZE}) {
@@ -379,7 +380,10 @@ query($owner: String!, $name: String!, $authoredQuery: String!, $reviewRequested
     nodes { ... on PullRequest { ...PrFields } }
   }
 }
-fragment PrFields on PullRequest {
+${PR_DETAIL_FRAGMENT}`.trim()
+}
+
+const PR_DETAIL_FRAGMENT = `fragment PrFields on PullRequest {
   number title url state isDraft body
   author { login }
   changedFiles
@@ -388,7 +392,6 @@ fragment PrFields on PullRequest {
   reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
   latestReviews(first: 10) { nodes { author { login } state } }
 }`.trim()
-}
 
 function searchStateQualifier(filter: PrStateFilter): string {
   if (filter === 'open') return ' is:open'
@@ -679,6 +682,7 @@ export class PrService {
   private readonly repoContextTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
+  private readonly batchedRepos = new Set<string>()
   private readonly paneListCache = new Map<string, CacheEntry<PanePrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
@@ -748,25 +752,27 @@ export class PrService {
   async listPullRequests(
     repoInput: unknown,
     filterInput: unknown,
-    options?: { refresh?: boolean },
+    options?: { refresh?: boolean; scope?: PrScope },
   ): Promise<PrList> {
     const repo = validateRepo(repoInput)
     const filter = validateStateFilter(filterInput)
-    const key = `${repo}::${filter}`
+    const scope = options?.scope ?? 'everyone'
+    if (scope !== 'mine' && scope !== 'everyone') throw new PrServiceError(400, 'invalid_request', 'scope must be "mine" or "everyone"')
+    const key = `${repo}::${filter}::${scope}`
     const cached = this.listCache.get(key)
     if (cached?.value) {
       if (options?.refresh) {
-        return cached.refresh ?? this.refreshPullRequests(key, repo, filter, cached)
+        return cached.refresh ?? this.refreshPullRequests(key, repo, filter, scope, cached)
       }
       if (this.now() - cached.at >= this.listTtlMs && !cached.refresh) {
-        void this.refreshPullRequests(key, repo, filter, cached).catch(() => undefined)
+        void this.refreshPullRequests(key, repo, filter, scope, cached).catch(() => undefined)
       }
       return cached.value
     }
     if (cached?.refresh) return cached.refresh
     const entry: SwrCacheEntry<PrList> = { at: 0, value: null, refresh: null }
     this.listCache.set(key, entry)
-    return this.refreshPullRequests(key, repo, filter, entry)
+    return this.refreshPullRequests(key, repo, filter, scope, entry)
   }
 
   async listPanePullRequests(targetIdInput: unknown): Promise<PanePrList> {
@@ -825,9 +831,10 @@ export class PrService {
     key: string,
     repo: string,
     filter: PrStateFilter,
+    scope: PrScope,
     entry: SwrCacheEntry<PrList>,
   ): Promise<PrList> {
-    const refresh = this.fetchPullRequests(repo, filter)
+    const refresh = this.fetchPullRequests(repo, filter, scope)
     entry.refresh = refresh
     void refresh.then(
       (value) => {
@@ -857,16 +864,33 @@ export class PrService {
     }
   }
 
-  private async fetchPullRequests(repo: string, filter: PrStateFilter): Promise<PrList> {
+  private async fetchPullRequests(repo: string, filter: PrStateFilter, scope: PrScope): Promise<PrList> {
     const [owner, name] = repo.split('/', 2) as [string, string]
-    const output = await this.runner([
+    const args = [
       'api', 'graphql',
-      '-f', `query=${pullRequestQuery(filter)}`,
+      '-f', `query=${pullRequestQuery(filter, scope)}`,
       '-f', `owner=${owner}`,
       '-f', `name=${name}`,
       '-f', `authoredQuery=${scopedSearchQuery(repo, 'author', filter)}`,
       '-f', `reviewRequestedQuery=${scopedSearchQuery(repo, 'review-requested', filter)}`,
-    ])
+    ]
+    let output: string
+    const batchKey = `${repo.toLowerCase()}::${scope}`
+    if (this.batchedRepos.has(batchKey)) {
+      output = await this.fetchBatchedPullRequests(args)
+    } else {
+      try {
+        output = await this.runner(args)
+      } catch (error) {
+        if (!(error instanceof PrServiceError)
+          || !(/HTTP 50[24]/.test(error.message) || error.code === 'github_timeout')) throw error
+        // GitHub can time out resolving details for busy repositories. Discover
+        // the same full pages cheaply, then hydrate unique PRs in small batches.
+        output = await this.fetchBatchedPullRequests(args)
+        this.batchedRepos.add(batchKey)
+        if (this.batchedRepos.size > MAX_LIST_CACHE_ENTRIES) this.batchedRepos.delete(this.batchedRepos.values().next().value!)
+      }
+    }
     let payload: unknown
     try {
       payload = JSON.parse(output)
@@ -887,9 +911,13 @@ export class PrService {
     const totalCount = requiredNumber(connection, 'totalCount')
     const authored = searchConnection(data, 'authored')
     const reviewRequested = searchConnection(data, 'reviewRequested')
+    const requestedNumbers = new Set(reviewRequested.nodes.map((node) => requiredNumber(node, 'number')))
     const byNumber = new Map<number, PrSummary>()
-    for (const node of [...nodes(repository, 'pullRequests'), ...authored.nodes, ...reviewRequested.nodes]) {
+    for (const node of [...(scope === 'everyone' ? nodes(repository, 'pullRequests') : []), ...authored.nodes, ...reviewRequested.nodes]) {
       const pullRequest = parsePullRequest(node, viewer)
+      // Search also includes team review requests, which the User-only
+      // reviewRequests fragment cannot identify as belonging to the viewer.
+      if (requestedNumbers.has(pullRequest.number)) pullRequest.viewerReviewRequested = true
       if (!byNumber.has(pullRequest.number)) byNumber.set(pullRequest.number, pullRequest)
     }
     const pullRequests = [...byNumber.values()].sort((a, b) => b.number - a.number)
@@ -903,6 +931,52 @@ export class PrService {
       mineTruncated: authored.truncated || reviewRequested.truncated,
       fetchedAt: this.now(),
     }
+  }
+
+  private async fetchBatchedPullRequests(args: string[]): Promise<string> {
+    const discoveryArgs = args.map((arg) => arg.startsWith('query=')
+      ? arg.replace(PR_DETAIL_FRAGMENT, 'fragment PrFields on PullRequest { id }')
+      : arg)
+    const payload = parseGhObject(await this.runner(discoveryArgs))
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) return JSON.stringify(payload)
+    const data = objectField(payload, 'data')
+    const repository = optionalObject(data, 'repository')
+    if (!repository) return JSON.stringify(payload)
+    const connections = [objectField(repository, 'pullRequests'), objectField(data, 'authored'), objectField(data, 'reviewRequested')]
+      .filter((connection) => connection.nodes !== undefined)
+    const ids = [...new Set(connections.flatMap((connection) => {
+      if (!Array.isArray(connection.nodes)) throw invalidUpstream()
+      return connection.nodes.filter(isRecord).map((node) => requiredString(node, 'id'))
+    }))]
+    const details = new Map<string, JsonRecord>()
+    // Bound concurrency as well as query size to avoid amplifying upstream load.
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(3, Math.ceil(ids.length / PULL_REQUEST_DETAIL_BATCH_SIZE)) }, async () => {
+      while (next < ids.length) {
+        const batch = ids.slice(next, next += PULL_REQUEST_DETAIL_BATCH_SIZE)
+        const result = parseGhObject(await this.runner([
+          'api', 'graphql',
+          '-f', `query=query { nodes(ids: ${JSON.stringify(batch)}) { ... on PullRequest { id ...PrFields } } }\n${PR_DETAIL_FRAGMENT}`,
+        ]))
+        if (Array.isArray(result.errors) && result.errors.length > 0) {
+          throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the pull request detail query')
+        }
+        const records = objectField(result, 'data').nodes
+        if (!Array.isArray(records)) throw invalidUpstream()
+        for (const node of records) {
+          if (!isRecord(node)) throw invalidUpstream()
+          details.set(requiredString(node, 'id'), node)
+        }
+      }
+    }))
+    for (const connection of connections) {
+      connection.nodes = (connection.nodes as JsonRecord[]).map((node) => {
+        const detail = details.get(requiredString(node, 'id'))
+        if (!detail) throw invalidUpstream()
+        return detail
+      })
+    }
+    return JSON.stringify(payload)
   }
 
   async listUnresolvedThreads(repoInput: unknown, numberInput: unknown): Promise<PrThreads> {

@@ -72,7 +72,7 @@ export async function handlePrsApi(
         list: await service.listPullRequests(
           url.searchParams.get('repo'),
           url.searchParams.get('state'),
-          { refresh: refresh === '1' },
+          { refresh: refresh === '1', scope: (url.searchParams.get('scope') ?? 'mine') as import('./prs.js').PrScope },
         ),
       })
       return true

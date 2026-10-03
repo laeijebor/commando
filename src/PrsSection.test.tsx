@@ -172,10 +172,15 @@ describe('PrsSection', () => {
     expect(screen.getByText('Needs your review')).toBeInTheDocument()
     expect(screen.getByText('review me: auth linking')).toBeInTheDocument()
     expect(screen.queryByText('someone else: ECR push')).not.toBeInTheDocument()
+    const listRequests = () => requests.filter((request) => new URL(request.url, 'http://localhost').pathname === '/api/prs')
+    expect(listRequests()).toHaveLength(1)
+    expect(listRequests()[0].url).toContain('scope=mine')
 
     const reveal = screen.getByRole('button', { name: /Everyone.s open PRs · 3 · show/ })
     fireEvent.click(reveal)
     expect(await screen.findByText('someone else: ECR push')).toBeInTheDocument()
+    expect(listRequests()).toHaveLength(2)
+    expect(listRequests()[1].url).toContain('scope=everyone')
     await waitFor(() => {
       expect(requests.some((request) => request.method === 'PUT' && (request.body as { lastScope?: string })?.lastScope === 'everyone')).toBe(true)
     })
