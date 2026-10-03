@@ -1,25 +1,38 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Camera, Circle, Home, Link, Lock, MoreHorizontal, PanelsTopLeft, RotateCw, SunMoon } from 'lucide-react'
+import { SIM_NETWORK_PROFILES, type SimAction, type SimOrientation } from '../shared/sim-actions'
 import { createSimsApi, type SimsApiClient } from './simsApi'
+import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screenBottomEdge, screenSize, screenToNative, type NativeEdge, type Point } from './simGeometry'
+import { useSimRecording } from './useSimRecording'
 import './sims-view.css'
 import './sim-live.css'
 
-type Point = { x: number; y: number }
 /** Height in points of the home-indicator band at the bottom of the screen. */
+/** Baguette cannot report a device's orientation, so reopening a view resumes the one this page last set. */
+export const lastOrientation = new Map<string, SimOrientation>()
 const EDGE_BAND = 20
+/** Points of wheel travel before the synthetic finger presses, and how long after the last wheel event it lifts. */
+const WHEEL_SLOP = 12
+const WHEEL_IDLE_MS = 120
 
 /**
  * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
- * A preview is a bare, view-only canvas that renders nothing until video is available.
+ * A preview accepts pointer input without taking keyboard focus and waits for decoded video.
  */
 export function SimLiveView({ udid, token, active = true, connected = true, preview = false, onStreaming, api: providedApi }: {
   udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; onStreaming?: (streaming: boolean) => void; api?: SimsApiClient
 }) {
   const api = useMemo(() => providedApi ?? createSimsApi(token), [providedApi, token])
   const canvas = useRef<HTMLCanvasElement>(null)
+  const screen = useRef<HTMLDivElement>(null)
   const socket = useRef<WebSocket | null>(null)
   const dimensions = useRef({ width: 0, height: 0 })
+  const [nativeSize, setNativeSize] = useState({ width: 390, height: 844 })
+  const [bounds, setBounds] = useState({ width: 0, height: 0 })
+  const [viewOrientation, setOrientation] = useState<SimOrientation>(() => lastOrientation.get(udid) ?? 'portrait')
+  const orientation = preview ? 'portrait' : viewOrientation
   // `second` is set for an Option-held two-finger gesture; `offset` is the vector between the fingers.
-  const pointer = useRef<{ id: number; x: number; y: number; second?: Point; edge?: 'bottom' } | null>(null)
+  const pointer = useRef<{ id: number; x: number; y: number; second?: Point; edge?: NativeEdge } | null>(null)
   const hover = useRef<Point | null>(null)
   const offset = useRef<Point>({ x: 0, y: 0 })
   const [fingers, setFingers] = useState<{ pressed: boolean; points: Point[] }>({ pressed: false, points: [] })
@@ -31,6 +44,83 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const [revision, setRevision] = useState(0)
   const [focused, setFocused] = useState(false)
   const [ready, setReady] = useState(false)
+  const [painted, setPainted] = useState(false)
+  const toolbar = useRef<HTMLDivElement>(null)
+  const moreButton = useRef<HTMLButtonElement>(null)
+  const urlButton = useRef<HTMLButtonElement>(null)
+  const returnFocus = useRef<HTMLButtonElement | null>(null)
+  const pending = useRef(new Set<string>())
+  const [busy, setBusy] = useState(new Set<string>())
+  const [popover, setPopover] = useState<'more' | 'url' | null>(null)
+  const [url, setUrl] = useState('')
+  const [schemes, setSchemes] = useState<string[]>([])
+  const schemesId = useId()
+  const closePopover = () => {
+    setPopover(null)
+    const button = (popover === 'more' ? moreButton : urlButton).current
+    if (button?.disabled) returnFocus.current = button
+    else button?.focus()
+  }
+  const perform = async (key: string, work: () => Promise<void>) => {
+    if (pending.current.has(key)) return
+    pending.current.add(key); setBusy(new Set(pending.current)); setReason('')
+    try { await work() } catch (error) { setReason(error instanceof Error ? error.message : 'Simulator action failed') }
+    finally { pending.current.delete(key); setBusy(new Set(pending.current)) }
+  }
+  const deviceAction = (body: SimAction) => perform(body.action, async () => {
+    const result = await api.action(udid, body)
+    if (result.warning) setReason(result.warning)
+  })
+  const rotate = (direction: 1 | -1) => {
+    if (!connected || preview) return
+    const next = rotateOrientation(orientation, direction)
+    return perform('orientation', async () => {
+      await api.action(udid, { action: 'orientation', value: next })
+      releasePointer(); hover.current = null; offset.current = { x: 0, y: 0 }
+      setFingers({ pressed: false, points: [] }); setOrientation(next); lastOrientation.set(udid, next)
+    })
+  }
+
+  useEffect(() => {
+    const target = screen.current
+    if (!target) return
+    const measure = () => setBounds({ width: Math.max(0, target.clientWidth - 12), height: Math.max(0, target.clientHeight - 12) })
+    measure()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure)
+      return () => window.removeEventListener('resize', measure)
+    }
+    const observer = new ResizeObserver(([entry]) => setBounds({ width: entry.contentRect.width, height: entry.contentRect.height }))
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [preview])
+
+  useEffect(() => {
+    if (!popover && returnFocus.current && !returnFocus.current.disabled) {
+      returnFocus.current.focus(); returnFocus.current = null
+    }
+  }, [popover, busy])
+
+  useEffect(() => {
+    if (!popover) return
+    const outside = (event: PointerEvent) => { if (!toolbar.current?.contains(event.target as Node)) closePopover() }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePopover() }
+    }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape, true)
+    if (popover === 'more') toolbar.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape, true) }
+  }, [popover])
+
+  useEffect(() => {
+    if (popover !== 'url') return
+    let disposed = false
+    setSchemes([])
+    void api.schemes(udid).then((values) => { if (!disposed) setSchemes(values) })
+      .catch((error: unknown) => { if (!disposed) setReason(error instanceof Error ? error.message : 'Unable to load URL schemes') })
+    return () => { disposed = true }
+  }, [popover, api, udid])
 
   const send = (envelope: Record<string, unknown>) => {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(envelope))
@@ -64,6 +154,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
 
   useEffect(() => {
     setReady(false)
+    setPainted(false)
     dimensions.current = { width: 0, height: 0 }
     if (!active || !connected || typeof VideoDecoder === 'undefined') {
       setSnapshot(true)
@@ -118,6 +209,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           const meta = JSON.parse(event.data) as { type: string; width: number; height: number }
           if (meta.type === 'meta' && Number.isFinite(meta.width) && Number.isFinite(meta.height) && meta.width > 0 && meta.height > 0) {
             dimensions.current = { width: meta.width, height: meta.height }
+            setNativeSize(dimensions.current)
             setReady(true)
           }
           return
@@ -129,7 +221,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           if (decoder && decoder.state !== 'closed') decoder.close()
           decoder = new VideoDecoder({
             output: (frame) => {
-              try { paint(frame, frame.displayWidth, frame.displayHeight); paintedVideo = true } finally { frame.close() }
+              try { if (disposed || failed) return; paint(frame, frame.displayWidth, frame.displayHeight); paintedVideo = true; setPainted(true) } finally { frame.close() }
             },
             error: () => fallback('Live video could not be decoded'),
           })
@@ -172,18 +264,45 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     if (active && !snapshot && !preview) canvas.current?.focus()
   }, [active, snapshot, preview])
 
+  const streaming = ready && !snapshot && (!preview || painted)
+  const recording = useSimRecording(canvas, active && streaming && !preview, udid, setReason)
   useEffect(() => {
     const target = canvas.current
-    if (!target || !active || snapshot || !ready || preview) return
+    if (!target || !active || !streaming) return
+    // Baguette's `scroll` message restarts backboardd on iOS 26.5, so the wheel drives a one-finger drag instead.
+    let drag: { x: number; y: number; down: boolean; dx: number; dy: number } | null = null
+    let idle: number | undefined
+    const end = () => {
+      window.clearTimeout(idle)
+      if (drag?.down) send({ type: 'touch1-up', x: drag.x + drag.dx, y: drag.y + drag.dy })
+      drag = null
+    }
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
-      send({ type: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY })
+      if (pointer.current) return
+      const rect = screenRect(target), { width, height } = dimensions.current
+      if (!width || !height || !rect.width) return
+      drag ??= { ...clamp(screenToNative({ x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }, dimensions.current, orientation)), down: false, dx: 0, dy: 0 }
+      // Content follows the finger, so the drag runs opposite to the wheel delta. One wheel pixel is one
+      // device point whatever the view's zoom, so a small wall card does not scroll faster than the full view.
+      const displayed = screenSize(dimensions.current, orientation)
+      const delta = screenToNative({ x: -event.deltaX / displayed.width, y: -event.deltaY / displayed.height }, dimensions.current, orientation)
+      const origin = screenToNative({ x: 0, y: 0 }, dimensions.current, orientation)
+      const next = { x: drag.x + drag.dx + delta.x - origin.x, y: drag.y + drag.dy + delta.y - origin.y }
+      const held = clamp(next)
+      drag.dx = held.x - drag.x; drag.dy = held.y - drag.y
+      // Press only after real travel: a press and release in place would be a tap.
+      if (!drag.down && Math.hypot(drag.dx, drag.dy) >= WHEEL_SLOP) { drag.down = true; send({ type: 'touch1-down', x: drag.x, y: drag.y }) }
+      if (drag.down) send({ type: 'touch1-move', x: held.x, y: held.y })
+      window.clearTimeout(idle)
+      // At the screen edge the finger lifts so the next wheel event starts a fresh drag from the cursor.
+      if (drag.down && (held.x !== next.x || held.y !== next.y)) end()
+      else idle = window.setTimeout(end, WHEEL_IDLE_MS)
     }
     target.addEventListener('wheel', wheel, { passive: false })
-    return () => target.removeEventListener('wheel', wheel)
-  }, [active, snapshot, ready, preview])
+    return () => { target.removeEventListener('wheel', wheel); end() }
+  }, [active, streaming, orientation])
 
-  const streaming = ready && !snapshot
   useEffect(() => {
     if (!streaming) return
     onStreaming?.(true)
@@ -211,9 +330,17 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   }, [snapshot, visible, api, udid, preview])
 
   const clamp = ({ x, y }: Point): Point => ({ x: Math.max(0, Math.min(dimensions.current.width, x)), y: Math.max(0, Math.min(dimensions.current.height, y)) })
+  const screenRect = (target: HTMLCanvasElement) => {
+    const rect = target.getBoundingClientRect()
+    if (!preview) return rect
+    // object-fit: cover centres horizontally and aligns the uncropped screen to the top.
+    const scale = Math.max(rect.width / target.width, rect.height / target.height)
+    const width = target.width * scale, height = target.height * scale
+    return { left: rect.left + (rect.width - width) / 2, top: rect.top, width, height }
+  }
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    return clamp({ x: (event.clientX - rect.left) / rect.width * dimensions.current.width, y: (event.clientY - rect.top) / rect.height * dimensions.current.height })
+    const rect = screenRect(event.currentTarget)
+    return clamp(screenToNative({ x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }, dimensions.current, orientation))
   }
   /** Like Simulator.app: the second finger mirrors the first through the screen centre; Shift moves both in parallel. */
   const secondFinger = (first: Point, parallel: boolean): Point => {
@@ -222,12 +349,15 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   }
   /** Finger markers are positioned in viewport pixels so they need no wrapper sized to the canvas. */
   const showFingers = (pressed: boolean, points: Point[]) => {
-    const rect = canvas.current?.getBoundingClientRect()
+    const rect = canvas.current ? screenRect(canvas.current) : undefined
     const { width, height } = dimensions.current
     if (!rect || !width || !height) return
-    setFingers({ pressed, points: points.map(({ x, y }) => ({ x: Math.round(rect.left + x / width * rect.width), y: Math.round(rect.top + y / height * rect.height) })) })
+    setFingers({ pressed, points: points.map((point) => {
+      const { x, y } = nativeToScreen(point, dimensions.current, orientation)
+      return { x: Math.round(rect.left + x * rect.width), y: Math.round(rect.top + y * rect.height) }
+    }) })
   }
-  const inputEnabled = active && !snapshot && ready
+  const inputEnabled = active && streaming
   const press = (button: string) => send({ type: 'button', button })
   const saveScreenshot = () => {
     const save = (url: string, extension: 'png' | 'jpg') => {
@@ -245,34 +375,25 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
     }, 'image/png')
   }
-  if (preview) return snapshot ? null : <canvas ref={canvas} className="sim-live-preview" hidden={!ready} aria-hidden="true" />
-  return <div className="sim-live">
-    <div className="sims-actions sim-live-toolbar">
-      <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
-      <button type="button" disabled={!inputEnabled} title="Home (⌘⇧H)" onClick={() => press('home')}>Home</button>
-      <button type="button" disabled={!inputEnabled} title="App switcher" onClick={() => press('app-switcher')}>Switcher</button>
-      <button type="button" disabled={!inputEnabled} title="Lock (⌘L)" onClick={() => press('lock')}>Lock</button>
-      <button type="button" disabled={!inputEnabled} aria-label="Volume down" title="Volume down" onClick={() => press('volume-down')}>Vol −</button>
-      <button type="button" disabled={!inputEnabled} aria-label="Volume up" title="Volume up" onClick={() => press('volume-up')}>Vol +</button>
-      <button type="button" disabled={snapshot ? !image : !ready} title="Save an image of the current screen" onClick={saveScreenshot}>Screenshot</button>
-      <button type="button" onClick={() => {
-        void api.open(udid).then((result) => { if (result.raised === false) setReason(result.reason ?? 'Simulator activated') }).catch((error: unknown) => setReason(error instanceof Error ? error.message : 'Unable to open Simulator'))
-      }}>Open Simulator</button>
-    </div>
-    <div className="sim-live-screen">
-      {snapshot ? (image ? <img src={image} alt="Simulator snapshot" /> : <span className="sims-empty">Waiting for snapshot…</span>) : null}
-      <canvas ref={canvas} hidden={snapshot} className={focused ? 'is-focused' : ''} tabIndex={active && !snapshot ? 0 : -1} aria-label="Live simulator. Click to control; Escape releases keyboard focus"
-        onFocus={() => setFocused(true)} onBlur={() => { setFocused(false); releasePointer() }}
+  const canvasSize = fitCanvas(nativeSize, bounds, orientation)
+  const screenStyle = preview ? undefined : {
+    width: canvasSize.width, height: canvasSize.height,
+    transform: `translate(-50%, -50%) rotate(${ORIENTATION_TURNS[orientation] * 90}deg)`,
+  }
+  const liveCanvas = <canvas ref={canvas} style={screenStyle} hidden={preview ? !streaming : snapshot} className={preview ? 'sim-live-preview' : focused ? 'is-focused' : ''}
+        tabIndex={preview ? undefined : active && !snapshot ? 0 : -1} aria-label={preview ? 'Live simulator preview' : 'Live simulator. Click to control; Escape releases keyboard focus'}
+        onFocus={preview ? undefined : () => setFocused(true)} onBlur={preview ? undefined : () => { setFocused(false); releasePointer() }}
         onPointerDown={(event) => {
           if (!inputEnabled || pointer.current || event.button !== 0) return
-          event.preventDefault(); event.currentTarget.focus()
+          event.preventDefault(); if (!preview) event.currentTarget.focus()
           const position = point(event)
           if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return
           const second = event.altKey ? secondFinger(position, event.shiftKey) : undefined
           pointer.current = { id: event.pointerId, ...position, second }
           event.currentTarget.setPointerCapture(event.pointerId)
           // A press in the home-indicator band is an edge gesture, so iOS runs its live home and app-switcher animation.
-          const edge = !second && position.y >= dimensions.current.height - EDGE_BAND ? 'bottom' : undefined
+          const fraction = nativeToScreen(position, dimensions.current, orientation)
+          const edge = !second && (1 - fraction.y) * screenSize(dimensions.current, orientation).height <= EDGE_BAND ? screenBottomEdge(orientation) : undefined
           pointer.current.edge = edge
           send(second ? { type: 'touch2-down', x1: position.x, y1: position.y, x2: second.x, y2: second.y } : { type: 'touch1-down', ...position, edge })
           showFingers(true, second ? [position, second] : [position])
@@ -307,14 +428,14 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
         }}
         onPointerCancel={releasePointer} onLostPointerCapture={releasePointer}
         onPointerLeave={() => { hover.current = null; releasePointer() }}
-        onPaste={(event) => {
+        onPaste={preview ? undefined : (event) => {
           const text = event.clipboardData.getData('text/plain')
           if (!inputEnabled || !text) return
           event.preventDefault()
           send({ type: 'paste', text: text.slice(0, 4096), press: true })
         }}
-        onKeyUp={(event) => { if (event.key === 'Alt' && !pointer.current) setFingers({ pressed: false, points: [] }) }}
-        onKeyDown={(event) => {
+        onKeyUp={preview ? undefined : (event) => { if (event.key === 'Alt' && !pointer.current) setFingers({ pressed: false, points: [] }) }}
+        onKeyDown={preview ? undefined : (event) => {
           if (event.key === 'Escape') { event.preventDefault(); releasePointer(); event.currentTarget.blur(); return }
           if (!inputEnabled || document.activeElement !== event.currentTarget) return
           // ⌘V falls through to the paste event so the host clipboard reaches the simulator.
@@ -326,9 +447,72 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           }
           if (event.metaKey && event.shiftKey && event.code === 'KeyH') { press('home'); return }
           if (event.metaKey && event.code === 'KeyL') { press('lock'); return }
+          if (event.metaKey && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) { void rotate(event.code === 'ArrowRight' ? 1 : -1); return }
+          if (event.metaKey && event.shiftKey && event.code === 'KeyA') { void deviceAction({ action: 'appearance', value: 'toggle' }); return }
           send({ type: 'key', code: event.code, modifiers: [event.shiftKey && 'shift', event.ctrlKey && 'control', event.altKey && 'option', event.metaKey && 'command'].filter(Boolean) })
         }} />
-      {fingers.points.map((finger, index) => <span key={index} className={`sim-live-finger${fingers.pressed ? ' is-pressed' : ''}`} style={{ left: finger.x, top: finger.y }} aria-hidden="true" />)}
+  const fingerMarkers = fingers.points.map((finger, index) => <span key={index} className={`sim-live-finger${fingers.pressed ? ' is-pressed' : ''}`} style={{ left: finger.x, top: finger.y }} aria-hidden="true" />)
+  if (preview) return snapshot ? null : <>{liveCanvas}{fingerMarkers}</>
+  return <div className="sim-live">
+    <div ref={toolbar} className="sims-actions sim-live-toolbar">
+      <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
+      <button type="button" disabled={!inputEnabled} aria-label="Home" title="Home (⌘⇧H)" onClick={() => press('home')}><Home aria-hidden="true" /></button>
+      <button type="button" disabled={!inputEnabled} aria-label="App Switcher" title="App Switcher" onClick={() => press('app-switcher')}><PanelsTopLeft aria-hidden="true" /></button>
+      <button type="button" disabled={!inputEnabled} aria-label="Lock" title="Lock (⌘L)" onClick={() => press('lock')}><Lock aria-hidden="true" /></button>
+      <button type="button" disabled={snapshot ? !image : !ready} aria-label="Screenshot" title="Save an image of the current screen" onClick={saveScreenshot}><Camera aria-hidden="true" /></button>
+      <button type="button" disabled={!connected || busy.has('orientation')} aria-label="Rotate right" title="Rotate right (⌘→)" onClick={() => void rotate(1)}><RotateCw aria-hidden="true" /></button>
+      <button type="button" className={`sim-live-record${recording.recording ? ' is-recording' : ''}`} disabled={!recording.recording && (!inputEnabled || !recording.available)} aria-label={recording.recording ? 'Stop recording' : 'Record'} aria-pressed={recording.recording}
+        title={`${recording.recording ? 'Stop and save recording' : 'Record live video'}${orientation !== 'portrait' ? ' (captures unrotated canvas pixels)' : ''}`} onClick={recording.toggle}><Circle aria-hidden="true" />{recording.recording ? <span>{recording.elapsed}</span> : null}</button>
+      <button type="button" disabled={!connected || busy.has('appearance')} aria-label="Toggle Light/Dark" title="Toggle Light/Dark (⌘⇧A)" onClick={() => void deviceAction({ action: 'appearance', value: 'toggle' })}><SunMoon aria-hidden="true" /></button>
+      <button ref={urlButton} type="button" disabled={!connected || busy.has('open-url')} aria-label="Open URL" title="Open URL / deep link" aria-expanded={popover === 'url'} onClick={() => popover === 'url' ? closePopover() : setPopover('url')}><Link aria-hidden="true" /></button>
+      <button ref={moreButton} type="button" aria-label="More" title="More" aria-haspopup="menu" aria-expanded={popover === 'more'} onClick={() => popover === 'more' ? closePopover() : setPopover('more')}><MoreHorizontal aria-hidden="true" /></button>
+      {popover === 'url' ? <form className="sim-live-popover sim-live-url" onSubmit={(event) => {
+        event.preventDefault()
+        if (!url || busy.has('open-url') || !connected) return
+        void perform('open-url', async () => { await api.action(udid, { action: 'open-url', url }); closePopover() })
+      }}>
+        <label htmlFor={`${schemesId}-url`}>Open URL / deep link</label>
+        <input id={`${schemesId}-url`} autoFocus type="text" value={url} maxLength={2048} list={schemesId} placeholder="myapp://" disabled={busy.has('open-url')} onChange={(event) => setUrl(event.target.value)} />
+        <datalist id={schemesId}>{schemes.map((scheme) => <option key={scheme} value={`${scheme}://`} />)}</datalist>
+        <button type="submit" disabled={!connected || !url || busy.has('open-url')}>Open</button>
+      </form> : null}
+      {popover === 'more' ? <div className="sim-live-popover sim-live-menu" role="menu" aria-label="Device actions" onKeyDown={(event) => {
+        const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')]
+        const index = items.indexOf(document.activeElement as HTMLButtonElement)
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault()
+          items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+        } else if (event.key === 'Tab') setPopover(null)
+      }}>
+        {['up', 'down'].map((direction) => <button key={direction} type="button" role="menuitem" disabled={!inputEnabled} onClick={() => { press(`volume-${direction}`); closePopover() }}>Volume {direction}</button>)}
+        {([-1, 1] as const).map((direction) => <button key={direction} type="button" role="menuitem" disabled={!connected || busy.has('orientation')} onClick={() => { closePopover(); void rotate(direction) }}>Rotate {direction === 1 ? 'right' : 'left'}</button>)}
+        {([
+          ['Shake', { action: 'shake' }],
+          ['Clean status bar', { action: 'status-bar', mode: 'clean' }], ['Reset status bar', { action: 'status-bar', mode: 'clear' }],
+          ['Text size larger', { action: 'text-size', step: 1 }], ['Text size smaller', { action: 'text-size', step: -1 }],
+          ['Increase contrast on', { action: 'contrast', enabled: true }], ['Increase contrast off', { action: 'contrast', enabled: false }],
+          ['Reduce motion on', { action: 'reduce-motion', enabled: true }], ['Reduce motion off', { action: 'reduce-motion', enabled: false }],
+          ...SIM_NETWORK_PROFILES.map((profile): [string, SimAction] => [`Network: ${profile}`, { action: 'network', profile }]),
+          ['Repair input', { action: 'heal' }],
+        ] satisfies Array<[string, SimAction]>).map(([label, body]) => <button key={label} type="button" role="menuitem" disabled={!connected || busy.has(body.action)} onClick={() => {
+          if (body.action === 'heal' && !window.confirm("This restarts the simulator's home screen")) return
+          closePopover(); void deviceAction(body)
+        }}>{label}</button>)}
+        <p>Network conditions need an app relaunch and affect URLSession traffic.</p>
+        <button type="button" role="menuitem" disabled={!connected || busy.has('open')} onClick={() => {
+          closePopover(); void perform('open', async () => {
+            const result = await api.open(udid)
+            if (result.raised === false) setReason(result.reason ?? 'Simulator activated')
+          })
+        }}>Open in Simulator</button>
+      </div> : null}
+    </div>
+    <div ref={screen} className="sim-live-screen">
+      {snapshot ? (image ? <img src={image} style={screenStyle} alt="Simulator snapshot" onLoad={(event) => {
+        const { naturalWidth: width, naturalHeight: height } = event.currentTarget
+        if (width && height) setNativeSize({ width, height })
+      }} /> : <span className="sims-empty">Waiting for snapshot…</span>) : null}
+      {liveCanvas}{fingerMarkers}
     </div>
     {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
     {reason ? <p className="sims-error" role="status">{reason}</p> : null}

@@ -130,16 +130,18 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
   }
 
   return <article className="sims-card" ref={card} aria-label={name}>
-    <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}
-      onPointerEnter={(event) => { if (event.pointerType === 'mouse') onHover(true) }} onPointerLeave={() => onHover(false)}>
-      {image ? <img src={image.url} alt={`${name} snapshot`} />
-        : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
+    <div className="sims-snapshot" onPointerEnter={(event) => { if (event.pointerType === 'mouse') onHover(true) }} onPointerLeave={() => onHover(false)}>
+      <button type="button" className="sims-snapshot-control" onClick={(event) => { if (hover !== 'live' || !streaming) onLive(event.currentTarget) }} aria-label={`View ${name} live`}>
+        {image ? <img src={image.url} alt={`${name} snapshot`} />
+          : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
+      </button>
       {/* The live canvas sits over the snapshot, which stays visible until video arrives or if it cannot start. */}
       {hover === 'live' && visible ? <SimLiveView udid={sim.udid} token={token} api={api} preview onStreaming={setStreaming} /> : null}
       {hover === 'arming' ? <span className="sims-hover-ring" aria-hidden="true"><svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" /></svg></span> : null}
       {streaming ? <span className="sims-snapshot-live">live</span>
         : image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
-    </button>
+      <button type="button" className="sims-expand" aria-label={`Open ${name} live view`} onClick={(event) => onLive(event.currentTarget)}>↗</button>
+    </div>
     <div className="sims-name">{name}</div>
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
     {ended && !formerGroup ? <div className="sims-last">last: {ended.sessionName}{ended.task ? ` · ${ended.task}` : ''}</div> : null}
@@ -175,6 +177,7 @@ export function SimsView({ token }: { token: string }) {
   // attached at a time, and it detaches HOVER_IDLE_MS after the mouse leaves unless it returns.
   const [hover, setHover] = useState<{ arming?: string; live?: string }>({})
   const hoverTimers = useRef<{ arm?: number; idle?: number }>({})
+  // Cards are keyed by group and device: an ended simulator appears twice and only the hovered copy attaches.
   const onHover = (udid: string, hovered: boolean) => {
     window.clearTimeout(hoverTimers.current.arm)
     if (!hovered) {
@@ -314,7 +317,7 @@ export function SimsView({ token }: { token: string }) {
         group.sims.some((sim) => sim.lease) ? `${group.sims.filter((sim) => sim.lease).length} leased` : '',
         group.sims.some((sim) => !sim.lease && sim.endedLease) ? `${group.sims.filter((sim) => !sim.lease && sim.endedLease).length} ended` : '',
       ].filter(Boolean).join(' · ')}</span></header> : null}
-      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} token={token} hover={hover.live === sim.udid ? 'live' : hover.arming === sim.udid ? 'arming' : undefined} onHover={(hovered) => onHover(sim.udid, hovered)} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
+      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} token={token} hover={hover.live === `${group.key}:${sim.udid}` ? 'live' : hover.arming === `${group.key}:${sim.udid}` ? 'arming' : undefined} onHover={(hovered) => onHover(`${group.key}:${sim.udid}`, hovered)} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
 }

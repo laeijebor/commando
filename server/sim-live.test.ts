@@ -116,7 +116,8 @@ describe('gesture and endpoint validation', () => {
   it('allows precisely the supported gesture types and rejects invalid fields', () => {
     expect(simGesture({ type: 'touch2-down', x1: 1, y1: 2, x2: 3, y2: 4 }, 390, 844)).toMatchObject({ width: 390, height: 844 })
     for (const value of [null, [], { type: 'force_idr' }, { type: 'touch1-up', x: 1 }, { type: 'scroll', deltaX: Infinity }, { type: 'scroll', deltaY: '3' }, { type: 'key', code: 'KeyA', modifiers: ['bad'] }, { type: 'type', text: 1 }, { type: 'button', button: 'siri' }]) expect(simGesture(value, 390, 844)).toBeNull()
-    for (const value of [{ type: 'scroll', deltaY: 3 }, { type: 'type', text: 'hello' }, { type: 'button', button: 'lock' }]) expect(simGesture(value, 390, 844)).not.toBeNull()
+    expect(simGesture({ type: 'scroll', deltaY: 3 }, 390, 844)).toBeNull()
+    for (const value of [{ type: 'type', text: 'hello' }, { type: 'button', button: 'lock' }]) expect(simGesture(value, 390, 844)).not.toBeNull()
   })
   it('routes the API endpoint and its development proxy alias without query auth', () => {
     expect(simLiveUdid(`/api/sims/${A.toLowerCase()}/live`)).toBe(A)
