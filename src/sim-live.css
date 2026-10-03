@@ -1,6 +1,6 @@
 .sim-live { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface-deep); color: var(--text); }
 .sim-live-toolbar { position: relative; flex: none; flex-wrap: nowrap; align-items: center; gap: 3px; margin: 0; padding: 6px; }
-.sim-live-toolbar > .sims-pill { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sim-live-toolbar > .sims-pill { flex: none; margin-right: auto; }
 .sim-live-toolbar > button { display: flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 4px; border-radius: 5px; border-color: var(--border); color: var(--text); }
 .sim-live-toolbar > button svg { width: 16px; height: 16px; }
 .sim-live-popover { position: absolute; z-index: 2; top: 100%; right: 6px; width: min(290px, calc(100% - 12px)); box-sizing: border-box; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
