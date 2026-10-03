@@ -4,7 +4,7 @@ import type { SimElement, SimSourceResult } from '../shared/sim-inspector'
 import type { SimOrientation } from '../shared/sim-actions'
 import { nativeToScreen, screenSize, type ScreenSize } from './simGeometry'
 
-const frameText = ({ x, y, width, height }: SimElement['frame']) => `x=${x}, y=${y}, width=${width}, height=${height}`
+const frameText = (frame: SimElement['frame']) => (['x', 'y', 'width', 'height'] as const).map((key) => `${key}=${Math.round(frame[key] * 10) / 10}`).join(', ')
 const location = (item: { file?: string; line?: number }) => item.file ? `${item.file}${item.line !== undefined ? `:${item.line}` : ''}` : ''
 export function inspectorCopyText(element: SimElement, source: SimSourceResult | null): string {
   return [`Role: ${element.role ?? ''}`, `Label: ${element.label ?? ''}`, `Identifier: ${element.identifier ?? ''}`,
