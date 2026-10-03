@@ -177,6 +177,7 @@ export function SimsView({ token }: { token: string }) {
   // attached at a time, and it detaches HOVER_IDLE_MS after the mouse leaves unless it returns.
   const [hover, setHover] = useState<{ arming?: string; live?: string }>({})
   const hoverTimers = useRef<{ arm?: number; idle?: number }>({})
+  // Cards are keyed by group and device: an ended simulator appears twice and only the hovered copy attaches.
   const onHover = (udid: string, hovered: boolean) => {
     window.clearTimeout(hoverTimers.current.arm)
     if (!hovered) {
@@ -316,7 +317,7 @@ export function SimsView({ token }: { token: string }) {
         group.sims.some((sim) => sim.lease) ? `${group.sims.filter((sim) => sim.lease).length} leased` : '',
         group.sims.some((sim) => !sim.lease && sim.endedLease) ? `${group.sims.filter((sim) => !sim.lease && sim.endedLease).length} ended` : '',
       ].filter(Boolean).join(' · ')}</span></header> : null}
-      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} token={token} hover={hover.live === sim.udid ? 'live' : hover.arming === sim.udid ? 'arming' : undefined} onHover={(hovered) => onHover(sim.udid, hovered)} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
+      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} token={token} hover={hover.live === `${group.key}:${sim.udid}` ? 'live' : hover.arming === `${group.key}:${sim.udid}` ? 'arming' : undefined} onHover={(hovered) => onHover(`${group.key}:${sim.udid}`, hovered)} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
 }
