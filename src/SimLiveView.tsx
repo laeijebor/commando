@@ -3,6 +3,10 @@ import { createSimsApi, type SimsApiClient } from './simsApi'
 import './sims-view.css'
 import './sim-live.css'
 
+type Point = { x: number; y: number }
+/** Height in points of the home-indicator band at the bottom of the screen. */
+const EDGE_BAND = 20
+
 /** Exactly one tile is active in App; the wall mounts only its focused overlay. */
 export function SimLiveView({ udid, token, active = true, connected = true, api: providedApi }: {
   udid: string; token: string; active?: boolean; connected?: boolean; api?: SimsApiClient
@@ -11,7 +15,11 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
   const canvas = useRef<HTMLCanvasElement>(null)
   const socket = useRef<WebSocket | null>(null)
   const dimensions = useRef({ width: 0, height: 0 })
-  const pointer = useRef<{ id: number; x: number; y: number } | null>(null)
+  // `second` is set for an Option-held two-finger gesture; `offset` is the vector between the fingers.
+  const pointer = useRef<{ id: number; x: number; y: number; second?: Point; edge?: 'bottom' } | null>(null)
+  const hover = useRef<Point | null>(null)
+  const offset = useRef<Point>({ x: 0, y: 0 })
+  const [fingers, setFingers] = useState<{ pressed: boolean; points: Point[] }>({ pressed: false, points: [] })
   const moveFrame = useRef<number | null>(null)
   const [snapshot, setSnapshot] = useState(!active || typeof VideoDecoder === 'undefined')
   const [image, setImage] = useState<string>()
@@ -28,8 +36,9 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
     if (moveFrame.current !== null) { cancelAnimationFrame(moveFrame.current); moveFrame.current = null }
     const held = pointer.current
     if (!held) return
-    send({ type: 'touch1-up', x: held.x, y: held.y })
+    send(held.second ? { type: 'touch2-up', x1: held.x, y1: held.y, x2: held.second.x, y2: held.second.y } : { type: 'touch1-up', x: held.x, y: held.y, edge: held.edge })
     pointer.current = null
+    setFingers({ pressed: false, points: [] })
     if (canvas.current?.hasPointerCapture?.(held.id)) canvas.current.releasePointerCapture(held.id)
   }
 
@@ -190,17 +199,49 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
     return () => { controller.abort(); window.clearInterval(timer) }
   }, [snapshot, visible, api, udid])
 
+  const clamp = ({ x, y }: Point): Point => ({ x: Math.max(0, Math.min(dimensions.current.width, x)), y: Math.max(0, Math.min(dimensions.current.height, y)) })
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
-    return { x: Math.max(0, Math.min(dimensions.current.width, (event.clientX - rect.left) / rect.width * dimensions.current.width)),
-      y: Math.max(0, Math.min(dimensions.current.height, (event.clientY - rect.top) / rect.height * dimensions.current.height)) }
+    return clamp({ x: (event.clientX - rect.left) / rect.width * dimensions.current.width, y: (event.clientY - rect.top) / rect.height * dimensions.current.height })
+  }
+  /** Like Simulator.app: the second finger mirrors the first through the screen centre; Shift moves both in parallel. */
+  const secondFinger = (first: Point, parallel: boolean): Point => {
+    if (!parallel) offset.current = { x: dimensions.current.width - 2 * first.x, y: dimensions.current.height - 2 * first.y }
+    return clamp({ x: first.x + offset.current.x, y: first.y + offset.current.y })
+  }
+  /** Finger markers are positioned in viewport pixels so they need no wrapper sized to the canvas. */
+  const showFingers = (pressed: boolean, points: Point[]) => {
+    const rect = canvas.current?.getBoundingClientRect()
+    const { width, height } = dimensions.current
+    if (!rect || !width || !height) return
+    setFingers({ pressed, points: points.map(({ x, y }) => ({ x: Math.round(rect.left + x / width * rect.width), y: Math.round(rect.top + y / height * rect.height) })) })
   }
   const inputEnabled = active && !snapshot && ready
+  const press = (button: string) => send({ type: 'button', button })
+  const saveScreenshot = () => {
+    const save = (url: string) => {
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `simulator-${udid.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+      link.click()
+    }
+    if (snapshot) { if (image) save(image); return }
+    canvas.current?.toBlob((blob) => {
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      save(url)
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+    }, 'image/png')
+  }
   return <div className="sim-live">
     <div className="sims-actions sim-live-toolbar">
       <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
-      <button type="button" disabled={!inputEnabled} onClick={() => send({ type: 'button', button: 'home' })}>Home</button>
-      <button type="button" disabled={!inputEnabled} onClick={() => send({ type: 'button', button: 'lock' })}>Lock</button>
+      <button type="button" disabled={!inputEnabled} title="Home (⌘⇧H)" onClick={() => press('home')}>Home</button>
+      <button type="button" disabled={!inputEnabled} title="App switcher" onClick={() => press('app-switcher')}>Switcher</button>
+      <button type="button" disabled={!inputEnabled} title="Lock (⌘L)" onClick={() => press('lock')}>Lock</button>
+      <button type="button" disabled={!inputEnabled} aria-label="Volume down" title="Volume down" onClick={() => press('volume-down')}>Vol −</button>
+      <button type="button" disabled={!inputEnabled} aria-label="Volume up" title="Volume up" onClick={() => press('volume-up')}>Vol +</button>
+      <button type="button" disabled={snapshot ? !image : !ready} title="Save a PNG of the current screen" onClick={saveScreenshot}>Screenshot</button>
       <button type="button" onClick={() => {
         void api.open(udid).then((result) => { if (result.raised === false) setReason(result.reason ?? 'Simulator activated') }).catch((error: unknown) => setReason(error instanceof Error ? error.message : 'Unable to open Simulator'))
       }}>Open Simulator</button>
@@ -214,34 +255,69 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
           event.preventDefault(); event.currentTarget.focus()
           const position = point(event)
           if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return
-          pointer.current = { id: event.pointerId, ...position }
+          const second = event.altKey ? secondFinger(position, event.shiftKey) : undefined
+          pointer.current = { id: event.pointerId, ...position, second }
           event.currentTarget.setPointerCapture(event.pointerId)
-          send({ type: 'touch1-down', ...position })
+          // A press in the home-indicator band is an edge gesture, so iOS runs its live home and app-switcher animation.
+          const edge = !second && position.y >= dimensions.current.height - EDGE_BAND ? 'bottom' : undefined
+          pointer.current.edge = edge
+          send(second ? { type: 'touch2-down', x1: position.x, y1: position.y, x2: second.x, y2: second.y } : { type: 'touch1-down', ...position, edge })
+          showFingers(true, second ? [position, second] : [position])
         }}
         onPointerMove={(event) => {
-          if (!pointer.current || pointer.current.id !== event.pointerId) return
           const position = point(event)
           if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return
-          pointer.current = { id: event.pointerId, ...position }
+          if (!pointer.current) {
+            // Preview where both fingers will land while Option is held.
+            hover.current = position
+            if (inputEnabled && event.altKey) showFingers(false, [position, secondFinger(position, event.shiftKey)])
+            else if (fingers.points.length) setFingers({ pressed: false, points: [] })
+            return
+          }
+          if (pointer.current.id !== event.pointerId) return
+          const second = pointer.current.second ? secondFinger(position, event.shiftKey) : undefined
+          pointer.current = { ...pointer.current, ...position, second }
+          showFingers(true, second ? [position, second] : [position])
           if (moveFrame.current === null) moveFrame.current = requestAnimationFrame(() => {
             moveFrame.current = null
-            if (pointer.current) send({ type: 'touch1-move', x: pointer.current.x, y: pointer.current.y })
+            const held = pointer.current
+            if (held) send(held.second ? { type: 'touch2-move', x1: held.x, y1: held.y, x2: held.second.x, y2: held.second.y } : { type: 'touch1-move', x: held.x, y: held.y, edge: held.edge })
           })
         }}
         onPointerUp={(event) => {
           if (pointer.current?.id !== event.pointerId) return
           const position = point(event)
-          if (Number.isFinite(position.x) && Number.isFinite(position.y)) pointer.current = { id: event.pointerId, ...position }
+          if (Number.isFinite(position.x) && Number.isFinite(position.y)) {
+            pointer.current = { ...pointer.current, ...position, second: pointer.current.second ? secondFinger(position, event.shiftKey) : undefined }
+          }
           releasePointer()
         }}
-        onPointerCancel={releasePointer} onPointerLeave={releasePointer} onLostPointerCapture={releasePointer}
+        onPointerCancel={releasePointer} onLostPointerCapture={releasePointer}
+        onPointerLeave={() => { hover.current = null; releasePointer() }}
+        onPaste={(event) => {
+          const text = event.clipboardData.getData('text/plain')
+          if (!inputEnabled || !text) return
+          event.preventDefault()
+          send({ type: 'paste', text: text.slice(0, 4096), press: true })
+        }}
+        onKeyUp={(event) => { if (event.key === 'Alt' && !pointer.current) setFingers({ pressed: false, points: [] }) }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') { event.preventDefault(); releasePointer(); event.currentTarget.blur(); return }
           if (!inputEnabled || document.activeElement !== event.currentTarget) return
+          // ⌘V falls through to the paste event so the host clipboard reaches the simulator.
+          if (event.metaKey && event.code === 'KeyV') return
           event.preventDefault(); event.stopPropagation()
+          if (event.key === 'Alt') {
+            if (hover.current && !pointer.current) showFingers(false, [hover.current, secondFinger(hover.current, event.shiftKey)])
+            return
+          }
+          if (event.metaKey && event.shiftKey && event.code === 'KeyH') { press('home'); return }
+          if (event.metaKey && event.code === 'KeyL') { press('lock'); return }
           send({ type: 'key', code: event.code, modifiers: [event.shiftKey && 'shift', event.ctrlKey && 'control', event.altKey && 'option', event.metaKey && 'command'].filter(Boolean) })
         }} />
+      {fingers.points.map((finger, index) => <span key={index} className={`sim-live-finger${fingers.pressed ? ' is-pressed' : ''}`} style={{ left: finger.x, top: finger.y }} aria-hidden="true" />)}
     </div>
+    {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
     {reason ? <p className="sims-error" role="status">{reason}</p> : null}
   </div>
 }

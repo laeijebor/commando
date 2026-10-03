@@ -5,6 +5,9 @@
 .sim-live-screen canvas { touch-action: none; outline: 2px solid transparent; outline-offset: 2px; }
 .sim-live-screen canvas[hidden] { display: none; }
 .sim-live-screen canvas.is-focused { outline-color: var(--accent); }
+.sim-live-finger { position: fixed; z-index: 101; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; border: 1.5px solid rgb(255 255 255 / 0.85); background: rgb(120 120 128 / 0.35); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); pointer-events: none; }
+.sim-live-finger.is-pressed { background: rgb(120 120 128 / 0.65); transform: scale(0.88); }
+.sim-live-hint { flex: none; margin: 0 8px 6px; color: var(--muted); opacity: 0.7; font-size: 11px; text-align: center; }
 .sim-live > .sims-error { flex: none; margin: 4px 8px 8px; }
 .sims-live-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--surface-deep); }
 .sims-live-dialog { display: flex; flex-direction: column; height: 100%; width: min(100%, 720px); min-height: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
