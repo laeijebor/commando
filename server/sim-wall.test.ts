@@ -6,6 +6,7 @@ import { PassThrough, Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SimLeaseRegistry, SIM_LEASE_IDLE_MS } from './sim-leases.js'
 import { SimWallApi, type SimWallRunner } from './sim-wall.js'
+import { SIM_TEXT_SIZES } from '../shared/sim-actions.js'
 
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
 const B = 'BBBBBBBB-2222-2222-2222-222222222222'
@@ -40,8 +41,8 @@ function setup(override?: SimWallRunner, cacheDirectory?: string) {
   const api = new SimWallApi({ registry, paneExists: (pane) => pane !== '%9', runner, now: () => now, cacheDirectory })
   return { api, registry, runner, devices, advance: (ms: number) => { now += ms } }
 }
-async function call(api: SimWallApi, path = '', method = 'GET') {
-  const request = Readable.from([]) as IncomingMessage
+async function call(api: SimWallApi, path = '', method = 'GET', body?: unknown) {
+  const request = Readable.from(body === undefined ? [] : [typeof body === 'string' ? body : JSON.stringify(body)]) as IncomingMessage
   request.method = method
   const response = new PassThrough() as unknown as ServerResponse
   const chunks: Buffer[] = []
@@ -54,6 +55,131 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
 }
 
 describe('SimWallApi', () => {
+  it.each([
+    [{ action: 'appearance', value: 'light' }, 'baguette', ['interface', 'appearance', '--udid', A, 'light']],
+    [{ action: 'appearance', value: 'dark' }, 'baguette', ['interface', 'appearance', '--udid', A, 'dark']],
+    [{ action: 'shake' }, 'baguette', ['shake', '--udid', A]],
+    [{ action: 'heal' }, 'baguette', ['heal', '--udid', A]],
+    [{ action: 'status-bar', mode: 'clean' }, 'baguette', ['status-bar', 'override', '--udid', A, '--time', '9:41', '--battery-state', 'charged', '--battery-level', '100', '--cellular-mode', 'active', '--cellular-bars', '4', '--wifi-mode', 'active', '--wifi-bars', '3', '--data-network', 'wifi']],
+    [{ action: 'status-bar', mode: 'clear' }, 'baguette', ['status-bar', 'clear', '--udid', A]],
+    [{ action: 'open-url', url: 'myapp://profile/42?q=";$(bad)`' }, 'baguette', ['openurl', '--udid', A, '--', 'myapp://profile/42?q=";$(bad)`']],
+    [{ action: 'open-url', url: 'mailto:someone@example.com' }, 'baguette', ['openurl', '--udid', A, '--', 'mailto:someone@example.com']],
+    ...SIM_TEXT_SIZES.map((value): [unknown, string, string[]] => [{ action: 'text-size', value }, 'baguette', ['interface', 'text-size', '--udid', A, value]]),
+    [{ action: 'text-size', step: 1 }, 'baguette', ['interface', 'text-size', '--udid', A, 'increment']],
+    [{ action: 'text-size', step: -1 }, 'baguette', ['interface', 'text-size', '--udid', A, 'decrement']],
+    ...[true, false].flatMap((enabled): Array<[unknown, string, string[]]> => [
+      [{ action: 'contrast', enabled }, 'baguette', ['interface', 'contrast', '--udid', A, enabled ? 'enabled' : 'disabled']],
+      [{ action: 'reduce-motion', enabled }, 'xcrun', ['simctl', 'spawn', A, 'defaults', 'write', 'com.apple.Accessibility', 'ReduceMotionEnabled', '-bool', String(enabled)]],
+    ]),
+    [{ action: 'network', profile: 'off' }, 'baguette', ['network', 'clear', '--udid', A]],
+    [{ action: 'network', profile: 'offline' }, 'baguette', ['network', 'set', '--udid', A, '--offline']],
+    [{ action: 'network', profile: '3g' }, 'baguette', ['network', 'set', '--udid', A, '--profile', '3g']],
+    [{ action: 'network', profile: 'lte' }, 'baguette', ['network', 'set', '--udid', A, '--profile', 'lte']],
+    [{ action: 'network', profile: 'lossy' }, 'baguette', ['network', 'set', '--udid', A, '--latency', '200', '--loss', '10']],
+  ])('dispatches validated action %j with argv and a command deadline', async (body, command, args) => {
+    const { api, runner } = setup()
+    const result = await call(api, `/${A.toLowerCase()}/action`, 'POST', body)
+    expect(result.status).toBe(200)
+    expect(result.json()).toMatchObject({ ok: true })
+    expect(runner).toHaveBeenLastCalledWith(command, args, { timeout: 10_000 })
+  })
+
+  it.each(['light', 'dark', 'unknown'])('reads appearance before toggling from %s', async (current) => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => command === 'baguette' ? `${current}\n` : baseline.runner(command, args))
+    const result = await call(api, `/${A}/action`, 'POST', { action: 'appearance', value: 'toggle' })
+    const calls = runner.mock.calls.filter(([command]) => command === 'baguette')
+    expect(calls[0]).toEqual(['baguette', ['interface', 'appearance', '--udid', A], { timeout: 10_000 }])
+    if (current === 'unknown') { expect(result.status).toBe(500); expect(calls).toHaveLength(1) }
+    else {
+      const value = current === 'light' ? 'dark' : 'light'
+      expect(result.json()).toEqual({ ok: true, value })
+      expect(calls[1][1]).toEqual(['interface', 'appearance', '--udid', A, value])
+    }
+  })
+
+  it.each([
+    null, [], 42, 'malformed', {}, { action: 'rotate' }, { action: 'shake', args: ['--bad'] }, { action: 'heal', extra: true },
+    { action: 'appearance' }, { action: 'appearance', value: 'system' }, { action: 'appearance', value: true },
+    { action: 'status-bar', mode: 'override' }, { action: 'status-bar', mode: ['clean'] },
+    { action: 'text-size' }, { action: 'text-size', value: 'huge' }, { action: 'text-size', value: 1 },
+    { action: 'text-size', step: '1' }, { action: 'text-size', step: 0 }, { action: 'text-size', value: 'large', step: 1 },
+    { action: 'contrast', enabled: 'true' }, { action: 'reduce-motion', enabled: 1 }, { action: 'reduce-motion' },
+    { action: 'network', profile: 'unknown' }, { action: 'network', profile: '3g', latency: 100 },
+    { action: 'open-url', url: 123 }, { action: 'open-url', url: '' }, { action: 'open-url', url: 'noscheme' },
+    { action: 'open-url', url: '--help' }, { action: 'open-url', url: '-bad://host' }, { action: 'open-url', url: 'https://[' },
+    { action: 'open-url', url: 'myapp://a\u0000b' }, { action: 'open-url', url: `myapp:${'x'.repeat(2043)}` },
+    { action: 'shake', padding: 'x'.repeat(16 * 1024) },
+  ])('rejects malformed or unexpected action parameters: %j', async (body) => {
+    const { api, runner } = setup()
+    expect((await call(api, `/${A}/action`, 'POST', body)).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it('validates new endpoint UUIDs, methods and boot state, and accepts the URL length boundary', async () => {
+    const { api, runner, devices } = setup()
+    expect((await call(api, '/bad/action', 'POST', { action: 'shake' })).status).toBe(400)
+    expect((await call(api, `/${A}/action`)).status).toBe(405)
+    expect((await call(api, `/${A}/schemes`, 'POST')).status).toBe(405)
+    expect((await call(api, '/bad/schemes')).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+    expect((await call(api, `/${A}/action`, 'POST', { action: 'open-url', url: `myapp:${'x'.repeat(2042)}` })).status).toBe(200)
+    const stopped = setup()
+    stopped.devices[0].state = 'Shutdown'
+    expect((await call(stopped.api, `/${A}/action`, 'POST', { action: 'shake' })).status).toBe(404)
+    expect((await call(stopped.api, `/${A}/schemes`)).status).toBe(404)
+    expect(stopped.runner.mock.calls.some(([command]) => command === 'baguette')).toBe(false)
+    expect(devices[0].state).toBe('Booted')
+  })
+
+  it('summarises stderr and reports timeouts without leaving a pending deadline', async () => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('exec failed'), { stderr: `permission denied\n${'x'.repeat(1000)}` })
+      return baseline.runner(command, args)
+    })
+    const failure = await call(api, `/${A}/action`, 'POST', { action: 'shake' })
+    expect(failure.status).toBe(500)
+    expect(failure.json().error).toMatch(/^baguette failed: permission denied /)
+    expect(failure.json().error.length).toBeLessThan(530)
+    const hung = setup(async (command, args) => command === 'baguette' ? new Promise(() => {}) : baseline.runner(command, args))
+    await hung.api.list()
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/action`, 'POST', { action: 'shake' })
+      await vi.advanceTimersByTimeAsync(10_000)
+      const result = await request
+      expect(result.status).toBe(504)
+      expect(result.json().error).toContain('timed out after 10 seconds')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each([{ killed: true }, { code: 'ETIMEDOUT' }])('reports native subprocess timeouts: %j', async (error) => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('killed'), error)
+      return baseline.runner(command, args)
+    })
+    expect((await call(api, `/${A}/action`, 'POST', { action: 'shake' })).status).toBe(504)
+  })
+
+  it('returns unique URL scheme suggestions from Baguette JSON', async () => {
+    const baseline = setup()
+    const { api, runner } = setup(async (command, args) => command === 'baguette' ? JSON.stringify([
+      { scheme: 'myapp', url: 'myapp://', app: 'App', bundleId: 'com.app' }, { scheme: 'https' }, { scheme: 'myapp' },
+    ]) : baseline.runner(command, args))
+    const result = await call(api, `/${A}/schemes`)
+    expect(result.json()).toEqual({ schemes: ['https', 'myapp'] })
+    expect(runner).toHaveBeenLastCalledWith('baguette', ['schemes', '--udid', A, '--json'], { timeout: 10_000 })
+  })
+
+  it.each(['bad json', '{}', '[{"scheme":"--help"}]'])('surfaces invalid schemes output: %s', async (output) => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => command === 'baguette' ? output : baseline.runner(command, args))
+    expect((await call(api, `/${A}/schemes`)).status).toBe(500)
+  })
+
   it('marks booted pool cards and counts only Shutdown members not leased or reserved, including cached payloads', async () => {
     const directory = await cacheDirectory()
     const { api, registry, runner } = setup(undefined, directory)

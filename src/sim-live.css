@@ -1,5 +1,17 @@
 .sim-live { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface-deep); color: var(--text); }
-.sim-live-toolbar { flex: none; align-items: center; margin: 0; padding: 8px; }
+.sim-live-toolbar { position: relative; flex: none; flex-wrap: nowrap; align-items: center; gap: 3px; margin: 0; padding: 6px; }
+.sim-live-toolbar > .sims-pill { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sim-live-toolbar > button { display: flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 4px; border-radius: 5px; border-color: var(--border); color: var(--text); }
+.sim-live-toolbar > button svg { width: 16px; height: 16px; }
+.sim-live-popover { position: absolute; z-index: 2; top: 100%; right: 6px; width: min(290px, calc(100% - 12px)); box-sizing: border-box; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 4px 16px rgb(0 0 0 / .25); }
+.sim-live-menu { display: flex; flex-direction: column; gap: 2px; max-height: min(380px, 50vh); overflow-y: auto; }
+.sim-live-menu button { text-align: left; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; font-size: 11px; }
+.sim-live-menu button:focus-visible, .sim-live-menu button:hover:not(:disabled) { background: var(--surface); }
+.sim-live-menu p { margin: 4px 8px; font-size: 10px; color: var(--muted); }
+.sim-live-url { display: flex; flex-wrap: wrap; gap: 6px; }
+.sim-live-url label { width: 100%; font-size: 11px; color: var(--muted); }
+.sim-live-url input { flex: 1; min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-deep); color: var(--text); font: inherit; font-size: 12px; }
+.sim-live-url input:focus-visible { outline: 2px solid var(--accent); }
 .sim-live-screen { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 6px; overflow: hidden; }
 .sim-live-screen canvas, .sim-live-screen img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
 .sim-live-screen canvas { touch-action: none; outline: 2px solid transparent; outline-offset: 2px; }

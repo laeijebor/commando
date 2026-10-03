@@ -1,4 +1,5 @@
 import type { SimOpenResult, SimPoolSummary, SimWallDevice } from '../shared/protocol'
+import type { SimAction, SimActionResult } from '../shared/sim-actions'
 
 const LISTING_STORAGE_KEY = 'commando.sims-listing'
 export type CachedSimSnapshot = { url: string; at: number }
@@ -89,10 +90,11 @@ export function cacheSims(sims: SimWallDevice[], pool?: SimPoolSummary): void {
 }
 
 export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
-  const request = async (path: string, method: 'GET' | 'POST', signal?: AbortSignal) => {
+  const request = async (path: string, method: 'GET' | 'POST', signal?: AbortSignal, body?: SimAction) => {
     const response = await fetcher(`/api/sims${path}`, {
       method, signal, credentials: 'same-origin', cache: 'no-store',
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
     })
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { error?: string } | null
@@ -128,6 +130,8 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
     },
     slim: async (udid: string): Promise<void> => { await request(`/${encodeURIComponent(udid)}/slim`, 'POST') },
     open: async (udid: string): Promise<SimOpenResult> => (await request(`/${encodeURIComponent(udid)}/open`, 'POST')).json(),
+    action: async (udid: string, body: SimAction): Promise<SimActionResult> => (await request(`/${encodeURIComponent(udid)}/action`, 'POST', undefined, body)).json(),
+    schemes: async (udid: string): Promise<string[]> => (await (await request(`/${encodeURIComponent(udid)}/schemes`, 'GET')).json()).schemes,
   }
 }
 

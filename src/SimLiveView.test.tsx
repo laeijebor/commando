@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', Socket); vi.stubGlobal('VideoDecoder', Decoder)
   vi.stubGlobal('EncodedVideoChunk', class { constructor(readonly init: EncodedVideoChunkInit) { Object.assign(this, init) } })
   vi.stubGlobal('Image', vi.fn(function () { const image = document.createElement('img'); images.push(image); return image }))
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('jpeg')))
+  vi.stubGlobal('fetch', vi.fn(async (path) => new Response(String(path).endsWith('/snapshot.jpg') ? 'jpeg' : String(path).endsWith('/schemes') ? '{"schemes":["myapp","https"]}' : '{"ok":true}')))
   vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: draw } as unknown as CanvasRenderingContext2D)
   vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, right: 205, bottom: 442, width: 195, height: 422, toJSON: () => ({}) })
@@ -68,6 +68,133 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('SimLiveView', () => {
+  it('shows seven named icon buttons with tooltips and no toolbar in preview mode', () => {
+    const { container, unmount } = render(<SimLiveView udid={U} token="" />)
+    for (const name of ['Home', 'App Switcher', 'Lock', 'Screenshot', 'Toggle Light/Dark', 'Open URL', 'More']) {
+      const button = screen.getByRole('button', { name })
+      expect(button).toHaveAttribute('title')
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+      expect(button).toHaveTextContent('')
+    }
+    expect(container.querySelectorAll('.sim-live-toolbar > button')).toHaveLength(7)
+    expect(screen.getByRole('button', { name: 'Home' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Toggle Light/Dark' })).toBeEnabled()
+    unmount()
+    const preview = render(<SimLiveView udid={U} token="" preview />)
+    expect(preview.container.querySelector('.sim-live-toolbar')).toBeNull()
+  })
+
+  it('opens More, moves focus, closes on Escape/outside click and returns focus', () => {
+    render(<SimLiveView udid={U} token="" />); meta()
+    const more = screen.getByRole('button', { name: 'More' })
+    expect(more).toHaveAttribute('aria-haspopup', 'menu')
+    fireEvent.click(more)
+    expect(more).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('menuitem', { name: 'Volume up' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitem', { name: 'Volume down' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'End' })
+    expect(screen.getByRole('menuitem', { name: 'Open in Simulator' })).toHaveFocus()
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull(); expect(more).toHaveFocus()
+    fireEvent.click(more); fireEvent.pointerDown(document.body)
+    expect(screen.queryByRole('menu')).toBeNull(); expect(more).toHaveFocus()
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it.each([
+    ['Shake', { action: 'shake' }],
+    ['Clean status bar', { action: 'status-bar', mode: 'clean' }], ['Reset status bar', { action: 'status-bar', mode: 'clear' }],
+    ['Text size larger', { action: 'text-size', step: 1 }], ['Text size smaller', { action: 'text-size', step: -1 }],
+    ['Increase contrast on', { action: 'contrast', enabled: true }], ['Increase contrast off', { action: 'contrast', enabled: false }],
+    ['Reduce motion on', { action: 'reduce-motion', enabled: true }], ['Reduce motion off', { action: 'reduce-motion', enabled: false }],
+    ...['off', 'offline', '3g', 'lte', 'lossy'].map((profile): [string, unknown] => [`Network: ${profile}`, { action: 'network', profile }]),
+  ])('sends %s from More and closes it', async (name, body) => {
+    render(<SimLiveView udid={U} token="owner" />)
+    const more = screen.getByRole('button', { name: 'More' })
+    fireEvent.click(more); fireEvent.click(screen.getByRole('menuitem', { name: name as string })); await flush()
+    expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }))
+    expect(screen.queryByRole('menu')).toBeNull(); expect(more).toHaveFocus()
+  })
+
+  it('confirms Repair input and sends nothing on cancellation', async () => {
+    render(<SimLiveView udid={U} token="" />)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const more = screen.getByRole('button', { name: 'More' })
+    fireEvent.click(more); fireEvent.click(screen.getByRole('menuitem', { name: 'Repair input' }))
+    expect(confirm).toHaveBeenCalledWith("This restarts the simulator's home screen")
+    expect(fetch).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Repair input' })); await flush()
+    expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ body: '{"action":"heal"}' }))
+    expect(screen.queryByRole('menu')).toBeNull(); expect(more).toHaveFocus()
+  })
+
+  it('loads schemes on opening the URL popover, submits a custom deep link on Enter and returns focus', async () => {
+    render(<SimLiveView udid={U} token="owner" />)
+    expect(fetch).not.toHaveBeenCalled()
+    const open = screen.getByRole('button', { name: 'Open URL' })
+    fireEvent.click(open); await flush()
+    expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/schemes`, expect.objectContaining({ method: 'GET' }))
+    const input = screen.getByRole('combobox', { name: 'Open URL / deep link' })
+    expect(input).toHaveFocus()
+    expect(document.querySelector('datalist option[value="myapp://"]')).not.toBeNull()
+    fireEvent.change(input, { target: { value: 'custom://path?a=1' } })
+    // Submitting the form is the browser's default action for Enter in this field.
+    fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.submit(input.closest('form')!); await flush()
+    expect(fetch).toHaveBeenLastCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ body: '{"action":"open-url","url":"custom://path?a=1"}' }))
+    expect(screen.queryByRole('combobox')).toBeNull(); expect(open).toHaveFocus()
+    fireEvent.click(open); await flush(); fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
+    expect(screen.queryByRole('combobox')).toBeNull(); expect(open).toHaveFocus()
+  })
+
+  it('routes ⌘⇧A and the appearance icon to a single pending action, then shows errors', async () => {
+    let reject!: (error: Error) => void
+    vi.mocked(fetch).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail }))
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!
+    act(() => canvas.focus())
+    fireEvent.keyDown(canvas, { key: 'A', code: 'KeyA', metaKey: true, shiftKey: true })
+    const toggle = screen.getByRole('button', { name: 'Toggle Light/Dark' })
+    expect(toggle).toBeDisabled()
+    fireEvent.keyDown(canvas, { key: 'A', code: 'KeyA', metaKey: true, shiftKey: true })
+    fireEvent.click(toggle)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ body: '{"action":"appearance","value":"toggle"}' }))
+    expect(Socket.instances[0].envelopes()).toEqual([])
+    act(() => reject(new Error('baguette failed: input unavailable'))); await flush()
+    expect(screen.getByRole('status')).toHaveTextContent('input unavailable'); expect(toggle).toBeEnabled()
+    vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}'))
+    fireEvent.click(toggle); await flush()
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('disables both controls for a pending menu action while preserving other actions', async () => {
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementation(() => new Promise((done) => { resolve = done }))
+    render(<SimLiveView udid={U} token="" />)
+    const more = screen.getByRole('button', { name: 'More' })
+    fireEvent.click(more); fireEvent.click(screen.getByRole('menuitem', { name: 'Text size larger' })); fireEvent.click(more)
+    expect(screen.getByRole('menuitem', { name: 'Text size larger' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Text size smaller' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Shake' })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: 'Volume up' })).toBeDisabled()
+    act(() => resolve(new Response('{"ok":true}'))); await flush()
+    expect(screen.getByRole('menuitem', { name: 'Text size smaller' })).toBeEnabled()
+  })
+
+  it('keeps a failed URL open for correction and reports scheme-loading errors', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response('{"error":"Unable to load schemes"}', { status: 500 }))
+    render(<SimLiveView udid={U} token="" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open URL' })); await flush()
+    expect(screen.getByRole('status')).toHaveTextContent('Unable to load schemes')
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'bad-url' } })
+    vi.mocked(fetch).mockResolvedValue(new Response('{"error":"Invalid simulator action or parameters"}', { status: 400 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open' })); await flush()
+    expect(screen.getByRole('status')).toHaveTextContent('Invalid simulator action')
+    expect(screen.getByRole('combobox')).toHaveValue('bad-url')
+  })
+
   it('authenticates without URL tokens, configures AVCC, skips deltas before IDR, draws video and closes frame/decoder/socket', () => {
     const { unmount } = render(<SimLiveView udid={U} token="token/value &" />)
     const ws = Socket.instances[0]
@@ -145,12 +272,16 @@ describe('SimLiveView', () => {
     fireEvent.paste(canvas, { clipboardData: { getData: () => 'héllo' } })
     fireEvent.keyDown(canvas, { key: 'Alt', code: 'AltLeft', altKey: true })
     fireEvent.keyDown(canvas, { key: 'H', code: 'KeyH', metaKey: true, shiftKey: true }); fireEvent.keyDown(canvas, { key: 'l', code: 'KeyL', metaKey: true })
-    for (const label of ['Switcher', 'Vol −', 'Vol +']) fireEvent.click(screen.getByText(label))
+    fireEvent.click(screen.getByRole('button', { name: 'App Switcher' }))
+    for (const name of ['Volume down', 'Volume up']) {
+      fireEvent.click(screen.getByRole('button', { name: 'More' }))
+      fireEvent.click(screen.getByRole('menuitem', { name }))
+    }
     expect(ws.envelopes()).toEqual([{ type: 'paste', text: 'héllo', press: true }, ...['home', 'lock', 'app-switcher', 'volume-down', 'volume-up'].map((button) => ({ type: 'button', button }))])
     const toBlob = vi.fn((done: BlobCallback) => done(new Blob(['png'])))
     Object.defineProperty(canvas, 'toBlob', { value: toBlob })
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    fireEvent.click(screen.getByText('Screenshot'))
+    fireEvent.click(screen.getByRole('button', { name: 'Screenshot' }))
     expect(toBlob).toHaveBeenCalled(); expect(click).toHaveBeenCalled()
     expect(click.mock.contexts[0]).toHaveProperty('download', expect.stringMatching(/\.png$/))
   })
@@ -159,7 +290,7 @@ describe('SimLiveView', () => {
     vi.stubGlobal('VideoDecoder', undefined)
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     const fallback = render(<SimLiveView udid={U} token="" />); await flush()
-    fireEvent.click(screen.getByText('Screenshot'))
+    fireEvent.click(screen.getByRole('button', { name: 'Screenshot' }))
     expect(click.mock.contexts[0]).toHaveProperty('download', expect.stringMatching(/\.jpg$/))
     fallback.unmount(); vi.stubGlobal('VideoDecoder', Decoder)
     const onStreaming = vi.fn()
@@ -233,13 +364,13 @@ describe('SimLiveView', () => {
     expect(ws.envelopes().slice(4)).toEqual([{ type: 'touch1-down', x: 195, y: 422 }, { type: 'touch1-move', x: 195, y: 0 }, { type: 'touch1-up', x: 195, y: 0 }])
     ws.send.mockClear()
     act(() => canvas.focus()); expect(canvas).toHaveClass('is-focused')
-    fireEvent.keyDown(canvas, { key: 'A', code: 'KeyA', shiftKey: true, metaKey: true })
-    expect(ws.envelopes()).toEqual([{ type: 'key', code: 'KeyA', modifiers: ['shift', 'command'] }])
+    fireEvent.keyDown(canvas, { key: 'B', code: 'KeyB', shiftKey: true, metaKey: true })
+    expect(ws.envelopes()).toEqual([{ type: 'key', code: 'KeyB', modifiers: ['shift', 'command'] }])
     fireEvent.keyDown(canvas, { key: 'Escape', code: 'Escape' }); expect(canvas).not.toHaveFocus(); expect(canvas).not.toHaveClass('is-focused')
     fireEvent.keyDown(canvas, { key: 'b', code: 'KeyB' }); expect(ws.envelopes()).toHaveLength(1)
-    fireEvent.click(screen.getByText('Home')); fireEvent.click(screen.getByText('Lock'))
+    fireEvent.click(screen.getByRole('button', { name: 'Home' })); fireEvent.click(screen.getByRole('button', { name: 'Lock' }))
     expect(ws.envelopes().slice(-2)).toEqual([{ type: 'button', button: 'home' }, { type: 'button', button: 'lock' }])
-    fireEvent.click(screen.getByText('Open Simulator')); await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'More' })); fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Simulator' })); await flush()
     expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/open`, expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer owner' } }))
   })
 
@@ -259,7 +390,7 @@ describe('SimLiveView', () => {
     render(<SimLiveView udid={U} token="" />)
     act(() => Socket.instances[0].onclose?.({ reason: 'Two simulators are already live' })); await flush()
     expect(screen.getByText('snapshot')).toBeVisible(); expect(screen.getByRole('status')).toHaveTextContent('Two simulators')
-    expect(screen.getByText('Home')).toBeDisabled(); cleanup()
+    expect(screen.getByRole('button', { name: 'Home' })).toBeDisabled(); cleanup()
     render(<SimLiveView udid={U} token="" />); binary(1, [1, 100, 0, 31])
     act(() => Decoder.instances[0].init.error(new DOMException('bad video'))); await flush()
     expect(screen.getByText('snapshot')).toBeVisible(); expect(screen.getByRole('status')).toHaveTextContent('decoded')

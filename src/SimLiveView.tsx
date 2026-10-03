@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Camera, Home, Link, Lock, MoreHorizontal, PanelsTopLeft, SunMoon } from 'lucide-react'
+import { SIM_NETWORK_PROFILES, type SimAction } from '../shared/sim-actions'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import './sims-view.css'
 import './sim-live.css'
@@ -35,6 +37,59 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const [focused, setFocused] = useState(false)
   const [ready, setReady] = useState(false)
   const [painted, setPainted] = useState(false)
+  const toolbar = useRef<HTMLDivElement>(null)
+  const moreButton = useRef<HTMLButtonElement>(null)
+  const urlButton = useRef<HTMLButtonElement>(null)
+  const returnFocus = useRef<HTMLButtonElement | null>(null)
+  const pending = useRef(new Set<string>())
+  const [busy, setBusy] = useState(new Set<string>())
+  const [popover, setPopover] = useState<'more' | 'url' | null>(null)
+  const [url, setUrl] = useState('')
+  const [schemes, setSchemes] = useState<string[]>([])
+  const schemesId = useId()
+  const closePopover = () => {
+    setPopover(null)
+    const button = (popover === 'more' ? moreButton : urlButton).current
+    if (button?.disabled) returnFocus.current = button
+    else button?.focus()
+  }
+  const perform = async (key: string, work: () => Promise<void>) => {
+    if (pending.current.has(key)) return
+    pending.current.add(key); setBusy(new Set(pending.current)); setReason('')
+    try { await work() } catch (error) { setReason(error instanceof Error ? error.message : 'Simulator action failed') }
+    finally { pending.current.delete(key); setBusy(new Set(pending.current)) }
+  }
+  const deviceAction = (body: SimAction) => perform(body.action, async () => {
+    const result = await api.action(udid, body)
+    if (result.warning) setReason(result.warning)
+  })
+
+  useEffect(() => {
+    if (!popover && returnFocus.current && !returnFocus.current.disabled) {
+      returnFocus.current.focus(); returnFocus.current = null
+    }
+  }, [popover, busy])
+
+  useEffect(() => {
+    if (!popover) return
+    const outside = (event: PointerEvent) => { if (!toolbar.current?.contains(event.target as Node)) closePopover() }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePopover() }
+    }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape, true)
+    if (popover === 'more') toolbar.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus()
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape, true) }
+  }, [popover])
+
+  useEffect(() => {
+    if (popover !== 'url') return
+    let disposed = false
+    setSchemes([])
+    void api.schemes(udid).then((values) => { if (!disposed) setSchemes(values) })
+      .catch((error: unknown) => { if (!disposed) setReason(error instanceof Error ? error.message : 'Unable to load URL schemes') })
+    return () => { disposed = true }
+  }, [popover, api, udid])
 
   const send = (envelope: Record<string, unknown>) => {
     if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(envelope))
@@ -348,22 +403,60 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           }
           if (event.metaKey && event.shiftKey && event.code === 'KeyH') { press('home'); return }
           if (event.metaKey && event.code === 'KeyL') { press('lock'); return }
+          if (event.metaKey && event.shiftKey && event.code === 'KeyA') { void deviceAction({ action: 'appearance', value: 'toggle' }); return }
           send({ type: 'key', code: event.code, modifiers: [event.shiftKey && 'shift', event.ctrlKey && 'control', event.altKey && 'option', event.metaKey && 'command'].filter(Boolean) })
         }} />
   const fingerMarkers = fingers.points.map((finger, index) => <span key={index} className={`sim-live-finger${fingers.pressed ? ' is-pressed' : ''}`} style={{ left: finger.x, top: finger.y }} aria-hidden="true" />)
   if (preview) return snapshot ? null : <>{liveCanvas}{fingerMarkers}</>
   return <div className="sim-live">
-    <div className="sims-actions sim-live-toolbar">
+    <div ref={toolbar} className="sims-actions sim-live-toolbar">
       <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
-      <button type="button" disabled={!inputEnabled} title="Home (⌘⇧H)" onClick={() => press('home')}>Home</button>
-      <button type="button" disabled={!inputEnabled} title="App switcher" onClick={() => press('app-switcher')}>Switcher</button>
-      <button type="button" disabled={!inputEnabled} title="Lock (⌘L)" onClick={() => press('lock')}>Lock</button>
-      <button type="button" disabled={!inputEnabled} aria-label="Volume down" title="Volume down" onClick={() => press('volume-down')}>Vol −</button>
-      <button type="button" disabled={!inputEnabled} aria-label="Volume up" title="Volume up" onClick={() => press('volume-up')}>Vol +</button>
-      <button type="button" disabled={snapshot ? !image : !ready} title="Save an image of the current screen" onClick={saveScreenshot}>Screenshot</button>
-      <button type="button" onClick={() => {
-        void api.open(udid).then((result) => { if (result.raised === false) setReason(result.reason ?? 'Simulator activated') }).catch((error: unknown) => setReason(error instanceof Error ? error.message : 'Unable to open Simulator'))
-      }}>Open Simulator</button>
+      <button type="button" disabled={!inputEnabled} aria-label="Home" title="Home (⌘⇧H)" onClick={() => press('home')}><Home aria-hidden="true" /></button>
+      <button type="button" disabled={!inputEnabled} aria-label="App Switcher" title="App Switcher" onClick={() => press('app-switcher')}><PanelsTopLeft aria-hidden="true" /></button>
+      <button type="button" disabled={!inputEnabled} aria-label="Lock" title="Lock (⌘L)" onClick={() => press('lock')}><Lock aria-hidden="true" /></button>
+      <button type="button" disabled={snapshot ? !image : !ready} aria-label="Screenshot" title="Save an image of the current screen" onClick={saveScreenshot}><Camera aria-hidden="true" /></button>
+      <button type="button" disabled={!connected || busy.has('appearance')} aria-label="Toggle Light/Dark" title="Toggle Light/Dark (⌘⇧A)" onClick={() => void deviceAction({ action: 'appearance', value: 'toggle' })}><SunMoon aria-hidden="true" /></button>
+      <button ref={urlButton} type="button" disabled={!connected || busy.has('open-url')} aria-label="Open URL" title="Open URL / deep link" aria-expanded={popover === 'url'} onClick={() => popover === 'url' ? closePopover() : setPopover('url')}><Link aria-hidden="true" /></button>
+      <button ref={moreButton} type="button" aria-label="More" title="More" aria-haspopup="menu" aria-expanded={popover === 'more'} onClick={() => popover === 'more' ? closePopover() : setPopover('more')}><MoreHorizontal aria-hidden="true" /></button>
+      {popover === 'url' ? <form className="sim-live-popover sim-live-url" onSubmit={(event) => {
+        event.preventDefault()
+        if (!url || busy.has('open-url') || !connected) return
+        void perform('open-url', async () => { await api.action(udid, { action: 'open-url', url }); closePopover() })
+      }}>
+        <label htmlFor={`${schemesId}-url`}>Open URL / deep link</label>
+        <input id={`${schemesId}-url`} autoFocus type="text" value={url} maxLength={2048} list={schemesId} placeholder="myapp://" disabled={busy.has('open-url')} onChange={(event) => setUrl(event.target.value)} />
+        <datalist id={schemesId}>{schemes.map((scheme) => <option key={scheme} value={`${scheme}://`} />)}</datalist>
+        <button type="submit" disabled={!connected || !url || busy.has('open-url')}>Open</button>
+      </form> : null}
+      {popover === 'more' ? <div className="sim-live-popover sim-live-menu" role="menu" aria-label="Device actions" onKeyDown={(event) => {
+        const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')]
+        const index = items.indexOf(document.activeElement as HTMLButtonElement)
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault()
+          items[event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+        } else if (event.key === 'Tab') setPopover(null)
+      }}>
+        {['up', 'down'].map((direction) => <button key={direction} type="button" role="menuitem" disabled={!inputEnabled} onClick={() => { press(`volume-${direction}`); closePopover() }}>Volume {direction}</button>)}
+        {([
+          ['Shake', { action: 'shake' }],
+          ['Clean status bar', { action: 'status-bar', mode: 'clean' }], ['Reset status bar', { action: 'status-bar', mode: 'clear' }],
+          ['Text size larger', { action: 'text-size', step: 1 }], ['Text size smaller', { action: 'text-size', step: -1 }],
+          ['Increase contrast on', { action: 'contrast', enabled: true }], ['Increase contrast off', { action: 'contrast', enabled: false }],
+          ['Reduce motion on', { action: 'reduce-motion', enabled: true }], ['Reduce motion off', { action: 'reduce-motion', enabled: false }],
+          ...SIM_NETWORK_PROFILES.map((profile): [string, SimAction] => [`Network: ${profile}`, { action: 'network', profile }]),
+          ['Repair input', { action: 'heal' }],
+        ] satisfies Array<[string, SimAction]>).map(([label, body]) => <button key={label} type="button" role="menuitem" disabled={!connected || busy.has(body.action)} onClick={() => {
+          if (body.action === 'heal' && !window.confirm("This restarts the simulator's home screen")) return
+          closePopover(); void deviceAction(body)
+        }}>{label}</button>)}
+        <p>Network conditions need an app relaunch and affect URLSession traffic.</p>
+        <button type="button" role="menuitem" disabled={!connected || busy.has('open')} onClick={() => {
+          closePopover(); void perform('open', async () => {
+            const result = await api.open(udid)
+            if (result.raised === false) setReason(result.reason ?? 'Simulator activated')
+          })
+        }}>Open in Simulator</button>
+      </div> : null}
     </div>
     <div className="sim-live-screen">
       {snapshot ? (image ? <img src={image} alt="Simulator snapshot" /> : <span className="sims-empty">Waiting for snapshot…</span>) : null}

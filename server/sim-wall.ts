@@ -6,11 +6,12 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SimOpenResult, SimPoolSummary, SimWallDevice, SimWallListing } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
+import { SIM_NETWORK_PROFILES, SIM_TEXT_SIZES, type SimAction, type SimActionResult } from '../shared/sim-actions.js'
 
-export type SimWallRunner = (command: string, args: string[]) => Promise<string>
+export type SimWallRunner = (command: string, args: string[], options?: { timeout: number }) => Promise<string>
 const execute = promisify(execFile)
-const run: SimWallRunner = async (command, args) => (await execute(command, args, {
-  timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
+const run: SimWallRunner = async (command, args, options) => (await execute(command, args, {
+  timeout: options?.timeout ?? 120_000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024,
 })).stdout
 const UDID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const CACHE_MS = 2_000
@@ -22,6 +23,42 @@ export function defaultSimSnapshotDirectory(port: number): string {
 
 class SimWallError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
+}
+
+async function readAction(request: IncomingMessage): Promise<SimAction> {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk)
+    bytes += buffer.length
+    if (bytes > 16 * 1024) throw new SimWallError(400, 'Action body is too large')
+    chunks.push(buffer)
+  }
+  let body: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+    body = parsed as Record<string, unknown>
+  } catch { throw new SimWallError(400, 'Action body must be a JSON object') }
+  const only = (...keys: string[]) => Object.keys(body).every((key) => key === 'action' || keys.includes(key))
+  let valid = false
+  switch (body.action) {
+    case 'appearance': valid = only('value') && ['light', 'dark', 'toggle'].includes(body.value as string); break
+    case 'shake': case 'heal': valid = only(); break
+    case 'status-bar': valid = only('mode') && ['clean', 'clear'].includes(body.mode as string); break
+    case 'open-url':
+      if (only('url') && typeof body.url === 'string' && body.url.length > 0 && body.url.length <= 2048
+        && /^[a-z][a-z\d+.-]*:/i.test(body.url) && !/[\x00-\x1f\x7f]/.test(body.url)) {
+        try { valid = !!new URL(body.url).protocol } catch { /* Invalid URL. */ }
+      }
+      break
+    case 'text-size': valid = (only('value') && SIM_TEXT_SIZES.includes(body.value as typeof SIM_TEXT_SIZES[number]))
+      || (only('step') && (body.step === 1 || body.step === -1)); break
+    case 'contrast': case 'reduce-motion': valid = only('enabled') && typeof body.enabled === 'boolean'; break
+    case 'network': valid = only('profile') && SIM_NETWORK_PROFILES.includes(body.profile as typeof SIM_NETWORK_PROFILES[number]); break
+  }
+  if (!valid) throw new SimWallError(400, 'Invalid simulator action or parameters')
+  return body as SimAction
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -290,6 +327,55 @@ export class SimWallApi {
     try { return await flight } finally { this.captures.delete(udid) }
   }
 
+  private async actionCommand(command: string, args: string[]): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        this.runner(command, args, { timeout: 10_000 }),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SimWallError(504, 'Simulator command timed out after 10 seconds')), 10_000) }),
+      ])
+    } catch (error) {
+      if (error instanceof SimWallError) throw error
+      const failure = error as { stderr?: string; stdout?: string; message?: string; killed?: boolean; code?: string }
+      if (failure?.killed || failure?.code === 'ETIMEDOUT') throw new SimWallError(504, 'Simulator command timed out after 10 seconds')
+      const detail = String(failure?.stderr || failure?.stdout || failure?.message || 'Command failed')
+        .replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)
+      throw new SimWallError(500, `${command} failed: ${detail}`)
+    } finally { clearTimeout(timer) }
+  }
+
+  private async deviceAction(udid: string, body: SimAction): Promise<SimActionResult> {
+    await this.booted(udid)
+    const device = ['--udid', udid]
+    const baguette = (args: string[]) => this.actionCommand('baguette', args)
+    switch (body.action) {
+      case 'appearance': {
+        let value = body.value
+        if (value === 'toggle') {
+          const current = (await baguette(['interface', 'appearance', ...device])).trim().toLowerCase()
+          if (current !== 'light' && current !== 'dark') throw new SimWallError(500, 'Unable to read current appearance')
+          value = current === 'light' ? 'dark' : 'light'
+        }
+        await baguette(['interface', 'appearance', ...device, value])
+        return { ok: true, value }
+      }
+      case 'shake': case 'heal': await baguette([body.action, ...device]); break
+      case 'status-bar': await baguette(['status-bar', body.mode === 'clean' ? 'override' : 'clear', ...device,
+        ...(body.mode === 'clean' ? ['--time', '9:41', '--battery-state', 'charged', '--battery-level', '100',
+          '--cellular-mode', 'active', '--cellular-bars', '4', '--wifi-mode', 'active', '--wifi-bars', '3', '--data-network', 'wifi'] : [])]); break
+      case 'open-url': await baguette(['openurl', ...device, '--', body.url]); break
+      case 'text-size': await baguette(['interface', 'text-size', ...device, body.value ?? (body.step === 1 ? 'increment' : 'decrement')]); break
+      case 'contrast': await baguette(['interface', 'contrast', ...device, body.enabled ? 'enabled' : 'disabled']); break
+      case 'reduce-motion': await this.actionCommand('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.Accessibility', 'ReduceMotionEnabled', '-bool', body.enabled ? 'true' : 'false']); break
+      case 'network':
+        await baguette(['network', body.profile === 'off' ? 'clear' : 'set', ...device,
+          ...(body.profile === 'off' ? [] : body.profile === 'offline' ? ['--offline']
+            : body.profile === 'lossy' ? ['--latency', '200', '--loss', '10'] : ['--profile', body.profile])])
+        return { ok: true, ...(body.profile !== 'off' ? { warning: 'Relaunch the app to apply network conditions; only URLSession traffic is affected.' } : {}) }
+    }
+    return { ok: true }
+  }
+
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
     if (url.pathname !== '/api/sims' && !url.pathname.startsWith('/api/sims/')) return false
     try {
@@ -298,17 +384,29 @@ export class SimWallApi {
         json(response, 200, await this.listPayload())
         return true
       }
-      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open)$/.exec(url.pathname)
+      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open|action|schemes)$/.exec(url.pathname)
       if (!match) throw new SimWallError(404, 'Not found')
       if (!UDID.test(match[1])) throw new SimWallError(400, 'udid must be a simulator UUID')
       const udid = match[1].toUpperCase()
       const action = match[2]
-      if (request.method !== (action === 'snapshot.jpg' ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
+      if (request.method !== (action === 'snapshot.jpg' || action === 'schemes' ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
       if (action === 'snapshot.jpg') {
         const { data, at } = await this.snapshot(udid)
         response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'Content-Length': data.length,
           'X-Commando-Snapshot-At': String(at), 'Access-Control-Expose-Headers': 'X-Commando-Snapshot-At' })
         response.end(data)
+      } else if (action === 'action') {
+        json(response, 200, await this.deviceAction(udid, await readAction(request)))
+      } else if (action === 'schemes') {
+        await this.booted(udid)
+        const payload: unknown = JSON.parse(await this.actionCommand('baguette', ['schemes', '--udid', udid, '--json']))
+        const entries = Array.isArray(payload) ? payload : (payload as { schemes?: unknown } | null)?.schemes
+        if (!Array.isArray(entries)) throw new SimWallError(500, 'Invalid URL schemes response from baguette')
+        const schemes = entries.map((entry: unknown) => typeof entry === 'string' ? entry : (entry as { scheme?: unknown } | null)?.scheme)
+        if (!schemes.every((scheme): scheme is string => typeof scheme === 'string' && scheme.length <= 256 && /^[a-z][a-z\d+.-]*$/i.test(scheme))) {
+          throw new SimWallError(500, 'Invalid URL schemes response from baguette')
+        }
+        json(response, 200, { schemes: [...new Set(schemes)].sort() })
       } else if (action === 'slim') {
         if (this.slimming.has(udid)) throw new SimWallError(409, 'Slimming is already running')
         this.slimming.add(udid)

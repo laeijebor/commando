@@ -3,6 +3,31 @@ import { describe, expect, it, vi } from 'vitest'
 import { cacheSims, createSimsApi, readCachedSims, simsCache } from './simsApi'
 
 describe('simulator claim actions', () => {
+  it('sends authenticated action JSON, encodes the UDID and fetches schemes', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{"ok":true,"value":"dark"}'))
+      .mockResolvedValueOnce(new Response('{"schemes":["myapp","https"]}'))
+      .mockResolvedValueOnce(new Response('{"error":"baguette failed: input unavailable"}', { status: 500 }))
+    const api = createSimsApi('owner-token', fetcher)
+    const body = { action: 'appearance', value: 'toggle' } as const
+    await expect(api.action('sim/udid', body)).resolves.toEqual({ ok: true, value: 'dark' })
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/action', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', body: JSON.stringify(body),
+      headers: { Authorization: 'Bearer owner-token', 'Content-Type': 'application/json' },
+    }))
+    await expect(api.schemes('sim/udid')).resolves.toEqual(['myapp', 'https'])
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/schemes', expect.objectContaining({ method: 'GET', headers: { Authorization: 'Bearer owner-token' } }))
+    await expect(api.action('sim/udid', { action: 'shake' })).rejects.toThrow('input unavailable')
+  })
+
+  it('supports session auth without a bearer token and propagates schemes errors', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{"ok":true}'))
+      .mockResolvedValueOnce(new Response('{"error":"Simulator is not booted"}', { status: 404 }))
+    const api = createSimsApi('', fetcher)
+    await api.action('sim', { action: 'shake' })
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim/action', expect.objectContaining({ headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' }))
+    await expect(api.schemes('sim')).rejects.toThrow('Simulator is not booted')
+  })
+
   it('hydrates ended history and legacy listings while ignoring malformed ended metadata', () => {
     const sim = { udid: 'sim', name: 'Phone', deviceModel: 'iPhone', runtime: 'iOS 26', slim: 'slim', lease: null }
     const endedLease = { sessionName: 'Previous', task: '', label: 'Previous', endedAt: 123, reason: 'released' }
