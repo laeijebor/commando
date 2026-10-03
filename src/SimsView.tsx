@@ -134,7 +134,7 @@ function SimCard({ sim, api, visible, formerGroup, showEnded, onSlimmed, onLive 
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
     {ended && !formerGroup ? <div className="sims-last">last: {ended.sessionName}{ended.task ? ` · ${ended.task}` : ''}</div> : null}
     <div className="sims-meta">
-      {sim.pool ? <span className="pool">pool</span> : null}
+      {sim.pool ? <span className="pool" title={sim.poolProjects?.length ? `used by: ${sim.poolProjects.join(', ')}` : undefined}>pool</span> : null}
       <span className={sim.slim}>{sim.slim === 'unknown' ? 'slim unknown' : sim.slim}</span>
       {ended && showEnded ? <><span className="ended">lease ended</span><span>ended {endedAge(ended.endedAt, now)}</span></> : null}
       {sim.lease?.idle ? <span className="idle">idle</span> : null}

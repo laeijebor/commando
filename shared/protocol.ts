@@ -262,6 +262,7 @@ export type SimWallDevice = {
   lease: SimWallLease | null
   endedLease?: SimWallEndedLease | null
   pool?: boolean
+  poolProjects?: string[]
 }
 
 export type SimPoolSummary = { size: number; free: number }

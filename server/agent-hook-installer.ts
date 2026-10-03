@@ -767,7 +767,7 @@ export function generatedSimCli(tokenPath: string): string {
 import { execFile } from 'node:child_process'
 import { constants, realpathSync } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, isAbsolute, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 const tokenPath = ${JSON.stringify(tokenPath)}
@@ -783,10 +783,22 @@ export function formatLabel(sessionName, task = '') {
 const poolNumber = (name) => Number(/^Commando Pool ([1-9][0-9]*)$/.exec(name ?? '')?.[1] ?? Infinity)
 const iosDevices = (listing) => Object.entries(listing.devices ?? {}).filter(([runtime]) => /\.iOS-\d/.test(runtime)).flatMap(([, devices]) => devices)
 
-export function chooseDevice(listing, heldUdids, requested, members = []) {
+function comparePoolMembers(a, b, repoRoot) {
+  const projectsA = a.projects ?? [], projectsB = b.projects ?? []
+  const affinityA = repoRoot && projectsA.find((entry) => entry.root === repoRoot)
+  const affinityB = repoRoot && projectsB.find((entry) => entry.root === repoRoot)
+  const tierA = affinityA ? 0 : projectsA.length ? 2 : 1
+  const tierB = affinityB ? 0 : projectsB.length ? 2 : 1
+  if (tierA !== tierB) return tierA - tierB
+  const recency = tierA === 0 ? affinityB.lastUsedAt - affinityA.lastUsedAt : tierA === 2
+    ? Math.max(...projectsA.map((entry) => entry.lastUsedAt)) - Math.max(...projectsB.map((entry) => entry.lastUsedAt)) : 0
+  return recency || poolNumber(a.name) - poolNumber(b.name)
+}
+
+export function chooseDevice(listing, heldUdids, requested, members = [], repoRoot) {
   const held = new Set(heldUdids.map((id) => id.toUpperCase()))
   const devices = iosDevices(listing)
-  const candidates = requested ? devices : [...members].sort((a, b) => poolNumber(a.name) - poolNumber(b.name))
+  const candidates = requested ? devices : [...members].sort((a, b) => comparePoolMembers(a, b, repoRoot))
     .map((member) => devices.find((entry) => entry.udid.toUpperCase() === member.udid.toUpperCase())).filter(Boolean)
   const device = candidates.find((entry) => entry.isAvailable === true && entry.state === 'Shutdown' &&
     (!requested || entry.udid.toUpperCase() === requested.toUpperCase()) && !held.has(entry.udid.toUpperCase()))
@@ -813,7 +825,7 @@ function nextPoolName(members) {
   return 'Commando Pool ' + number
 }
 
-async function createPoolDevice(request, run, requestedType) {
+async function createPoolDevice(request, run, requestedType, projects = []) {
   const { members } = await poolMembers(request, run)
   const runtimes = JSON.parse(await run('xcrun', ['simctl', 'list', 'runtimes', '--json'])).runtimes ?? []
   const runtime = runtimes.filter((entry) => entry.isAvailable === true && /\.iOS-\d/.test(entry.identifier))
@@ -829,23 +841,35 @@ async function createPoolDevice(request, run, requestedType) {
   if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(udid)) throw new Error('simctl create did not return a simulator UUID')
   try {
     await run('simslim', ['on', udid, '--preserve-boot-state'])
-    await request('POST', '/pool', { udid, name, created: true })
+    await request('POST', '/pool', { udid, name, created: true, projects })
   } catch (error) { throw new Error('Pool create failed for ' + udid + ': ' + String(error?.message ?? error)) }
   return { udid, name, state: 'Shutdown', isAvailable: true }
 }
 
 async function runPoolCommand(args, request, run) {
-  const [action, ...rest] = args
+  const [action, ...input] = args
+  const rest = [], roots = []
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] !== '--project') { rest.push(input[i]); continue }
+    const root = input[++i]
+    if (!['add', 'create'].includes(action) || !root || !isAbsolute(root) || /[\u0000-\u001f\u007f-\u009f]/u.test(root)) {
+      throw new Error('--project requires an absolute repository root without control characters (pool add/create only)')
+    }
+    roots.push(resolve(root))
+    if (roots.length > 8) throw new Error('At most 8 --project roots are allowed')
+  }
+  const lastUsedAt = Date.now()
+  const projects = [...new Set(roots)].map((root) => ({ root, name: basename(root) || root, lastUsedAt }))
   if (action === 'create') {
     let count = 1, type
     for (let i = 0; i < rest.length; i++) {
       const flag = rest[i], value = rest[++i]
       if (flag === '--count' && /^[1-8]$/.test(value ?? '')) count = Number(value)
       else if (flag === '--device-type' && value && !value.startsWith('--')) type = value
-      else throw new Error('Usage: commando-sim.mjs pool create [--count 1-8] [--device-type "iPhone name"]')
+      else throw new Error('Usage: commando-sim.mjs pool create [--count 1-8] [--device-type "iPhone name"] [--project /repo]...')
     }
     const members = []
-    for (let i = 0; i < count; i++) members.push(await createPoolDevice(request, run, type))
+    for (let i = 0; i < count; i++) members.push(await createPoolDevice(request, run, type, projects))
     return { members }
   }
   if (!['list', 'add', 'remove'].includes(action) || (action === 'list' ? rest.length : action === 'remove' ? rest.length !== 1 : !rest.length)) {
@@ -858,7 +882,7 @@ async function runPoolCommand(args, request, run) {
   const held = new Set([...leases.map((entry) => entry.udid), ...heldUdids].map((id) => id.toUpperCase()))
   if (action === 'list') return { members: members.map((member) => {
     const device = Object.values(listing.devices ?? {}).flat().find((entry) => entry.udid.toUpperCase() === member.udid.toUpperCase())
-    return { ...member, name: device.name, poolName: member.name, state: device.state, leased: held.has(member.udid.toUpperCase()) }
+    return { ...member, projects: member.projects ?? [], name: device.name, poolName: member.name, state: device.state, leased: held.has(member.udid.toUpperCase()) }
   }) }
   if (action === 'remove') {
     const udid = rest[0].toUpperCase()
@@ -876,7 +900,7 @@ async function runPoolCommand(args, request, run) {
       await run('simslim', ['on', udid, '--preserve-boot-state'])
       const name = nextPoolName((await request('GET', '/pool')).members)
       await run('xcrun', ['simctl', 'rename', udid, name])
-      const { member } = await request('POST', '/pool', { udid, name, created: false })
+      const { member } = await request('POST', '/pool', { udid, name, created: false, projects })
       members.push(member)
       added.push(member)
     } catch (error) { failures.push(udid + ': ' + String(error?.message ?? error)) }
@@ -982,7 +1006,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     const { members, listing } = requested
       ? { members: (await request('GET', '/pool')).members, listing: JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])) }
       : await poolMembers(request, run)
-    device = chooseDevice(listing, context.heldUdids, requested, members)
+    device = chooseDevice(listing, context.heldUdids, requested, members, context.repo?.root)
     if (!device) device = await createPoolDevice(request, run)
     poolName = members.find((entry) => entry.udid.toUpperCase() === device.udid)?.name ?? (!requested ? device.name : undefined)
   }

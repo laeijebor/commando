@@ -21,7 +21,7 @@ describe('simulator claim actions', () => {
   })
 
   it('persists pool summaries and chip flags, while reading older cached arrays without pool metadata', async () => {
-    const sim = { udid: 'sim', name: 'Phone', deviceModel: 'iPhone', runtime: 'iOS 26', slim: 'slim' as const, lease: null, pool: true }
+    const sim = { udid: 'sim', name: 'Phone', deviceModel: 'iPhone', runtime: 'iOS 26', slim: 'slim' as const, lease: null, pool: true, poolProjects: ['gizmo', 'commando'] }
     const pool = { size: 6, free: 4 }
     cacheSims([sim], pool)
     simsCache.listing = undefined; simsCache.pool = undefined

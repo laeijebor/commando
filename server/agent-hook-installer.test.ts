@@ -1570,7 +1570,7 @@ type SimCliDependencies = {
 }
 type SimCliModule = {
   formatLabel: (session: string, task?: string) => string
-  chooseDevice: (listing: unknown, held: string[], requested?: string, members?: Array<{ udid: string; name: string }>) => { udid: string; name: string } | null
+  chooseDevice: (listing: unknown, held: string[], requested?: string, members?: Array<{ udid: string; name: string; projects?: Array<{ root: string; name: string; lastUsedAt: number }> }>, repoRoot?: string) => { udid: string; name: string } | null
   verifySlim: (output: string, udid: string) => void
   runSimCommand: (args: string[], dependencies: SimCliDependencies) => Promise<unknown>
 }
@@ -2088,7 +2088,7 @@ describe('generated simulator lease CLI', () => {
 
 const thirdSimUdid = '33333333-3333-3333-3333-333333333333'
 function poolDependencies() {
-  type Member = { udid: string; name: string; created: boolean; addedAt: number }
+  type Member = { udid: string; name: string; created: boolean; addedAt: number; projects?: Array<{ root: string; name: string; lastUsedAt: number }> }
   const members: Member[] = []
   const devices = [simUdid, secondSimUdid].map((udid) => ({ ...fakeDevice, udid, deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' }))
   const events: string[] = []
@@ -2143,12 +2143,91 @@ function poolDependencies() {
 }
 
 describe('generated simulator pool CLI', () => {
+  it('orders matching projects by root recency, then unused by number, then other projects by overall LRU and number', async () => {
+    const cli = await loadSimCli()
+    const project = (root: string, lastUsedAt: number) => ({ root, name: root.slice(1), lastUsedAt })
+    const members = [
+      { udid: simUdid, name: 'Commando Pool 1', projects: [project('/main', 10), project('/other', 1000)] },
+      { udid: secondSimUdid, name: 'Commando Pool 9', projects: [project('/main', 20)] },
+      { udid: thirdSimUdid, name: 'Commando Pool 3', projects: [] },
+      { udid: '44444444-4444-4444-4444-444444444444', name: 'Commando Pool 2' },
+      { udid: '55555555-5555-5555-5555-555555555555', name: 'Commando Pool 6', projects: [project('/other', 20)] },
+      { udid: '66666666-6666-6666-6666-666666666666', name: 'Commando Pool 7', projects: [project('/other', 10)] },
+      { udid: '77777777-7777-7777-7777-777777777777', name: 'Commando Pool 5', projects: [project('/other', 1), project('/another', 20)] },
+    ]
+    const listing = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': members.map((member) => ({ ...fakeDevice, udid: member.udid })) } }
+    for (const [root, expected] of [
+      ['/main', [1, 0, 3, 2, 5, 6, 4]],
+      [undefined, [3, 2, 5, 6, 4, 1, 0]],
+      ['/unknown', [3, 2, 5, 6, 4, 1, 0]],
+    ] as const) {
+      const held: string[] = []
+      for (const index of expected) {
+        const device = cli.chooseDevice(listing, held, undefined, members, root)
+        expect(device?.udid).toBe(members[index].udid)
+        held.push(device!.udid)
+      }
+      expect(cli.chooseDevice(listing, held, undefined, members, root)).toBeNull()
+    }
+    expect(cli.chooseDevice(listing, [], simUdid, members, '/main')?.udid).toBe(simUdid)
+  })
+
+  it('uses the pane main-checkout root for lease affinity, skipping held or booted affinity devices', async () => {
+    const cli = await loadSimCli()
+    for (const unavailable of [false, 'held', 'Booted']) {
+      const deps = poolDependencies()
+      deps.members.push({ udid: simUdid, name: 'Commando Pool 1', created: true, addedAt: 1 },
+        { udid: secondSimUdid, name: 'Commando Pool 2', created: true, addedAt: 1, projects: [{ root: '/main', name: 'main', lastUsedAt: 100 }] })
+      Object.assign(deps.context, { repo: { root: '/main', worktreeRoot: '/worktree' } })
+      if (unavailable === 'held') deps.context.heldUdids.push(secondSimUdid)
+      if (unavailable === 'Booted') deps.devices[1].state = 'Booted'
+      expect(await cli.runSimCommand(['lease'], deps)).toMatchObject({ udid: unavailable ? simUdid : secondSimUdid })
+      expect(deps.run.mock.calls.some(([, args]) => args[1] === 'create')).toBe(false)
+    }
+  })
+
+  it('pre-tags every added or created device with validated roots, names and the call timestamp', async () => {
+    const cli = await loadSimCli()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1234)
+    try {
+      for (const args of [
+        ['pool', 'add', simUdid, '--project', '/repos/gizmo', secondSimUdid, '--project', '/repos/commando/'],
+        ['pool', 'create', '--count', '2', '--project', '/repos/gizmo', '--project', '/repos/commando/'],
+      ]) {
+        const deps = poolDependencies()
+        await cli.runSimCommand(args, deps)
+        expect(deps.members).toHaveLength(2)
+        for (const member of deps.members) expect(member.projects).toEqual([
+          { root: '/repos/gizmo', name: 'gizmo', lastUsedAt: 1234 },
+          { root: '/repos/commando', name: 'commando', lastUsedAt: 1234 },
+        ])
+        const listing = await cli.runSimCommand(['pool', 'list'], deps) as { members: typeof deps.members }
+        expect(listing.members.map((member) => member.projects)).toEqual(deps.members.map((member) => member.projects))
+      }
+    } finally { clock.mockRestore() }
+  })
+
+  it('rejects relative roots, controls and more than eight pre-tags before running tools or requests', async () => {
+    const cli = await loadSimCli()
+    for (const base of [['pool', 'add', simUdid], ['pool', 'create']]) {
+      for (const flags of [['--project', 'relative'], ['--project', '/bad\nroot'], ['--project', '/bad\u0085root'],
+        ['--project'], Array.from({ length: 9 }, (_, i) => ['--project', `/repo${i}`]).flat()]) {
+        const deps = poolDependencies()
+        await expect(cli.runSimCommand([...base, ...flags], deps)).rejects.toThrow(/absolute|8 --project/)
+        expect(deps.run).not.toHaveBeenCalled(); expect(deps.request).not.toHaveBeenCalled()
+      }
+      const deps = poolDependencies()
+      await cli.runSimCommand([...base, ...Array.from({ length: 8 }, (_, i) => ['--project', `/repo${i}`]).flat()], deps)
+      expect(deps.members[0].projects).toHaveLength(8)
+    }
+  })
+
   it('grows an empty pool instead of taking personal sims, slims before recording and restores the pool name', async () => {
     const cli = await loadSimCli()
     const deps = poolDependencies()
     const result = await cli.runSimCommand(['lease'], deps)
     expect(result).toEqual({ udid: thirdSimUdid, label: 'Pool session', originalName: 'Commando Pool 1' })
-    expect(deps.members).toEqual([{ udid: thirdSimUdid, name: 'Commando Pool 1', created: true, addedAt: 1 }])
+    expect(deps.members).toEqual([{ udid: thirdSimUdid, name: 'Commando Pool 1', created: true, addedAt: 1, projects: [] }])
     const create = deps.events.indexOf('xcrun simctl create Commando Pool 1 iPhone 17 Pro com.apple.CoreSimulator.SimRuntime.iOS-26-10')
     const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --preserve-boot-state`)
     const record = deps.events.indexOf(`POST /pool ${thirdSimUdid}`)
@@ -2192,7 +2271,7 @@ describe('generated simulator pool CLI', () => {
     const deps = poolDependencies()
     deps.failures.add(simUdid)
     await expect(cli.runSimCommand(['pool', 'add', simUdid, secondSimUdid], deps)).rejects.toThrow(`${simUdid}: slim failed`)
-    expect(deps.members).toEqual([{ udid: secondSimUdid, name: 'Commando Pool 1', created: false, addedAt: 1 }])
+    expect(deps.members).toEqual([{ udid: secondSimUdid, name: 'Commando Pool 1', created: false, addedAt: 1, projects: [] }])
     expect(deps.events).not.toContain(`POST /pool ${simUdid}`)
     expect(deps.events.some((event) => event.startsWith(`xcrun simctl rename ${simUdid}`))).toBe(false)
     expect(deps.events.indexOf(`simslim on ${simUdid} --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --preserve-boot-state`))
@@ -2227,7 +2306,7 @@ describe('generated simulator pool CLI', () => {
     deps.members.push({ udid: simUdid, name: 'Commando Pool 1', created: false, addedAt: 1 }, { udid: thirdSimUdid, name: 'Commando Pool 2', created: true, addedAt: 1 })
     deps.leased.push(simUdid)
     deps.devices[0].name = 'Review · task'; deps.devices[0].state = 'Booted'
-    expect(await cli.runSimCommand(['pool', 'list'], deps)).toEqual({ members: [{ udid: simUdid, name: 'Review · task', poolName: 'Commando Pool 1', state: 'Booted', leased: true, created: false, addedAt: 1 }] })
+    expect(await cli.runSimCommand(['pool', 'list'], deps)).toEqual({ members: [{ udid: simUdid, name: 'Review · task', poolName: 'Commando Pool 1', state: 'Booted', leased: true, created: false, addedAt: 1, projects: [] }] })
     expect(deps.members).toHaveLength(1)
   })
 

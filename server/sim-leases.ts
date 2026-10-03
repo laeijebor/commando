@@ -1,8 +1,8 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import type { PaneRepo } from '../shared/protocol.js'
 
 export type SimPaneContext = { sessionId: string; sessionName: string; repo?: PaneRepo }
@@ -36,7 +36,24 @@ export function defaultSimLeaseStatePath(port: number): string {
   return process.env.COMMANDO_SIM_LEASES_PATH ?? join(homedir(), '.commando', `sim-leases-${port}.json`)
 }
 
-export type SimPoolMember = { udid: string; name: string; addedAt: number; created: boolean }
+export type SimPoolProject = { root: string; name: string; lastUsedAt: number }
+export type SimPoolMember = { udid: string; name: string; addedAt: number; created: boolean; projects: SimPoolProject[] }
+const POOL_LOCK_STALE_MS = 10_000
+
+function poolProjects(value: unknown): SimPoolProject[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 8) throw new SimLeaseError(400, 'projects must contain at most 8 repositories')
+  const roots = new Set<string>()
+  return value.map((entry) => {
+    if (!entry || typeof entry.root !== 'string' || !isAbsolute(entry.root) || /[\u0000-\u001f\u007f-\u009f]/u.test(entry.root) ||
+      typeof entry.name !== 'string' || !entry.name || /[\u0000-\u001f\u007f-\u009f]/u.test(entry.name) ||
+      !Number.isFinite(entry.lastUsedAt) || entry.lastUsedAt < 0 || roots.has(entry.root)) {
+      throw new SimLeaseError(400, 'projects require unique absolute roots, names without controls and valid timestamps')
+    }
+    roots.add(entry.root)
+    return { root: entry.root, name: entry.name, lastUsedAt: entry.lastUsedAt }
+  }).sort((a, b) => b.lastUsedAt - a.lastUsedAt)
+}
 
 export function defaultSimPoolStatePath(): string {
   return process.env.COMMANDO_SIM_POOL_PATH ?? join(homedir(), '.commando', 'sim-pool.json')
@@ -46,7 +63,7 @@ function poolInput(value: Record<string, unknown>): Omit<SimPoolMember, 'addedAt
   if (typeof value.udid !== 'string' || !UDID.test(value.udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
   if (typeof value.name !== 'string' || !/^Commando Pool [1-9][0-9]*$/.test(value.name)) throw new SimLeaseError(400, 'name must be Commando Pool <n>')
   if (typeof value.created !== 'boolean') throw new SimLeaseError(400, 'created must be a boolean')
-  return { udid: value.udid.toUpperCase(), name: value.name, created: value.created }
+  return { udid: value.udid.toUpperCase(), name: value.name, created: value.created, projects: poolProjects(value.projects) }
 }
 
 /** Host-wide metadata only. Daemons reload before every operation. */
@@ -73,7 +90,7 @@ export class SimPoolRegistry {
         this.members = []
       }
     }
-    return this.members.map((entry) => ({ ...entry }))
+    return this.members.map((entry) => ({ ...entry, projects: entry.projects.map((project) => ({ ...project })) }))
   }
 
   add(value: Record<string, unknown>): SimPoolMember {
@@ -85,6 +102,19 @@ export class SimPoolRegistry {
       const member = { ...input, addedAt: (this.options.now ?? Date.now)() }
       members.push(member)
       return member
+    })
+  }
+
+  recordProject(udid: string, repo: PaneRepo | undefined, lastUsedAt: number): void {
+    if (!repo || !this.list().some((entry) => entry.udid === udid.toUpperCase())) return
+    this.mutate((members) => {
+      const member = members.find((entry) => entry.udid === udid.toUpperCase())
+      if (!member) return
+      member.projects = poolProjects([
+        { root: repo.root, name: repo.name, lastUsedAt },
+        ...member.projects.filter((project) => project.root !== repo.root)
+          .sort((a, b) => b.lastUsedAt - a.lastUsedAt).slice(0, 7),
+      ])
     })
   }
 
@@ -103,10 +133,20 @@ export class SimPoolRegistry {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
       try { mkdirSync(lock!, { mode: 0o700 }) }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new SimLeaseError(409, 'Pool update is in progress; retry the command')
-        throw error
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        // Only metadata work holds this lock; simulator child processes run in the CLI.
+        let stale = false
+        try { stale = Date.now() - statSync(lock!).mtimeMs > POOL_LOCK_STALE_MS }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+        if (stale) rmSync(lock!, { recursive: true, force: true })
+        try { mkdirSync(lock!, { mode: 0o700 }) }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new SimLeaseError(409, 'Pool update is in progress; retry the command')
+          throw error
+        }
       }
     }
+    const lockIdentity = lock ? statSync(lock) : undefined
     const temporary = path && `${path}.${process.pid}.${randomUUID()}.tmp`
     try {
       const members = this.list()
@@ -119,7 +159,12 @@ export class SimPoolRegistry {
       return result
     } finally {
       if (temporary) rmSync(temporary, { force: true })
-      if (lock) rmSync(lock, { recursive: true, force: true })
+      if (lock) {
+        try {
+          const current = statSync(lock)
+          if (current.ino === lockIdentity!.ino && current.dev === lockIdentity!.dev) rmSync(lock, { recursive: true, force: true })
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      }
     }
   }
 }
@@ -299,7 +344,14 @@ export class SimLeaseRegistry {
       originalName: existing?.originalName ?? (input.via !== 'adopted' ? this.pool.list().find((entry) => entry.udid === input.udid)?.name : undefined) ?? this.listEnded().find((entry) => entry.udid === input.udid)?.originalName ?? input.originalName, via: existing?.via ?? input.via,
       adopted: existing?.adopted ?? input.adopted,
       createdAt: existing?.createdAt ?? this.now(), lastActiveAt: this.now() }
+    const previousLeases = this.leases, previousEnded = this.ended
     this.commit([...this.leases.filter((lease) => lease.paneId !== paneId), entry], this.ended.filter((ended) => ended.udid !== input.udid))
+    try { this.pool.recordProject(input.udid, target.repo, this.now()) }
+    catch (error) {
+      // A failed affinity write must not leave a lease that the CLI believes failed.
+      this.commit(previousLeases, previousEnded)
+      throw error
+    }
     return { ...entry }
   }
 

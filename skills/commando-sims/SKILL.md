@@ -13,7 +13,8 @@ $HOME/.commando/hooks/commando-sim.mjs lease --task "what you are doing" --metro
 
 Use the returned JSON `udid` for all simulator work. A pane reuses its existing
 lease. Commando chooses a free simulator from its own slim iPhone pool and grows
-the pool when none are free. It boots it slim, verifies its slim status, and labels
+the pool when none are free. It prefers devices previously used by this repository,
+then unused devices, then the least recently used devices. It boots it slim, verifies its slim status, and labels
 it with the session name and task. Use `--device <udid>` only when the user names
 a specific simulator; release an existing lease before switching devices.
 
@@ -26,7 +27,9 @@ $HOME/.commando/hooks/commando-sim.mjs pool list
 Pool management: `pool create [--count 1-8] [--device-type "iPhone name"]` creates
 slim pool devices; `pool add <udid>...` slims and renames existing Shutdown iPhones
 before adding them. `pool remove <udid>` removes membership only and refuses leased
-devices. Pool names reuse the lowest free `Commando Pool <n>` number.
+devices. Pool names reuse the lowest free `Commando Pool <n>` number. Add repeatable
+`--project /absolute/repo/root` flags to `pool add` or `pool create` to pre-tag each
+device for up to eight projects. `pool list` includes project history.
 
 When the user asks to use a simulator that is already running, adopt that UDID:
 

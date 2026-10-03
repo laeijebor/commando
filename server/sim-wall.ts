@@ -175,7 +175,7 @@ export class SimWallApi {
         const udid = device.udid.toUpperCase()
         const lease = leases.find((entry) => entry.udid === udid)
         const ended = !lease ? this.dependencies.registry.listEnded().find((entry) => entry.udid === udid) : undefined
-        devices.push({ udid, name: device.name, ...(poolUdids.has(udid) ? { pool: true } : {}),
+        devices.push({ udid, name: device.name, ...(poolUdids.has(udid) ? { pool: true, poolProjects: members.find((member) => member.udid === udid)!.projects.map((project) => project.name) } : {}),
           runtime: `iOS ${runtimeId.split('.iOS-')[1].replaceAll('-', '.')}`,
           deviceModel: device.deviceTypeIdentifier?.split('.').at(-1)?.replaceAll('-', ' ') ?? lease?.originalName ?? device.name,
           slim: slimText === null ? 'unknown' : slimStates.get(udid) ?? 'unknown',

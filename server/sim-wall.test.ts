@@ -57,12 +57,15 @@ describe('SimWallApi', () => {
   it('marks booted pool cards and counts only Shutdown members not leased or reserved, including cached payloads', async () => {
     const directory = await cacheDirectory()
     const { api, registry, runner } = setup(undefined, directory)
-    registry.pool.add({ udid: A, name: 'Commando Pool 1', created: true })
+    registry.pool.add({ udid: A, name: 'Commando Pool 1', created: true, projects: [
+      { root: '/repos/gizmo', name: 'gizmo', lastUsedAt: 2 }, { root: '/repos/commando', name: 'commando', lastUsedAt: 1 },
+    ] })
     registry.pool.add({ udid: D, name: 'Commando Pool 2', created: false })
     const result = (await call(api)).json()
     expect(result.pool).toEqual({ size: 2, free: 1 })
-    expect(result.sims.find((device: { udid: string }) => device.udid === A).pool).toBe(true)
+    expect(result.sims.find((device: { udid: string }) => device.udid === A)).toMatchObject({ pool: true, poolProjects: ['gizmo', 'commando'] })
     expect(result.sims.find((device: { udid: string }) => device.udid === B).pool).toBeUndefined()
+    expect(result.sims.find((device: { udid: string }) => device.udid === B).poolProjects).toBeUndefined()
     expect((await call(api)).json().pool).toEqual(result.pool)
     expect(runner).toHaveBeenCalledTimes(2)
     const cached = setup(async () => { throw new Error('offline') }, directory)
