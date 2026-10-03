@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import type { SimOpenResult, SimWallDevice, SimWallListing } from '../shared/protocol.js'
+import type { SimOpenResult, SimPoolSummary, SimWallDevice, SimWallListing } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
 
 export type SimWallRunner = (command: string, args: string[]) => Promise<string>
@@ -54,7 +54,7 @@ end run`
 export class SimWallApi {
   private readonly runner: SimWallRunner
   private readonly now: () => number
-  private listing?: { at: number; devices: SimWallDevice[] }
+  private listing?: { at: number; devices: SimWallDevice[]; pool?: SimPoolSummary }
   private listingFlight?: Promise<SimWallDevice[]>
   private listingRead?: Promise<void>
   private readonly images = new Map<string, Snapshot>()
@@ -88,10 +88,10 @@ export class SimWallApi {
       // `stale` tells the client a refresh is in flight, so it can ask again soon instead of waiting a full poll.
       const stale = this.now() - cached.at >= CACHE_MS
       if (stale) void this.refreshListing().catch(() => { /* Keep the last listing. */ })
-      return { sims: cached.devices, listedAt: cached.at, stale }
+      return { sims: cached.devices, listedAt: cached.at, stale, ...(cached.pool ? { pool: cached.pool } : {}) }
     }
     const sims = await this.refreshListing()
-    return { sims, listedAt: this.listing!.at, stale: false }
+    return { sims, listedAt: this.listing!.at, stale: false, pool: this.listing!.pool }
   }
 
   private async readListing(): Promise<void> {
@@ -99,7 +99,7 @@ export class SimWallApi {
     try {
       const stored = JSON.parse(await readFile(join(this.dependencies.cacheDirectory, 'listing.json'), 'utf8')) as SimWallListing
       if (Number.isFinite(stored.listedAt) && Array.isArray(stored.sims) && stored.sims.every((device) => UDID.test(device.udid))) {
-        this.listing = { at: stored.listedAt, devices: stored.sims }
+        this.listing = { at: stored.listedAt, devices: stored.sims, pool: stored.pool }
       }
     } catch { /* Missing or damaged caches are rebuilt on demand. */ }
   }
@@ -162,6 +162,11 @@ export class SimWallApi {
     const parsed = JSON.parse(devicesJson) as { devices: Record<string, Array<{
       udid: string; name: string; state: string; deviceTypeIdentifier?: string
     }>> }
+    const members = this.dependencies.registry.pool.list()
+    const poolUdids = new Set(members.map((entry) => entry.udid))
+    const pool = { size: members.length, free: Object.entries(parsed.devices).filter(([runtime]) => runtime.includes('.iOS-'))
+      .flatMap(([, entries]) => entries).filter((device) => poolUdids.has(device.udid.toUpperCase()) && device.state === 'Shutdown'
+        && !this.dependencies.registry.isHeld(device.udid)).length }
     const devices: SimWallDevice[] = []
     for (const [runtimeId, entries] of Object.entries(parsed.devices)) {
       if (!runtimeId.includes('.iOS-')) continue
@@ -170,7 +175,7 @@ export class SimWallApi {
         const udid = device.udid.toUpperCase()
         const lease = leases.find((entry) => entry.udid === udid)
         const ended = !lease ? this.dependencies.registry.listEnded().find((entry) => entry.udid === udid) : undefined
-        devices.push({ udid, name: device.name,
+        devices.push({ udid, name: device.name, ...(poolUdids.has(udid) ? { pool: true, poolProjects: members.find((member) => member.udid === udid)!.projects.map((project) => project.name) } : {}),
           runtime: `iOS ${runtimeId.split('.iOS-')[1].replaceAll('-', '.')}`,
           deviceModel: device.deviceTypeIdentifier?.split('.').at(-1)?.replaceAll('-', ' ') ?? lease?.originalName ?? device.name,
           slim: slimText === null ? 'unknown' : slimStates.get(udid) ?? 'unknown',
@@ -184,9 +189,9 @@ export class SimWallApi {
     this.dependencies.registry.pruneEnded(devices.map((device) => device.udid))
     for (const key of this.images.keys()) if (!devices.some((device) => device.udid === key)) this.images.delete(key)
     const listedAt = this.now()
-    this.listing = { at: listedAt, devices }
+    this.listing = { at: listedAt, devices, pool }
     await this.persist(async (directory) => {
-      await this.atomicWrite(directory, 'listing.json', JSON.stringify({ sims: devices, listedAt, stale: false }))
+      await this.atomicWrite(directory, 'listing.json', JSON.stringify({ sims: devices, listedAt, stale: false, pool }))
       await this.prune(directory)
     })
     return devices

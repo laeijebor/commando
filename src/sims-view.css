@@ -37,6 +37,7 @@
 .sims-task { color: var(--text-soft); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
 .sims-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; font-family: var(--mono); font-size: 10px; color: var(--muted-dim); }
 .sims-meta span { padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+.sims-meta .pool { color: var(--muted); }
 .sims-meta .slim { color: var(--green); }
 .sims-last { color: var(--muted); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
 .sims-meta .ended { color: var(--amber); }

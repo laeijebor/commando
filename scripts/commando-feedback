@@ -80,7 +80,9 @@ status=$(curl -sS -o "$body_file" -w '%{http_code}' \
   -H "Authorization: Bearer $(cat "$token_path")" \
   "$url") || { echo "commando-feedback: daemon unreachable" >&2; exit 1; }
 body=$(cat "$body_file")
-echo "$body"
+# printf, not echo: under macOS /bin/sh (bash with xpg_echo) echo expands the \n escapes inside
+# note comments into raw newlines, and the printed body stops being valid JSON.
+printf '%s\n' "$body"
 case "$status" in
   200)
     # The daemon serializes cursor before notes, so the first match is ours,
