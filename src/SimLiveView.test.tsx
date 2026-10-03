@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SimLiveView, lastOrientation } from './SimLiveView'
 import { SIM_ORIENTATIONS, type SimOrientation } from '../shared/sim-actions'
 import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screenBottomEdge, screenSize, screenToNative } from './simGeometry'
+import type { SimSourceResult } from '../shared/sim-inspector'
 
 const U = 'AAAAAAAA-1111-1111-1111-111111111111'
 class Socket {
@@ -327,15 +328,15 @@ describe('SimLiveView', () => {
     expect(Recorder.instances).toHaveLength(0)
   })
 
-  it('shows nine named icon buttons with tooltips and no toolbar in preview mode', () => {
+  it('shows ten named icon buttons with tooltips and no toolbar in preview mode', () => {
     const { container, unmount } = render(<SimLiveView udid={U} token="" />)
-    for (const name of ['Home', 'App Switcher', 'Lock', 'Screenshot', 'Rotate right', 'Record', 'Toggle Light/Dark', 'Open URL', 'More']) {
+    for (const name of ['Home', 'App Switcher', 'Lock', 'Screenshot', 'Inspect', 'Rotate right', 'Record', 'Toggle Light/Dark', 'Open URL', 'More']) {
       const button = screen.getByRole('button', { name })
       expect(button).toHaveAttribute('title')
       expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
       expect(button).toHaveTextContent('')
     }
-    expect(container.querySelectorAll('.sim-live-toolbar > button')).toHaveLength(9)
+    expect(container.querySelectorAll('.sim-live-toolbar > button')).toHaveLength(10)
     expect(screen.getByRole('button', { name: 'Home' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Toggle Light/Dark' })).toBeEnabled()
     unmount()
@@ -683,5 +684,181 @@ describe('SimLiveView', () => {
     rerender(<SimLiveView udid={U} token="" active={false} />); expect(Socket.instances[0].close).toHaveBeenCalled()
     await flush(); const signal = vi.mocked(fetch).mock.calls.at(-1)![1]!.signal!
     unmount(); expect(signal.aborted).toBe(true)
+  })
+})
+
+describe('live element inspector', () => {
+  const element = { role: 'AXButton', label: 'General', identifier: 'settings.general', value: 'selected', title: 'Settings',
+    frame: { x: 39, y: 84.4, width: 78, height: 168.8 } }
+  const source: SimSourceResult = { ok: true, components: [{ name: 'Button', file: '/app/Button.tsx', line: 12, code: '<Button title="General" />' },
+    { name: 'SettingsScreen', file: '/app/Settings.tsx', line: 30 }] }
+  const hits = () => vi.mocked(fetch).mock.calls.filter(([path]) => String(path).includes('/inspect?'))
+  const sources = () => vi.mocked(fetch).mock.calls.filter(([path]) => String(path).includes('/inspect/source?'))
+  function setupInspector(result: SimSourceResult = source) {
+    vi.mocked(fetch).mockImplementation(async (path) => new Response(JSON.stringify(String(path).includes('/inspect/source?') ? result : { ok: true, element })))
+    const view = render(<SimLiveView udid={U} token="owner" />)
+    meta(); ScreenObserver.instances[0].resize(195, 422)
+    const canvas = view.container.querySelector('canvas')!
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect' }))
+    return { ...view, canvas, socket: Socket.instances[0] }
+  }
+
+  it('toggles with the toolbar and focused shortcut, clears on Escape, and restores touch input', async () => {
+    const { canvas, socket } = setupInspector()
+    const button = screen.getByRole('button', { name: 'Inspect' })
+    expect(button).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    expect(screen.getByRole('complementary', { name: 'Element inspector' })).toBeVisible()
+    fireEvent.keyDown(canvas, { key: 'Escape', code: 'Escape' })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByTestId('sim-inspector-box')).toBeNull()
+    expect(screen.queryByRole('complementary')).toBeNull()
+    expect(canvas).toHaveFocus()
+    fireEvent.keyDown(canvas, { key: 'I', code: 'KeyI', metaKey: true, shiftKey: true })
+    expect(button).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.keyDown(canvas, { key: 'I', code: 'KeyI', metaKey: true, shiftKey: true })
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    expect(socket.envelopes()).toEqual([])
+    pointer(canvas, 'pointerdown', 30, 50); pointer(canvas, 'pointerup', 30, 50)
+    expect(socket.envelopes().map((message) => message.type)).toEqual(['touch1-down', 'touch1-up'])
+  })
+
+  it('single-flights hit tests, keeps the latest position, and spaces requests by at least 80ms', async () => {
+    const { canvas } = setupInspector()
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    pointer(canvas, 'pointermove', 30, 50)
+    pointer(canvas, 'pointermove', 40, 60)
+    pointer(canvas, 'pointermove', 50, 70)
+    await advance(30)
+    expect(hits()).toHaveLength(1)
+    expect(String(hits()[0][0])).toContain('x=40&y=60')
+    await act(async () => resolve(new Response(JSON.stringify({ ok: true, element }))))
+    await advance(49); expect(hits()).toHaveLength(1)
+    await advance(1); expect(hits()).toHaveLength(2)
+    expect(String(hits()[1][0])).toContain('x=80&y=100')
+    expect(screen.getByTestId('sim-inspector-box')).toBeVisible()
+    pointer(canvas, 'pointermove', 60, 80); pointer(canvas, 'pointermove', 70, 90)
+    await advance(79); expect(hits()).toHaveLength(2)
+    await advance(1); expect(hits()).toHaveLength(3)
+    expect(String(hits()[2][0])).toContain('x=120&y=140')
+    expect(sources()).toHaveLength(0)
+  })
+
+  it.each(['portrait', 'landscape-left'] as const)('places the native frame and chip correctly in %s', async (orientation) => {
+    lastOrientation.set(U, orientation)
+    const { canvas, container } = setupInspector()
+    pointer(canvas, 'pointermove', 30, 50); await flush()
+    const box = screen.getByTestId('sim-inspector-box')
+    const expected = orientation === 'portrait' ? [10, 10, 20, 20] : [70, 10, 20, 20]
+    for (const [index, key] of (['left', 'top', 'width', 'height'] as const).entries()) expect(parseFloat(box.style[key])).toBeCloseTo(expected[index])
+    expect(box).toHaveTextContent('AXButton · General')
+    const overlay = container.querySelector<HTMLElement>('.sim-inspector-overlay')!
+    const displayed = screenSize(fitCanvas({ width: 390, height: 844 }, { width: 195, height: 422 }, orientation), orientation)
+    expect(parseFloat(overlay.style.width)).toBeCloseTo(displayed.width)
+    expect(parseFloat(overlay.style.height)).toBeCloseTo(displayed.height)
+    const native = screenToNative({ x: 20 / 195, y: 30 / 422 }, { width: 390, height: 844 }, orientation)
+    const url = new URL(String(hits()[0][0]), 'http://localhost')
+    expect(Number(url.searchParams.get('x'))).toBeCloseTo(native.x)
+    expect(Number(url.searchParams.get('y'))).toBeCloseTo(native.y)
+  })
+
+  it('selects the click position, shows accessibility and ordered source, pins the box and copies compact text', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { canvas, container } = setupInspector()
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    const panel = screen.getByRole('complementary', { name: 'Element inspector' })
+    for (const value of ['AXButton', 'General', 'settings.general', 'selected', 'Settings', '/app/Button.tsx:12', '/app/Settings.tsx:30', '<Button title="General" />']) expect(panel).toHaveTextContent(value)
+    expect([...panel.querySelectorAll('li strong')].map((node) => node.textContent)).toEqual(['Button', 'SettingsScreen'])
+    expect(panel.parentElement).toBe(container.querySelector('.sim-live-body'))
+    expect(panel.previousElementSibling).toBe(container.querySelector('.sim-live-screen'))
+    expect(String(sources()[0][0])).toContain('x=40&y=60')
+    pointer(canvas, 'pointerleave', 30, 50); pointer(canvas, 'pointermove', 80, 100)
+    expect(screen.getByTestId('sim-inspector-box')).toBeVisible()
+    expect(hits()).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy element details' })); await flush()
+    expect(writeText).toHaveBeenCalledWith('Role: AXButton\nLabel: General\nIdentifier: settings.general\nFrame: x=39, y=84.4, width=78, height=168.8\nButton (/app/Button.tsx:12)\nSettingsScreen (/app/Settings.tsx:30)')
+    expect(screen.getByRole('status')).toHaveTextContent('Copied')
+    await advance(1500); expect(screen.queryByText('Copied')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Close element inspector' }))
+    expect(screen.queryByRole('complementary')).toBeNull()
+    expect(screen.queryByTestId('sim-inspector-box')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Inspect' })).toHaveAttribute('aria-pressed', 'true')
+    pointer(canvas, 'pointermove', 30, 50); await flush()
+    expect(hits()).toHaveLength(2)
+  })
+
+  it.each([
+    [{ ok: false, reason: 'no-metro-port' }, "No Metro port on this simulator's lease. Declare one with commando-sim update --metro <port>."],
+    [{ ok: false, reason: 'argent-missing' }, 'Argent is not installed.'],
+    [{ ok: false, reason: 'not-connected', port: 8082 }, 'No React Native dev build is attached to Metro on port 8082.'],
+    [{ ok: false, reason: 'failed', message: 'Inspection timed out' }, 'Source lookup failed: Inspection timed out'],
+  ] as const)('keeps accessibility details and explains %j', async (source, message) => {
+    const { canvas } = setupInspector(source)
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    expect(screen.getByText(message)).toBeVisible()
+    expect(screen.getByRole('complementary')).toHaveTextContent('settings.general')
+  })
+
+  it('shows accessibility before source resolves and ignores source after closing or turning off', async () => {
+    const { canvas } = setupInspector()
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementation(async (path) => String(path).includes('/inspect/source?') ? new Promise((done) => { resolve = done }) : new Response(JSON.stringify({ ok: true, element })))
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    expect(screen.getByRole('complementary')).toHaveTextContent('settings.general')
+    expect(screen.getByText('Loading component source…')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close element inspector' }))
+    expect(sources()[0][1]!.signal!.aborted).toBe(true)
+    await act(async () => resolve(new Response(JSON.stringify(source))))
+    expect(screen.queryByRole('complementary')).toBeNull()
+    await advance(80)
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect' }))
+    await act(async () => resolve(new Response(JSON.stringify(source))))
+    expect(screen.queryByTestId('sim-inspector-box')).toBeNull()
+    expect(screen.queryByRole('complementary')).toBeNull()
+  })
+
+  it('suppresses pointer touches and typing while inspecting but still allows wheel scrolling', async () => {
+    const { canvas, socket, container } = setupInspector()
+    pointer(canvas, 'pointerdown', 30, 50, { altKey: true })
+    pointer(canvas, 'pointermove', 40, 60, { altKey: true })
+    pointer(canvas, 'pointerup', 40, 60)
+    fireEvent.keyDown(canvas, { key: 'a', code: 'KeyA' })
+    fireEvent.paste(canvas, { clipboardData: { getData: () => 'text' } })
+    expect(socket.envelopes()).toEqual([])
+    expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(0)
+    fireEvent.wheel(canvas, { clientX: 50, clientY: 100, deltaY: 30 })
+    await advance(120)
+    expect(socket.envelopes().map((item) => item.type)).toEqual(['touch1-down', 'touch1-move', 'touch1-up'])
+  })
+
+  it('cancels queued hits on leave, ignores late hover results, and clears when disconnected', async () => {
+    const { canvas, rerender } = setupInspector()
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    pointer(canvas, 'pointermove', 30, 50); pointer(canvas, 'pointermove', 40, 60)
+    pointer(canvas, 'pointerleave', 40, 60)
+    await act(async () => resolve(new Response(JSON.stringify({ ok: true, element }))))
+    await advance(80)
+    expect(hits()).toHaveLength(1)
+    expect(screen.queryByTestId('sim-inspector-box')).toBeNull()
+    pointer(canvas, 'pointermove', 30, 50); await flush()
+    expect(screen.getByTestId('sim-inspector-box')).toBeVisible()
+    rerender(<SimLiveView udid={U} token="owner" connected={false} />); await flush()
+    expect(screen.queryByTestId('sim-inspector-box')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Inspect' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('shows failed hits and raw source fallbacks without sending touches', async () => {
+    const { canvas } = setupInspector({ ok: true, components: [], raw: 'unrecognised source output' })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('{"error":"Invalid JSON response from baguette describe-ui"}', { status: 500 }))
+    pointer(canvas, 'pointermove', 30, 50); await flush()
+    expect(screen.getByRole('status')).toHaveTextContent('Invalid JSON response')
+    await advance(80)
+    fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
+    expect(screen.getByText('No component source was returned.')).toBeVisible()
+    expect(screen.getByText('unrecognised source output')).toBeInTheDocument()
   })
 })

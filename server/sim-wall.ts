@@ -7,6 +7,8 @@ import { promisify } from 'node:util'
 import type { SimOpenResult, SimPoolSummary, SimWallDevice, SimWallListing } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
 import { SIM_NETWORK_PROFILES, SIM_ORIENTATIONS, SIM_TEXT_SIZES, type SimAction, type SimActionResult } from '../shared/sim-actions.js'
+import type { SimSourceResult } from '../shared/sim-inspector.js'
+import { inspectorJson, parseSimComponents, parseSimElement } from './sim-inspector.js'
 
 export type SimWallRunner = (command: string, args: string[], options?: { timeout: number }) => Promise<string>
 const execute = promisify(execFile)
@@ -328,21 +330,50 @@ export class SimWallApi {
     try { return await flight } finally { this.captures.delete(udid) }
   }
 
-  private async actionCommand(command: string, args: string[]): Promise<string> {
+  private async actionCommand(command: string, args: string[], timeout = 10_000): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
-        this.runner(command, args, { timeout: 10_000 }),
-        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SimWallError(504, 'Simulator command timed out after 10 seconds')), 10_000) }),
+        this.runner(command, args, { timeout }),
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SimWallError(504, `Simulator command timed out after ${timeout / 1000} seconds`)), timeout) }),
       ])
     } catch (error) {
       if (error instanceof SimWallError) throw error
       const failure = error as { stderr?: string; stdout?: string; message?: string; killed?: boolean; code?: string }
-      if (failure?.killed || failure?.code === 'ETIMEDOUT') throw new SimWallError(504, 'Simulator command timed out after 10 seconds')
+      if (command === 'argent' && failure?.code === 'ENOENT') throw error
+      if (failure?.killed || failure?.code === 'ETIMEDOUT') throw new SimWallError(504, `Simulator command timed out after ${timeout / 1000} seconds`)
       const detail = String(failure?.stderr || failure?.stdout || failure?.message || 'Command failed')
         .replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)
       throw new SimWallError(500, `${command} failed: ${detail}`)
     } finally { clearTimeout(timer) }
+  }
+
+  private async inspectSource(udid: string, x: number, y: number): Promise<SimSourceResult> {
+    const lease = this.dependencies.registry.list(this.dependencies.paneExists).find((entry) => entry.udid === udid)
+    const port = lease?.ports.find((entry) => entry.name === 'metro')?.port
+    if (!port) return { ok: false, reason: 'no-metro-port' }
+    let connecting = true
+    try {
+      const command = async (tool: string, coordinates: string[] = []) => {
+        const raw = await this.actionCommand('argent', ['run', tool, '--device_id', udid, '--port', String(port), ...coordinates, '--json'], 15_000)
+        let payload: unknown
+        try { payload = inspectorJson(raw) } catch { return raw }
+        if (payload && typeof payload === 'object') {
+          const result = payload as { ok?: boolean; success?: boolean; isError?: boolean; error?: unknown; message?: unknown }
+          if (result.ok === false || result.success === false || result.isError === true || result.error) {
+            throw new Error(String(result.message ?? result.error ?? 'Argent command failed').slice(0, 300))
+          }
+        }
+        return raw
+      }
+      await command('debugger-connect')
+      connecting = false
+      return { ok: true, ...parseSimComponents(await command('debugger-inspect-element', ['--x', String(x), '--y', String(y)])) }
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'ENOENT') return { ok: false, reason: 'argent-missing' }
+      const message = (error instanceof Error ? error.message : 'Source lookup failed').replace(/\s+/g, ' ').slice(0, 300)
+      return { ok: false, reason: connecting || /not.connected|no.*(?:dev build|runtime|metro)|disconnected|connection.*(?:closed|refused)/i.test(message) ? 'not-connected' : 'failed', message, port }
+    }
   }
 
   private async deviceAction(udid: string, body: SimAction): Promise<SimActionResult> {
@@ -388,13 +419,28 @@ export class SimWallApi {
         json(response, 200, await this.listPayload())
         return true
       }
-      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open|action|schemes)$/.exec(url.pathname)
+      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open|action|schemes|inspect(?:\/source)?)$/.exec(url.pathname)
       if (!match) throw new SimWallError(404, 'Not found')
       if (!UDID.test(match[1])) throw new SimWallError(400, 'udid must be a simulator UUID')
       const udid = match[1].toUpperCase()
       const action = match[2]
-      if (request.method !== (action === 'snapshot.jpg' || action === 'schemes' ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
-      if (action === 'snapshot.jpg') {
+      if (request.method !== (action === 'snapshot.jpg' || action === 'schemes' || action.startsWith('inspect') ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
+      if (action.startsWith('inspect')) {
+        const coordinate = (key: string) => {
+          const values = url.searchParams.getAll(key), value = Number(values[0])
+          if (values.length !== 1 || !values[0].trim() || !Number.isFinite(value) || value < 0 || value > 10_000) {
+            throw new SimWallError(400, 'x and y must be finite device points from 0 to 10000')
+          }
+          return value
+        }
+        const x = coordinate('x'), y = coordinate('y')
+        if (action === 'inspect/source') json(response, 200, await this.inspectSource(udid, x, y))
+        else {
+          await this.booted(udid)
+          const raw = await this.actionCommand('baguette', ['describe-ui', '--udid', udid, '--x', String(x), '--y', String(y)], 5_000)
+          json(response, 200, { ok: true, element: parseSimElement(raw) })
+        }
+      } else if (action === 'snapshot.jpg') {
         const { data, at } = await this.snapshot(udid)
         response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'Content-Length': data.length,
           'X-Commando-Snapshot-At': String(at), 'Access-Control-Expose-Headers': 'X-Commando-Snapshot-At' })
