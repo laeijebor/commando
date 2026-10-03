@@ -7,8 +7,12 @@ import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
 import { simsCache } from './simsApi'
 
+const preview = vi.hoisted(() => ({ onStreaming: undefined as ((streaming: boolean) => void) | undefined }))
 vi.mock('./SimLiveView', () => ({
-  SimLiveView: ({ udid, token, preview }: { udid: string; token: string; preview?: boolean }) => <span data-testid={preview ? 'live-preview' : 'live-view'} data-udid={udid} data-token={token} />,
+  SimLiveView: ({ udid, token, preview: isPreview, onStreaming }: { udid: string; token: string; preview?: boolean; onStreaming?: (streaming: boolean) => void }) => {
+    if (isPreview) preview.onStreaming = onStreaming
+    return <span data-testid={isPreview ? 'live-preview' : 'live-view'} data-udid={udid} data-token={token} />
+  },
 }))
 
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
@@ -483,7 +487,10 @@ describe('SimsView', () => {
     expect(snapshot('Review UI').querySelector('.sims-hover-ring')).toBeNull()
     await tick(2_000); expect(previews()).toEqual([])
     hover('Review UI', 'pointerenter'); await tick(1_000)
-    expect(previews()).toEqual([A]); expect(within(snapshot('Review UI')).getByText('live')).toBeVisible()
+    // The badge waits for video: a preview that cannot start leaves the snapshot unlabelled.
+    expect(previews()).toEqual([A]); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
+    act(() => preview.onStreaming?.(true)); expect(within(snapshot('Review UI')).getByText('live')).toBeVisible()
+    act(() => preview.onStreaming?.(false)); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
     hover('Review UI', 'pointerleave'); await tick(29_000)
     hover('Stray phone', 'pointerenter'); await tick(500); hover('Stray phone', 'pointerleave')
     expect(previews()).toEqual([A])

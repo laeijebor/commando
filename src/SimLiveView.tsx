@@ -11,8 +11,8 @@ const EDGE_BAND = 20
  * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
  * A preview is a bare, view-only canvas that renders nothing until video is available.
  */
-export function SimLiveView({ udid, token, active = true, connected = true, preview = false, api: providedApi }: {
-  udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; api?: SimsApiClient
+export function SimLiveView({ udid, token, active = true, connected = true, preview = false, onStreaming, api: providedApi }: {
+  udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; onStreaming?: (streaming: boolean) => void; api?: SimsApiClient
 }) {
   const api = useMemo(() => providedApi ?? createSimsApi(token), [providedApi, token])
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -183,6 +183,14 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     return () => target.removeEventListener('wheel', wheel)
   }, [active, snapshot, ready, preview])
 
+  const streaming = ready && !snapshot
+  useEffect(() => {
+    if (!streaming) return
+    onStreaming?.(true)
+    return () => onStreaming?.(false)
+    // Callers pass a state setter; a changing callback identity must not flap the flag.
+  }, [streaming])
+
   useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
   useEffect(() => {
     if (!snapshot || !visible || preview) return
@@ -222,17 +230,18 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const inputEnabled = active && !snapshot && ready
   const press = (button: string) => send({ type: 'button', button })
   const saveScreenshot = () => {
-    const save = (url: string) => {
+    const save = (url: string, extension: 'png' | 'jpg') => {
       const link = document.createElement('a')
       link.href = url
-      link.download = `simulator-${udid.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+      link.download = `simulator-${udid.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`
       link.click()
     }
-    if (snapshot) { if (image) save(image); return }
+    // Fallback snapshots are JPEG; only the live canvas is encoded as PNG.
+    if (snapshot) { if (image) save(image, 'jpg'); return }
     canvas.current?.toBlob((blob) => {
       if (!blob) return
       const url = URL.createObjectURL(blob)
-      save(url)
+      save(url, 'png')
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
     }, 'image/png')
   }
@@ -245,7 +254,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       <button type="button" disabled={!inputEnabled} title="Lock (⌘L)" onClick={() => press('lock')}>Lock</button>
       <button type="button" disabled={!inputEnabled} aria-label="Volume down" title="Volume down" onClick={() => press('volume-down')}>Vol −</button>
       <button type="button" disabled={!inputEnabled} aria-label="Volume up" title="Volume up" onClick={() => press('volume-up')}>Vol +</button>
-      <button type="button" disabled={snapshot ? !image : !ready} title="Save a PNG of the current screen" onClick={saveScreenshot}>Screenshot</button>
+      <button type="button" disabled={snapshot ? !image : !ready} title="Save an image of the current screen" onClick={saveScreenshot}>Screenshot</button>
       <button type="button" onClick={() => {
         void api.open(udid).then((result) => { if (result.raised === false) setReason(result.reason ?? 'Simulator activated') }).catch((error: unknown) => setReason(error instanceof Error ? error.message : 'Unable to open Simulator'))
       }}>Open Simulator</button>

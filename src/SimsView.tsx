@@ -62,6 +62,7 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
   const [snapshotError, setSnapshotError] = useState('')
   const [error, setError] = useState('')
   const [action, setAction] = useState<'slim' | 'open' | null>(null)
+  const [streaming, setStreaming] = useState(false)
   const ended = !sim.lease ? sim.endedLease : undefined
   const name = sim.lease?.sessionName ?? (formerGroup ? ended?.sessionName : undefined) ?? sim.name
 
@@ -134,9 +135,9 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
       {image ? <img src={image.url} alt={`${name} snapshot`} />
         : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
       {/* The live canvas sits over the snapshot, which stays visible until video arrives or if it cannot start. */}
-      {hover === 'live' && visible ? <SimLiveView udid={sim.udid} token={token} api={api} preview /> : null}
+      {hover === 'live' && visible ? <SimLiveView udid={sim.udid} token={token} api={api} preview onStreaming={setStreaming} /> : null}
       {hover === 'arming' ? <span className="sims-hover-ring" aria-hidden="true"><svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" /></svg></span> : null}
-      {hover === 'live' ? <span className="sims-snapshot-live">live</span>
+      {streaming ? <span className="sims-snapshot-live">live</span>
         : image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
     </button>
     <div className="sims-name">{name}</div>
