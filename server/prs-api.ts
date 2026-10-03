@@ -162,7 +162,8 @@ export async function handlePrsApi(
     json(response, 404, { error: 'Not found' })
   } catch (error) {
     if (error instanceof PrServiceError) {
-      json(response, error.status, { error: error.message, code: error.code })
+      if (error.retryAt) response.setHeader('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1000))))
+      json(response, error.status, { error: error.message, code: error.code, ...(error.retryAt ? { retryAt: error.retryAt } : {}) })
     } else {
       console.error('[commando] PR request failed', error)
       json(response, 500, { error: 'PR request failed', code: 'internal_error' })
