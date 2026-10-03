@@ -54,6 +54,47 @@ async function call(api: SimWallApi, path = '', method = 'GET') {
 }
 
 describe('SimWallApi', () => {
+  it('marks booted pool cards and counts only Shutdown members not leased or reserved, including cached payloads', async () => {
+    const directory = await cacheDirectory()
+    const { api, registry, runner } = setup(undefined, directory)
+    registry.pool.add({ udid: A, name: 'Commando Pool 1', created: true, projects: [
+      { root: '/repos/gizmo', name: 'gizmo', lastUsedAt: 2 }, { root: '/repos/commando', name: 'commando', lastUsedAt: 1 },
+    ] })
+    registry.pool.add({ udid: D, name: 'Commando Pool 2', created: false })
+    const result = (await call(api)).json()
+    expect(result.pool).toEqual({ size: 2, free: 1 })
+    expect(result.sims.find((device: { udid: string }) => device.udid === A)).toMatchObject({ pool: true, poolProjects: ['gizmo', 'commando'] })
+    expect(result.sims.find((device: { udid: string }) => device.udid === B).pool).toBeUndefined()
+    expect(result.sims.find((device: { udid: string }) => device.udid === B).poolProjects).toBeUndefined()
+    expect((await call(api)).json().pool).toEqual(result.pool)
+    expect(runner).toHaveBeenCalledTimes(2)
+    const cached = setup(async () => { throw new Error('offline') }, directory)
+    expect((await call(cached.api)).json()).toMatchObject({ pool: result.pool, sims: result.sims })
+    const reserved = setup()
+    reserved.registry.pool.add({ udid: D, name: 'Commando Pool 1', created: false })
+    reserved.registry.reserve('%1', D)
+    expect((await call(reserved.api)).json().pool).toEqual({ size: 1, free: 0 })
+    const leased = setup()
+    leased.registry.pool.add({ udid: D, name: 'Commando Pool 1', created: false })
+    leased.registry.upsert('%1', { sessionId: '$1', sessionName: 'Owner' }, { udid: D, originalName: 'Phone', task: '', via: 'simslim' })
+    expect((await call(leased.api)).json().pool).toEqual({ size: 1, free: 0 })
+  })
+
+  it('loads a legacy disk listing with no pool fields and refreshes it without blocking cached delivery', async () => {
+    const directory = await cacheDirectory()
+    const baseline = setup()
+    const sims = await baseline.api.list()
+    await writeFile(join(directory, 'listing.json'), JSON.stringify({ sims, listedAt: 0, stale: false }))
+    const gate = deferred()
+    const { api, runner, advance } = setup(async (file, args) => { await gate.promise; return baseline.runner(file, args) }, directory)
+    advance(2500)
+    const cached = (await call(api)).json()
+    expect(cached).toEqual({ sims, listedAt: 0, stale: true })
+    gate.resolve()
+    await vi.waitFor(async () => expect((await call(api)).json().pool).toEqual({ size: 0, free: 0 }))
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
   it('joins closed and released leases onto booted sims, removes reclaimed history and prunes shutdown history', async () => {
     const { api, registry, runner, devices, advance } = setup()
     const input = { originalName: 'iPhone 17', task: 'review', via: 'adopted', adopted: true }

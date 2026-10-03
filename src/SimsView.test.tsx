@@ -53,6 +53,7 @@ const listingCalls = () => fetcher.mock.calls.filter(([url]) => url === '/api/si
 
 beforeEach(() => {
   simsCache.listing = undefined
+  simsCache.pool = undefined
   simsCache.snapshots.clear()
   window.localStorage.clear()
   vi.useFakeTimers()
@@ -82,6 +83,36 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('SimsView', () => {
+  it('shows a muted pool chip and free/total pill, preserves them on remount and hides an empty pool', async () => {
+    sims = [device({ pool: true, poolProjects: ['gizmo', 'commando'] }), device({ udid: B, lease: null })]
+    let pool = { size: 3, free: 1 }
+    fetcher.mockImplementation(async () => new Response(JSON.stringify({ sims, pool })))
+    const mounted = render(<SimsView token="" />); await flush()
+    expect(screen.getByText('pool')).toHaveClass('pool')
+    expect(screen.getByText('pool')).toHaveAttribute('title', 'used by: gizmo, commando')
+    expect(screen.getByText('pool 1 free / 3')).toBeVisible()
+    mounted.unmount()
+    fetcher.mockImplementation(() => new Promise<Response>(() => {}))
+    const remounted = render(<SimsView token="" />)
+    expect(screen.getByText('pool 1 free / 3')).toBeVisible()
+    expect(screen.getByText('pool')).toBeVisible()
+    expect(screen.getByText('pool')).toHaveAttribute('title', 'used by: gizmo, commando')
+    remounted.unmount()
+    pool = { size: 0, free: 0 }
+    fetcher.mockImplementation(async () => new Response(JSON.stringify({ sims, pool })))
+    render(<SimsView token="" />); await flush()
+    expect(screen.queryByText(/pool \d+ free/)).toBeNull()
+  })
+
+  it('shows legacy or unused pool chips without a project tooltip', async () => {
+    sims = [device({ pool: true })]
+    render(<SimsView token="" />); await flush()
+    expect(screen.getByText('pool')).not.toHaveAttribute('title')
+    sims = [device({ pool: true, poolProjects: [] })]
+    await tick(5000)
+    expect(screen.getByText('pool')).not.toHaveAttribute('title')
+  })
+
   it('duplicates ended sims in former and No lease groups, counts each device once and includes history in filters', async () => {
     vi.setSystemTime(60 * 60 * 1000)
     sims.push(device({ udid: B, name: 'Ended phone', lease: null, endedLease: {

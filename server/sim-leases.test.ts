@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { defaultSimLeaseStatePath, formatSimLabel, SIM_LEASE_IDLE_MS, SimLeaseApi, SimLeaseRegistry } from './sim-leases.js'
+import { defaultSimLeaseStatePath, defaultSimPoolStatePath, SimPoolRegistry, formatSimLabel, SIM_LEASE_IDLE_MS, SimLeaseApi, SimLeaseRegistry } from './sim-leases.js'
 
 const UDID = '11111111-1111-1111-1111-111111111111'
 const OTHER = '22222222-2222-2222-2222-222222222222'
@@ -13,7 +13,141 @@ const input = { udid: UDID, task: 'check empty state', originalName: 'iPhone 17'
 const directories: string[] = []
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
 
+describe('SimPoolRegistry', () => {
+  it('shares one host-wide path, rereads across instances and persists idempotently and privately', async () => {
+    vi.stubEnv('COMMANDO_SIM_POOL_PATH', undefined)
+    expect(defaultSimPoolStatePath()).toMatch(/\.commando\/sim-pool.json$/)
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-pool-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    vi.stubEnv('COMMANDO_SIM_POOL_PATH', statePath)
+    expect(defaultSimPoolStatePath()).toBe(statePath)
+    const first = new SimPoolRegistry({ statePath, now: () => 123 })
+    const second = new SimPoolRegistry({ statePath, now: () => 456 })
+    const a = { udid: UDID, name: 'Commando Pool 1', created: false, projects: [] }
+    const b = { udid: OTHER, name: 'Commando Pool 2', created: true, projects: [] }
+    expect(first.list()).toEqual([])
+    first.add(a)
+    expect(second.list()).toEqual([{ ...a, addedAt: 123 }])
+    second.add(b)
+    expect(first.add({ ...a, created: true })).toEqual({ ...a, addedAt: 123 })
+    expect(first.list()).toEqual([{ ...a, addedAt: 123 }, { ...b, addedAt: 456 }])
+    expect((await stat(statePath)).mode & 0o777).toBe(0o600)
+    second.remove(UDID)
+    expect(first.list()).toEqual([{ ...b, addedAt: 456 }])
+    expect(() => first.add({ ...a, name: b.name })).toThrow('already in use')
+    expect(() => first.add({ ...a, created: 'yes' })).toThrow('boolean')
+    expect(() => first.add({ ...a, udid: 'bad' })).toThrow('UUID')
+    expect(() => first.add({ ...a, name: 'Personal iPhone' })).toThrow('Commando Pool')
+    expect(() => first.remove('bad')).toThrow('UUID')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).members).toEqual(first.list())
+  })
+
+  it('loads legacy members with no projects, validates pre-tags and sorts projects by most recent use', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-pool-projects-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    const legacy = { udid: UDID, name: 'Commando Pool 1', created: false, addedAt: 10 }
+    await writeFile(statePath, JSON.stringify({ version: 1, members: [legacy] }))
+    const pool = new SimPoolRegistry({ statePath })
+    expect(pool.list()).toEqual([{ ...legacy, projects: [] }])
+    const projects = [{ root: '/older', name: 'older', lastUsedAt: 1 }, { root: '/newer', name: 'newer', lastUsedAt: 2 }]
+    pool.add({ udid: OTHER, name: 'Commando Pool 2', created: true, projects })
+    expect(new SimPoolRegistry({ statePath }).list()[1].projects).toEqual([...projects].reverse())
+    const copy = pool.list()
+    copy[1].projects[0].name = 'mutated'
+    expect(pool.list()[1].projects[0].name).toBe('newer')
+    for (const invalid of [null, {}, Array.from({ length: 9 }, (_, i) => ({ root: `/repo${i}`, name: 'repo', lastUsedAt: 1 })),
+      [{ ...projects[0], root: 'relative' }], [{ ...projects[0], root: '/bad\nroot' }], [projects[0], projects[0]],
+      [{ ...projects[0], lastUsedAt: '1' }], [{ ...projects[0], name: 'bad\u0000name' }]]) {
+      expect(() => pool.add({ ...legacy, projects: invalid })).toThrow('projects')
+    }
+  })
+
+  it('recovers locks older than ten seconds, refuses fresh locks and leaves no lock or temp files', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-pool-lock-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    const lock = `${statePath}.lock`
+    const pool = new SimPoolRegistry({ statePath })
+    await mkdir(lock)
+    expect(() => pool.add({ udid: UDID, name: 'Commando Pool 1', created: true })).toThrow('in progress')
+    const old = new Date(Date.now() - 10_100)
+    await utimes(lock, old, old)
+    pool.add({ udid: UDID, name: 'Commando Pool 1', created: true })
+    expect(pool.list()).toHaveLength(1)
+    expect(await readdir(directory)).toEqual(['pool.json'])
+    await mkdir(lock)
+    await utimes(lock, old, old)
+    pool.remove(UDID)
+    expect(pool.list()).toEqual([])
+    expect(await readdir(directory)).toEqual(['pool.json'])
+  })
+
+  it('fails closed on corrupt state rather than losing host-wide ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-pool-bad-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    await writeFile(statePath, 'broken')
+    const registry = new SimPoolRegistry({ statePath })
+    expect(() => registry.list()).toThrow()
+    expect(() => registry.add({ udid: UDID, name: 'Commando Pool 1', created: true })).toThrow()
+    expect(await readFile(statePath, 'utf8')).toBe('broken')
+  })
+})
+
 describe('SimLeaseRegistry', () => {
+  it('records the context main-checkout repo on pool leases, upserts names/times and keeps only eight recent projects', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-lease-projects-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    const pool = new SimPoolRegistry({ statePath })
+    const otherDaemon = new SimPoolRegistry({ statePath })
+    pool.add({ udid: UDID, name: 'Commando Pool 1', created: true })
+    let now = 100
+    const registry = new SimLeaseRegistry({ pool, now: () => now })
+    registry.upsert('%1', target, { ...input, repo: { root: '/spoof', name: 'spoof' } })
+    expect(otherDaemon.list()[0].projects).toEqual([{ root: '/main', name: 'main', lastUsedAt: 100 }])
+    now = 200
+    registry.touch('%1', { ...target, repo: { ...target.repo, name: 'Renamed repo' } }, {})
+    expect(otherDaemon.list()[0].projects).toEqual([{ root: '/main', name: 'Renamed repo', lastUsedAt: 200 }])
+    for (let i = 0; i < 8; i++) {
+      now++
+      registry.touch('%1', { ...target, repo: { ...target.repo, root: `/repo${i}`, name: `repo${i}` } }, {})
+    }
+    expect(otherDaemon.list()[0].projects.map((project) => project.root)).toEqual(Array.from({ length: 8 }, (_, i) => `/repo${7 - i}`))
+    const before = await readFile(statePath, 'utf8')
+    registry.touch('%1', { ...target, repo: undefined }, {})
+    expect(await readFile(statePath, 'utf8')).toBe(before)
+    registry.upsert('%2', target, { ...input, udid: OTHER })
+    expect(await readFile(statePath, 'utf8')).toBe(before)
+    expect(() => registry.upsert('%3', target, input)).toThrow('another pane')
+    expect(await readFile(statePath, 'utf8')).toBe(before)
+    now++
+    registry.touch('%1', { ...target, repo: { ...target.repo, root: '/repo0', name: 'updated' } }, {})
+    expect(otherDaemon.list()[0].projects).toHaveLength(8)
+    expect(otherDaemon.list()[0].projects[0]).toEqual({ root: '/repo0', name: 'updated', lastUsedAt: now })
+  })
+
+  it('does not retain a lease after affinity persistence fails or tag a repo when lease persistence fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-affinity-failure-'))
+    directories.push(directory)
+    const statePath = join(directory, 'leases.json')
+    const pool = new SimPoolRegistry()
+    pool.add({ udid: UDID, name: 'Commando Pool 1', created: true })
+    const registry = new SimLeaseRegistry({ statePath, pool })
+    const failure = vi.spyOn(pool, 'recordProject').mockImplementation(() => { throw new Error('affinity write failed') })
+    expect(() => registry.upsert('%1', target, input)).toThrow('affinity write failed')
+    expect(registry.list(() => true)).toEqual([])
+    expect(JSON.parse(await readFile(statePath, 'utf8')).leases).toEqual([])
+    expect(pool.list()[0].projects).toEqual([])
+    failure.mockRestore()
+    await rm(statePath)
+    await mkdir(statePath)
+    expect(() => registry.upsert('%1', target, input)).toThrow()
+    expect(pool.list()[0].projects).toEqual([])
+  })
+
   it('formats labels without controls or excess whitespace and limits Unicode characters', () => {
     expect(formatSimLabel(' A\tB\u0000 ', ' ready:\n empty  state\u0085 ')).toBe('A B · ready: empty state')
     expect(formatSimLabel(' session ', '   ')).toBe('session')
@@ -221,7 +355,7 @@ describe('SimLeaseApi', () => {
 
   it('authenticates, resolves daemon context, upserts, touches, lists and deletes', async () => {
     const { api } = setup()
-    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, ended: [], heldUdids: [] })
+    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, ended: [], heldUdids: [], poolUdids: [] })
     const created = await call(api, 'PUT', '', { ...input, sessionName: 'spoofed', paneId: '%2', label: 'spoofed' })
     expect(created.status).toBe(200)
     expect((await call(api, 'POST', '/reservation', { udid: UDID, requireUnleased: true })).status).toBe(409)
@@ -234,6 +368,27 @@ describe('SimLeaseApi', () => {
     expect((await call(api, 'DELETE', '', {})).status).toBe(200)
     expect((await call(api, 'GET')).body).toMatchObject({ leases: [], ended: [expect.objectContaining({ reason: 'released' })] })
     expect((await call(api, 'GET', '/context')).body.ended).toHaveLength(1)
+  })
+
+  it('authenticates pool CRUD, publishes context and refuses removal of leased or reserved members', async () => {
+    const { api, registry } = setup()
+    const member = { udid: UDID, name: 'Commando Pool 1', created: false }
+    expect((await call(api, 'GET', '/pool', undefined, { authorization: 'Bearer wrong' })).status).toBe(401)
+    expect((await call(api, 'PATCH', '/pool', member)).status).toBe(405)
+    expect((await call(api, 'POST', '/pool', { ...member, created: 'yes' })).status).toBe(400)
+    expect((await call(api, 'POST', '/pool', member)).body.member).toMatchObject(member)
+    await call(api, 'POST', '/pool', member)
+    expect((await call(api, 'GET', '/pool')).body.members).toHaveLength(1)
+    expect((await call(api, 'GET', '/context')).body.poolUdids).toEqual([UDID])
+    const operation = registry.reserve('%2', UDID)
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(409)
+    registry.unlock('%2', operation)
+    await call(api, 'PUT', '', input)
+    expect(registry.list(() => true)[0].originalName).toBe(member.name)
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(409)
+    await call(api, 'DELETE', '', {})
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(200)
+    expect((await call(api, 'GET', '/pool')).body.members).toEqual([])
   })
 
   it('publishes lease, metadata updates, labels and release through the brief callback only after successful changes', async () => {
