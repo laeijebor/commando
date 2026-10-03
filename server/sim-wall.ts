@@ -368,7 +368,9 @@ export class SimWallApi {
       case 'open-url': await baguette(['openurl', ...device, '--', body.url]); break
       case 'text-size': await baguette(['interface', 'text-size', ...device, body.value ?? (body.step === 1 ? 'increment' : 'decrement')]); break
       case 'contrast': await baguette(['interface', 'contrast', ...device, body.enabled ? 'enabled' : 'disabled']); break
-      case 'reduce-motion': await this.actionCommand('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.Accessibility', 'ReduceMotionEnabled', '-bool', body.enabled ? 'true' : 'false']); break
+      case 'reduce-motion': await this.actionCommand('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.Accessibility', 'ReduceMotionEnabled', '-bool', body.enabled ? 'true' : 'false'])
+        // A raw defaults write posts no accessibility notification, so running apps keep their old value.
+        return { ok: true, warning: 'Relaunch the app to apply Reduce Motion; running apps keep the previous setting.' }
       case 'network':
         await baguette(['network', body.profile === 'off' ? 'clear' : 'set', ...device,
           ...(body.profile === 'off' ? [] : body.profile === 'offline' ? ['--offline']
