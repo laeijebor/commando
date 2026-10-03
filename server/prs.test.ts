@@ -941,3 +941,74 @@ describe('preferences store', () => {
     await expect(store.update('nope')).rejects.toMatchObject({ code: 'invalid_request' })
   })
 })
+
+describe('GitHub rate limit backpressure', () => {
+  const rateLimitError = () => new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached')
+
+  it('pauses polled reads after a rate limit and doubles the backoff', async () => {
+    let now = 1_000_000
+    const runner = vi.fn().mockRejectedValue(rateLimitError())
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', now: () => now })
+
+    await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ code: 'rate_limited', retryAt: now + 60_000 })
+    now += 30_000
+    await expect(service.listPanePullRequests('123e4567-e89b-42d3-a456-426614174000')).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(runner).toHaveBeenCalledTimes(1)
+
+    now += 30_000
+    await expect(service.listPanePullRequests('123e4567-e89b-42d3-a456-426614174000')).rejects.toMatchObject({ code: 'rate_limited', retryAt: now + 120_000 })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('treats a RATE_LIMITED GraphQL error as a rate limit', async () => {
+    const { service, runner } = serviceWith(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }))
+    await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ code: 'rate_limited' })
+    await expect(service.listPullRequests('acme/widgets', 'closed')).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(runner).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops polling until the reset when the remaining budget is low', async () => {
+    let now = Date.parse('2026-10-03T10:00:00Z')
+    const payload = JSON.parse(graphqlPayload([pullRequestNode()]))
+    payload.data.rateLimit = { remaining: 120, resetAt: '2026-10-03T10:20:00Z' }
+    const runner = vi.fn().mockResolvedValue(JSON.stringify(payload))
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', now: () => now })
+
+    await expect(service.listPullRequests('acme/widgets', 'open')).resolves.toMatchObject({ totalCount: 1 })
+    await expect(service.listPullRequests('acme/widgets', 'open', { refresh: true }))
+      .rejects.toMatchObject({ code: 'rate_limited', retryAt: Date.parse('2026-10-03T10:20:00Z') })
+    expect(runner).toHaveBeenCalledTimes(1)
+
+    now = Date.parse('2026-10-03T10:20:00Z')
+    await service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('pauses batched detail hydration once the budget runs low', async () => {
+    const now = Date.parse('2026-10-03T10:00:00Z')
+    const records = Array.from({ length: 30 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
+    const discovery = graphqlPayload(records.map(({ id }) => ({ id })), 733)
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      if (query.includes('fragment PrFields on PullRequest { id }')) return discovery
+      if (query.includes('repository(owner:')) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
+      expect(query).toContain('rateLimit { remaining resetAt }')
+      const ids = JSON.parse(/nodes\(ids: (\[[^\]]*\])/.exec(query)![1]!) as string[]
+      return JSON.stringify({ data: {
+        rateLimit: { remaining: 100, resetAt: '2026-10-03T10:20:00Z' },
+        nodes: ids.map((id) => records.find((record) => record.id === id)),
+      } })
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', now: () => now })
+
+    await expect(service.listPullRequests('acme/widgets', 'open', { scope: 'everyone' })).rejects.toMatchObject({ code: 'rate_limited' })
+    // Discovery, the timed-out full query, and one detail batch per worker before the pause.
+    expect(runner.mock.calls.length).toBeLessThan(2 + 6)
+  })
+
+  it('asks GitHub for the remaining budget in polled list queries', async () => {
+    const { service, runner } = serviceWith(graphqlPayload([pullRequestNode()]))
+    await service.listPullRequests('acme/widgets', 'open')
+    expect(runner.mock.calls[0]![0].find((arg) => arg.startsWith('query='))).toContain('rateLimit { remaining resetAt }')
+  })
+})
