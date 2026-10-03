@@ -117,6 +117,15 @@ describe('SimsView', () => {
     expect(screen.getByText('pool')).not.toHaveAttribute('title')
   })
 
+  it('opens the expanded view from the card body but not from its action buttons, and shows Expand while live', async () => {
+    render(<SimsView token="" />); await flush()
+    const card = screen.getByRole('article', { name: 'Review UI' })
+    fireEvent.click(within(card).getByRole('button', { name: 'Open in Simulator' }))
+    expect(screen.queryByTestId('live-view')).toBeNull()
+    fireEvent.click(within(card).getByText('Check spacing'))
+    expect(screen.getByTestId('live-view')).toHaveAttribute('data-udid', A)
+  })
+
   it('attaches the hover preview only to the hovered copy of an ended sim shown in two groups', async () => {
     sims.push(device({ udid: B, name: 'Ended phone', lease: null, endedLease: { sessionName: 'Old session', task: '', label: 'Old session', repo, endedAt: Date.now() - 60_000, reason: 'released' } }))
     render(<SimsView token="" />); await flush()
@@ -485,7 +494,7 @@ describe('SimsView', () => {
     expect(snapshotCalls().at(-1)![0]).toBe(`/api/sims/${B}/snapshot.jpg`)
   })
 
-  it('attaches a live preview after a one-second hover, moves it to another hovered card and detaches thirty seconds after leaving', async () => {
+  it('attaches a live preview after a half-second hover, moves it to another hovered card and detaches thirty seconds after leaving', async () => {
     sims.push(device({ udid: B, name: 'Stray phone', slim: 'slim', lease: null }))
     render(<SimsView token="browser-token" />)
     await flush()
@@ -494,19 +503,19 @@ describe('SimsView', () => {
     const previews = () => screen.queryAllByTestId('live-preview').map((node) => node.dataset.udid)
     hover('Review UI', 'pointerenter')
     expect(snapshot('Review UI').querySelector('.sims-hover-ring')).not.toBeNull()
-    await tick(900); hover('Review UI', 'pointerleave')
+    await tick(400); hover('Review UI', 'pointerleave')
     expect(snapshot('Review UI').querySelector('.sims-hover-ring')).toBeNull()
     await tick(2_000); expect(previews()).toEqual([])
-    hover('Review UI', 'pointerenter'); await tick(1_000)
+    hover('Review UI', 'pointerenter'); await tick(500)
     // The badge waits for video: a preview that cannot start leaves the snapshot unlabelled.
     expect(previews()).toEqual([A]); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
     act(() => preview.onStreaming?.(true)); expect(within(snapshot('Review UI')).getByText('live')).toBeVisible()
     act(() => preview.onStreaming?.(false)); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
     hover('Review UI', 'pointerleave'); await tick(29_000)
-    hover('Stray phone', 'pointerenter'); await tick(500); hover('Stray phone', 'pointerleave')
+    hover('Stray phone', 'pointerenter'); await tick(200); hover('Stray phone', 'pointerleave')
     expect(previews()).toEqual([A])
     hover('Review UI', 'pointerenter'); await tick(5_000); expect(previews()).toEqual([A])
-    hover('Review UI', 'pointerleave'); hover('Stray phone', 'pointerenter'); await tick(1_000)
+    hover('Review UI', 'pointerleave'); hover('Stray phone', 'pointerenter'); await tick(500)
     expect(previews()).toEqual([B])
     hover('Stray phone', 'pointerleave'); await tick(29_999); expect(previews()).toEqual([B])
     await tick(1); expect(previews()).toEqual([])

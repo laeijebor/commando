@@ -25,7 +25,7 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() 
 function setup() {
   const children: Child[] = []
   const spawn = vi.fn((_command: string, args: string[]) => { const child = new Child(args); children.push(child); return child as unknown as ChildProcessWithoutNullStreams })
-  const service = new SimLiveService({ spawn, command: 'fake-baguette' }); services.push(service)
+  const service = new SimLiveService({ spawn, command: 'fake-baguette', graceMs: 0 }); services.push(service)
   const connect = (udid = A) => { const viewer = new Viewer(); service.connect(udid, viewer as unknown as SimLiveSocket); return viewer }
   const layout = async (width = 390, height = 844) => { const child = [...children].reverse().find((item) => item.args[0] === 'chrome')!; child.stdout.write(JSON.stringify({ screen: { width, height } })); child.emit('close', 0); await flush() }
   return { children, service, spawn, connect, layout }
@@ -33,6 +33,58 @@ function setup() {
 function chunk(tag: number, payload = Buffer.from('payload')) { const frame = Buffer.concat([Buffer.from([tag]), payload]); const length = Buffer.alloc(4); length.writeUInt32BE(frame.length); return Buffer.concat([length, frame]) }
 
 describe('live simulator sessions', () => {
+  it('keeps a session alive briefly after the last viewer leaves so a handoff reuses its children', async () => {
+    vi.useFakeTimers()
+    try {
+      const children: Child[] = []
+      const spawn = vi.fn((_command: string, args: string[]) => { const child = new Child(args); children.push(child); return child as unknown as ChildProcessWithoutNullStreams })
+      const service = new SimLiveService({ spawn, command: 'fake-baguette', graceMs: 3_000 }); services.push(service)
+      const first = new Viewer(); service.connect(A, first as unknown as SimLiveSocket)
+      children[0].stdout.write(JSON.stringify({ screen: { width: 390, height: 844 } })); children[0].emit('close', 0); await flush()
+      first.close(); vi.advanceTimersByTime(2_000)
+      const second = new Viewer(); service.connect(A, second as unknown as SimLiveSocket); await flush()
+      expect(spawn).toHaveBeenCalledTimes(3); expect(second.send.mock.calls[0]).toEqual([JSON.stringify({ type: 'meta', width: 390, height: 844 })])
+      vi.advanceTimersByTime(10_000); expect(children[1].kill).not.toHaveBeenCalled()
+      second.close(); vi.advanceTimersByTime(2_999); expect(children[1].kill).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1); expect(children[1].kill).toHaveBeenCalledOnce(); expect(service.status().sessions).toEqual([])
+    } finally { vi.useRealTimers() }
+  })
+
+  it('evicts a session that is only in its grace period when a third simulator needs the slot', async () => {
+    vi.useFakeTimers()
+    try {
+      const spawn = vi.fn((_command: string, args: string[]) => new Child(args) as unknown as ChildProcessWithoutNullStreams)
+      const service = new SimLiveService({ spawn, command: 'fake-baguette', graceMs: 3_000 }); services.push(service)
+      const a = new Viewer(); const b = new Viewer(); const c = new Viewer()
+      service.connect(A, a as unknown as SimLiveSocket); service.connect(B, b as unknown as SimLiveSocket)
+      a.close()
+      service.connect(C, c as unknown as SimLiveSocket)
+      expect(c.close).not.toHaveBeenCalled(); expect(service.status().sessions.map((item) => item.udid).sort()).toEqual([B, C])
+      const d = new Viewer(); service.connect(A, d as unknown as SimLiveSocket)
+      expect(d.close).toHaveBeenCalledWith(1013, expect.stringContaining('Two simulators'))
+    } finally { vi.useRealTimers() }
+  })
+
+  it('reports sessions and recent stops with timings, logging each lifecycle step and the child stderr', async () => {
+    const logs: string[] = []; let now = 1_000
+    const children: Child[] = []
+    const spawn = vi.fn((_command: string, args: string[]) => { const child = new Child(args); children.push(child); return child as unknown as ChildProcessWithoutNullStreams })
+    const service = new SimLiveService({ spawn, command: 'fake-baguette', graceMs: 0, log: (message) => logs.push(message), now: () => now }); services.push(service)
+    const viewer = new Viewer(); service.connect(A, viewer as unknown as SimLiveSocket)
+    expect(service.status().sessions).toEqual([expect.objectContaining({ udid: A, viewers: 1, ready: false, readyAfterMs: null, firstFrameAfterMs: null })])
+    now += 120
+    const layout = children[0]; layout.stdout.write(JSON.stringify({ screen: { width: 390, height: 844 } })); layout.emit('close', 0); await flush()
+    now += 80; children[1].stdout.write(chunk(2))
+    now += 20
+    expect(service.status().sessions).toEqual([{ udid: A, viewers: 1, ready: true, ageMs: 220, readyAfterMs: 120, firstFrameAfterMs: 200, lastFrameAgoMs: 20, frames: 1 }])
+    children[1].stderr.write('simulator is busy\n')
+    viewer.close()
+    expect(service.status().sessions).toEqual([])
+    expect(service.status().recentStops).toEqual([expect.objectContaining({ udid: A, reason: 'last viewer left', frames: 1, ageMs: 220 })])
+    expect(logs).toEqual(expect.arrayContaining([`start ${A}`, `join ${A}: 1 viewer(s)`, expect.stringContaining('ready'), expect.stringContaining('first frame'), `leave ${A}: 0 viewer(s)`, expect.stringContaining('stop') ]))
+    expect(logs.at(-1)).toContain('stderr: simulator is busy')
+  })
+
   it('shares stream/input children, frames fragmented and coalesced output, and seeds every new viewer after meta', async () => {
     const { children, spawn, connect, layout } = setup()
     const first = connect(A.toLowerCase()); const second = connect()
