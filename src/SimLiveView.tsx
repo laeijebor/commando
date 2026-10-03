@@ -7,9 +7,12 @@ type Point = { x: number; y: number }
 /** Height in points of the home-indicator band at the bottom of the screen. */
 const EDGE_BAND = 20
 
-/** Exactly one tile is active in App; the wall mounts only its focused overlay. */
-export function SimLiveView({ udid, token, active = true, connected = true, api: providedApi }: {
-  udid: string; token: string; active?: boolean; connected?: boolean; api?: SimsApiClient
+/**
+ * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
+ * A preview is a bare, view-only canvas that renders nothing until video is available.
+ */
+export function SimLiveView({ udid, token, active = true, connected = true, preview = false, onStreaming, api: providedApi }: {
+  udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; onStreaming?: (streaming: boolean) => void; api?: SimsApiClient
 }) {
   const api = useMemo(() => providedApi ?? createSimsApi(token), [providedApi, token])
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -152,7 +155,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       if (socket.current === ws) socket.current = null
       fallback(event.reason || 'Live simulator connection closed')
     }
-    canvas.current?.focus()
+    if (!preview) canvas.current?.focus()
     return () => {
       releasePointer()
       disposed = true
@@ -163,26 +166,34 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       for (const seed of seeds) { seed.onload = null; seed.onerror = null; seed.removeAttribute('src') }
       for (const seedUrl of urls) URL.revokeObjectURL(seedUrl)
     }
-  }, [active, connected, udid, token, revision])
+  }, [active, connected, udid, token, revision, preview])
 
   useEffect(() => {
-    if (active && !snapshot) canvas.current?.focus()
-  }, [active, snapshot])
+    if (active && !snapshot && !preview) canvas.current?.focus()
+  }, [active, snapshot, preview])
 
   useEffect(() => {
     const target = canvas.current
-    if (!target || !active || snapshot || !ready) return
+    if (!target || !active || snapshot || !ready || preview) return
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
       send({ type: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY })
     }
     target.addEventListener('wheel', wheel, { passive: false })
     return () => target.removeEventListener('wheel', wheel)
-  }, [active, snapshot, ready])
+  }, [active, snapshot, ready, preview])
+
+  const streaming = ready && !snapshot
+  useEffect(() => {
+    if (!streaming) return
+    onStreaming?.(true)
+    return () => onStreaming?.(false)
+    // Callers pass a state setter; a changing callback identity must not flap the flag.
+  }, [streaming])
 
   useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
   useEffect(() => {
-    if (!snapshot || !visible) return
+    if (!snapshot || !visible || preview) return
     const controller = new AbortController()
     let busy = false
     const refresh = async () => {
@@ -197,7 +208,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
     void refresh()
     const timer = window.setInterval(() => void refresh(), 2_000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [snapshot, visible, api, udid])
+  }, [snapshot, visible, api, udid, preview])
 
   const clamp = ({ x, y }: Point): Point => ({ x: Math.max(0, Math.min(dimensions.current.width, x)), y: Math.max(0, Math.min(dimensions.current.height, y)) })
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -219,20 +230,22 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
   const inputEnabled = active && !snapshot && ready
   const press = (button: string) => send({ type: 'button', button })
   const saveScreenshot = () => {
-    const save = (url: string) => {
+    const save = (url: string, extension: 'png' | 'jpg') => {
       const link = document.createElement('a')
       link.href = url
-      link.download = `simulator-${udid.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+      link.download = `simulator-${udid.slice(0, 8)}-${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`
       link.click()
     }
-    if (snapshot) { if (image) save(image); return }
+    // Fallback snapshots are JPEG; only the live canvas is encoded as PNG.
+    if (snapshot) { if (image) save(image, 'jpg'); return }
     canvas.current?.toBlob((blob) => {
       if (!blob) return
       const url = URL.createObjectURL(blob)
-      save(url)
+      save(url, 'png')
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
     }, 'image/png')
   }
+  if (preview) return snapshot ? null : <canvas ref={canvas} className="sim-live-preview" hidden={!ready} aria-hidden="true" />
   return <div className="sim-live">
     <div className="sims-actions sim-live-toolbar">
       <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
@@ -241,7 +254,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       <button type="button" disabled={!inputEnabled} title="Lock (⌘L)" onClick={() => press('lock')}>Lock</button>
       <button type="button" disabled={!inputEnabled} aria-label="Volume down" title="Volume down" onClick={() => press('volume-down')}>Vol −</button>
       <button type="button" disabled={!inputEnabled} aria-label="Volume up" title="Volume up" onClick={() => press('volume-up')}>Vol +</button>
-      <button type="button" disabled={snapshot ? !image : !ready} title="Save a PNG of the current screen" onClick={saveScreenshot}>Screenshot</button>
+      <button type="button" disabled={snapshot ? !image : !ready} title="Save an image of the current screen" onClick={saveScreenshot}>Screenshot</button>
       <button type="button" onClick={() => {
         void api.open(udid).then((result) => { if (result.raised === false) setReason(result.reason ?? 'Simulator activated') }).catch((error: unknown) => setReason(error instanceof Error ? error.message : 'Unable to open Simulator'))
       }}>Open Simulator</button>

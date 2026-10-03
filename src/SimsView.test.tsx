@@ -7,8 +7,12 @@ import type { SimWallDevice } from '../shared/protocol'
 import { SimsView } from './SimsView'
 import { simsCache } from './simsApi'
 
+const preview = vi.hoisted(() => ({ onStreaming: undefined as ((streaming: boolean) => void) | undefined }))
 vi.mock('./SimLiveView', () => ({
-  SimLiveView: ({ udid, token }: { udid: string; token: string }) => <div data-testid="live-view" data-udid={udid} data-token={token} />,
+  SimLiveView: ({ udid, token, preview: isPreview, onStreaming }: { udid: string; token: string; preview?: boolean; onStreaming?: (streaming: boolean) => void }) => {
+    if (isPreview) preview.onStreaming = onStreaming
+    return <span data-testid={isPreview ? 'live-preview' : 'live-view'} data-udid={udid} data-token={token} />
+  },
 }))
 
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
@@ -468,6 +472,33 @@ describe('SimsView', () => {
     expect(snapshotCalls()).toHaveLength(filteredCount)
     await intersect(true, 2)
     expect(snapshotCalls().at(-1)![0]).toBe(`/api/sims/${B}/snapshot.jpg`)
+  })
+
+  it('attaches a live preview after a one-second hover, moves it to another hovered card and detaches thirty seconds after leaving', async () => {
+    sims.push(device({ udid: B, name: 'Stray phone', slim: 'slim', lease: null }))
+    render(<SimsView token="browser-token" />)
+    await flush()
+    const snapshot = (name: string) => within(screen.getByRole('article', { name })).getByRole('button', { name: `View ${name} live` })
+    const hover = (name: string, type: 'pointerenter' | 'pointerleave') => act(() => { fireEvent(snapshot(name), Object.assign(new MouseEvent(type === 'pointerenter' ? 'pointerover' : 'pointerout', { bubbles: true }), { pointerType: 'mouse' })) })
+    const previews = () => screen.queryAllByTestId('live-preview').map((node) => node.dataset.udid)
+    hover('Review UI', 'pointerenter')
+    expect(snapshot('Review UI').querySelector('.sims-hover-ring')).not.toBeNull()
+    await tick(900); hover('Review UI', 'pointerleave')
+    expect(snapshot('Review UI').querySelector('.sims-hover-ring')).toBeNull()
+    await tick(2_000); expect(previews()).toEqual([])
+    hover('Review UI', 'pointerenter'); await tick(1_000)
+    // The badge waits for video: a preview that cannot start leaves the snapshot unlabelled.
+    expect(previews()).toEqual([A]); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
+    act(() => preview.onStreaming?.(true)); expect(within(snapshot('Review UI')).getByText('live')).toBeVisible()
+    act(() => preview.onStreaming?.(false)); expect(within(snapshot('Review UI')).queryByText('live')).toBeNull()
+    hover('Review UI', 'pointerleave'); await tick(29_000)
+    hover('Stray phone', 'pointerenter'); await tick(500); hover('Stray phone', 'pointerleave')
+    expect(previews()).toEqual([A])
+    hover('Review UI', 'pointerenter'); await tick(5_000); expect(previews()).toEqual([A])
+    hover('Review UI', 'pointerleave'); hover('Stray phone', 'pointerenter'); await tick(1_000)
+    expect(previews()).toEqual([B])
+    hover('Stray phone', 'pointerleave'); await tick(29_999); expect(previews()).toEqual([B])
+    await tick(1); expect(previews()).toEqual([])
   })
 
   it('renders counts, repo groups then No lease, lease labels, task and state/model chips', async () => {

@@ -148,6 +148,21 @@ describe('SimLiveView', () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     fireEvent.click(screen.getByText('Screenshot'))
     expect(toBlob).toHaveBeenCalled(); expect(click).toHaveBeenCalled()
+    expect(click.mock.contexts[0]).toHaveProperty('download', expect.stringMatching(/\.png$/))
+  })
+
+  it('saves fallback snapshots as JPEG and reports preview streaming only once video is ready', async () => {
+    vi.stubGlobal('VideoDecoder', undefined)
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const fallback = render(<SimLiveView udid={U} token="" />); await flush()
+    fireEvent.click(screen.getByText('Screenshot'))
+    expect(click.mock.contexts[0]).toHaveProperty('download', expect.stringMatching(/\.jpg$/))
+    fallback.unmount(); vi.stubGlobal('VideoDecoder', Decoder)
+    const onStreaming = vi.fn()
+    const { container, unmount } = render(<SimLiveView udid={U} token="" preview onStreaming={onStreaming} />)
+    expect(onStreaming).not.toHaveBeenCalled(); expect(container.querySelector('canvas')).not.toBeVisible()
+    meta(); expect(onStreaming.mock.calls).toEqual([[true]])
+    unmount(); expect(onStreaming.mock.calls).toEqual([[true], [false]])
   })
 
   it('sends wheel, focused code/modifier keys and toolbar buttons; Escape releases focus', async () => {
