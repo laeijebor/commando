@@ -8,6 +8,8 @@ import './sims-view.css'
 import './sim-live.css'
 
 /** Height in points of the home-indicator band at the bottom of the screen. */
+/** Baguette cannot report a device's orientation, so reopening a view resumes the one this page last set. */
+export const lastOrientation = new Map<string, SimOrientation>()
 const EDGE_BAND = 20
 /** Points of wheel travel before the synthetic finger presses, and how long after the last wheel event it lifts. */
 const WHEEL_SLOP = 12
@@ -27,7 +29,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const dimensions = useRef({ width: 0, height: 0 })
   const [nativeSize, setNativeSize] = useState({ width: 390, height: 844 })
   const [bounds, setBounds] = useState({ width: 0, height: 0 })
-  const [viewOrientation, setOrientation] = useState<SimOrientation>('portrait')
+  const [viewOrientation, setOrientation] = useState<SimOrientation>(() => lastOrientation.get(udid) ?? 'portrait')
   const orientation = preview ? 'portrait' : viewOrientation
   // `second` is set for an Option-held two-finger gesture; `offset` is the vector between the fingers.
   const pointer = useRef<{ id: number; x: number; y: number; second?: Point; edge?: NativeEdge } | null>(null)
@@ -75,7 +77,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     return perform('orientation', async () => {
       await api.action(udid, { action: 'orientation', value: next })
       releasePointer(); hover.current = null; offset.current = { x: 0, y: 0 }
-      setFingers({ pressed: false, points: [] }); setOrientation(next)
+      setFingers({ pressed: false, points: [] }); setOrientation(next); lastOrientation.set(udid, next)
     })
   }
 

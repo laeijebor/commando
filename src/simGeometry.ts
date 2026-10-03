@@ -4,9 +4,9 @@ export type Point = { x: number; y: number }
 export type ScreenSize = { width: number; height: number }
 export type NativeEdge = 'left' | 'right' | 'top' | 'bottom'
 
-// Clockwise CSS quarter turns; swap the landscape entries if Baguette's direction names differ.
+// Clockwise CSS quarter turns that bring the content upright. Checked on a simulator: in landscape-right the content is drawn a quarter turn clockwise in the native frame.
 export const ORIENTATION_TURNS: Record<SimOrientation, number> = {
-  portrait: 0, 'landscape-left': 3, 'landscape-right': 1, 'portrait-upside-down': 2,
+  portrait: 0, 'landscape-left': 1, 'landscape-right': 3, 'portrait-upside-down': 2,
 }
 export function rotateOrientation(orientation: SimOrientation, direction: 1 | -1): SimOrientation {
   const turns = (ORIENTATION_TURNS[orientation] + direction + 4) % 4

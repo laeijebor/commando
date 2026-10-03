@@ -2,7 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SimLiveView } from './SimLiveView'
+import { SimLiveView, lastOrientation } from './SimLiveView'
 import { SIM_ORIENTATIONS, type SimOrientation } from '../shared/sim-actions'
 import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screenBottomEdge, screenSize, screenToNative } from './simGeometry'
 
@@ -74,6 +74,7 @@ function pointer(canvas: HTMLElement, type: string, x: number, y: number, keys: 
   fireEvent(canvas, event)
 }
 beforeEach(() => {
+  lastOrientation.clear()
   vi.useFakeTimers(); Socket.instances = []; Decoder.instances = []; images = []; rafs = new Map(); capture = new Set(); visibility = 'visible'; draw.mockClear()
   vi.stubGlobal('WebSocket', Socket); vi.stubGlobal('VideoDecoder', Decoder)
   Recorder.instances = []; Recorder.isTypeSupported.mockImplementation((type) => type === 'video/mp4'); captureStream.mockClear(); trackStop.mockClear(); ScreenObserver.instances = []
@@ -101,9 +102,9 @@ describe('simulator rotation geometry', () => {
   const size = { width: 390, height: 844 }
   it.each([
     ['portrait', [78, 590.8], 'bottom', 0],
-    ['landscape-right', [273, 675.2], 'right', 90],
+    ['landscape-left', [273, 675.2], 'right', 90],
     ['portrait-upside-down', [312, 253.2], 'top', 180],
-    ['landscape-left', [117, 168.8], 'left', 270],
+    ['landscape-right', [117, 168.8], 'left', 270],
   ] as const)('maps fractions, inverse points, bottom edge and CSS rotation for %s', (orientation, expected, edge, degrees) => {
     const native = screenToNative({ x: 0.2, y: 0.7 }, size, orientation)
     expect(native.x).toBeCloseTo(expected[0]); expect(native.y).toBeCloseTo(expected[1])
@@ -138,7 +139,7 @@ describe('SimLiveView', () => {
     const { container } = render(<SimLiveView udid={U} token="" />); meta()
     const canvas = container.querySelector('canvas')!
     act(() => canvas.focus())
-    for (const value of ['landscape-right', 'portrait-upside-down', 'landscape-left', 'portrait']) {
+    for (const value of ['landscape-left', 'portrait-upside-down', 'landscape-right', 'portrait']) {
       fireEvent.keyDown(canvas, { key: 'ArrowRight', code: 'ArrowRight', metaKey: true }); await flush()
       expect(fetch).toHaveBeenLastCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ body: JSON.stringify({ action: 'orientation', value }) }))
     }
@@ -179,9 +180,9 @@ describe('SimLiveView', () => {
 
   it.each([
     ['portrait', [97.5, 211], [156, 253.2], [195, 839], 'bottom', [20, 10], [-20, 40]],
-    ['landscape-right', [97.5, 633], [117, 506.4], [385, 422], 'right', [10, -20], [40, 20]],
+    ['landscape-left', [97.5, 633], [117, 506.4], [385, 422], 'right', [10, -20], [40, 20]],
     ['portrait-upside-down', [292.5, 633], [234, 590.8], [195, 5], 'top', [-20, -10], [20, -40]],
-    ['landscape-left', [292.5, 211], [273, 337.6], [5, 422], 'left', [-10, 20], [-40, -20]],
+    ['landscape-right', [292.5, 211], [273, 337.6], [5, 422], 'left', [-10, 20], [-40, -20]],
   ] as const)('maps taps, drags, edge envelopes, two fingers, markers and wheel in %s', async (orientation, tap, moved, bottom, edge, pan, wheel) => {
     const { container } = render(<SimLiveView udid={U} token="" />); meta(); await orient(orientation)
     const canvas = container.querySelector('canvas')!, ws = Socket.instances[0]
@@ -231,7 +232,7 @@ describe('SimLiveView', () => {
     const canvas = container.querySelector('canvas')!, observer = ScreenObserver.instances[0]
     observer.resize(600, 400)
     expect(parseFloat(canvas.style.height)).toBe(400)
-    await orient('landscape-right')
+    await orient('landscape-left')
     expect(parseFloat(canvas.style.height)).toBe(600)
     expect(parseFloat(canvas.style.width)).toBeCloseTo(600 * 390 / 844)
     observer.resize(200, 100)
@@ -245,7 +246,7 @@ describe('SimLiveView', () => {
     const canvas = container.querySelector('canvas')!, ws = Socket.instances[0]
     pointer(canvas, 'pointermove', 60, 120, { altKey: true })
     expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(2)
-    await orient('landscape-right')
+    await orient('landscape-left')
     expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(0)
     pointer(canvas, 'pointerdown', 107.5, 231)
     act(() => canvas.focus())
@@ -275,7 +276,7 @@ describe('SimLiveView', () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     render(<SimLiveView udid={U} token="" />); meta(); video()
     expect(screen.getByRole('button', { name: 'Record' })).not.toHaveAttribute('title', expect.stringContaining('unrotated'))
-    await orient('landscape-right')
+    await orient('landscape-left')
     expect(screen.getByRole('button', { name: 'Record' })).toHaveAttribute('title', expect.stringContaining('unrotated canvas pixels'))
     fireEvent.click(screen.getByRole('button', { name: 'Record' }))
     expect(captureStream).toHaveBeenCalledWith(30)
