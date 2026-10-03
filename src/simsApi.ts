@@ -1,9 +1,10 @@
-import type { SimOpenResult, SimWallDevice } from '../shared/protocol'
+import type { SimOpenResult, SimPoolSummary, SimWallDevice } from '../shared/protocol'
 
 const LISTING_STORAGE_KEY = 'commando.sims-listing'
 export type CachedSimSnapshot = { url: string; at: number }
 export const simsCache = {
   listing: undefined as SimWallDevice[] | undefined,
+  pool: undefined as SimPoolSummary | undefined,
   snapshots: new Map<string, CachedSimSnapshot>(),
 }
 
@@ -59,7 +60,8 @@ export function readCachedSims(): SimWallDevice[] | undefined {
   if (simsCache.listing) return simsCache.listing
   try {
     const stored: unknown = JSON.parse(window.localStorage.getItem(LISTING_STORAGE_KEY) ?? 'null')
-    if (Array.isArray(stored) && stored.every((sim) => sim && typeof sim.udid === 'string'
+    const sims = Array.isArray(stored) ? stored : stored && typeof stored === 'object' && 'sims' in stored ? stored.sims : undefined
+    if (Array.isArray(sims) && sims.every((sim) => sim && typeof sim.udid === 'string'
       && typeof sim.name === 'string' && typeof sim.deviceModel === 'string'
       && typeof sim.runtime === 'string' && ['slim', 'unslimmed', 'unknown'].includes(sim.slim)
       && (sim.endedLease === undefined || sim.endedLease === null || (typeof sim.endedLease === 'object'
@@ -67,19 +69,23 @@ export function readCachedSims(): SimWallDevice[] | undefined {
         && typeof sim.endedLease.label === 'string' && Number.isFinite(sim.endedLease.endedAt)
         && ['pane-closed', 'released'].includes(sim.endedLease.reason)))
       && (sim.lease === null || (sim.lease && typeof sim.lease.sessionName === 'string')))) {
-      simsCache.listing = stored
+      simsCache.listing = sims
+      const pool = stored && typeof stored === 'object' && 'pool' in stored ? stored.pool as Partial<SimPoolSummary> | undefined : undefined
+      simsCache.pool = pool && Number.isInteger(pool.size) && Number.isInteger(pool.free) && pool.size! >= 0 && pool.free! >= 0 && pool.free! <= pool.size!
+        ? pool as SimPoolSummary : undefined
     }
   } catch { /* Storage may be unavailable or malformed. */ }
   return simsCache.listing
 }
 
-export function cacheSims(sims: SimWallDevice[]): void {
+export function cacheSims(sims: SimWallDevice[], pool?: SimPoolSummary): void {
   simsCache.listing = sims
+  simsCache.pool = pool
   const udids = new Set(sims.map((sim) => sim.udid))
   for (const [udid, frame] of simsCache.snapshots) {
     if (!udids.has(udid)) { URL.revokeObjectURL(frame.url); simsCache.snapshots.delete(udid) }
   }
-  try { window.localStorage.setItem(LISTING_STORAGE_KEY, JSON.stringify(sims)) } catch { /* Storage may be unavailable. */ }
+  try { window.localStorage.setItem(LISTING_STORAGE_KEY, JSON.stringify({ sims, pool })) } catch { /* Storage may be unavailable. */ }
 }
 
 export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
@@ -109,9 +115,9 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
     },
     list: async (signal?: AbortSignal): Promise<SimWallDevice[]> => (await (await request('', 'GET', signal)).json()).sims,
     /** The listing plus whether the daemon answered from cache while refreshing. */
-    listing: async (signal?: AbortSignal): Promise<{ sims: SimWallDevice[]; stale: boolean }> => {
-      const payload = await (await request('', 'GET', signal)).json() as { sims: SimWallDevice[]; stale?: boolean }
-      return { sims: payload.sims, stale: payload.stale === true }
+    listing: async (signal?: AbortSignal): Promise<{ sims: SimWallDevice[]; stale: boolean; pool?: SimPoolSummary }> => {
+      const payload = await (await request('', 'GET', signal)).json() as { sims: SimWallDevice[]; stale?: boolean; pool?: SimPoolSummary }
+      return { sims: payload.sims, stale: payload.stale === true, pool: payload.pool }
     },
     snapshot: async (udid: string, signal: AbortSignal): Promise<Blob> => (await request(`/${encodeURIComponent(udid)}/snapshot.jpg`, 'GET', signal)).blob(),
     snapshotFrame: async (udid: string, signal: AbortSignal): Promise<{ blob: Blob; at: number }> => {

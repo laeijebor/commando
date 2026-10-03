@@ -69,7 +69,7 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
-import { SimLeaseApi, SimLeaseRegistry, defaultSimLeaseStatePath } from './sim-leases.js'
+import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
@@ -629,7 +629,7 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
-  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port) })
+  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port), pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
 
   const publishedBriefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
   const briefTargetIds = new Map<string, string>()
