@@ -1,4 +1,4 @@
-.sim-live { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface-deep); color: var(--text); }
+.sim-live { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--surface-deep); color: var(--text); container-type: inline-size; }
 /* Wraps so every control stays reachable in a narrow tile. */
 .sim-live-toolbar { position: relative; flex: none; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0; padding: 6px; }
 .sim-live-toolbar > .sims-pill { flex: none; margin-right: auto; }
@@ -18,6 +18,29 @@
 .sim-live-screen canvas { touch-action: none; outline: 2px solid transparent; outline-offset: 2px; }
 .sim-live-screen canvas[hidden] { display: none; }
 .sim-live-screen canvas.is-focused { outline-color: var(--accent); }
+.sim-live-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.sim-live-toolbar > button[aria-label="Inspect"][aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.sim-live-screen:has(.sim-inspector-overlay) canvas { cursor: crosshair; }
+.sim-inspector-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+.sim-inspector-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.sim-inspector-box > span { position: absolute; top: 0; left: 0; max-width: 240px; padding: 2px 4px; color: var(--surface-deep); background: var(--accent); border-radius: 2px; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sim-inspector-panel { flex: 0 0 260px; min-width: 0; overflow: auto; border-left: 1px solid var(--border); padding: 8px; font-size: 11px; background: var(--surface-raised); }
+.sim-inspector-panel header { display: flex; align-items: center; gap: 6px; }
+.sim-inspector-panel header strong { margin-right: auto; }
+.sim-inspector-panel button { display: flex; align-items: center; gap: 3px; padding: 4px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; }
+.sim-inspector-panel svg { width: 14px; height: 14px; }
+.sim-inspector-panel dl > div { margin: 8px 0; }
+.sim-inspector-panel dt { color: var(--muted); }
+.sim-inspector-panel dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.sim-inspector-panel ol { padding-left: 18px; }
+.sim-inspector-panel li { margin: 6px 0; overflow-wrap: anywhere; }
+.sim-inspector-panel li span { display: block; color: var(--muted); }
+.sim-inspector-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
+@container (max-width: 560px) {
+  .sim-live-body { flex-direction: column; }
+  .sim-live-body:has(.sim-inspector-panel) .sim-live-screen { min-height: 120px; }
+  .sim-inspector-panel { flex: 0 1 auto; max-height: 45%; border-left: 0; border-top: 1px solid var(--border); }
+}
 .sim-live-toolbar > .sim-live-record.is-recording { width: auto; gap: 4px; color: #ef4444; }
 .sim-live-record.is-recording svg { fill: currentColor; }
 .sim-live-record span { font-size: 10px; font-variant-numeric: tabular-nums; }

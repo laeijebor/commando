@@ -55,6 +55,141 @@ async function call(api: SimWallApi, path = '', method = 'GET', body?: unknown) 
 }
 
 describe('SimWallApi', () => {
+  const element = { role: 'AXButton', label: 'General', identifier: 'com.apple.settings.general', value: null, title: null,
+    frame: { x: 20, y: 293.33, width: 400, height: 52 } }
+  function inspection(output: string, source?: SimWallRunner) {
+    const baseline = setup()
+    const result = setup(async (command, args, options) => command === 'baguette' ? output
+      : command === 'argent' && source ? source(command, args, options) : baseline.runner(command, args))
+    result.registry.upsert('%1', { sessionId: '$1', sessionName: 'Work' }, {
+      udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: 'backend', port: 3000 }, { name: 'metro', port: 8082 }],
+    })
+    return result
+  }
+
+  it('hit-tests device points with argv, a five-second deadline, and only accessibility details', async () => {
+    const { api, runner } = inspection(JSON.stringify({ ...element, children: [], focused: false }))
+    const response = await call(api, `/${A.toLowerCase()}/inspect?x=20.5&y=293.33`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: true, element })
+    expect(runner).toHaveBeenLastCalledWith('baguette', ['describe-ui', '--udid', A, '--x', '20.5', '--y', '293.33'], { timeout: 5000 })
+  })
+
+  it.each(['x=NaN&y=1', 'x=Infinity&y=1', 'x=-1&y=1', 'x=10001&y=1', 'x=1&y=10001', 'x=1', 'x=&y=1', 'x=1&y=abc', 'x=1&x=2&y=1'])('rejects invalid inspect coordinates before running anything: %s', async (query) => {
+    const { api, runner } = setup()
+    for (const path of ['inspect', 'inspect/source']) expect((await call(api, `/${A}/${path}?${query}`)).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each(['inspect', 'inspect/source'])('validates the inspect UUID and method: %s', async (path) => {
+    const { api, runner } = setup()
+    expect((await call(api, `/bad/${path}?x=1&y=2`)).status).toBe(400)
+    expect((await call(api, `/${A}/${path}?x=1&y=2`, 'POST')).status).toBe(405)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each(['null', `[baguette] [ax] diagnostic\n${JSON.stringify(element)}\n`])('accepts a null hit and diagnostics around JSON', async (output) => {
+    const { api } = inspection(output)
+    expect((await call(api, `/${A}/inspect?x=0&y=10000`)).json()).toEqual({ ok: true, element: output === 'null' ? null : element })
+  })
+
+  it.each(['not JSON', '{}', '[]', JSON.stringify({ ...element, frame: { x: 0, y: 0, width: -1, height: 52 } })])('reports malformed accessibility output clearly: %s', async (output) => {
+    const { api } = inspection(output)
+    const response = await call(api, `/${A}/inspect?x=1&y=2`)
+    expect(response.status).toBe(500)
+    expect(response.json().error).toMatch(/Invalid .*response from baguette describe-ui/)
+  })
+
+  it('reports accessibility command errors and enforces the hit-test deadline', async () => {
+    const baseline = setup()
+    const hung = setup(async (command, args) => command === 'baguette' ? new Promise(() => {}) : baseline.runner(command, args))
+    await hung.api.list()
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/inspect?x=1&y=2`)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await request).status).toBe(504)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+    const failing = setup(async (command, args) => {
+      if (command === 'baguette') throw Object.assign(new Error('exec failed'), { stderr: '[baguette] access denied\n' })
+      return baseline.runner(command, args)
+    })
+    expect((await call(failing.api, `/${A}/inspect?x=1&y=2`)).json().error).toBe('baguette failed: [baguette] access denied')
+  })
+
+  it('resolves the current lease Metro port, connects before inspecting, and parses nested source records in order', async () => {
+    const components = [{ componentName: 'Button', source: { fileName: '/app/Button.tsx', lineNumber: 12, columnNumber: 3 }, codeFragment: '<Button />' },
+      { name: 'Screen', file: '/app/Screen.tsx', line: 5 }]
+    const { api, runner, registry } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{"ok":true}' : JSON.stringify({ result: { components } }))
+    const response = await call(api, `/${A}/inspect/source?x=20.5&y=30`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: true, components: [{ name: 'Button', file: '/app/Button.tsx', line: 12, column: 3, code: '<Button />' }, { name: 'Screen', file: '/app/Screen.tsx', line: 5 }] })
+    expect(runner.mock.calls).toEqual([
+      ['argent', ['run', 'debugger-connect', '--device_id', A, '--port', '8082', '--json'], { timeout: 15_000 }],
+      ['argent', ['run', 'debugger-inspect-element', '--device_id', A, '--port', '8082', '--x', '20.5', '--y', '30', '--json'], { timeout: 15_000 }],
+    ])
+    registry.upsert('%1', { sessionId: '$1', sessionName: 'Work' }, { udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: 'metro', port: 9000 }] })
+    await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(runner.mock.calls.at(-1)![1]).toContain('9000')
+  })
+
+  it.each([
+    '[{"name":"Button","file":"Button.tsx","line":1}]',
+    '{"componentName":"Button","location":{"filePath":"Button.tsx","line":1}}',
+    JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ components: [{ name: 'Button', file: 'Button.tsx', line: 1 }] }) }] }),
+  ])('parses defensive Argent object, array and tool-text shapes: %s', async (raw) => {
+    const { api } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{}' : raw)
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toEqual({ ok: true, components: [{ name: 'Button', file: 'Button.tsx', line: 1 }] })
+  })
+
+  it.each(['unknown output', '{"unexpected":true}', '[{"name":"Button","line":"bad","file":42}]'])('keeps unrecognised source output as raw text: %s', async (raw) => {
+    const { api } = inspection('', async (_command, args) => args[1] === 'debugger-connect' ? '{}' : raw)
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toEqual({ ok: true, components: [], raw })
+  })
+
+  it.each(['absent', 'backend-only', 'closed', 'released'])('returns no-metro-port for a %s lease without shelling out', async (state) => {
+    const { api, registry, runner } = setup()
+    if (state !== 'absent') registry.upsert(state === 'closed' ? '%9' : '%1', { sessionId: '$1', sessionName: 'Work' }, {
+      udid: A, originalName: 'Phone', via: 'adopted', ports: [{ name: state === 'backend-only' ? 'backend' : 'metro', port: 8082 }],
+    })
+    if (state === 'released') registry.delete('%1')
+    const response = await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toEqual({ ok: false, reason: 'no-metro-port' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['connect', 'ENOENT', 'argent-missing'], ['inspect', 'ENOENT', 'argent-missing'],
+    ['connect', 'offline', 'not-connected'], ['inspect', 'not connected to Metro', 'not-connected'], ['inspect', 'bad inspection', 'failed'],
+  ])('returns an expected source failure for %s: %s', async (stage, message, reason) => {
+    const { api, runner } = inspection('', async (_command, args) => {
+      if (args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element')) throw Object.assign(new Error(message), { code: message })
+      return '{}'
+    })
+    const response = await call(api, `/${A}/inspect/source?x=1&y=2`)
+    expect(response.status).toBe(200)
+    expect(response.json()).toMatchObject({ ok: false, reason })
+    expect(runner).toHaveBeenCalledTimes(stage === 'connect' ? 1 : 2)
+    if (reason !== 'argent-missing') expect(response.json()).toMatchObject({ message: expect.any(String), port: 8082 })
+  })
+
+  it.each(['connect', 'inspect'])('handles unsuccessful Argent JSON and a timeout during %s', async (stage) => {
+    const { api } = inspection('', async (_command, args) => args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element') ? '{"success":false,"message":"tool failed"}' : '{}')
+    expect((await call(api, `/${A}/inspect/source?x=1&y=2`)).json()).toMatchObject({ ok: false, reason: stage === 'connect' ? 'not-connected' : 'failed' })
+    const hung = inspection('', async (_command, args) => args[1] === (stage === 'connect' ? 'debugger-connect' : 'debugger-inspect-element') ? new Promise(() => {}) : '{}')
+    vi.useFakeTimers()
+    try {
+      const request = call(hung.api, `/${A}/inspect/source?x=1&y=2`)
+      await vi.advanceTimersByTimeAsync(15_000)
+      const response = await request
+      expect(response.status).toBe(200)
+      expect(response.json()).toMatchObject({ ok: false, message: expect.stringContaining('15 seconds') })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
   it.each([
     ...SIM_ORIENTATIONS.map((value): [unknown, string, string[]] => [{ action: 'orientation', value }, 'baguette', ['orientation', '--udid', A, value]]),
     [{ action: 'appearance', value: 'light' }, 'baguette', ['interface', 'appearance', '--udid', A, 'light']],

@@ -1,9 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { Camera, Circle, Home, Link, Lock, MoreHorizontal, PanelsTopLeft, RotateCw, SunMoon } from 'lucide-react'
+import { Camera, Circle, Home, Link, Lock, MoreHorizontal, PanelsTopLeft, RotateCw, ScanSearch, SunMoon } from 'lucide-react'
 import { SIM_NETWORK_PROFILES, type SimAction, type SimOrientation } from '../shared/sim-actions'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screenBottomEdge, screenSize, screenToNative, type NativeEdge, type Point } from './simGeometry'
 import { useSimRecording } from './useSimRecording'
+import { useSimInspector } from './useSimInspector'
+import { SimInspectorBox, SimInspectorPanel } from './SimInspector'
 import './sims-view.css'
 import './sim-live.css'
 
@@ -265,6 +267,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   }, [active, snapshot, preview])
 
   const streaming = ready && !snapshot && (!preview || painted)
+  const inspector = useSimInspector(api, udid, active && streaming && !preview)
   const recording = useSimRecording(canvas, active && streaming && !preview, udid, setReason)
   useEffect(() => {
     const target = canvas.current
@@ -338,7 +341,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     const width = target.width * scale, height = target.height * scale
     return { left: rect.left + (rect.width - width) / 2, top: rect.top, width, height }
   }
-  const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+  const point = (event: Pick<ReactPointerEvent<HTMLCanvasElement>, 'currentTarget' | 'clientX' | 'clientY'>) => {
     const rect = screenRect(event.currentTarget)
     return clamp(screenToNative({ x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }, dimensions.current, orientation))
   }
@@ -358,6 +361,10 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     }) })
   }
   const inputEnabled = active && streaming
+  const toggleInspect = () => {
+    releasePointer(); hover.current = null; setFingers({ pressed: false, points: [] })
+    inspector.setEnabled(!inspector.enabled)
+  }
   const press = (button: string) => send({ type: 'button', button })
   const saveScreenshot = () => {
     const save = (url: string, extension: 'png' | 'jpg') => {
@@ -386,6 +393,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
         onPointerDown={(event) => {
           if (!inputEnabled || pointer.current || event.button !== 0) return
           event.preventDefault(); if (!preview) event.currentTarget.focus()
+          if (inspector.enabled) return
           const position = point(event)
           if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return
           const second = event.altKey ? secondFinger(position, event.shiftKey) : undefined
@@ -401,6 +409,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
         onPointerMove={(event) => {
           const position = point(event)
           if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return
+          if (inspector.enabled) { inspector.move(position); return }
           if (!pointer.current) {
             // Preview where both fingers will land while Option is held.
             hover.current = position
@@ -427,17 +436,28 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           releasePointer()
         }}
         onPointerCancel={releasePointer} onLostPointerCapture={releasePointer}
-        onPointerLeave={() => { hover.current = null; releasePointer() }}
+        onPointerLeave={() => { hover.current = null; releasePointer(); inspector.leave() }}
+        onClick={(event) => {
+          if (!inspector.enabled || event.button !== 0) return
+          const position = point(event)
+          if (Number.isFinite(position.x) && Number.isFinite(position.y)) inspector.select(position)
+        }}
         onPaste={preview ? undefined : (event) => {
           const text = event.clipboardData.getData('text/plain')
-          if (!inputEnabled || !text) return
+          if (!inputEnabled || inspector.enabled || !text) return
           event.preventDefault()
           send({ type: 'paste', text: text.slice(0, 4096), press: true })
         }}
         onKeyUp={preview ? undefined : (event) => { if (event.key === 'Alt' && !pointer.current) setFingers({ pressed: false, points: [] }) }}
         onKeyDown={preview ? undefined : (event) => {
-          if (event.key === 'Escape') { event.preventDefault(); releasePointer(); event.currentTarget.blur(); return }
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            if (inspector.enabled) { event.stopPropagation(); inspector.setEnabled(false); return }
+            releasePointer(); event.currentTarget.blur(); return
+          }
           if (!inputEnabled || document.activeElement !== event.currentTarget) return
+          if (event.metaKey && event.shiftKey && event.code === 'KeyI') { event.preventDefault(); event.stopPropagation(); toggleInspect(); return }
+          if (inspector.enabled) { event.preventDefault(); event.stopPropagation(); return }
           // ⌘V falls through to the paste event so the host clipboard reaches the simulator.
           if (event.metaKey && event.code === 'KeyV') return
           event.preventDefault(); event.stopPropagation()
@@ -453,13 +473,17 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
         }} />
   const fingerMarkers = fingers.points.map((finger, index) => <span key={index} className={`sim-live-finger${fingers.pressed ? ' is-pressed' : ''}`} style={{ left: finger.x, top: finger.y }} aria-hidden="true" />)
   if (preview) return snapshot ? null : <>{liveCanvas}{fingerMarkers}</>
-  return <div className="sim-live">
+  // Container queries establish a containing block; viewport finger markers must stay outside it.
+  return <><div className="sim-live" onKeyDown={(event) => {
+    if (inspector.enabled && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); inspector.setEnabled(false) }
+  }}>
     <div ref={toolbar} className="sims-actions sim-live-toolbar">
       <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
       <button type="button" disabled={!inputEnabled} aria-label="Home" title="Home (⌘⇧H)" onClick={() => press('home')}><Home aria-hidden="true" /></button>
       <button type="button" disabled={!inputEnabled} aria-label="App Switcher" title="App Switcher" onClick={() => press('app-switcher')}><PanelsTopLeft aria-hidden="true" /></button>
       <button type="button" disabled={!inputEnabled} aria-label="Lock" title="Lock (⌘L)" onClick={() => press('lock')}><Lock aria-hidden="true" /></button>
       <button type="button" disabled={snapshot ? !image : !ready} aria-label="Screenshot" title="Save an image of the current screen" onClick={saveScreenshot}><Camera aria-hidden="true" /></button>
+      <button type="button" disabled={!inputEnabled} aria-label="Inspect" aria-pressed={inspector.enabled} title="Inspect element (⌘⇧I)" onClick={toggleInspect}><ScanSearch aria-hidden="true" /></button>
       <button type="button" disabled={!connected || busy.has('orientation')} aria-label="Rotate right" title="Rotate right (⌘→)" onClick={() => void rotate(1)}><RotateCw aria-hidden="true" /></button>
       <button type="button" className={`sim-live-record${recording.recording ? ' is-recording' : ''}`} disabled={!recording.recording && (!inputEnabled || !recording.available)} aria-label={recording.recording ? 'Stop recording' : 'Record'} aria-pressed={recording.recording}
         title={`${recording.recording ? 'Stop and save recording' : 'Record live video'}${orientation !== 'portrait' ? ' (captures unrotated canvas pixels)' : ''}`} onClick={recording.toggle}><Circle aria-hidden="true" />{recording.recording ? <span>{recording.elapsed}</span> : null}</button>
@@ -507,14 +531,19 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
         }}>Open in Simulator</button>
       </div> : null}
     </div>
+    <div className="sim-live-body">
     <div ref={screen} className="sim-live-screen">
       {snapshot ? (image ? <img src={image} style={screenStyle} alt="Simulator snapshot" onLoad={(event) => {
         const { naturalWidth: width, naturalHeight: height } = event.currentTarget
         if (width && height) setNativeSize({ width, height })
       }} /> : <span className="sims-empty">Waiting for snapshot…</span>) : null}
-      {liveCanvas}{fingerMarkers}
+      {liveCanvas}
+      {inspector.enabled && inspector.element ? <SimInspectorBox element={inspector.element} size={nativeSize} canvasSize={canvasSize} orientation={orientation} /> : null}
+    </div>
+    {inspector.enabled && inspector.selected ? <SimInspectorPanel element={inspector.selected} source={inspector.source} onClose={inspector.close} /> : null}
     </div>
     {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
     {reason ? <p className="sims-error" role="status">{reason}</p> : null}
-  </div>
+    {inspector.enabled && inspector.error ? <p className="sims-error" role="status">{inspector.error}</p> : null}
+  </div>{fingerMarkers}</>
 }

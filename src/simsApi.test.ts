@@ -3,6 +3,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { cacheSims, createSimsApi, readCachedSims, simsCache } from './simsApi'
 
 describe('simulator claim actions', () => {
+  it('fetches both inspector layers with device points, auth, encoding and cancellation', async () => {
+    const element = { role: 'AXButton', label: 'General', identifier: 'general', value: null, title: null, frame: { x: 1, y: 2, width: 3, height: 4 } }
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, element })))
+      .mockResolvedValueOnce(new Response('{"ok":false,"reason":"no-metro-port"}'))
+      .mockResolvedValueOnce(new Response('{"error":"Invalid coordinates"}', { status: 400 }))
+    const signal = new AbortController().signal, api = createSimsApi('owner', fetcher)
+    await expect(api.inspect('sim/udid', 1.5, 2, signal)).resolves.toEqual({ ok: true, element })
+    await expect(api.inspectSource('sim/udid', 1.5, 2, signal)).resolves.toEqual({ ok: false, reason: 'no-metro-port' })
+    for (const path of ['inspect', 'inspect/source']) expect(fetcher).toHaveBeenCalledWith(`/api/sims/sim%2Fudid/${path}?x=1.5&y=2`, expect.objectContaining({
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', signal, headers: { Authorization: 'Bearer owner' },
+    }))
+    await expect(api.inspect('sim', -1, 2)).rejects.toThrow('Invalid coordinates')
+  })
+
   it('sends orientation actions through the authenticated client', async () => {
     const fetcher = vi.fn(async () => new Response('{"ok":true}'))
     await createSimsApi('owner', fetcher).action('sim/udid', { action: 'orientation', value: 'landscape-left' })
