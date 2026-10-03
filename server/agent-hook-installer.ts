@@ -780,26 +780,109 @@ export function formatLabel(sessionName, task = '') {
   return Array.from(description ? session + ' · ' + description : session).slice(0, 60).join('')
 }
 
-export function chooseDevice(listing, heldUdids, requested) {
+const poolNumber = (name) => Number(/^Commando Pool ([1-9][0-9]*)$/.exec(name ?? '')?.[1] ?? Infinity)
+const iosDevices = (listing) => Object.entries(listing.devices ?? {}).filter(([runtime]) => /\.iOS-\d/.test(runtime)).flatMap(([, devices]) => devices)
+
+export function chooseDevice(listing, heldUdids, requested, members = []) {
   const held = new Set(heldUdids.map((id) => id.toUpperCase()))
-  const runtimes = Object.entries(listing.devices ?? {}).filter(([runtime, devices]) =>
-    /\.iOS-\d/.test(runtime) && devices.some((device) => device.isAvailable === true))
-  const version = (runtime) => runtime.match(/iOS-(\d+(?:-\d+)*)/)[1].split('-').map(Number)
-  runtimes.sort(([left], [right]) => {
-    const a = version(left), b = version(right)
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const diff = (b[i] ?? 0) - (a[i] ?? 0)
-      if (diff) return diff
+  const devices = iosDevices(listing)
+  const candidates = requested ? devices : [...members].sort((a, b) => poolNumber(a.name) - poolNumber(b.name))
+    .map((member) => devices.find((entry) => entry.udid.toUpperCase() === member.udid.toUpperCase())).filter(Boolean)
+  const device = candidates.find((entry) => entry.isAvailable === true && entry.state === 'Shutdown' &&
+    (!requested || entry.udid.toUpperCase() === requested.toUpperCase()) && !held.has(entry.udid.toUpperCase()))
+  if (!device && requested) throw new Error('Requested iOS simulator is unavailable, not Shutdown, or held by another pane')
+  return device ? { ...device, udid: device.udid.toUpperCase() } : null
+}
+
+async function poolMembers(request, run) {
+  const { members } = await request('GET', '/pool')
+  const listing = JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json']))
+  const live = new Set(Object.values(listing.devices ?? {}).flat().map((entry) => entry.udid.toUpperCase()))
+  const kept = []
+  for (const member of members) {
+    if (live.has(member.udid.toUpperCase())) kept.push(member)
+    else await request('DELETE', '/pool', { udid: member.udid })
+  }
+  return { members: kept, listing }
+}
+
+function nextPoolName(members) {
+  const used = new Set(members.map((entry) => poolNumber(entry.name)))
+  let number = 1
+  while (used.has(number)) number++
+  return 'Commando Pool ' + number
+}
+
+async function createPoolDevice(request, run, requestedType) {
+  const { members } = await poolMembers(request, run)
+  const runtimes = JSON.parse(await run('xcrun', ['simctl', 'list', 'runtimes', '--json'])).runtimes ?? []
+  const runtime = runtimes.filter((entry) => entry.isAvailable === true && /\.iOS-\d/.test(entry.identifier))
+    .sort((a, b) => b.identifier.localeCompare(a.identifier, undefined, { numeric: true }))[0]
+  if (!runtime) throw new Error('No available iOS runtime to create a pool simulator')
+  const types = JSON.parse(await run('xcrun', ['simctl', 'list', 'devicetypes', '--json'])).devicetypes ?? []
+  const iphones = types.filter((entry) => entry.name.startsWith('iPhone'))
+  const type = iphones.find((entry) => entry.name === (requestedType ?? 'iPhone 17 Pro')) ??
+    (!requestedType ? iphones.filter((entry) => /\bPro\b/.test(entry.name)).sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))[0] : undefined)
+  if (!type) throw new Error('Requested iPhone device type is unavailable')
+  const name = nextPoolName(members)
+  const udid = (await run('xcrun', ['simctl', 'create', name, type.name, runtime.identifier])).trim().toUpperCase()
+  if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(udid)) throw new Error('simctl create did not return a simulator UUID')
+  try {
+    await run('simslim', ['on', udid, '--preserve-boot-state'])
+    await request('POST', '/pool', { udid, name, created: true })
+  } catch (error) { throw new Error('Pool create failed for ' + udid + ': ' + String(error?.message ?? error)) }
+  return { udid, name, state: 'Shutdown', isAvailable: true }
+}
+
+async function runPoolCommand(args, request, run) {
+  const [action, ...rest] = args
+  if (action === 'create') {
+    let count = 1, type
+    for (let i = 0; i < rest.length; i++) {
+      const flag = rest[i], value = rest[++i]
+      if (flag === '--count' && /^[1-8]$/.test(value ?? '')) count = Number(value)
+      else if (flag === '--device-type' && value && !value.startsWith('--')) type = value
+      else throw new Error('Usage: commando-sim.mjs pool create [--count 1-8] [--device-type "iPhone name"]')
     }
-    return left.localeCompare(right)
-  })
-  const devices = requested ? runtimes.flatMap(([, entries]) => entries) : (runtimes[0]?.[1] ?? [])
-  const device = devices.find((entry) => entry.isAvailable === true &&
-    entry.state === 'Shutdown' && (requested ? entry.udid.toUpperCase() === requested.toUpperCase() : entry.name.startsWith('iPhone')) &&
-    !held.has(entry.udid.toUpperCase()))
-  if (!device) throw new Error(requested ? 'Requested iOS simulator is unavailable, not Shutdown, or held by another pane' :
-    'No free Shutdown iPhone simulator on the newest available iOS runtime')
-  return { ...device, udid: device.udid.toUpperCase() }
+    const members = []
+    for (let i = 0; i < count; i++) members.push(await createPoolDevice(request, run, type))
+    return { members }
+  }
+  if (!['list', 'add', 'remove'].includes(action) || (action === 'list' ? rest.length : action === 'remove' ? rest.length !== 1 : !rest.length)) {
+    throw new Error('Usage: commando-sim.mjs pool list | add <udid>... | create | remove <udid>')
+  }
+  if (rest.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) throw new Error('pool requires simulator UUIDs')
+  const { members, listing } = await poolMembers(request, run)
+  const { leases } = await request('GET', '')
+  const { heldUdids } = await request('GET', '/context')
+  const held = new Set([...leases.map((entry) => entry.udid), ...heldUdids].map((id) => id.toUpperCase()))
+  if (action === 'list') return { members: members.map((member) => {
+    const device = Object.values(listing.devices ?? {}).flat().find((entry) => entry.udid.toUpperCase() === member.udid.toUpperCase())
+    return { ...member, name: device.name, poolName: member.name, state: device.state, leased: held.has(member.udid.toUpperCase()) }
+  }) }
+  if (action === 'remove') {
+    const udid = rest[0].toUpperCase()
+    if (held.has(udid)) throw new Error('Simulator is leased or reserved')
+    return request('DELETE', '/pool', { udid })
+  }
+  const added = [], failures = []
+  for (const id of rest) {
+    const udid = id.toUpperCase()
+    try {
+      const device = iosDevices(listing).find((entry) => entry.udid.toUpperCase() === udid)
+      if (!device || !(device.deviceTypeIdentifier ? /\.iPhone-/.test(device.deviceTypeIdentifier) : device.name.startsWith('iPhone'))) throw new Error('Device must exist and be an iPhone simulator')
+      if (device.state !== 'Shutdown' || held.has(udid)) throw new Error('Device must be Shutdown and not leased')
+      if (members.some((entry) => entry.udid.toUpperCase() === udid)) continue
+      await run('simslim', ['on', udid, '--preserve-boot-state'])
+      const name = nextPoolName((await request('GET', '/pool')).members)
+      await run('xcrun', ['simctl', 'rename', udid, name])
+      const { member } = await request('POST', '/pool', { udid, name, created: false })
+      members.push(member)
+      added.push(member)
+    } catch (error) { failures.push(udid + ': ' + String(error?.message ?? error)) }
+  }
+  if (failures.length) throw new Error('Pool add failed: ' + failures.join('; ') + '. Added: ' + added.map((entry) => entry.udid).join(', '))
+  return { members: added }
 }
 
 export function verifySlim(output, udid) {
@@ -812,6 +895,7 @@ export function verifySlim(output, udid) {
 
 export async function runSimCommand(args, { request, run, exists, onPath }) {
   const [command, ...rest] = args
+  if (command === 'pool') return runPoolCommand(rest, request, run)
   let task, requested, branchOverride, clearPorts = false
   const declaredPorts = []
   if (command === 'lease' || command === 'update' || command === 'adopt') {
@@ -847,7 +931,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     }
   } else if (command === 'label' && rest.length === 1) task = rest[0]
   else if (!['release', 'list'].includes(command) || rest.length) {
-    throw new Error('Usage: commando-sim.mjs lease | adopt <udid> | update | label "task" | release | list')
+    throw new Error('Usage: commando-sim.mjs lease | adopt <udid> | update | label "task" | release | list | pool')
   }
   if (task !== undefined && task.length > 4096) throw new Error('Task must be at most 4096 characters')
   if (command === 'list') return request('GET', '')
@@ -892,7 +976,16 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     if (context.heldUdids.some((id) => id.toUpperCase() === requested.toUpperCase())) throw new Error('Simulator is held by another pane')
     adoptedDevice = { ...adoptedDevice, udid: adoptedDevice.udid.toUpperCase() }
   }
-  const device = existing ?? adoptedDevice ?? chooseDevice(JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])), context.heldUdids, requested)
+  let device = existing ?? adoptedDevice
+  let poolName
+  if (!device) {
+    const { members, listing } = requested
+      ? { members: (await request('GET', '/pool')).members, listing: JSON.parse(await run('xcrun', ['simctl', 'list', 'devices', '--json'])) }
+      : await poolMembers(request, run)
+    device = chooseDevice(listing, context.heldUdids, requested, members)
+    if (!device) device = await createPoolDevice(request, run)
+    poolName = members.find((entry) => entry.udid.toUpperCase() === device.udid)?.name ?? (!requested ? device.name : undefined)
+  }
   const { udid } = device
   const { operation } = await request('POST', '/reservation', { udid, ...(command === 'adopt' ? { requireUnleased: true } : {}) })
   let primaryError
@@ -941,7 +1034,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
       await run('xcrun', ['simctl', 'rename', udid, label])
       const body = { operation, task: description, ...metadata }
       const result = existing ? await request('PATCH', '', body) : await request('PUT', '', {
-        ...body, udid, originalName: (context.ended ?? []).find((entry) => entry.udid === udid)?.originalName ?? current.name, via,
+        ...body, udid, originalName: poolName ?? (context.ended ?? []).find((entry) => entry.udid === udid)?.originalName ?? current.name, via,
         ...(via === 'adopted' ? { adopted: true } : {}),
       })
       return { udid: result.lease.udid, label: result.lease.label, originalName: result.lease.originalName }

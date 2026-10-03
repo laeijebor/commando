@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -34,6 +34,94 @@ class SimLeaseError extends Error {
 
 export function defaultSimLeaseStatePath(port: number): string {
   return process.env.COMMANDO_SIM_LEASES_PATH ?? join(homedir(), '.commando', `sim-leases-${port}.json`)
+}
+
+export type SimPoolMember = { udid: string; name: string; addedAt: number; created: boolean }
+
+export function defaultSimPoolStatePath(): string {
+  return process.env.COMMANDO_SIM_POOL_PATH ?? join(homedir(), '.commando', 'sim-pool.json')
+}
+
+function poolInput(value: Record<string, unknown>): Omit<SimPoolMember, 'addedAt'> {
+  if (typeof value.udid !== 'string' || !UDID.test(value.udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
+  if (typeof value.name !== 'string' || !/^Commando Pool [1-9][0-9]*$/.test(value.name)) throw new SimLeaseError(400, 'name must be Commando Pool <n>')
+  if (typeof value.created !== 'boolean') throw new SimLeaseError(400, 'created must be a boolean')
+  return { udid: value.udid.toUpperCase(), name: value.name, created: value.created }
+}
+
+/** Host-wide metadata only. Daemons reload before every operation. */
+export class SimPoolRegistry {
+  private members: SimPoolMember[] = []
+  constructor(private readonly options: { statePath?: string; now?: () => number } = {}) {}
+
+  list(): SimPoolMember[] {
+    if (this.options.statePath) {
+      try {
+        const stored = JSON.parse(readFileSync(this.options.statePath, 'utf8'))
+        if (stored.version !== 1 || !Array.isArray(stored.members)) throw new Error('Invalid simulator pool file')
+        const members: SimPoolMember[] = []
+        for (const value of stored.members) {
+          const input = poolInput(value)
+          if (!Number.isFinite(value.addedAt) || members.some((entry) => entry.udid === input.udid || entry.name === input.name)) {
+            throw new Error('Invalid simulator pool member')
+          }
+          members.push({ ...input, addedAt: value.addedAt })
+        }
+        this.members = members
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        this.members = []
+      }
+    }
+    return this.members.map((entry) => ({ ...entry }))
+  }
+
+  add(value: Record<string, unknown>): SimPoolMember {
+    const input = poolInput(value)
+    return this.mutate((members) => {
+      const existing = members.find((entry) => entry.udid === input.udid)
+      if (existing) return existing
+      if (members.some((entry) => entry.name === input.name)) throw new SimLeaseError(409, 'Pool name is already in use; retry the command')
+      const member = { ...input, addedAt: (this.options.now ?? Date.now)() }
+      members.push(member)
+      return member
+    })
+  }
+
+  remove(udid: unknown): void {
+    if (typeof udid !== 'string' || !UDID.test(udid)) throw new SimLeaseError(400, 'udid must be a simulator UUID')
+    this.mutate((members) => {
+      const index = members.findIndex((entry) => entry.udid === udid.toUpperCase())
+      if (index >= 0) members.splice(index, 1)
+    })
+  }
+
+  private mutate<T>(change: (members: SimPoolMember[]) => T): T {
+    const path = this.options.statePath
+    const lock = path && `${path}.lock`
+    if (path) {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      try { mkdirSync(lock!, { mode: 0o700 }) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new SimLeaseError(409, 'Pool update is in progress; retry the command')
+        throw error
+      }
+    }
+    const temporary = path && `${path}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      const members = this.list()
+      const result = change(members)
+      if (path) {
+        writeFileSync(temporary!, JSON.stringify({ version: 1, members }, null, 2), { mode: 0o600 })
+        renameSync(temporary!, path)
+      }
+      this.members = members
+      return result
+    } finally {
+      if (temporary) rmSync(temporary, { force: true })
+      if (lock) rmSync(lock, { recursive: true, force: true })
+    }
+  }
 }
 
 export function cleanSimText(text: string): string {
@@ -104,7 +192,10 @@ export class SimLeaseRegistry {
   private readonly now: () => number
   private readonly statePath: string | undefined
 
-  constructor(options: { statePath?: string; now?: () => number } = {}) {
+  readonly pool: SimPoolRegistry
+
+  constructor(options: { statePath?: string; now?: () => number; pool?: SimPoolRegistry } = {}) {
+    this.pool = options.pool ?? new SimPoolRegistry()
     this.now = options.now ?? Date.now
     this.statePath = options.statePath
     if (!this.statePath) return
@@ -172,7 +263,7 @@ export class SimLeaseRegistry {
 
   context(paneId: string, target: SimPaneContext, paneExists: (paneId: string) => boolean) {
     const leases = this.list(paneExists)
-    return { ...target, ended: this.listEnded(), lease: leases.find((entry) => entry.paneId === paneId) ?? null,
+    return { ...target, poolUdids: this.pool.list().map((entry) => entry.udid), ended: this.listEnded(), lease: leases.find((entry) => entry.paneId === paneId) ?? null,
       heldUdids: [...new Set([...leases.filter((entry) => entry.paneId !== paneId).map((entry) => entry.udid),
         ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid)])] }
   }
@@ -205,7 +296,7 @@ export class SimLeaseRegistry {
     const existing = this.leases.find((entry) => entry.paneId === paneId)
     if (existing && existing.udid !== input.udid) throw new SimLeaseError(409, 'Release this pane’s existing lease first')
     const entry: SimLease = { ...input, ...target, ...(existing?.repo ? { repo: existing.repo } : {}), paneId, label: formatSimLabel(target.sessionName, input.task),
-      originalName: existing?.originalName ?? this.listEnded().find((entry) => entry.udid === input.udid)?.originalName ?? input.originalName, via: existing?.via ?? input.via,
+      originalName: existing?.originalName ?? (input.via !== 'adopted' ? this.pool.list().find((entry) => entry.udid === input.udid)?.name : undefined) ?? this.listEnded().find((entry) => entry.udid === input.udid)?.originalName ?? input.originalName, via: existing?.via ?? input.via,
       adopted: existing?.adopted ?? input.adopted,
       createdAt: existing?.createdAt ?? this.now(), lastActiveAt: this.now() }
     this.commit([...this.leases.filter((lease) => lease.paneId !== paneId), entry], this.ended.filter((ended) => ended.udid !== input.udid))
@@ -230,6 +321,11 @@ export class SimLeaseRegistry {
     const reservation = this.reservations.get(paneId)
     if (reservation && operation !== reservation.operation) throw new SimLeaseError(409, 'Simulator operation is in progress')
     if (!reservation && operation !== undefined) throw new SimLeaseError(409, 'Simulator reservation expired; retry the command')
+  }
+
+  isHeld(udid: string): boolean {
+    const id = udid.toUpperCase()
+    return this.leases.some((entry) => entry.udid === id) || [...this.reservations.values()].some((entry) => entry.udid === id)
   }
 
   private assertFree(paneId: string, udid: string): void {
@@ -294,8 +390,8 @@ export class SimLeaseApi {
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
     const path = url.pathname
-    if (!['/api/sim-leases', '/api/sim-leases/context', '/api/sim-leases/reservation'].includes(path)) return false
-    const allowed = path.endsWith('/context') ? ['GET'] : path.endsWith('/reservation') ? ['POST', 'DELETE'] : ['GET', 'PUT', 'PATCH', 'DELETE']
+    if (!['/api/sim-leases', '/api/sim-leases/context', '/api/sim-leases/reservation', '/api/sim-leases/pool'].includes(path)) return false
+    const allowed = path.endsWith('/pool') ? ['GET', 'POST', 'DELETE'] : path.endsWith('/context') ? ['GET'] : path.endsWith('/reservation') ? ['POST', 'DELETE'] : ['GET', 'PUT', 'PATCH', 'DELETE']
     try {
       const token = /^Bearer\s+([^\s]+)$/i.exec(request.headers.authorization ?? '')?.[1]
       if (!token || token.length > 1_024 || !timingSafeEqual(createHash('sha256').update(token).digest(), this.tokenDigest)) {
@@ -310,6 +406,19 @@ export class SimLeaseApi {
       registry.list(paneExists)
       if (path === '/api/sim-leases' && request.method === 'GET') {
         writeJson(response, 200, { leases: registry.list(paneExists), ended: registry.listEnded() })
+        return true
+      }
+      if (path.endsWith('/pool')) {
+        if (request.method === 'GET') writeJson(response, 200, { members: registry.pool.list() })
+        else {
+          const body = await readJson(request)
+          if (request.method === 'POST') writeJson(response, 200, { member: registry.pool.add(body) })
+          else {
+            if (typeof body.udid === 'string' && registry.isHeld(body.udid)) throw new SimLeaseError(409, 'Simulator is leased or reserved')
+            registry.pool.remove(body.udid)
+            writeJson(response, 200, { ok: true })
+          }
+        }
         return true
       }
       const paneId = request.headers['x-commando-pane']

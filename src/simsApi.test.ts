@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { createSimsApi, readCachedSims, simsCache } from './simsApi'
+import { cacheSims, createSimsApi, readCachedSims, simsCache } from './simsApi'
 
 describe('simulator claim actions', () => {
   it('hydrates ended history and legacy listings while ignoring malformed ended metadata', () => {
@@ -17,6 +17,23 @@ describe('simulator claim actions', () => {
       expect(readCachedSims()).toBeUndefined()
     }
     simsCache.listing = undefined
+    window.localStorage.clear()
+  })
+
+  it('persists pool summaries and chip flags, while reading older cached arrays without pool metadata', async () => {
+    const sim = { udid: 'sim', name: 'Phone', deviceModel: 'iPhone', runtime: 'iOS 26', slim: 'slim' as const, lease: null, pool: true }
+    const pool = { size: 6, free: 4 }
+    cacheSims([sim], pool)
+    simsCache.listing = undefined; simsCache.pool = undefined
+    expect(readCachedSims()).toEqual([sim])
+    expect(simsCache.pool).toEqual(pool)
+    simsCache.listing = undefined
+    window.localStorage.setItem('commando.sims-listing', JSON.stringify([sim]))
+    expect(readCachedSims()).toEqual([sim])
+    expect(simsCache.pool).toBeUndefined()
+    const api = createSimsApi('', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ sims: [sim], pool, stale: true }))))
+    expect(await api.listing()).toEqual({ sims: [sim], pool, stale: true })
+    simsCache.listing = undefined; simsCache.pool = undefined
     window.localStorage.clear()
   })
 

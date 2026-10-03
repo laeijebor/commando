@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { defaultSimLeaseStatePath, formatSimLabel, SIM_LEASE_IDLE_MS, SimLeaseApi, SimLeaseRegistry } from './sim-leases.js'
+import { defaultSimLeaseStatePath, defaultSimPoolStatePath, SimPoolRegistry, formatSimLabel, SIM_LEASE_IDLE_MS, SimLeaseApi, SimLeaseRegistry } from './sim-leases.js'
 
 const UDID = '11111111-1111-1111-1111-111111111111'
 const OTHER = '22222222-2222-2222-2222-222222222222'
@@ -12,6 +12,48 @@ const target = { sessionId: '$1', sessionName: 'Commando session', repo: { root:
 const input = { udid: UDID, task: 'check empty state', originalName: 'iPhone 17', via: 'simslim' }
 const directories: string[] = []
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
+
+describe('SimPoolRegistry', () => {
+  it('shares one host-wide path, rereads across instances and persists idempotently and privately', async () => {
+    vi.stubEnv('COMMANDO_SIM_POOL_PATH', undefined)
+    expect(defaultSimPoolStatePath()).toMatch(/\.commando\/sim-pool.json$/)
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-pool-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    vi.stubEnv('COMMANDO_SIM_POOL_PATH', statePath)
+    expect(defaultSimPoolStatePath()).toBe(statePath)
+    const first = new SimPoolRegistry({ statePath, now: () => 123 })
+    const second = new SimPoolRegistry({ statePath, now: () => 456 })
+    const a = { udid: UDID, name: 'Commando Pool 1', created: false }
+    const b = { udid: OTHER, name: 'Commando Pool 2', created: true }
+    expect(first.list()).toEqual([])
+    first.add(a)
+    expect(second.list()).toEqual([{ ...a, addedAt: 123 }])
+    second.add(b)
+    expect(first.add({ ...a, created: true })).toEqual({ ...a, addedAt: 123 })
+    expect(first.list()).toEqual([{ ...a, addedAt: 123 }, { ...b, addedAt: 456 }])
+    expect((await stat(statePath)).mode & 0o777).toBe(0o600)
+    second.remove(UDID)
+    expect(first.list()).toEqual([{ ...b, addedAt: 456 }])
+    expect(() => first.add({ ...a, name: b.name })).toThrow('already in use')
+    expect(() => first.add({ ...a, created: 'yes' })).toThrow('boolean')
+    expect(() => first.add({ ...a, udid: 'bad' })).toThrow('UUID')
+    expect(() => first.add({ ...a, name: 'Personal iPhone' })).toThrow('Commando Pool')
+    expect(() => first.remove('bad')).toThrow('UUID')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).members).toEqual(first.list())
+  })
+
+  it('fails closed on corrupt state rather than losing host-wide ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-pool-bad-'))
+    directories.push(directory)
+    const statePath = join(directory, 'pool.json')
+    await writeFile(statePath, 'broken')
+    const registry = new SimPoolRegistry({ statePath })
+    expect(() => registry.list()).toThrow()
+    expect(() => registry.add({ udid: UDID, name: 'Commando Pool 1', created: true })).toThrow()
+    expect(await readFile(statePath, 'utf8')).toBe('broken')
+  })
+})
 
 describe('SimLeaseRegistry', () => {
   it('formats labels without controls or excess whitespace and limits Unicode characters', () => {
@@ -221,7 +263,7 @@ describe('SimLeaseApi', () => {
 
   it('authenticates, resolves daemon context, upserts, touches, lists and deletes', async () => {
     const { api } = setup()
-    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, ended: [], heldUdids: [] })
+    expect((await call(api, 'GET', '/context')).body).toEqual({ ...target, lease: null, ended: [], heldUdids: [], poolUdids: [] })
     const created = await call(api, 'PUT', '', { ...input, sessionName: 'spoofed', paneId: '%2', label: 'spoofed' })
     expect(created.status).toBe(200)
     expect((await call(api, 'POST', '/reservation', { udid: UDID, requireUnleased: true })).status).toBe(409)
@@ -234,6 +276,27 @@ describe('SimLeaseApi', () => {
     expect((await call(api, 'DELETE', '', {})).status).toBe(200)
     expect((await call(api, 'GET')).body).toMatchObject({ leases: [], ended: [expect.objectContaining({ reason: 'released' })] })
     expect((await call(api, 'GET', '/context')).body.ended).toHaveLength(1)
+  })
+
+  it('authenticates pool CRUD, publishes context and refuses removal of leased or reserved members', async () => {
+    const { api, registry } = setup()
+    const member = { udid: UDID, name: 'Commando Pool 1', created: false }
+    expect((await call(api, 'GET', '/pool', undefined, { authorization: 'Bearer wrong' })).status).toBe(401)
+    expect((await call(api, 'PATCH', '/pool', member)).status).toBe(405)
+    expect((await call(api, 'POST', '/pool', { ...member, created: 'yes' })).status).toBe(400)
+    expect((await call(api, 'POST', '/pool', member)).body.member).toMatchObject(member)
+    await call(api, 'POST', '/pool', member)
+    expect((await call(api, 'GET', '/pool')).body.members).toHaveLength(1)
+    expect((await call(api, 'GET', '/context')).body.poolUdids).toEqual([UDID])
+    const operation = registry.reserve('%2', UDID)
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(409)
+    registry.unlock('%2', operation)
+    await call(api, 'PUT', '', input)
+    expect(registry.list(() => true)[0].originalName).toBe(member.name)
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(409)
+    await call(api, 'DELETE', '', {})
+    expect((await call(api, 'DELETE', '/pool', { udid: UDID })).status).toBe(200)
+    expect((await call(api, 'GET', '/pool')).body.members).toEqual([])
   })
 
   it('publishes lease, metadata updates, labels and release through the brief callback only after successful changes', async () => {

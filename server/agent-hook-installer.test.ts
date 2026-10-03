@@ -1570,7 +1570,7 @@ type SimCliDependencies = {
 }
 type SimCliModule = {
   formatLabel: (session: string, task?: string) => string
-  chooseDevice: (listing: unknown, held: string[], requested?: string) => { udid: string; name: string }
+  chooseDevice: (listing: unknown, held: string[], requested?: string, members?: Array<{ udid: string; name: string }>) => { udid: string; name: string } | null
   verifySlim: (output: string, udid: string) => void
   runSimCommand: (args: string[], dependencies: SimCliDependencies) => Promise<unknown>
 }
@@ -1595,6 +1595,7 @@ function simDependencies(
 ) {
   const context = { sessionName: ' Session\n name ', repo: { root: '/main' }, lease, heldUdids: [] as string[] }
   const request = vi.fn(async (method: string, suffix: string, body?: Record<string, unknown>) => {
+    if (suffix === '/pool') return { members: [{ udid: simUdid, name: 'Commando Pool 1', addedAt: 1, created: false }] }
     if (suffix === '/context') return context
     if (suffix === '/reservation') return method === 'POST' ? { operation: 'operation-id' } : { ok: true }
     if (method === 'GET') return { leases: lease ? [lease] : [], ended: [] }
@@ -1770,24 +1771,23 @@ describe('generated simulator lease CLI', () => {
     expect(deps.request).toHaveBeenLastCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
   })
 
-  it('chooses a free Shutdown iPhone only on the newest available numeric iOS runtime', async () => {
+  it('ignores personal devices and prefers the lowest free pool number across runtimes', async () => {
     const cli = await loadSimCli()
     const listing = { devices: {
       'com.apple.CoreSimulator.SimRuntime.iOS-26-9': [fakeDevice],
-      'com.apple.CoreSimulator.SimRuntime.iOS-26-10': [
-        { ...fakeDevice, udid: secondSimUdid },
-        { ...fakeDevice, udid: '33333333-3333-3333-3333-333333333333', state: 'Booted' },
-        { ...fakeDevice, udid: '44444444-4444-4444-4444-444444444444', name: 'iPad Pro' },
-      ],
-      'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [{ ...fakeDevice, isAvailable: false }],
-      'com.apple.CoreSimulator.SimRuntime.tvOS-28-0': [fakeDevice],
+      'com.apple.CoreSimulator.SimRuntime.iOS-26-10': [{ ...fakeDevice, udid: secondSimUdid }],
+      'com.apple.CoreSimulator.SimRuntime.tvOS-28-0': [{ ...fakeDevice, udid: '33333333-3333-3333-3333-333333333333' }],
     } }
-    expect(cli.chooseDevice(listing, []).udid).toBe(secondSimUdid)
-    expect(() => cli.chooseDevice(listing, [secondSimUdid])).toThrow('newest available')
-    expect(cli.chooseDevice(listing, [], simUdid).udid).toBe(simUdid)
+    const members = [{ udid: secondSimUdid, name: 'Commando Pool 10' }, { udid: simUdid, name: 'Commando Pool 2' }]
+    expect(cli.chooseDevice(listing, [], undefined, members)?.udid).toBe(simUdid)
+    expect(cli.chooseDevice(listing, [simUdid], undefined, members)?.udid).toBe(secondSimUdid)
+    expect(cli.chooseDevice(listing, [], undefined, members.slice(0, 1))?.udid).toBe(secondSimUdid)
+    expect(cli.chooseDevice(listing, [])).toBeNull()
+    expect(cli.chooseDevice(listing, [simUdid, secondSimUdid], undefined, members)).toBeNull()
+    expect(cli.chooseDevice(listing, [], simUdid)?.udid).toBe(simUdid)
     expect(() => cli.chooseDevice(listing, [simUdid], simUdid)).toThrow('held by another pane')
-    expect(() => cli.chooseDevice({ devices: {} }, [])).toThrow('No free')
-    expect(cli.chooseDevice({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, name: 'iPad Pro' }] } }, [], simUdid).udid).toBe(simUdid)
+    expect(cli.chooseDevice({ devices: {} }, [])).toBeNull()
+    expect(cli.chooseDevice({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [{ ...fakeDevice, name: 'iPad Pro' }] } }, [], simUdid)?.udid).toBe(simUdid)
   })
 
   it('formats labels and verifies the exact UDID, boot state and complete slim counts', async () => {
@@ -1809,21 +1809,21 @@ describe('generated simulator lease CLI', () => {
     const cli = await loadSimCli()
     const dependencies = simDependencies()
     expect(await cli.runSimCommand(['lease', '--task', 'check empty state'], dependencies)).toEqual({
-      udid: simUdid, label: 'Session name · check empty state', originalName: 'iPhone 17',
+      udid: simUdid, label: 'Session name · check empty state', originalName: 'Commando Pool 1',
     })
     expect(dependencies.run.mock.calls).toEqual([
       ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]],
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · check empty state']],
     ])
     expect(dependencies.request.mock.calls).toEqual([
-      ['GET', '/context'], ['POST', '/reservation', { udid: simUdid }],
-      ['PUT', '', { operation: 'operation-id', udid: simUdid, originalName: 'iPhone 17', via: 'simslim', task: 'check empty state' }],
+      ['GET', '/context'], ['GET', '/pool'], ['POST', '/reservation', { udid: simUdid }],
+      ['PUT', '', { operation: 'operation-id', udid: simUdid, originalName: 'Commando Pool 1', via: 'simslim', task: 'check empty state' }],
       ['DELETE', '/reservation', { operation: 'operation-id' }],
     ])
     const calls = dependencies.run.mock.invocationCallOrder
-    expect(dependencies.request.mock.invocationCallOrder[1]).toBeLessThan(calls[1])
+    expect(dependencies.request.mock.invocationCallOrder[2]).toBeLessThan(calls[1])
     expect(calls[2]).toBeLessThan(calls[3])
-    expect(calls[3]).toBeLessThan(dependencies.request.mock.invocationCallOrder[2])
+    expect(calls[3]).toBeLessThan(dependencies.request.mock.invocationCallOrder[3])
   })
 
   it('uses simfleet only with a main-checkout project and executable, then releases through the original repo', async () => {
@@ -1910,9 +1910,10 @@ describe('generated simulator lease CLI', () => {
   it('fails before any device mutation on a reservation conflict and reuses an existing lease over --device', async () => {
     const cli = await loadSimCli()
     const deps = simDependencies()
-    deps.request.mockImplementation(async (_method, suffix) => {
-      if (suffix === '/context') return deps.context
-      throw new Error('Simulator is held by another pane')
+    const request = deps.request.getMockImplementation()!
+    deps.request.mockImplementation(async (method, suffix, body) => {
+      if (suffix === '/reservation') throw new Error('Simulator is held by another pane')
+      return request(method, suffix, body)
     })
     await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow('held by another pane')
     expect(deps.run).toHaveBeenCalledTimes(1)
@@ -2082,5 +2083,180 @@ describe('generated simulator lease CLI', () => {
         Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Commando-Pane': '%42',
       },
     })
+  })
+})
+
+const thirdSimUdid = '33333333-3333-3333-3333-333333333333'
+function poolDependencies() {
+  type Member = { udid: string; name: string; created: boolean; addedAt: number }
+  const members: Member[] = []
+  const devices = [simUdid, secondSimUdid].map((udid) => ({ ...fakeDevice, udid, deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' }))
+  const events: string[] = []
+  const failures = new Set<string>()
+  const leased: string[] = []
+  const context = { sessionName: 'Pool session', lease: null, heldUdids: [] as string[] }
+  const request = vi.fn<SimCliDependencies['request']>(async (method, suffix, body) => {
+    events.push(method + ' ' + suffix + (body?.udid ? ' ' + body.udid : ''))
+    if (suffix === '/context') return context
+    if (suffix === '/reservation') return { operation: 'operation-id' }
+    if (suffix === '/pool') {
+      if (method === 'GET') return { members: members.map((entry) => ({ ...entry })) }
+      if (method === 'POST') {
+        const member = { ...body, addedAt: 1 } as Member
+        members.push(member)
+        return { member }
+      }
+      const index = members.findIndex((entry) => entry.udid === body?.udid)
+      if (index >= 0) members.splice(index, 1)
+      return { ok: true }
+    }
+    if (method === 'GET') return { leases: leased.map((udid) => ({ udid })), ended: [] }
+    if (method === 'PUT') return { lease: { ...body, label: 'Pool session' } }
+    return { ok: true }
+  })
+  const run = vi.fn<SimCliDependencies['run']>(async (file, args) => {
+    events.push(file + ' ' + args.join(' '))
+    if (file === 'xcrun' && args[1] === 'list') {
+      if (args[2] === 'devices') return JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-9': devices } })
+      if (args[2] === 'runtimes') return JSON.stringify({ runtimes: [
+        { identifier: 'com.apple.CoreSimulator.SimRuntime.iOS-26-9', isAvailable: true },
+        { identifier: 'com.apple.CoreSimulator.SimRuntime.iOS-27-1', isAvailable: false },
+        { identifier: 'com.apple.CoreSimulator.SimRuntime.iOS-26-10', isAvailable: true },
+        { identifier: 'com.apple.CoreSimulator.SimRuntime.tvOS-28-1', isAvailable: true },
+      ] })
+      if (args[2] === 'devicetypes') return JSON.stringify({ devicetypes: [{ name: 'iPhone 17 Pro' }, { name: 'iPhone 18 Pro' }, { name: 'iPad Pro' }] })
+    }
+    if (file === 'xcrun' && args[1] === 'create') {
+      const udid = `${(devices.length + 1).toString().repeat(8)}-${(devices.length + 1).toString().repeat(4)}-${(devices.length + 1).toString().repeat(4)}-${(devices.length + 1).toString().repeat(4)}-${(devices.length + 1).toString().repeat(12)}`
+      devices.push({ ...fakeDevice, udid, name: args[2], deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' })
+      return udid + '\n'
+    }
+    if (file === 'xcrun' && args[1] === 'rename') devices.find((entry) => entry.udid === args[2])!.name = args[3]
+    if (file === 'simslim' && args[0] === 'on') {
+      if (failures.has(args[1])) throw new Error('slim failed')
+      if (!args.includes('--preserve-boot-state')) devices.find((entry) => entry.udid === args[1])!.state = 'Booted'
+    }
+    if (file === 'simslim' && args[0] === 'list') return devices.filter((entry) => entry.state === 'Booted').map((entry) => `${entry.udid} booted · 170/170 slim`).join('\n')
+    return ''
+  })
+  return { members, devices, events, failures, leased, context, request, run, exists: async () => false, onPath: async () => false }
+}
+
+describe('generated simulator pool CLI', () => {
+  it('grows an empty pool instead of taking personal sims, slims before recording and restores the pool name', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    const result = await cli.runSimCommand(['lease'], deps)
+    expect(result).toEqual({ udid: thirdSimUdid, label: 'Pool session', originalName: 'Commando Pool 1' })
+    expect(deps.members).toEqual([{ udid: thirdSimUdid, name: 'Commando Pool 1', created: true, addedAt: 1 }])
+    const create = deps.events.indexOf('xcrun simctl create Commando Pool 1 iPhone 17 Pro com.apple.CoreSimulator.SimRuntime.iOS-26-10')
+    const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --preserve-boot-state`)
+    const record = deps.events.indexOf(`POST /pool ${thirdSimUdid}`)
+    const reserve = deps.events.indexOf(`POST /reservation ${thirdSimUdid}`)
+    expect(create).toBeGreaterThan(-1)
+    expect(create).toBeLessThan(slim); expect(slim).toBeLessThan(record); expect(record).toBeLessThan(reserve)
+    expect(deps.devices.slice(0, 2).map((entry) => [entry.name, entry.state])).toEqual([['iPhone 17', 'Shutdown'], ['iPhone 17', 'Shutdown']])
+  })
+
+  it('grows when members are booted, held or unavailable and never selects the personal free device', async () => {
+    const cli = await loadSimCli()
+    for (const state of ['Booted', 'held', 'unavailable']) {
+      const deps = poolDependencies()
+      deps.members.push({ udid: simUdid, name: 'Commando Pool 1', created: true, addedAt: 1 })
+      if (state === 'Booted') deps.devices[0].state = 'Booted'
+      if (state === 'held') deps.context.heldUdids.push(simUdid)
+      if (state === 'unavailable') deps.devices[0].isAvailable = false
+      expect(await cli.runSimCommand(['lease'], deps)).toMatchObject({ udid: thirdSimUdid, originalName: 'Commando Pool 2' })
+    }
+  })
+
+  it('adds sequentially in slim, rename, record order; reuses numbering gaps and is idempotent', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    deps.members.push({ udid: thirdSimUdid, name: 'Commando Pool 2', created: true, addedAt: 1 })
+    deps.devices.push({ ...deps.devices[0], udid: thirdSimUdid, name: 'Commando Pool 2' })
+    await cli.runSimCommand(['pool', 'add', simUdid, secondSimUdid], deps)
+    const changes = deps.events.filter((event) => event.startsWith('simslim on') || event.startsWith('xcrun simctl rename') || event.startsWith('POST /pool'))
+    expect(changes).toEqual([
+      `simslim on ${simUdid} --preserve-boot-state`, `xcrun simctl rename ${simUdid} Commando Pool 1`, `POST /pool ${simUdid}`,
+      `simslim on ${secondSimUdid} --preserve-boot-state`, `xcrun simctl rename ${secondSimUdid} Commando Pool 3`, `POST /pool ${secondSimUdid}`,
+    ])
+    expect(deps.members.map((entry) => entry.created)).toEqual([true, false, false])
+    deps.events.length = 0
+    await cli.runSimCommand(['pool', 'add', simUdid], deps)
+    expect(deps.events.some((entry) => entry.startsWith('simslim'))).toBe(false)
+  })
+
+  it('reports slimming failures, continues the remaining additions and does not rename or record failures', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    deps.failures.add(simUdid)
+    await expect(cli.runSimCommand(['pool', 'add', simUdid, secondSimUdid], deps)).rejects.toThrow(`${simUdid}: slim failed`)
+    expect(deps.members).toEqual([{ udid: secondSimUdid, name: 'Commando Pool 1', created: false, addedAt: 1 }])
+    expect(deps.events).not.toContain(`POST /pool ${simUdid}`)
+    expect(deps.events.some((event) => event.startsWith(`xcrun simctl rename ${simUdid}`))).toBe(false)
+    expect(deps.events.indexOf(`simslim on ${simUdid} --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --preserve-boot-state`))
+  })
+
+  it('validates add eligibility and refuses leased removal without changing the device', async () => {
+    const cli = await loadSimCli()
+    for (const invalid of ['missing', 'iPad', 'Booted', 'leased']) {
+      const deps = poolDependencies()
+      if (invalid === 'missing') deps.devices.shift()
+      if (invalid === 'iPad') deps.devices[0].deviceTypeIdentifier = 'com.apple.CoreSimulator.SimDeviceType.iPad-Pro'
+      if (invalid === 'Booted') deps.devices[0].state = 'Booted'
+      if (invalid === 'leased') deps.leased.push(simUdid)
+      await expect(cli.runSimCommand(['pool', 'add', simUdid], deps)).rejects.toThrow(simUdid)
+      expect(deps.run.mock.calls.every(([, args]) => args.includes('list'))).toBe(true)
+      expect(deps.members).toEqual([])
+    }
+    const deps = poolDependencies()
+    deps.members.push({ udid: simUdid, name: 'Commando Pool 1', created: false, addedAt: 1 })
+    deps.leased.push(simUdid)
+    await expect(cli.runSimCommand(['pool', 'remove', simUdid], deps)).rejects.toThrow('leased')
+    expect(deps.members).toHaveLength(1)
+    deps.leased.length = 0
+    await cli.runSimCommand(['pool', 'remove', simUdid], deps)
+    expect(deps.members).toHaveLength(0)
+    expect(deps.run.mock.calls.every(([, args]) => args.includes('list'))).toBe(true)
+  })
+
+  it('lists live names, states and leases and prunes devices that no longer exist', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    deps.members.push({ udid: simUdid, name: 'Commando Pool 1', created: false, addedAt: 1 }, { udid: thirdSimUdid, name: 'Commando Pool 2', created: true, addedAt: 1 })
+    deps.leased.push(simUdid)
+    deps.devices[0].name = 'Review · task'; deps.devices[0].state = 'Booted'
+    expect(await cli.runSimCommand(['pool', 'list'], deps)).toEqual({ members: [{ udid: simUdid, name: 'Review · task', poolName: 'Commando Pool 1', state: 'Booted', leased: true, created: false, addedAt: 1 }] })
+    expect(deps.members).toHaveLength(1)
+  })
+
+  it('creates sequentially with the requested count, supports explicit types and falls back to the newest Pro', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    const originalRun = deps.run.getMockImplementation()!
+    deps.run.mockImplementation(async (file, args, cwd) => args[2] === 'devicetypes'
+      ? JSON.stringify({ devicetypes: [{ name: 'iPhone 9 Pro' }, { name: 'iPhone 18 Pro' }, { name: 'iPad Pro' }] })
+      : originalRun(file, args, cwd))
+    await cli.runSimCommand(['pool', 'create', '--count', '2'], deps)
+    expect(deps.members.map((entry) => entry.name)).toEqual(['Commando Pool 1', 'Commando Pool 2'])
+    expect(deps.run.mock.calls.filter(([, args]) => args[1] === 'create').map(([, args]) => args.slice(2))).toEqual([
+      ['Commando Pool 1', 'iPhone 18 Pro', 'com.apple.CoreSimulator.SimRuntime.iOS-26-10'],
+      ['Commando Pool 2', 'iPhone 18 Pro', 'com.apple.CoreSimulator.SimRuntime.iOS-26-10'],
+    ])
+    expect(deps.events.indexOf(`POST /pool ${thirdSimUdid}`)).toBeLessThan(deps.events.lastIndexOf('xcrun simctl create Commando Pool 2 iPhone 18 Pro com.apple.CoreSimulator.SimRuntime.iOS-26-10'))
+    await cli.runSimCommand(['pool', 'create', '--device-type', 'iPhone 9 Pro'], deps)
+    expect(deps.run).toHaveBeenCalledWith('xcrun', ['simctl', 'create', 'Commando Pool 3', 'iPhone 9 Pro', 'com.apple.CoreSimulator.SimRuntime.iOS-26-10'])
+    for (const count of ['0', '9', '1.5', '-1', 'no']) await expect(cli.runSimCommand(['pool', 'create', '--count', count], deps)).rejects.toThrow('Usage')
+    await expect(cli.runSimCommand(['pool', 'create', '--device-type', 'iPad Pro'], deps)).rejects.toThrow('unavailable')
+  })
+
+  it('leaves an unsuccessfully slimmed creation outside the pool and reports its UUID', async () => {
+    const cli = await loadSimCli()
+    const deps = poolDependencies()
+    deps.failures.add(thirdSimUdid)
+    await expect(cli.runSimCommand(['pool', 'create'], deps)).rejects.toThrow(thirdSimUdid)
+    expect(deps.members).toEqual([])
+    expect(deps.events.some((event) => event.startsWith('POST /pool'))).toBe(false)
   })
 })

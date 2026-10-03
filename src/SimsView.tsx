@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SimWallDevice } from '../shared/protocol'
+import type { SimPoolSummary, SimWallDevice } from '../shared/protocol'
 import { cacheSimSnapshot, claimSimSnapshotPolling, subscribeSimSnapshot, cacheSims, createSimsApi, readCachedSims, simsCache, type CachedSimSnapshot } from './simsApi'
 import './sims-view.css'
 import { SimLiveView } from './SimLiveView'
@@ -134,6 +134,7 @@ function SimCard({ sim, api, visible, formerGroup, showEnded, onSlimmed, onLive 
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
     {ended && !formerGroup ? <div className="sims-last">last: {ended.sessionName}{ended.task ? ` · ${ended.task}` : ''}</div> : null}
     <div className="sims-meta">
+      {sim.pool ? <span className="pool">pool</span> : null}
       <span className={sim.slim}>{sim.slim === 'unknown' ? 'slim unknown' : sim.slim}</span>
       {ended && showEnded ? <><span className="ended">lease ended</span><span>ended {endedAge(ended.endedAt, now)}</span></> : null}
       {sim.lease?.idle ? <span className="idle">idle</span> : null}
@@ -167,6 +168,7 @@ export function SimsView({ token }: { token: string }) {
     return () => document.removeEventListener('keydown', escape)
   }, [liveUdid])
   const [sims, setSims] = useState<SimWallDevice[]>(() => readCachedSims() ?? [])
+  const [pool, setPool] = useState<SimPoolSummary | undefined>(() => simsCache.pool)
   const [loaded, setLoaded] = useState(() => readCachedSims() !== undefined)
   const [updating, setUpdating] = useState(visible)
   const [error, setError] = useState('')
@@ -190,7 +192,7 @@ export function SimsView({ token }: { token: string }) {
       try {
         const next = await api.listing(controller.signal)
         if (controller.signal.aborted) return
-        cacheSims(next.sims); setSims(next.sims); setLoaded(true); setError('')
+        cacheSims(next.sims, next.pool); setPool(next.pool); setSims(next.sims); setLoaded(true); setError('')
         // A cached answer means the daemon is refreshing: ask again shortly rather than at the next poll.
         stale = next.stale && followUps < 8
         if (stale) { followUps += 1; followUp = window.setTimeout(() => void refresh(), 1_000) } else followUps = 0
@@ -244,6 +246,7 @@ export function SimsView({ token }: { token: string }) {
     <header className="sims-bar">
       <h2>Simulators</h2>
       <span className="sims-pill">{sims.length} booted</span>
+      {pool && pool.size > 0 ? <span className="sims-pill">pool {pool.free} free / {pool.size}</span> : null}
       <span className="sims-pill warn">{sims.filter((sim) => sim.slim === 'unslimmed').length} unslimmed</span>
       {loaded && updating ? <span className="sims-updating" role="status">Updating…</span> : null}
       <div className="sims-filters" role="group" aria-label="Filter simulators by session">

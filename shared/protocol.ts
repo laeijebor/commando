@@ -261,12 +261,16 @@ export type SimWallDevice = {
   slim: 'slim' | 'unslimmed' | 'unknown'
   lease: SimWallLease | null
   endedLease?: SimWallEndedLease | null
+  pool?: boolean
 }
+
+export type SimPoolSummary = { size: number; free: number }
 
 export type SimWallListing = {
   sims: SimWallDevice[]
   listedAt: number
   stale: boolean
+  pool?: SimPoolSummary
 }
 
 export type TmuxPane = PaneTerminalState & {
