@@ -5,7 +5,8 @@ import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 
 const UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
-const TYPES = new Set(['touch1-down', 'touch1-move', 'touch1-up', 'touch2-down', 'touch2-move', 'touch2-up', 'key', 'type', 'paste', 'button', 'scroll'])
+// `scroll` is deliberately absent: Baguette 0.2.1's scroll injection restarts backboardd on iOS 26.5.
+const TYPES = new Set(['touch1-down', 'touch1-move', 'touch1-up', 'touch2-down', 'touch2-move', 'touch2-up', 'key', 'type', 'paste', 'button'])
 const MAX_CHUNK = 16 * 1024 * 1024
 export type SimLiveSpawn = (command: string, args: string[]) => ChildProcessWithoutNullStreams
 export type SimLiveSocket = Pick<WebSocket, 'send' | 'close' | 'on' | 'readyState' | 'bufferedAmount'>

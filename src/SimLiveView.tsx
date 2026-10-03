@@ -6,6 +6,9 @@ import './sim-live.css'
 type Point = { x: number; y: number }
 /** Height in points of the home-indicator band at the bottom of the screen. */
 const EDGE_BAND = 20
+/** Points of wheel travel before the synthetic finger presses, and how long after the last wheel event it lifts. */
+const WHEEL_SLOP = 12
+const WHEEL_IDLE_MS = 120
 
 /**
  * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
@@ -178,12 +181,36 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   useEffect(() => {
     const target = canvas.current
     if (!target || !active || !streaming) return
+    // Baguette's `scroll` message restarts backboardd on iOS 26.5, so the wheel drives a one-finger drag instead.
+    let drag: { x: number; y: number; down: boolean; dx: number; dy: number } | null = null
+    let idle: number | undefined
+    const end = () => {
+      window.clearTimeout(idle)
+      if (drag?.down) send({ type: 'touch1-up', x: drag.x + drag.dx, y: drag.y + drag.dy })
+      drag = null
+    }
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
-      send({ type: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY })
+      if (pointer.current) return
+      const rect = screenRect(target), { width, height } = dimensions.current
+      if (!width || !height || !rect.width) return
+      const scale = width / rect.width
+      drag ??= { ...clamp({ x: (event.clientX - rect.left) * scale, y: (event.clientY - rect.top) * scale }), down: false, dx: 0, dy: 0 }
+      // Content follows the finger, so the drag runs opposite to the wheel delta. One wheel pixel is one
+      // device point whatever the view's zoom, so a small wall card does not scroll faster than the full view.
+      const next = { x: drag.x + drag.dx - event.deltaX, y: drag.y + drag.dy - event.deltaY }
+      const held = clamp(next)
+      drag.dx = held.x - drag.x; drag.dy = held.y - drag.y
+      // Press only after real travel: a press and release in place would be a tap.
+      if (!drag.down && Math.hypot(drag.dx, drag.dy) >= WHEEL_SLOP) { drag.down = true; send({ type: 'touch1-down', x: drag.x, y: drag.y }) }
+      if (drag.down) send({ type: 'touch1-move', x: held.x, y: held.y })
+      window.clearTimeout(idle)
+      // At the screen edge the finger lifts so the next wheel event starts a fresh drag from the cursor.
+      if (drag.down && (held.x !== next.x || held.y !== next.y)) end()
+      else idle = window.setTimeout(end, WHEEL_IDLE_MS)
     }
     target.addEventListener('wheel', wheel, { passive: false })
-    return () => target.removeEventListener('wheel', wheel)
+    return () => { target.removeEventListener('wheel', wheel); end() }
   }, [active, streaming])
 
   useEffect(() => {
