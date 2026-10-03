@@ -1,6 +1,6 @@
 ---
 name: commando-sims
-description: Lease, label, and release slim iOS simulators for a Commando agent pane. Use before any iOS simulator work and when changing tasks or handing off a device for review.
+description: Lease, adopt, label, and release iOS simulators for a Commando agent pane. Use before any iOS simulator work and when changing tasks or handing off a device for review.
 ---
 
 # Commando simulator leases
@@ -16,8 +16,19 @@ lease. Commando chooses a free iPhone, boots it slim, verifies its slim status,
 and labels it with the session name and task. To request a specific device,
 add `--device <udid>`; release an existing lease before switching devices.
 
+When the user asks to use a simulator that is already running, adopt that UDID:
+
+```sh
+$HOME/.commando/hooks/commando-sim.mjs adopt <udid> --task "what you are doing" --metro 8101 --backend 3101
+```
+
+Adopt requires a Booted iOS device and a pane without a lease. It claims and
+labels the running device without rebooting, slimming, or verifying slim status;
+an unslimmed adopted device is allowed. It accepts the same task, port and branch
+metadata as lease. Otherwise always use `lease`.
+
 Never boot a simulator another way. Never use an unslimmed simulator unless
-the user explicitly asks for stock. If leasing fails, report the error and
+adopting a running device at the user's request or the user explicitly asks for stock. If leasing fails, report the error and
 resolve it before interacting with any device.
 
 Keep driving the leased UDID with whatever tool the project uses, such as
@@ -33,7 +44,10 @@ $HOME/.commando/hooks/commando-sim.mjs list
 Never drive a device held by another pane. Idle is only a flag; it does not
 transfer ownership or permit taking someone else's device.
 
-Declare the ports you use at lease time: `--metro <port>` and `--backend <port>`
+The list includes active and ended leases. Ended leases have no owner; the wall
+keeps booted devices in their former group and under No lease until reclaimed.
+
+Declare the ports you use at lease or adopt time: `--metro <port>` and `--backend <port>`
 are shorthand for `--port metro=<port>` and `--port backend=<port>`. Add other
 ports with repeatable `--port <name>=<port>` (at most six unique lowercase names).
 Commando shows your purpose, live repository branch, and ports in Important terms.
@@ -62,8 +76,9 @@ Release when done:
 $HOME/.commando/hooks/commando-sim.mjs release
 ```
 
-Release restores the original name, shuts down the simulator, and removes
-its lease. If it fails, resolve the error and retry; do not assume ownership
+Release restores the original name and ends the lease. Normally it shuts down
+the simulator; an adopted simulator stays running. If an adopted device stops
+running, `lease` will not boot it implicitly: release, then lease again. If it fails, resolve the error and retry; do not assume ownership
 has been cleared.
 
 If the CLI is missing, tell the user to run `npm run hooks:install` in the

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SimWallDevice } from '../shared/protocol'
-import { createSimsApi } from './simsApi'
+import { cacheSimSnapshot, claimSimSnapshotPolling, subscribeSimSnapshot, cacheSims, createSimsApi, readCachedSims, simsCache, type CachedSimSnapshot } from './simsApi'
 import './sims-view.css'
 import { SimLiveView } from './SimLiveView'
 
@@ -8,6 +8,17 @@ type SimsApi = ReturnType<typeof createSimsApi>
 type ViewPreferences = { groupBy: 'repo' | 'session' | 'none'; size: 's' | 'm' | 'l' }
 const VIEW_STORAGE_KEY = 'commando.sims-view'
 const DEFAULT_VIEW: ViewPreferences = { groupBy: 'repo', size: 'm' }
+
+function snapshotAge(at: number, now: number): string | undefined {
+  const seconds = Math.floor((now - at) / 1000)
+  if (now - at <= 15_000) return
+  return seconds < 60 ? `${seconds}s ago` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3600)}h ago`
+}
+
+function endedAge(at: number, now: number): string {
+  const minutes = Math.max(0, Math.floor((now - at) / 60_000))
+  return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`
+}
 
 function readViewPreferences(): ViewPreferences {
   try {
@@ -36,18 +47,19 @@ function loadImage(url: string, signal: AbortSignal): Promise<void> {
   })
 }
 
-function SimCard({ sim, api, visible, onSlimmed, onLive }: {
-  sim: SimWallDevice; api: SimsApi; visible: boolean; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
+function SimCard({ sim, api, visible, formerGroup, showEnded, onSlimmed, onLive }: {
+  sim: SimWallDevice; api: SimsApi; visible: boolean; formerGroup: boolean; showEnded: boolean; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
 }) {
   const card = useRef<HTMLElement>(null)
-  const snapshotBusy = useRef(false)
   const actionBusy = useRef(false)
   const [intersecting, setIntersecting] = useState(false)
-  const [image, setImage] = useState<string>()
+  const [image, setImage] = useState<CachedSimSnapshot | undefined>(() => simsCache.snapshots.get(sim.udid))
+  const [now, setNow] = useState(Date.now)
   const [snapshotError, setSnapshotError] = useState('')
   const [error, setError] = useState('')
   const [action, setAction] = useState<'slim' | 'open' | null>(null)
-  const name = sim.lease?.sessionName ?? sim.name
+  const ended = !sim.lease ? sim.endedLease : undefined
+  const name = sim.lease?.sessionName ?? (formerGroup ? ended?.sessionName : undefined) ?? sim.name
 
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => setIntersecting(entry.isIntersecting))
@@ -55,34 +67,48 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
     return () => observer.disconnect()
   }, [])
 
-  useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
+  useEffect(() => subscribeSimSnapshot(sim.udid, setImage), [sim.udid])
+
+  useEffect(() => {
+    if (!visible || (!image && !ended)) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [visible, image, ended])
 
   useEffect(() => {
     if (!visible || !intersecting) return
-    const controller = new AbortController()
-    const refresh = async () => {
-      if (snapshotBusy.current || controller.signal.aborted || document.visibilityState !== 'visible') return
-      snapshotBusy.current = true
-      let next: string | undefined
-      try {
-        const blob = await api.snapshot(sim.udid, controller.signal)
-        if (controller.signal.aborted) return
-        next = URL.createObjectURL(blob)
-        await loadImage(next, controller.signal)
-        if (controller.signal.aborted) return
-        setImage(next)
-        next = undefined // Ownership passes to the image effect.
-        setSnapshotError('')
-      } catch (cause) {
-        if (!controller.signal.aborted) setSnapshotError(cause instanceof Error ? cause.message : 'Snapshot unavailable')
-      } finally {
-        if (next) URL.revokeObjectURL(next)
-        snapshotBusy.current = false
+    return claimSimSnapshotPolling(sim.udid, () => {
+      const controller = new AbortController()
+      // Scoped to this effect run: an aborted run must not block the next run's first fetch.
+      let busy = false
+      const refresh = async () => {
+        if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
+        busy = true
+        let next: string | undefined
+        try {
+          const { blob, at } = await api.snapshotFrame(sim.udid, controller.signal)
+          if (controller.signal.aborted) return
+          const cached = simsCache.snapshots.get(sim.udid)
+          if (cached && cached.at >= at) { setSnapshotError(''); return }
+          next = URL.createObjectURL(blob)
+          await loadImage(next, controller.signal)
+          if (controller.signal.aborted || !simsCache.listing?.some((device) => device.udid === sim.udid)) return
+          const frame = { url: next, at }
+          cacheSimSnapshot(sim.udid, frame)
+          next = undefined // The module cache owns loaded URLs across remounts.
+          setSnapshotError('')
+        } catch (cause) {
+          if (!controller.signal.aborted) setSnapshotError(cause instanceof Error ? cause.message : 'Snapshot unavailable')
+        } finally {
+          if (next) URL.revokeObjectURL(next)
+          busy = false
+        }
       }
-    }
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 2_000)
-    return () => { window.clearInterval(timer); controller.abort() }
+      void refresh()
+      const timer = window.setInterval(() => void refresh(), 2_000)
+      return () => { window.clearInterval(timer); controller.abort() }
+    })
   }, [api, sim.udid, visible, intersecting])
 
   const perform = async (kind: 'slim' | 'open') => {
@@ -100,13 +126,16 @@ function SimCard({ sim, api, visible, onSlimmed, onLive }: {
 
   return <article className="sims-card" ref={card} aria-label={name}>
     <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}>
-      {image ? <img src={image} alt={`${name} snapshot`} />
+      {image ? <img src={image.url} alt={`${name} snapshot`} />
         : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
+      {image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
     </button>
     <div className="sims-name">{name}</div>
-    <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : 'No lease')}</div>
+    <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
+    {ended && !formerGroup ? <div className="sims-last">last: {ended.sessionName}{ended.task ? ` · ${ended.task}` : ''}</div> : null}
     <div className="sims-meta">
       <span className={sim.slim}>{sim.slim === 'unknown' ? 'slim unknown' : sim.slim}</span>
+      {ended && showEnded ? <><span className="ended">lease ended</span><span>ended {endedAge(ended.endedAt, now)}</span></> : null}
       {sim.lease?.idle ? <span className="idle">idle</span> : null}
       <span>{sim.deviceModel}</span>
     </div>
@@ -137,38 +166,48 @@ export function SimsView({ token }: { token: string }) {
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
   }, [liveUdid])
-  const [sims, setSims] = useState<SimWallDevice[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const [sims, setSims] = useState<SimWallDevice[]>(() => readCachedSims() ?? [])
+  const [loaded, setLoaded] = useState(() => readCachedSims() !== undefined)
+  const [updating, setUpdating] = useState(visible)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
-  const listingBusy = useRef(false)
   useEffect(() => {
     const change = () => setVisible(document.visibilityState === 'visible')
     document.addEventListener('visibilitychange', change)
     return () => document.removeEventListener('visibilitychange', change)
   }, [])
   useEffect(() => {
-    if (!visible) return
+    if (!visible) { setUpdating(false); return }
     const controller = new AbortController()
+    setUpdating(true)
+    let busy = false
+    let followUp: number | undefined
+    let followUps = 0
     const refresh = async () => {
-      if (listingBusy.current || controller.signal.aborted || document.visibilityState !== 'visible') return
-      listingBusy.current = true
+      if (busy || controller.signal.aborted || document.visibilityState !== 'visible') return
+      busy = true
+      let stale = false
       try {
-        const next = await api.list(controller.signal)
-        if (!controller.signal.aborted) { setSims(next); setLoaded(true); setError('') }
+        const next = await api.listing(controller.signal)
+        if (controller.signal.aborted) return
+        cacheSims(next.sims); setSims(next.sims); setLoaded(true); setError('')
+        // A cached answer means the daemon is refreshing: ask again shortly rather than at the next poll.
+        stale = next.stale && followUps < 8
+        if (stale) { followUps += 1; followUp = window.setTimeout(() => void refresh(), 1_000) } else followUps = 0
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Simulators unavailable')
-      } finally { listingBusy.current = false }
+      } finally { busy = false; if (!controller.signal.aborted) setUpdating(stale) }
     }
     void refresh()
     const timer = window.setInterval(() => void refresh(), 5_000)
-    return () => { window.clearInterval(timer); controller.abort() }
+    return () => { window.clearInterval(timer); window.clearTimeout(followUp); controller.abort() }
   }, [api, visible, revision])
 
   const sessions = useMemo(() => {
     const counts = new Map<string, number>()
     for (const sim of sims) {
-      if (sim.lease) counts.set(sim.lease.sessionName, (counts.get(sim.lease.sessionName) ?? 0) + 1)
+      const owner = sim.lease ?? sim.endedLease
+      if (owner) counts.set(owner.sessionName, (counts.get(owner.sessionName) ?? 0) + 1)
     }
     return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [sims])
@@ -180,7 +219,7 @@ export function SimsView({ token }: { token: string }) {
     if (!filterExists) setSessionFilter('all')
   }, [filterExists])
   const filtered = sims.filter((sim) => activeFilter === 'all' || (activeFilter === 'no-lease'
-    ? !sim.lease : sim.lease && `session:${sim.lease.sessionName}` === activeFilter))
+    ? !sim.lease : (sim.lease ?? sim.endedLease) && `session:${(sim.lease ?? sim.endedLease)!.sessionName}` === activeFilter))
   const leased = filtered.filter((sim) => sim.lease)
   const filteredUnleased = filtered.filter((sim) => !sim.lease)
   type SimGroup = { key: string; name?: string; sims: SimWallDevice[] }
@@ -189,8 +228,8 @@ export function SimsView({ token }: { token: string }) {
     ordered = filtered.length ? [{ key: 'flat', sims: [...leased, ...filteredUnleased] }] : []
   } else {
     const groups = new Map<string, SimGroup>()
-    for (const sim of leased) {
-      const lease = sim.lease!
+    for (const sim of filtered.filter((device) => device.lease || device.endedLease)) {
+      const lease = (sim.lease ?? sim.endedLease)!
       const key = view.groupBy === 'session' ? `session:${lease.sessionName}` : `repo:${lease.repo?.root ?? ''}`
       const name = view.groupBy === 'session' ? lease.sessionName : lease.repo?.name ?? 'Unknown repository'
       const group = groups.get(key) ?? { key, name, sims: [] }
@@ -206,6 +245,7 @@ export function SimsView({ token }: { token: string }) {
       <h2>Simulators</h2>
       <span className="sims-pill">{sims.length} booted</span>
       <span className="sims-pill warn">{sims.filter((sim) => sim.slim === 'unslimmed').length} unslimmed</span>
+      {loaded && updating ? <span className="sims-updating" role="status">Updating…</span> : null}
       <div className="sims-filters" role="group" aria-label="Filter simulators by session">
         <button type="button" className="sims-pill" aria-pressed={activeFilter === 'all'} onClick={() => setSessionFilter('all')}>All</button>
         {sessions.map(([name, count]) => <button type="button" className="sims-pill" key={name} aria-pressed={activeFilter === `session:${name}`} onClick={() => setSessionFilter(`session:${name}`)}>{name} ({count})</button>)}
@@ -236,8 +276,11 @@ export function SimsView({ token }: { token: string }) {
       </section>
     </div> : null}
     {ordered.map((group) => <section className="sims-group" key={group.key} aria-label={group.name}>
-      {group.name !== undefined ? <header className="sims-repo"><h3>{group.name}</h3><span>{group.sims.length} {group.key === 'no-lease' ? 'unleased' : 'leased'}</span></header> : null}
-      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
+      {group.name !== undefined ? <header className="sims-repo"><h3>{group.name}</h3><span>{group.key === 'no-lease' ? `${group.sims.length} unleased` : [
+        group.sims.some((sim) => sim.lease) ? `${group.sims.filter((sim) => sim.lease).length} leased` : '',
+        group.sims.some((sim) => !sim.lease && sim.endedLease) ? `${group.sims.filter((sim) => !sim.lease && sim.endedLease).length} ended` : '',
+      ].filter(Boolean).join(' · ')}</span></header> : null}
+      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
 }

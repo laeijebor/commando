@@ -242,6 +242,11 @@ export type SimWallLease = {
   idle: boolean
 }
 
+export type SimWallEndedLease = Pick<SimWallLease, 'sessionName' | 'task' | 'label' | 'repo'> & {
+  endedAt: number
+  reason: 'pane-closed' | 'released'
+}
+
 export type SimOpenResult = {
   ok: true
   raised?: boolean
@@ -255,6 +260,13 @@ export type SimWallDevice = {
   deviceModel: string
   slim: 'slim' | 'unslimmed' | 'unknown'
   lease: SimWallLease | null
+  endedLease?: SimWallEndedLease | null
+}
+
+export type SimWallListing = {
+  sims: SimWallDevice[]
+  listedAt: number
+  stale: boolean
 }
 
 export type TmuxPane = PaneTerminalState & {

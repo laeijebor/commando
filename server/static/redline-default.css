@@ -902,11 +902,6 @@
     opacity: 1 !important;
   }
 
-  :where(html[data-redline-theme="commando"]) redline-code-diff .redline-diff-side {
-    width: max-content;
-    min-width: 100%;
-  }
-
   :where(html[data-redline-theme="commando"]) redline-code-diff .redline-diff-side > *:first-child {
     border-right: 1px solid var(--redline-page-border-strong);
   }
