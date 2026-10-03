@@ -9,6 +9,9 @@ type ViewPreferences = { groupBy: 'repo' | 'session' | 'none'; size: 's' | 'm' |
 const VIEW_STORAGE_KEY = 'commando.sims-view'
 const DEFAULT_VIEW: ViewPreferences = { groupBy: 'repo', size: 'm' }
 
+const HOVER_ARM_MS = 1_000
+const HOVER_IDLE_MS = 30_000
+
 function snapshotAge(at: number, now: number): string | undefined {
   const seconds = Math.floor((now - at) / 1000)
   if (now - at <= 15_000) return
@@ -47,8 +50,9 @@ function loadImage(url: string, signal: AbortSignal): Promise<void> {
   })
 }
 
-function SimCard({ sim, api, visible, formerGroup, showEnded, onSlimmed, onLive }: {
-  sim: SimWallDevice; api: SimsApi; visible: boolean; formerGroup: boolean; showEnded: boolean; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
+function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHover, onSlimmed, onLive }: {
+  sim: SimWallDevice; api: SimsApi; token: string; visible: boolean; formerGroup: boolean; showEnded: boolean
+  hover: 'arming' | 'live' | undefined; onHover: (hovered: boolean) => void; onSlimmed: () => void; onLive: (trigger: HTMLButtonElement) => void
 }) {
   const card = useRef<HTMLElement>(null)
   const actionBusy = useRef(false)
@@ -125,10 +129,15 @@ function SimCard({ sim, api, visible, formerGroup, showEnded, onSlimmed, onLive 
   }
 
   return <article className="sims-card" ref={card} aria-label={name}>
-    <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}>
+    <button type="button" className="sims-snapshot" onClick={(event) => onLive(event.currentTarget)} aria-label={`View ${name} live`}
+      onPointerEnter={(event) => { if (event.pointerType === 'mouse') onHover(true) }} onPointerLeave={() => onHover(false)}>
       {image ? <img src={image.url} alt={`${name} snapshot`} />
         : <span className="sims-placeholder">{snapshotError || 'Waiting for snapshot…'}</span>}
-      {image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
+      {/* The live canvas sits over the snapshot, which stays visible until video arrives or if it cannot start. */}
+      {hover === 'live' && visible ? <SimLiveView udid={sim.udid} token={token} api={api} preview /> : null}
+      {hover === 'arming' ? <span className="sims-hover-ring" aria-hidden="true"><svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" /></svg></span> : null}
+      {hover === 'live' ? <span className="sims-snapshot-live">live</span>
+        : image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
     </button>
     <div className="sims-name">{name}</div>
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
@@ -161,6 +170,27 @@ export function SimsView({ token }: { token: string }) {
   const [liveUdid, setLiveUdid] = useState<string | null>(null)
   const liveTrigger = useRef<HTMLElement | null>(null)
   const closeLive = () => { setLiveUdid(null); liveTrigger.current?.focus() }
+  // Resting the mouse on a card for HOVER_ARM_MS attaches its live stream in place. Only one card is
+  // attached at a time, and it detaches HOVER_IDLE_MS after the mouse leaves unless it returns.
+  const [hover, setHover] = useState<{ arming?: string; live?: string }>({})
+  const hoverTimers = useRef<{ arm?: number; idle?: number }>({})
+  const onHover = (udid: string, hovered: boolean) => {
+    window.clearTimeout(hoverTimers.current.arm)
+    if (!hovered) {
+      setHover((current) => ({ live: current.live }))
+      if (hover.live !== udid) return
+      window.clearTimeout(hoverTimers.current.idle)
+      hoverTimers.current.idle = window.setTimeout(() => setHover((current) => ({ arming: current.arming })), HOVER_IDLE_MS)
+      return
+    }
+    if (hover.live === udid) { window.clearTimeout(hoverTimers.current.idle); return }
+    setHover((current) => ({ live: current.live, arming: udid }))
+    hoverTimers.current.arm = window.setTimeout(() => {
+      window.clearTimeout(hoverTimers.current.idle)
+      setHover({ live: udid })
+    }, HOVER_ARM_MS)
+  }
+  useEffect(() => () => { window.clearTimeout(hoverTimers.current.arm); window.clearTimeout(hoverTimers.current.idle) }, [])
   useEffect(() => {
     if (!liveUdid) return
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); closeLive() } }
@@ -283,7 +313,7 @@ export function SimsView({ token }: { token: string }) {
         group.sims.some((sim) => sim.lease) ? `${group.sims.filter((sim) => sim.lease).length} leased` : '',
         group.sims.some((sim) => !sim.lease && sim.endedLease) ? `${group.sims.filter((sim) => !sim.lease && sim.endedLease).length} ended` : '',
       ].filter(Boolean).join(' · ')}</span></header> : null}
-      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
+      <div className="sims-grid">{group.sims.map((sim) => <SimCard key={sim.udid} sim={sim} api={api} token={token} hover={hover.live === sim.udid ? 'live' : hover.arming === sim.udid ? 'arming' : undefined} onHover={(hovered) => onHover(sim.udid, hovered)} formerGroup={group.key !== 'no-lease' && group.key !== 'flat'} showEnded={group.key !== 'no-lease'} visible={visible && liveUdid !== sim.udid} onLive={(trigger) => { liveTrigger.current = trigger; setLiveUdid(sim.udid) }} onSlimmed={() => setRevision((value) => value + 1)} />)}</div>
     </section>)}
   </section>
 }

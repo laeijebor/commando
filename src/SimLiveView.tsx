@@ -7,9 +7,12 @@ type Point = { x: number; y: number }
 /** Height in points of the home-indicator band at the bottom of the screen. */
 const EDGE_BAND = 20
 
-/** Exactly one tile is active in App; the wall mounts only its focused overlay. */
-export function SimLiveView({ udid, token, active = true, connected = true, api: providedApi }: {
-  udid: string; token: string; active?: boolean; connected?: boolean; api?: SimsApiClient
+/**
+ * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
+ * A preview is a bare, view-only canvas that renders nothing until video is available.
+ */
+export function SimLiveView({ udid, token, active = true, connected = true, preview = false, api: providedApi }: {
+  udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; api?: SimsApiClient
 }) {
   const api = useMemo(() => providedApi ?? createSimsApi(token), [providedApi, token])
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -152,7 +155,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       if (socket.current === ws) socket.current = null
       fallback(event.reason || 'Live simulator connection closed')
     }
-    canvas.current?.focus()
+    if (!preview) canvas.current?.focus()
     return () => {
       releasePointer()
       disposed = true
@@ -163,26 +166,26 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       for (const seed of seeds) { seed.onload = null; seed.onerror = null; seed.removeAttribute('src') }
       for (const seedUrl of urls) URL.revokeObjectURL(seedUrl)
     }
-  }, [active, connected, udid, token, revision])
+  }, [active, connected, udid, token, revision, preview])
 
   useEffect(() => {
-    if (active && !snapshot) canvas.current?.focus()
-  }, [active, snapshot])
+    if (active && !snapshot && !preview) canvas.current?.focus()
+  }, [active, snapshot, preview])
 
   useEffect(() => {
     const target = canvas.current
-    if (!target || !active || snapshot || !ready) return
+    if (!target || !active || snapshot || !ready || preview) return
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
       send({ type: 'scroll', deltaX: event.deltaX, deltaY: event.deltaY })
     }
     target.addEventListener('wheel', wheel, { passive: false })
     return () => target.removeEventListener('wheel', wheel)
-  }, [active, snapshot, ready])
+  }, [active, snapshot, ready, preview])
 
   useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
   useEffect(() => {
-    if (!snapshot || !visible) return
+    if (!snapshot || !visible || preview) return
     const controller = new AbortController()
     let busy = false
     const refresh = async () => {
@@ -197,7 +200,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
     void refresh()
     const timer = window.setInterval(() => void refresh(), 2_000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [snapshot, visible, api, udid])
+  }, [snapshot, visible, api, udid, preview])
 
   const clamp = ({ x, y }: Point): Point => ({ x: Math.max(0, Math.min(dimensions.current.width, x)), y: Math.max(0, Math.min(dimensions.current.height, y)) })
   const point = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -233,6 +236,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, api:
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
     }, 'image/png')
   }
+  if (preview) return snapshot ? null : <canvas ref={canvas} className="sim-live-preview" hidden={!ready} aria-hidden="true" />
   return <div className="sim-live">
     <div className="sims-actions sim-live-toolbar">
       <span className="sims-pill">{snapshot ? 'snapshot' : ready ? 'live' : 'connecting'}</span>
