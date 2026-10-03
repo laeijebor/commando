@@ -12,11 +12,14 @@
 .sim-live-url label { width: 100%; font-size: 11px; color: var(--muted); }
 .sim-live-url input { flex: 1; min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-deep); color: var(--text); font: inherit; font-size: 12px; }
 .sim-live-url input:focus-visible { outline: 2px solid var(--accent); }
-.sim-live-screen { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 6px; overflow: hidden; }
-.sim-live-screen canvas, .sim-live-screen img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.sim-live-screen { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 6px; overflow: hidden; }
+.sim-live-screen canvas, .sim-live-screen img { position: absolute; top: 50%; left: 50%; display: block; object-fit: contain; }
 .sim-live-screen canvas { touch-action: none; outline: 2px solid transparent; outline-offset: 2px; }
 .sim-live-screen canvas[hidden] { display: none; }
 .sim-live-screen canvas.is-focused { outline-color: var(--accent); }
+.sim-live-toolbar > .sim-live-record.is-recording { width: auto; gap: 4px; color: #ef4444; }
+.sim-live-record.is-recording svg { fill: currentColor; }
+.sim-live-record span { font-size: 10px; font-variant-numeric: tabular-nums; }
 .sim-live-finger { position: fixed; z-index: 101; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; border: 1.5px solid rgb(255 255 255 / 0.85); background: rgb(120 120 128 / 0.35); box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); pointer-events: none; }
 .sim-live-finger.is-pressed { background: rgb(120 120 128 / 0.65); transform: scale(0.88); }
 .sim-live-hint { flex: none; margin: 0 8px 6px; color: var(--muted); opacity: 0.7; font-size: 11px; text-align: center; }

@@ -6,7 +6,7 @@ import { PassThrough, Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SimLeaseRegistry, SIM_LEASE_IDLE_MS } from './sim-leases.js'
 import { SimWallApi, type SimWallRunner } from './sim-wall.js'
-import { SIM_TEXT_SIZES } from '../shared/sim-actions.js'
+import { SIM_ORIENTATIONS, SIM_TEXT_SIZES } from '../shared/sim-actions.js'
 
 const A = 'AAAAAAAA-1111-1111-1111-111111111111'
 const B = 'BBBBBBBB-2222-2222-2222-222222222222'
@@ -56,6 +56,7 @@ async function call(api: SimWallApi, path = '', method = 'GET', body?: unknown) 
 
 describe('SimWallApi', () => {
   it.each([
+    ...SIM_ORIENTATIONS.map((value): [unknown, string, string[]] => [{ action: 'orientation', value }, 'baguette', ['orientation', '--udid', A, value]]),
     [{ action: 'appearance', value: 'light' }, 'baguette', ['interface', 'appearance', '--udid', A, 'light']],
     [{ action: 'appearance', value: 'dark' }, 'baguette', ['interface', 'appearance', '--udid', A, 'dark']],
     [{ action: 'shake' }, 'baguette', ['shake', '--udid', A]],
@@ -101,6 +102,8 @@ describe('SimWallApi', () => {
   it.each([
     null, [], 42, 'malformed', {}, { action: 'rotate' }, { action: 'shake', args: ['--bad'] }, { action: 'heal', extra: true },
     { action: 'appearance' }, { action: 'appearance', value: 'system' }, { action: 'appearance', value: true },
+    { action: 'orientation' }, { action: 'orientation', value: 'landscape' }, { action: 'orientation', value: 90 },
+    { action: 'orientation', value: ['portrait'] }, { action: 'orientation', value: 'portrait', extra: true },
     { action: 'status-bar', mode: 'override' }, { action: 'status-bar', mode: ['clean'] },
     { action: 'text-size' }, { action: 'text-size', value: 'huge' }, { action: 'text-size', value: 1 },
     { action: 'text-size', step: '1' }, { action: 'text-size', step: 0 }, { action: 'text-size', value: 'large', step: 1 },

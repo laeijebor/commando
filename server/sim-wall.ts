@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { SimOpenResult, SimPoolSummary, SimWallDevice, SimWallListing } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
-import { SIM_NETWORK_PROFILES, SIM_TEXT_SIZES, type SimAction, type SimActionResult } from '../shared/sim-actions.js'
+import { SIM_NETWORK_PROFILES, SIM_ORIENTATIONS, SIM_TEXT_SIZES, type SimAction, type SimActionResult } from '../shared/sim-actions.js'
 
 export type SimWallRunner = (command: string, args: string[], options?: { timeout: number }) => Promise<string>
 const execute = promisify(execFile)
@@ -43,6 +43,7 @@ async function readAction(request: IncomingMessage): Promise<SimAction> {
   const only = (...keys: string[]) => Object.keys(body).every((key) => key === 'action' || keys.includes(key))
   let valid = false
   switch (body.action) {
+    case 'orientation': valid = only('value') && SIM_ORIENTATIONS.includes(body.value as typeof SIM_ORIENTATIONS[number]); break
     case 'appearance': valid = only('value') && ['light', 'dark', 'toggle'].includes(body.value as string); break
     case 'shake': case 'heal': valid = only(); break
     case 'status-bar': valid = only('mode') && ['clean', 'clear'].includes(body.mode as string); break
@@ -349,6 +350,7 @@ export class SimWallApi {
     const device = ['--udid', udid]
     const baguette = (args: string[]) => this.actionCommand('baguette', args)
     switch (body.action) {
+      case 'orientation': await baguette(['orientation', ...device, body.value]); break
       case 'appearance': {
         let value = body.value
         if (value === 'toggle') {

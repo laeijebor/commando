@@ -3,6 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { cacheSims, createSimsApi, readCachedSims, simsCache } from './simsApi'
 
 describe('simulator claim actions', () => {
+  it('sends orientation actions through the authenticated client', async () => {
+    const fetcher = vi.fn(async () => new Response('{"ok":true}'))
+    await createSimsApi('owner', fetcher).action('sim/udid', { action: 'orientation', value: 'landscape-left' })
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/action', expect.objectContaining({
+      method: 'POST', body: '{"action":"orientation","value":"landscape-left"}', headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+    }))
+  })
   it('sends authenticated action JSON, encodes the UDID and fetches schemes', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response('{"ok":true,"value":"dark"}'))
       .mockResolvedValueOnce(new Response('{"schemes":["myapp","https"]}'))

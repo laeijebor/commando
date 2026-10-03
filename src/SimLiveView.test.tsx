@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SimLiveView } from './SimLiveView'
+import { SIM_ORIENTATIONS, type SimOrientation } from '../shared/sim-actions'
+import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screenBottomEdge, screenSize, screenToNative } from './simGeometry'
 
 const U = 'AAAAAAAA-1111-1111-1111-111111111111'
 class Socket {
@@ -27,6 +29,31 @@ class Decoder {
   close = vi.fn(() => { this.state = 'closed' })
   constructor(readonly init: VideoDecoderInit) { Decoder.instances.push(this) }
 }
+class Recorder {
+  static instances: Recorder[] = []
+  static isTypeSupported = vi.fn((type: string) => type === 'video/mp4')
+  state = 'inactive'
+  ondataavailable: ((event: { data: Blob }) => void) | null = null
+  onstop: (() => void) | null = null
+  onerror: (() => void) | null = null
+  start = vi.fn(() => { this.state = 'recording' })
+  stop = vi.fn(() => {
+    this.state = 'inactive'
+    this.ondataavailable?.({ data: new Blob(['video'], { type: this.mimeType }) })
+    this.onstop?.()
+  })
+  mimeType: string
+  constructor(readonly stream: MediaStream, options: MediaRecorderOptions) { this.mimeType = options.mimeType!; Recorder.instances.push(this) }
+}
+const trackStop = vi.fn()
+const captureStream = vi.fn(() => ({ getTracks: () => [{ stop: trackStop }] }))
+class ScreenObserver {
+  static instances: ScreenObserver[] = []
+  observe = vi.fn()
+  disconnect = vi.fn()
+  constructor(readonly callback: ResizeObserverCallback) { ScreenObserver.instances.push(this) }
+  resize(width: number, height: number) { act(() => this.callback([{ contentRect: { width, height } } as ResizeObserverEntry], this as unknown as ResizeObserver)) }
+}
 const draw = vi.fn()
 let visibility: DocumentVisibilityState
 let images: HTMLImageElement[]
@@ -49,6 +76,8 @@ function pointer(canvas: HTMLElement, type: string, x: number, y: number, keys: 
 beforeEach(() => {
   vi.useFakeTimers(); Socket.instances = []; Decoder.instances = []; images = []; rafs = new Map(); capture = new Set(); visibility = 'visible'; draw.mockClear()
   vi.stubGlobal('WebSocket', Socket); vi.stubGlobal('VideoDecoder', Decoder)
+  Recorder.instances = []; Recorder.isTypeSupported.mockImplementation((type) => type === 'video/mp4'); captureStream.mockClear(); trackStop.mockClear(); ScreenObserver.instances = []
+  vi.stubGlobal('MediaRecorder', Recorder); vi.stubGlobal('ResizeObserver', ScreenObserver)
   vi.stubGlobal('EncodedVideoChunk', class { constructor(readonly init: EncodedVideoChunkInit) { Object.assign(this, init) } })
   vi.stubGlobal('Image', vi.fn(function () { const image = document.createElement('img'); images.push(image); return image }))
   vi.stubGlobal('fetch', vi.fn(async (path) => new Response(String(path).endsWith('/snapshot.jpg') ? 'jpeg' : String(path).endsWith('/schemes') ? '{"schemes":["myapp","https"]}' : '{"ok":true}')))
@@ -56,6 +85,7 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: draw } as unknown as CanvasRenderingContext2D)
   vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, right: 205, bottom: 442, width: 195, height: 422, toJSON: () => ({}) })
   Object.defineProperties(HTMLCanvasElement.prototype, {
+    captureStream: { configurable: true, value: captureStream },
     setPointerCapture: { configurable: true, value: vi.fn((id: number) => capture.add(id)) },
     hasPointerCapture: { configurable: true, value: (id: number) => capture.has(id) },
     releasePointerCapture: { configurable: true, value: vi.fn((id: number) => capture.delete(id)) },
@@ -67,16 +97,244 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
+describe('simulator rotation geometry', () => {
+  const size = { width: 390, height: 844 }
+  it.each([
+    ['portrait', [78, 590.8], 'bottom', 0],
+    ['landscape-right', [273, 675.2], 'right', 90],
+    ['portrait-upside-down', [312, 253.2], 'top', 180],
+    ['landscape-left', [117, 168.8], 'left', 270],
+  ] as const)('maps fractions, inverse points, bottom edge and CSS rotation for %s', (orientation, expected, edge, degrees) => {
+    const native = screenToNative({ x: 0.2, y: 0.7 }, size, orientation)
+    expect(native.x).toBeCloseTo(expected[0]); expect(native.y).toBeCloseTo(expected[1])
+    const fraction = nativeToScreen(native, size, orientation)
+    expect(fraction.x).toBeCloseTo(0.2); expect(fraction.y).toBeCloseTo(0.7)
+    expect(screenBottomEdge(orientation)).toBe(edge)
+    expect(ORIENTATION_TURNS[orientation] * 90).toBe(degrees)
+    for (const x of [0, 1]) for (const y of [0, 1]) {
+      expect(nativeToScreen(screenToNative({ x, y }, size, orientation), size, orientation)).toEqual({ x, y })
+    }
+  })
+  it.each(SIM_ORIENTATIONS)('fits both wide and tall bounds in %s', (orientation) => {
+    for (const bounds of [{ width: 200, height: 600 }, { width: 600, height: 200 }]) {
+      const fitted = fitCanvas(size, bounds, orientation)
+      const displayed = screenSize(fitted, orientation)
+      expect(fitted.width / fitted.height).toBeCloseTo(size.width / size.height)
+      expect(displayed.width).toBeLessThanOrEqual(bounds.width)
+      expect(displayed.height).toBeLessThanOrEqual(bounds.height)
+      expect(Math.min(bounds.width - displayed.width, bounds.height - displayed.height)).toBeCloseTo(0)
+    }
+    expect(rotateOrientation(rotateOrientation(orientation, 1), -1)).toBe(orientation)
+  })
+})
+
 describe('SimLiveView', () => {
-  it('shows seven named icon buttons with tooltips and no toolbar in preview mode', () => {
+  const orient = async (orientation: SimOrientation) => {
+    for (let step = 0; step < ORIENTATION_TURNS[orientation]; step++) {
+      fireEvent.click(screen.getByRole('button', { name: 'Rotate right' })); await flush()
+    }
+  }
+  it('steps right and left through all orientations using the focused shortcuts and menu', async () => {
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!
+    act(() => canvas.focus())
+    for (const value of ['landscape-right', 'portrait-upside-down', 'landscape-left', 'portrait']) {
+      fireEvent.keyDown(canvas, { key: 'ArrowRight', code: 'ArrowRight', metaKey: true }); await flush()
+      expect(fetch).toHaveBeenLastCalledWith(`/api/sims/${U}/action`, expect.objectContaining({ body: JSON.stringify({ action: 'orientation', value }) }))
+    }
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true }); await flush()
+    expect(canvas.style.transform).toContain('rotate(270deg)')
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rotate right' })); await flush()
+    expect(canvas.style.transform).toContain('rotate(0deg)')
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rotate left' })); await flush()
+    expect(canvas.style.transform).toContain('rotate(270deg)')
+    expect(Socket.instances[0].envelopes()).toEqual([])
+    act(() => canvas.blur())
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', code: 'ArrowRight', metaKey: true })
+    expect(fetch).toHaveBeenCalledTimes(7)
+  })
+
+  it('leaves orientation unchanged after a failed action and prevents overlapping rotations', async () => {
+    let reject!: (error: Error) => void
+    vi.mocked(fetch).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail }))
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!
+    act(() => canvas.focus())
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', code: 'ArrowRight', metaKey: true })
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft', code: 'ArrowLeft', metaKey: true })
+    expect(screen.getByRole('button', { name: 'Rotate right' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    expect(screen.getByRole('menuitem', { name: 'Rotate left' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Rotate right' })).toBeDisabled()
+    act(() => reject(new Error('Orientation failed'))); await flush()
+    expect(canvas.style.transform).toContain('rotate(0deg)')
+    expect(screen.getByRole('status')).toHaveTextContent('Orientation failed')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true}'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rotate right' })); await flush()
+    expect(canvas.style.transform).toContain('rotate(90deg)')
+  })
+
+  it.each([
+    ['portrait', [97.5, 211], [156, 253.2], [195, 839], 'bottom', [20, 10], [-20, 40]],
+    ['landscape-right', [97.5, 633], [117, 506.4], [385, 422], 'right', [10, -20], [40, 20]],
+    ['portrait-upside-down', [292.5, 633], [234, 590.8], [195, 5], 'top', [-20, -10], [20, -40]],
+    ['landscape-left', [292.5, 211], [273, 337.6], [5, 422], 'left', [-10, 20], [-40, -20]],
+  ] as const)('maps taps, drags, edge envelopes, two fingers, markers and wheel in %s', async (orientation, tap, moved, bottom, edge, pan, wheel) => {
+    const { container } = render(<SimLiveView udid={U} token="" />); meta(); await orient(orientation)
+    const canvas = container.querySelector('canvas')!, ws = Socket.instances[0]
+    const landscape = orientation.startsWith('landscape')
+    const width = landscape ? 422 : 195, height = landscape ? 195 : 422
+    vi.mocked(HTMLCanvasElement.prototype.getBoundingClientRect).mockReturnValue({ left: 10, top: 20, width, height } as DOMRect)
+    const frame = () => act(() => { for (const callback of rafs.values()) callback(0); rafs.clear() })
+    const x = 10 + width / 4, y = 20 + height / 4
+    pointer(canvas, 'pointerdown', x, y)
+    pointer(canvas, 'pointermove', 10 + width * 0.4, 20 + height * 0.3); frame()
+    pointer(canvas, 'pointerup', 10 + width * 0.4, 20 + height * 0.3)
+    expect(ws.envelopes()).toEqual([
+      { type: 'touch1-down', x: tap[0], y: tap[1] },
+      { type: 'touch1-move', x: moved[0], y: moved[1] },
+      { type: 'touch1-up', x: moved[0], y: moved[1] },
+    ])
+    ws.send.mockClear()
+    pointer(canvas, 'pointerdown', 10 + width / 2, 20 + height - 2.5)
+    pointer(canvas, 'pointermove', 10 + width / 2, 20 + height / 2); frame()
+    pointer(canvas, 'pointerup', 10 + width / 2, 20 + height / 2)
+    expect(ws.envelopes()).toEqual([
+      { type: 'touch1-down', x: bottom[0], y: bottom[1], edge },
+      { type: 'touch1-move', x: 195, y: 422, edge }, { type: 'touch1-up', x: 195, y: 422, edge },
+    ])
+    ws.send.mockClear()
+    pointer(canvas, 'pointerdown', x, y, { altKey: true })
+    expect(ws.envelopes()[0]).toEqual({ type: 'touch2-down', x1: tap[0], y1: tap[1], x2: 390 - tap[0], y2: 844 - tap[1] })
+    const markers = [...container.querySelectorAll<HTMLElement>('.sim-live-finger')]
+    expect(markers.map((marker) => [marker.style.left, marker.style.top])).toEqual([
+      [`${Math.round(x)}px`, `${Math.round(y)}px`], [`${Math.round(10 + width * 0.75)}px`, `${Math.round(20 + height * 0.75)}px`],
+    ])
+    pointer(canvas, 'pointermove', x + 10, y + 5, { altKey: true, shiftKey: true }); frame()
+    expect(ws.envelopes()[1]).toEqual({ type: 'touch2-move', x1: tap[0] + pan[0], y1: tap[1] + pan[1], x2: 390 - tap[0] + pan[0], y2: 844 - tap[1] + pan[1] })
+    pointer(canvas, 'pointerup', x + 10, y + 5, { altKey: true, shiftKey: true })
+    ws.send.mockClear()
+    fireEvent.wheel(canvas, { clientX: x, clientY: y, deltaX: 20, deltaY: -40 })
+    act(() => vi.advanceTimersByTime(120))
+    expect(ws.envelopes()).toEqual([
+      { type: 'touch1-down', x: tap[0], y: tap[1] },
+      { type: 'touch1-move', x: tap[0] + wheel[0], y: tap[1] + wheel[1] },
+      { type: 'touch1-up', x: tap[0] + wheel[0], y: tap[1] + wheel[1] },
+    ])
+  })
+
+  it('sizes the canvas before rotation and resizes within the live screen', async () => {
+    const { container, unmount } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!, observer = ScreenObserver.instances[0]
+    observer.resize(600, 400)
+    expect(parseFloat(canvas.style.height)).toBe(400)
+    await orient('landscape-right')
+    expect(parseFloat(canvas.style.height)).toBe(600)
+    expect(parseFloat(canvas.style.width)).toBeCloseTo(600 * 390 / 844)
+    observer.resize(200, 100)
+    expect(parseFloat(canvas.style.height)).toBe(200)
+    expect(parseFloat(canvas.style.width)).toBeLessThan(100)
+    unmount(); expect(observer.disconnect).toHaveBeenCalledOnce()
+  })
+
+  it('clears hover markers and releases held touches when rotation succeeds', async () => {
+    const { container } = render(<SimLiveView udid={U} token="" />); meta()
+    const canvas = container.querySelector('canvas')!, ws = Socket.instances[0]
+    pointer(canvas, 'pointermove', 60, 120, { altKey: true })
+    expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(2)
+    await orient('landscape-right')
+    expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(0)
+    pointer(canvas, 'pointerdown', 107.5, 231)
+    act(() => canvas.focus())
+    fireEvent.keyDown(canvas, { key: 'ArrowRight', code: 'ArrowRight', metaKey: true }); await flush()
+    expect(ws.envelopes()).toEqual([{ type: 'touch1-down', x: 195, y: 422 }, { type: 'touch1-up', x: 195, y: 422 }])
+    expect(capture.size).toBe(0)
+    expect(container.querySelectorAll('.sim-live-finger')).toHaveLength(0)
+  })
+
+  it('waits for the recorder final data event after unmount before saving', async () => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const { unmount } = render(<SimLiveView udid={U} token="" />); meta(); video()
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
+    const recorder = Recorder.instances[0]
+    recorder.stop.mockImplementation(() => { recorder.state = 'inactive' })
+    unmount()
+    expect(recorder.stop).toHaveBeenCalledOnce(); expect(click).not.toHaveBeenCalled()
+    recorder.ondataavailable?.({ data: new Blob(['final frame'], { type: 'video/mp4' }) })
+    recorder.onstop?.()
+    expect(click).toHaveBeenCalledOnce(); expect(trackStop).toHaveBeenCalledOnce()
+    await advance(1000); expect(vi.getTimerCount()).toBe(0)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith((click.mock.contexts[0] as HTMLAnchorElement).href)
+  })
+
+  it.each(['mp4', 'webm'])('records canvas video, shows elapsed time and downloads matching %s', async (extension) => {
+    Recorder.isTypeSupported.mockImplementation((type) => extension === 'mp4' && type === 'video/mp4')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<SimLiveView udid={U} token="" />); meta(); video()
+    expect(screen.getByRole('button', { name: 'Record' })).not.toHaveAttribute('title', expect.stringContaining('unrotated'))
+    await orient('landscape-right')
+    expect(screen.getByRole('button', { name: 'Record' })).toHaveAttribute('title', expect.stringContaining('unrotated canvas pixels'))
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
+    expect(captureStream).toHaveBeenCalledWith(30)
+    expect(Recorder.instances[0].mimeType).toBe(`video/${extension}`)
+    expect(Recorder.instances[0].start).toHaveBeenCalledWith(1000)
+    expect(screen.getByRole('button', { name: 'Stop recording' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Stop recording' })).toHaveTextContent('00:00')
+    await advance(65_000)
+    expect(screen.getByRole('button', { name: 'Stop recording' })).toHaveTextContent('01:05')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop recording' }))
+    expect(Recorder.instances[0].stop).toHaveBeenCalledOnce(); expect(trackStop).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: 'Record' })).toHaveAttribute('aria-pressed', 'false')
+    expect(click).toHaveBeenCalledOnce()
+    expect(click.mock.contexts[0]).toHaveProperty('download', expect.stringMatching(new RegExp(`^simulator-AAAAAAAA-[\\dTZ-]+\\.${extension}$`)))
+    const blob = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob
+    expect(blob.type).toBe(`video/${extension}`); expect(blob.size).toBe(5)
+    const url = (click.mock.contexts[0] as HTMLAnchorElement).href
+    await advance(1000); expect(URL.revokeObjectURL).toHaveBeenCalledWith(url)
+  })
+
+  it.each(['stream drop', 'hidden timeout', 'unmount', 'daemon disconnect'])('stops and saves recording on %s', async (end) => {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const { unmount, rerender } = render(<SimLiveView udid={U} token="" />); meta(); video()
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }))
+    const recorder = Recorder.instances[0]
+    if (end === 'stream drop') act(() => Socket.instances[0].onclose?.({ reason: 'Lost stream' }))
+    else if (end === 'hidden timeout') {
+      changeVisibility('hidden'); await advance(29_999)
+      expect(recorder.stop).not.toHaveBeenCalled()
+      await advance(1)
+    } else if (end === 'unmount') unmount()
+    else rerender(<SimLiveView udid={U} token="" connected={false} />)
+    await flush()
+    expect(recorder.stop).toHaveBeenCalledOnce(); expect(click).toHaveBeenCalledOnce(); expect(trackStop).toHaveBeenCalledOnce()
+    unmount(); await advance(1000)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith((click.mock.contexts[0] as HTMLAnchorElement).href)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['MediaRecorder', 'captureStream', 'snapshot'])('disables recording when %s is unavailable', (missing) => {
+    if (missing === 'MediaRecorder') vi.stubGlobal('MediaRecorder', undefined)
+    if (missing === 'captureStream') Object.defineProperty(HTMLCanvasElement.prototype, 'captureStream', { configurable: true, value: undefined })
+    if (missing === 'snapshot') vi.stubGlobal('VideoDecoder', undefined)
+    render(<SimLiveView udid={U} token="" />)
+    if (missing !== 'snapshot') meta()
+    const record = screen.getByRole('button', { name: 'Record' })
+    expect(record).toBeDisabled(); fireEvent.click(record)
+    expect(Recorder.instances).toHaveLength(0)
+  })
+
+  it('shows nine named icon buttons with tooltips and no toolbar in preview mode', () => {
     const { container, unmount } = render(<SimLiveView udid={U} token="" />)
-    for (const name of ['Home', 'App Switcher', 'Lock', 'Screenshot', 'Toggle Light/Dark', 'Open URL', 'More']) {
+    for (const name of ['Home', 'App Switcher', 'Lock', 'Screenshot', 'Rotate right', 'Record', 'Toggle Light/Dark', 'Open URL', 'More']) {
       const button = screen.getByRole('button', { name })
       expect(button).toHaveAttribute('title')
       expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
       expect(button).toHaveTextContent('')
     }
-    expect(container.querySelectorAll('.sim-live-toolbar > button')).toHaveLength(7)
+    expect(container.querySelectorAll('.sim-live-toolbar > button')).toHaveLength(9)
     expect(screen.getByRole('button', { name: 'Home' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Toggle Light/Dark' })).toBeEnabled()
     unmount()
