@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { createServer, type ViteDevServer } from 'vite'
 import type { CommandoSnapshot, TmuxPane } from '../shared/protocol'
-import type { PanePrSummary } from '../src/prsApi'
+import type { PanePrSummary, PrSummary } from '../src/prsApi'
 
 const port = Number(process.env.COMMANDO_E2E_VITE_PORT ?? 5297)
 let vite: ViteDevServer
@@ -12,7 +12,7 @@ test.beforeAll(async () => {
 })
 test.afterAll(async () => { await vite?.close() })
 
-test('session counts include inactive panes and update after a PR merges', async ({ page }, testInfo) => {
+test('session PR pills include inactive panes, use HUD previews, and update after a PR merges', async ({ page }, testInfo) => {
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   const pane: TmuxPane = {
@@ -36,11 +36,22 @@ test('session counts include inactive panes and update after a PR merges', async
       { id: '@2', index: 0, sessionId: '$2', name: 'other', active: true, layout: '', paneIds: ['%3'] },
     ],
   }
-  const pr = (number: number, state: PanePrSummary['state'] = 'open'): PanePrSummary => ({
+  const pr = (number: number, state: PanePrSummary['state'] = 'open'): PanePrSummary => {
+    const summary: PrSummary = {
+      number, state, title: `PR ${number}`, url: `https://github.com/acme/app/pull/${number}`,
+      isDraft: number === 2, createdAt: '', updatedAt: '', additions: 0, deletions: 0, checks: null,
+      conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
+      author: 'QA', bodyExcerpt: 'HUD preview for this session PR', changedFiles: 1, commitCount: 1,
+      headRefName: `feature-${number}`, baseRefName: number === 2 ? 'release/mail' : 'main',
+      headRefOid: 'b'.repeat(40), baseRefOid: 'a'.repeat(40), mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+      reviews: [], requestedReviewers: [], viewerIsAuthor: true, viewerReviewRequested: false, commandoMarker: null,
+    }
+    return {
     repo: 'acme/app', number, state, title: `PR ${number}`, url: `https://github.com/acme/app/pull/${number}`,
     isDraft: number === 2, createdAt: '', updatedAt: '', additions: 0, deletions: 0, checks: null,
     conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
-  })
+    preview: summary,
+  }}
   let merged = false
   await page.routeWebSocket((url) => url.pathname === '/ws', (socket) => {
     socket.send(JSON.stringify({ type: 'snapshot', snapshot }))
@@ -65,17 +76,24 @@ test('session counts include inactive panes and update after a PR merges', async
   })
   await page.clock.install()
   await page.goto(`http://127.0.0.1:${port}/#token=session-pr-count-fixture`)
-  await expect(page.getByRole('img', { name: '2 open pull requests in work' })).toBeVisible()
-  const inactiveBadge = page.getByRole('img', { name: '1 open pull request in Long inactive session with open PRs' })
+  const workBadge = page.getByRole('button', { name: 'PR #2 in work: Draft; 1 more open pull request' })
+  await expect(workBadge).toBeVisible()
+  await expect(workBadge).toContainText('#2+1')
+  const inactiveBadge = page.getByRole('button', { name: 'PR #5 in Long inactive session with open PRs: Ready to merge' })
   await expect(inactiveBadge).toBeVisible()
-  const row = inactiveBadge.locator('..')
+  const row = inactiveBadge.locator('xpath=ancestor::div[@class="managed-session-row"]')
   const rowBounds = await row.boundingBox()
   const badgeBounds = await inactiveBadge.boundingBox()
   expect(badgeBounds!.x + badgeBounds!.width).toBeLessThanOrEqual(rowBounds!.x + rowBounds!.width)
+  await expect(page.locator('.managed-window-tree')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Open pull requests in work' }).getByLabel('Merge target: release/mail')).toBeVisible()
+  await workBadge.hover()
+  await page.clock.runFor(400)
+  await expect(page.getByRole('dialog', { name: 'Details for #2' })).toContainText('HUD preview for this session PR')
   await page.screenshot({ path: testInfo.outputPath('session-pr-counts.png') })
   merged = true
   await page.clock.fastForward(5 * 60_000)
-  await expect(page.getByRole('img', { name: '1 open pull request in work' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'PR #2 in work: Draft', exact: true })).toBeVisible()
   await expect(inactiveBadge).toBeVisible()
   expect(errors).toEqual([])
 })
