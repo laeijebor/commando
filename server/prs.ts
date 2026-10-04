@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
+import { PrConflictInspector } from './pr-conflicts.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
@@ -697,6 +698,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
@@ -1103,7 +1105,20 @@ export class PrService {
       }
     })
     conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks }
+    const base = optionalObject(pr, 'base')
+    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks,
+      ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+  }
+
+  async pullRequestConflicts(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrConflicts> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
+    const base = objectField(pr, 'base')
+    const head = objectField(pr, 'head')
+    const refs = { baseRefName: requiredString(base, 'ref'), baseOid: requiredString(base, 'sha'), headRefName: requiredString(head, 'ref'), headOid: requiredString(head, 'sha') }
+    if (pr.state !== 'open') return { ...refs, state: 'not-open', files: [], messages: [], truncated: false, fetchedAt: this.now() }
+    return this.conflictInspector.inspect({ ...refs, repo, number })
   }
 
   async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {

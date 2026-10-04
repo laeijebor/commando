@@ -14,6 +14,19 @@ export type PrDetails = {
   body: string
   conversation: PrConversationEntry[]
   checks: Array<{ name: string; state: 'pass' | 'fail' | 'pending'; url: string }>
+  mergeTarget?: { branch: string; oid: string }
+}
+
+export type PrConflicts = {
+  state: 'clean' | 'conflicting' | 'not-open'
+  baseRefName: string
+  headRefName: string
+  baseOid: string
+  headOid: string
+  files: Array<{ path: string; kind: string; content: string | null; truncated: boolean }>
+  messages: string[]
+  truncated: boolean
+  fetchedAt: number
 }
 
 export type PrRemoteDiff = {

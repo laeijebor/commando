@@ -97,6 +97,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    conflicts: async (repo: string, number: number) =>
+      (await request<{ conflicts: import('../shared/pr-quick-look').PrConflicts }>(`/conflicts?repo=${encodeURIComponent(repo)}&number=${number}`)).conflicts,
     details: async (repo: string, number: number) =>
       (await request<{ details: import('../shared/pr-quick-look').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
     diff: async (repo: string, number: number) =>
