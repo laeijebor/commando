@@ -28,6 +28,7 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
   const nextId = useRef(0)
   const pause = useRef(false)
   const filterPending = useRef(false)
+  const connection = useRef<{ socket: WebSocket; closed: Promise<void> } | null>(null)
   filterPending.current = bundle !== streamBundle
   const list = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -52,15 +53,24 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
     atBottom.current = true
     setError('')
     if (streamBundle && !SIM_BUNDLE_ID.test(streamBundle)) { setError('Enter a valid app bundle id'); return }
-    let socket: WebSocket
-    try {
+    let active = true
+    let socket: WebSocket | undefined
+    let resolveClosed: (() => void) | undefined
+    const connect = async () => {
+      const previous = connection.current
+      // Cleanup initiates close; wait for the handshake before consuming a replacement server slot.
+      if (previous && previous.socket.readyState !== WebSocket.CLOSED) await previous.closed
+      if (!active) return
+      try {
       const url = new URL(`/ws/api/sims/${encodeURIComponent(udid)}/logs`, window.location.href)
       url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
       url.searchParams.set('level', level)
       if (streamBundle) url.searchParams.set('bundle', streamBundle)
       const credential = encodeURIComponent(token).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
       socket = new WebSocket(url.toString(), token ? ['commando-live', `commando-auth.${credential}`] : ['commando-live'])
-    } catch { setError('Simulator logs connection unavailable'); return }
+      const closed = new Promise<void>((resolve) => { resolveClosed = resolve })
+      connection.current = { socket, closed }
+      } catch { setError('Simulator logs connection unavailable'); return }
     socket.onmessage = (event) => {
       if (pause.current || filterPending.current || typeof event.data !== 'string') return
       let line: unknown
@@ -74,14 +84,19 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
       dirty.current = true
     }
     socket.onerror = () => setError('Simulator logs connection failed')
-    socket.onclose = (event) => setError(event.reason || 'Simulator log stream closed')
+    socket.onclose = (event) => { resolveClosed?.(); if (active) setError(event.reason || 'Simulator log stream closed') }
+    }
+    void connect()
     const timer = setInterval(() => {
       if (!dirty.current) return
       dirty.current = false; setLines(buffer.current.slice())
     }, 100)
     return () => {
       clearInterval(timer)
-      socket.onmessage = null; socket.onerror = null; socket.onclose = null; socket.close()
+      active = false
+      if (socket) {
+        socket.onmessage = null; socket.onerror = null; socket.onclose = () => resolveClosed?.(); socket.close()
+      }
     }
   }, [udid, token, level, streamBundle])
   const visible = useMemo(() => {

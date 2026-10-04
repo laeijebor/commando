@@ -10,11 +10,15 @@ const U = 'AAAAAAAA-1111-1111-1111-111111111111'
 const apps = [{ bundleId: 'com.example.app', name: 'Example', type: 'user' }, { bundleId: 'com.example.other', name: 'Other', type: 'user' },
   { bundleId: 'com.apple.settings', name: 'Settings', type: 'system' }]
 class Socket {
+  static CLOSED = 3
+  readyState = 1
+  deferClose = false
   static instances: Socket[] = []
   onmessage: ((event: { data: unknown }) => void) | null = null
   onerror: (() => void) | null = null
   onclose: ((event: { reason: string }) => void) | null = null
-  close = vi.fn()
+  close = vi.fn(() => { this.readyState = 2; if (!this.deferClose) queueMicrotask(() => this.finishClose()) })
+  finishClose() { this.readyState = 3; this.onclose?.({ reason: '' }) }
   constructor(readonly url: string, readonly protocols: string[]) { Socket.instances.push(this) }
   line(message: string, level = 'info') { this.onmessage?.({ data: JSON.stringify({ t: 'now', level, process: '/Example', message }) }) }
 }
@@ -41,6 +45,7 @@ describe('Logs panel', () => {
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
     expect(screen.queryByText('old displayed line')).not.toBeInTheDocument()
     if (label === 'App filter') await advance(300)
+    await flush()
     expect(old.onmessage).toBeNull()
     act(() => Socket.instances[1].line('new filtered line')); await advance()
     expect(screen.queryByText('old queued line')).not.toBeInTheDocument()
@@ -55,6 +60,7 @@ describe('Logs panel', () => {
     expect(document.querySelectorAll('datalist option')).toHaveLength(2)
     fireEvent.change(screen.getByLabelText('Text filter'), { target: { value: 'error' } }); expect(Socket.instances).toHaveLength(1)
     fireEvent.change(screen.getByLabelText('Level'), { target: { value: 'debug' } })
+    await flush()
     expect(Socket.instances[0].close).toHaveBeenCalledOnce(); expect(Socket.instances[1].url).toContain('level=debug')
     fireEvent.change(screen.getByLabelText('App filter'), { target: { value: 'com.example.app' } })
     await advance(300)
@@ -81,6 +87,22 @@ describe('Logs panel', () => {
     expect(Socket.instances).toHaveLength(2)
     expect(Socket.instances[1].url).toContain('bundle=com.example.app')
     expect(screen.queryByText('stale pending line')).not.toBeInTheDocument()
+  })
+
+  it('waits for the prior close handshake and opens only the latest replacement', async () => {
+    render(<SimLogsPanel api={api()} udid={U} token="" onClose={vi.fn()} />); await flush()
+    const old = Socket.instances[0]
+    old.deferClose = true
+    fireEvent.change(screen.getByLabelText('Level'), { target: { value: 'debug' } }); await flush()
+    expect(old.close).toHaveBeenCalledOnce()
+    expect(Socket.instances).toHaveLength(1)
+    fireEvent.change(screen.getByLabelText('Level'), { target: { value: 'default' } })
+    fireEvent.change(screen.getByLabelText('App filter'), { target: { value: 'com.example.app' } }); await advance(300)
+    expect(Socket.instances).toHaveLength(1)
+    act(() => old.finishClose()); await flush()
+    expect(Socket.instances).toHaveLength(2)
+    expect(Socket.instances[1].url).toContain('level=default')
+    expect(Socket.instances[1].url).toContain('bundle=com.example.app')
   })
 
   it('batches at 100ms, discards while paused, caps at 2000 and copies only visible lines', async () => {
