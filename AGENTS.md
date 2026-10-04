@@ -19,7 +19,13 @@
   2. `npm test` passes (vitest)
   3. You have exercised the feature end-to-end where practical (e.g. `npm run dev` and drive the affected flow, or the relevant Playwright test)
 
-  Then merge the branch into `main` and clean up:
+  **Local merge is the default, with standing user authorization.** Commando is a single-user development app: once the checks above pass, merge completed work into local `main` so the user can use it in their running checkout. Do not stop at opening a PR or ask for routine local-merge approval. An explicit request to leave work unmerged or await review takes precedence.
+
+  **Preserve the active session.** Inspect the main checkout for concurrent changes before merging. Preserve unrelated commits and untracked files; never reset, stash, or overwrite another agent's work. If main has diverged, prepare and test the combined result in your worktree, then fast-forward the main checkout after confirming it has not moved. Ask first if applying the change could interrupt the active session, requires restarting/reconfiguring the shared daemon or tmux server, or requires a migration or destructive operation. A verified local Git merge does not authorize restarting shared services.
+
+  **Remote merging is separate.** Opening a PR does not block safe local integration. Merge on GitHub / `origin/main` only when the user requests it, after any required review is complete. Do not push unrelated local-only commits as part of merging a PR remotely.
+
+  Then merge the branch into local `main` and clean up only your own finished worktree:
 
   ```sh
   git -C <main-checkout> merge <feature>
