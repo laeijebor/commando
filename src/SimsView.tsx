@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { SimPoolSummary, SimWallDevice } from '../shared/protocol'
 import { cacheSimSnapshot, claimSimSnapshotPolling, subscribeSimSnapshot, cacheSims, createSimsApi, readCachedSims, simsCache, type CachedSimSnapshot } from './simsApi'
 import './sims-view.css'
@@ -9,7 +9,7 @@ type ViewPreferences = { groupBy: 'repo' | 'session' | 'none'; size: 's' | 'm' |
 const VIEW_STORAGE_KEY = 'commando.sims-view'
 const DEFAULT_VIEW: ViewPreferences = { groupBy: 'repo', size: 'm' }
 
-const HOVER_ARM_MS = 1_000
+const HOVER_ARM_MS = 500
 const HOVER_IDLE_MS = 30_000
 
 function snapshotAge(at: number, now: number): string | undefined {
@@ -56,6 +56,7 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
 }) {
   const card = useRef<HTMLElement>(null)
   const actionBusy = useRef(false)
+  const expand = useRef<HTMLButtonElement>(null)
   const [intersecting, setIntersecting] = useState(false)
   const [image, setImage] = useState<CachedSimSnapshot | undefined>(() => simsCache.snapshots.get(sim.udid))
   const [now, setNow] = useState(Date.now)
@@ -137,11 +138,13 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
       </button>
       {/* The live canvas sits over the snapshot, which stays visible until video arrives or if it cannot start. */}
       {hover === 'live' && visible ? <SimLiveView udid={sim.udid} token={token} api={api} preview onStreaming={setStreaming} /> : null}
-      {hover === 'arming' ? <span className="sims-hover-ring" aria-hidden="true"><svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" /></svg></span> : null}
+      {hover === 'arming' ? <span className="sims-hover-ring" aria-hidden="true" style={{ '--sims-hover-delay': `${HOVER_ARM_MS}ms` } as CSSProperties}><svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" /></svg></span> : null}
       {streaming ? <span className="sims-snapshot-live">live</span>
         : image && snapshotAge(image.at, now) ? <span className="sims-snapshot-age">{snapshotAge(image.at, now)}</span> : null}
-      <button type="button" className="sims-expand" aria-label={`Open ${name} live view`} onClick={(event) => onLive(event.currentTarget)}>↗</button>
+      <button type="button" ref={expand} className={`sims-expand${streaming ? ' is-live' : ''}`} aria-label={`Open ${name} live view`} title="Expand" onClick={(event) => onLive(event.currentTarget)}>⤢ Expand</button>
     </div>
+    {/* Everything below the screen opens the expanded view; its own buttons keep their actions. */}
+    <div className="sims-card-body" onClick={(event) => { if (!(event.target as HTMLElement).closest('button') && expand.current) onLive(expand.current) }}>
     <div className="sims-name">{name}</div>
     <div className="sims-task">{sim.lease?.task || (sim.lease ? 'No task' : formerGroup && ended ? ended.task || 'No task' : 'No lease')}</div>
     {ended && !formerGroup ? <div className="sims-last">last: {ended.sessionName}{ended.task ? ` · ${ended.task}` : ''}</div> : null}
@@ -151,6 +154,7 @@ function SimCard({ sim, api, token, visible, formerGroup, showEnded, hover, onHo
       {ended && showEnded ? <><span className="ended">lease ended</span><span>ended {endedAge(ended.endedAt, now)}</span></> : null}
       {sim.lease?.idle ? <span className="idle">idle</span> : null}
       <span>{sim.deviceModel}</span>
+    </div>
     </div>
     <div className="sims-actions">
       {sim.slim === 'unslimmed' ? <button type="button" disabled={action !== null} onClick={() => void perform('slim')}>{action === 'slim' ? 'Slimming…' : 'Slim'}</button> : null}
