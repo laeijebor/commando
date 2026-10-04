@@ -37,6 +37,11 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
     return () => controller.abort()
   }, [api, udid])
   useEffect(() => {
+    buffer.current = []
+    dirty.current = false
+    setLines([])
+    setCopyStatus('')
+    atBottom.current = true
     setError('')
     if (bundle && !SIM_BUNDLE_ID.test(bundle)) { setError('Enter a valid app bundle id'); return }
     let socket: WebSocket

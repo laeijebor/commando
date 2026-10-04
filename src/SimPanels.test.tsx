@@ -32,6 +32,21 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.use
 const api = () => createSimsApi('token/value &', fetcher)
 
 describe('Logs panel', () => {
+  it.each([['App filter', 'com.example.app'], ['Level', 'debug']])('clears rendered and queued lines when %s changes', async (label, value) => {
+    render(<SimLogsPanel api={api()} udid={U} token="" onClose={vi.fn()} />); await flush()
+    const old = Socket.instances[0]
+    act(() => old.line('old displayed line')); await advance()
+    expect(screen.getByText('old displayed line')).toBeInTheDocument()
+    act(() => old.line('old queued line'))
+    fireEvent.change(screen.getByLabelText(label), { target: { value } })
+    expect(screen.queryByText('old displayed line')).not.toBeInTheDocument()
+    expect(old.onmessage).toBeNull()
+    act(() => Socket.instances[1].line('new filtered line')); await advance()
+    expect(screen.queryByText('old queued line')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible' })); await flush()
+    expect(copy).toHaveBeenLastCalledWith('now info /Example new filtered line')
+  })
+
   it('uses authenticated sockets, suggests user apps, and reconnects only for server filters', async () => {
     const { unmount } = render(<SimLogsPanel api={api()} udid={U} token="token/value &" onClose={vi.fn()} />); await flush()
     expect(Socket.instances[0].url).toContain(`/ws/api/sims/${U}/logs?level=info`)
