@@ -634,6 +634,17 @@ describe('SimLiveView', () => {
     expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/open`, expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer owner' } }))
   })
 
+  it('falls back with a retry button when the daemon never answers, and reconnects on retry', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    render(<SimLiveView udid={U} token="" />)
+    await advance(11_000); expect(screen.getByText('connecting')).toBeVisible()
+    await advance(1_500)
+    expect(screen.getByText('snapshot')).toBeVisible(); expect(screen.getByText(/Live stream did not respond/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry live' }))
+    expect(Socket.instances).toHaveLength(2); expect(screen.getByText('connecting')).toBeVisible()
+    meta(); await advance(20_000); expect(screen.getByText('live')).toBeVisible()
+  })
+
   it('falls back on missing WebCodecs, polls snapshots every two seconds with header auth and stops when hidden', async () => {
     vi.stubGlobal('VideoDecoder', undefined)
     const { unmount } = render(<SimLiveView udid={U} token="owner" />); await flush()

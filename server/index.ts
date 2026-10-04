@@ -1460,7 +1460,7 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
-  const simLive = new SimLiveService()
+  const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
   const simLogs = new SimLogsService()
   const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
   const simLeaseApi = new SimLeaseApi({
@@ -2075,6 +2075,7 @@ async function main(): Promise<void> {
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
