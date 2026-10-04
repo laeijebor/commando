@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { GitPullRequestArrow, Pin, PinOff, Plus, RefreshCw } from 'lucide-react'
+import { Eye, GitPullRequest, GitPullRequestArrow, Pin, PinOff, Plus, RefreshCw } from 'lucide-react'
 import {
   createPrsApi,
   type PrsApiClient,
@@ -14,6 +14,8 @@ import { useRepoPrs } from './prStore'
 import { PrBadges } from './PrBadges'
 import { prMergeDisabledReason } from '../shared/pr-merge'
 import './prs-section.css'
+
+const PrQuickLook = lazy(() => import('./PrQuickLook').then((module) => ({ default: module.PrQuickLook })))
 
 export const PRS_POLL_INTERVAL_MS = 30_000
 export const PR_HOVER_DELAY_MS = 350
@@ -181,7 +183,7 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
   )
 }
 
-function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff, onMerged }: {
+export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff, onMerged, pill }: {
   pr: PrSummary
   viewer: string
   repo: string
@@ -191,6 +193,7 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
   onJumpToTarget?: (targetId: string) => void
   onOpenDiff?: (pr: PrSummary) => void
   onMerged: () => Promise<void>
+  pill?: { count: number; sessionName: string; tone: string; status: string }
 }) {
   const [merged, setMerged] = useState(false)
   const [merging, setMerging] = useState(false)
@@ -210,6 +213,7 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
   const [popover, setPopover] = useState<{ top: number; left: number } | null>(null)
   const [threads, setThreads] = useState<PrThreads | null>(null)
   const [threadsFailed, setThreadsFailed] = useState(false)
+  const [quickLook, setQuickLook] = useState(false)
 
   useEffect(() => () => {
     if (openTimer.current !== null) window.clearTimeout(openTimer.current)
@@ -222,8 +226,11 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
     // The HUD hugs the right edge, so prefer opening leftward over the pane
     // grid; drop below the card when there is no room.
     const fitsLeft = rect.left >= PR_POP_WIDTH + 18
+    const fitsRight = rect.right + PR_POP_WIDTH + 18 <= window.innerWidth
     setPopover(fitsLeft
       ? { top: Math.max(8, Math.min(rect.top - 8, window.innerHeight - 340)), left: rect.left - PR_POP_WIDTH - 10 }
+      : fitsRight
+      ? { top: Math.max(8, Math.min(rect.top - 8, window.innerHeight - 340)), left: rect.right + 10 }
       : { top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - PR_POP_WIDTH - 8)) })
   }
   const cancelTimers = () => {
@@ -231,6 +238,7 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
     if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
   }
   const scheduleOpen = () => {
+    if (quickLook) return
     if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
     if (popover || openTimer.current !== null) return
     openTimer.current = window.setTimeout(() => { openTimer.current = null; openNow() }, PR_HOVER_DELAY_MS)
@@ -274,19 +282,67 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
   return (
     <article
       ref={cardRef}
-      className={`pr-card${attention ? ' attention' : ''}`}
+      className={pill ? 'session-pr-preview' : `pr-card${attention ? ' attention' : ''}`}
       onMouseEnter={scheduleOpen}
       onMouseLeave={scheduleClose}
       onFocus={scheduleOpen}
       onBlur={scheduleClose}
     >
+      {pill ? (
+        <button type="button" className="session-pr-count"
+          aria-label={`PR #${pr.number} in ${pill.sessionName}: ${pill.status}${pill.count > 1 ? `; ${pill.count - 1} more open pull request${pill.count > 2 ? 's' : ''}` : ''}`}
+          onClick={() => { cancelTimers(); setPopover(null); setQuickLook(true) }}>
+          <GitPullRequest aria-hidden="true" /><span>#{pr.number}</span>
+          {pill.count > 1 ? <span className="session-pr-more">+{pill.count - 1}</span> : null}
+          <i className={`session-pr-readiness ${pill.tone}`} aria-hidden="true" />
+        </button>
+      ) : <>
       <div className="pr-idrow">
         <span className="pr-number">#{pr.number}</span>
         <span className="pr-idrule" aria-hidden="true" />
         <span className={`pr-state ${stateClass}`}>{stateLabel}</span>
+        <button
+          type="button"
+          className="pr-quick-trigger"
+          aria-label={`Quick look at PR #${pr.number}`}
+          title="Quick look"
+          onClick={() => { cancelTimers(); setPopover(null); setQuickLook(true) }}
+        ><Eye aria-hidden="true" /></button>
       </div>
       <a className="pr-card-title" href={pr.url} target="_blank" rel="noreferrer">{pr.title}</a>
-      {popover ? (
+      </>}
+      {quickLook ? (
+        <Suspense fallback={<span role="status">Loading quick look…</span>}>
+          <PrQuickLook
+            pr={pr}
+            repo={repo}
+            api={api}
+            onClose={() => setQuickLook(false)}
+            actions={<>
+              {targetIsLive && targetId ? (
+                <button type="button" className="pr-pop-btn" onClick={() => {
+                  setQuickLook(false)
+                  onJumpToTarget?.(targetId)
+                }}>Jump to pane</button>
+              ) : null}
+              <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
+              <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
+              <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.url).catch(() => undefined) }}>Copy URL</button>
+              {pr.state === 'open' ? (
+                <button
+                  type="button"
+                  className="pr-pop-btn primary"
+                  disabled={merging || Boolean(prMergeDisabledReason(pr))}
+                  title={prMergeDisabledReason(pr) ?? 'Merge this pull request on GitHub'}
+                  onClick={() => { void merge() }}
+                >{merging ? 'Merging…' : 'Merge PR'}</button>
+              ) : null}
+              {mergeError ? <span className="pr-pop-merge-error" role="alert">{mergeError}</span> : null}
+            </>}
+          />
+        </Suspense>
+      ) : null}
+      {popover && !quickLook ? (
         <PrPopover
           pr={pr}
           position={popover}
@@ -301,6 +357,7 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
           onMerge={() => { void merge() }}
         />
       ) : null}
+      {!pill ? <>
       <div className="pr-meta">
         <PrBadges pr={pr} number={pr.number} onOpenDiff={targetIsLive && onOpenDiff ? () => onOpenDiff(pr) : undefined}>
           {targetIsLive ? (
@@ -328,6 +385,7 @@ function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionN
           : <span className="pr-branch" title={pr.headRefName}>{pr.headRefName}</span>}
         <span className="pr-time">{relativeTime(pr.updatedAt)}</span>
       </div>
+      </> : null}
     </article>
   )
 }

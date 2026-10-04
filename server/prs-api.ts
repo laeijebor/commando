@@ -89,6 +89,20 @@ export async function handlePrsApi(
       return true
     }
 
+    if (path.length === 1 && (path[0] === 'details' || path[0] === 'diff')) {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const repo = url.searchParams.get('repo')
+      const number = url.searchParams.get('number')
+      json(response, 200, path[0] === 'details'
+        ? { details: await service.pullRequestDetails(repo, number) }
+        : { diff: await service.pullRequestDiff(repo, number) })
+      return true
+    }
+
     if (path.length === 1 && path[0] === 'threads') {
       if (request.method !== 'GET') {
         response.setHeader('Allow', 'GET')

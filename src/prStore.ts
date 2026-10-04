@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
-import type { PanePrList, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
+import type { PanePrList, PanePrSummary, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
 
 export const PR_FOREGROUND_INTERVAL_MS = 30_000
 export const PR_BACKGROUND_INTERVAL_MS = 5 * 60_000
@@ -61,6 +61,10 @@ class PrStore {
 
   refreshRepo(repo: string, filter: PrStateFilter, scope: PrScope): Promise<void> {
     return this.refresh(this.repoEntry(repo, filter, scope), true)
+  }
+
+  refreshPane(paneId: string): Promise<void> {
+    return this.refresh(this.paneEntry(paneId), true)
   }
 
   private paneEntry(paneId: string): Entry<PanePrList> {
@@ -197,31 +201,62 @@ export function usePanePrs(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).list
 }
 
-/** Count distinct open PRs across panes, sharing their existing polling entries. */
-export function useSessionPrCount(
+type SessionPrSnapshot = {
+  pullRequests: PanePrSummary[]
+  loading: boolean
+  error: string
+  truncated: boolean
+}
+const EMPTY_SESSION_PRS: SessionPrSnapshot = { pullRequests: [], loading: false, error: '', truncated: false }
+
+/** Distinct open PRs across panes, newest first, sharing existing polling entries. */
+export function useSessionPrs(
   paneIds: readonly string[],
   api: Pick<PrsApiClient, 'pane'>,
-  { enabled = true }: { enabled?: boolean } = {},
-): number {
+  { enabled = true, background = true }: { enabled?: boolean; background?: boolean } = {},
+) {
   const store = useMemo(() => storeFor(api as StoreApi), [api])
   const paneKey = JSON.stringify([...new Set(paneIds)].sort())
   const ids = useMemo(() => JSON.parse(paneKey) as string[], [paneKey])
+  const cache = useRef<{ sources: PrStoreSnapshot<PanePrList>[]; snapshot: SessionPrSnapshot } | null>(null)
   const subscribe = useCallback((listener: () => void) => {
     if (!enabled) return () => undefined
-    const unsubscribe = ids.map((id) => store.subscribePane(id, true, listener))
+    const unsubscribe = ids.map((id) => store.subscribePane(id, background, listener))
     return () => unsubscribe.forEach((stop) => stop())
-  }, [enabled, ids, store])
+  }, [background, enabled, ids, store])
   const getSnapshot = useCallback(() => {
-    if (!enabled) return 0
-    const prs = new Set<string>()
-    for (const id of ids) {
-      for (const pr of store.paneSnapshot(id).list?.pullRequests ?? []) {
-        if (pr.state === 'open') prs.add(`${pr.repo.toLowerCase()}#${pr.number}`)
+    if (!enabled || ids.length === 0) return EMPTY_SESSION_PRS
+    const sources = ids.map((id) => store.paneSnapshot(id))
+    if (cache.current?.sources.length === sources.length && sources.every((source, index) => source === cache.current!.sources[index])) return cache.current.snapshot
+    const prs = new Map<string, { pr: PanePrSummary; at: number }>()
+    for (const source of sources) {
+      for (const pr of source.list?.pullRequests ?? []) {
+        const key = `${pr.repo.toLowerCase()}#${pr.number}`
+        const at = source.list?.fetchedAt ?? 0
+        if (!prs.has(key) || at > prs.get(key)!.at) prs.set(key, { pr, at })
       }
     }
-    return prs.size
+    const snapshot = {
+      pullRequests: [...prs.values()].map(({ pr }) => pr).filter((pr) => pr.state === 'open')
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.number - a.number || a.repo.localeCompare(b.repo)),
+      loading: sources.some((source) => source.loading || (!source.list && !source.error)),
+      error: sources.find((source) => source.error)?.error ?? '',
+      truncated: sources.some((source) => source.list?.truncated),
+    }
+    cache.current = { sources, snapshot }
+    return snapshot
   }, [enabled, ids, store])
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const refresh = useCallback(() => enabled ? Promise.all(ids.map((id) => store.refreshPane(id))).then(() => undefined) : Promise.resolve(), [enabled, ids, store])
+  return useMemo(() => ({ ...snapshot, refresh }), [snapshot, refresh])
+}
+
+export function useSessionPrCount(
+  paneIds: readonly string[],
+  api: Pick<PrsApiClient, 'pane'>,
+  options: { enabled?: boolean } = {},
+): number {
+  return useSessionPrs(paneIds, api, options).pullRequests.length
 }
 
 export function useRepoPrs(
