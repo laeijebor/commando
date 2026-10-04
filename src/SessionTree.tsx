@@ -10,6 +10,8 @@ import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { SessionCreateDialog } from './SessionCreateDialog'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-tree.css'
+import type { PrsApiClient } from './prsApi'
+import { SessionPrCount } from './SessionPrCount'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -33,6 +35,8 @@ type Props = {
   onSessionsChanged: () => void
   onPreferencesChanged: (preferences: SessionTreePreferences) => void
   creation?: SessionTreeCreation
+  prsApi?: Pick<PrsApiClient, 'pane'>
+  connected?: boolean
 }
 
 const providerLabels: Record<AgentStatus['provider'], string> = {
@@ -415,6 +419,7 @@ export function SessionTree(props: Props) {
                 key={session.id}
               >
                 <div className="managed-session-row">
+                  {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} /> : null}
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{container.kind === 'auxiliary' ? 'Background · ' : ''}{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
                   {markedPanes.length ? <span className="session-mark-cluster">{markedPanes.map((pane) => { const mark = marks[pane.targetId]; const label = markLabel(mark, pane); return <button type="button" key={pane.targetId} className={`session-mark-dot tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</button> })}</span> : null}

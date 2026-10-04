@@ -197,6 +197,33 @@ export function usePanePrs(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).list
 }
 
+/** Count distinct open PRs across panes, sharing their existing polling entries. */
+export function useSessionPrCount(
+  paneIds: readonly string[],
+  api: Pick<PrsApiClient, 'pane'>,
+  { enabled = true }: { enabled?: boolean } = {},
+): number {
+  const store = useMemo(() => storeFor(api as StoreApi), [api])
+  const paneKey = JSON.stringify([...new Set(paneIds)].sort())
+  const ids = useMemo(() => JSON.parse(paneKey) as string[], [paneKey])
+  const subscribe = useCallback((listener: () => void) => {
+    if (!enabled) return () => undefined
+    const unsubscribe = ids.map((id) => store.subscribePane(id, true, listener))
+    return () => unsubscribe.forEach((stop) => stop())
+  }, [enabled, ids, store])
+  const getSnapshot = useCallback(() => {
+    if (!enabled) return 0
+    const prs = new Set<string>()
+    for (const id of ids) {
+      for (const pr of store.paneSnapshot(id).list?.pullRequests ?? []) {
+        if (pr.state === 'open') prs.add(`${pr.repo.toLowerCase()}#${pr.number}`)
+      }
+    }
+    return prs.size
+  }, [enabled, ids, store])
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 export function useRepoPrs(
   repo: string,
   filter: PrStateFilter,
