@@ -327,6 +327,38 @@ describe('redline-choice', () => {
     })
   })
 
+  it('keeps child option prose intact and queues the complete label', () => {
+    const calls = loadSdk()
+    document.body.innerHTML = `
+      <redline-choice key="attachments" prompt="Attachments?" options="Ignored,fallback">
+        <redline-option>Carry attachments, including &quot;inline&quot; images</redline-option>
+        <redline-option>Say attachments aren't supported &amp; forward text</redline-option>
+      </redline-choice>`
+    const host = document.querySelector('redline-choice') as HTMLElement
+    const radios = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')]
+    const options = ['Carry attachments, including "inline" images', "Say attachments aren't supported & forward text"]
+    expect(radios.map((radio) => radio.value)).toEqual(options)
+    expect([...host.querySelectorAll<HTMLElement>('redline-option')].every((option) => option.hidden)).toBe(true)
+    radios[1].click()
+    expect(calls[0]).toMatchObject({ answer: options[1], data: { choice: options[1], options } })
+  })
+
+  it.each([
+    `options='["Carry attachments","Attachments aren't supported"]'`,
+    `options='["A",]'`,
+    `options='["A",42]'`,
+  ])('shows an error instead of splitting malformed JSON: %s', (attribute) => {
+    const calls = loadSdk()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    document.body.innerHTML = `<redline-choice prompt="Attachments?" ${attribute}></redline-choice>`
+    const host = document.querySelector('redline-choice') as HTMLElement
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Invalid choice options')
+    expect(host.querySelectorAll('input, button')).toHaveLength(0)
+    expect(calls).toHaveLength(0)
+    expect(warning).toHaveBeenCalled()
+    warning.mockRestore()
+  })
+
   it('queues a changed option and leaves note edits for the manual button', () => {
     const calls = loadSdk()
     document.body.innerHTML =

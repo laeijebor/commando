@@ -215,10 +215,23 @@ one line each:
 </redline-question>
 ```
 
+For prose labels, prefer child options: apostrophes, quotation marks, and commas
+are ordinary text rather than nested HTML/JSON quoting. Escape `&` and `<` as
+normal HTML text. Child options take precedence over an `options` attribute.
+
+```html
+<redline-choice key="attachments" prompt="Gmail forwards with attachments in v1?">
+  <redline-option>Carry the attachments (recommended)</redline-option>
+  <redline-option>Forward text only and say attachments aren't supported</redline-option>
+</redline-choice>
+```
+
 The compact `options="Starter,Pro,Enterprise"` form is only for labels that do
 not contain commas. If any label contains a comma, pass the entire option list
 as a JSON array and wrap the HTML attribute in single quotes so each label stays
-intact:
+intact. Inside that single-quoted attribute, escape every apostrophe as `&#39;`
+(including in `aren't`); backslashes do not escape HTML attribute quotes.
+Malformed JSON shows a visible error instead of falling back to comma splitting:
 
 ```html
 <redline-choice key="set" prompt="Which set?" options='["Ten — Pulse, Crest, Kiln, Ridge (recommended)","Twelve — all six"]'></redline-choice>

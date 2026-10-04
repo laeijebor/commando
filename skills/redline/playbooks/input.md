@@ -30,12 +30,22 @@ for.
 | `<redline-ask>` | open-ended text the options list can't capture |
 | `<redline-question>` | a composite form — wrap your own `<input>`/`<select>`/`<textarea>` fields inside it |
 
-`<redline-choice>` accepts the compact comma-separated form for simple labels,
-for example `options="Starter,Pro"`. When any option label contains a comma,
-use a JSON array inside a single-quoted attribute instead:
-`options='["Ten — Pulse, Crest, Kiln, Ridge","Twelve — all six"]'`. Never put a
-comma-bearing label in the compact form because each comma becomes a separate
-option.
+Prefer `<redline-option>` children for prose labels. Commas, apostrophes, and
+quotation marks remain ordinary HTML text (escape `&` and `<` as usual):
+
+```html
+<redline-choice key="attachments" prompt="Forward attachments?">
+  <redline-option>Yes, carry the attachments</redline-option>
+  <redline-option>No — say attachments aren't supported</redline-option>
+</redline-choice>
+```
+
+`<redline-choice>` also accepts the compact comma-separated form for simple
+labels, for example `options="Starter,Pro"`. JSON arrays remain supported:
+`options='["Ten — Pulse, Crest, Kiln, Ridge","Twelve — all six"]'`. Escape every
+apostrophe inside a single-quoted attribute as `&#39;`; backslashes do not
+escape HTML quotes. Invalid JSON shows an error instead of splitting into
+misleading options. Child options take precedence when both forms are present.
 
 ## Keys
 
