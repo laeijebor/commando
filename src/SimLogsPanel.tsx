@@ -15,6 +15,7 @@ const LogRow = memo(function LogRow({ line }: { line: Entry }) {
 export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient; udid: string; token: string; onClose: () => void }) {
   const [level, setLevel] = useState<SimLogLevel>('info')
   const [bundle, setBundle] = useState('')
+  const [streamBundle, setStreamBundle] = useState('')
   const [filter, setFilter] = useState('')
   const [paused, setPaused] = useState(false)
   const [lines, setLines] = useState<Entry[]>([])
@@ -26,9 +27,16 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
   const dirty = useRef(false)
   const nextId = useRef(0)
   const pause = useRef(false)
+  const filterPending = useRef(false)
+  filterPending.current = bundle !== streamBundle
   const list = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const appsId = useId()
+  useEffect(() => {
+    if (bundle === streamBundle) return
+    const timer = setTimeout(() => setStreamBundle(bundle), 300)
+    return () => clearTimeout(timer)
+  }, [bundle, streamBundle])
   useEffect(() => {
     const controller = new AbortController()
     void api.apps(udid, controller.signal).then((apps) => { if (!controller.signal.aborted) setApps(apps) }).catch((error: unknown) => {
@@ -43,18 +51,18 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
     setCopyStatus('')
     atBottom.current = true
     setError('')
-    if (bundle && !SIM_BUNDLE_ID.test(bundle)) { setError('Enter a valid app bundle id'); return }
+    if (streamBundle && !SIM_BUNDLE_ID.test(streamBundle)) { setError('Enter a valid app bundle id'); return }
     let socket: WebSocket
     try {
       const url = new URL(`/ws/api/sims/${encodeURIComponent(udid)}/logs`, window.location.href)
       url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
       url.searchParams.set('level', level)
-      if (bundle) url.searchParams.set('bundle', bundle)
+      if (streamBundle) url.searchParams.set('bundle', streamBundle)
       const credential = encodeURIComponent(token).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
       socket = new WebSocket(url.toString(), token ? ['commando-live', `commando-auth.${credential}`] : ['commando-live'])
     } catch { setError('Simulator logs connection unavailable'); return }
     socket.onmessage = (event) => {
-      if (pause.current || typeof event.data !== 'string') return
+      if (pause.current || filterPending.current || typeof event.data !== 'string') return
       let line: unknown
       try { line = JSON.parse(event.data) } catch { return }
       if (!line || typeof line !== 'object' || !('message' in line) || typeof line.message !== 'string') return
@@ -75,7 +83,7 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
       clearInterval(timer)
       socket.onmessage = null; socket.onerror = null; socket.onclose = null; socket.close()
     }
-  }, [udid, token, level, bundle])
+  }, [udid, token, level, streamBundle])
   const visible = useMemo(() => {
     const query = filter.toLowerCase()
     return query ? lines.filter((line) => simLogText(line).toLowerCase().includes(query)) : lines
@@ -90,7 +98,7 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
     <div className="sim-panel-controls">
       <label>Level<select value={level} onChange={(event) => setLevel(event.target.value as SimLogLevel)}>
         {(['default', 'info', 'debug'] as const).map((value) => <option key={value}>{value}</option>)}</select></label>
-      <label>App filter<input value={bundle} list={appsId} placeholder="All apps" onChange={(event) => setBundle(event.target.value)} /></label>
+      <label>App filter<input value={bundle} list={appsId} placeholder="All apps" onChange={(event) => { setBundle(event.target.value); buffer.current = []; dirty.current = false; setLines([]); setCopyStatus('') }} /></label>
       <datalist id={appsId}>{apps.filter((app) => app.type === 'user').map((app) => <option key={app.bundleId} value={app.bundleId}>{app.name}</option>)}</datalist>
       <label>Text filter<input value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
       <div className="sim-panel-buttons">
@@ -101,7 +109,7 @@ export function SimLogsPanel({ api, udid, token, onClose }: { api: SimsApiClient
     </div>
     {error || appsError ? <p className="sims-error" role="alert">{error || appsError}</p> : null}
     {copyStatus ? <p role="status">{copyStatus}</p> : null}
-    <p className="sim-panel-note">{visible.length} visible · {lines.length} / 2000 lines{paused ? ' · Paused (incoming lines discarded)' : ''}</p>
+    <p className="sim-panel-note">{visible.length} visible · {lines.length} / 2000 lines{paused ? ' · Paused (incoming lines discarded)' : ''}{bundle !== streamBundle ? ' · Applying app filter…' : ''}</p>
     <div ref={list} className="sim-log-list" aria-label="Log lines" onScroll={(event) => {
       const target = event.currentTarget
       atBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 16

@@ -40,6 +40,7 @@ describe('Logs panel', () => {
     act(() => old.line('old queued line'))
     fireEvent.change(screen.getByLabelText(label), { target: { value } })
     expect(screen.queryByText('old displayed line')).not.toBeInTheDocument()
+    if (label === 'App filter') await advance(300)
     expect(old.onmessage).toBeNull()
     act(() => Socket.instances[1].line('new filtered line')); await advance()
     expect(screen.queryByText('old queued line')).not.toBeInTheDocument()
@@ -56,12 +57,30 @@ describe('Logs panel', () => {
     fireEvent.change(screen.getByLabelText('Level'), { target: { value: 'debug' } })
     expect(Socket.instances[0].close).toHaveBeenCalledOnce(); expect(Socket.instances[1].url).toContain('level=debug')
     fireEvent.change(screen.getByLabelText('App filter'), { target: { value: 'com.example.app' } })
+    await advance(300)
     expect(Socket.instances[1].close).toHaveBeenCalledOnce(); expect(Socket.instances[2].url).toContain('bundle=com.example.app')
     fireEvent.change(screen.getByLabelText('App filter'), { target: { value: 'invalid/id' } })
+    await advance(300)
     expect(Socket.instances[2].close).toHaveBeenCalledOnce(); expect(screen.getByRole('alert')).toHaveTextContent('valid app bundle id')
     expect(Socket.instances).toHaveLength(3)
     fireEvent.change(screen.getByLabelText('App filter'), { target: { value: '' } })
+    await advance(300)
     unmount(); expect(Socket.instances[3].close).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('debounces rapidly typed app IDs and discards lines while the new filter is pending', async () => {
+    render(<SimLogsPanel api={api()} udid={U} token="" onClose={vi.fn()} />); await flush()
+    for (const value of ['com.e', 'com.ex', 'com.example', 'com.example.app']) {
+      fireEvent.change(screen.getByLabelText('App filter'), { target: { value } })
+      act(() => Socket.instances[0].line('stale pending line'))
+      await advance(50)
+      expect(Socket.instances).toHaveLength(1)
+    }
+    expect(screen.getByText(/Applying app filter/)).toBeInTheDocument()
+    await advance(300)
+    expect(Socket.instances).toHaveLength(2)
+    expect(Socket.instances[1].url).toContain('bundle=com.example.app')
+    expect(screen.queryByText('stale pending line')).not.toBeInTheDocument()
   })
 
   it('batches at 100ms, discards while paused, caps at 2000 and copies only visible lines', async () => {
