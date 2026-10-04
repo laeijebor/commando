@@ -1,5 +1,5 @@
 import type { SimOpenResult, SimPoolSummary, SimWallDevice } from '../shared/protocol'
-import type { SimAction, SimActionResult } from '../shared/sim-actions'
+import type { SimAction, SimActionResult, SimApp } from '../shared/sim-actions'
 import type { SimInspectResult, SimSourceResult } from '../shared/sim-inspector'
 
 const LISTING_STORAGE_KEY = 'commando.sims-listing'
@@ -133,6 +133,7 @@ export function createSimsApi(token: string, fetcher: typeof fetch = fetch) {
     open: async (udid: string): Promise<SimOpenResult> => (await request(`/${encodeURIComponent(udid)}/open`, 'POST')).json(),
     action: async (udid: string, body: SimAction): Promise<SimActionResult> => (await request(`/${encodeURIComponent(udid)}/action`, 'POST', undefined, body)).json(),
     schemes: async (udid: string): Promise<string[]> => (await (await request(`/${encodeURIComponent(udid)}/schemes`, 'GET')).json()).schemes,
+    apps: async (udid: string, signal?: AbortSignal): Promise<SimApp[]> => (await (await request(`/${encodeURIComponent(udid)}/apps`, 'GET', signal)).json()).apps,
     inspect: async (udid: string, x: number, y: number, signal?: AbortSignal): Promise<SimInspectResult> =>
       (await request(`/${encodeURIComponent(udid)}/inspect?${new URLSearchParams({ x: String(x), y: String(y) })}`, 'GET', signal)).json(),
     inspectSource: async (udid: string, x: number, y: number, signal?: AbortSignal): Promise<SimSourceResult> =>

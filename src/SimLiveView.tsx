@@ -6,6 +6,8 @@ import { fitCanvas, nativeToScreen, ORIENTATION_TURNS, rotateOrientation, screen
 import { useSimRecording } from './useSimRecording'
 import { useSimInspector } from './useSimInspector'
 import { SimInspectorBox, SimInspectorPanel } from './SimInspector'
+import { SimLogsPanel } from './SimLogsPanel'
+import { SimPermissionsPanel } from './SimPermissionsPanel'
 import './sims-view.css'
 import './sim-live.css'
 
@@ -13,6 +15,8 @@ import './sim-live.css'
 /** Baguette cannot report a device's orientation, so reopening a view resumes the one this page last set. */
 export const lastOrientation = new Map<string, SimOrientation>()
 const EDGE_BAND = 20
+/** How long the daemon may take to answer a live connection before the view falls back to snapshots. */
+const CONNECT_TIMEOUT_MS = 12_000
 /** Points of wheel travel before the synthetic finger presses, and how long after the last wheel event it lifts. */
 const WHEEL_SLOP = 12
 const WHEEL_IDLE_MS = 120
@@ -54,6 +58,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const pending = useRef(new Set<string>())
   const [busy, setBusy] = useState(new Set<string>())
   const [popover, setPopover] = useState<'more' | 'url' | null>(null)
+  const [panel, setPanel] = useState<'logs' | 'permissions' | null>(null)
   const [url, setUrl] = useState('')
   const [schemes, setSchemes] = useState<string[]>([])
   const schemesId = useId()
@@ -187,8 +192,12 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     }
     socket.current = ws
     ws.binaryType = 'arraybuffer'
+    // A stream that never answers must not leave a blank 'connecting' view: give up visibly and offer a retry.
+    const watchdog = window.setTimeout(() => { if (!dimensions.current.width) fallback('Live stream did not respond; showing snapshots') }, CONNECT_TIMEOUT_MS)
     const fallback = (message: string) => {
+      window.clearTimeout(watchdog)
       if (disposed || failed) return
+      console.warn(`[sim-live] ${udid}: ${message}`)
       failed = true
       releasePointer()
       setReady(false)
@@ -212,6 +221,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           if (meta.type === 'meta' && Number.isFinite(meta.width) && Number.isFinite(meta.height) && meta.width > 0 && meta.height > 0) {
             dimensions.current = { width: meta.width, height: meta.height }
             setNativeSize(dimensions.current)
+            window.clearTimeout(watchdog)
             setReady(true)
           }
           return
@@ -251,6 +261,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     }
     if (!preview) canvas.current?.focus()
     return () => {
+      window.clearTimeout(watchdog)
       releasePointer()
       disposed = true
       if (socket.current === ws) socket.current = null
@@ -268,6 +279,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
 
   const streaming = ready && !snapshot && (!preview || painted)
   const inspector = useSimInspector(api, udid, active && streaming && !preview)
+  useEffect(() => { if (!active || !connected || preview) setPanel(null) }, [active, connected, preview, udid])
   const recording = useSimRecording(canvas, active && streaming && !preview, udid, setReason)
   useEffect(() => {
     const target = canvas.current
@@ -362,6 +374,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   }
   const inputEnabled = active && streaming
   const toggleInspect = () => {
+    setPanel(null)
     releasePointer(); hover.current = null; setFingers({ pressed: false, points: [] })
     inspector.setEnabled(!inspector.enabled)
   }
@@ -522,6 +535,9 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
           if (body.action === 'heal' && !window.confirm("This restarts the simulator's home screen")) return
           closePopover(); void deviceAction(body)
         }}>{label}</button>)}
+        {(['logs', 'permissions'] as const).map((value) => <button key={value} type="button" role="menuitem" disabled={!active || !connected} onClick={() => {
+          inspector.close(); inspector.setEnabled(false); setPanel(value); closePopover()
+        }}>{value === 'logs' ? 'Logs' : 'Permissions'}</button>)}
         <p>Network conditions need an app relaunch and affect URLSession traffic.</p>
         <button type="button" role="menuitem" disabled={!connected || busy.has('open')} onClick={() => {
           closePopover(); void perform('open', async () => {
@@ -541,9 +557,11 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       {inspector.enabled && inspector.element ? <SimInspectorBox element={inspector.element} size={nativeSize} canvasSize={canvasSize} orientation={orientation} /> : null}
     </div>
     {inspector.enabled && inspector.selected ? <SimInspectorPanel element={inspector.selected} source={inspector.source} onClose={inspector.close} /> : null}
+    {panel === 'logs' && active && connected && !preview ? <SimLogsPanel key={udid} api={api} udid={udid} token={token} onClose={() => setPanel(null)} /> : null}
+    {panel === 'permissions' && active && connected && !preview ? <SimPermissionsPanel key={udid} api={api} udid={udid} onClose={() => setPanel(null)} /> : null}
     </div>
     {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
-    {reason ? <p className="sims-error" role="status">{reason}</p> : null}
+    {reason ? <p className="sims-error" role="status">{reason}{snapshot && active && connected ? <> <button type="button" onClick={() => { setReason(''); setRevision((value) => value + 1) }}>Retry live</button></> : null}</p> : null}
     {inspector.enabled && inspector.error ? <p className="sims-error" role="status">{inspector.error}</p> : null}
   </div>{fingerMarkers}</>
 }

@@ -634,6 +634,17 @@ describe('SimLiveView', () => {
     expect(fetch).toHaveBeenCalledWith(`/api/sims/${U}/open`, expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: { Authorization: 'Bearer owner' } }))
   })
 
+  it('falls back with a retry button when the daemon never answers, and reconnects on retry', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    render(<SimLiveView udid={U} token="" />)
+    await advance(11_000); expect(screen.getByText('connecting')).toBeVisible()
+    await advance(1_500)
+    expect(screen.getByText('snapshot')).toBeVisible(); expect(screen.getByText(/Live stream did not respond/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry live' }))
+    expect(Socket.instances).toHaveLength(2); expect(screen.getByText('connecting')).toBeVisible()
+    meta(); await advance(20_000); expect(screen.getByText('live')).toBeVisible()
+  })
+
   it('falls back on missing WebCodecs, polls snapshots every two seconds with header auth and stops when hidden', async () => {
     vi.stubGlobal('VideoDecoder', undefined)
     const { unmount } = render(<SimLiveView udid={U} token="owner" />); await flush()
@@ -860,5 +871,41 @@ describe('live element inspector', () => {
     fireEvent.click(canvas, { clientX: 30, clientY: 50 }); await flush()
     expect(screen.getByText('No component source was returned.')).toBeVisible()
     expect(screen.getByText('unrecognised source output')).toBeInTheDocument()
+  })
+})
+
+describe('live view side panels', () => {
+  const open = (name: string) => { fireEvent.click(screen.getByRole('button', { name: 'More' })); fireEvent.click(screen.getByRole('menuitem', { name })) }
+  it('opens Logs and Permissions from More, closes the log socket, and switches exclusively to the inspector', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith('/apps') ? {
+      apps: [{ bundleId: 'com.example.app', name: 'Example', type: 'user' }],
+    } : { ok: true })))
+    const { unmount } = render(<SimLiveView udid={U} token="owner" />); meta()
+    open('Logs'); await flush()
+    expect(screen.getByRole('complementary', { name: 'Simulator logs' })).toBeInTheDocument()
+    const logSocket = Socket.instances[1]
+    expect(logSocket.url).toContain('/logs?level=info')
+    open('Permissions'); await flush()
+    expect(logSocket.close).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('complementary', { name: 'Simulator logs' })).toBeNull()
+    expect(screen.getByRole('complementary', { name: 'App permissions' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect' }))
+    expect(screen.getByRole('button', { name: 'Inspect' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('complementary', { name: 'App permissions' })).toBeNull()
+    open('Logs'); await flush()
+    expect(screen.getByRole('button', { name: 'Inspect' })).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Close logs' }))
+    expect(Socket.instances[2].close).toHaveBeenCalledOnce()
+    open('Logs'); await flush(); unmount(); expect(Socket.instances[3].close).toHaveBeenCalledOnce()
+  })
+
+  it('closes panels when disconnected and excludes them from wall previews', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{"apps":[]}'))
+    const { rerender } = render(<SimLiveView udid={U} token="" />); meta()
+    open('Logs'); await flush()
+    rerender(<SimLiveView udid={U} token="" connected={false} />); await flush()
+    expect(Socket.instances[1].close).toHaveBeenCalledOnce(); expect(screen.queryByRole('complementary')).toBeNull()
+    rerender(<SimLiveView udid={U} token="" preview />)
+    expect(screen.queryByRole('button', { name: 'More' })).toBeNull(); expect(screen.queryByRole('complementary')).toBeNull()
   })
 })

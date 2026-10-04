@@ -71,6 +71,7 @@ import {
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
+import { SimLogsService, simLogsUdid } from './sim-logs.js'
 import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
@@ -1459,7 +1460,8 @@ async function main(): Promise<void> {
     },
     onChange: publishSessionBrief,
   })
-  const simLive = new SimLiveService()
+  const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
+  const simLogs = new SimLogsService()
   const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
@@ -2073,6 +2075,7 @@ async function main(): Promise<void> {
           writeJson(response, 401, { error: 'Unauthorized' })
           return
         }
+        if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
@@ -2133,8 +2136,9 @@ async function main(): Promise<void> {
         }
         const url = requestUrl(request)
         const liveUdid = url ? simLiveUdid(url.pathname) : null
+        const logsUdid = url ? simLogsUdid(url.pathname) : null
         const webTileId = url ? webTilePathId(url.pathname) : null
-        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId && !liveUdid)) {
+        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId && !liveUdid && !logsUdid)) {
           rejectUpgrade(socket, 404, 'Not Found')
           return
         }
@@ -2166,6 +2170,10 @@ async function main(): Promise<void> {
         }
         if (liveUdid) {
           simLive.handleUpgrade(request, socket, head, liveUdid)
+          return
+        }
+        if (logsUdid) {
+          simLogs.handleUpgrade(request, socket, head, logsUdid, url.searchParams)
           return
         }
         webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -2217,6 +2225,7 @@ async function main(): Promise<void> {
     companion?.close()
     pushNotifier?.close()
     simLive.close()
+    simLogs.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void tmux.releaseAllPaneResizes().finally(() => {
