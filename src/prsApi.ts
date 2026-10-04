@@ -50,6 +50,7 @@ export type PrList = {
 export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
 export type PanePrSummary = PrStatus & {
   repo: string
+  preview?: PrSummary
   number: number
   title: string
   url: string
@@ -96,6 +97,10 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    details: async (repo: string, number: number) =>
+      (await request<{ details: import('../shared/pr-quick-look').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
+    diff: async (repo: string, number: number) =>
+      (await request<{ diff: import('../shared/pr-quick-look').PrRemoteDiff }>(`/diff?repo=${encodeURIComponent(repo)}&number=${number}`)).diff,
     merge: async (repo: string, number: number, headRefOid: string) =>
       request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid }) }),
     list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean; scope?: PrScope }) =>

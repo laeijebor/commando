@@ -7,6 +7,7 @@ import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { SessionTree } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
+import type { PrsApiClient, PanePrSummary } from './prsApi'
 
 const sessionApi = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
@@ -84,6 +85,27 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
 }
 
 describe('SessionTree', () => {
+  it('replaces selected-session window and pane rows with open PR details', async () => {
+    const open: PanePrSummary = {
+      repo: 'acme/app', number: 12, title: 'Ship the feature', url: 'https://github.com/acme/app/pull/12',
+      state: 'open', isDraft: false, createdAt: '', updatedAt: '', additions: 2, deletions: 1,
+      checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
+    }
+    const prsApi = { pane: vi.fn(async () => ({ targetId: 'target', pullRequests: [open], totalCount: 1, truncated: false, fetchedAt: 1 })) } as unknown as PrsApiClient
+    const { container } = render(<SessionTree
+      token="token" sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+      windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: '', paneIds: ['%1'] }]}
+      panes={[pane('%1', 0, 'Agent pane')]} displayedPaneIds={['%1']} statuses={{}}
+      selectedSessionId="$1" focusedPaneId="%1" onSelectSession={vi.fn()} onSelectWindow={vi.fn()}
+      onSelectPane={vi.fn()} onOpenPaneMaximized={vi.fn()} onWindowDeleting={vi.fn()}
+      onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} prsApi={prsApi} connected
+    />)
+    expect(await screen.findByRole('link', { name: '#12 · Ship the feature' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Open pull requests in work' })).toContainElement(screen.getByRole('link', { name: '#12 · Ship the feature' }))
+    expect(container.querySelector('.managed-window-tree')).not.toBeInTheDocument()
+    expect(container.querySelector('.managed-pane-row')).not.toBeInTheDocument()
+  })
+
   it('opens the first nine sessions by their session-tree order', async () => {
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,

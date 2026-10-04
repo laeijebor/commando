@@ -259,6 +259,9 @@
   border-radius: 10px;
   background: var(--surface-raised);
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .pr-pop-head {

@@ -281,10 +281,11 @@ describe('pane PR status', () => {
         ] },
       } } }] },
     })
-    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 1, nodes: [node] } } }))
+    const { service } = serviceWith(JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 1, nodes: [node] } } }))
     const panePr = (await service.listPanePullRequests(targetId)).pullRequests[0]
     const { service: hudService } = serviceWith(graphqlPayload([node]))
     const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    expect(panePr.preview).toEqual(hudPr)
     for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'threadsTruncated', 'reviewDecision'] as const) {
       expect(panePr[field]).toEqual(hudPr[field])
     }
