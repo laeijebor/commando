@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ExternalLink, X } from 'lucide-react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
-import type { PrDetails, PrRemoteDiff } from '../shared/pr-quick-look'
+import type { PrConflicts, PrConversationEntry, PrDetails, PrRemoteDiff } from '../shared/pr-quick-look'
+import { groupPrConversation } from './prConversation'
+import { PrConflictPanel } from './PrConflictPanel'
 import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
 
-const tabs = ['Description', 'Checks', 'Conversation', 'Diff'] as const
+const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts'] as const
 type Tab = (typeof tabs)[number]
 
 function MarkdownBody({ body }: { body: string }) {
@@ -23,6 +25,42 @@ function MarkdownBody({ body }: { body: string }) {
         {body}
       </Markdown>
     </div>
+  )
+}
+
+function ConversationComment({
+  entry,
+  prUrl,
+  reply,
+  detached,
+  showPath = true,
+}: {
+  entry: PrConversationEntry
+  prUrl: string
+  reply?: boolean
+  detached?: boolean
+  showPath?: boolean
+}) {
+  return (
+    <>
+      <header>
+        <strong>{entry.author}</strong>
+        <span>
+          {reply ? 'reply' : entry.kind}
+          {detached ? ' · reply, original comment unavailable' : ''}
+        </span>
+        <a href={entry.url || prUrl} target="_blank" rel="noreferrer">
+          {entry.createdAt ? new Date(entry.createdAt).toLocaleString() : 'View on GitHub'}
+        </a>
+      </header>
+      {showPath && entry.path ? (
+        <code>
+          {entry.path}
+          {entry.line ? `:${entry.line}` : ''}
+        </code>
+      ) : null}
+      <MarkdownBody body={entry.body || '_No review body._'} />
+    </>
   )
 }
 
@@ -47,9 +85,14 @@ export function PrQuickLook({
   const [retry, setRetry] = useState(0)
   const [selectedPath, setSelectedPath] = useState('')
   const [filter, setFilter] = useState('')
+  const [conflicts, setConflicts] = useState<PrConflicts | null>(null)
   const dialog = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+
+  useEffect(() => {
+    setConflicts(null)
+  }, [pr.headRefOid, pr.baseRefOid, pr.baseRefName])
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -123,6 +166,12 @@ export function PrQuickLook({
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
   const error = tab === 'Diff' ? diffError : detailError
   const checks = details?.checks ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? []
+  const mergeTarget = conflicts?.baseRefName ?? details?.mergeTarget?.branch ?? pr.baseRefName
+  const nonMainTarget = Boolean(mergeTarget && mergeTarget !== 'main')
+  const hasConflicts = conflicts ? conflicts.state === 'conflicting' : pr.conflicting
+  const conversation = useMemo(() => groupPrConversation(details?.conversation ?? []), [details])
+  const replies = conversation.reduce((count, thread) => count + thread.replies.length, 0)
+  const visibleEntries = conversation.length + replies
   return createPortal(
     <div
       className="pr-quick-backdrop"
@@ -155,13 +204,36 @@ export function PrQuickLook({
         <div className="pr-quick-meta">
           <code>{pr.headRefName}</code>
           <span>→</span>
-          <code>{pr.baseRefName}</code>
+          <span
+            className={`pr-quick-target${nonMainTarget ? ' non-main' : ''}`}
+            title={`Merge target: ${mergeTarget}`}
+          >
+            <small>Merge target</small>
+            <code>{mergeTarget || 'unknown'}</code>
+          </span>
           <span>
             by {pr.author ?? 'unknown'} · {pr.commitCount} commits · {pr.changedFiles} files
           </span>
           <span className="pass">+{pr.additions}</span>
           <span className="fail">−{pr.deletions}</span>
         </div>
+        {nonMainTarget ? (
+          <div className="pr-quick-target-warning" role="note">
+            <strong>
+              Merges into <code>{mergeTarget}</code>, not main.
+            </strong>{' '}
+            The Diff tab still compares against <code>origin/main</code>; conflict inspection uses{' '}
+            <code>{mergeTarget}</code>.
+          </div>
+        ) : null}
+        {hasConflicts ? (
+          <div className="pr-quick-conflict-warning" role="status">
+            This PR has merge conflicts against <code>{mergeTarget}</code>.{' '}
+            <button type="button" onClick={() => setTab('Conflicts')}>
+              View conflicts
+            </button>
+          </div>
+        ) : null}
         <div className="pr-quick-tabs" role="tablist" aria-label="PR quick look tabs">
           {tabs.map((name, index) => (
             <button
@@ -192,23 +264,33 @@ export function PrQuickLook({
             >
               {name}
               {name === 'Diff' ? <small>vs origin/main</small> : null}
+              {name === 'Conflicts' && hasConflicts ? <small className="fail">!</small> : null}
             </button>
           ))}
         </div>
         <div
-          className={`pr-quick-panel${tab === 'Diff' ? ' is-diff' : ''}`}
+          className={`pr-quick-panel${tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
           role="tabpanel"
           id="pr-quick-panel"
           aria-labelledby={`pr-quick-tab-${tab}`}
           tabIndex={0}
         >
-          {error ? (
+          {error && tab !== 'Conflicts' ? (
             <div className="pr-quick-message" role="alert">
               {error}{' '}
               <button type="button" onClick={() => setRetry((value) => value + 1)}>
                 Retry
               </button>
             </div>
+          ) : null}
+          {tab === 'Conflicts' ? (
+            <PrConflictPanel
+              key={`${pr.headRefOid}:${pr.baseRefOid}:${pr.baseRefName}`}
+              repo={repo}
+              number={pr.number}
+              api={api}
+              onLoaded={setConflicts}
+            />
           ) : null}
           {tab === 'Description' && !error ? (
             details ? (
@@ -264,7 +346,9 @@ export function PrQuickLook({
                   </div>
                 ))}
               {!pr.reviews.length && !pr.requestedReviewers.length ? <p>No reviews yet.</p> : null}
-              {pr.conflicting ? <p className="fail">This pull request has merge conflicts.</p> : null}
+              {hasConflicts ? (
+                <p className="fail">This pull request has merge conflicts against {mergeTarget}.</p>
+              ) : null}
             </>
           ) : null}
           {tab === 'Conversation' && !error ? (
@@ -273,29 +357,42 @@ export function PrQuickLook({
                 <h3>
                   Conversation{' '}
                   <small>
-                    {details.conversation.length} entries · {pr.unresolvedThreads} unresolved threads
+                    {visibleEntries} entries
+                    {replies ? ` · ${replies} ${replies === 1 ? 'reply' : 'replies'}` : ''} ·{' '}
+                    {pr.unresolvedThreads} unresolved threads
                   </small>
                 </h3>
-                {details.conversation.length ? (
-                  details.conversation.map((entry) => (
-                    <article className="pr-quick-comment" key={entry.id}>
-                      <header>
-                        <strong>{entry.author}</strong>
-                        <span>
-                          {entry.kind}
-                          {entry.replyTo ? ' · reply' : ''}
-                        </span>
-                        <a href={entry.url || pr.url} target="_blank" rel="noreferrer">
-                          {entry.createdAt ? new Date(entry.createdAt).toLocaleString() : 'View on GitHub'}
-                        </a>
-                      </header>
-                      {entry.path ? (
-                        <code>
-                          {entry.path}
-                          {entry.line ? `:${entry.line}` : ''}
-                        </code>
+                {conversation.length ? (
+                  conversation.map((thread) => (
+                    <article
+                      className="pr-quick-comment"
+                      key={thread.entry.id}
+                      data-comment-id={thread.entry.id}
+                    >
+                      <ConversationComment
+                        entry={thread.entry}
+                        prUrl={pr.url}
+                        detached={thread.detachedReply}
+                      />
+                      {thread.replies.length ? (
+                        <div className="pr-quick-thread-replies" aria-label="Replies to this comment">
+                          {thread.replies.map((entry) => (
+                            <article
+                              className="pr-quick-reply"
+                              key={entry.id}
+                              data-comment-id={entry.id}
+                              aria-label={`Reply by ${entry.author}`}
+                            >
+                              <ConversationComment
+                                entry={entry}
+                                prUrl={pr.url}
+                                reply
+                                showPath={entry.path !== thread.entry.path}
+                              />
+                            </article>
+                          ))}
+                        </div>
                       ) : null}
-                      <MarkdownBody body={entry.body || '_No review body._'} />
                     </article>
                   ))
                 ) : (

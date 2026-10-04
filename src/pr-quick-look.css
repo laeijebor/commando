@@ -76,6 +76,99 @@
   overflow-wrap: anywhere;
   color: var(--text-soft);
 }
+
+.pr-quick-target {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.pr-quick-target small {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.pr-quick-target.non-main {
+  padding: 2px 7px;
+  border: 1px solid var(--amber);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--amber) 9%, transparent);
+}
+.pr-quick-target.non-main code {
+  color: var(--amber);
+  font-weight: 700;
+}
+.pr-quick-target-warning,
+.pr-quick-conflict-warning {
+  flex: 0 0 auto;
+  padding: 10px 24px;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--border);
+}
+.pr-quick-target-warning {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
+}
+.pr-quick-conflict-warning {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 6%, transparent);
+}
+.pr-quick-conflict-warning button,
+.pr-conflict-summary button {
+  padding: 4px 8px;
+  margin-left: 8px;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.pr-conflict-layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.pr-conflict-summary {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  overflow: auto;
+  max-height: 45%;
+  flex: 0 0 auto;
+}
+.pr-conflict-summary > strong,
+.pr-conflict-summary > span,
+.pr-conflict-summary > small {
+  display: block;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.pr-conflict-summary > small {
+  color: var(--muted);
+}
+.pr-conflict-summary button {
+  margin: 0;
+}
+.pr-conflict-summary pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.5 var(--mono);
+}
+.pr-conflict-files-layout {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.pr-conflict-marker {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  font-weight: 700;
+}
+.pr-quick-tabs {
+  flex-wrap: wrap;
+}
 .pr-quick-tabs {
   display: flex;
   gap: 4px;
@@ -204,6 +297,28 @@
   margin-bottom: 12px;
   color: var(--accent);
   overflow-wrap: anywhere;
+}
+
+.pr-quick-thread-replies {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.pr-quick-reply {
+  margin: 0 0 12px 10px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--surface-raised);
+}
+.pr-quick-reply:last-child {
+  margin-bottom: 0;
+}
+.pr-quick-reply > code {
+  display: block;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+  color: var(--accent);
 }
 .pr-quick-actions {
   display: flex;
@@ -345,4 +460,27 @@
   .pr-quick-header h2 {
     font-size: 16px;
   }
+}
+
+@media (max-height: 650px) {
+  .pr-quick-backdrop { padding: 8px; }
+  .pr-quick-modal { height: calc(100vh - 16px); }
+  .pr-quick-header { padding: 10px 16px 6px; }
+  .pr-quick-header h2 { font-size: 16px; margin-top: 4px; }
+  .pr-quick-repo { font-size: 9px; }
+  .pr-quick-meta { padding: 0 16px 8px; font-size: 10px; }
+  .pr-quick-target-warning, .pr-quick-conflict-warning { padding: 6px 16px; font-size: 10px; line-height: 1.4; }
+  .pr-quick-tabs { padding: 0 8px; }
+  .pr-quick-tabs button { padding: 8px 10px; font-size: 11px; }
+  .pr-quick-actions { padding: 8px 16px; }
+  .pr-quick-actions .pr-pop-btn { padding: 5px 8px; font-size: 9px; }
+  .pr-conflict-summary { padding: 6px 12px; }
+  .pr-conflict-summary > strong { display: inline; margin: 0; font-size: 11px; }
+  .pr-conflict-summary > span { display: none; }
+  .pr-conflict-summary > small { display: inline; margin: 0 8px; font-size: 9px; }
+  .pr-conflict-summary button { padding: 3px 6px; font-size: 9px; }
+  .pr-conflict-summary details { display: inline; margin-left: 8px; font-size: 10px; }
+  .pr-conflict-summary details[open] { display: block; margin: 6px 0 0; }
+  .pr-quick-diff header { padding: 8px; font-size: 11px; }
+  .pr-quick-diff pre { padding: 8px; font-size: 11px; line-height: 1.5; }
 }

@@ -94,7 +94,7 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
       <div className="pr-pop-row mono">
         <span className="pr-pop-strong">{pr.headRefName}</span>
         <span className="pr-pop-dim">→</span>
-        <span>{pr.baseRefName}</span>
+        <span className={pr.baseRefName && pr.baseRefName !== 'main' ? 'pr-target-highlight' : undefined}>{pr.baseRefName}{pr.baseRefName && pr.baseRefName !== 'main' ? ' · merge target, not main' : ''}</span>
       </div>
       <div className="pr-pop-row">
         {pr.createdAt ? `opened ${relativeTime(pr.createdAt)}` : 'opened'}
@@ -299,7 +299,9 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       ) : <>
       <div className="pr-idrow">
         <span className="pr-number">#{pr.number}</span>
-        <span className="pr-idrule" aria-hidden="true" />
+        {pr.baseRefName && pr.baseRefName !== 'main'
+          ? <span className="pr-target-badge" aria-label={`Merge target: ${pr.baseRefName}`} title={`Merges into ${pr.baseRefName}, not main`}><span aria-hidden="true">→</span><code>{pr.baseRefName}</code></span>
+          : <span className="pr-idrule" aria-hidden="true" />}
         <span className={`pr-state ${stateClass}`}>{stateLabel}</span>
         <button
           type="button"

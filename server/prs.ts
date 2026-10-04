@@ -1101,6 +1101,9 @@ export class PrService {
           ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
+          ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
+          ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
+            : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
         })
       }
     })

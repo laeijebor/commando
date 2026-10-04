@@ -96,6 +96,13 @@ afterEach(() => {
 })
 
 describe('PrsSection', () => {
+  it('shows a non-main merge target in the PR card header', async () => {
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({ baseRefName: 'release/mail' })]) }) })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByLabelText('Merge target: release/mail')).toHaveTextContent('→release/mail')
+    expect(screen.getByLabelText('Merge target: release/mail')).toHaveAttribute('title', 'Merges into release/mail, not main')
+  })
+
   it.each([
     { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
     { mergeable: 'UNKNOWN' }, { mergeStateStatus: 'BLOCKED' },

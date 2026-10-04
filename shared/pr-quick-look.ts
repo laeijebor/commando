@@ -8,6 +8,8 @@ export type PrConversationEntry = {
   path?: string
   line?: number
   replyTo?: number
+  commentId?: number
+  reviewId?: number
 }
 
 export type PrDetails = {

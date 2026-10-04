@@ -28,7 +28,7 @@ describe('PR quick look data', () => {
       if (endpoint.includes('/reviews'))
         return JSON.stringify([[{ id: 3, body: 'Review', state: 'APPROVED', submitted_at: '2026-01-01' }]])
       return JSON.stringify([
-        [{ id: 4, body: 'Reply', created_at: '2026-01-03', path: 'a.ts', line: 10, in_reply_to_id: 9 }],
+        [{ id: 4, body: 'Reply', created_at: '2026-01-03', path: 'a.ts', line: 10, in_reply_to_id: 9, pull_request_review_id: 3 }],
       ])
     })
     const result = await new PrService({ runner }).pullRequestDetails('acme/widgets', 12)
@@ -39,7 +39,8 @@ describe('PR quick look data', () => {
       'Reply',
       'Second page',
     ])
-    expect(result.conversation[2]).toMatchObject({ path: 'a.ts', line: 10, replyTo: 9 })
+    expect(result.conversation[2]).toMatchObject({ path: 'a.ts', line: 10, replyTo: 9, commentId: 4, reviewId: 3 })
+    expect(result.conversation[0]).toMatchObject({ kind: 'approved', reviewId: 3 })
     expect(result.checks).toEqual([
       { name: 'build', state: 'pass', url: '' },
       { name: 'deploy', state: 'pending', url: '' },
