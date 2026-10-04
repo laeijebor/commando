@@ -50,6 +50,7 @@ export type PrList = {
 export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
 export type PanePrSummary = PrStatus & {
   repo: string
+  preview?: PrSummary
   number: number
   title: string
   url: string
@@ -96,16 +97,22 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
-    merge: async (repo: string, number: number, headRefOid: string) =>
-      request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid }) }),
+    conflicts: async (repo: string, number: number) =>
+      (await request<{ conflicts: import('../shared/pr-quick-look').PrConflicts }>(`/conflicts?repo=${encodeURIComponent(repo)}&number=${number}`)).conflicts,
+    details: async (repo: string, number: number) =>
+      (await request<{ details: import('../shared/pr-quick-look').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
+    diff: async (repo: string, number: number) =>
+      (await request<{ diff: import('../shared/pr-quick-look').PrRemoteDiff }>(`/diff?repo=${encodeURIComponent(repo)}&number=${number}`)).diff,
+    merge: async (repo: string, number: number, headRefOid: string, baseRefName?: string) =>
+      request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid, ...(baseRefName ? { baseRefName } : {}) }) }),
     list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean; scope?: PrScope }) =>
       (await request<{ list: PrList }>(
         `?repo=${encodeURIComponent(repo)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(options?.scope ?? 'mine')}${options?.refresh ? '&refresh=1' : ''}`,
       )).list,
     threads: async (repo: string, number: number) =>
       (await request<{ threads: PrThreads }>(`/threads?repo=${encodeURIComponent(repo)}&number=${number}`)).threads,
-    pane: async (paneId: string) =>
-      (await request<{ list: PanePrList }>(`/pane?paneId=${encodeURIComponent(paneId)}`)).list,
+    pane: async (paneId: string, options?: { refresh?: boolean }) =>
+      (await request<{ list: PanePrList }>(`/pane?paneId=${encodeURIComponent(paneId)}${options?.refresh ? '&refresh=1' : ''}`)).list,
     repoForPane: async (paneId: string) =>
       (await request<{ repo: string | null }>(`/repo?paneId=${encodeURIComponent(paneId)}`)).repo,
     repos: async () => (await request<{ repos: PrRepoOption[] }>('/repos')).repos,

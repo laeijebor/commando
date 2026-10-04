@@ -88,6 +88,13 @@ describe('merging pull requests', () => {
   const head = '2222222222222222222222222222222222222222'
   const ready = { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: head }
 
+  it('rejects a retargeted PR before sending any merge write', async () => {
+    const runner = vi.fn().mockResolvedValueOnce(JSON.stringify({ ...ready, baseRefName: 'release' }))
+    await expect(new PrService({ runner }).mergePullRequest('acme/widgets', 12, head, 'main')).rejects.toMatchObject({ status: 409, code: 'target_changed' })
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner.mock.calls[0][0]).not.toContain('PUT')
+  })
+
   it.each([
     [{ allow_merge_commit: true }, 'merge'],
     [{ allow_merge_commit: false, allow_squash_merge: true }, 'squash'],
@@ -202,6 +209,15 @@ describe('pane pull request history', () => {
   const targetId = '123e4567-e89b-42d3-a456-426614174000'
   const marker = `<!-- commando:v1 target=${targetId} relation=created -->`
 
+  it('allows explicit refresh to bypass the pane cache after a revision mismatch', async () => {
+    const { service, runner } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 0, nodes: [] } } }))
+    await service.listPanePullRequests(targetId)
+    await service.listPanePullRequests(targetId)
+    expect(runner).toHaveBeenCalledTimes(1)
+    await service.listPanePullRequests(targetId, { refresh: true })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
   it('returns every exact marker match across repositories and states', async () => {
     const output = JSON.stringify({
       data: {
@@ -281,10 +297,11 @@ describe('pane PR status', () => {
         ] },
       } } }] },
     })
-    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 1, nodes: [node] } } }))
+    const { service } = serviceWith(JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 1, nodes: [node] } } }))
     const panePr = (await service.listPanePullRequests(targetId)).pullRequests[0]
     const { service: hudService } = serviceWith(graphqlPayload([node]))
     const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
+    expect(panePr.preview).toEqual(hudPr)
     for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'threadsTruncated', 'reviewDecision'] as const) {
       expect(panePr[field]).toEqual(hudPr[field])
     }

@@ -10,6 +10,8 @@ import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { SessionCreateDialog } from './SessionCreateDialog'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-tree.css'
+import type { PrsApiClient } from './prsApi'
+import { SessionPrCards, SessionPrCount } from './SessionPrCount'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -33,6 +35,8 @@ type Props = {
   onSessionsChanged: () => void
   onPreferencesChanged: (preferences: SessionTreePreferences) => void
   creation?: SessionTreeCreation
+  prsApi?: PrsApiClient
+  connected?: boolean
 }
 
 const providerLabels: Record<AgentStatus['provider'], string> = {
@@ -105,6 +109,11 @@ export function SessionTree(props: Props) {
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
   const mode: SessionGroupingMode = preferences.groupingMode ?? DEFAULT_GROUPING_MODE
   const manual = mode === 'manual'
+  const liveTargetIds = new Set(props.panes.map((pane) => pane.targetId))
+  const jumpToTarget = (targetId: string) => {
+    const panes = props.panes.filter((pane) => pane.targetId === targetId)
+    if (panes.length === 1) props.onSelectPane(panes[0].id)
+  }
 
   useEffect(() => {
     api.loadPreferences().then((next) => {
@@ -415,12 +424,16 @@ export function SessionTree(props: Props) {
                 key={session.id}
               >
                 <div className="managed-session-row">
+                  {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
                   <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-expanded={selected}>{selected ? <ChevronDown /> : <ChevronRight />}<span className="managed-session-copy"><strong>{session.name}</strong><small>{container.kind === 'auxiliary' ? 'Background · ' : ''}{branch ? <span className="session-branch" title={`On branch ${branch}`}><GitBranch />{branch}</span> : null}{session.windowIds.length} windows / {sessionPanes.length} panes</small></span></button>
                   {statusPanes.length ? <span className="session-status-cluster">{statusPanes.map((pane) => { const status = props.statuses[pane.id]; const label = statusLabel(status, pane); return <button type="button" key={pane.id} className={`session-status-dot ${status.status}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label} /> })}</span> : null}
                   {markedPanes.length ? <span className="session-mark-cluster">{markedPanes.map((pane) => { const mark = marks[pane.targetId]; const label = markLabel(mark, pane); return <button type="button" key={pane.targetId} className={`session-mark-dot tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} onClick={() => props.onSelectPane(pane.id)} aria-label={label} title={label}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</button> })}</span> : null}
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
                 </div>
+                {selected && props.prsApi ? <SessionPrCards paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
+                {!props.prsApi ? <>
                 {selected ? <div className="managed-window-tree">{session.windowIds.map((windowId) => { const tmuxWindow = windowMap.get(windowId); if (!tmuxWindow) return null; const paneIds = [...tmuxWindow.paneIds].sort((left, right) => (displayedPaneOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right) ?? Number.MAX_SAFE_INTEGER)); return <div key={tmuxWindow.id}><div className="managed-window-row"><button type="button" className="managed-window-main" onClick={() => props.onSelectWindow(tmuxWindow.id)}><Columns2 /><span>{tmuxWindow.index}: {tmuxWindow.name}</span><small>{tmuxWindow.paneIds.length}</small></button><button type="button" className="managed-window-close" onClick={() => void deleteWindow(tmuxWindow.id)} aria-label={`Close window ${tmuxWindow.name}`} title="Close window"><X /></button></div><div className="managed-window-panes">{paneIds.map((paneId) => { const pane = paneMap.get(paneId); if (!pane) return null; const status = props.statuses[pane.id]; const mark = marks[pane.targetId]; const label = paneLabel(pane); const agentLabel = status ? statusLabel(status, pane) : ''; const paneMarkLabel = mark ? markLabel(mark, pane) : ''; return <div className={`managed-pane-row${props.focusedPaneId === pane.id ? ' active' : ''}`} key={pane.id}><button type="button" className="managed-pane-main" onClick={() => props.onSelectPane(pane.id)}><Terminal /><span>{label}</span>{mark ? <i className={`mini-pane-mark tone-${mark.tone}${mark.activityCount ? ' has-activity' : ''}`} role="img" aria-label={paneMarkLabel} title={paneMarkLabel}>{mark.activityCount ? <small>{mark.activityCount}</small> : null}</i> : null}{status ? <i className={`mini-status ${status.status}`} role="img" aria-label={agentLabel} title={agentLabel} /> : null}</button><button type="button" className="managed-pane-maximize" onClick={() => props.onOpenPaneMaximized(pane.id)} aria-label={`Open ${label} maximized`} title="Open maximized"><Maximize2 /></button></div> })}</div></div> })}</div> : null}
+                </> : null}
               </article>]
             })}
             {manual && !container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}

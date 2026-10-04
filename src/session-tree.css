@@ -19,6 +19,21 @@
 .managed-session.selected { background: var(--surface-soft); }
 .managed-session.dragging { opacity: .45; }
 .managed-session-row { display: flex; align-items: center; }
+.session-pr-preview { order: 1; display: inline-flex; flex: 0 0 auto; }
+.managed-session-tree .session-pr-count { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 5px; border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); border-radius: 5px; color: var(--green); background: color-mix(in srgb, var(--green) 8%, transparent); font: 8px var(--mono); }
+.session-pr-count svg { width: 11px; height: 11px; }
+.session-pr-count:hover, .session-pr-count:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.session-pr-more { color: var(--muted); }
+.session-pr-readiness { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--muted-dim); }
+.session-pr-readiness.red { background: var(--red); }
+.session-pr-readiness.amber { background: var(--amber); }
+.session-pr-readiness.green { background: var(--green); }
+.session-open-prs { padding: 0 8px 10px 24px; }
+.session-open-prs > p { margin: 6px 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.session-open-prs .pr-card { min-width: 0; }
+.session-open-prs .pr-card .pr-number { color: var(--accent); }
+.session-pr-fallback { display: block; margin-bottom: 6px; color: var(--accent); font-size: 10px; overflow-wrap: anywhere; }
+.session-status-cluster, .session-mark-cluster, .session-row-actions { order: 2; }
 .managed-session-main { min-width: 0; flex: 1; padding: 9px 7px; display: flex; gap: 7px; align-items: center; text-align: left; }
 .managed-session-main > svg { flex: 0 0 auto; width: 13px; height: 13px; color: var(--muted-dim); }
 .managed-session-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }

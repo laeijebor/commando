@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handlePrsApi } from './prs-api.js'
 import { PrService } from './prs.js'
+import { PrConflictError } from './pr-conflicts.js'
 
 const servers: Server[] = []
 
@@ -47,6 +48,30 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('forwards explicit pane refresh and rejects malformed refresh values', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const paneList = vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPanePullRequests']>>)
+    const base = await startApi(() => '/workspace', () => TARGET_ID, service)
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=1`)).status).toBe(200)
+    expect(paneList).toHaveBeenCalledWith(TARGET_ID, { refresh: true })
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=invalid`)).status).toBe(400)
+  })
+
+  it('serves conflict inspection as a read-only endpoint with actionable race errors', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const inspect = vi.spyOn(service, 'pullRequestConflicts').mockResolvedValue({ state: 'clean' } as Awaited<ReturnType<PrService['pullRequestConflicts']>>)
+    const base = await startApi(() => undefined, () => undefined, service)
+    const url = `${base}/api/prs/conflicts?repo=acme%2Fwidgets&number=12`
+    expect((await fetch(url, { method: 'POST' })).status).toBe(405)
+    expect(inspect).not.toHaveBeenCalled()
+    await expect((await fetch(url)).json()).resolves.toMatchObject({ conflicts: { state: 'clean' } })
+    expect(inspect).toHaveBeenCalledWith('acme/widgets', '12')
+    inspect.mockRejectedValueOnce(new PrConflictError('Refs changed; retry', 409))
+    const changed = await fetch(url)
+    expect(changed.status).toBe(409)
+    await expect(changed.json()).resolves.toMatchObject({ error: 'Refs changed; retry', code: 'conflict_inspection_failed' })
+  })
+
   it('defaults to mine and forwards explicit scopes', async () => {
     const service = new PrService({ runner: vi.fn() })
     const list = vi.spyOn(service, 'listPullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPullRequests']>>)

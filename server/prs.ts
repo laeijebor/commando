@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
+import { PrConflictInspector } from './pr-conflicts.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
@@ -55,12 +56,17 @@ query($owner: String!, $name: String!, $number: Int!) {
 }`.trim()
 const PANE_PULL_REQUESTS_QUERY = `
 query($targetQuery: String!) {
+  viewer { login }
   ${RATE_LIMIT_FIELD}
   linked: search(query: $targetQuery, type: ISSUE, first: ${PANE_PULL_REQUEST_PAGE_SIZE}) {
     issueCount
     nodes {
       ... on PullRequest {
         number title url state isDraft body createdAt updatedAt
+        author { login }
+        changedFiles headRefName baseRefName headRefOid baseRefOid mergeStateStatus
+        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+        latestReviews(first: 10) { nodes { author { login } state } }
         ${PR_STATUS_FIELDS}
         repository { nameWithOwner }
       }
@@ -139,6 +145,7 @@ export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'c
 
 export type PanePrSummary = PrStatus & {
   repo: string
+  preview?: PrSummary
   number: number
   title: string
   url: string
@@ -424,7 +431,7 @@ function paneTargetSearchQuery(targetId: string): string {
   return `is:pr in:body ${targetId} sort:created-desc`
 }
 
-function parsePanePullRequest(node: JsonRecord, targetId: string): PanePrSummary | null {
+function parsePanePullRequest(node: JsonRecord, targetId: string, viewer: string): PanePrSummary | null {
   const body = typeof node.body === 'string' ? node.body : ''
   if (parseCommandoPrMarker(body)?.targetId !== targetId) return null
   const repository = optionalObject(node, 'repository')
@@ -435,6 +442,7 @@ function parsePanePullRequest(node: JsonRecord, targetId: string): PanePrSummary
   const stateValue = requiredString(node, 'state')
   return {
     repo,
+    ...(typeof node.headRefOid === 'string' ? { preview: parsePullRequest(node, viewer) } : {}),
     ...parsePrStatus(node),
     number: requiredNumber(node, 'number'),
     title: requiredString(node, 'title'),
@@ -690,6 +698,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
@@ -725,19 +734,20 @@ export class PrService {
     this.now = options?.now ?? Date.now
   }
 
-  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown): Promise<{ merged: true }> {
+  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown, baseInput?: unknown): Promise<{ merged: true }> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     if (typeof headInput !== 'string' || !/^[a-f0-9]{40}$/i.test(headInput)) {
       throw new PrServiceError(400, 'invalid_request', 'A valid PR head commit is required')
     }
+    if (baseInput !== undefined && (typeof baseInput !== 'string' || !baseInput || baseInput.length > 1024)) throw new PrServiceError(400, 'invalid_request', 'A valid merge target is required')
     const key = `${repo.toLowerCase()}::${number}`
     if (this.merging.has(key)) throw new PrServiceError(409, 'merge_in_progress', 'This pull request is already being merged')
     this.merging.add(key)
     try {
       const current = parseGhObject(await this.runner([
         'pr', 'view', String(number), '--repo', repo,
-        '--json', 'state,isDraft,mergeable,mergeStateStatus,headRefOid',
+        '--json', `state,isDraft,mergeable,mergeStateStatus,headRefOid${baseInput !== undefined ? ',baseRefName' : ''}`,
       ]))
       const reason = prMergeDisabledReason({
         state: typeof current.state === 'string' ? current.state : '',
@@ -747,6 +757,7 @@ export class PrService {
       })
       if (reason) throw new PrServiceError(409, 'not_mergeable', reason)
       if (current.headRefOid !== headInput) throw new PrServiceError(409, 'head_changed', 'The PR has new commits. Resync and try again.')
+      if (baseInput !== undefined && current.baseRefName !== baseInput) throw new PrServiceError(409, 'target_changed', 'The PR merge target changed. Resync and review the new target before merging.')
       const settings = parseGhObject(await this.runner(['api', `repos/${repo}`]))
       const method = settings.allow_merge_commit === true ? 'merge'
         : settings.allow_squash_merge === true ? 'squash'
@@ -829,10 +840,10 @@ export class PrService {
     return this.refreshPullRequests(key, repo, filter, scope, entry)
   }
 
-  async listPanePullRequests(targetIdInput: unknown): Promise<PanePrList> {
+  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    if (!options.refresh && cached && this.now() - cached.at < this.listTtlMs) return cached.promise
     const promise = this.fetchPanePullRequests(targetId)
     const entry = { at: this.now(), promise }
     this.paneListCache.set(targetId, entry)
@@ -867,9 +878,11 @@ export class PrService {
     if (Array.isArray(payload.errors) && payload.errors.length > 0) {
       throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the pane pull request query')
     }
-    const linked = searchConnection(objectField(payload, 'data'), 'linked')
+    const data = objectField(payload, 'data')
+    const viewer = optionalObject(data, 'viewer')
+    const linked = searchConnection(data, 'linked')
     const pullRequests = linked.nodes
-      .map((node) => parsePanePullRequest(node, targetId))
+      .map((node) => parsePanePullRequest(node, targetId, typeof viewer?.login === 'string' ? viewer.login : ''))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     return {
@@ -1031,6 +1044,111 @@ export class PrService {
       })
     }
     return JSON.stringify(payload)
+  }
+
+  async pullRequestDetails(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrDetails> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const root = `repos/${repo}`
+    const [prOutput, ...pages] = await Promise.all([
+      this.ghRead(['api', `${root}/pulls/${number}`]),
+      ...[`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`].map((path) =>
+        this.ghRead(['api', `${root}/${path}?per_page=100`, '--paginate', '--slurp'])),
+    ])
+    const pr = parseGhObject(prOutput)
+    const head = requiredString(objectField(pr, 'head'), 'sha')
+    if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    const checkOutputs = await Promise.all([
+      this.ghRead(['api', `${root}/commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp']),
+      this.ghRead(['api', `${root}/commits/${head}/statuses?per_page=100`, '--paginate', '--slurp']),
+    ])
+    const checkPages: unknown = JSON.parse(checkOutputs[0])
+    const statusPages: unknown = JSON.parse(checkOutputs[1])
+    if (!Array.isArray(checkPages) || !Array.isArray(statusPages) || !statusPages.every(Array.isArray)) throw invalidUpstream()
+    const checks: import('../shared/pr-quick-look.js').PrDetails['checks'] = []
+    const seen = new Set<string>()
+    const runs = checkPages.flatMap((page: unknown) => {
+      if (!isRecord(page) || !Array.isArray(page.check_runs)) throw invalidUpstream()
+      return page.check_runs
+    }).sort((a: JsonRecord, b: JsonRecord) => Number(b.id) - Number(a.id))
+    for (const run of runs) {
+      if (!isRecord(run)) throw invalidUpstream()
+      const name = requiredString(run, 'name')
+      const key = `${name}:${isRecord(run.app) ? run.app.id : ''}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      checks.push({ name, state: run.status !== 'completed' ? 'pending' : ['success', 'neutral', 'skipped'].includes(String(run.conclusion)) ? 'pass' : 'fail', url: typeof run.html_url === 'string' ? run.html_url : '' })
+    }
+    for (const status of statusPages.flat()) {
+      if (!isRecord(status)) throw invalidUpstream()
+      const name = requiredString(status, 'context')
+      if (seen.has(`status:${name}`)) continue
+      seen.add(`status:${name}`)
+      checks.push({ name, state: status.state === 'pending' ? 'pending' : status.state === 'success' ? 'pass' : 'fail', url: typeof status.target_url === 'string' ? status.target_url : '' })
+    }
+    const conversation: import('../shared/pr-quick-look.js').PrConversationEntry[] = []
+    pages.forEach((output, kind) => {
+      const parsed: unknown = JSON.parse(output)
+      if (!Array.isArray(parsed) || !parsed.every(Array.isArray)) throw invalidUpstream()
+      for (const entry of parsed.flat()) {
+        if (!isRecord(entry)) throw invalidUpstream()
+        const user = optionalObject(entry, 'user')
+        conversation.push({
+          id: `${kind}:${entry.id}`,
+          author: typeof user?.login === 'string' ? user.login : 'someone',
+          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body) : '',
+          url: typeof entry.html_url === 'string' ? entry.html_url : '',
+          createdAt: typeof entry.submitted_at === 'string' ? entry.submitted_at : typeof entry.created_at === 'string' ? entry.created_at : '',
+          kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
+          ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
+          ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+          ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
+          ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
+          ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
+            : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
+        })
+      }
+    })
+    conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const base = optionalObject(pr, 'base')
+    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
+      ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+  }
+
+  async pullRequestConflicts(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrConflicts> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
+    const base = objectField(pr, 'base')
+    const head = objectField(pr, 'head')
+    const refs = { baseRefName: requiredString(base, 'ref'), baseOid: requiredString(base, 'sha'), headRefName: requiredString(head, 'ref'), headOid: requiredString(head, 'sha') }
+    if (pr.state !== 'open') return { ...refs, state: 'not-open', files: [], messages: [], truncated: false, fetchedAt: this.now() }
+    return this.conflictInspector.inspect({ ...refs, repo, number })
+  }
+
+  async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
+    const head = requiredString(objectField(pr, 'head'), 'sha')
+    if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    // GitHub's main is the remote origin/main, independent of local worktree state.
+    const main = parseGhObject(await this.ghRead(['api', `repos/${repo}/commits/main`]))
+    const base = requiredString(main, 'sha')
+    if (!/^[a-f0-9]{40}$/i.test(base)) throw invalidUpstream()
+    const comparison = parseGhObject(await this.ghRead(['api', `repos/${repo}/compare/${base}...${head}`]))
+    if (!Array.isArray(comparison.files)) throw invalidUpstream()
+    const files = comparison.files.map((file: unknown) => {
+      if (!isRecord(file)) throw invalidUpstream()
+      return {
+        path: requiredString(file, 'filename'),
+        status: requiredString(file, 'status'),
+        additions: typeof file.additions === 'number' ? file.additions : 0,
+        deletions: typeof file.deletions === 'number' ? file.deletions : 0,
+        patch: typeof file.patch === 'string' ? file.patch : null,
+      }
+    })
+    return { base, head, files, truncated: files.length >= 300 }
   }
 
   async listUnresolvedThreads(repoInput: unknown, numberInput: unknown): Promise<PrThreads> {
