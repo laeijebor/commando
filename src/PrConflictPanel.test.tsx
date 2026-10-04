@@ -26,6 +26,15 @@ const result = {
   ],
 }
 
+it('rejects mismatched conflict revisions before showing any files or notifying the parent', async () => {
+  const api = { conflicts: vi.fn().mockResolvedValue(result) } as unknown as PrsApiClient
+  const onLoaded = vi.fn()
+  render(<PrConflictPanel repo="acme/widgets" number={12} api={api} onLoaded={onLoaded} expected={{ headOid: 'c'.repeat(40), baseOid: 'd'.repeat(40), baseRefName: 'main' }} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('PR or merge target changed')
+  expect(screen.queryByText('Merge conflicts · 2 files')).not.toBeInTheDocument()
+  expect(onLoaded).not.toHaveBeenCalled()
+})
+
 it('shows actual-target conflict markers, file navigation, and binary fallback', async () => {
   const api = { conflicts: vi.fn().mockResolvedValue(result) } as unknown as PrsApiClient
   render(<PrConflictPanel repo="acme/widgets" number={12} api={api} onLoaded={vi.fn()} />)

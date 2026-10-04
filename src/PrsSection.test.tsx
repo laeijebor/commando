@@ -135,7 +135,7 @@ describe('PrsSection', () => {
     expect(screen.getByRole('button', { name: 'Merging…' })).toBeInTheDocument()
     expect(requests.filter((request) => request.url.endsWith('/merge'))).toEqual([{
       url: '/api/prs/merge', method: 'POST',
-      body: { repo: 'acme/widgets', number: 12, headRefOid: pr().headRefOid },
+      body: { repo: 'acme/widgets', number: 12, headRefOid: pr().headRefOid, baseRefName: 'main' },
     }])
     merged = true
     await act(async () => finish(jsonResponse({ merged: true })))

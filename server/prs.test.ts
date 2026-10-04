@@ -88,6 +88,13 @@ describe('merging pull requests', () => {
   const head = '2222222222222222222222222222222222222222'
   const ready = { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: head }
 
+  it('rejects a retargeted PR before sending any merge write', async () => {
+    const runner = vi.fn().mockResolvedValueOnce(JSON.stringify({ ...ready, baseRefName: 'release' }))
+    await expect(new PrService({ runner }).mergePullRequest('acme/widgets', 12, head, 'main')).rejects.toMatchObject({ status: 409, code: 'target_changed' })
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner.mock.calls[0][0]).not.toContain('PUT')
+  })
+
   it.each([
     [{ allow_merge_commit: true }, 'merge'],
     [{ allow_merge_commit: false, allow_squash_merge: true }, 'squash'],
@@ -201,6 +208,15 @@ describe('input validation', () => {
 describe('pane pull request history', () => {
   const targetId = '123e4567-e89b-42d3-a456-426614174000'
   const marker = `<!-- commando:v1 target=${targetId} relation=created -->`
+
+  it('allows explicit refresh to bypass the pane cache after a revision mismatch', async () => {
+    const { service, runner } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 0, nodes: [] } } }))
+    await service.listPanePullRequests(targetId)
+    await service.listPanePullRequests(targetId)
+    expect(runner).toHaveBeenCalledTimes(1)
+    await service.listPanePullRequests(targetId, { refresh: true })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
 
   it('returns every exact marker match across repositories and states', async () => {
     const output = JSON.stringify({

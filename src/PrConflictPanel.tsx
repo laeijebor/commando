@@ -7,11 +7,15 @@ export function PrConflictPanel({
   number,
   api,
   onLoaded,
+  expected,
+  onRefresh,
 }: {
   repo: string
   number: number
   api: PrsApiClient
   onLoaded(value: PrConflicts): void
+  expected?: { headOid?: string; baseOid?: string; baseRefName?: string }
+  onRefresh?(): Promise<void>
 }) {
   const [result, setResult] = useState<PrConflicts | null>(null)
   const [error, setError] = useState('')
@@ -20,6 +24,9 @@ export function PrConflictPanel({
   const [filter, setFilter] = useState('')
   const loaded = useRef(onLoaded)
   loaded.current = onLoaded
+  const expectedHead = expected?.headOid
+  const expectedBase = expected?.baseOid
+  const expectedBranch = expected?.baseRefName
   useEffect(() => {
     let active = true
     const report = loaded.current
@@ -29,6 +36,10 @@ export function PrConflictPanel({
       .conflicts(repo, number)
       .then((value) => {
         if (!active) return
+        if ((expectedHead && value.headOid !== expectedHead) || (expectedBase && value.baseOid !== expectedBase)
+          || (expectedBranch && value.baseRefName !== expectedBranch)) {
+          throw new Error('The PR or merge target changed since this card refreshed. Refresh PR, then retry inspection.')
+        }
         setResult(value)
         setPath(value.files[0]?.path ?? '')
         report(value)
@@ -39,7 +50,7 @@ export function PrConflictPanel({
     return () => {
       active = false
     }
-  }, [api, repo, number, retry])
+  }, [api, repo, number, retry, expectedHead, expectedBase, expectedBranch])
 
   if (error)
     return (
@@ -48,6 +59,7 @@ export function PrConflictPanel({
         <button type="button" onClick={() => setRetry((value) => value + 1)}>
           Retry conflict inspection
         </button>
+        {onRefresh ? <button type="button" onClick={() => { void onRefresh().then(() => setRetry((value) => value + 1)) }}>Refresh PR</button> : null}
       </div>
     )
   if (!result)

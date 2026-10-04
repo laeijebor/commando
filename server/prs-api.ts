@@ -86,7 +86,9 @@ export async function handlePrsApi(
         return true
       }
       const body = await readBody(request)
-      json(response, 200, await service.mergePullRequest(body.repo, body.number, body.headRefOid))
+      json(response, 200, body.baseRefName === undefined
+        ? await service.mergePullRequest(body.repo, body.number, body.headRefOid)
+        : await service.mergePullRequest(body.repo, body.number, body.headRefOid, body.baseRefName))
       return true
     }
 
@@ -131,7 +133,9 @@ export async function handlePrsApi(
       }
       const targetId = dependencies.paneTargetId(paneId)
       if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'Tmux pane does not exist')
-      json(response, 200, { list: await service.listPanePullRequests(targetId) })
+      const refresh = url.searchParams.get('refresh')
+      if (refresh !== null && refresh !== '1') throw new PrServiceError(400, 'invalid_request', 'Refresh must be 1')
+      json(response, 200, { list: await service.listPanePullRequests(targetId, { refresh: refresh === '1' }) })
       return true
     }
 

@@ -48,6 +48,15 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('forwards explicit pane refresh and rejects malformed refresh values', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const paneList = vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPanePullRequests']>>)
+    const base = await startApi(() => '/workspace', () => TARGET_ID, service)
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=1`)).status).toBe(200)
+    expect(paneList).toHaveBeenCalledWith(TARGET_ID, { refresh: true })
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=invalid`)).status).toBe(400)
+  })
+
   it('serves conflict inspection as a read-only endpoint with actionable race errors', async () => {
     const service = new PrService({ runner: vi.fn() })
     const inspect = vi.spyOn(service, 'pullRequestConflicts').mockResolvedValue({ state: 'clean' } as Awaited<ReturnType<PrService['pullRequestConflicts']>>)

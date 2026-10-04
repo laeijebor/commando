@@ -33,6 +33,7 @@ describe('PR quick look data', () => {
     })
     const result = await new PrService({ runner }).pullRequestDetails('acme/widgets', 12)
     expect(result.body.length).toBeGreaterThan(280)
+    expect(result.headOid).toBe(head)
     expect(result.conversation.map((entry) => entry.body.slice(0, 12))).toEqual([
       'Review',
       'Comment Comm',

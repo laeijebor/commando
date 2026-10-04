@@ -44,11 +44,12 @@ function setup(
         },
       ],
       checks: [{ name: 'build', state: 'pass', url: pr.url }],
+      headOid: overrides.headRefOid,
       ...(target ? { mergeTarget: { branch: target, oid: 'a'.repeat(40) } } : {}),
     }),
     diff: vi.fn().mockResolvedValue({
       base: '1'.repeat(40),
-      head: '2'.repeat(40),
+      head: overrides.headRefOid ?? '2'.repeat(40),
       truncated: false,
       files: [
         { path: 'a.ts', additions: 1, deletions: 1, patch: '@@\n-old\n+new' },
@@ -57,10 +58,10 @@ function setup(
     }),
     conflicts: vi.fn().mockResolvedValue({
       state: 'clean',
-      baseRefName: 'release',
+      baseRefName: overrides.baseRefName ?? pr.baseRefName,
       headRefName: 'feature',
-      baseOid: 'a'.repeat(40),
-      headOid: 'b'.repeat(40),
+      baseOid: overrides.baseRefOid ?? 'a'.repeat(40),
+      headOid: overrides.headRefOid ?? 'b'.repeat(40),
       files: [],
       messages: [],
       truncated: false,
@@ -82,6 +83,26 @@ function setup(
 }
 
 describe('PR quick look', () => {
+  it('rejects a newer returned diff rather than tagging it with the old card revision', async () => {
+    const { api } = setup({ headRefOid: 'b'.repeat(40) })
+    await screen.findByRole('heading', { name: 'Complete description' })
+    api.diff.mockResolvedValueOnce({ base: 'a'.repeat(40), head: 'c'.repeat(40), truncated: false,
+      files: [{ path: 'newer.ts', status: 'modified', additions: 1, deletions: 0, patch: '+unpolled-revision' }] })
+    fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('PR head changed')
+    expect(screen.queryByText('+unpolled-revision')).not.toBeInTheDocument()
+  })
+
+  it('rejects detail metadata from a different head or target before publishing it', async () => {
+    const { api, rerender } = setup({ headRefOid: 'b'.repeat(40), baseRefOid: 'a'.repeat(40), baseRefName: 'release' }, 'release')
+    await screen.findByRole('heading', { name: 'Complete description' })
+    api.details.mockResolvedValueOnce({ body: '# Unpolled description', headOid: 'c'.repeat(40), checks: [], conversation: [], mergeTarget: { branch: 'another-target', oid: 'd'.repeat(40) } })
+    rerender({ updatedAt: '2026-01-03' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('PR or merge target changed')
+    expect(screen.queryByRole('heading', { name: 'Unpolled description' })).not.toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent('Merges into release, not main.')
+  })
+
   it('refreshes all detail and diff data on retarget/head changes and ignores superseded requests', async () => {
     const { api, rerender } = setup(
       { baseRefName: 'release/old', headRefOid: '1'.repeat(40), baseRefOid: 'a'.repeat(40) },
@@ -108,6 +129,7 @@ describe('PR quick look', () => {
     expect(screen.queryByText('+new')).not.toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent('Merges into release/next, not main.')
     const latest: PrDetails = {
+      headOid: '3'.repeat(40),
       body: '# Current description',
       checks: [{ name: 'current-check', state: 'pass', url: pr.url }],
       conversation: [

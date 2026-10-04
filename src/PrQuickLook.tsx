@@ -71,12 +71,14 @@ export function PrQuickLook({
   api,
   onClose,
   actions,
+  onRefresh,
 }: {
   pr: PrSummary
   repo: string
   api: PrsApiClient
   onClose(): void
   actions: ReactNode
+  onRefresh?(): Promise<void>
 }) {
   const references = JSON.stringify([
     repo,
@@ -163,7 +165,12 @@ export function PrQuickLook({
     api
       .details(repo, pr.number)
       .then((value) => {
-        if (active) setDetailSnapshot({ api, references, revision: detailRevision, value })
+        if (!active) return
+        if ((pr.headRefOid && value.headOid !== pr.headRefOid)
+          || (pr.baseRefOid && (value.mergeTarget?.oid !== pr.baseRefOid || value.mergeTarget.branch !== pr.baseRefName))) {
+          throw new Error('The PR or merge target changed since this card refreshed. Refresh PR, then retry.')
+        }
+        setDetailSnapshot({ api, references, revision: detailRevision, value })
       })
       .catch((error: unknown) => {
         if (active) setDetailError(error instanceof Error ? error.message : 'Unable to load PR details')
@@ -181,6 +188,7 @@ export function PrQuickLook({
       .diff(repo, pr.number)
       .then((value) => {
         if (active) {
+          if (pr.headRefOid && value.head !== pr.headRefOid) throw new Error('The PR head changed since this card refreshed. Refresh PR, then retry.')
           setDiffSnapshot({ api, references, revision: references, value })
           setSelectedPath(value.files[0]?.path ?? '')
         }
@@ -315,6 +323,7 @@ export function PrQuickLook({
               <button type="button" onClick={() => setRetry((value) => value + 1)}>
                 Retry
               </button>
+              {onRefresh ? <button type="button" onClick={() => { void onRefresh().then(() => setRetry((value) => value + 1)) }}>Refresh PR</button> : null}
             </div>
           ) : null}
           {tab === 'Conflicts' ? (
@@ -324,6 +333,8 @@ export function PrQuickLook({
               number={pr.number}
               api={api}
               onLoaded={(value) => setConflictSnapshot({ api, references, revision: references, value })}
+              expected={{ headOid: pr.headRefOid, baseOid: pr.baseRefOid, baseRefName: pr.baseRefName }}
+              onRefresh={onRefresh}
             />
           ) : null}
           {tab === 'Description' && !error ? (

@@ -72,7 +72,7 @@ it('shows the HUD hover and opens quick look from a numbered session pill', asyn
   const api = {
     pane: vi.fn(async () => list([first, withPreview(11)])),
     threads: vi.fn(async () => ({ threads: [], truncated: false })),
-    details: vi.fn(async () => ({ body: '# Full description', conversation: [], checks: [] })),
+    details: vi.fn(async () => ({ body: '# Full description', conversation: [], checks: [], headOid: first.preview!.headRefOid, mergeTarget: { branch: first.preview!.baseRefName, oid: first.preview!.baseRefOid } })),
   } as unknown as PrsApiClient
   render(<SessionPrCount paneIds={['%1']} api={api} previewApi={api} enabled sessionName="work" />)
   const pill = await screen.findByRole('button', { name: /PR #12 in work: 2 unresolved comment threads; 1 more/ })

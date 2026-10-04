@@ -734,19 +734,20 @@ export class PrService {
     this.now = options?.now ?? Date.now
   }
 
-  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown): Promise<{ merged: true }> {
+  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown, baseInput?: unknown): Promise<{ merged: true }> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     if (typeof headInput !== 'string' || !/^[a-f0-9]{40}$/i.test(headInput)) {
       throw new PrServiceError(400, 'invalid_request', 'A valid PR head commit is required')
     }
+    if (baseInput !== undefined && (typeof baseInput !== 'string' || !baseInput || baseInput.length > 1024)) throw new PrServiceError(400, 'invalid_request', 'A valid merge target is required')
     const key = `${repo.toLowerCase()}::${number}`
     if (this.merging.has(key)) throw new PrServiceError(409, 'merge_in_progress', 'This pull request is already being merged')
     this.merging.add(key)
     try {
       const current = parseGhObject(await this.runner([
         'pr', 'view', String(number), '--repo', repo,
-        '--json', 'state,isDraft,mergeable,mergeStateStatus,headRefOid',
+        '--json', `state,isDraft,mergeable,mergeStateStatus,headRefOid${baseInput !== undefined ? ',baseRefName' : ''}`,
       ]))
       const reason = prMergeDisabledReason({
         state: typeof current.state === 'string' ? current.state : '',
@@ -756,6 +757,7 @@ export class PrService {
       })
       if (reason) throw new PrServiceError(409, 'not_mergeable', reason)
       if (current.headRefOid !== headInput) throw new PrServiceError(409, 'head_changed', 'The PR has new commits. Resync and try again.')
+      if (baseInput !== undefined && current.baseRefName !== baseInput) throw new PrServiceError(409, 'target_changed', 'The PR merge target changed. Resync and review the new target before merging.')
       const settings = parseGhObject(await this.runner(['api', `repos/${repo}`]))
       const method = settings.allow_merge_commit === true ? 'merge'
         : settings.allow_squash_merge === true ? 'squash'
@@ -838,10 +840,10 @@ export class PrService {
     return this.refreshPullRequests(key, repo, filter, scope, entry)
   }
 
-  async listPanePullRequests(targetIdInput: unknown): Promise<PanePrList> {
+  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    if (!options.refresh && cached && this.now() - cached.at < this.listTtlMs) return cached.promise
     const promise = this.fetchPanePullRequests(targetId)
     const entry = { at: this.now(), promise }
     this.paneListCache.set(targetId, entry)
@@ -1109,7 +1111,7 @@ export class PrService {
     })
     conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     const base = optionalObject(pr, 'base')
-    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks,
+    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
       ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
   }
 

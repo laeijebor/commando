@@ -258,7 +258,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
     setMerging(true)
     setMergeError('')
     try {
-      await api.merge(repo, pr.number, pr.headRefOid)
+      await api.merge(repo, pr.number, pr.headRefOid, pr.baseRefName || undefined)
       setMerged(true)
       await onMerged()
     } catch (cause) {
@@ -320,6 +320,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
             repo={repo}
             api={api}
             onClose={() => setQuickLook(false)}
+            onRefresh={onMerged}
             actions={<>
               {targetIsLive && targetId ? (
                 <button type="button" className="pr-pop-btn" onClick={() => {

@@ -17,6 +17,7 @@ export type PrDetails = {
   conversation: PrConversationEntry[]
   checks: Array<{ name: string; state: 'pass' | 'fail' | 'pending'; url: string }>
   mergeTarget?: { branch: string; oid: string }
+  headOid?: string
 }
 
 export type PrConflicts = {

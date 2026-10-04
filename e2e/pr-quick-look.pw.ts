@@ -25,7 +25,7 @@ test('quick look shows actual-target conflicts and attaches replies to their ori
     createdAt: '2026-01-01T09:00:00Z', updatedAt: '2026-01-02T09:00:00Z', headRefName: 'feature/mail', baseRefName: 'release/mail',
     headRefOid: 'b'.repeat(40), baseRefOid: 'a'.repeat(40), viewerIsAuthor: true, viewerReviewRequested: false, commandoMarker: null }
   let activePr = pr
-  const details: PrDetails = { body: '# Full description', checks: [], mergeTarget: { branch: 'release/mail', oid: pr.baseRefOid }, conversation: [
+  const details: PrDetails = { body: '# Full description', checks: [], headOid: pr.headRefOid, mergeTarget: { branch: 'release/mail', oid: pr.baseRefOid }, conversation: [
     { id: '2:101', commentId: 101, author: 'Reviewer', body: 'Original inline finding', path: 'worker.ts', line: 10, kind: 'inline comment', createdAt: '2026-01-01T09:00:00Z', url: `${pr.url}#discussion_r101` },
     { id: '2:102', commentId: 102, author: 'Reviewer', body: 'Different finding on the same file', path: 'worker.ts', line: 22, kind: 'inline comment', createdAt: '2026-01-01T10:00:00Z', url: `${pr.url}#discussion_r102` },
     { id: '1:303', reviewId: 303, author: 'Author', body: '', kind: 'commented', createdAt: '2026-01-02T09:00:00Z', url: pr.url },
@@ -48,7 +48,7 @@ test('quick look shows actual-target conflicts and attaches replies to their ori
     else if (path === '/api/prs/repos') json = { repos: [{ nameWithOwner: 'acme/app', pinned: true }] }
     else if (path === '/api/prs') json = { list: { repo: 'acme/app', filter: 'open', viewer: 'QA', totalCount: 1, pullRequests: [activePr], truncated: false, mineTruncated: false, fetchedAt: Date.now() } }
     else if (path === '/api/prs/details') json = { details: activePr === pr ? details : { ...details, body: '# Updated description',
-      mergeTarget: { branch: activePr.baseRefName, oid: activePr.baseRefOid },
+      mergeTarget: { branch: activePr.baseRefName, oid: activePr.baseRefOid }, headOid: activePr.headRefOid,
       checks: [{ name: 'updated-check', state: 'pass', url: pr.url }],
       conversation: details.conversation.map((entry) => entry.id === '2:103' ? { ...entry, body: 'Reply after retarget' } : entry),
     } }
