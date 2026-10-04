@@ -3,18 +3,20 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, utimes, wri
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { promisify } from 'node:util'
 import type { SimOpenResult, SimPoolSummary, SimWallDevice, SimWallListing } from '../shared/protocol.js'
 import type { SimLeaseRegistry } from './sim-leases.js'
-import { SIM_NETWORK_PROFILES, SIM_ORIENTATIONS, SIM_TEXT_SIZES, type SimAction, type SimActionResult } from '../shared/sim-actions.js'
+import { SIM_BUNDLE_ID, SIM_NETWORK_PROFILES, SIM_ORIENTATIONS, SIM_PRIVACY_SERVICES, SIM_TEXT_SIZES, type SimAction, type SimActionResult, type SimApp } from '../shared/sim-actions.js'
 import type { SimSourceResult } from '../shared/sim-inspector.js'
 import { inspectorJson, parseSimComponents, parseSimElement } from './sim-inspector.js'
 
-export type SimWallRunner = (command: string, args: string[], options?: { timeout: number }) => Promise<string>
-const execute = promisify(execFile)
-const run: SimWallRunner = async (command, args, options) => (await execute(command, args, {
-  timeout: options?.timeout ?? 120_000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024,
-})).stdout
+export type SimWallRunner = (command: string, args: string[], options?: { timeout: number; stdin?: string }) => Promise<string>
+const run: SimWallRunner = (command, args, options) => new Promise((resolve, reject) => {
+  const child = execFile(command, args, {
+    timeout: options?.timeout ?? 120_000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024,
+  }, (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve(stdout))
+  child.stdin?.on('error', reject)
+  child.stdin?.end(options?.stdin)
+})
 const UDID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const CACHE_MS = 2_000
 type Snapshot = { at: number; data: Buffer }
@@ -45,6 +47,10 @@ async function readAction(request: IncomingMessage): Promise<SimAction> {
   const only = (...keys: string[]) => Object.keys(body).every((key) => key === 'action' || keys.includes(key))
   let valid = false
   switch (body.action) {
+    case 'privacy': valid = only('operation', 'service', 'bundleId')
+      && ['grant', 'revoke', 'reset'].includes(body.operation as string)
+      && SIM_PRIVACY_SERVICES.includes(body.service as typeof SIM_PRIVACY_SERVICES[number])
+      && (body.bundleId === undefined ? body.operation === 'reset' : typeof body.bundleId === 'string' && SIM_BUNDLE_ID.test(body.bundleId)); break
     case 'orientation': valid = only('value') && SIM_ORIENTATIONS.includes(body.value as typeof SIM_ORIENTATIONS[number]); break
     case 'appearance': valid = only('value') && ['light', 'dark', 'toggle'].includes(body.value as string); break
     case 'shake': case 'heal': valid = only(); break
@@ -330,11 +336,11 @@ export class SimWallApi {
     try { return await flight } finally { this.captures.delete(udid) }
   }
 
-  private async actionCommand(command: string, args: string[], timeout = 10_000): Promise<string> {
+  private async actionCommand(command: string, args: string[], timeout = 10_000, stdin?: string): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
-        this.runner(command, args, { timeout }),
+        this.runner(command, args, { timeout, ...(stdin !== undefined ? { stdin } : {}) }),
         new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SimWallError(504, `Simulator command timed out after ${timeout / 1000} seconds`)), timeout) }),
       ])
     } catch (error) {
@@ -381,6 +387,8 @@ export class SimWallApi {
     const device = ['--udid', udid]
     const baguette = (args: string[]) => this.actionCommand('baguette', args)
     switch (body.action) {
+      case 'privacy': await this.actionCommand('xcrun', ['simctl', 'privacy', udid, body.operation, body.service,
+        ...(body.bundleId === undefined ? [] : [body.bundleId])]); break
       case 'orientation': await baguette(['orientation', ...device, body.value]); break
       case 'appearance': {
         let value = body.value
@@ -419,12 +427,12 @@ export class SimWallApi {
         json(response, 200, await this.listPayload())
         return true
       }
-      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open|action|schemes|inspect(?:\/source)?)$/.exec(url.pathname)
+      const match = /^\/api\/sims\/([^/]+)\/(snapshot\.jpg|slim|open|action|schemes|apps|inspect(?:\/source)?)$/.exec(url.pathname)
       if (!match) throw new SimWallError(404, 'Not found')
       if (!UDID.test(match[1])) throw new SimWallError(400, 'udid must be a simulator UUID')
       const udid = match[1].toUpperCase()
       const action = match[2]
-      if (request.method !== (action === 'snapshot.jpg' || action === 'schemes' || action.startsWith('inspect') ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
+      if (request.method !== (action === 'snapshot.jpg' || action === 'schemes' || action === 'apps' || action.startsWith('inspect') ? 'GET' : 'POST')) throw new SimWallError(405, 'Method not allowed')
       if (action.startsWith('inspect')) {
         const coordinate = (key: string) => {
           const values = url.searchParams.getAll(key), value = Number(values[0])
@@ -447,6 +455,21 @@ export class SimWallApi {
         response.end(data)
       } else if (action === 'action') {
         json(response, 200, await this.deviceAction(udid, await readAction(request)))
+      } else if (action === 'apps') {
+        await this.booted(udid)
+        const plist = await this.actionCommand('xcrun', ['simctl', 'listapps', udid])
+        const payload: unknown = JSON.parse(await this.actionCommand('plutil', ['-convert', 'json', '-o', '-', '-'], 10_000, plist))
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SimWallError(500, 'Invalid installed apps response')
+        const apps: SimApp[] = []
+        for (const [bundleId, value] of Object.entries(payload)) {
+          if (!SIM_BUNDLE_ID.test(bundleId) || !value || typeof value !== 'object' || Array.isArray(value)) continue
+          const app = value as Record<string, unknown>
+          if (app.ApplicationType !== 'User' && app.ApplicationType !== 'System') continue
+          const name = [app.CFBundleDisplayName, app.CFBundleName].find((name) => typeof name === 'string' && name.trim())
+          apps.push({ bundleId, name: typeof name === 'string' ? name : bundleId, type: app.ApplicationType === 'User' ? 'user' : 'system' })
+        }
+        apps.sort((a, b) => Number(a.type === 'system') - Number(b.type === 'system') || a.name.localeCompare(b.name) || a.bundleId.localeCompare(b.bundleId))
+        json(response, 200, { apps })
       } else if (action === 'schemes') {
         await this.booted(udid)
         const payload: unknown = JSON.parse(await this.actionCommand('baguette', ['schemes', '--udid', udid, '--json']))
