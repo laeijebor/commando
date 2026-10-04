@@ -13,6 +13,7 @@ import './pr-quick-look.css'
 
 const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts'] as const
 type Tab = (typeof tabs)[number]
+type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T }
 
 function MarkdownBody({ body }: { body: string }) {
   return (
@@ -77,22 +78,51 @@ export function PrQuickLook({
   onClose(): void
   actions: ReactNode
 }) {
+  const references = JSON.stringify([
+    repo,
+    pr.number,
+    pr.state,
+    pr.headRefName,
+    pr.baseRefName,
+    pr.headRefOid,
+    pr.baseRefOid,
+  ])
+  const detailRevision = JSON.stringify([
+    references,
+    pr.updatedAt,
+    pr.checks,
+    pr.unresolvedThreads,
+    pr.reviewDecision,
+    pr.reviews,
+    pr.requestedReviewers,
+  ])
   const [tab, setTab] = useState<Tab>('Description')
-  const [details, setDetails] = useState<PrDetails | null>(null)
+  const [detailSnapshot, setDetailSnapshot] = useState<Snapshot<PrDetails> | null>(null)
   const [detailError, setDetailError] = useState('')
-  const [diff, setDiff] = useState<PrRemoteDiff | null>(null)
+  const [diffSnapshot, setDiffSnapshot] = useState<Snapshot<PrRemoteDiff> | null>(null)
   const [diffError, setDiffError] = useState('')
   const [retry, setRetry] = useState(0)
   const [selectedPath, setSelectedPath] = useState('')
   const [filter, setFilter] = useState('')
-  const [conflicts, setConflicts] = useState<PrConflicts | null>(null)
+  const [conflictSnapshot, setConflictSnapshot] = useState<Snapshot<PrConflicts> | null>(null)
+  // Hide stale data immediately on a new render, including before effects or old requests settle.
+  const details =
+    detailSnapshot?.api === api && detailSnapshot.revision === detailRevision ? detailSnapshot.value : null
+  const diff = diffSnapshot?.api === api && diffSnapshot.revision === references ? diffSnapshot.value : null
+  const conflicts =
+    conflictSnapshot?.api === api && conflictSnapshot.revision === references ? conflictSnapshot.value : null
   const dialog = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
 
   useEffect(() => {
-    setConflicts(null)
-  }, [pr.headRefOid, pr.baseRefOid, pr.baseRefName])
+    setDetailSnapshot(null)
+    setDiffSnapshot(null)
+    setConflictSnapshot(null)
+    setDetailError('')
+    setDiffError('')
+    setSelectedPath('')
+  }, [api, references])
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -133,7 +163,7 @@ export function PrQuickLook({
     api
       .details(repo, pr.number)
       .then((value) => {
-        if (active) setDetails(value)
+        if (active) setDetailSnapshot({ api, references, revision: detailRevision, value })
       })
       .catch((error: unknown) => {
         if (active) setDetailError(error instanceof Error ? error.message : 'Unable to load PR details')
@@ -141,7 +171,7 @@ export function PrQuickLook({
     return () => {
       active = false
     }
-  }, [api, repo, pr.number, retry])
+  }, [api, repo, pr.number, references, detailRevision, retry])
 
   useEffect(() => {
     if (tab !== 'Diff' || diff) return
@@ -151,7 +181,7 @@ export function PrQuickLook({
       .diff(repo, pr.number)
       .then((value) => {
         if (active) {
-          setDiff(value)
+          setDiffSnapshot({ api, references, revision: references, value })
           setSelectedPath(value.files[0]?.path ?? '')
         }
       })
@@ -161,12 +191,16 @@ export function PrQuickLook({
     return () => {
       active = false
     }
-  }, [tab, api, repo, pr.number, diff, retry])
+  }, [tab, api, repo, pr.number, references, diff, retry])
 
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
   const error = tab === 'Diff' ? diffError : detailError
   const checks = details?.checks ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? []
-  const mergeTarget = conflicts?.baseRefName ?? details?.mergeTarget?.branch ?? pr.baseRefName
+  const knownTarget =
+    detailSnapshot?.api === api && detailSnapshot.references === references
+      ? detailSnapshot.value.mergeTarget?.branch
+      : undefined
+  const mergeTarget = conflicts?.baseRefName ?? knownTarget ?? pr.baseRefName
   const nonMainTarget = Boolean(mergeTarget && mergeTarget !== 'main')
   const hasConflicts = conflicts ? conflicts.state === 'conflicting' : pr.conflicting
   const conversation = useMemo(() => groupPrConversation(details?.conversation ?? []), [details])
@@ -285,11 +319,11 @@ export function PrQuickLook({
           ) : null}
           {tab === 'Conflicts' ? (
             <PrConflictPanel
-              key={`${pr.headRefOid}:${pr.baseRefOid}:${pr.baseRefName}`}
+              key={references}
               repo={repo}
               number={pr.number}
               api={api}
-              onLoaded={setConflicts}
+              onLoaded={(value) => setConflictSnapshot({ api, references, revision: references, value })}
             />
           ) : null}
           {tab === 'Description' && !error ? (

@@ -22,6 +22,7 @@ export function PrConflictPanel({
   loaded.current = onLoaded
   useEffect(() => {
     let active = true
+    const report = loaded.current
     setResult(null)
     setError('')
     api
@@ -30,7 +31,7 @@ export function PrConflictPanel({
         if (!active) return
         setResult(value)
         setPath(value.files[0]?.path ?? '')
-        loaded.current(value)
+        report(value)
       })
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Unable to inspect merge conflicts')

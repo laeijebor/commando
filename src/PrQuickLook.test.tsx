@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PrQuickLook } from './PrQuickLook'
 import type { PrsApiClient, PrSummary } from './prsApi'
+import type { PrDetails, PrRemoteDiff } from '../shared/pr-quick-look'
 
 afterEach(cleanup)
 const pr = {
@@ -67,19 +68,121 @@ function setup(
     }),
   }
   const onClose = vi.fn()
-  render(
+  const element = (next: Partial<PrSummary> = {}) => (
     <PrQuickLook
-      pr={{ ...pr, ...overrides }}
+      pr={{ ...pr, ...overrides, ...next }}
       repo="acme/widgets"
       api={api as unknown as PrsApiClient}
       onClose={onClose}
       actions={null}
-    />,
+    />
   )
-  return { api, onClose }
+  const view = render(element())
+  return { api, onClose, rerender: (next: Partial<PrSummary>) => view.rerender(element(next)) }
 }
 
 describe('PR quick look', () => {
+  it('refreshes all detail and diff data on retarget/head changes and ignores superseded requests', async () => {
+    const { api, rerender } = setup(
+      { baseRefName: 'release/old', headRefOid: '1'.repeat(40), baseRefOid: 'a'.repeat(40) },
+      'release/old',
+    )
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+    await screen.findByText('+new')
+    let finishOldDetails!: (value: PrDetails) => void
+    let finishOldDiff!: (value: PrRemoteDiff) => void
+    api.details.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOldDetails = resolve
+        }),
+    )
+    api.diff.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOldDiff = resolve
+        }),
+    )
+    rerender({ baseRefName: 'release/next', headRefOid: '2'.repeat(40), baseRefOid: 'b'.repeat(40) })
+    expect(screen.queryByText('+new')).not.toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent('Merges into release/next, not main.')
+    const latest: PrDetails = {
+      body: '# Current description',
+      checks: [{ name: 'current-check', state: 'pass', url: pr.url }],
+      conversation: [
+        {
+          id: '0:55',
+          kind: 'comment',
+          author: 'QA',
+          body: 'Latest conversation',
+          url: pr.url,
+          createdAt: '2026-01-03',
+        },
+      ],
+      mergeTarget: { branch: 'release/final', oid: 'c'.repeat(40) },
+    }
+    const latestDiff: PrRemoteDiff = {
+      base: 'c'.repeat(40),
+      head: '3'.repeat(40),
+      files: [{ path: 'updated.ts', status: 'modified', additions: 1, deletions: 0, patch: '@@\n+current' }],
+      truncated: false,
+    }
+    api.details.mockResolvedValueOnce(latest)
+    api.diff.mockResolvedValueOnce(latestDiff)
+    rerender({ baseRefName: 'release/final', headRefOid: '3'.repeat(40), baseRefOid: 'c'.repeat(40) })
+    await screen.findByText('+current')
+    await act(async () => {
+      finishOldDetails({
+        ...latest,
+        body: '# Stale description',
+        mergeTarget: { branch: 'release/next', oid: 'b'.repeat(40) },
+      })
+      finishOldDiff({ ...latestDiff, files: [{ ...latestDiff.files[0], patch: '+stale' }] })
+    })
+    expect(screen.getByRole('note')).toHaveTextContent('Merges into release/final, not main.')
+    expect(screen.queryByText('+stale')).not.toBeInTheDocument()
+    expect(screen.getByText('+current')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Description' }))
+    expect(await screen.findByRole('heading', { name: 'Current description' })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Checks' }))
+    expect(screen.getByRole('link', { name: 'current-check' })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+    expect(screen.getByText('Latest conversation')).toBeVisible()
+    expect(api.details).toHaveBeenCalledTimes(3)
+    expect(api.diff).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes check/comment metadata without discarding an unchanged diff', async () => {
+    const pending: NonNullable<PrSummary['checks']> = {
+      state: 'pending',
+      runs: [{ name: 'build', state: 'pending' }],
+      failed: 0,
+      pending: 1,
+      total: 1,
+      truncated: false,
+    }
+    const { api, rerender } = setup({ checks: pending }, 'release/current')
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+    await screen.findByText('+new')
+    api.details.mockResolvedValueOnce({
+      body: '# Refreshed metadata',
+      conversation: [],
+      checks: [{ name: 'finished-check', state: 'pass', url: pr.url }],
+      mergeTarget: { branch: 'release/current', oid: 'a'.repeat(40) },
+    })
+    rerender({ checks: { ...pending, state: 'pass', pending: 0, runs: [{ name: 'build', state: 'pass' }] } })
+    expect(screen.getByRole('note')).toHaveTextContent('Merges into release/current, not main.')
+    expect(screen.getByText('+new')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: 'Description' }))
+    await screen.findByRole('heading', { name: 'Refreshed metadata' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Checks' }))
+    expect(screen.getByRole('link', { name: 'finished-check' })).toBeVisible()
+    expect(api.details).toHaveBeenCalledTimes(2)
+    expect(api.diff).toHaveBeenCalledTimes(1)
+  })
+
   it('renders replies inside their original comment and suppresses empty reply review wrappers', async () => {
     const entry = {
       author: 'reviewer',
