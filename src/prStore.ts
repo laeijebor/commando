@@ -70,7 +70,7 @@ class PrStore {
   private paneEntry(paneId: string): Entry<PanePrList> {
     let entry = this.panes.get(paneId)
     if (!entry) {
-      entry = this.createEntry(() => this.api.pane(paneId), EMPTY_PANE, PR_FOREGROUND_INTERVAL_MS)
+      entry = this.createEntry((refresh) => refresh ? this.api.pane(paneId, { refresh: true }) : this.api.pane(paneId), EMPTY_PANE, PR_FOREGROUND_INTERVAL_MS)
       this.panes.set(paneId, entry)
     }
     return entry

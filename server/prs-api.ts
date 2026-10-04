@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PrService, PrServiceError } from './prs.js'
+import { PrConflictError } from './pr-conflicts.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
 
 const ROOT = '/api/prs'
@@ -85,7 +86,24 @@ export async function handlePrsApi(
         return true
       }
       const body = await readBody(request)
-      json(response, 200, await service.mergePullRequest(body.repo, body.number, body.headRefOid))
+      json(response, 200, body.baseRefName === undefined
+        ? await service.mergePullRequest(body.repo, body.number, body.headRefOid)
+        : await service.mergePullRequest(body.repo, body.number, body.headRefOid, body.baseRefName))
+      return true
+    }
+
+    if (path.length === 1 && (path[0] === 'details' || path[0] === 'diff' || path[0] === 'conflicts')) {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const repo = url.searchParams.get('repo')
+      const number = url.searchParams.get('number')
+      json(response, 200, path[0] === 'details'
+        ? { details: await service.pullRequestDetails(repo, number) }
+        : path[0] === 'conflicts' ? { conflicts: await service.pullRequestConflicts(repo, number) }
+        : { diff: await service.pullRequestDiff(repo, number) })
       return true
     }
 
@@ -129,7 +147,9 @@ export async function handlePrsApi(
       }
       const targetId = dependencies.paneTargetId(paneId)
       if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'Tmux pane does not exist')
-      json(response, 200, { list: await service.listPanePullRequests(targetId) })
+      const refresh = url.searchParams.get('refresh')
+      if (refresh !== null && refresh !== '1') throw new PrServiceError(400, 'invalid_request', 'Refresh must be 1')
+      json(response, 200, { list: await service.listPanePullRequests(targetId, { refresh: refresh === '1' }) })
       return true
     }
 
@@ -178,6 +198,8 @@ export async function handlePrsApi(
     if (error instanceof PrServiceError) {
       if (error.retryAt) response.setHeader('Retry-After', String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1000))))
       json(response, error.status, { error: error.message, code: error.code, ...(error.retryAt ? { retryAt: error.retryAt } : {}) })
+    } else if (error instanceof PrConflictError) {
+      json(response, error.status, { error: error.message, code: 'conflict_inspection_failed' })
     } else {
       console.error('[commando] PR request failed', error)
       json(response, 500, { error: 'PR request failed', code: 'internal_error' })

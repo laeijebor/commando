@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
+import { PrConflictInspector } from './pr-conflicts.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
@@ -697,6 +698,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
@@ -732,19 +734,20 @@ export class PrService {
     this.now = options?.now ?? Date.now
   }
 
-  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown): Promise<{ merged: true }> {
+  async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown, baseInput?: unknown): Promise<{ merged: true }> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     if (typeof headInput !== 'string' || !/^[a-f0-9]{40}$/i.test(headInput)) {
       throw new PrServiceError(400, 'invalid_request', 'A valid PR head commit is required')
     }
+    if (baseInput !== undefined && (typeof baseInput !== 'string' || !baseInput || baseInput.length > 1024)) throw new PrServiceError(400, 'invalid_request', 'A valid merge target is required')
     const key = `${repo.toLowerCase()}::${number}`
     if (this.merging.has(key)) throw new PrServiceError(409, 'merge_in_progress', 'This pull request is already being merged')
     this.merging.add(key)
     try {
       const current = parseGhObject(await this.runner([
         'pr', 'view', String(number), '--repo', repo,
-        '--json', 'state,isDraft,mergeable,mergeStateStatus,headRefOid',
+        '--json', `state,isDraft,mergeable,mergeStateStatus,headRefOid${baseInput !== undefined ? ',baseRefName' : ''}`,
       ]))
       const reason = prMergeDisabledReason({
         state: typeof current.state === 'string' ? current.state : '',
@@ -754,6 +757,7 @@ export class PrService {
       })
       if (reason) throw new PrServiceError(409, 'not_mergeable', reason)
       if (current.headRefOid !== headInput) throw new PrServiceError(409, 'head_changed', 'The PR has new commits. Resync and try again.')
+      if (baseInput !== undefined && current.baseRefName !== baseInput) throw new PrServiceError(409, 'target_changed', 'The PR merge target changed. Resync and review the new target before merging.')
       const settings = parseGhObject(await this.runner(['api', `repos/${repo}`]))
       const method = settings.allow_merge_commit === true ? 'merge'
         : settings.allow_squash_merge === true ? 'squash'
@@ -836,10 +840,10 @@ export class PrService {
     return this.refreshPullRequests(key, repo, filter, scope, entry)
   }
 
-  async listPanePullRequests(targetIdInput: unknown): Promise<PanePrList> {
+  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    if (!options.refresh && cached && this.now() - cached.at < this.listTtlMs) return cached.promise
     const promise = this.fetchPanePullRequests(targetId)
     const entry = { at: this.now(), promise }
     this.paneListCache.set(targetId, entry)
@@ -1099,11 +1103,27 @@ export class PrService {
           ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
+          ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
+          ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
+            : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
         })
       }
     })
     conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks }
+    const base = optionalObject(pr, 'base')
+    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
+      ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+  }
+
+  async pullRequestConflicts(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrConflicts> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
+    const base = objectField(pr, 'base')
+    const head = objectField(pr, 'head')
+    const refs = { baseRefName: requiredString(base, 'ref'), baseOid: requiredString(base, 'sha'), headRefName: requiredString(head, 'ref'), headOid: requiredString(head, 'sha') }
+    if (pr.state !== 'open') return { ...refs, state: 'not-open', files: [], messages: [], truncated: false, fetchedAt: this.now() }
+    return this.conflictInspector.inspect({ ...refs, repo, number })
   }
 
   async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {

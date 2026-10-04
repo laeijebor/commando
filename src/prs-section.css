@@ -180,6 +180,10 @@
   border-top: 1px dashed var(--border-mid);
 }
 
+.pr-target-badge { display: inline-flex; align-items: center; gap: 3px; min-width: 0; flex: 1; color: var(--amber); font: 8px var(--mono); }
+.pr-target-badge code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px; border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 4px; background: color-mix(in srgb, var(--amber) 8%, transparent); }
+.pr-target-highlight { color: var(--amber); }
+
 .pr-card-title {
   min-width: 0;
   color: var(--text);
