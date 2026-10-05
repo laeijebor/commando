@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { PanePrList, PanePrSummary, PrSummary, PrsApiClient } from './prsApi'
@@ -80,7 +80,7 @@ it('shows the HUD hover and opens quick look from a numbered session pill', asyn
   expect(pill.querySelector('.session-pr-readiness')).toHaveClass('amber')
   fireEvent.mouseEnter(pill.closest('article')!)
   expect(await screen.findByRole('dialog', { name: 'Details for #12' })).toHaveTextContent('Full HUD hover excerpt')
-  expect(api.threads).toHaveBeenCalledWith('acme/app', 12)
+  await waitFor(() => expect(api.threads).toHaveBeenCalledWith('acme/app', 12))
   fireEvent.click(pill)
   expect(await screen.findByRole('heading', { name: 'Full description' })).toBeVisible()
   expect(screen.queryByRole('dialog', { name: 'Details for #12' })).not.toBeInTheDocument()
