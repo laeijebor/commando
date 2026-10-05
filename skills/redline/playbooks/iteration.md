@@ -51,7 +51,11 @@ Stamp every section:
 - `data-redline-changed="<n>"` — you changed it this round.
 
 The default theme renders these as chips and a "new this round" badge, and
-`<redline-nav>` mirrors them onto its links with an open/decided tally. Open
+legacy scroll navigation mirrors them onto its links with an open/decided
+tally. New documents use `<redline-nav mode="sections">`, short labels, and
+optional `data-redline-group` metadata. Its counts come from actual
+question/pending/sent snapshots and resolved controls; an authored changed
+stamp still flags a revision. Selecting a section is never approval. Open
 vs settled answers "what still needs me?"; changed vs unchanged answers "what
 did you just do to the document?" — the second question is the one the user
 asks right after a reload, so do not skip the changed stamp.

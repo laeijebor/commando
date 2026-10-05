@@ -67,24 +67,25 @@ until the current one genuinely yields no evidence:
      ```html
      <html lang="en" data-redline-theme="commando">
      <head>
+       <meta charset="utf-8">
        <meta name="viewport" content="width=device-width, initial-scale=1">
        <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
        <!-- Put artifact-specific CSS after this link. -->
      </head>
      <body>
        <div class="redline-layout">
-         <redline-nav
+         <redline-nav mode="sections"
            eyebrow="Project or ticket"
            heading="Artifact title"
            summary="One sentence explaining the decision."
            status="Ready for review"
          ></redline-nav>
          <main class="redline-shell redline-stack">
-           <section id="summary" data-redline-section data-redline-label="Summary" class="redline-panel">
+           <section id="summary" data-redline-section data-redline-label="Summary" data-redline-group="Overview" class="redline-panel">
              <h2>Summary</h2>
              <p>...</p>
            </section>
-           <section id="details" data-redline-section data-redline-label="Details" class="redline-panel">...</section>
+           <section id="details" data-redline-section data-redline-label="Details" data-redline-group="Proposal" class="redline-panel">...</section>
          </main>
        </div>
        <script src="http://127.0.0.1:4310/redline/sdk.js"></script>
@@ -102,11 +103,18 @@ until the current one genuinely yields no evidence:
      Every document using this fallback must use the `redline-layout` +
      `<redline-nav>` shell, even when it has only a few sections. Give each
      logical section a stable `id`, `data-redline-section`, and a short
-     `data-redline-label`; the component builds the left-hand structural links
-     and highlights the current section. On narrow tiles it becomes a compact
-     horizontal navigator that pins to the top of the tile while the header
-     scrolls away. Omit the component only when matching an existing project's
-     own navigation/design system.
+     `data-redline-label`. Use `mode="sections"` by default: one logical section
+     shows at a time, with grouped rail links and previous/next navigation.
+     Below 620px the rail becomes a sticky labelled section select. The
+     full-document button remains reachable there for scanning and browser
+     find. Omit the component only when matching an existing project's own
+     navigation/design system.
+
+     The fallback uses flat slate canvas `#11151b`, surface `#1c232d`, border
+     `#374252`, text `#eef0f7`, secondary `#b4becd`, lavender `#b5a8ff`, and
+     selection `#302b48`. Use system sans, 28–36px section headings, 15–16px
+     prose, and 12–13px navigation. Prefer dividers to nested cards. Avoid
+     default gradients, blur, glow, oversized narrow headings, and shadows.
 
      Tailwind and DaisyUI remain available for an authored fallback artifact
      that genuinely needs their utilities/components, but do not load them by
@@ -136,15 +144,47 @@ faithful rendering.
 
 ## Structural navigation
 
-`<redline-nav>` is provided by `/redline/sdk.js`. Its `eyebrow`, `heading`,
-`summary`, `status`, optional `status-tone="warn|danger"`, and optional
-`label` attributes define the navigation header. It discovers
-`[data-redline-section][id]` elements after the document is ready; link text
-comes from `data-redline-label`, then the section heading, then its id. Keep
-labels short and ordered exactly like the document. The first/current visible
-section receives `aria-current="location"` automatically, and the component
-scrolls that link into view when it has drifted out of the rail or the pinned
-top strip — so a long document never leaves the reader without their place.
+`<redline-nav mode="sections">` is the authoring default. `eyebrow`,
+`heading`, `summary`, `status`, optional `status-tone="warn|danger"`, and
+optional `label` define a compact header. It discovers
+`[data-redline-section][id]` after the document is ready. Labels come from
+`data-redline-label`, then the heading, then the id. Use short, meaningful
+labels and optional `data-redline-group="Overview|Proposal|Decisions"` text
+on sections to group the rail and picker. Keep each group contiguous and in
+reading order. Nested section markers belong to their outer logical section;
+they remain valid deep-link and annotation targets without duplicate nav items.
+
+All sections and question controls stay mounted. Selecting a section updates
+the hash, marks its link `aria-current="page"`, focuses the section heading,
+and restores its reading position on return. Nested hashes, refresh, browser
+Back/Forward, and **Show in page** activate the containing section and its
+track first. Keep question keys, section ids, and target ids stable between
+rounds. Navigation created by the SDK (rail, picker, pager, full-document
+button, track tabs) still works during annotation mode; arbitrary product
+controls remain annotation targets. In a streamed review the picker opens a
+page-owned menu because native select popups are outside the captured page.
+
+**View full document** shows all sections on the active discussion track for
+scanning and browser find; **Return to focused sections** restores the selected
+section. Switch tracks to search another discussion. Print includes every
+section on every track, with navigation removed. Use `mode="scroll"` when the
+artifact needs continuous reading from the start. Omitting `mode` preserves
+legacy scroll links, IntersectionObserver highlighting, and
+`aria-current="location"`; new authored documents should choose explicitly.
+
+Focused section badges use actual SDK question/pending/sent state where
+available: unanswered, queued, sent/settled, and changed since review. Questions
+in hidden sections stay in inventory; stable identities are counted once.
+An authored `resolved` control is settled; a matching sent answer remains
+settled across reloads. Changed prompts/options reopen the question and flag
+it as changed. `data-redline-changed` also flags authored revisions. Visiting
+or selecting a section never approves it. A section without questions does
+not acquire a completion badge just because the reader visited it.
+
+The public `window.redline.revealSelector(selector)` hook activates the
+containing track and section, opens ancestor `details`, then scrolls/focuses
+the target. Commando uses it at both the Chromium and desktop reveal boundary;
+external pages retain ordinary selector scrolling when no SDK is present.
 
 ## Discussion tracks
 
@@ -162,9 +202,9 @@ deep dives like backend architecture and UI — give each topic a
 ```
 
 The strip renders one tab per track in document order, badged with that
-track's open-question count, and switches which sections show. A section
-marked `data-redline-track-all` (the decision log) stays visible on every
-tab, and `<redline-nav>` follows the active track so it never links to a
+track's author-stamped open-section count, and switches which sections show. A section
+marked `data-redline-track-all` (the decision log) is reachable on every
+tab; in focused mode select its nav item to read it, and `<redline-nav>` follows the active track so it never links to a
 section the user cannot see. Hidden tracks stay in the DOM, so a review note
 captured on one tab still resolves by selector after the user switches.
 
@@ -199,8 +239,8 @@ a simple image without a figure, provide a short `caption` attribute instead.
 ## Ready-made review controls (response queuing)
 
 Load the SDK once: `<script src="http://127.0.0.1:4310/redline/sdk.js"></script>`
-(substitute `$COMMANDO_PORT` if set). Components inject their own glass-panel
-"Aura" styling and adapt to dark/light artifacts automatically — no design
+(substitute `$COMMANDO_PORT` if set). Components inject restrained flat review-control
+styling and adapt to dark/light artifacts automatically — no design
 kit needed for their appearance; override the accent by setting
 `--redline-accent` / `--redline-accent2` on `:root`. Five response controls,
 one line each:
@@ -238,9 +278,10 @@ Malformed JSON shows a visible error instead of falling back to comma splitting:
 ```
 
 Discipline the agent must know:
-- Interacting with a control (checking a box, typing) only updates local
-  state — nothing sends yet.
-- The explicit **"Queue answer"** button queues, once per press.
+- Built-in choice, approve, and rating selections auto-queue. Free text,
+  note-only answers, decision, and scope controls use their explicit queue
+  button. Preserve this distinction; selecting or queuing never sends.
+- **Queue answer** also explicitly updates an answer or its optional note.
 - Every built-in control includes an optional note field. The answer and note
   remain separate in the structured response.
 - Queued answers land in the tile's compact queue strip next to annotations
@@ -253,6 +294,10 @@ Discipline the agent must know:
   without a key use their captured selector as a best-effort fallback.
 - The queue drawer can edit answers and notes, attach PNG/JPEG/GIF/WebP images,
   preview/remove attachments, and send one answer without sending the rest.
+  It becomes a side tray when the tile can leave at least 700px of reading
+  space beside it (1100px tile width); otherwise it is a bottom sheet. Short
+  tiles scroll the entire sheet. A compact summary and primary **Send all**
+  stay reachable; **Send all + Build** is a deliberate secondary action.
 - While review mode is active, queued selector-based notes stay highlighted on
   the live page. Click a highlight to edit or send that answer/comment in an
   anchored popover; use **Open full queue** there for attachments or removal.

@@ -5,20 +5,23 @@ from the user rather than just to display something.
 
 ## Queue discipline
 
-Every redline component follows the same three-stage flow — know it before
-building a form with them:
+Redline separates editing, queuing, and sending:
 
-1. Interacting with a control (checking a box, typing text) only updates
-   **local state** in the browser. Nothing is sent yet.
-2. Pressing the control's own **queue button** ("Queue answer") sends that
-   one answer to the tile's pending list, exactly once per press.
-3. The answer only reaches the agent when the user presses **Send** in the
-   tile footer — queuing is not sending. Re-answering a queued question (same
-   `key`) replaces the unsent entry rather than adding a duplicate.
+1. Built-in choice, approve, and rating selections queue immediately. Free
+   text, note-only answers, decision, and scope controls use the explicit
+   **Queue answer** / **Queue decision** / **Queue scope answer** button.
+2. The queue snapshot is authoritative. Selecting or pressing a queue button
+   never sends to the agent. Re-answering with the same stable `key` replaces
+   the unsent entry. Section/track switches and hashes preserve that identity.
+3. Only **Send all** or **Send this** delivers feedback. **Send all + Build**
+   explicitly adds build intent; don't treat it as interchangeable with send.
 
-Never wire a control to auto-queue on `change`/`input` — that breaks the "I
-can still change my mind before I commit" contract the queue button exists
-for.
+For custom controls, choose and explain auto-queue versus manual queue; don't
+change the SDK's existing queue behavior for a visual redesign. Put questions
+beside their evidence in `<redline-nav mode="sections">` documents, with stable
+section ids, short labels, and optional `data-redline-group` metadata. Hidden
+questions remain in inventory, and the feedback tray's **Show in page** opens
+the correct section/track before scrolling.
 
 ## Which element for which question
 
@@ -63,10 +66,10 @@ confirms the answer. Reloads rehydrate the queued values. If the local answer
 or optional note changes, the control turns amber and says `Changed since
 queued`; don't suppress or restyle these states away. The user can update the
 queued answer from the control or edit it in the tile's queue drawer.
-Components arrive self-styled (glass "Aura" look, dark/light-aware) —
+Components arrive self-styled (flat surfaces, dark/light-aware) —
 override accents via `--redline-accent`/`--redline-accent2`; the injected
 rules are zero-specificity, so artifact CSS can still restyle them if needed.
-The Commando default artifact theme supplies matching violet/cyan accent
+The Commando default artifact theme supplies matching slate/lavender accent
 variables automatically.
 
 Every built-in control has one optional note field. The note is delivered as

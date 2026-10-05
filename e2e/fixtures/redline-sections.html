@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-redline-theme="commando">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/default.css">
+  <style>.reading-evidence { min-height: 1200px; } .reading-evidence p { padding: 12px 0; } #nested-evidence { margin-top: 450px; }</style>
+  <script>
+    window.reviews = JSON.parse(localStorage.getItem('redline-e2e-review') || '{"version":1,"controls":[],"sent":[]}');
+    window.__commandoRedlinePendingSnapshot = window.reviews;
+    window.publishReview = () => {
+      localStorage.setItem('redline-e2e-review', JSON.stringify(window.reviews));
+      window.__commandoRedlinePendingSnapshot = window.reviews;
+      window.dispatchEvent(new CustomEvent('commando:redline-pending', { detail: window.reviews }));
+    };
+    window.__commandoRedlineQueue = payload => {
+      const response = JSON.parse(payload);
+      if (response.type === 'questions') { window.inventory = response.questions; return; }
+      const index = window.reviews.controls.findIndex(control => response.queueKey ? control.queueKey === response.queueKey : control.selector === response.selector);
+      const control = { queueKey: response.queueKey, selector: response.selector, response };
+      if (index >= 0) window.reviews.controls[index] = control;
+      else window.reviews.controls.push(control);
+      window.publishReview();
+    };
+  </script>
+  <script src="/sdk.js"></script>
+</head>
+<body>
+  <div class="redline-layout">
+    <redline-nav mode="sections" heading="Redline review" summary="Choose a direction" label="Review sections"></redline-nav>
+    <main class="redline-shell redline-stack">
+      <redline-tracks default="plan" label="Discussions"></redline-tracks>
+      <section id="overview" class="redline-panel" data-redline-section data-redline-label="Overview" data-redline-group="The experience" data-redline-track="plan" data-redline-track-label="Plan">
+        <h2>A calmer review</h2><p>Read one topic at a time.</p>
+        <redline-choice id="direction" key="direction" prompt="Which direction?" options="Slate,Lavender"></redline-choice>
+        <div class="reading-evidence"><p id="ordinary-evidence">Evidence stays mounted.</p><a href="#nested-evidence">Read nested evidence</a><button id="product-control">Ordinary product control</button></div>
+      </section>
+      <section id="details" class="redline-panel" data-redline-section data-redline-label="Details" data-redline-group="The experience" data-redline-track="plan">
+        <h2>Details matter</h2><p>Questions beside the evidence.</p>
+        <section id="nested" data-redline-section><div id="nested-evidence">Nested evidence target</div><redline-ask id="name" key="name" prompt="What should we name it?"></redline-ask></section>
+        <div class="reading-evidence">End of details</div>
+      </section>
+      <section id="architecture" class="redline-panel" data-redline-section data-redline-label="Architecture" data-redline-group="The workflow" data-redline-track="backend" data-redline-track-label="Backend">
+        <h2>Backend discussion</h2><details><summary>More evidence</summary><p id="hidden-target">Hidden track and folded evidence</p></details>
+        <redline-ask id="backend-question" key="backend" prompt="Backend question?"></redline-ask>
+      </section>
+      <section id="log" class="redline-panel" data-redline-section data-redline-label="Decision log" data-redline-group="The workflow" data-redline-track="plan" data-redline-track-all>
+        <h2>Decision log</h2><redline-approve key="resolved" prompt="Use sections?" resolved answer="approve" locked></redline-approve>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

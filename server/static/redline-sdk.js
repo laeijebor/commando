@@ -216,32 +216,84 @@
 
   window.redline = Object.assign(window.redline || {}, { queueResponse })
 
-  // Aura visual treatment — self-styled, no host-page CSS kit dependency.
+  // Only SDK-created navigation controls bypass annotation interception.
+  const navigationState = window.__commandoRedlineNavigationState ||= { controls: new WeakMap(), navigators: new Set() }
+  const navigationControls = navigationState.controls
+  const navigationControl = (target) => {
+    for (let node = target; node instanceof Element; node = node.parentElement) {
+      if (navigationControls.has(node)) return node
+    }
+    return null
+  }
+  const registerNavigation = (element, action) => navigationControls.set(element, action || (() => element.click()))
+  const revealTrack = (element) => {
+    const track = element.closest('[data-redline-track]:not([data-redline-track-all])')?.getAttribute('data-redline-track')
+    if (!track) return
+    for (const tracks of document.querySelectorAll('redline-tracks')) {
+      if (tracks._active !== track && tracks.trackedSections().some((section) => section.contains(element))) tracks.activate(track)
+    }
+  }
+  const sectionNavigators = navigationState.navigators
+  Object.assign(window.redline, {
+    isNavigationControl: (target) => Boolean(navigationControl(target)),
+    navigateReviewControl: (target) => {
+      const control = navigationControl(target)
+      if (!control) return false
+      navigationControls.get(control)()
+      return true
+    },
+    revealSelector: (selector) => {
+      let element
+      try { element = document.querySelector(selector) } catch { return false }
+      if (!element) return false
+      for (const nav of sectionNavigators) nav.revealTarget(element)
+      // Focused navigators select before activating tracks, preserving the
+      // previous history entry. Reveal remaining tracks for unhandled targets.
+      revealTrack(element)
+      for (let node = element.parentElement; node; node = node.parentElement) {
+        if (node instanceof HTMLDetailsElement) node.open = true
+      }
+      const reduce = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+      element.scrollIntoView?.({ behavior: reduce ? 'auto' : 'smooth', block: 'center', inline: 'nearest' })
+      if (!element.hasAttribute('tabindex') && !element.matches('a,button,input,textarea,select')) element.tabIndex = -1
+      element.focus?.({ preventScroll: true })
+      return true
+    },
+  })
+
+  // DOM events bridge WebKit's isolated inspection world to the page SDK.
+  // Event payloads are unnecessary: the target is the actual DOM element.
+  if (!navigationState.bridgeInstalled) {
+    navigationState.bridgeInstalled = true
+    for (const type of ['redline-navigation-probe', 'redline-navigation-click']) {
+      document.addEventListener(type, (event) => {
+        if (!window.redline.isNavigationControl(event.target)) return
+        event.target.setAttribute('data-redline-navigation-result', '1')
+        if (type === 'redline-navigation-click') window.redline.navigateReviewControl(event.target)
+      })
+    }
+    document.addEventListener('redline-reveal-target', (event) => {
+      if (window.redline.revealSelector(cssPath(event.target))) event.target.setAttribute('data-redline-reveal-result', '1')
+    })
+  }
+
+  // Self-styled review controls, with low specificity for author overrides.
   // Scoped via :where() so it never out-specifies author styles.
-  const AURA_CSS = `
+  const REVIEW_CSS = `
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) {
-  --_ac: var(--redline-accent, #7c6cf6);
+  --_ac: var(--redline-accent, #b5a8ff);
   --_ac2: var(--redline-accent2, #5aa9f7);
   display: block; position: relative; isolation: isolate; overflow: hidden;
   margin: 1.25rem 0; padding: 1.15rem 1.25rem 1.25rem;
-  border-radius: 16px;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent); border-radius: 10px;
   background: color-mix(in oklab, currentColor 5%, transparent);
-  backdrop-filter: blur(14px);
   font-size: .95rem; line-height: 1.5;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)::before {
-  content: ""; position: absolute; inset: 0; border-radius: 16px; z-index: -1;
-  padding: 1px; pointer-events: none;
-  background: linear-gradient(135deg, color-mix(in oklab, var(--_ac) 55%, transparent),
-              transparent 40%, color-mix(in oklab, var(--_ac2) 45%, transparent));
-  -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
-  mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
-  -webkit-mask-composite: xor; mask-composite: exclude;
+  display: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)::after {
-  content: ""; position: absolute; z-index: -2; inset: 30% -10% -40% 40%;
-  border-radius: 50%; pointer-events: none;
-  background: radial-gradient(closest-side, color-mix(in oklab, var(--_ac) 16%, transparent), transparent);
+  display: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-prompt) {
   margin: 0 0 .85rem; font-weight: 650; letter-spacing: -.01em;
@@ -261,8 +313,8 @@
   background: color-mix(in oklab, currentColor 7%, transparent);
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-options label:has(:checked)) {
-  background: linear-gradient(135deg, var(--_ac), var(--_ac2));
-  color: #fff; font-weight: 650; text-shadow: 0 1px 4px rgb(0 0 0 / .25);
+  background: color-mix(in oklab, var(--_ac) 18%, transparent);
+  color: inherit; font-weight: 650;
 }
 :where(redline-choice) :where(.redline-options label) {
   display: inline-flex; align-items: center; gap: .48rem; min-height: 2.75rem; box-sizing: border-box;
@@ -300,7 +352,7 @@
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment:focus) {
   border-color: var(--_ac);
-  box-shadow: 0 0 18px color-mix(in oklab, var(--_ac) 30%, transparent);
+  box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-comment::placeholder) {
   color: color-mix(in oklab, currentColor 45%, transparent);
@@ -315,7 +367,7 @@
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input:not([type="checkbox"]):not([type="radio"]):focus, select:focus) {
   border-color: var(--_ac);
-  box-shadow: 0 0 18px color-mix(in oklab, var(--_ac) 30%, transparent);
+  box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(input[type="checkbox"]:not(.redline-options *), input[type="radio"]:not(.redline-options *)) {
   accent-color: var(--_ac);
@@ -325,25 +377,25 @@
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue) {
   margin-top: .85rem; padding: .5rem 1.15rem; cursor: pointer;
-  border: 0; border-radius: 10px; font: inherit; font-size: .9rem; font-weight: 650; color: #fff;
-  background: linear-gradient(135deg, var(--_ac), var(--_ac2));
-  box-shadow: 0 0 20px color-mix(in oklab, var(--_ac) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / .25);
+  border: 0; border-radius: 10px; font: inherit; font-size: .9rem; font-weight: 650; color: inherit;
+  background: color-mix(in oklab, var(--_ac) 18%, transparent);
+  box-shadow: none;
   transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue:hover:not(:disabled)) {
-  transform: translateY(-1px);
-  box-shadow: 0 0 28px color-mix(in oklab, var(--_ac) 55%, transparent), inset 0 1px 0 rgb(255 255 255 / .3);
+  transform: none;
+  box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue:disabled) {
   cursor: not-allowed; filter: grayscale(.7) opacity(.55); box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue[data-queued]) {
-  background: linear-gradient(135deg, #2fbf71, #24a05c);
-  box-shadow: 0 0 16px rgb(47 191 113 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
+  background: color-mix(in oklab, #92d3b1 18%, transparent); color: #92d3b1;
+  box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue[data-changed]) {
-  background: linear-gradient(135deg, #d99124, #b86d18);
-  box-shadow: 0 0 16px rgb(217 145 36 / .35), inset 0 1px 0 rgb(255 255 255 / .25);
+  background: color-mix(in oklab, #edc88b 18%, transparent); color: #edc88b;
+  box-shadow: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip) {
   margin: .85rem 0 0 .5rem; padding: .5rem .95rem; cursor: pointer;
@@ -360,9 +412,9 @@
   cursor: not-allowed; opacity: .3;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(button.redline-queue-skip[data-queued]) {
-  cursor: default; opacity: 1; color: #2fbf71;
-  border-color: color-mix(in oklab, #2fbf71 45%, transparent);
-  background: color-mix(in oklab, #2fbf71 12%, transparent);
+  cursor: default; opacity: 1; color: #92d3b1;
+  border-color: color-mix(in oklab, #92d3b1 45%, transparent);
+  background: color-mix(in oklab, #92d3b1 12%, transparent);
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queue-hint) {
   margin: .5rem 0 0; font-size: .8rem; opacity: .6;
@@ -372,25 +424,24 @@
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge) {
   display: inline-block; margin-left: .6rem; padding: .22rem .6rem; border-radius: 999px;
-  font-size: .75rem; font-weight: 600; color: #2fbf71;
-  background: color-mix(in oklab, #2fbf71 14%, transparent);
-  border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
+  font-size: .75rem; font-weight: 600; color: #92d3b1;
+  background: color-mix(in oklab, #92d3b1 14%, transparent);
+  border: 1px solid color-mix(in oklab, #92d3b1 40%, transparent);
   animation: redline-badge-in .25s ease;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question) :where(.redline-queued-badge[data-changed]) {
-  color: #d99124;
-  background: color-mix(in oklab, #d99124 14%, transparent);
-  border-color: color-mix(in oklab, #d99124 40%, transparent);
+  color: #edc88b;
+  background: color-mix(in oklab, #edc88b 14%, transparent);
+  border-color: color-mix(in oklab, #edc88b 40%, transparent);
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] {
-  background: color-mix(in oklab, #2fbf71 6%, transparent);
+  background: color-mix(in oklab, #92d3b1 6%, transparent);
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::before {
-  background: linear-gradient(135deg, color-mix(in oklab, #2fbf71 40%, transparent),
-              transparent 45%, color-mix(in oklab, #2fbf71 22%, transparent));
+  display: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved]::after {
-  background: radial-gradient(closest-side, color-mix(in oklab, #2fbf71 12%, transparent), transparent);
+  display: none;
 }
 :where(redline-choice, redline-approve, redline-rating, redline-ask, redline-question)[data-redline-resolved] :where(.redline-prompt) {
   opacity: .85; font-weight: 600;
@@ -401,9 +452,9 @@
 :where(.redline-resolved-answer) {
   display: inline-flex; align-items: center; gap: .4rem;
   padding: .4rem .85rem; border-radius: 10px;
-  border: 1px solid color-mix(in oklab, #2fbf71 40%, transparent);
-  background: color-mix(in oklab, #2fbf71 14%, transparent);
-  color: #2fbf71; font-weight: 650; font-size: .9rem;
+  border: 1px solid color-mix(in oklab, #92d3b1 40%, transparent);
+  background: color-mix(in oklab, #92d3b1 14%, transparent);
+  color: #92d3b1; font-weight: 650; font-size: .9rem;
 }
 :where(.redline-resolved-answer.redline-resolved-skipped) {
   border-color: color-mix(in oklab, currentColor 22%, transparent);
@@ -478,6 +529,37 @@
 :where(.redline-nav-links a[data-redline-track-hidden]) {
   display: none;
 }
+/* Section visibility works with or without the optional document theme. */
+:where([data-redline-section-hidden]) { display: none !important; }
+:where(redline-nav[mode="sections"]) { display: grid; gap: 16px; min-width: 0; }
+:where(redline-nav[mode="sections"] .redline-nav-links) { display: grid; gap: 14px; }
+:where(.redline-nav-group) { display: grid; gap: 4px; }
+:where(.redline-nav-group-label) { margin: 4px 10px; font-size: 11px; opacity: .7; text-transform: uppercase; letter-spacing: .08em; }
+:where(redline-nav[mode="sections"] .redline-nav-links a) { display: grid; gap: 4px; padding: 10px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; text-decoration: none; color: inherit; }
+:where(redline-nav[mode="sections"] .redline-nav-links a[aria-current="page"]) { border-color: var(--redline-accent, #b5a8ff); background: color-mix(in srgb, var(--redline-accent, #b5a8ff) 14%, transparent); }
+:where(.redline-section-counts) { font-size: 11px; opacity: .8; white-space: normal; }
+:where(.redline-section-counts:empty) { display: none; }
+:where(.redline-section-picker) { display: none; }
+:where(.redline-view-toggle, .redline-section-pager button, .redline-review-picker button) { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 8px 12px; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+:where(.redline-section-pager) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 24px; font-size: 12px; }
+:where(.redline-section-pager button:disabled) { opacity: .45; cursor: default; }
+:where(.redline-view-toggle, .redline-section-pager button, .redline-review-picker button):focus-visible { outline: 2px solid var(--redline-accent, #b5a8ff); outline-offset: 3px; }
+:where(.redline-review-picker) { display: grid; position: absolute; z-index: 5; top: 100%; left: 0; right: 0; max-height: 60vh; overflow: auto; background: var(--redline-page-surface, #1c232d); color: var(--redline-page-text, #eef0f7); padding: 8px; border: 1px solid var(--redline-page-border, #374252); }
+:where(redline-nav[mode="sections"] [hidden], .redline-section-pager[hidden]) { display: none !important; }
+@media (max-width: 620px) {
+  :where(redline-nav[mode="sections"]) { display: contents; }
+  :where(redline-nav[mode="sections"] .redline-nav-links) { display: none; }
+  :where(.redline-section-picker) { display: flex; position: sticky; top: 0; z-index: 4; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--redline-page-border, #374252); background: var(--redline-page-bg, #11151b); color: var(--redline-page-text, #eef0f7); font-size: 12px; }
+  :where(.redline-section-picker select) { min-width: 0; width: 100%; font: inherit; font-size: 13px; }
+  :where(.redline-view-toggle) { margin: 8px 16px; }
+}
+@media print {
+  :where(redline-nav, redline-tracks, .redline-section-pager) { display: none !important; }
+  :where([data-redline-section-hidden], [data-redline-track-hidden]) { display: block !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(.redline-queued-badge) { animation: none; }
+}
 :where(redline-lightbox) {
   display: block;
 }
@@ -489,7 +571,7 @@
   outline-offset: 4px;
 }
 :where(dialog.redline-lightbox-dialog) {
-  --_ac: var(--redline-accent, #7c6cf6);
+  --_ac: var(--redline-accent, #b5a8ff);
   position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none;
   margin: 0; padding: 0; overflow: hidden; border: 0; color: #f5f3fa;
   background: rgb(8 6 16 / .97);
@@ -569,7 +651,7 @@
 :where(redline-before-after, redline-file-tree, redline-milestones, redline-evidence,
   redline-scenario, redline-tradeoffs, redline-risk, redline-code-diff, redline-scope,
   redline-decision) {
-  --_ac: var(--redline-accent, #7c6cf6);
+  --_ac: var(--redline-accent, #b5a8ff);
   display: block; margin: 1.25rem 0; padding: 1rem 1.2rem;
   border: 1px solid color-mix(in oklab, currentColor 18%, transparent);
   border-radius: 14px; background: color-mix(in oklab, currentColor 4%, transparent);
@@ -641,7 +723,7 @@
     if (document.head.querySelector('style[data-redline-styles]')) return
     const style = document.createElement('style')
     style.setAttribute('data-redline-styles', '')
-    style.textContent = AURA_CSS
+    style.textContent = REVIEW_CSS
     document.head.append(style)
   }
   injectStyles()
@@ -698,6 +780,7 @@
       }
       const snapshot = { type: 'questions', version: 1, questions }
       window[QUESTION_SNAPSHOT] = snapshot
+      document.dispatchEvent(new CustomEvent('redline-question-state'))
       if (!bindingAvailable()) return
       const payload = JSON.stringify(snapshot)
       if (new TextEncoder().encode(payload).byteLength > MAX_QUESTION_SNAPSHOT_BYTES) {
@@ -818,6 +901,7 @@
     if (!validPendingSnapshot(snapshot)) return
     pendingSnapshot = snapshot
     for (const control of pendingControls) control.applyPendingSnapshot(snapshot)
+    document.dispatchEvent(new CustomEvent('redline-question-state'))
   }
 
   window.addEventListener(PENDING_EVENT, (event) => {
@@ -975,6 +1059,7 @@
     onDraftChanged() {
       if (this._skipped && (this.draft() || this.noteText())) this._skipped = false
       renderPendingState(this)
+      document.dispatchEvent(new CustomEvent('redline-question-state'))
     }
     registerPendingControl() {
       if (!this._queueButton || !this.isConnected) return
@@ -1178,6 +1263,7 @@
       this._queuedBaseline = null
       this._localBaseline = this.currentBaseline()
       renderPendingState(this)
+      document.dispatchEvent(new CustomEvent('redline-question-state'))
       this.dispatchEvent(new CustomEvent('redline-reopen', { bubbles: true }))
     }
     /** Restores the live control, pre-filled with the recorded answer. */
@@ -1202,6 +1288,7 @@
       if (this._noteInput) this._noteInput.value = note
       this._localBaseline = this.currentBaseline()
       renderPendingState(this)
+      document.dispatchEvent(new CustomEvent('redline-question-state'))
       this.dispatchEvent(new CustomEvent('redline-reopen', { bubbles: true }))
     }
   }
@@ -1664,9 +1751,9 @@
   /** Structural navigation for authored artifacts using stable section ids. */
   class RedlineNav extends HTMLElement {
     connectedCallback() {
-      if (this.dataset.redlineReady) return
-      this.dataset.redlineReady = '1'
-      const render = () => queueMicrotask(() => this.render())
+      if (this._connected) return
+      this._connected = true
+      const render = () => queueMicrotask(() => { if (this.isConnected) this.render() })
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', render, { once: true })
       } else {
@@ -1675,6 +1762,12 @@
     }
 
     disconnectedCallback() {
+      this._connected = false
+      sectionNavigators.delete(this)
+      for (const cleanup of this._cleanup || []) cleanup()
+      this._cleanup = []
+      this._pager?.remove()
+      for (const section of this._sections || []) section.removeAttribute('data-redline-section-hidden')
       this._observer?.disconnect()
       this._observer = null
       this._strip?.disconnect()
@@ -1731,7 +1824,287 @@
       }
     }
 
+    listen(target, event, listener) {
+      target.addEventListener(event, listener)
+      this._cleanup.push(() => target.removeEventListener(event, listener))
+    }
+
+    availableSections() {
+      return this._sections.filter((section) => !section.closest('[data-redline-track-hidden]'))
+    }
+
+    sectionFor(target) {
+      return this._sections.find((section) => section === target || section.contains(target))
+    }
+
+    hashTarget() {
+      try { return document.getElementById(decodeURIComponent(location.hash.slice(1))) } catch { return null }
+    }
+
+    renderSections() {
+      this._cleanup = []
+      this._positions = new Map()
+      this._sections = [...document.querySelectorAll('[data-redline-section][id]')]
+        .filter((section) => !section.parentElement?.closest('[data-redline-section][id]'))
+      this._full = false
+      const restoration = history.scrollRestoration
+      history.scrollRestoration = 'manual'
+      this._cleanup.push(() => { history.scrollRestoration = restoration })
+      sectionNavigators.add(this)
+      const brand = document.createElement('div')
+      brand.className = 'redline-nav-brand'
+      for (const [attribute, tag] of [['eyebrow', 'p'], ['heading', 'h2'], ['summary', 'p'], ['status', 'p']]) {
+        const text = this.getAttribute(attribute)
+        if (!text) continue
+        const node = document.createElement(tag)
+        node.className = `redline-nav-${attribute}`
+        node.textContent = text
+        if (attribute === 'status') node.dataset.tone = this.getAttribute('status-tone') || 'success'
+        brand.append(node)
+      }
+      this._tally = document.createElement('p')
+      this._tally.className = 'redline-nav-counts'
+      brand.append(this._tally)
+      const navigation = document.createElement('nav')
+      navigation.className = 'redline-nav-links'
+      navigation.setAttribute('aria-label', this.getAttribute('label') || 'Artifact sections')
+      this._navigation = navigation
+      this._links = new Map()
+      this._options = new Map()
+      const pickerBox = document.createElement('label')
+      pickerBox.className = 'redline-section-picker'
+      const pickerLabel = document.createElement('span')
+      pickerLabel.textContent = 'Section'
+      this._picker = document.createElement('select')
+      this._picker.setAttribute('aria-label', 'Section')
+      pickerBox.append(pickerLabel, this._picker)
+      const groups = new Map()
+      this._sections.forEach((section, index) => {
+        const group = section.getAttribute('data-redline-group') || ''
+        if (!groups.has(group)) {
+          const box = document.createElement('div')
+          box.className = 'redline-nav-group'
+          if (group) {
+            const heading = document.createElement('p')
+            heading.className = 'redline-nav-group-label'
+            heading.textContent = group
+            box.append(heading)
+          }
+          navigation.append(box)
+          const options = group ? document.createElement('optgroup') : this._picker
+          if (group) { options.label = group; this._picker.append(options) }
+          groups.set(group, { box, options })
+        }
+        const label = section.getAttribute('data-redline-label') || section.querySelector('h2,h3,h4')?.textContent?.trim() || section.id.replace(/[-_]+/g, ' ')
+        const link = document.createElement('a')
+        link.href = `#${encodeURIComponent(section.id)}`
+        const name = document.createElement('span')
+        name.textContent = `${String(index + 1).padStart(2, '0')} · ${label}`
+        const counts = document.createElement('small')
+        counts.className = 'redline-section-counts'
+        link.append(name, counts)
+        this.listen(link, 'click', (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+          event.preventDefault()
+          this.selectSection(section, { push: true, focus: true })
+        })
+        registerNavigation(link)
+        groups.get(group).box.append(link)
+        const option = document.createElement('option')
+        option.value = section.id
+        option.textContent = name.textContent
+        groups.get(group).options.append(option)
+        this._options.set(section, option)
+        this._links.set(section, link)
+      })
+      this.listen(this._picker, 'change', () => {
+        this.selectSection(this._sections.find((section) => section.id === this._picker.value), { push: true, focus: true })
+      })
+      // The stream cannot display the operating system's select popup. Use the
+      // same sections in a page-owned menu only when annotation intercepts it.
+      this._reviewPicker = document.createElement('div')
+      this._reviewPicker.className = 'redline-review-picker'
+      this._reviewPicker.hidden = true
+      for (const section of this._sections) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.textContent = this._options.get(section).textContent
+        button.addEventListener('click', () => {
+          this._reviewPicker.hidden = true
+          this.selectSection(section, { push: true, focus: true })
+        })
+        registerNavigation(button)
+        this._reviewPicker.append(button)
+      }
+      registerNavigation(this._picker, () => {
+        this._reviewPicker.hidden = !this._reviewPicker.hidden
+        ;[...this._reviewPicker.children].forEach((button, index) => {
+          button.hidden = !this.availableSections().includes(this._sections[index])
+        })
+      })
+      this.listen(this._picker, 'keydown', (event) => {
+        if (event.key === 'Escape') this._reviewPicker.hidden = true
+      })
+      pickerBox.append(this._reviewPicker)
+      this._toggle = document.createElement('button')
+      this._toggle.type = 'button'
+      this._toggle.className = 'redline-view-toggle'
+      this.listen(this._toggle, 'click', () => {
+        if (!this._full && this._current) this._positions.set(this._current.id, window.scrollY)
+        this._full = !this._full
+        this.updateSections()
+        if (!this._full && this._current) this.restorePosition(this._current)
+      })
+      registerNavigation(this._toggle)
+      this._pager = document.createElement('footer')
+      this._pager.className = 'redline-section-pager'
+      this._previous = document.createElement('button')
+      this._next = document.createElement('button')
+      this._pageLabel = document.createElement('span')
+      for (const [button, label, offset] of [[this._previous, '← Previous', -1], [this._next, 'Next section →', 1]]) {
+        button.type = 'button'
+        button.textContent = label
+        this.listen(button, 'click', () => {
+          const sections = this.availableSections()
+          this.selectSection(sections[sections.indexOf(this._current) + offset], { push: true, focus: true })
+        })
+        registerNavigation(button)
+      }
+      this._pager.append(this._previous, this._pageLabel, this._next)
+      this.replaceChildren(brand, navigation, pickerBox, this._toggle)
+      this._sections.at(-1)?.after(this._pager)
+      const route = () => {
+        const target = this.hashTarget()
+        const section = this.sectionFor(target) || this.availableSections()[0]
+        // selectSection sets _current before track activation emits its event.
+        // During parser-time startup the tracks may not have activated yet.
+        this.selectSection(section, { target })
+      }
+      this.listen(window, 'popstate', route)
+      this.listen(window, 'hashchange', route)
+      this.listen(document, 'click', (event) => {
+        const link = event.target.closest?.('a[href]')
+        if (!link || this.contains(link) || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+        const url = new URL(link.href, location.href)
+        if (url.origin !== location.origin || url.pathname !== location.pathname || url.search !== location.search || !url.hash) return
+        let target
+        try { target = document.getElementById(decodeURIComponent(url.hash.slice(1))) } catch { return }
+        const section = this.sectionFor(target)
+        if (!section) return
+        event.preventDefault()
+        this.selectSection(section, { push: true, target, focus: true })
+      })
+      this.listen(document, 'redline-track-change', () => {
+        const sections = this.availableSections()
+        if (!sections.includes(this._current)) this.selectSection(sections[0], { replace: true })
+        else this.updateSections()
+      })
+      this.listen(document, 'redline-question-state', () => this.updateCounts())
+      this.listen(document, 'input', () => this.updateCounts())
+      this.listen(document, 'change', () => this.updateCounts())
+      this.trackStripHeight(pickerBox)
+      route()
+    }
+
+    restorePosition(section) {
+      // Force instant restoration, independent of an author's scroll-behavior.
+      window.scrollTo?.({ top: this._positions.get(section.id) || 0, behavior: 'instant' })
+    }
+
+    selectSection(section, { push = false, replace = false, target = null, focus = false } = {}) {
+      if (!section) return
+      const changed = this._current !== section
+      if (changed && this._current && !this._full) this._positions.set(this._current.id, window.scrollY)
+      this._current = section
+      revealTrack(target || section)
+      if (push || replace) {
+        const id = target?.id || section.id
+        const hash = `#${encodeURIComponent(id)}`
+        if (location.hash !== hash) history[replace ? 'replaceState' : 'pushState'](null, '', hash)
+      }
+      this.updateSections()
+      if (!this._full && changed) this.restorePosition(section)
+      if (target && target !== section) target.scrollIntoView?.({ block: 'start', behavior: 'instant' })
+      if (focus) {
+        const heading = target || section.querySelector('h2,h3,h4') || section
+        if (!heading.hasAttribute('tabindex')) heading.tabIndex = -1
+        heading.focus?.({ preventScroll: true })
+      }
+    }
+
+    revealTarget(target) {
+      const section = this.sectionFor(target)
+      if (section) this.selectSection(section, { push: true, target })
+    }
+
+    updateSections() {
+      const sections = this.availableSections()
+      for (const section of this._sections) {
+        section.toggleAttribute('data-redline-section-hidden', !this._full && section !== this._current)
+        const hidden = !sections.includes(section)
+        const link = this._links.get(section)
+        link.hidden = hidden
+        const selected = section === this._current
+        const alreadySelected = link.getAttribute('aria-current') === 'page'
+        if (selected) link.setAttribute('aria-current', 'page')
+        else link.removeAttribute('aria-current')
+        if (selected && !alreadySelected) this.revealLink(this._navigation, link, 'auto')
+        const option = this._options.get(section)
+        option.hidden = hidden
+        option.disabled = hidden
+      }
+      for (const group of this.querySelectorAll('.redline-nav-group')) group.hidden = ![...group.querySelectorAll('a')].some((link) => !link.hidden)
+      for (const group of this._picker.querySelectorAll('optgroup')) group.hidden = ![...group.children].some((option) => !option.hidden)
+      this._picker.value = this._current?.id || ''
+      const index = sections.indexOf(this._current)
+      this._pageLabel.textContent = `Section ${index + 1} of ${sections.length}`
+      this._previous.disabled = index <= 0
+      this._next.disabled = index < 0 || index === sections.length - 1
+      this._pager.hidden = this._full
+      this._toggle.textContent = this._full ? 'Return to focused sections' : 'View full document'
+      this._toggle.setAttribute('aria-pressed', String(this._full))
+      this.updateCounts()
+    }
+
+    updateCounts() {
+      if (!this._sections) return
+      const snapshot = currentPendingSnapshot()
+      const seen = new Set()
+      const counts = new Map(this._sections.map((section) => [section, { unanswered: 0, queued: 0, sent: 0, changed: 0 }]))
+      // Includes questions in hidden sections and nested markup, once per stable
+      // identity. A visit never changes review state. No protocol fields needed.
+      for (const host of document.querySelectorAll('redline-choice,redline-approve,redline-rating,redline-ask,redline-question,redline-decision,redline-scope')) {
+        const section = this.sectionFor(host)
+        if (!section) continue
+        const descriptor = host.questionDescriptor?.()
+        const identity = host.key?.() ? `key:${host.key()}` : `selector:${cssPath(host)}`
+        if (seen.has(identity)) continue
+        seen.add(identity)
+        const count = counts.get(section)
+        const pending = matchedPendingControl(host, snapshot)
+        const sent = descriptor ? matchedSentAnswer(host, snapshot) : null
+        const stale = snapshot?.sent?.some((answer) => host.key?.() ? answer.queueKey === host.key() : !answer.queueKey && answer.selector === cssPath(host)) && !sent
+        if (pending?.response) count.queued += 1
+        else if (host.hasAttribute('resolved') || sent) count.sent += 1
+        else count.unanswered += 1
+        if ((stale && !host.hasAttribute('resolved')) || (host._queuedBaseline != null && host.currentBaseline() !== host._queuedBaseline)) count.changed += 1
+      }
+      const totals = { unanswered: 0, queued: 0, sent: 0, changed: 0 }
+      const label = (count) => Object.entries(count).filter(([, value]) => value > 0).map(([key, value]) => `${value} ${key === 'changed' ? 'changed since review' : key === 'sent' ? 'sent/settled' : key}`).join(' · ')
+      for (const [section, count] of counts) {
+        if (section.hasAttribute('data-redline-changed')) count.changed = Math.max(1, count.changed)
+        const link = this._links.get(section)
+        link.querySelector('.redline-section-counts').textContent = label(count)
+        link.dataset.redlineStatus = count.unanswered ? 'open' : count.queued ? 'queued' : count.sent ? 'decided' : ''
+        link.toggleAttribute('data-redline-changed', count.changed > 0)
+        this._options.get(section).label = `${link.firstChild.textContent}${label(count) ? ` — ${label(count)}` : ''}`
+        if (this.availableSections().includes(section)) for (const key of Object.keys(totals)) totals[key] += count[key]
+      }
+      this._tally.textContent = label(totals)
+    }
+
     render() {
+      if (this.getAttribute('mode') === 'sections') return this.renderSections()
       const sections = [...document.querySelectorAll('[data-redline-section][id]')]
       const brand = document.createElement('div')
       brand.className = 'redline-nav-brand'
@@ -1784,6 +2157,7 @@
         const status = section.getAttribute('data-redline-status')
         if (status) link.dataset.redlineStatus = status
         if (section.hasAttribute('data-redline-changed')) link.dataset.redlineChanged = '1'
+        registerNavigation(link)
         navigation.append(link)
         return link
       })
@@ -1931,13 +2305,17 @@
           tab.append(count)
         }
         tab.addEventListener('click', () => this.activate(track))
+        registerNavigation(tab)
         strip.append(tab)
         return tab
       })
 
       this.replaceChildren(strip)
       const requested = this.getAttribute('default')
-      this.activate(order.includes(requested) ? requested : order[0])
+      let target
+      try { target = document.getElementById(decodeURIComponent(location.hash.slice(1))) } catch {}
+      const linked = target?.closest('[data-redline-track]:not([data-redline-track-all])')?.getAttribute('data-redline-track')
+      this.activate(order.includes(linked) ? linked : order.includes(requested) ? requested : order[0])
     }
 
     /** A track's display name: an explicit label on any of its sections, else the raw key. */
