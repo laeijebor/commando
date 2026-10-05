@@ -711,3 +711,68 @@ describe('SimWallApi', () => {
     expect(source.indexOf('await simLeaseApi.handle')).toBeLessThan(browserGate)
   })
 })
+
+describe('simulator apps and privacy', () => {
+  it('converts the old-style plist on stdin without a shell and sorts user apps first by name', async () => {
+    const baseline = setup()
+    const plist = '{ "com.example.z" = { ApplicationType = User; CFBundleDisplayName = "Zebra"; }; }'
+    const { api, runner } = setup(async (command, args) => {
+      if (args[1] === 'listapps') return plist
+      if (command === 'plutil') return JSON.stringify({
+        'com.apple.a': { ApplicationType: 'System', CFBundleName: 'Alpha System' },
+        'com.example.z': { ApplicationType: 'User', CFBundleDisplayName: 'Zebra', CFBundleName: 'Ignore' },
+        'com.example.a': { ApplicationType: 'User', CFBundleName: 'Alpha' },
+        'com.example.fallback': { ApplicationType: 'User' },
+        'invalid/id': { ApplicationType: 'User' }, unknown: { ApplicationType: 'Other' }, null: null,
+      })
+      return baseline.runner(command, args)
+    })
+    const result = await call(api, `/${A.toLowerCase()}/apps`)
+    expect(result.status).toBe(200)
+    expect(result.json()).toEqual({ apps: [
+      { bundleId: 'com.example.a', name: 'Alpha', type: 'user' },
+      { bundleId: 'com.example.fallback', name: 'com.example.fallback', type: 'user' },
+      { bundleId: 'com.example.z', name: 'Zebra', type: 'user' },
+      { bundleId: 'com.apple.a', name: 'Alpha System', type: 'system' },
+    ] })
+    expect(runner).toHaveBeenCalledWith('xcrun', ['simctl', 'listapps', A], { timeout: 10_000 })
+    expect(runner).toHaveBeenCalledWith('plutil', ['-convert', 'json', '-o', '-', '-'], { timeout: 10_000, stdin: plist })
+    expect((await call(api, `/${A}/apps`, 'POST')).status).toBe(405)
+    expect((await call(api, '/bad/apps')).status).toBe(400)
+  })
+
+  it('reports malformed plist conversion and non-booted devices', async () => {
+    const baseline = setup()
+    const { api } = setup(async (command, args) => command === 'plutil' ? '[]' : baseline.runner(command, args))
+    expect((await call(api, `/${A}/apps`)).status).toBe(500)
+    expect((await call(api, `/${D}/apps`)).status).toBe(404)
+  })
+
+  it.each(['grant', 'revoke', 'reset'] as const)('runs privacy %s as argv with the app id', async (operation) => {
+    const { api, runner } = setup()
+    const result = await call(api, `/${A}/action`, 'POST', { action: 'privacy', operation, service: 'microphone', bundleId: 'com.example.app' })
+    expect(result.status).toBe(200)
+    expect(result.json()).toEqual({ ok: true })
+    expect(runner).toHaveBeenLastCalledWith('xcrun', ['simctl', 'privacy', A, operation, 'microphone', 'com.example.app'], { timeout: 10_000 })
+  })
+
+  it('allows reset without a bundle id, including all services', async () => {
+    const { api, runner } = setup()
+    for (const service of ['all', 'contacts-limited', 'location-always', 'photos-add', 'siri']) {
+      expect((await call(api, `/${A}/action`, 'POST', { action: 'privacy', operation: 'reset', service })).status).toBe(200)
+      expect(runner).toHaveBeenLastCalledWith('xcrun', ['simctl', 'privacy', A, 'reset', service], { timeout: 10_000 })
+    }
+  })
+
+  it.each([
+    { operation: 'grant' }, { operation: 'revoke' }, { operation: 'deny', bundleId: 'app' },
+    { operation: 'reset', service: 'camera' }, { operation: 'reset', bundleId: '' },
+    { operation: 'reset', bundleId: 'app; rm' }, { operation: 'reset', bundleId: 4 },
+    { operation: 'reset', bundleId: 'x'.repeat(256) }, { operation: 'reset', bundleId: null },
+    { operation: 'reset', extra: true },
+  ])('rejects invalid privacy parameters before running commands: %j', async (parameters) => {
+    const { api, runner } = setup()
+    expect((await call(api, `/${A}/action`, 'POST', { action: 'privacy', service: 'photos', ...parameters })).status).toBe(400)
+    expect(runner).not.toHaveBeenCalled()
+  })
+})

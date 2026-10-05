@@ -8,10 +8,11 @@ import {
 } from '../shared/protocol.js'
 import {
   PANE_FORMAT,
+  PANE_IDENTITY_DISCOVERY_FORMAT,
   SESSION_FORMAT,
   WINDOW_FORMAT,
   parsePaneProcesses,
-  parsePaneTargetObservations,
+  parsePaneIdentityDiscovery,
   parseTmuxSnapshot,
 } from './tmux-parsers.js'
 import { OpenPortScanner } from './open-ports.js'
@@ -23,6 +24,7 @@ import {
 } from './tmux-control.js'
 import { TmuxResizeLeaseManager } from './tmux-resize-lease.js'
 import { TMUX_PANE_TARGET_OPTION, TmuxPaneTargets } from './tmux-pane-targets.js'
+import { TmuxPaneIdentityStore } from './tmux-pane-identity-store.js'
 
 const DISCOVERY_TIMEOUT_MS = 1_500
 const DISCOVERY_BUFFER_BYTES = 4 * 1024 * 1024
@@ -131,12 +133,13 @@ export class TmuxClient {
   private readonly socketArgs = configuredSocketArgs()
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
   private readonly openPorts: OpenPortScanner
-  private readonly paneTargets = new TmuxPaneTargets((paneId, value) =>
+  private readonly paneIdentities = new TmuxPaneIdentityStore()
+  private readonly persistPaneTarget = (paneId: string, value: string) =>
     this.run(
       ['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, value],
       { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 },
-    ).then(() => undefined),
-  )
+    ).then(() => undefined)
+  private readonly paneTargets = new TmuxPaneTargets(this.persistPaneTarget)
   private readonly resizeLeases = new TmuxResizeLeaseManager((args) =>
     this.run(args, { timeout: 3_000, maxBuffer: 64 * 1024 }),
   )
@@ -155,7 +158,7 @@ export class TmuxClient {
 
   async discover(revision: number, capturedAt = Date.now()): Promise<CommandoSnapshot> {
     try {
-      const [sessions, windows, panes] = await Promise.all([
+      const [sessions, windows, paneDiscovery] = await Promise.all([
         this.run(['list-sessions', '-F', SESSION_FORMAT], {
           timeout: DISCOVERY_TIMEOUT_MS,
           maxBuffer: DISCOVERY_BUFFER_BYTES,
@@ -164,12 +167,15 @@ export class TmuxClient {
           timeout: DISCOVERY_TIMEOUT_MS,
           maxBuffer: DISCOVERY_BUFFER_BYTES,
         }),
-        this.run(['list-panes', '-a', '-F', PANE_FORMAT], {
+        this.run(['list-panes', '-a', '-F', PANE_IDENTITY_DISCOVERY_FORMAT], {
           timeout: DISCOVERY_TIMEOUT_MS,
           maxBuffer: DISCOVERY_BUFFER_BYTES,
         }),
       ])
-      const targetIds = await this.paneTargets.reconcile(parsePaneTargetObservations(panes))
+      const { paneOutput: panes, serverId, identities } = parsePaneIdentityDiscovery(paneDiscovery)
+      const restored = await this.paneIdentities.restore(serverId, identities, this.persistPaneTarget)
+      const targetIds = await this.paneTargets.reconcile(restored)
+      await this.paneIdentities.remember(serverId, restored, targetIds)
       const snapshot = parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt, targetIds)
       snapshot.ports = await this.openPorts.scan(parsePaneProcesses(panes), capturedAt)
       return snapshot

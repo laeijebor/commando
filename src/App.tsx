@@ -2657,6 +2657,8 @@ export function App() {
           <div className="session-tree">
             <SessionTree
               token={token}
+              prsApi={prsApi}
+              connected={connected}
               sessions={snapshot?.sessions ?? []}
               windows={snapshot?.windows ?? []}
               panes={snapshot?.panes ?? []}

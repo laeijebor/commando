@@ -115,3 +115,19 @@ describe('simulator claim actions', () => {
     await expect(api.show('bad', '%1')).rejects.toThrow('Invalid simulator content')
   })
 })
+
+describe('installed apps and privacy API', () => {
+  it('fetches installed apps with auth and cancellation and posts privacy actions', async () => {
+    const apps = [{ bundleId: 'com.example.app', name: 'Example', type: 'user' }]
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ apps })))
+      .mockResolvedValueOnce(new Response('{"ok":true}'))
+      .mockResolvedValueOnce(new Response('{"error":"listapps failed"}', { status: 500 }))
+    const signal = new AbortController().signal, api = createSimsApi('owner', fetcher)
+    await expect(api.apps('sim/udid', signal)).resolves.toEqual(apps)
+    expect(fetcher).toHaveBeenCalledWith('/api/sims/sim%2Fudid/apps', expect.objectContaining({ method: 'GET', signal, headers: { Authorization: 'Bearer owner' } }))
+    const body = { action: 'privacy', operation: 'revoke', service: 'photos', bundleId: 'com.example.app' } as const
+    await api.action('sim/udid', body)
+    expect(fetcher).toHaveBeenLastCalledWith('/api/sims/sim%2Fudid/action', expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }))
+    await expect(api.apps('sim')).rejects.toThrow('listapps failed')
+  })
+})

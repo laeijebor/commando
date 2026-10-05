@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TMUX_FIELD_SEPARATOR,
   parsePaneProcesses,
+  parsePaneIdentityDiscovery,
   parsePaneTargetObservations,
   parsePaneTerminalState,
   parsePanes,
@@ -74,6 +75,17 @@ function paneRow(
 }
 
 describe('tmux format parsers', () => {
+  it('captures server identity and restored coordinates with the original pane observation', () => {
+    const original = paneRow('%8', '1', '@3', '$1', 'Agent', 'sh', '/repo', '1', '0', '120', '40', '0', '0')
+    expect(parsePaneIdentityDiscovery(row(original, '1234:5678', 'saved-work', '2'))).toEqual({
+      paneOutput: original,
+      serverId: '1234:5678',
+      identities: [{ paneId: '%8', storedValue: `v1:%8:${targetIds.get('%8')}`, sessionName: 'saved-work', windowIndex: 2, paneIndex: 1, path: '/repo' }],
+    })
+    expect(() => parsePaneIdentityDiscovery(`${row(original, '1234:5678', 'saved-work', '2')}\nbroken`)).toThrow('Incomplete')
+    expect(() => parsePaneIdentityDiscovery([row(original, '1234:5678', 'saved-work', '2'), row(original, '9999:9999', 'saved-work', '2')].join('\n'))).toThrow('Invalid')
+  })
+
   it('builds relationships from stable tmux ids', () => {
     const snapshot = parseTmuxSnapshot(
       `${row('$1', 'work', '2')}\n${row('$2', 'other', '0')}\n`,

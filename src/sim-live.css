@@ -36,6 +36,20 @@
 .sim-inspector-panel li { margin: 6px 0; overflow-wrap: anywhere; }
 .sim-inspector-panel li span { display: block; color: var(--muted); }
 .sim-inspector-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
+.sim-panel-controls { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.sim-panel-controls label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); }
+.sim-panel-controls input, .sim-panel-controls select { min-width: 0; width: 100%; box-sizing: border-box; padding: 5px; color: var(--text); background: var(--surface-deep); border: 1px solid var(--border); border-radius: 4px; font: inherit; }
+.sim-panel-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
+.sim-panel-note { color: var(--muted); font-size: 10px; }
+.sim-logs-panel { display: flex; flex-direction: column; }
+.sim-logs-panel > :not(.sim-log-list) { flex: none; }
+.sim-log-list { flex: 1; min-height: 60px; overflow: auto; overflow-anchor: none; }
+.sim-log-line { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.sim-log-line > span { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.sim-log-line pre { margin: 3px 0 0; font-family: var(--mono); }
+.sim-log-line.is-error, .sim-log-line.is-error > span { color: var(--red); }
+.sim-permission-row { margin: 10px 0; }
+.sim-permission-row > span { display: block; margin: 3px 0; color: var(--muted); font-size: 10px; }
 @container (max-width: 560px) {
   .sim-live-body { flex-direction: column; }
   .sim-live-body:has(.sim-inspector-panel) .sim-live-screen { min-height: 120px; }

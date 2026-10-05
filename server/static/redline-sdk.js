@@ -849,15 +849,17 @@
 
   const choiceOptions = (value) => {
     const source = value.trim()
-    if (source.startsWith('[') && source.endsWith(']')) {
+    if (source.startsWith('[')) {
       try {
         const parsed = JSON.parse(source)
         if (Array.isArray(parsed) && parsed.every((option) => typeof option === 'string')) {
           return parsed.map((option) => option.trim()).filter(Boolean)
         }
       } catch {
-        // Fall through to the original comma-separated shorthand.
+        // JSON-looking input must not become comma-separated labels when an
+        // HTML quote truncates it. The caller renders an actionable error.
       }
+      return null
     }
     return source.split(',').map((option) => option.trim()).filter(Boolean)
   }
@@ -1208,8 +1210,21 @@
     render() {
       const multiple = this.hasAttribute('multiple')
       const name = nextName()
-      const options = choiceOptions(this.getAttribute('options') || '')
+      const authoredOptions = [...this.children].filter((child) => child.localName === 'redline-option')
+      const options = authoredOptions.length
+        ? authoredOptions.map((child) => child.textContent.trim()).filter(Boolean)
+        : choiceOptions(this.getAttribute('options') || '')
+      for (const child of authoredOptions) child.hidden = true
       this.append(promptHeading(this))
+      if (options === null) {
+        const error = document.createElement('p')
+        error.className = 'redline-options-error'
+        error.setAttribute('role', 'alert')
+        error.textContent = 'Invalid choice options. Use a <redline-option> child for each label, or a valid JSON array with HTML-escaped attribute quotes.'
+        this.append(error)
+        console.warn('[redline-choice] Invalid options attribute; use <redline-option> children to avoid quote escaping.', this)
+        return
+      }
       const list = document.createElement('div')
       list.className = `redline-options redline-options-${multiple ? 'multiple' : 'single'}`
       for (const option of options) {
