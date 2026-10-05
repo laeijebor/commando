@@ -1,0 +1,39 @@
+.session-ide-view {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-ide-view[hidden], .session-ide-frame[hidden] { display: none; }
+.session-ide-context h1 { display: flex; align-items: center; gap: 8px; }
+.session-ide-context { overflow: hidden; }
+.session-ide-view .workspace-actions { flex-shrink: 0; white-space: nowrap; }
+.session-ide-context h1 svg { width: 18px; height: 18px; }
+.session-ide-context h1 span { color: var(--muted); font-size: 12px; font-weight: 500; }
+.session-ide-context small { display: block; min-width: 0; max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.session-ide-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #1e1e1e; }
+.session-ide-message { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; text-align: center; }
+.session-ide-message h2, .session-ide-message p { margin: 0; }
+.session-ide-message p { max-width: 580px; color: var(--muted); }
+.session-ide-view button, .open-session-ide { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.session-ide-view button svg, .open-session-ide svg { width: 15px; height: 15px; }
+.session-ide-badge { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--accent); font-size: 10px; flex-shrink: 0; }
+.session-ide-badge svg { width: 12px; height: 12px; }
+.session-ide-badge.state-failed { color: var(--red); }
+.session-ide-badge.state-starting { color: var(--amber); }
+.session-ide-badge[aria-pressed="true"] { background: var(--surface-hover); border-color: var(--accent); }
+.session-ide-minimize { color: var(--accent); }
+.session-ide-detach-control summary { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: var(--surface-raised); font-size: 10px; }
+.session-ide-detach-control summary::-webkit-details-marker { display: none; }
+.session-ide-detach-control summary svg { width: 15px; height: 15px; }
+.session-ide-detach-control summary[aria-disabled="true"] { opacity: .5; cursor: default; }
+.session-ide-detach-control summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.session-ide-detach-confirm { position: absolute; top: 40px; left: 8px; right: 8px; max-width: 420px; margin-left: auto; z-index: 5; padding: 14px; white-space: normal; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow); }
+.session-ide-detach-confirm strong { display: block; color: var(--text); font-size: 12px; }
+.session-ide-detach-confirm p { margin: 8px 0 12px; color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+.session-ide-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.session-ide-error { margin: 0; padding: 8px 12px; color: var(--red); background: var(--surface-raised); }

@@ -96,6 +96,82 @@ notify = ["node", "/Users/you/.commando/hooks/commando-codex-notify.mjs"]
 
 The Codex bridge reports turn completion and nothing else. An `agent-turn-complete` callback becomes a hook-sourced `done` with the recap and headline taken from Codex's last assistant message and the turn intent from its input messages, so "Codex finished" stops being a guess. It cannot report tool activity, checks, file changes, or progress, and **Codex permission and approval prompts stay in the terminal** — they are never forwarded and cannot be answered from Commando or the companion app. Because the callback only describes the turn that just ended, heuristics take the pane back to `working` as soon as it visibly resumes, and the next callback records a fresh completion.
 
+## Session IDE (code-server PoC)
+
+Use **Open IDE** in a session's toolbar, the code icon on its sidebar row, or
+**Actions → Open IDE**. An **IDE** badge remains visible on attached sessions
+in the left-hand menu; click it to return to the editor. **Minimize IDE** returns
+to the session's panes without unloading the editor or discarding its buffers.
+
+The daemon starts code-server lazily. Each session attaches to at most one
+workspace, selected from the focused pane's exact Git checkout/worktree root
+(or its directory when it is outside Git). Reopening reuses that attachment;
+sessions on the same canonical workspace share one code-server process.
+**Detach IDE** opens an in-app confirmation; **Confirm detach** removes a
+session's attachment and stops the process when no sessions remain. Save files
+before detaching the last session. Deleted or
+archived sessions are pruned, and daemon shutdown stops its owned IDEs.
+
+Install code-server yourself (`brew install code-server` on macOS), or set
+`COMMANDO_CODE_SERVER_PATH` to an executable. The PoC was exercised with native
+macOS code-server 4.112.0. It uses a private Unix socket and proxies HTTP and
+WebSockets through Commando. Opening the IDE authorizes that browser with an
+HttpOnly, path-scoped cookie; no unauthenticated code-server TCP listener or
+owner token is exposed. For local clients, each IDE gets a lightweight,
+authenticated loopback proxy on a distinct port. This gives VS Code a separate
+browser origin for its configuration cache, storage and workers as well as
+its separate backend profile. Proxy listeners are closed with their IDEs.
+This PoC requires a Unix host (macOS/Linux). Non-loopback clients currently
+retain the main proxy route; per-origin remote routing is a follow-up.
+
+Profiles and extensions are stored per daemon port and workspace under
+`~/.commando/ides/<port>/`; override the base with `COMMANDO_IDE_DATA_DIR` for
+isolated runs. New profiles start with a dark theme, no welcome editor or AI
+chat, and telemetry disabled. Existing preferences are preserved. Attachments
+are currently daemon-lifetime state: after a daemon restart, use **Open IDE**
+again. The PoC does not automatically install Python/Swift extensions.
+Install compatible extensions from Open VSX; native macOS execution gives
+Swift tooling access to the installed Apple toolchain.
+
+Different worktrees have different workspace folders, editor frames, tabs,
+settings and extension directories. Sessions using the same worktree share
+that worktree's IDE. The attachment stays pinned to the checkout selected on
+first open; to change it after moving a session to a different checkout,
+detach and reopen the IDE.
+
+Use the IDE's **Extensions** view to install from Open VSX, and **Manage →
+Settings**, **Color Theme**, or **Keyboard Shortcuts** to customize it normally.
+User preferences and extension installations are currently per worktree, not
+shared with desktop VS Code or other worktrees. We only seed defaults for new
+profiles. Microsoft Marketplace/proprietary extensions are not interchangeable
+with the Open VSX ecosystem; VSIX installation still requires a compatible,
+appropriately licensed extension.
+
+An opt-in Playwright regression covers shared processes, sidebar badges,
+TypeScript file editing, retained buffers, proxy authentication and detach:
+
+```bash
+COMMANDO_IDE_E2E_URL=http://127.0.0.1:5279 \
+COMMANDO_IDE_E2E_TOKEN=ide-poc \
+COMMANDO_CHROMIUM="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+npx playwright test e2e/session-ide.pw.ts --workers=1
+```
+
+Use a dedicated daemon/tmux socket with sessions named `TypeScript` and
+`Shared-worktree`, both rooted at a disposable directory containing
+`src/ide-fixture.ts` (exporting `createSessionIdesApi`). The regression resets
+IDE attachments on that stack and edits only this fixture. Never point it at
+your regular Commando daemon.
+
+`e2e/session-ide-isolation.pw.ts` is an additional opt-in check, enabled with
+`COMMANDO_IDE_ISOLATION_E2E_URL` and `COMMANDO_IDE_ISOLATION_E2E_TOKEN`. Use
+disposable, distinct Git worktrees named `worktree-a` and `worktree-b`, with
+sessions `Worktree-A` and `Worktree-B` and files `ide-fixtures/a-only.ts` and
+`ide-fixtures/b-only.ts` containing `WORKTREE_A` and `WORKTREE_B` respectively.
+It checks separate contexts, preserved tabs, a user-settings edit and a real
+Dracula theme installation from Open VSX in A without changing B. It requires
+network access and must only target disposable editor profiles.
+
 ## Web Pane Tiles
 
 Agents (and you) can open a web page as a tile in the pane grid, right beside a

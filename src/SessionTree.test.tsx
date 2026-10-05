@@ -84,6 +84,24 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
 }
 
 describe('SessionTree', () => {
+  it('shows attached IDEs on session rows even when their pane tree is collapsed', async () => {
+    const onOpenIde = vi.fn()
+    render(<SessionTree
+      token="token" sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: null, windowIds: [] }, { id: '$2', name: 'other', attached: false, activeWindowId: null, windowIds: [] }]}
+      windows={[]} panes={[]} displayedPaneIds={[]} statuses={{}} selectedSessionId={null} focusedPaneId={null}
+      onSelectSession={vi.fn()} onSelectWindow={vi.fn()} onSelectPane={vi.fn()} onOpenPaneMaximized={vi.fn()}
+      onWindowDeleting={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} onOpenIde={onOpenIde}
+      ides={[{ id: 'ide-1111111111111111', sessionIds: ['$1'], workspacePath: '/worktree', state: 'ready', generation: 1, url: '/ide/ide-1111111111111111/' }]}
+    />)
+    const badge = await screen.findByRole('button', { name: 'Open attached IDE for work' })
+    expect(badge).toHaveTextContent('IDE')
+    expect(screen.queryByRole('button', { name: 'Open attached IDE for other' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open attached IDE for work' }))
+    expect(onOpenIde).toHaveBeenCalledWith('$1')
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for other' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open IDE' }))
+    expect(onOpenIde).toHaveBeenLastCalledWith('$2')
+  })
   it('opens the first nine sessions by their session-tree order', async () => {
     sessionApi.loadPreferences.mockResolvedValue({
       version: 1,

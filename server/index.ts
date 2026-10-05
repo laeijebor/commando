@@ -6,7 +6,8 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
-import { extname, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
 import type { Duplex } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
@@ -52,6 +53,8 @@ import { handleNotesApi } from './notes-api.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { SessionIdeService } from './session-ides.js'
+import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
 import { runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
@@ -120,7 +123,7 @@ const CONTENT_SECURITY_POLICY = [
   "form-action 'self'",
   "frame-ancestors 'none'",
   // Web pane tiles embed localhost dev servers and confirmed https sites.
-  "frame-src http://localhost:* http://127.0.0.1:* https:",
+  "frame-src 'self' http://localhost:* http://127.0.0.1:* https:",
   "img-src 'self' data:",
   "object-src 'none'",
   "script-src 'self'",
@@ -1186,6 +1189,7 @@ async function main(): Promise<void> {
         snapshotRevision = nextSnapshot.revision
         snapshot = nextSnapshot
         lastTmuxError = ''
+        await sessionIdes.retain(new Set(snapshot.sessions.map((session) => session.id)))
 
         const removedPaneMarks = await paneMarks.retainTargets(
           snapshot.panes.map((pane) => pane.targetId),
@@ -1285,6 +1289,21 @@ async function main(): Promise<void> {
     if (snapshotRefresh) await snapshotRefresh
     return refreshSnapshot()
   }
+
+  const sessionIdes = new SessionIdeService({
+    dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
+    onChange: () => {
+      sessionIdeApi.retainOrigins()
+      broadcast({ type: 'session_ides', ides: sessionIdes.list() })
+    },
+  })
+  const sessionIdeApi = new SessionIdeApi({
+    service: sessionIdes,
+    currentSessionIds: () => snapshot.sessions.map((session) => session.id),
+    currentPanes: () => snapshot.panes,
+    refresh: refreshSnapshotFresh,
+    validRequest: networkAccess.validRequest,
+  })
 
   const queueInput = (
     client: ClientState,
@@ -1946,6 +1965,7 @@ async function main(): Promise<void> {
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
     send(client, { type: 'snapshot', snapshot })
+    send(client, { type: 'session_ides', ides: sessionIdes.list() })
     send(client, webPanesMessage())
     void queueBriefPublication(async () => {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
@@ -2010,6 +2030,16 @@ async function main(): Promise<void> {
       const url = requestUrl(request)
       if (!url) {
         writeJson(response, 400, { error: 'Invalid request URL' })
+        return
+      }
+
+      const ideId = idePathId(url.pathname)
+      if (ideId) {
+        if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
+          writeJson(response, 401, { error: 'Open the IDE from the session menu to authorize this browser' })
+          return
+        }
+        sessionIdeApi.proxy(request, response, url, ideId)
         return
       }
 
@@ -2085,6 +2115,7 @@ async function main(): Promise<void> {
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
+        if (await sessionIdeApi.handle(request, response, url)) return
         if (await paneManagement.handle(request, response, url)) return
         if (await agentRequestApi.handle(request, response, url)) return
         if (await pushApi.handle(request, response, url)) return
@@ -2133,6 +2164,15 @@ async function main(): Promise<void> {
           return
         }
         const url = requestUrl(request)
+        const ideId = url ? idePathId(url.pathname) : null
+        if (url && ideId) {
+          if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
+          sessionIdeApi.upgrade(request, socket, head, url, ideId)
+          return
+        }
         const liveUdid = url ? simLiveUdid(url.pathname) : null
         const webTileId = url ? webTilePathId(url.pathname) : null
         if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId && !liveUdid)) {
@@ -2220,6 +2260,8 @@ async function main(): Promise<void> {
     simLive.close()
     webTileRelay.close()
     chromiumEngine.dispose()
+    void sessionIdes.close().catch((error: unknown) => console.error('[commando] IDE cleanup failed', error))
+    sessionIdeApi.close()
     void tmux.releaseAllPaneResizes().finally(() => {
       tmux.close()
       webSocketServer.close()

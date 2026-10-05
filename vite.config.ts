@@ -21,6 +21,7 @@ export default defineConfig({
     proxy: {
       '/api': daemonHttpTarget,
       '/screenshots': daemonHttpTarget,
+      '/ide': { target: daemonHttpTarget, ws: true },
       '/ws': {
         target: daemonWebSocketTarget,
         ws: true,

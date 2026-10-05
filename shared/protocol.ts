@@ -324,6 +324,17 @@ export type CommandoSnapshot = {
   ports: OpenPort[]
 }
 
+/** One daemon-owned editor per canonical checkout, attached to one or more sessions. */
+export type SessionIde = {
+  id: string
+  sessionIds: string[]
+  workspacePath: string
+  state: 'starting' | 'ready' | 'failed'
+  error?: string
+  generation: number
+  url: string
+}
+
 export type UsageProvider = 'claude' | 'codex'
 
 export type UsageWindow = {
@@ -608,6 +619,7 @@ export type LayoutSpec =
 
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
+  | { type: 'session_ides'; ides: SessionIde[] }
   | { type: 'capabilities'; capabilities: { revealInFinder: boolean } }
   | {
       type: 'pane_reset'

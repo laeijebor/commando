@@ -7,6 +7,7 @@ import {
   Bot,
   Check,
   CircleDotDashed,
+  Code2,
   Command,
   Grid2X2,
   KeyRound,
@@ -63,6 +64,7 @@ import type {
   SavedWorkspace,
   ServerMessage,
   SessionBrief,
+  SessionIde,
   SpecialKey,
   TmuxPane,
   WebPane,
@@ -95,6 +97,8 @@ import { PrsSection } from './PrsSection'
 import { GitDiffModal, type GitDiffComparison } from './GitDiffModal'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
+import { SessionIdeView } from './SessionIdeView'
+import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
@@ -760,7 +764,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'linear' | 'notes' | 'sims'
+type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -921,6 +925,11 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
+  const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
+  const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
+  const [ideErrors, setIdeErrors] = useState<Record<string, string>>({})
+  const ideRequests = useRef(new Set<string>())
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
   const [webPaneNavigateRequests, setWebPaneNavigateRequests] = useState<Record<string, WebPaneNavigateRequest>>({})
   const [webPaneReloads, setWebPaneReloads] = useState<Record<string, number>>({})
@@ -1254,6 +1263,14 @@ export function App() {
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
         setWebPaneReloads(message.reloads ?? {})
+        break
+      case 'session_ides':
+        // Origin URLs are authorized per browser by open(); broadcasts contain
+        // only the neutral proxy path. Preserve already-authorized frame URLs.
+        setSessionIdes((current) => message.ides.map((ide) => {
+          const previous = current.find((item) => item.id === ide.id)
+          return previous && previous.generation === ide.generation ? { ...ide, url: previous.url } : ide
+        }))
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
@@ -1598,6 +1615,48 @@ export function App() {
     setArea('workspace')
     setSelectedSessionId(sessionId)
     setLeftPanelOpen(false)
+  }
+
+  const openSessionIde = async (sessionId: string) => {
+    setSelectedSessionId(sessionId)
+    setArea('ide')
+    setLeftPanelOpen(false)
+    if (ideRequests.current.has(sessionId) || ideRequests.current.has(`detach:${sessionId}`)) return
+    ideRequests.current.add(sessionId)
+    setIdePendingSessions((current) => new Set([...current, sessionId]))
+    setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
+    try {
+      const focused = snapshot?.panes.find((pane) => pane.id === focusedPaneId && pane.sessionId === sessionId)
+      const ide = await createSessionIdesApi(token).open(sessionId, focused?.id)
+      // Live broadcasts are authoritative; an older HTTP response must not
+      // replace a newer shared-session attachment list.
+      setSessionIdes((current) => current.some((item) => item.id === ide.id)
+        ? current.map((item) => item.id === ide.id && item.generation === ide.generation ? { ...item, url: ide.url } : item)
+        : [...current, ide])
+      setOpenedIdeIds((current) => new Set([...current, ide.id]))
+    } catch (error) {
+      setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open IDE' }))
+    } finally {
+      ideRequests.current.delete(sessionId)
+      setIdePendingSessions((current) => new Set([...current].filter((id) => id !== sessionId)))
+    }
+  }
+
+  const detachSessionIde = async (sessionId: string) => {
+    if (ideRequests.current.has(sessionId) || ideRequests.current.has(`detach:${sessionId}`)) return
+    ideRequests.current.add(`detach:${sessionId}`)
+    setIdePendingSessions((current) => new Set([...current, sessionId]))
+    setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
+    try {
+      await createSessionIdesApi(token).detach(sessionId)
+      setSessionIdes((current) => current.map((item) => ({ ...item, sessionIds: item.sessionIds.filter((id) => id !== sessionId) })).filter((item) => item.sessionIds.length))
+      setArea('workspace')
+    } catch (error) {
+      setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to detach IDE' }))
+    } finally {
+      ideRequests.current.delete(`detach:${sessionId}`)
+      setIdePendingSessions((current) => new Set([...current].filter((id) => id !== sessionId)))
+    }
   }
 
   const jumpToPane = (paneId: string, expectedTargetId?: string, highlight = false) => {
@@ -2613,6 +2672,9 @@ export function App() {
               onWindowDeleting={clearLayoutTimers}
               onSessionsChanged={refresh}
               onPreferencesChanged={setSessionTreePreferences}
+              ides={sessionIdes}
+              ideSessionId={area === 'ide' ? selectedSessionId : null}
+              onOpenIde={(sessionId) => { void openSessionIde(sessionId) }}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
@@ -2681,6 +2743,7 @@ export function App() {
               ) : null}
             </div>
             <div className="workspace-actions">
+              <button type="button" className="open-session-ide" disabled={!connected || !selectedSessionId} onClick={() => { if (selectedSessionId) void openSessionIde(selectedSessionId) }}><Code2 />{sessionIdes.some((ide) => ide.sessionIds.includes(selectedSessionId ?? '')) ? 'IDE' : 'Open IDE'}</button>
               <label
                 className={`web-layout-toggle${webLayoutAuthoritative ? ' active' : ''}${webLayoutError ? ' has-error' : ''}`}
                 title={webLayoutError || 'Keep tmux window geometry synchronized with the web workspace until unchecked'}
@@ -3018,6 +3081,21 @@ export function App() {
             ) : null}
           </div>
           </> : area === 'linear' ? <LinearSection token={token} /> : null}
+          <SessionIdeView
+            active={area === 'ide'}
+            sessionId={selectedSessionId}
+            sessionName={selectedSession?.name ?? 'Session'}
+            ide={sessionIdes.find((ide) => ide.sessionIds.includes(selectedSessionId ?? ''))}
+            ides={sessionIdes}
+            openedIdeIds={openedIdeIds}
+            pending={idePendingSessions.has(selectedSessionId ?? '')}
+            detaching={ideRequests.current.has(`detach:${selectedSessionId}`)}
+            error={ideErrors[selectedSessionId ?? ''] ?? ''}
+            connected={connected}
+            onOpen={() => { if (selectedSessionId) void openSessionIde(selectedSessionId) }}
+            onDetach={() => { if (selectedSessionId) void detachSessionIde(selectedSessionId) }}
+            onTerminal={() => setArea('workspace')}
+          />
           {area === 'sims' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
               <SimsView token={token} />
