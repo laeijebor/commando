@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /// <reference lib="dom" />
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   inspectExpression,
   inspectPageAt,
@@ -8,7 +8,11 @@ import {
   parseTileSelectorAnchors,
   resolvePageSelectors,
   selectorResolveExpression,
+  revealPageSelector,
+  selectorRevealExpression,
 } from './tile-inspect.js'
+
+afterEach(() => { delete (window as any).redline; vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 function mount(html: string): void {
   document.body.innerHTML = html
@@ -25,6 +29,25 @@ function atPoint(element: Element | null) {
 }
 
 describe('inspectPageAt', () => {
+  it('dispatches only recognized navigation clicks and preserves the flag through validation', () => {
+    mount('<redline-nav><a href="#second"><span>Second</span></a></redline-nav><button id="product">Product action</button>')
+    const navigate = vi.fn()
+    ;(window as any).redline = {
+      isNavigationControl: (target: Element) => Boolean(target.closest('redline-nav a')),
+      navigateReviewControl: navigate,
+    }
+    const target = document.querySelector('span')!
+    atPoint(target)
+    expect(inspectPageAt(document, 1, 1, 'hover')).toMatchObject({ navigation: true })
+    expect(navigate).not.toHaveBeenCalled()
+    const click = inspectPageAt(document, 1, 1, 'click')
+    expect(navigate).toHaveBeenCalledOnce()
+    expect(navigate).toHaveBeenCalledWith(target)
+    expect(parseTileInspectResult(click)).toMatchObject({ navigation: true })
+    atPoint(document.querySelector('#product'))
+    expect(inspectPageAt(document, 1, 1, 'click')).not.toHaveProperty('navigation')
+    expect(navigate).toHaveBeenCalledOnce()
+  })
   it('reports failure when nothing is at the point', () => {
     atPoint(null)
     expect(inspectPageAt(document, 10, 10, 'hover')).toEqual({
@@ -79,6 +102,30 @@ describe('inspectPageAt', () => {
     atPoint(document.querySelector('i'))
     const result = inspectPageAt(document, 1, 1, 'hover')
     if (result.ok) expect(document.querySelector(result.selector)).toBe(document.querySelector('i'))
+  })
+})
+
+describe('selector reveal boundary', () => {
+  it('uses the SDK hook before any fallback scrolling, including in the serialized expression', () => {
+    const reveal = vi.fn(() => true)
+    ;(window as any).redline = { revealSelector: reveal }
+    expect(revealPageSelector(document, '#hidden-question')).toBe(true)
+    expect(reveal).toHaveBeenCalledWith('#hidden-question')
+    expect((0, eval)(selectorRevealExpression('#hidden-question'))).toBe(true)
+    expect(reveal).toHaveBeenCalledTimes(2)
+  })
+
+  it('scrolls external pages with reduced motion, safely handling missing/invalid selectors', () => {
+    mount('<button id="target">External action</button>')
+    const target = document.querySelector<HTMLElement>('#target')!
+    const scroll = vi.fn()
+    target.scrollIntoView = scroll
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    expect(revealPageSelector(document, '#target')).toBe(true)
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'auto', block: 'center', inline: 'nearest' })
+    expect(document.activeElement).toBe(target)
+    expect(revealPageSelector(document, '#missing')).toBe(false)
+    expect(revealPageSelector(document, '[broken')).toBe(false)
   })
 })
 

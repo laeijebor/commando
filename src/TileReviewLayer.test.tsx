@@ -51,6 +51,7 @@ function annotation(id: number, revision = 1, comment = 'Tighten this copy'): We
 afterEach(() => {
   cleanup()
   window.localStorage.clear()
+  vi.unstubAllGlobals()
 })
 
 describe('TileReviewLayer', () => {
@@ -110,6 +111,61 @@ describe('TileReviewLayer', () => {
       comment: 'Needs hierarchy',
     }))
     expect(await screen.findByRole('button', { name: 'Review queue · 1' })).toBeInTheDocument()
+  })
+
+  it('keeps navigation clicks out of annotation cards while ordinary controls remain annotatable', async () => {
+    const input = document.createElement('canvas')
+    let navigation = true
+    const inspect = vi.fn((_x, _y, _grade, receive) => receive({
+      ok: true, selector: '#next', tag: 'button', rect: { x: 10, y: 10, width: 90, height: 30 },
+      ...(navigation ? { navigation: true } : {}),
+    })) as TileReviewSurface['inspect']
+    render(<TileReviewLayer webPaneId="w-nav" reviewMode active
+      containerRef={{ current: document.createElement('div') }} inputRef={{ current: input }}
+      pendingQueue={queue()} surface={surface({ inspect })} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.pointerDown(input, { button: 0, clientX: 20, clientY: 20 })
+    expect(inspect).toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Note about #next' })).not.toBeInTheDocument()
+    navigation = false
+    fireEvent.pointerDown(input, { button: 0, clientX: 20, clientY: 20 })
+    expect(screen.getByRole('textbox', { name: 'Note about #next' })).toBeInTheDocument()
+  })
+
+  it('measures the persistent summary, reserves the viewport, and cleans up layout observers', async () => {
+    const callbacks: ResizeObserverCallback[] = []
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) { callbacks.push(callback) }
+      observe() {}
+      disconnect = disconnect
+    })
+    const container = document.createElement('div')
+    let tileHeight = 600
+    vi.spyOn(container, 'getBoundingClientRect').mockImplementation(() => ({ height: tileHeight } as DOMRect))
+    const { unmount } = render(<TileReviewLayer webPaneId="w-layout" reviewMode={false} active={false}
+      containerRef={{ current: container }} inputRef={{ current: document.createElement('div') }}
+      pendingQueue={queue({ list: async () => ({ notes: [annotation(1)], knownUpTo: 1, dropped: 0 }) })}
+      surface={surface()} />)
+    const toggle = await screen.findByRole('button', { name: 'Review queue · 1' })
+    const strip = screen.getByTestId('pending-queue-strip')
+    vi.spyOn(strip, 'getBoundingClientRect').mockReturnValue({ height: 72 } as DOMRect)
+    callbacks.at(-1)!([], {} as ResizeObserver)
+    expect(container.style.getPropertyValue('--tile-review-strip-height')).toBe('72px')
+    expect(container).toHaveAttribute('data-review-summary')
+    fireEvent.click(toggle)
+    expect(container).toHaveAttribute('data-review-drawer-open')
+    expect(strip).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getAllByRole('button', { name: /^Send all$/ })).toHaveLength(1)
+    tileHeight = 280
+    callbacks.at(-1)!([], {} as ResizeObserver)
+    expect(container).toHaveAttribute('data-review-short-tile')
+    unmount()
+    expect(disconnect).toHaveBeenCalled()
+    expect(container).not.toHaveAttribute('data-review-summary')
+    expect(container.style.getPropertyValue('--tile-review-strip-height')).toBe('')
+    vi.unstubAllGlobals()
   })
 
   it('drops a late click result after review deactivation and teardown', async () => {

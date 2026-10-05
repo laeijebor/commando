@@ -11,6 +11,7 @@ import {
   parseTileInspectResult,
   parseTileSelectorAnchors,
   selectorResolveExpression,
+  selectorRevealExpression,
   type TileInspectGrade,
   type TileInspectResult,
   type TileSelectorAnchor,
@@ -1128,10 +1129,7 @@ export class ChromiumEngine {
   async revealSelector(webPaneId: string, selector: string): Promise<void> {
     const tile = this.tiles.get(webPaneId)
     if (!tile) throw new WebPaneError(404, 'Tile has no live chromium target')
-    const expression = `(()=>{try{const element=document.querySelector(${JSON.stringify(selector)});` +
-      `if(!element)return false;const reduce=matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;` +
-      `element.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center',inline:'nearest'});` +
-      `element.focus?.({preventScroll:true});return true}catch{return false}})()`
+    const expression = selectorRevealExpression(selector)
     await tile.cdp.send('Runtime.evaluate', { expression, returnByValue: true })
   }
 

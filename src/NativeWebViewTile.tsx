@@ -267,7 +267,9 @@ export function NativeWebViewTile({
       fallbackTimer = null
       const attachmentId = attachmentIdRef.current
       if (!attachmentId) return
-      const bounds = slot.getBoundingClientRect()
+      // The review input shares the page's reading viewport. A wide feedback
+      // tray reserves space beside it, and the summary reserves space below.
+      const bounds = inputRef.current?.getBoundingClientRect() ?? slot.getBoundingClientRect()
       const clip = clippingRect(slot)
       const occluders = [...document.querySelectorAll('[data-native-terminal-occluder]')]
         .filter(isVisibleElement)
@@ -312,6 +314,7 @@ export function NativeWebViewTile({
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
     }
     const resizeObserver = new ResizeObserver(schedule)
+    if (inputRef.current) resizeObserver.observe(inputRef.current)
     for (let element: HTMLElement | null = slot; element; element = element.parentElement) {
       resizeObserver.observe(element)
     }

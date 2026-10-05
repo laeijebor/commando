@@ -864,12 +864,13 @@
 
 .tile-review-drawer {
   position: absolute;
-  inset: auto 6px 6px;
+  inset: auto 6px calc(var(--tile-review-strip-height, 44px) + 12px);
   z-index: 5;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  max-height: min(82%, 560px);
-  min-height: min(320px, calc(100% - 12px));
+  max-height: calc(100% - var(--tile-review-strip-height, 44px) - 18px);
+  min-height: 0;
+  height: min(78%, 560px);
   overflow: hidden;
   border: 1px solid var(--border-mid, #2c2740);
   border-radius: 11px;
@@ -1410,10 +1411,6 @@
     display: none;
   }
 
-  .tile-review-drawer {
-    max-height: calc(100% - 12px);
-  }
-
   .tile-review-drawer-body {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(92px, 0.58fr) minmax(190px, 1.42fr);
@@ -1461,3 +1458,86 @@
     grid-column: 1 / -1;
   }
 }
+
+/* Redline feedback stays local to the tile: a sheet until a 400px tray can
+   leave at least 700px of reading space. Summary/actions remain reachable. */
+.tile-review-strip,
+.tile-review-drawer {
+  --surface-deep: #11151b;
+  --surface: #1c232d;
+  --surface-raised: #1c232d;
+  --surface-hover: #252e3b;
+  --border: #374252;
+  --border-mid: #374252;
+  --text: #eef0f7;
+  --text-soft: #eef0f7;
+  --muted: #b4becd;
+  --text-faint: #b4becd;
+  --accent: #b5a8ff;
+  --green: #92d3b1;
+  --amber: #edc88b;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: none;
+}
+.tile-review-strip {
+  flex-wrap: wrap;
+  min-height: 44px;
+  padding: 6px 8px;
+  z-index: 6;
+  max-height: 50%;
+  overflow: auto;
+}
+.tile-review-summary { color: #b4becd; font-size: 12px; overflow-wrap: anywhere; }
+.tile-review-queue-toggle { font-family: inherit; font-size: 12px; }
+.tile-review-strip-items { display: none; }
+.tile-review-strip-actions { margin-left: auto; flex-wrap: wrap; }
+.tile-review-send-all { padding: 7px 10px; font-family: inherit; font-size: 12px; color: #11151b; background: #b5a8ff; letter-spacing: 0; }
+.tile-review-send-all.is-build { background: transparent; color: #b4becd; border: 1px solid #374252; font-weight: 600; }
+.tile-review-drawer {
+  min-width: 0;
+}
+.tile-review-drawer-head { align-items: flex-start; }
+.tile-review-drawer-head > div:first-child { min-width: 0; }
+.tile-review-drawer-head strong { font-size: 13px; overflow-wrap: anywhere; }
+.tile-review-drawer-body { grid-template-columns: minmax(150px, .72fr) minmax(0, 1.4fr); }
+.tile-review-drawer-list, .tile-review-drawer-detail { min-height: 0; overscroll-behavior: contain; }
+.tile-review-detail-heading { flex-wrap: wrap; }
+.tile-review-detail-heading h3 { overflow-wrap: anywhere; }
+.tile-review-detail-actions { flex-wrap: wrap; }
+.tile-review-filters button, .tile-review-show-context { font-family: inherit; font-size: 11px; }
+.tile-review-type, .tile-review-list-meta { font-family: inherit; font-size: 10px; }
+.tile-review-list-item strong { font-size: 13px; }
+.tile-review-list-preview { font-size: 12px; }
+.tile-review-drawer :is(textarea, input, select) { font-size: 14px; }
+.tile-review-drawer :is(button, input, textarea, select):focus-visible,
+.tile-review-strip button:focus-visible { outline: 2px solid #b5a8ff; outline-offset: 2px; }
+@container chromium-tile (min-width: 1100px) {
+  .tile-review-drawer { inset: 6px 6px calc(var(--tile-review-strip-height, 44px) + 12px) auto; width: 400px; height: auto; max-height: none; }
+  [data-review-drawer-open] > :is(.chromium-tile-canvas, .web-pane-native-review-input) { width: calc(100% - 416px); }
+  .tile-review-drawer-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, .55fr) minmax(0, 1fr); }
+  .tile-review-drawer-list { border-right: 0; border-bottom: 1px solid #374252; }
+}
+@container chromium-tile (max-width: 620px) {
+  .tile-review-drawer-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, .5fr) minmax(0, 1fr); }
+  .tile-review-strip { gap: 6px; }
+  .tile-review-summary { flex: 1; }
+  .tile-review-strip-actions { flex-basis: 100%; justify-content: flex-end; }
+}
+
+/* Resize the real browser/WebView viewport with the available reading area;
+   keeping the page full width underneath an opaque tray would hide evidence. */
+[data-review-summary] > .chromium-tile-canvas {
+  flex: none;
+  height: calc(100% - var(--tile-review-strip-height, 44px) - 12px);
+}
+[data-review-summary] > .web-pane-native-review-input {
+  bottom: calc(var(--tile-review-strip-height, 44px) + 12px);
+}
+
+[data-review-short-tile] .tile-review-drawer {
+  display: block;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+[data-review-short-tile] .tile-review-drawer-body { display: block; }
+[data-review-short-tile] .tile-review-drawer-list { max-height: 110px; }

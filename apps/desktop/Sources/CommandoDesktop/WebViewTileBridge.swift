@@ -113,6 +113,10 @@ enum WebViewTileProtocol {
         tag: target.tagName.toLowerCase().slice(0, 32),
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     };
+    target.removeAttribute("data-redline-navigation-result");
+    target.dispatchEvent(new Event(inspectGrade === "click" ? "redline-navigation-click" : "redline-navigation-probe", { bubbles: true }));
+    if (target.hasAttribute("data-redline-navigation-result")) result.navigation = true;
+    target.removeAttribute("data-redline-navigation-result");
     if (inspectGrade === "click") {
         const text = (target.textContent || "").trim();
         if (text) result.text = text.slice(0, 512);
@@ -170,9 +174,16 @@ enum WebViewTileProtocol {
     """
 
     static let revealSelectorScript = """
+    if (typeof window.redline?.revealSelector === "function") return window.redline.revealSelector(revealSelector);
     let element = null;
     try { element = document.querySelector(revealSelector); } catch { return false; }
     if (!element || !element.isConnected) return false;
+    element.removeAttribute("data-redline-reveal-result");
+    element.dispatchEvent(new Event("redline-reveal-target", { bubbles: true }));
+    if (element.hasAttribute("data-redline-reveal-result")) {
+        element.removeAttribute("data-redline-reveal-result");
+        return true;
+    }
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
     element.scrollIntoView({
         behavior: reduceMotion ? "auto" : "smooth",
@@ -1246,6 +1257,7 @@ final class WebViewTileBridge: NSObject {
             "tag": clipped(tag, length: WebViewTileProtocol.maxInspectTagLength),
             "rect": rect,
         ]
+        if result["navigation"] as? Bool == true { parsed["navigation"] = true }
         if let text = result["text"] as? String {
             parsed["text"] = clipped(text, length: WebViewTileProtocol.maxInspectTextLength)
         }

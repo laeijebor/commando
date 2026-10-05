@@ -428,8 +428,10 @@ describe('ChromiumEngine', () => {
       sent: sent.answers,
     })
 
+    const priorEvaluations = pagePendingEvaluations(stub, 'T1').length
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/other.html' } })
     await until(() => onPageNavigated.mock.calls.length === 2, 'second page report')
+    await until(() => pagePendingEvaluations(stub, 'T1').length > priorEvaluations, 'second page pending hydration')
     expect(snapshotFromEvaluation(pagePendingEvaluations(stub, 'T1').at(-1) as CdpCall)).toEqual({
       version: 1,
       controls: [],
@@ -1170,7 +1172,8 @@ describe('ChromiumEngine', () => {
       await engine.revealSelector('w-11111111', '#question')
 
       const call = stub.calls.filter((entry) => entry.method === 'Runtime.evaluate').at(-1)
-      expect(String(call?.params?.expression)).toContain('document.querySelector("#question")')
+      expect(String(call?.params?.expression)).toContain('(document, "#question")')
+      expect(String(call?.params?.expression)).toContain('redline.revealSelector(selector)')
       expect(String(call?.params?.expression)).toContain('scrollIntoView')
     })
   })

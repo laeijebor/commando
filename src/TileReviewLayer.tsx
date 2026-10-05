@@ -620,12 +620,38 @@ export function TileReviewLayer({
   const clickGeneration = useRef(0)
   const anchorGeneration = useRef(0)
   const queueToggleRef = useRef<HTMLButtonElement | null>(null)
+  const stripRef = useRef<HTMLDivElement | null>(null)
   const drawerRef = useRef<HTMLElement | null>(null)
   const drawerDetailRef = useRef<HTMLDivElement | null>(null)
   const drawerWasOpenRef = useRef(false)
   const focusDetailAfterQueueRef = useRef(false)
   const unansweredFilterRef = useRef<HTMLButtonElement | null>(null)
   const previousUnansweredCountRef = useRef(0)
+
+  const hasReviewSummary = questions.length > 0 || queued.length > 0 || dropped > 0
+  useEffect(() => {
+    const container = containerRef.current
+    const strip = stripRef.current
+    if (!container || !strip || !hasReviewSummary) return
+    container.setAttribute('data-review-summary', '')
+    container.toggleAttribute('data-review-drawer-open', drawerOpen)
+    const measure = () => {
+      const height = Math.ceil(strip.getBoundingClientRect().height)
+      container.style.setProperty('--tile-review-strip-height', `${height}px`)
+      container.toggleAttribute('data-review-short-tile', container.getBoundingClientRect().height < 360)
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(strip)
+    observer?.observe(container)
+    return () => {
+      observer?.disconnect()
+      container.removeAttribute('data-review-summary')
+      container.removeAttribute('data-review-drawer-open')
+      container.removeAttribute('data-review-short-tile')
+      container.style.removeProperty('--tile-review-strip-height')
+    }
+  }, [containerRef, hasReviewSummary, drawerOpen])
 
   useEffect(() => {
     hoverGeneration.current += 1
@@ -852,7 +878,7 @@ export function TileReviewLayer({
       const generation = ++hoverGeneration.current
       surfaceRef.current.inspect(x, y, 'hover', (result) => {
         if (generation !== hoverGeneration.current) return
-        setHighlight(result.ok ? result.rect : null)
+        setHighlight(result.ok && !result.navigation ? result.rect : null)
       })
     })
     hoverThrottle.current = throttle
@@ -880,6 +906,12 @@ export function TileReviewLayer({
       const generation = ++clickGeneration.current
       surfaceRef.current.inspect(point.x, point.y, 'click', (result) => {
         if (generation !== clickGeneration.current) return
+        if (result.ok && result.navigation) {
+          setCard(null)
+          setHint(null)
+          setHighlight(null)
+          return
+        }
         if (!result.ok) {
           setCard(null)
           setHint(point)
@@ -1449,10 +1481,11 @@ export function TileReviewLayer({
           </footer>
         </section>
       )}
-      {(questions.length > 0 || queued.length > 0 || dropped > 0) && (
+      {hasReviewSummary && (
         <>
-          {!drawerOpen ? (
+          {(
             <div
+              ref={stripRef}
               className="tile-review-strip"
               data-testid="pending-queue-strip"
               data-native-terminal-occluder=""
@@ -1480,14 +1513,18 @@ export function TileReviewLayer({
                   ref={queueToggleRef}
                   type="button"
                   className="tile-review-queue-toggle"
-                  aria-expanded="false"
-                  onClick={openDrawer}
+                  aria-expanded={drawerOpen}
+                  onClick={() => drawerOpen ? setDrawerOpen(false) : openDrawer()}
                 >
                   {questions.length > 0
                     ? `Answer queue · ${questions.length}`
                     : `Review queue · ${queued.length}`}
                 </button>
               )}
+              <span className="tile-review-summary" role="status">
+                {questions.length > 0 ? `${unansweredQuestions.length} unanswered · ` : ''}{queued.length} queued
+                {questionItems.some((item) => item.sent) ? ` · ${questionItems.filter((item) => item.sent).length} sent` : ''}
+              </span>
               <div className="tile-review-strip-items" aria-hidden="true">
                 {(questions.length > 0 ? questionItems : queued).slice(0, 3).map((item) => (
                   <span
@@ -1525,9 +1562,10 @@ export function TileReviewLayer({
                   </button>
                 </div>
               )}
-              {queueError && <span className="tile-review-error" role="alert">{queueError}</span>}
+              {queueError && !drawerOpen && <span className="tile-review-error" role="alert">{queueError}</span>}
             </div>
-          ) : (
+          )}
+          {drawerOpen && (
             <section
               ref={drawerRef}
               className="tile-review-drawer"
@@ -1574,22 +1612,6 @@ export function TileReviewLayer({
                   )}
                 </div>
                 <div className="tile-review-drawer-actions">
-                  <button
-                    type="button"
-                    className="tile-review-send-all"
-                    disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
-                    onClick={() => void sendAll()}
-                  >
-                    {sendingAllMode === 'send' ? 'Saving and sending…' : 'Send all'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tile-review-send-all is-build"
-                    disabled={sendingAll || busyIds.size > 0 || queued.length === 0}
-                    onClick={() => void sendAll('build')}
-                  >
-                    {sendingAllMode === 'build' ? 'Sending for build…' : 'Send all + Build'}
-                  </button>
                   <button
                     type="button"
                     className="tile-review-collapse"

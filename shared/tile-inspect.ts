@@ -13,6 +13,7 @@ export type TileInspectSuccess = {
   rect: TileInspectRect
   text?: string
   snippet?: string
+  navigation?: boolean
 }
 export type TileInspectFailure = { ok: false; error: string }
 export type TileInspectResult = TileInspectSuccess | TileInspectFailure
@@ -75,6 +76,11 @@ export function inspectPageAt(
     selector: parts.join(' > ').slice(0, 1024),
     tag: target.tagName.toLowerCase().slice(0, 32),
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+  }
+  const redline = (doc.defaultView as (Window & { redline?: { isNavigationControl?: (target: Element) => boolean; navigateReviewControl?: (target: Element) => boolean } }) | null)?.redline
+  if (redline?.isNavigationControl?.(target)) {
+    result.navigation = true
+    if (grade === 'click') redline.navigateReviewControl?.(target)
   }
   if (grade === 'click') {
     const text = (target.textContent ?? '').trim()
@@ -141,6 +147,28 @@ export function selectorResolveExpression(items: readonly TileSelectorResolveIte
   return `(() => { var __name = (fn) => fn; return (${resolvePageSelectors.toString()})(document, JSON.parse(${JSON.stringify(payload)})); })()`
 }
 
+/** Page-side reveal boundary, shared with offline tests. Keep self-contained. */
+export function revealPageSelector(doc: Document, selector: string): boolean {
+  try {
+    const win = doc.defaultView as (Window & {
+      redline?: { revealSelector?: (selector: string) => boolean }
+    }) | null
+    if (typeof win?.redline?.revealSelector === 'function') return win.redline.revealSelector(selector)
+    const element = doc.querySelector<HTMLElement>(selector)
+    if (!element) return false
+    const reduce = win?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    element.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center', inline: 'nearest' })
+    element.focus?.({ preventScroll: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function selectorRevealExpression(selector: string): string {
+  return `(() => { var __name = (fn) => fn; return (${revealPageSelector.toString()})(document, ${JSON.stringify(selector)}); })()`
+}
+
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -178,6 +206,7 @@ export function parseTileInspectResult(value: unknown): TileInspectResult | null
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     ...(record.text !== undefined ? { text: record.text.slice(0, MAX_INSPECT_TEXT) } : {}),
     ...(record.snippet !== undefined ? { snippet: record.snippet.slice(0, MAX_INSPECT_SNIPPET) } : {}),
+    ...(record.navigation === true ? { navigation: true } : {}),
   }
 }
 

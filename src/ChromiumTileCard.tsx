@@ -214,9 +214,9 @@ export function ChromiumTileCard({
     }
 
     const sendViewport = (targetSocket = socket) => {
-      const container = containerRef.current
-      if (!container || !targetSocket || targetSocket.readyState !== WebSocket.OPEN) return
-      const rect = container.getBoundingClientRect()
+      const canvas = canvasRef.current
+      if (!canvas || !targetSocket || targetSocket.readyState !== WebSocket.OPEN) return
+      const rect = canvas.getBoundingClientRect()
       if (rect.width < 1 || rect.height < 1) return
       targetSocket.send(JSON.stringify({
         type: 'viewport',
@@ -384,6 +384,7 @@ export function ChromiumTileCard({
         }, VIEWPORT_THROTTLE_MS)
       })
       observer.observe(containerRef.current)
+      if (canvasRef.current) observer.observe(canvasRef.current)
     }
 
     return () => {
