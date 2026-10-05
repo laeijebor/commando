@@ -1292,7 +1292,8 @@ async function main(): Promise<void> {
   }
 
   const sessionIdes = new SessionIdeService({
-    dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
+    dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
+    legacyDataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
     onChange: () => {
       sessionIdeApi.retainOrigins()
       broadcast({ type: 'session_ides', ides: sessionIdes.list() })

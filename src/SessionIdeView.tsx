@@ -36,10 +36,10 @@ export function SessionIdeView({
             if (!connected || pending) event.preventDefault()
           }}>{detaching ? <LoaderCircle className="spin" /> : <Unplug />}{detaching ? 'Detaching…' : 'Detach IDE'}</summary>
           <div className="session-ide-detach-confirm" role="group" aria-label="Confirm IDE detachment" data-native-terminal-occluder="">
-            <strong>{ide.sessionIds.length > 1 ? 'Detach this session?' : 'Detach and stop this IDE?'}</strong>
+            <strong>{ide.sessionIds.length > 1 ? 'Detach this session?' : 'Detach this worktree IDE?'}</strong>
             <p>{ide.sessionIds.length > 1
               ? 'Other attached sessions will keep the shared IDE running. To just hide it, use Minimize IDE.'
-              : 'Save your files first. Detaching the last session stops code-server and may lose unsaved buffers. Minimize IDE keeps them open.'}</p>
+              : 'Save your files first. Detaching closes this worktree’s editor and may lose unsaved buffers. Code-server stops when no worktrees remain attached. Minimize IDE keeps them open.'}</p>
             <div className="session-ide-confirm-actions">
               <button type="button" onClick={(event) => {
                 const details = event.currentTarget.closest('details')!

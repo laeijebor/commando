@@ -7,11 +7,13 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { SessionIde } from '../shared/protocol.js'
+import { importIdeProfile } from './ide-profile.js'
 
 export type IdeRuntime = { socketPath: string; stop(): Promise<void> }
 export type IdeLaunchOptions = {
   workspacePath: string
   dataDirectory: string
+  legacyDataDirectory?: string
   signal: AbortSignal
   onExit: () => void
 }
@@ -47,6 +49,7 @@ function health(socketPath: string): Promise<boolean> {
 export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRuntime> {
   const binary = await codeServerBinary()
   await mkdir(options.dataDirectory, { recursive: true, mode: 0o700 })
+  await importIdeProfile(options.dataDirectory, options.legacyDataDirectory)
   const settingsDirectory = join(options.dataDirectory, 'user-data', 'User')
   await mkdir(settingsDirectory, { recursive: true })
   // Seed only new profiles; users retain control of their editor preferences.
@@ -69,7 +72,7 @@ export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRu
     '--extensions-dir', join(options.dataDirectory, 'extensions'),
     '--disable-telemetry', '--disable-update-check', '--disable-proxy',
     options.workspacePath,
-  ], { cwd: options.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  ], { cwd: options.dataDirectory, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
   let ended = false
   let failure: Error | undefined
   // Consume pipes to avoid backpressure; never expose process output or environment secrets.
@@ -117,12 +120,77 @@ export class SessionIdeService {
   private readonly entries = new Map<string, IdeEntry>()
   private readonly sessions = new Map<string, IdeEntry>()
   private closed = false
+  private stoppingBackend: Promise<void> = Promise.resolve()
+  // One writer for preferences and extension installs, multiple folder workbenches.
+  private backend?: {
+    abort: AbortController
+    task: Promise<IdeRuntime>
+    owners: Set<IdeEntry>
+  }
 
   constructor(private readonly options: {
     dataDirectory?: string
+    legacyDataDirectory?: string
     launch?: (options: IdeLaunchOptions) => Promise<IdeRuntime>
     onChange?: () => void
   } = {}) {}
+
+  private async acquireBackend(entry: IdeEntry): Promise<IdeRuntime> {
+    if (entry.abort.signal.aborted) throw new Error('IDE startup cancelled')
+    let backend = this.backend
+    if (!backend) {
+      const abort = new AbortController()
+      const owners = new Set<IdeEntry>([entry])
+      const key = createHash('sha256').update(entry.public.workspacePath).digest('hex').slice(0, 24)
+      const root = this.options.dataDirectory ?? join(homedir(), '.commando', 'ides')
+      const stopped = this.stoppingBackend
+      const next = {
+        abort, owners,
+        task: stopped.then(() => (this.options.launch ?? launchCodeServer)({
+          workspacePath: entry.public.workspacePath,
+          dataDirectory: join(root, 'base'),
+          legacyDataDirectory: join(this.options.legacyDataDirectory ?? root, key),
+          signal: abort.signal,
+          onExit: () => {
+            if (this.backend !== next || abort.signal.aborted) return
+            this.backend = undefined
+            for (const owner of owners) {
+              owner.public.state = 'failed'
+              owner.public.error = 'code-server stopped unexpectedly. Reopen the IDE to retry.'
+            }
+            this.options.onChange?.()
+          },
+        })),
+      }
+      this.backend = backend = next
+      // A failed launch can be retried without retaining a rejected backend.
+      void next.task.catch(() => { if (this.backend === next) this.backend = undefined })
+    } else {
+      backend.owners.add(entry)
+    }
+    const owned = backend
+    let releasing: Promise<void> | undefined
+    const release = (): Promise<void> => releasing ??= (async () => {
+      if (!owned.owners.delete(entry) || owned.owners.size) return
+      if (this.backend === owned) this.backend = undefined
+      owned.abort.abort()
+      this.stoppingBackend = owned.task.then((runtime) => runtime.stop(), () => undefined)
+      await this.stoppingBackend
+    })()
+    const abort = () => { void release() }
+    entry.abort.signal.addEventListener('abort', abort, { once: true })
+    try {
+      const runtime = await owned.task
+      return { socketPath: runtime.socketPath, stop: async () => {
+        entry.abort.signal.removeEventListener('abort', abort)
+        await release()
+      } }
+    } catch (error) {
+      entry.abort.signal.removeEventListener('abort', abort)
+      await release()
+      throw error
+    }
+  }
 
   list(): SessionIde[] {
     return [...this.entries.values()].map(({ public: ide }) => ({ ...ide, sessionIds: [...ide.sessionIds] }))
@@ -179,23 +247,11 @@ export class SessionIdeService {
       current.public.error = undefined
       current.public.generation += 1
       this.options.onChange?.()
-      const key = createHash('sha256').update(current.public.workspacePath).digest('hex').slice(0, 24)
-      const generation = current.public.generation
       current.task = (async () => {
         try {
           await current.runtime?.stop()
           current.runtime = undefined
-          const runtime = await (this.options.launch ?? launchCodeServer)({
-            workspacePath: current.public.workspacePath,
-            dataDirectory: join(this.options.dataDirectory ?? join(homedir(), '.commando', 'ides'), key),
-            signal: current.abort.signal,
-            onExit: () => {
-              if (this.entries.get(current.public.id) !== current || current.abort.signal.aborted || current.public.generation !== generation) return
-              current.public.state = 'failed'
-              current.public.error = 'code-server stopped unexpectedly. Reopen the IDE to retry.'
-              this.options.onChange?.()
-            },
-          })
+          const runtime = await this.acquireBackend(current)
           if (current.abort.signal.aborted) { await runtime.stop(); throw new Error('IDE startup cancelled') }
           current.runtime = runtime
           current.public.state = 'ready'

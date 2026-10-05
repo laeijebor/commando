@@ -42,29 +42,34 @@ describe('session IDE ownership', () => {
     expect(service.list()).toEqual([])
   })
 
-  it('starts independent processes for different worktrees and prunes removed sessions', async () => {
+  it('shares a single setup/backend across different worktrees and prunes removed sessions', async () => {
     await service.attach('$1', directory)
     await service.attach('$2', join(directory, 'other'))
-    expect(launch).toHaveBeenCalledTimes(2)
+    expect(launch).toHaveBeenCalledTimes(1)
     await service.retain(new Set(['$2']))
     expect(service.forSession('$1')).toBeUndefined()
     expect(service.forSession('$2')?.state).toBe('ready')
+    expect(stop).not.toHaveBeenCalled()
+    await service.detach('$2')
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
-  it('isolates persistent profiles by worktree and reuses each profile after detaching', async () => {
+  it('keeps workbench identities separate while reusing the persistent shared profile', async () => {
     const first = await service.attach('$1', directory)
     const second = await service.attach('$2', join(directory, 'other'))
     expect(first.id).not.toBe(second.id)
     const profileA = launch.mock.calls[0][0].dataDirectory
-    const profileB = launch.mock.calls[1][0].dataDirectory
-    expect(profileA).not.toBe(profileB)
+    expect(profileA).toBe(join(directory, 'base'))
     expect(launch.mock.calls[0][0].workspacePath).toBe(first.workspacePath)
-    expect(launch.mock.calls[1][0].workspacePath).toBe(second.workspacePath)
+    expect(service.get(second.id)?.url).toContain(encodeURIComponent(second.workspacePath))
     await service.detach('$1')
     await service.attach('$1', directory)
-    expect(launch.mock.calls[2][0].dataDirectory).toBe(profileA)
+    expect(launch).toHaveBeenCalledTimes(1)
     expect(service.forSession('$2')?.id).toBe(second.id)
+    await service.close()
+    service = new SessionIdeService({ launch, dataDirectory: directory })
+    await service.attach('$3', join(directory, 'other'))
+    expect(launch.mock.calls[1][0].dataDirectory).toBe(profileA)
   })
 
   it('reports failed startups and retries on the same attachment', async () => {
@@ -118,5 +123,47 @@ describe('session IDE ownership', () => {
     await service.attach('$1', directory)
     oldExit()
     expect(service.forSession('$1')?.state).toBe('ready')
+  })
+
+  it('marks all workbenches failed on backend exit and shares their retry', async () => {
+    await service.attach('$1', directory)
+    await service.attach('$2', join(directory, 'other'))
+    launch.mock.calls[0][0].onExit()
+    expect(service.list().every((ide) => ide.state === 'failed')).toBe(true)
+    await Promise.all([service.attach('$1', directory), service.attach('$2', join(directory, 'other'))])
+    expect(launch).toHaveBeenCalledTimes(2)
+    expect(service.list().every((ide) => ide.state === 'ready')).toBe(true)
+  })
+
+  it('does not cancel a shared startup when just one worktree detaches', async () => {
+    let ready!: (runtime: IdeRuntime) => void
+    launch.mockImplementation(() => new Promise((resolve) => { ready = resolve }))
+    const opening = service.attach('$1', directory)
+    const rejected = expect(opening).rejects.toThrow('cancelled')
+    const other = service.attach('$2', join(directory, 'other'))
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(service.list()).toHaveLength(2))
+    const detached = service.detach('$1')
+    expect(launch.mock.calls[0][0].signal.aborted).toBe(false)
+    ready({ socketPath: '/test/shared', stop })
+    await detached
+    await rejected
+    expect((await other).state).toBe('ready')
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('waits for the old writer to stop before reopening the shared profile', async () => {
+    let finish!: () => void
+    stop.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    await service.attach('$1', directory)
+    const detached = service.detach('$1')
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce())
+    const reopened = service.attach('$2', join(directory, 'other'))
+    await vi.waitFor(() => expect(service.list()).toHaveLength(1))
+    expect(launch).toHaveBeenCalledTimes(1)
+    finish()
+    await detached
+    expect((await reopened).state).toBe('ready')
+    expect(launch).toHaveBeenCalledTimes(2)
   })
 })

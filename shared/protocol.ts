@@ -324,7 +324,7 @@ export type CommandoSnapshot = {
   ports: OpenPort[]
 }
 
-/** One daemon-owned editor per canonical checkout, attached to one or more sessions. */
+/** One workbench per canonical checkout, backed by the daemon's shared editor. */
 export type SessionIde = {
   id: string
   sessionIds: string[]
