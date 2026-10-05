@@ -105,12 +105,15 @@ Use **Open IDE** in a session's toolbar, the code icon on its sidebar row, or
 in the left-hand menu; click it to return to the editor. **Minimize IDE** returns
 to the session's panes without unloading the editor or discarding its buffers.
 
-The daemon starts code-server lazily. Each session attaches to at most one
+The daemon starts one shared code-server backend lazily. Each session attaches to at most one
 workspace, selected from the focused pane's exact Git checkout/worktree root
 (or its directory when it is outside Git). Reopening reuses that attachment;
-sessions on the same canonical workspace share one code-server process.
+sessions on the same canonical workspace share one editor frame. Different
+worktrees have separate folder workbenches backed by the same code-server process,
+so settings and extension installs have a single owner rather than concurrent writers.
 **Detach IDE** opens an in-app confirmation; **Confirm detach** removes a
-session's attachment and stops the process when no sessions remain. Save files
+session's attachment and closes its editor when no sessions use that worktree.
+The shared backend stops when no worktrees remain attached. Save files
 before detaching the last session. Deleted or
 archived sessions are pruned, and daemon shutdown stops its owned IDEs.
 
@@ -122,32 +125,50 @@ HttpOnly, path-scoped cookie; no unauthenticated code-server TCP listener or
 owner token is exposed. For local clients, each IDE gets a lightweight,
 authenticated loopback proxy on a distinct port. This gives VS Code a separate
 browser origin for its configuration cache, storage and workers as well as
-its separate backend profile. Proxy listeners are closed with their IDEs.
+its folder-specific workspace storage. Proxy listeners are closed with their IDEs.
 This PoC requires a Unix host (macOS/Linux). Non-loopback clients currently
 retain the main proxy route; per-origin remote routing is a follow-up.
 
-Profiles and extensions are stored per daemon port and workspace under
-`~/.commando/ides/<port>/`; override the base with `COMMANDO_IDE_DATA_DIR` for
-isolated runs. New profiles start with a dark theme, no welcome editor or AI
+The shared profile and extensions persist under `~/.commando/ides/base/`,
+independent of daemon port or checkout path. `user-data/User/settings.json`
+and `keybindings.json` are the common preferences; `extensions/` contains
+installed extensions. Set `COMMANDO_IDE_DATA_DIR` to a private root for every
+additional daemon/test stack (its profile goes in `<root>/base/`). New profiles
+start with a dark theme, no welcome editor or AI
 chat, and telemetry disabled. Existing preferences are preserved. Attachments
 are currently daemon-lifetime state: after a daemon restart, use **Open IDE**
 again. The PoC does not automatically install Python/Swift extensions.
 Install compatible extensions from Open VSX; native macOS execution gives
 Swift tooling access to the installed Apple toolchain.
 
-Different worktrees have different workspace folders, editor frames, tabs,
-settings and extension directories. Sessions using the same worktree share
+Different worktrees have different workspace folders, editor frames, tabs and
+workspace storage. User settings, keybindings and installed extensions are shared.
+Project `.vscode/settings.json` still overrides the common user preferences.
+Sessions using the same worktree share
 that worktree's IDE. The attachment stays pinned to the checkout selected on
 first open; to change it after moving a session to a different checkout,
 detach and reopen the IDE.
 
 Use the IDE's **Extensions** view to install from Open VSX, and **Manage →
 Settings**, **Color Theme**, or **Keyboard Shortcuts** to customize it normally.
-User preferences and extension installations are currently per worktree, not
-shared with desktop VS Code or other worktrees. We only seed defaults for new
+Saved preferences and extensions carry into new worktrees and survive backend
+and daemon restarts. Existing workbenches may cache User settings: after changing
+them in another worktree, use **Developer: Reload Window** to pick up the latest
+saved setup. Extensions may also request a reload; Commando never automatically
+reloads editors over unsaved work. Desktop VS Code configuration is not imported
+automatically. We only seed defaults for new
 profiles. Microsoft Marketplace/proprietary extensions are not interchangeable
 with the Open VSX ecosystem; VSIX installation still requires a compatible,
 appropriately licensed extension.
+
+On the first launch of a new shared base, Commando copies settings, keybindings
+and extension packages from the selected worktree's old PoC profile
+(`~/.commando/ides/<daemon-port>/<workspace-hash>/`, or `<root>/<workspace-hash>/`
+for a custom root). Original profiles are preserved. The first selected profile
+becomes the base; later profiles never overwrite an established setup. Workspace
+storage and cached extension registry paths are not imported. To bring in a
+different old setup, save/merge its preferences deliberately and reinstall its
+additional extensions through the normal Extensions UI.
 
 An opt-in Playwright regression covers shared processes, sidebar badges,
 TypeScript file editing, retained buffers, proxy authentication and detach:
@@ -170,9 +191,18 @@ your regular Commando daemon.
 disposable, distinct Git worktrees named `worktree-a` and `worktree-b`, with
 sessions `Worktree-A` and `Worktree-B` and files `ide-fixtures/a-only.ts` and
 `ide-fixtures/b-only.ts` containing `WORKTREE_A` and `WORKTREE_B` respectively.
-It checks separate contexts, preserved tabs, a user-settings edit and a real
-Dracula theme installation from Open VSX in A without changing B. It requires
+It checks separate contexts and preserved tabs, a shared user-settings edit,
+a real Dracula theme installation inherited by B, deliberate configuration
+reload and backend-stop/reopen persistence. It requires
 network access and must only target disposable editor profiles.
+
+Optional `COMMANDO_IDE_SHARED_MIGRATION_E2E=1` checks a legacy A profile seeded
+with font size 19, a theme named `Commando Legacy` (editor background `#151515`)
+and a Ctrl+Alt+9 → New Untitled File binding, plus a third `Worktree-C` with
+`ide-fixtures/c-only.ts` and a project font-size override of 18. After the first
+test, restart only the disposable daemon while preserving its profile and set
+`COMMANDO_IDE_SHARED_RESTART_E2E=1`; run the `daemon restart` test to verify font
+size 24, Dracula and the imported keybinding persist across a full daemon restart.
 
 ## Web Pane Tiles
 
