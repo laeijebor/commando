@@ -10,7 +10,8 @@ const MAX_FILE_BYTES = 128 * 1024
 const MAX_TOTAL_BYTES = 2 * 1024 * 1024
 type GitResult = { stdout: string; code: number }
 type GitRunner = (args: string[], cwd: string, allowConflict?: boolean) => Promise<GitResult>
-type Inspection = Pick<PrConflicts, 'baseRefName' | 'headRefName' | 'baseOid' | 'headOid'> & { repo: string; number: number }
+// GitHub's base.sha is the target tip when the PR was last synced, not now, so the live target tip is fetched instead.
+type Inspection = Pick<PrConflicts, 'baseRefName' | 'headRefName' | 'headOid'> & { repo: string; number: number }
 
 export class PrConflictError extends Error {
   constructor(message: string, readonly status = 502) { super(message) }
@@ -63,9 +64,9 @@ export class PrConflictInspector {
   constructor(private options: { git?: GitRunner; remote?: (repo: string) => string } = {}) {}
 
   inspect(input: Inspection): Promise<PrConflicts> {
-    if (!OID.test(input.baseOid) || !OID.test(input.headOid) || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/.test(input.repo)
+    if (!OID.test(input.headOid) || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/.test(input.repo)
       || !Number.isSafeInteger(input.number) || input.number < 1) return Promise.reject(new PrConflictError('Invalid conflict inspection input', 400))
-    const key = JSON.stringify([input.repo.toLowerCase(), input.number, input.baseRefName, input.headRefName, input.baseOid, input.headOid])
+    const key = JSON.stringify([input.repo.toLowerCase(), input.number, input.baseRefName, input.headRefName, input.headOid])
     const cached = this.cache.get(key)
     if (cached && Date.now() - cached.at < 60_000) return cached.promise
     if (this.active >= 2) return Promise.reject(new PrConflictError('Conflict inspections are busy. Retry shortly.', 429))
@@ -91,7 +92,7 @@ export class PrConflictInspector {
         `+refs/heads/${input.baseRefName}:refs/heads/target`, `+refs/pull/${input.number}/head:refs/heads/proposed`], directory)
       const base = (await git(['rev-parse', 'refs/heads/target'], directory)).stdout.trim()
       const head = (await git(['rev-parse', 'refs/heads/proposed'], directory)).stdout.trim()
-      if (base !== input.baseOid || head !== input.headOid) throw new PrConflictError('The PR or target changed during inspection. Retry for the latest commits.', 409)
+      if (head !== input.headOid) throw new PrConflictError('The PR changed during inspection. Retry for the latest commits.', 409)
       const result = await git(['merge-tree', '--write-tree', '--name-only', '--messages', '-z', base, head], directory, true)
       const parsed = parseMergeTree(result.stdout, result.code)
       const files: PrConflicts['files'] = []

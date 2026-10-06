@@ -365,7 +365,7 @@ export function PrQuickLook({
               number={pr.number}
               api={api}
               onLoaded={(value) => setConflictSnapshot({ api, references, revision: references, value })}
-              expected={{ headOid: pr.headRefOid, baseOid: pr.baseRefOid, baseRefName: pr.baseRefName }}
+              expected={{ headOid: pr.headRefOid, baseRefName: pr.baseRefName }}
               onRefresh={onRefresh}
             />
           ) : null}

@@ -14,7 +14,7 @@ export function PrConflictPanel({
   number: number
   api: PrsApiClient
   onLoaded(value: PrConflicts): void
-  expected?: { headOid?: string; baseOid?: string; baseRefName?: string }
+  expected?: { headOid?: string; baseRefName?: string }
   onRefresh?(): Promise<void>
 }) {
   const [result, setResult] = useState<PrConflicts | null>(null)
@@ -25,7 +25,6 @@ export function PrConflictPanel({
   const loaded = useRef(onLoaded)
   loaded.current = onLoaded
   const expectedHead = expected?.headOid
-  const expectedBase = expected?.baseOid
   const expectedBranch = expected?.baseRefName
   useEffect(() => {
     let active = true
@@ -36,8 +35,7 @@ export function PrConflictPanel({
       .conflicts(repo, number)
       .then((value) => {
         if (!active) return
-        if ((expectedHead && value.headOid !== expectedHead) || (expectedBase && value.baseOid !== expectedBase)
-          || (expectedBranch && value.baseRefName !== expectedBranch)) {
+        if ((expectedHead && value.headOid !== expectedHead) || (expectedBranch && value.baseRefName !== expectedBranch)) {
           throw new Error('The PR or merge target changed since this card refreshed. Refresh PR, then retry inspection.')
         }
         setResult(value)
@@ -50,7 +48,7 @@ export function PrConflictPanel({
     return () => {
       active = false
     }
-  }, [api, repo, number, retry, expectedHead, expectedBase, expectedBranch])
+  }, [api, repo, number, retry, expectedHead, expectedBranch])
 
   if (error)
     return (

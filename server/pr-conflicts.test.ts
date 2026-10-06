@@ -73,6 +73,16 @@ describe('read-only conflict inspection', () => {
     expect(deletedResult.files[0].kind).toBe('CONFLICT (modify/delete)')
   })
 
+  it('inspects the live target tip rather than the base sha GitHub recorded at the last PR sync', async () => {
+    const { directory, input, inspector } = await fixture('clean')
+    await git(directory, 'switch', 'release')
+    await writeFile(join(directory, 'independent.txt'), 'target moved on\n')
+    await git(directory, 'add', '.')
+    await git(directory, 'commit', '-m', 'target moves after the PR was opened')
+    const tip = await git(directory, 'rev-parse', 'HEAD')
+    expect(await inspector.inspect(input)).toMatchObject({ state: 'conflicting', baseOid: tip, files: [{ path: 'independent.txt' }] })
+  })
+
   it('rejects races instead of returning stale conflicts', async () => {
     const { input, inspector } = await fixture()
     await expect(inspector.inspect({ ...input, headOid: 'f'.repeat(40) })).rejects.toMatchObject({ status: 409 })
@@ -81,7 +91,7 @@ describe('read-only conflict inspection', () => {
   it('validates request identity before invoking Git', async () => {
     const run = vi.fn()
     const inspector = new PrConflictInspector({ git: run })
-    await expect(inspector.inspect({ repo: '../bad', number: 12, baseRefName: 'main', headRefName: 'feature', baseOid: 'a'.repeat(40), headOid: 'b'.repeat(40) })).rejects.toMatchObject({ status: 400 })
+    await expect(inspector.inspect({ repo: '../bad', number: 12, baseRefName: 'main', headRefName: 'feature', headOid: 'b'.repeat(40) })).rejects.toMatchObject({ status: 400 })
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -93,7 +103,7 @@ describe('read-only conflict inspection', () => {
         : args[0] === 'cat-file' ? String(129 * 1024) : '',
     }))
     const inspector = new PrConflictInspector({ git: run })
-    expect(await inspector.inspect({ repo: 'acme/widgets', number: 12, baseRefName: 'main', headRefName: 'feature', baseOid: base, headOid: head }))
+    expect(await inspector.inspect({ repo: 'acme/widgets', number: 12, baseRefName: 'main', headRefName: 'feature', headOid: head }))
       .toMatchObject({ state: 'conflicting', truncated: true, files: [{ path: 'huge.ts', content: null, truncated: true }] })
     expect(run.mock.calls.some(([args]) => args[0] === 'cat-file' && args[1] === 'blob')).toBe(false)
   })
