@@ -67,6 +67,23 @@ class PrStore {
     return this.refresh(this.paneEntry(paneId), true)
   }
 
+  async refreshCommentStatus(repo: string): Promise<void> {
+    const entries = this.activeEntries().filter((entry) => {
+      const list = entry.snapshot.list
+      return entry.foreground + entry.background > 0 && list && (
+        'repo' in list ? list.repo.toLowerCase() === repo.toLowerCase()
+          : list.pullRequests.some((pr) => pr.repo.toLowerCase() === repo.toLowerCase())
+      )
+    })
+    await Promise.all(entries.map(async (entry) => {
+      // A read started before the write may contain the old counts. Fetch again after it settles.
+      if (entry.inFlight) await entry.inFlight
+      await this.refresh(entry, true)
+    }))
+    const failed = entries.find((entry) => entry.snapshot.error)
+    if (failed) throw new Error(failed.snapshot.error)
+  }
+
   private paneEntry(paneId: string): Entry<PanePrList> {
     let entry = this.panes.get(paneId)
     if (!entry) {
@@ -186,6 +203,10 @@ function storeFor(api: StoreApi): PrStore {
     stores.set(key, store)
   }
   return store
+}
+
+export function refreshPrCommentStatus(api: StoreApi, repo: string): Promise<void> {
+  return storeFor(api).refreshCommentStatus(repo)
 }
 
 export function usePanePrs(

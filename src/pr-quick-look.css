@@ -278,6 +278,16 @@
   border-radius: 10px;
   background: var(--surface);
 }
+.pr-quick-thread-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.pr-quick-thread-status { margin-right: auto; font: 10px var(--mono); }
+.pr-quick-reply-form { margin-top: 16px; }
+.pr-quick-reply-form label { display: grid; gap: 8px; color: var(--text-soft); font-size: 12px; }
+.pr-quick-reply-form textarea { width: 100%; min-height: 110px; resize: vertical; box-sizing: border-box; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5; }
+.pr-quick-reply-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pr-quick-reply-form > div { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pr-quick-reply-form small { margin-right: auto; color: var(--muted); }
+.pr-quick-thread-notice { font-size: 12px; color: var(--green); }
+.pr-quick-thread-error { font-size: 12px; color: var(--red); overflow-wrap: anywhere; }
 .pr-quick-comment header {
   display: flex;
   flex-wrap: wrap;

@@ -320,7 +320,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
             repo={repo}
             api={api}
             onClose={() => setQuickLook(false)}
-            onRefresh={onMerged}
+            onRefresh={async () => { setThreads(null); setThreadsFailed(false); await onMerged() }}
             actions={<>
               {targetIsLive && targetId ? (
                 <button type="button" className="pr-pop-btn" onClick={() => {

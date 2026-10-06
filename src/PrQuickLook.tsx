@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ExternalLink, X } from 'lucide-react'
 import Markdown from 'react-markdown'
@@ -6,7 +6,8 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import type { PrConflicts, PrConversationEntry, PrDetails, PrRemoteDiff } from '../shared/pr-quick-look'
-import { groupPrConversation } from './prConversation'
+import { PrConversationPanel } from './PrConversationPanel'
+import { refreshPrCommentStatus } from './prStore'
 import { PrConflictPanel } from './PrConflictPanel'
 import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
@@ -94,6 +95,7 @@ export function PrQuickLook({
     pr.updatedAt,
     pr.checks,
     pr.unresolvedThreads,
+    pr.unansweredThreads,
     pr.reviewDecision,
     pr.reviews,
     pr.requestedReviewers,
@@ -115,6 +117,9 @@ export function PrQuickLook({
     conflictSnapshot?.api === api && conflictSnapshot.revision === references ? conflictSnapshot.value : null
   const dialog = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
+  const detailRequest = useRef(0)
+  const latest = useRef({ api, references, detailRevision, pr })
+  latest.current = { api, references, detailRevision, pr }
   closeRef.current = onClose
 
   useEffect(() => {
@@ -139,7 +144,7 @@ export function PrQuickLook({
       if (event.key !== 'Tab') return
       const controls = [
         ...(dialog.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), a[href], input, [tabindex="0"]',
+          'button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
         ) ?? []),
       ]
       const first = controls[0]
@@ -155,17 +160,19 @@ export function PrQuickLook({
     window.addEventListener('keydown', keydown, true)
     return () => {
       window.removeEventListener('keydown', keydown, true)
+      detailRequest.current += 1
       previous?.focus()
     }
   }, [])
 
   useEffect(() => {
     let active = true
+    const request = ++detailRequest.current
     setDetailError('')
     api
       .details(repo, pr.number)
       .then((value) => {
-        if (!active) return
+        if (!active || request !== detailRequest.current) return
         if ((pr.headRefOid && value.headOid !== pr.headRefOid)
           || (pr.baseRefOid && (value.mergeTarget?.oid !== pr.baseRefOid || value.mergeTarget.branch !== pr.baseRefName))) {
           throw new Error('The PR or merge target changed since this card refreshed. Refresh PR, then retry.')
@@ -173,7 +180,7 @@ export function PrQuickLook({
         setDetailSnapshot({ api, references, revision: detailRevision, value })
       })
       .catch((error: unknown) => {
-        if (active) setDetailError(error instanceof Error ? error.message : 'Unable to load PR details')
+        if (active && request === detailRequest.current) setDetailError(error instanceof Error ? error.message : 'Unable to load PR details')
       })
     return () => {
       active = false
@@ -211,9 +218,34 @@ export function PrQuickLook({
   const mergeTarget = conflicts?.baseRefName ?? knownTarget ?? pr.baseRefName
   const nonMainTarget = Boolean(mergeTarget && mergeTarget !== 'main')
   const hasConflicts = conflicts ? conflicts.state === 'conflicting' : pr.conflicting
-  const conversation = useMemo(() => groupPrConversation(details?.conversation ?? []), [details])
-  const replies = conversation.reduce((count, thread) => count + thread.replies.length, 0)
-  const visibleEntries = conversation.length + replies
+  const refreshConversation = async () => {
+    const original = latest.current
+    // Refresh the shared PR store as well as the full conversation; avoid replaying a write on failure.
+    let refreshError: unknown
+    try { await Promise.all([onRefresh?.(), refreshPrCommentStatus(api, repo)]) } catch (cause) { refreshError = cause }
+    if (latest.current.api !== original.api || latest.current.references !== original.references) return
+    const request = ++detailRequest.current
+    let value: PrDetails
+    try {
+      value = await api.details(repo, pr.number)
+    } catch (cause) {
+      if (latest.current.api === original.api && latest.current.references === original.references && request === detailRequest.current) {
+        setDetailError(`Saved on GitHub, but conversation refresh failed: ${cause instanceof Error ? cause.message : 'Unable to refresh'}`)
+      }
+      throw cause
+    }
+    if (latest.current.api !== original.api || latest.current.references !== original.references || request !== detailRequest.current) return
+    const current = latest.current
+    if ((current.pr.headRefOid && value.headOid !== current.pr.headRefOid)
+      || (current.pr.baseRefOid && (value.mergeTarget?.oid !== current.pr.baseRefOid || value.mergeTarget.branch !== current.pr.baseRefName))) {
+      const message = 'Saved on GitHub, but the PR or merge target changed. Refresh PR, then retry.'
+      setDetailError(message)
+      throw new Error(message)
+    }
+    setDetailError('')
+    setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value })
+    if (refreshError) throw refreshError
+  }
   return createPortal(
     <div
       className="pr-quick-backdrop"
@@ -396,58 +428,11 @@ export function PrQuickLook({
               ) : null}
             </>
           ) : null}
-          {tab === 'Conversation' && !error ? (
-            details ? (
-              <>
-                <h3>
-                  Conversation{' '}
-                  <small>
-                    {visibleEntries} entries
-                    {replies ? ` · ${replies} ${replies === 1 ? 'reply' : 'replies'}` : ''} ·{' '}
-                    {pr.unresolvedThreads} unresolved threads
-                  </small>
-                </h3>
-                {conversation.length ? (
-                  conversation.map((thread) => (
-                    <article
-                      className="pr-quick-comment"
-                      key={thread.entry.id}
-                      data-comment-id={thread.entry.id}
-                    >
-                      <ConversationComment
-                        entry={thread.entry}
-                        prUrl={pr.url}
-                        detached={thread.detachedReply}
-                      />
-                      {thread.replies.length ? (
-                        <div className="pr-quick-thread-replies" aria-label="Replies to this comment">
-                          {thread.replies.map((entry) => (
-                            <article
-                              className="pr-quick-reply"
-                              key={entry.id}
-                              data-comment-id={entry.id}
-                              aria-label={`Reply by ${entry.author}`}
-                            >
-                              <ConversationComment
-                                entry={entry}
-                                prUrl={pr.url}
-                                reply
-                                showPath={entry.path !== thread.entry.path}
-                              />
-                            </article>
-                          ))}
-                        </div>
-                      ) : null}
-                    </article>
-                  ))
-                ) : (
-                  <p>No conversation yet.</p>
-                )}
-              </>
-            ) : (
-              <p role="status">Loading conversation…</p>
-            )
-          ) : null}
+          <div hidden={tab !== 'Conversation' || Boolean(error)}>
+            <PrConversationPanel key={`${repo}:${pr.number}`} details={details} unresolvedThreads={pr.unresolvedThreads}
+              repo={repo} number={pr.number} api={api} onChanged={refreshConversation}
+              renderComment={(entry, options) => <ConversationComment entry={entry} prUrl={pr.url} {...options} />} />
+          </div>
           {tab === 'Diff' && !error ? (
             diff ? (
               <>

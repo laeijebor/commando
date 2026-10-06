@@ -30,6 +30,7 @@ function setup(
   conversation?: import('../shared/pr-quick-look').PrConversationEntry[],
 ) {
   const api = {
+    threadAction: vi.fn().mockResolvedValue({ ok: true }),
     details: vi.fn().mockResolvedValue({
       body: '# Complete description\n\nFull body\n\n<sub>Badge text</sub>\n\n<script>window.bad = true</script>\n\n<a href="javascript:alert(1)">Unsafe link</a>',
       conversation: conversation ?? [
@@ -69,20 +70,52 @@ function setup(
     }),
   }
   const onClose = vi.fn()
+  const onRefresh = vi.fn().mockResolvedValue(undefined)
   const element = (next: Partial<PrSummary> = {}) => (
     <PrQuickLook
       pr={{ ...pr, ...overrides, ...next }}
       repo="acme/widgets"
       api={api as unknown as PrsApiClient}
       onClose={onClose}
+      onRefresh={onRefresh}
       actions={null}
     />
   )
   const view = render(element())
-  return { api, onClose, rerender: (next: Partial<PrSummary>) => view.rerender(element(next)) }
+  return { api, onClose, onRefresh, rerender: (next: Partial<PrSummary>) => view.rerender(element(next)) }
 }
 
 describe('PR quick look', () => {
+  it('shows an actionable saved-but-refresh-failed error and retries reads without repeating the write', async () => {
+    const entry = { id: '2:10', commentId: 10, kind: 'inline comment', author: 'Reviewer', body: 'Resolve this finding', url: '', createdAt: '',
+      thread: { id: 'PRRT_10', commentId: 10, isResolved: false, viewerCanReply: true, viewerCanResolve: true, viewerCanUnresolve: true } }
+    const { api } = setup({}, undefined, [entry])
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+    api.details.mockRejectedValueOnce(new Error('Conversation offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Saved on GitHub, but conversation refresh failed: Conversation offline')
+    api.details.mockResolvedValueOnce({ body: '', checks: [], unresolvedThreads: 0, conversation: [{ ...entry, thread: { ...entry.thread, isResolved: true } }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('✓ Resolved')).toBeVisible()
+    expect(api.threadAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes actual conversation and unresolved counts after resolving a thread', async () => {
+    const entry = { id: '2:10', commentId: 10, kind: 'inline comment', author: 'Reviewer', body: 'Resolve this finding', url: '', createdAt: '',
+      thread: { id: 'PRRT_10', commentId: 10, isResolved: false, viewerCanReply: true, viewerCanResolve: true, viewerCanUnresolve: true } }
+    const { api, onRefresh } = setup({}, undefined, [entry])
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+    api.details.mockResolvedValueOnce({ body: '', checks: [], unresolvedThreads: 0, conversation: [{ ...entry, thread: { ...entry.thread, isResolved: true } }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(await screen.findByText('✓ Resolved')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('0 unresolved threads')
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    expect(api.details).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects a newer returned diff rather than tagging it with the old card revision', async () => {
     const { api } = setup({ headRefOid: 'b'.repeat(40) })
     await screen.findByRole('heading', { name: 'Complete description' })

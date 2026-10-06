@@ -4,7 +4,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { PanePrList, PrList, PrsApiClient, PrScope } from './prsApi'
-import { usePanePrs, useRepoPrs } from './prStore'
+import { refreshPrCommentStatus, usePanePrs, useRepoPrs } from './prStore'
 
 const emptyList: PanePrList = {
   targetId: 'target', totalCount: 0, pullRequests: [], truncated: false, fetchedAt: 1,
@@ -73,6 +73,36 @@ describe('PR store backpressure', () => {
   const emptyRepoList: PrList = {
     repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 0, pullRequests: [], truncated: false, mineTruncated: false, fetchedAt: 1,
   }
+
+  it('refreshes repository and linked pane pills after a comment write, including in-flight old reads', async () => {
+    const linked: PanePrList = { ...emptyList, pullRequests: [{ repo: 'acme/widgets', number: 12 }] as PanePrList['pullRequests'] }
+    const api = { list: vi.fn().mockResolvedValue(emptyRepoList), pane: vi.fn().mockResolvedValue(linked) }
+    render(<><RepoSubscriber api={api} scope="mine" /><RepoSubscriber api={api} scope="everyone" /><Subscriber api={api} background /></>)
+    await act(async () => { await Promise.resolve() })
+    expect(api.list).toHaveBeenCalledTimes(2)
+    expect(api.pane).toHaveBeenCalledTimes(1)
+    await act(async () => { await refreshPrCommentStatus(api, 'ACME/Widgets') })
+    expect(api.list).toHaveBeenCalledTimes(4)
+    expect(api.pane).toHaveBeenCalledTimes(2)
+    expect(api.pane).toHaveBeenLastCalledWith('%12', { refresh: true })
+
+    let finish!: (value: PrList) => void
+    api.list.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    let before!: Promise<void>
+    await act(async () => { before = refreshPrCommentStatus(api, 'acme/widgets'); await Promise.resolve() })
+    let after!: Promise<void>
+    await act(async () => { after = refreshPrCommentStatus(api, 'acme/widgets'); await Promise.resolve() })
+    await act(async () => { finish(emptyRepoList); await Promise.all([before, after]) })
+    expect(api.list).toHaveBeenCalledTimes(8)
+  })
+
+  it('surfaces a failed status refresh so a successful reply is not silently left with stale pills', async () => {
+    const api = { list: vi.fn().mockResolvedValue(emptyRepoList), pane: vi.fn() }
+    render(<RepoSubscriber api={api} scope="mine" />)
+    await act(async () => { await Promise.resolve() })
+    api.list.mockRejectedValueOnce(new Error('Status refresh offline'))
+    await act(async () => { await expect(refreshPrCommentStatus(api, 'acme/widgets')).rejects.toThrow('Status refresh offline') })
+  })
 
   it("refreshes Everyone's every ten minutes", async () => {
     vi.useFakeTimers()
