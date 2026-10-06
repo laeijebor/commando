@@ -27,7 +27,7 @@ describe('PanePullRequests', () => {
       ...status, repo: 'acme/widgets', number: 12, title: 'Badge coverage',
       url: 'https://github.com/acme/widgets/pull/12', state: 'open', isDraft: false,
       createdAt: '', updatedAt: '', additions: 1234, deletions: 56,
-      conflicting: true, unresolvedThreads: 2, threadsTruncated: true, reviewDecision: decision,
+      conflicting: true, unresolvedThreads: 2, unansweredThreads: 1, threadsTruncated: true, reviewDecision: decision,
       checks: { state, failed: state === 'fail' ? 2 : 0, pending: state === 'pending' ? 3 : 0, total: 5, runs: [], truncated: false },
     }
     render(<PanePullRequests paneId="%12" api={{ pane: vi.fn() }} connected list={{
@@ -36,7 +36,8 @@ describe('PanePullRequests', () => {
     expect(screen.getByText('+1,234')).toBeInTheDocument()
     expect(screen.getByText('−56')).toBeInTheDocument()
     expect(screen.getByText(label)).toBeInTheDocument()
-    expect(screen.getByText('2+ unresolved')).toBeInTheDocument()
+    expect(screen.getByText('1+ unanswered')).toHaveClass('warn')
+    expect(screen.getByText('1+ unresolved')).toHaveClass('replied')
     expect(screen.getByText('⚠ conflicts')).toBeInTheDocument()
     if (reviewLabel) expect(screen.getByText(reviewLabel)).toBeInTheDocument()
     expect(screen.queryByRole('button')).not.toBeInTheDocument()

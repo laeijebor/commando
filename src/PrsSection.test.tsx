@@ -390,6 +390,7 @@ describe('PrsSection', () => {
             additions: 1494,
             deletions: 45,
             unresolvedThreads: 2,
+            unansweredThreads: 1,
             reviewDecision: 'changes_requested',
             conflicting: true,
             checks: {
@@ -407,7 +408,8 @@ describe('PrsSection', () => {
     render(<PrsSection token="t" />)
     expect(await screen.findByText('+1,494')).toBeInTheDocument()
     expect(screen.getByText('−45')).toBeInTheDocument()
-    expect(screen.getByText('2 unresolved')).toBeInTheDocument()
+    expect(screen.getByText('1 unanswered')).toHaveClass('warn')
+    expect(screen.getByText('1 unresolved')).toHaveClass('replied')
     expect(screen.getByText('changes requested')).toBeInTheDocument()
     expect(screen.getByText('⚠ conflicts')).toBeInTheDocument()
     expect(screen.getByText('✗ 1 failing')).toBeInTheDocument()

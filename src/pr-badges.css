@@ -15,6 +15,7 @@
 .pr-chip.ok, .pr-chip.pass { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, var(--border)); }
 .pr-chip.bad, .pr-chip.fail { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--border)); }
 .pr-chip.warn, .pr-chip.pending { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 32%, var(--border)); }
+.pr-chip.replied { color: #f4e38a; border-color: color-mix(in srgb, #f4e38a 32%, var(--border)); }
 .pr-chip.dim { color: var(--text-dim); }
 
 .pr-diffstat .plus { color: var(--green); }

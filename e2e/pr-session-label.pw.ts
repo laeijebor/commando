@@ -60,7 +60,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       url: 'https://github.com/acme/widgets/pull/128', state: 'open', isDraft: false,
       author: 'leo', bodyExcerpt: 'Keep the source session visible while reviewing work across sessions.',
       additions: 42, deletions: 7, changedFiles: 4, commitCount: 2,
-      unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
+      unresolvedThreads: 3, unansweredThreads: 2, threadsTruncated: false, reviewDecision: null,
       reviews: [], requestedReviewers: [], conflicting: false,
       checks: { state: 'pass', runs: [{ name: 'Tests', state: 'pass' }], failed: 0, pending: 0, total: 1, truncated: false },
       createdAt: new Date(Date.now() - 3_600_000).toISOString(),
@@ -91,9 +91,11 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       else if (path === '/api/snapshot') json = snapshot
       else if (path === '/api/git/summary') json = { isRepo: false }
       else if (path === '/api/session-management/preferences') json = { preferences: { version: 1, groups: [], ungroupedSessionIds: ['$3', '$6'] } }
+      else if (path === '/api/session-management/archives') json = { archives: [] }
       else if (path === '/api/prs/prefs') json = { prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } }
       else if (path === '/api/prs/repos') json = { repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] }
       else if (path === '/api/prs/repo') json = { repo: 'acme/widgets' }
+      else if (path === '/api/prs/threads') json = { threads: { repo: 'acme/widgets', number: 128, threads: [], truncated: false, fetchedAt: Date.now() } }
       else if (path === '/api/prs/pane') json = { list: { targetId: panes.find((pane) => pane.id === new URL(route.request().url()).searchParams.get('paneId'))?.targetId, pullRequests: [], totalCount: 0, truncated: false, fetchedAt: Date.now() } }
       else if (path === '/api/prs') { listRequests += 1; json = { list } }
       else if (path === '/api/session-management/sessions/%246/rename') {
@@ -124,6 +126,17 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const label = card.locator('.pr-foot .pr-branch')
     await expect(label).toHaveText('release-review')
     await expect(label).toHaveAttribute('title', `Session: release-review\nBranch: ${pr.headRefName}`)
+    await expect(card.getByText('2 unanswered', { exact: true })).toBeVisible()
+    await expect(card.getByText('2 unanswered', { exact: true })).toHaveCSS('color', 'rgb(243, 198, 107)')
+    await expect(card.getByText('1 unresolved', { exact: true })).toBeVisible()
+    await expect(card.getByText('1 unresolved', { exact: true })).toHaveCSS('color', 'rgb(244, 227, 138)')
+    expect(await card.evaluate((element) => {
+      const cardBounds = element.getBoundingClientRect()
+      return [...element.querySelectorAll('.pr-chip')].every((chip) => {
+        const bounds = chip.getBoundingClientRect()
+        return bounds.left >= cardBounds.left && bounds.right <= cardBounds.right
+      })
+    })).toBe(true)
     await page.screenshot({ path: testInfo.outputPath(`${size}-live.png`) })
 
     await card.hover()

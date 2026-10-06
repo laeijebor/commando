@@ -77,7 +77,7 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
       pullRequests: [{
         repo: 'example/worklog', number: 1, title: 'Linked PR before activity', url: 'https://example.test/pr/1',
         state: 'open', isDraft: false, createdAt: '2026-09-14', updatedAt: '2026-09-14',
-        additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2, threadsTruncated: true,
+        additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2, unansweredThreads: 1, threadsTruncated: true,
         reviewDecision: 'changes_requested',
         checks: { state: 'fail', failed: 2, pending: 0, total: 5, runs: [], truncated: false },
       }],
@@ -89,9 +89,11 @@ test('empty rail, generated hooks, screenshots and notes survive rename, move an
     await expect(first.getByRole('status')).toContainText('No agent hook data received')
     await expect(first.getByText('Linked PR before activity')).toBeVisible()
     const prCard = first.locator('.pane-worklog-pr')
-    for (const label of ['+1,234', '−56', '✗ 2 failing', '2+ unresolved', 'changes requested', '⚠ conflicts']) {
+    for (const label of ['+1,234', '−56', '✗ 2 failing', '1+ unanswered', '1+ unresolved', 'changes requested', '⚠ conflicts']) {
       await expect(prCard.getByText(label, { exact: true })).toBeVisible()
     }
+    await expect(prCard.getByText('1+ unanswered', { exact: true })).toHaveCSS('color', 'rgb(243, 198, 107)')
+    await expect(prCard.getByText('1+ unresolved', { exact: true })).toHaveCSS('color', 'rgb(244, 227, 138)')
     const layout = await prCard.evaluate((card) => {
       const badges = [...card.querySelectorAll('.pr-chip')].map((chip) => chip.getBoundingClientRect())
       const bounds = card.getBoundingClientRect()

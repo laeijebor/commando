@@ -13,6 +13,8 @@ export function PrBadges({ pr, number, onOpenDiff, children }: {
     <span className="minus">−{pr.deletions.toLocaleString('en-US')}</span>
   </>
   const checks = pr.checks
+  const unanswered = pr.unansweredThreads ?? pr.unresolvedThreads
+  const replied = pr.unresolvedThreads - unanswered
   const checkLabel = !checks ? 'no checks'
     : checks.state === 'fail' ? (checks.failed > 0 ? `✗ ${checks.failed} failing` : '✗ checks')
       : checks.state === 'pending' ? (checks.pending > 0 ? `● ${checks.pending} running` : '● running') : '✓ checks'
@@ -25,8 +27,11 @@ export function PrBadges({ pr, number, onOpenDiff, children }: {
     ) : <span className="pr-chip pr-diffstat">{diffstat}</span>}
     <span className={`pr-chip ${checks?.state ?? 'dim'}`}>{checkLabel}</span>
     {children}
-    {pr.unresolvedThreads > 0 ? (
-      <span className="pr-chip warn">{pr.unresolvedThreads}{pr.threadsTruncated ? '+' : ''} unresolved</span>
+    {unanswered > 0 ? (
+      <span className="pr-chip warn" title="Open comment threads without replies">{unanswered}{pr.threadsTruncated ? '+' : ''} unanswered</span>
+    ) : null}
+    {replied > 0 ? (
+      <span className="pr-chip replied" title="Open comment threads with replies">{replied}{pr.threadsTruncated ? '+' : ''} unresolved</span>
     ) : null}
     {pr.reviewDecision === 'changes_requested' ? <span className="pr-chip bad">changes requested</span> : null}
     {pr.reviewDecision === 'approved' ? <span className="pr-chip ok">approved</span> : null}
