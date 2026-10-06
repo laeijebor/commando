@@ -48,6 +48,22 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('accepts POST JSON thread actions and rejects other methods/content types', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const action = vi.spyOn(service, 'actOnReviewThread').mockResolvedValue({ ok: true })
+    const base = await startApi(() => undefined, () => undefined, service)
+    const url = `${base}/api/prs/thread-action`
+    expect((await fetch(url)).status).toBe(405)
+    expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(415)
+    expect(action).not.toHaveBeenCalled()
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'acme/widgets', number: 12, threadId: 'PRRT_123', action: 'reply', body: '**Fixed**' }),
+    })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ ok: true })
+    expect(action).toHaveBeenCalledExactlyOnceWith('acme/widgets', 12, 'PRRT_123', 'reply', '**Fixed**')
+  })
+
   it('forwards explicit pane refresh and rejects malformed refresh values', async () => {
     const service = new PrService({ runner: vi.fn() })
     const paneList = vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPanePullRequests']>>)

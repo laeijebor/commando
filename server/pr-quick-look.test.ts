@@ -5,9 +5,39 @@ const head = '2'.repeat(40)
 const main = '3'.repeat(40)
 
 describe('PR quick look data', () => {
+  it('paginates thread metadata and attaches actions only to each original inline comment', async () => {
+    let threadPages = 0
+    const runner = vi.fn(async (args: string[]) => {
+      const endpoint = args[1]
+      if (endpoint === 'graphql') {
+        threadPages++
+        const id = threadPages === 1 ? 10 : 20
+        return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+          pageInfo: { hasNextPage: threadPages === 1, endCursor: threadPages === 1 ? 'next-page' : null },
+          nodes: [{ id: `PRRT_${id}`, isResolved: id === 20, viewerCanReply: true, viewerCanResolve: id === 10, viewerCanUnresolve: id === 20,
+            comments: { nodes: [{ databaseId: id }] } }],
+        } } } } })
+      }
+      if (endpoint.endsWith('/pulls/12')) return JSON.stringify({ head: { sha: head } })
+      if (endpoint.includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+      if (endpoint.includes('/pulls/12/comments')) return JSON.stringify([[{ id: 10 }, { id: 20 }, { id: 30, in_reply_to_id: 10 }]])
+      return JSON.stringify([[]])
+    })
+    const details = await new PrService({ runner }).pullRequestDetails('acme/widgets', 12)
+    expect(threadPages).toBe(2)
+    expect(runner.mock.calls.some(([args]) => args.includes('cursor=next-page'))).toBe(true)
+    expect(details.conversation[0].thread).toMatchObject({ id: 'PRRT_10', isResolved: false, viewerCanResolve: true })
+    expect(details.conversation[1].thread).toMatchObject({ id: 'PRRT_20', isResolved: true, viewerCanUnresolve: true })
+    expect(details.conversation[2].thread).toBeUndefined()
+    expect(details.unresolvedThreads).toBe(1)
+  })
+
   it('loads every conversation page and full bodies, sorting reviews and replies chronologically', async () => {
     const runner = vi.fn(async (args: string[]) => {
       const endpoint = args[1]
+      if (endpoint === 'graphql') return JSON.stringify({ data: { repository: { pullRequest: {
+        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      } } } })
       if (endpoint.endsWith('/pulls/12'))
         return JSON.stringify({ body: 'Full description '.repeat(100), head: { sha: head } })
       if (endpoint.includes('/check-runs'))

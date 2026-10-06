@@ -99,6 +99,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    threadAction: async (repo: string, number: number, threadId: string, action: 'reply' | 'resolve' | 'reopen', body?: string) =>
+      request<{ ok: true }>('/thread-action', { method: 'POST', body: JSON.stringify({ repo, number, threadId, action, ...(body !== undefined ? { body } : {}) }) }),
     conflicts: async (repo: string, number: number) =>
       (await request<{ conflicts: import('../shared/pr-quick-look').PrConflicts }>(`/conflicts?repo=${encodeURIComponent(repo)}&number=${number}`)).conflicts,
     details: async (repo: string, number: number) =>

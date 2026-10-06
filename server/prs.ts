@@ -54,6 +54,17 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`.trim()
+const REVIEW_THREAD_FIELDS = 'id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
+const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ${REVIEW_THREAD_FIELDS} }
+      }
+    }
+  }
+}`
 const PANE_PULL_REQUESTS_QUERY = `
 query($targetQuery: String!) {
   viewer { login }
@@ -1057,7 +1068,8 @@ export class PrService {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     const root = `repos/${repo}`
-    const [prOutput, ...pages] = await Promise.all([
+    const [reviewThreads, prOutput, ...pages] = await Promise.all([
+      this.pullRequestReviewThreads(repo, number),
       this.ghRead(['api', `${root}/pulls/${number}`]),
       ...[`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`].map((path) =>
         this.ghRead(['api', `${root}/${path}?per_page=100`, '--paginate', '--slurp'])),
@@ -1111,6 +1123,7 @@ export class PrService {
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
           ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
+          ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
           ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
             : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
         })
@@ -1119,7 +1132,112 @@ export class PrService {
     conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     const base = optionalObject(pr, 'base')
     return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
+      unresolvedThreads: [...reviewThreads.values()].filter((thread) => !thread.isResolved).length,
       ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+  }
+
+  private async pullRequestReviewThreads(repo: string, number: number): Promise<Map<number, import('../shared/pr-quick-look.js').PrReviewThread>> {
+    const [owner, name] = repo.split('/')
+    const result = new Map<number, import('../shared/pr-quick-look.js').PrReviewThread>()
+    let cursor: string | undefined
+    const seen = new Set<string>()
+    do {
+      const payload = parseGhObject(await this.ghRead([
+        'api', 'graphql', '-f', `query=${REVIEW_THREADS_QUERY}`,
+        '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${number}`,
+        ...(cursor ? ['-f', `cursor=${cursor}`] : []),
+      ]))
+      const data = this.graphqlData(payload)
+      const repository = optionalObject(data, 'repository')
+      const pr = repository && optionalObject(repository, 'pullRequest')
+      if (!pr) throw new PrServiceError(404, 'pr_not_found', 'Pull request was not found')
+      const connection = objectField(pr, 'reviewThreads')
+      for (const node of nodes(pr, 'reviewThreads')) {
+        const root = nodes(node, 'comments')[0]
+        if (!root) continue
+        const thread = {
+          id: requiredString(node, 'id'), commentId: requiredNumber(root, 'databaseId'),
+          isResolved: requiredBoolean(node, 'isResolved'), viewerCanReply: requiredBoolean(node, 'viewerCanReply'),
+          viewerCanResolve: requiredBoolean(node, 'viewerCanResolve'), viewerCanUnresolve: requiredBoolean(node, 'viewerCanUnresolve'),
+        }
+        result.set(thread.commentId, thread)
+      }
+      const page = objectField(connection, 'pageInfo')
+      if (!requiredBoolean(page, 'hasNextPage')) break
+      cursor = requiredString(page, 'endCursor')
+      if (!cursor || seen.has(cursor)) throw invalidUpstream()
+      seen.add(cursor)
+    } while (cursor)
+    return result
+  }
+
+  private graphqlData(payload: JsonRecord): JsonRecord {
+    if (Array.isArray(payload.errors) && payload.errors.length) {
+      const message = payload.errors.find((error) => isRecord(error) && typeof error.message === 'string')
+      throw new PrServiceError(502, 'github_failed', isRecord(message) ? String(message.message) : 'GitHub returned errors for the review thread request')
+    }
+    return objectField(payload, 'data')
+  }
+
+  async actOnReviewThread(repoInput: unknown, numberInput: unknown, threadInput: unknown, actionInput: unknown, bodyInput?: unknown): Promise<{ ok: true }> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    if (typeof threadInput !== 'string' || !/^[A-Za-z0-9_=-]{1,256}$/.test(threadInput)) {
+      throw new PrServiceError(400, 'invalid_request', 'A valid review thread id is required')
+    }
+    if (actionInput !== 'reply' && actionInput !== 'resolve' && actionInput !== 'reopen') {
+      throw new PrServiceError(400, 'invalid_request', 'action must be reply, resolve, or reopen')
+    }
+    if (actionInput === 'reply' && (typeof bodyInput !== 'string' || !bodyInput.trim() || bodyInput.length > 60_000)) {
+      throw new PrServiceError(400, 'invalid_request', 'Reply must contain text and be at most 60,000 characters')
+    }
+    // Verify ownership and current permissions rather than trusting a client-supplied node id.
+    const current = this.graphqlData(parseGhObject(await this.runner([
+      'api', 'graphql', '-f', `query=query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread {
+        id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve
+        pullRequest { number repository { nameWithOwner } }
+      } } }`, '-f', `id=${threadInput}`,
+    ])))
+    const thread = optionalObject(current, 'node')
+    const pr = thread && optionalObject(thread, 'pullRequest')
+    if (!thread || !pr || pr.number !== number || requiredString(objectField(pr, 'repository'), 'nameWithOwner').toLowerCase() !== repo.toLowerCase()) {
+      throw new PrServiceError(404, 'thread_not_found', 'Review thread was not found on this pull request')
+    }
+    // Concurrent resolution/reopening is already a successful outcome.
+    if (actionInput !== 'reply' && thread.isResolved === (actionInput === 'resolve')) {
+      this.invalidateReviewThreadCaches(repo, number)
+      return { ok: true }
+    }
+    const permission = actionInput === 'reply' ? 'viewerCanReply' : actionInput === 'resolve' ? 'viewerCanResolve' : 'viewerCanUnresolve'
+    if (thread[permission] !== true) throw new PrServiceError(403, 'thread_action_forbidden', 'GitHub does not allow you to perform this action on this thread')
+    try {
+      const field = actionInput === 'reply' ? 'addPullRequestReviewThreadReply' : actionInput === 'resolve' ? 'resolveReviewThread' : 'unresolveReviewThread'
+      const query = actionInput === 'reply'
+        ? 'mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } } }'
+        : `mutation($id: ID!) { ${field}(input: {threadId: $id}) { thread { id isResolved } } }`
+      const data = this.graphqlData(parseGhObject(await this.runner([
+        'api', 'graphql', '-f', `query=${query}`, '-f', `id=${threadInput}`,
+        ...(actionInput === 'reply' ? ['-f', `body=${bodyInput}`] : []),
+      ])))
+      const mutation = objectField(data, field)
+      const written = objectField(mutation, actionInput === 'reply' ? 'comment' : 'thread')
+      requiredString(written, 'id')
+      if (actionInput !== 'reply' && written.isResolved !== (actionInput === 'resolve')) throw invalidUpstream()
+      return { ok: true }
+    } finally {
+      // Even a failed/ambiguous write may have changed GitHub state.
+      this.invalidateReviewThreadCaches(repo, number)
+    }
+  }
+
+  private invalidateReviewThreadCaches(repo: string, number: number): void {
+    for (const key of this.listCache.keys()) {
+      if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)
+    }
+    this.paneListCache.clear()
+    for (const key of this.threadsCache.keys()) {
+      if (key.toLowerCase() === `${repo.toLowerCase()}#${number}`) this.threadsCache.delete(key)
+    }
   }
 
   async pullRequestConflicts(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrConflicts> {

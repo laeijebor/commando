@@ -79,6 +79,17 @@ export async function handlePrsApi(
       return true
     }
 
+    if (path.length === 1 && path[0] === 'thread-action') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const body = await readBody(request)
+      json(response, 200, await service.actOnReviewThread(body.repo, body.number, body.threadId, body.action, body.body))
+      return true
+    }
+
     if (path.length === 1 && path[0] === 'merge') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST')

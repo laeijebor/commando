@@ -1,3 +1,12 @@
+export type PrReviewThread = {
+  id: string
+  commentId: number
+  isResolved: boolean
+  viewerCanReply: boolean
+  viewerCanResolve: boolean
+  viewerCanUnresolve: boolean
+}
+
 export type PrConversationEntry = {
   id: string
   author: string
@@ -10,6 +19,7 @@ export type PrConversationEntry = {
   replyTo?: number
   commentId?: number
   reviewId?: number
+  thread?: PrReviewThread
 }
 
 export type PrDetails = {
@@ -18,6 +28,7 @@ export type PrDetails = {
   checks: Array<{ name: string; state: 'pass' | 'fail' | 'pending'; url: string }>
   mergeTarget?: { branch: string; oid: string }
   headOid?: string
+  unresolvedThreads?: number
 }
 
 export type PrConflicts = {

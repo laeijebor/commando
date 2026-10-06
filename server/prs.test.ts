@@ -182,6 +182,36 @@ describe('merging pull requests', () => {
   })
 })
 
+describe('comment status cache invalidation', () => {
+  it.each([false, true])('invalidates list and thread caches even when the write response fails: %s', async (ambiguous) => {
+    let resolved = false
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query=')) ?? ''
+      if (query.includes('node(id: $id)')) return JSON.stringify({ data: { node: {
+        id: 'PRRT_123', isResolved: false, viewerCanResolve: true,
+        pullRequest: { number: 12, repository: { nameWithOwner: 'acme/widgets' } },
+      } } })
+      if (query.includes('mutation(')) {
+        resolved = true
+        if (ambiguous) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
+        return JSON.stringify({ data: { resolveReviewThread: { thread: { id: 'PRRT_123', isResolved: true } } } })
+      }
+      if (query.includes('comments(first: 1)')) return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+        totalCount: 1, nodes: resolved ? [] : [{ isResolved: false, path: 'a.ts', comments: { nodes: [{ body: 'Finding', author: { login: 'reviewer' } }] } }],
+      } } } } })
+      return graphqlPayload([pullRequestNode({ reviewThreads: { totalCount: 1, nodes: [{ isResolved: resolved, comments: { totalCount: 1 } }] } })])
+    })
+    const service = new PrService({ runner })
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].unresolvedThreads).toBe(1)
+    expect((await service.listUnresolvedThreads('acme/widgets', 12)).threads).toHaveLength(1)
+    const action = service.actOnReviewThread('acme/widgets', 12, 'PRRT_123', 'resolve')
+    if (ambiguous) await expect(action).rejects.toThrow('timed out')
+    else await action
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].unresolvedThreads).toBe(0)
+    expect((await service.listUnresolvedThreads('acme/widgets', 12)).threads).toHaveLength(0)
+  })
+})
+
 describe('input validation', () => {
   it('accepts owner/name repos and rejects everything else', () => {
     expect(validateRepo('Save-All/Save-All')).toBe('Save-All/Save-All')
