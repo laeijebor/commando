@@ -287,7 +287,11 @@ describe('pane PR status', () => {
       body: `<!-- commando:v1 target=${targetId} relation=created -->`,
       repository: { nameWithOwner: 'acme/widgets' },
       additions: 1234, deletions: 56, mergeable: 'CONFLICTING', reviewDecision: 'CHANGES_REQUESTED',
-      reviewThreads: { totalCount: 60, nodes: [{ isResolved: false }, { isResolved: true }, { isResolved: false }] },
+      reviewThreads: { totalCount: 60, nodes: [
+        { isResolved: false, comments: { totalCount: 1 } },
+        { isResolved: true, comments: { totalCount: 1 } },
+        { isResolved: false, comments: { totalCount: 2 } },
+      ] },
       commits: { totalCount: 3, nodes: [{ commit: { statusCheckRollup: {
         state: 'FAILURE', contexts: { totalCount: 4, nodes: [
           { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
@@ -302,11 +306,11 @@ describe('pane PR status', () => {
     const { service: hudService } = serviceWith(graphqlPayload([node]))
     const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
     expect(panePr.preview).toEqual(hudPr)
-    for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'threadsTruncated', 'reviewDecision'] as const) {
+    for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'unansweredThreads', 'threadsTruncated', 'reviewDecision'] as const) {
       expect(panePr[field]).toEqual(hudPr[field])
     }
     expect(panePr).toMatchObject({
-      additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2,
+      additions: 1234, deletions: 56, conflicting: true, unresolvedThreads: 2, unansweredThreads: 1,
       threadsTruncated: true, reviewDecision: 'changes_requested',
       checks: { state: 'fail', failed: 1, pending: 1, total: 3 },
     })
@@ -488,18 +492,26 @@ describe('pull request listing', () => {
     expect(closed.runner.mock.calls[0][0].join(' ')).toContain('states: [CLOSED, MERGED]')
   })
 
-  it('counts unresolved review threads and flags thread truncation', async () => {
-    const { service } = serviceWith(graphqlPayload([
+  it('splits unanswered and replied open threads, excludes resolved threads, and flags truncation', async () => {
+    const { service, runner } = serviceWith(graphqlPayload([
       pullRequestNode({
         reviewThreads: {
           totalCount: 60,
-          nodes: [{ isResolved: false }, { isResolved: true }, { isResolved: false }],
+          nodes: [
+            { isResolved: false, comments: { totalCount: 1 } },
+            { isResolved: false, comments: { totalCount: 2 } },
+            { isResolved: false, comments: { totalCount: 8 } },
+            { isResolved: true, comments: { totalCount: 1 } },
+            { isResolved: true, comments: { totalCount: 3 } },
+          ],
         },
       }),
     ]))
     const list = await service.listPullRequests('acme/widgets', 'open')
-    expect(list.pullRequests[0].unresolvedThreads).toBe(2)
+    expect(list.pullRequests[0].unresolvedThreads).toBe(3)
+    expect(list.pullRequests[0].unansweredThreads).toBe(1)
     expect(list.pullRequests[0].threadsTruncated).toBe(true)
+    expect(runner.mock.calls[0][0].join(' ')).toContain('isResolved comments { totalCount }')
   })
 
   it('normalizes the checks rollup, letting a passing rerun win over a failed attempt', async () => {

@@ -33,7 +33,7 @@ const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt }'
 
 const PR_STATUS_FIELDS = `
   additions deletions reviewDecision mergeable
-  reviewThreads(first: 50) { totalCount nodes { isResolved } }
+  reviewThreads(first: 50) { totalCount nodes { isResolved comments { totalCount } } }
   commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
     state
     contexts(first: 50) {
@@ -111,6 +111,7 @@ export type PrSummary = {
   changedFiles: number
   commitCount: number
   unresolvedThreads: number
+  unansweredThreads?: number
   threadsTruncated: boolean
   reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
   reviews: PrReview[]
@@ -141,7 +142,7 @@ export type PrList = {
   fetchedAt: number
 }
 
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision'>
 
 export type PanePrSummary = PrStatus & {
   repo: string
@@ -510,12 +511,18 @@ function parsePrStatus(node: JsonRecord): PrStatus {
   const threads = objectField(node, 'reviewThreads')
   const threadNodes = nodes(node, 'reviewThreads')
   const threadTotal = typeof threads.totalCount === 'number' ? threads.totalCount : threadNodes.length
+  const unresolved = threadNodes.filter((thread) => thread.isResolved === false)
   const commitNodes = nodes(node, 'commits')
   const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
   return {
     additions: requiredNumber(node, 'additions'),
     deletions: requiredNumber(node, 'deletions'),
-    unresolvedThreads: threadNodes.filter((thread) => thread.isResolved === false).length,
+    unresolvedThreads: unresolved.length,
+    unansweredThreads: unresolved.filter((thread) => {
+      const comments = optionalObject(thread, 'comments')
+      // The original comment is included; any subsequent comment is a reply.
+      return typeof comments?.totalCount !== 'number' || comments.totalCount <= 1
+    }).length,
     threadsTruncated: threadTotal > threadNodes.length,
     reviewDecision: parseReviewDecision(node.reviewDecision),
     conflicting: node.mergeable === 'CONFLICTING',

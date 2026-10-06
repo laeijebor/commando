@@ -17,6 +17,8 @@ export type PrSummary = {
   changedFiles: number
   commitCount: number
   unresolvedThreads: number
+  // Optional while the frontend and daemon may be running different versions.
+  unansweredThreads?: number
   threadsTruncated: boolean
   reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
   reviews: PrReview[]
@@ -47,7 +49,7 @@ export type PrList = {
   mineTruncated: boolean
   fetchedAt: number
 }
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'threadsTruncated' | 'reviewDecision'>
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision'>
 export type PanePrSummary = PrStatus & {
   repo: string
   preview?: PrSummary
