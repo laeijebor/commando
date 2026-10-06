@@ -103,7 +103,7 @@ for (const width of [1440, 390]) {
     await button.click()
     await expect(popover.getByRole('button', { name: 'Merging…' })).toBeDisabled()
     await page.screenshot({ path: testInfo.outputPath(`${width}-pending.png`) })
-    expect(writes).toEqual([{ repo: 'acme/widgets', number: 12, headRefOid: pr.headRefOid }])
+    expect(writes).toEqual([{ repo: 'acme/widgets', number: 12, headRefOid: pr.headRefOid, baseRefName: pr.baseRefName }])
     await expect.poll(() => Boolean(finishMerge)).toBe(true)
     finishMerge!()
     await expect(popover.getByRole('alert')).toHaveText('GitHub reports unmet merge requirements')
