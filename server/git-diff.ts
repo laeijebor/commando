@@ -150,6 +150,7 @@ export async function renderDeltaPatch(
   display: DiffDisplay = 'inline',
   execute: GitProcessExecutor = defaultExecutor,
   cwd = process.cwd(),
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   if (!patch) return ''
   const { stdout } = await execute('delta', [
@@ -159,7 +160,7 @@ export async function renderDeltaPatch(
   ], {
     cwd, encoding: 'utf8', shell: false, windowsHide: true,
     timeout: DIFF_TIMEOUT_MS, maxBuffer: DIFF_BUFFER_BYTES,
-    env: { ...process.env, COLORTERM: 'truecolor' }, allowExitCodes: [1], input: patch,
+    env: { ...environment, COLORTERM: 'truecolor' }, allowExitCodes: [1], input: patch,
   })
   return stdout
 }
@@ -615,7 +616,7 @@ export class GitDiffInspector {
       ['diff', base, ...(head ? [head] : []), '--', relative],
       this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
     )
-    return renderDeltaPatch(patch, width, display, this.execute, root)
+    return renderDeltaPatch(patch, width, display, this.execute, root, this.environment)
   }
 
   private asDiffError(error: unknown, engine: DiffEngine): GitDiffError {

@@ -48,6 +48,17 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('accepts only bounded JSON patch rendering requests', async () => {
+    const base = await startApi(() => undefined)
+    const url = `${base}/api/prs/diff-render`
+    expect((await fetch(url)).status).toBe(405)
+    expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(415)
+    const invalid = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: 'file\n.ts', patch: '+ok', width: 120 }) })
+    expect(invalid.status).toBe(400)
+    await expect(invalid.json()).resolves.toMatchObject({ code: 'invalid_request' })
+  })
+
   it('routes native stack reads and writes, and stamps a daemon-known creating pane', async () => {
     const service = new PrService({ runner: vi.fn() })
     const stack = { number: 7, open: true, baseRefName: 'main', pullRequests: [] }

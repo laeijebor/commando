@@ -1,19 +1,33 @@
 import { expect, test } from '@playwright/test'
 import { createServer, type ViteDevServer } from 'vite'
+import { createServer as createHttpServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { handlePrsApi } from '../server/prs-api'
+import { PrService } from '../server/prs'
 import type { CommandoSnapshot } from '../shared/protocol'
 import type { PrConflicts, PrDetails } from '../shared/pr-quick-look'
 import type { PrSummary } from '../src/prsApi'
 
 const port = Number(process.env.COMMANDO_E2E_VITE_PORT ?? 5298)
 let vite: ViteDevServer
+let apiServer: Server
 test.beforeAll(async () => {
+  const service = new PrService()
+  apiServer = createHttpServer((request, response) => {
+    void handlePrsApi(request, response, new URL(request.url ?? '/', 'http://localhost'), service, { panePath: () => undefined, paneTargetId: () => undefined })
+  })
+  await new Promise<void>((resolve) => apiServer.listen(0, '127.0.0.1', resolve))
+  const apiPort = (apiServer.address() as AddressInfo).port
   vite = await createServer({ server: { host: '127.0.0.1', port, strictPort: true,
-    proxy: { '/api': 'http://127.0.0.1:9', '/ws': { target: 'ws://127.0.0.1:9', ws: true } } } })
+    proxy: { '/api': `http://127.0.0.1:${apiPort}`, '/ws': { target: 'ws://127.0.0.1:9', ws: true } } } })
   await vite.listen()
 })
-test.afterAll(async () => { await vite?.close() })
+test.afterAll(async () => {
+  await vite?.close()
+  await new Promise<void>((resolve) => apiServer?.close(() => resolve()))
+})
 
-for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+for (const viewport of [{ width: 2400, height: 1400 }, { width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
 test(`${viewport.width}px: quick look supports replies, resolve/reopen, conflicts, and refresh`, async ({ page }, testInfo) => {
   await page.setViewportSize(viewport)
   const errors: string[] = []
@@ -44,6 +58,7 @@ test(`${viewport.width}px: quick look supports replies, resolve/reopen, conflict
   await page.routeWebSocket((url) => url.pathname === '/ws', (socket) => { socket.send(JSON.stringify({ type: 'snapshot', snapshot })); socket.onMessage(() => {}) })
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
+    if (path === '/api/prs/diff-render') { await route.continue(); return }
     let json: unknown = {}
     if (path === '/api/auth/bootstrap') json = { enabled: false, needsOwner: false, ownerEmail: null }
     else if (path === '/api/snapshot') json = snapshot
@@ -77,7 +92,9 @@ test(`${viewport.width}px: quick look supports replies, resolve/reopen, conflict
       json = { ok: true }
     }
     else if (path === '/api/prs/diff') json = { diff: { base: 'a'.repeat(40), head: activePr.headRefOid, truncated: false,
-      files: [{ path: activePr.headRefOid === pr.headRefOid ? 'original.ts' : 'updated.ts', status: 'modified', additions: 1, deletions: 0, patch: activePr.headRefOid === pr.headRefOid ? '+original-diff' : '+updated-diff' }],
+      files: [{ path: activePr.headRefOid === pr.headRefOid ? 'original.ts' : 'updated.ts', status: 'modified', additions: 4, deletions: 3,
+        patch: `@@ -1,11 +1,12 @@\n import { publishToast } from './notifications';\n \n export type ChallengeResult = {\n   score: number;\n   completed: boolean;\n };\n \n export function onChallengeComplete(result: ChallengeResult) {\n-  const message = "old";\n-  publishToast(message);\n-  return false;\n+  const message = "${activePr.headRefOid === pr.headRefOid ? 'original-diff' : 'updated-diff'}";\n+  publishToast(message, { variant: 'success' });\n+  return result.completed && result.score > 0;\n+}` },
+        { path: 'preview.png', status: 'added', additions: 0, deletions: 0, patch: null }],
     } }
     else if (path === '/api/prs/threads') json = { threads: { repo: 'acme/app', number: 12, threads: [], truncated: false, fetchedAt: Date.now() } }
     else if (path === '/api/prs/conflicts') {
@@ -93,6 +110,9 @@ test(`${viewport.width}px: quick look supports replies, resolve/reopen, conflict
   await expect(page.getByLabel('Merge target: release/mail')).toBeVisible()
   await page.getByRole('button', { name: 'Quick look at PR #12' }).click()
   await expect(page.getByRole('note')).toContainText('Merges into release/mail, not main.')
+  const modalBounds = await page.getByRole('dialog').boundingBox()
+  expect(modalBounds!.width).toBe(Math.min(1800, viewport.width - (viewport.width <= 700 ? 16 : 48)))
+  expect(modalBounds!.height).toBe(Math.min(1200, viewport.height - (viewport.width <= 700 ? 16 : 48)))
   expect(conflictReads).toBe(0)
   await page.getByRole('button', { name: 'View conflicts', exact: true }).click()
   await expect(page.getByText('<<<<<<< Target (release/mail)', { exact: true })).toBeVisible()
@@ -141,11 +161,27 @@ test(`${viewport.width}px: quick look supports replies, resolve/reopen, conflict
   expect(writes.map((write) => write.action)).toEqual(['reply', 'reply', 'resolve', 'reopen'])
   expect(writes.every((write) => write.repo === 'acme/app' && write.number === 12 && write.threadId === 'PRRT_102')).toBe(true)
   await page.getByRole('tab', { name: /Diff/ }).click()
-  await expect(page.getByText('+original-diff', { exact: true })).toBeVisible()
+  await page.clock.runFor(250)
+  const delta = page.getByLabel('Delta syntax-highlighted diff')
+  await expect(delta).toContainText('original-diff')
+  // Real Delta output must have multiple syntax colors, inline tokens, and diff backgrounds.
+  expect(await delta.locator('span[style*="color"]').count()).toBeGreaterThan(3)
+  expect(await delta.locator('span[style*="background-color"]').count()).toBeGreaterThan(0)
+  expect(await delta.locator('span').first().evaluate((span) => getComputedStyle(span).display)).toBe('inline')
+  expect(await page.getByRole('dialog').evaluate((modal) => modal.scrollWidth <= modal.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('delta-diff.png') })
+  await page.getByRole('button', { name: /preview.png/ }).click()
+  await expect(page.getByText(/GitHub did not provide a text patch/)).toBeVisible()
+  await expect(delta).toHaveCount(0)
+  await page.getByRole('button', { name: /original.ts/ }).click()
+  await page.clock.runFor(250)
+  await expect(delta).toContainText('original-diff')
   activePr = { ...activePr, headRefOid: 'd'.repeat(40), baseRefOid: 'c'.repeat(40), baseRefName: 'release/final', updatedAt: '2026-01-06T09:00:00Z' }
   await page.clock.fastForward(30_000)
-  await expect(page.getByText('+updated-diff', { exact: true })).toBeVisible()
-  await expect(page.getByText('+original-diff', { exact: true })).toHaveCount(0)
+  await expect(page.locator('.pr-quick-diff header strong')).toHaveText('updated.ts')
+  await page.clock.runFor(250)
+  await expect(delta).toContainText('updated-diff')
+  await expect(delta).not.toContainText('original-diff')
   await expect(page.getByRole('note')).toContainText('Merges into release/final, not main.')
   await page.getByRole('tab', { name: 'Description', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Updated description', exact: true })).toBeVisible()
