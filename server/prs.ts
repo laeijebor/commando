@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
+import { PrStackService } from './pr-stacks.js'
+import type { PrStackMembership } from '../shared/pr-stacks.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
@@ -32,6 +34,7 @@ const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
 const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt }'
 
 const PR_STATUS_FIELDS = `
+  stackEntry { position stack { number size baseRefName } }
   additions deletions reviewDecision mergeable
   reviewThreads(first: 50) { totalCount nodes { isResolved comments { totalCount } } }
   commits(last: 1) { totalCount nodes { commit { statusCheckRollup {
@@ -140,6 +143,7 @@ export type PrSummary = {
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
   commandoMarker: CommandoPrMarker | null
+  stack?: PrStackMembership | null
 }
 
 export type PrList = {
@@ -153,7 +157,7 @@ export type PrList = {
   fetchedAt: number
 }
 
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision'>
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision' | 'stack'>
 
 export type PanePrSummary = PrStatus & {
   repo: string
@@ -519,6 +523,8 @@ function parseReviewDecision(value: unknown): PrSummary['reviewDecision'] {
 }
 
 function parsePrStatus(node: JsonRecord): PrStatus {
+  const entry = optionalObject(node, 'stackEntry')
+  const stack = entry && optionalObject(entry, 'stack')
   const threads = objectField(node, 'reviewThreads')
   const threadNodes = nodes(node, 'reviewThreads')
   const threadTotal = typeof threads.totalCount === 'number' ? threads.totalCount : threadNodes.length
@@ -526,6 +532,8 @@ function parsePrStatus(node: JsonRecord): PrStatus {
   const commitNodes = nodes(node, 'commits')
   const commit = commitNodes[0] ? optionalObject(commitNodes[0], 'commit') : null
   return {
+    stack: stack && entry ? { number: requiredNumber(stack, 'number'), size: requiredNumber(stack, 'size'),
+      position: requiredNumber(entry, 'position'), baseRefName: requiredString(stack, 'baseRefName') } : null,
     additions: requiredNumber(node, 'additions'),
     deletions: requiredNumber(node, 'deletions'),
     unresolvedThreads: unresolved.length,
@@ -716,6 +724,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  readonly stacks: PrStackService
   private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
   private readonly runner: GhRunner
@@ -744,6 +753,10 @@ export class PrService {
     now?: () => number
   }) {
     this.runner = options?.runner ?? defaultRunner
+    this.stacks = new PrStackService(this.runner, (repo) => {
+      for (const key of this.listCache.keys()) if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)
+      this.paneListCache.clear()
+    })
     this.gitRunner = options?.gitRunner ?? defaultGitRunner
     this.preferences = new PrPreferencesStore(options?.preferencesPath)
     this.listTtlMs = options?.listTtlMs ?? LIST_CACHE_TTL_MS

@@ -59,6 +59,35 @@ export async function handlePrsApi(
   const path = url.pathname.slice(ROOT.length).split('/').filter(Boolean).map(decodeURIComponent)
 
   try {
+    if (path.length === 1 && path[0] === 'stack') {
+      if (request.method === 'GET') {
+        json(response, 200, { stack: await service.stacks.get(url.searchParams.get('repo'), url.searchParams.get('number')) })
+      } else if (request.method === 'POST') {
+        const body = await readBody(request)
+        json(response, 200, { stack: await service.stacks.link(body.repo, body.numbers) })
+      } else {
+        response.setHeader('Allow', 'GET, POST')
+        json(response, 405, { error: 'Method not allowed' })
+      }
+      return true
+    }
+    if (path.length === 1 && path[0] === 'stacked-pr') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const body = await readBody(request)
+      let targetId: string | undefined
+      if (body.paneId !== undefined) {
+        let paneId: string
+        try { paneId = validateTmuxPaneId(body.paneId) } catch { throw new PrServiceError(400, 'invalid_request', 'Invalid tmux pane id') }
+        targetId = dependencies.paneTargetId(paneId)
+        if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'The creating pane no longer exists')
+      }
+      json(response, 201, await service.stacks.create(body.repo, body.parentNumber, body, targetId))
+      return true
+    }
     if (path.length === 0) {
       if (request.method !== 'GET') {
         response.setHeader('Allow', 'GET')

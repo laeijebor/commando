@@ -48,6 +48,25 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('routes native stack reads and writes, and stamps a daemon-known creating pane', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const stack = { number: 7, open: true, baseRefName: 'main', pullRequests: [] }
+    const get = vi.spyOn(service.stacks, 'get').mockResolvedValue(stack)
+    const link = vi.spyOn(service.stacks, 'link').mockResolvedValue(stack)
+    const create = vi.spyOn(service.stacks, 'create').mockResolvedValue({ pullRequest: { number: 20, url: 'https://github.com/acme/widgets/pull/20' }, stack })
+    const base = await startApi(() => '/workspace', (pane) => pane === '%1' ? TARGET_ID : undefined, service)
+    expect((await fetch(`${base}/api/prs/stack?repo=acme%2Fwidgets&number=7`)).status).toBe(200)
+    expect(get).toHaveBeenCalledWith('acme/widgets', '7')
+    const write = (path: string, body: unknown) => fetch(`${base}/api/prs/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    expect((await write('stack', { repo: 'acme/widgets', numbers: [10, 20] })).status).toBe(200)
+    expect(link).toHaveBeenCalledWith('acme/widgets', [10, 20])
+    const body = { repo: 'acme/widgets', parentNumber: 10, head: 'api', title: 'API', body: '', draft: true, paneId: '%1' }
+    expect((await write('stacked-pr', body)).status).toBe(201)
+    expect(create).toHaveBeenCalledWith('acme/widgets', 10, body, TARGET_ID)
+    expect((await write('stacked-pr', { ...body, paneId: '%999' })).status).toBe(404)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect((await fetch(`${base}/api/prs/stacked-pr`)).status).toBe(405)
+  })
   it('accepts POST JSON thread actions and rejects other methods/content types', async () => {
     const service = new PrService({ runner: vi.fn() })
     const action = vi.spyOn(service, 'actOnReviewThread').mockResolvedValue({ ok: true })

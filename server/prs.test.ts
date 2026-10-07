@@ -85,6 +85,12 @@ function serviceWith(output: string | Error, options?: ConstructorParameters<typ
 }
 
 describe('merging pull requests', () => {
+  it('hydrates native stack membership in the existing list query', async () => {
+    const { service, runner } = serviceWith(graphqlPayload([pullRequestNode({ stackEntry: { position: 2, stack: { number: 7, size: 3, baseRefName: 'main' } } })]))
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].stack).toEqual({ number: 7, position: 2, size: 3, baseRefName: 'main' })
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner.mock.calls[0][0].join(' ')).toContain('stackEntry { position stack { number size baseRefName } }')
+  })
   const head = '2222222222222222222222222222222222222222'
   const ready = { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: head }
 
