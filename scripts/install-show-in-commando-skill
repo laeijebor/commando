@@ -10,8 +10,11 @@ destination_roots=(
   "$HOME/.claude/skills"
   "$HOME/.claudep/skills"
   "$HOME/.claudey/skills"
+  "$HOME/.cursor/skills"
   "$HOME/.config/opencode/skills"
 )
+# Custom Claude profiles may intentionally live outside HOME. Test callers must
+# clear inherited CLAUDE_CONFIG_DIR before invoking this installer in a sandbox.
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   destination_roots+=("$CLAUDE_CONFIG_DIR/skills")
 fi

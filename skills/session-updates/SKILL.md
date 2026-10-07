@@ -6,16 +6,22 @@ description: Maintain a pane-local Commando worklog. Use when starting meaningfu
 # Commando pane worklogs
 
 Keep the current tmux pane easy to re-enter throughout its session. Commando
-shows provider tasks automatically and derives pane-local milestones from
-lifecycle hooks. Use the shared CLI when you have a deliberate summary,
-decision, blocker, note, or next action to add to the current pane's worklog.
+shows provider tasks when its bridge supplies structured task telemetry and
+derives pane-local milestones from authenticated lifecycle hooks. Use the shared
+CLI when you have a deliberate summary, decision, blocker, note, or next action
+to add to the current pane's worklog.
 The worklog fills in after its first plan or activity and keeps completed,
-current, and pending tasks visible above chronological history.
+current, and pending tasks visible above chronological history when supplied.
+The shared CLI has no structured tasks input. When automatic task telemetry is
+unavailable, publish a short textual plan with `--recap-markdown` and one
+`--next` action; this does not populate the checklist. Automatic Cursor todos
+are unsupported in the current integration; use this textual-plan fallback.
 
 The worklog handle also remains available before hook data arrives, so notes
 and linked PRs are always accessible. If the worklog reports no agent hook
-data, run Commando's `npm run hooks:install`, then restart the agent when it
-is safe to do so. Running sessions may retain their old plugin configuration.
+data, run Commando's `npm run hooks:install` on the daemon/tmux host, then restart
+the agent when it is safe to do so. Running sessions may retain their old plugin
+configuration.
 
 When creating a PR, use the `commando-prs` skill: retrieve the pane marker
 with `node "$HOME/.commando/hooks/commando-pr-marker.mjs"` and append it to
@@ -83,20 +89,45 @@ the corresponding `kind` values are `issue`, `deployment`, `build`, and
 
 Pin the command that restarts this conversation so the user can resume it from
 the worklog after a restart or a tmux restore. The agent bridge prints the exact
-command at session start ("Resume command for this conversation: ..."); pin it
-verbatim, once per conversation. A new `--session` replaces the previous one:
+command at session start when supported ("Resume command for this conversation:
+..."); pin it verbatim, once per conversation. Otherwise use a confirmed
+conversation ID,
+never one inferred from the pane, branch, or a "latest conversation" alias.
+A new `--session` replaces the previous one:
 
 ```bash
 $HOME/.commando/hooks/commando-session-update.mjs --session "opencode --yolo -s ses_f08700672ffenN8gLm9kPx2xb6"
 $HOME/.commando/hooks/commando-session-update.mjs --session "claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487"
+$HOME/.commando/hooks/commando-session-update.mjs --session "agent --resume=d227943a-841a-4dfa-94c7-afe2e0774487"
 ```
 
 Claude uses `claudew` or `claudep` to match the config dir in use
-(`CLAUDE_CONFIG_DIR` ending `.claudew` / `.claudep`), opencode always runs with
-`--yolo`, and Codex is `codex resume <id>`. Clicking the term types the command
+(`CLAUDE_CONFIG_DIR` ending `.claudew` / `.claudep`), the OpenCode bridge supplies
+`opencode --yolo -s <id>`, and Codex is `codex resume <id>`. Cursor's executable
+is `agent`, with `agent --resume=<actual-conversation-id>`; replace the example
+UUID with this conversation's real ID. Do not append `--force` or `--yolo` to
+Cursor commands by default: those flags change approval policy. Cursor's
+[CLI parameters](https://cursor.com/docs/cli/reference/parameters) document
+resume and approval flags. Resume from the conversation's original checkout
+or worktree. Exact-ID Cursor resume retained conversation context without a
+fresh `sessionStart` in native acceptance; prompt hooks re-established activity.
+Do not depend on newly injected startup context when resuming.
+Clicking the term types the command
 into the pane without pressing Enter; a separate button copies it. Only plain
 words are accepted (no quotes, `;`, `&`, `|`, `$`, backticks or newlines), up to
 300 characters. Remove it with `--remove-session COMMAND`.
+
+Saved history after a tmux restore remains inactive until fresh authenticated
+hooks reconnect it. A provider inferred from a process or pane title does not
+verify restoration. Operational Cursor pane context requires a supported
+foreground process with verified PID/ancestry and tmux socket association;
+unsupported, background or non-tmux processes get no operational pane context.
+Remote Cursor permission/question answers are unsupported in the current
+integration; answer in the terminal. The completed ACP spike proves only
+initialize transport with a new child, not production remote-answer support
+or attachment to a live tmux process.
+For multiline Cursor input through tmux or SSH, use Ctrl+J, as described
+in [Cursor's CLI guide](https://cursor.com/docs/cli/using).
 
 ## Publish screenshots
 
@@ -136,8 +167,9 @@ JSON
 ## Content rules
 
 - Keep the headline under one short sentence.
-- Keep the agent's task list current so Commando can render checked, active,
-  pending, and cancelled work accurately.
+- Keep the agent's task list current when its bridge supports structured task
+  telemetry. Otherwise keep a textual plan and next action current; do not claim
+  the update CLI synchronizes tasks.
 - Record only meaningful milestones, not every tool call. Lifecycle history is
   append-only for the tmux session, so repetitive updates become noise.
 - Name a decision's consequence, not just that a decision happened.
