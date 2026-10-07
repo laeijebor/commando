@@ -91,6 +91,43 @@ final class TerminalPaneHostTests: XCTestCase {
         host.destroyAll()
     }
 
+    func testPaletteRecolorsExistingAndFutureSurfacesWithoutResettingZoom() throws {
+        defer { TerminalProfile.palette = .rosePineMoon }
+        let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let host = TerminalPaneHost(
+            overlay: overlay,
+            fallbackResponder: nil,
+            prefersMetal: false,
+            eventSink: { _, _ in }
+        )
+        let first = PaneIdentity(paneId: "%1", attachmentId: "first")
+        let second = PaneIdentity(paneId: "%2", attachmentId: "second")
+        host.attach(.init(identity: first, ariaLabel: "First"))
+        host.setZoomScale(1.2)
+
+        let palette = TerminalPalette(
+            background: 0x181818,
+            foreground: 0xd6d6d6,
+            cursor: 0xe4e4e4,
+            cursorText: 0x181818,
+            selectionBackground: 0x264f78,
+            selectionForeground: 0xffffff,
+            ansi: Array(repeating: 0x808080, count: TerminalPalette.ansiCount)
+        )
+        host.applyPalette(palette)
+
+        let expectedBackground = NSColor(srgbRed: 0x18 / 255, green: 0x18 / 255, blue: 0x18 / 255, alpha: 1)
+        let firstSurface = try XCTUnwrap(host.registry.record(for: first)?.value)
+        XCTAssertEqual(firstSurface.view.nativeBackgroundColor, expectedBackground)
+        XCTAssertEqual(firstSurface.backdropView.layer?.backgroundColor, expectedBackground.cgColor)
+        XCTAssertEqual(firstSurface.view.font.pointSize, TerminalProfile.fontSize * 1.2, accuracy: 0.001)
+
+        host.attach(.init(identity: second, ariaLabel: "Second"))
+        let secondSurface = try XCTUnwrap(host.registry.record(for: second)?.value)
+        XCTAssertEqual(secondSurface.view.nativeBackgroundColor, expectedBackground)
+        host.destroyAll()
+    }
+
     func testNonOwnerSourceGridSurvivesFrameZoomFocusAndReseed() throws {
         let overlay = TerminalOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var contextMenuPoints: [CGPoint] = []
