@@ -143,6 +143,27 @@ const defaultExecutor: GitProcessExecutor = (file, args, options) =>
     child.stdin?.end(options.input ?? '')
   })
 
+/** Shared by worktree diffs and remote PR patches. Always preserve syntax colors when piped. */
+export async function renderDeltaPatch(
+  patch: string,
+  width: number,
+  display: DiffDisplay = 'inline',
+  execute: GitProcessExecutor = defaultExecutor,
+  cwd = process.cwd(),
+): Promise<string> {
+  if (!patch) return ''
+  const { stdout } = await execute('delta', [
+    '--paging', 'never', '--dark', '--true-color', 'always',
+    '--width', String(width),
+    ...(display === 'side-by-side' ? ['--side-by-side'] : []),
+  ], {
+    cwd, encoding: 'utf8', shell: false, windowsHide: true,
+    timeout: DIFF_TIMEOUT_MS, maxBuffer: DIFF_BUFFER_BYTES,
+    env: { ...process.env, COLORTERM: 'truecolor' }, allowExitCodes: [1], input: patch,
+  })
+  return stdout
+}
+
 export function validateDiffEngine(value: unknown): DiffEngine {
   if (value === undefined || value === null || value === '') return 'difftastic'
   if (value === 'difftastic' || value === 'delta') return value
@@ -594,13 +615,7 @@ export class GitDiffInspector {
       ['diff', base, ...(head ? [head] : []), '--', relative],
       this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
     )
-    if (patch === '') return ''
-    const { stdout } = await this.execute(
-      'delta',
-      deltaArgs,
-      { ...this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES), allowExitCodes: [1], input: patch },
-    )
-    return stdout
+    return renderDeltaPatch(patch, width, display, this.execute, root)
   }
 
   private asDiffError(error: unknown, engine: DiffEngine): GitDiffError {

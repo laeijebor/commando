@@ -30,8 +30,8 @@
 .pr-quick-modal {
   display: flex;
   flex-direction: column;
-  width: min(1120px, 100%);
-  height: min(840px, 90vh);
+  width: min(1800px, 100%);
+  height: min(1200px, calc(100dvh - 48px));
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border-strong);
@@ -426,11 +426,23 @@
   padding: 16px;
   font: 12px/1.65 var(--mono);
 }
-.pr-quick-diff pre span {
+.pr-quick-diff pre:not(.pr-delta-output) > span {
   display: block;
   min-width: max-content;
   white-space: pre;
 }
+.pr-quick-diff .pr-delta-output {
+  background: var(--surface);
+  min-height: 100%;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+.pr-delta-output span { white-space: pre; }
+.pr-delta-patch { font: 12px/1.65 var(--mono); }
+.pr-quick-diff header { z-index: 1; }
+.pr-quick-diff .pr-delta-notice { margin: 0; color: var(--muted); font-size: 11px; }
+.pr-delta-notice button { margin-left: 8px; }
 .pr-quick-diff .added {
   color: var(--green);
   background: color-mix(in srgb, var(--green) 8%, transparent);
@@ -449,6 +461,7 @@
   .pr-quick-backdrop {
     padding: 8px;
   }
+  .pr-quick-modal { height: min(1200px, calc(100dvh - 16px)); }
   .pr-quick-header,
   .pr-quick-actions {
     padding: 14px;

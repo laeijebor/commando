@@ -30,6 +30,7 @@ function setup(
   conversation?: import('../shared/pr-quick-look').PrConversationEntry[],
 ) {
   const api = {
+    renderDiff: vi.fn().mockImplementation(async (_path: string, patch: string) => patch),
     threadAction: vi.fn().mockResolvedValue({ ok: true }),
     details: vi.fn().mockResolvedValue({
       body: '# Complete description\n\nFull body\n\n<sub>Badge text</sub>\n\n<script>window.bad = true</script>\n\n<a href="javascript:alert(1)">Unsafe link</a>',

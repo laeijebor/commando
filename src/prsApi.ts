@@ -57,6 +57,8 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       (await request<{ details: import('../shared/pr-quick-look').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
     diff: async (repo: string, number: number) =>
       (await request<{ diff: import('../shared/pr-quick-look').PrRemoteDiff }>(`/diff?repo=${encodeURIComponent(repo)}&number=${number}`)).diff,
+    renderDiff: async (path: string, patch: string, width: number) =>
+      (await request<{ ansi: string }>('/diff-render', { method: 'POST', body: JSON.stringify({ path, patch, width }) })).ansi,
     merge: async (repo: string, number: number, headRefOid: string, baseRefName?: string) =>
       request<{ merged: true }>('/merge', { method: 'POST', body: JSON.stringify({ repo, number, headRefOid, ...(baseRefName ? { baseRefName } : {}) }) }),
     list: async (repo: string, state: PrStateFilter, options?: { refresh?: boolean; scope?: PrScope }) =>

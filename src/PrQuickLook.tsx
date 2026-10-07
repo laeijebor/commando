@@ -10,6 +10,7 @@ import { PrConversationPanel } from './PrConversationPanel'
 import { refreshPrCommentStatus } from './prStore'
 import { PrConflictPanel } from './PrConflictPanel'
 import { PrStackPanel } from './PrStackPanel'
+import { PrDiffPatch } from './PrDiffPatch'
 import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
 
@@ -492,24 +493,7 @@ export function PrQuickLook({
                   </header>
                   {file ? (
                     file.patch !== null ? (
-                      <pre>
-                        {file.patch.split('\n').map((line, index) => (
-                          <span
-                            key={index}
-                            className={
-                              line.startsWith('+')
-                                ? 'added'
-                                : line.startsWith('-')
-                                  ? 'removed'
-                                  : line.startsWith('@@')
-                                    ? 'hunk'
-                                    : undefined
-                            }
-                          >
-                            {line || ' '}
-                          </span>
-                        ))}
-                      </pre>
+                      <PrDiffPatch key={`${references}:${file.path}`} path={file.path} patch={file.patch} api={api} />
                     ) : (
                       <p>
                         GitHub did not provide a text patch for this file (binary or too large).{' '}

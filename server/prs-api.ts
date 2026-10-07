@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { PrService, PrServiceError } from './prs.js'
 import { PrConflictError } from './pr-conflicts.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
+import { MAX_PR_PATCH_BYTES, renderPrDiff } from './pr-diff-render.js'
 
 const ROOT = '/api/prs'
 const MAX_BODY_BYTES = 64 * 1024
@@ -22,7 +23,7 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(body)
 }
 
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(request: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
   if (request.headers['content-type']?.split(';', 1)[0]?.trim() !== 'application/json') {
     throw new PrServiceError(415, 'invalid_request', 'Content-Type must be application/json')
   }
@@ -31,7 +32,7 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     length += buffer.length
-    if (length > MAX_BODY_BYTES) {
+    if (length > maxBytes) {
       throw new PrServiceError(413, 'invalid_request', 'Request body is too large')
     }
     chunks.push(buffer)
@@ -59,6 +60,16 @@ export async function handlePrsApi(
   const path = url.pathname.slice(ROOT.length).split('/').filter(Boolean).map(decodeURIComponent)
 
   try {
+    if (path.length === 1 && path[0] === 'diff-render') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const body = await readBody(request, MAX_PR_PATCH_BYTES * 6 + 32 * 1024)
+      json(response, 200, { ansi: await renderPrDiff(body.path, body.patch, body.width) })
+      return true
+    }
     if (path.length === 1 && path[0] === 'stack') {
       if (request.method === 'GET') {
         json(response, 200, { stack: await service.stacks.get(url.searchParams.get('repo'), url.searchParams.get('number')) })
