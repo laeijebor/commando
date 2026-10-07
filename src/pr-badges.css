@@ -20,3 +20,4 @@
 
 .pr-diffstat .plus { color: var(--green); }
 .pr-diffstat .minus { color: var(--red); }
+.pr-chip.pr-stack-badge { color: var(--accent); }

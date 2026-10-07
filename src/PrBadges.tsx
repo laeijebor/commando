@@ -27,6 +27,9 @@ export function PrBadges({ pr, number, onOpenDiff, children }: {
     ) : <span className="pr-chip pr-diffstat">{diffstat}</span>}
     <span className={`pr-chip ${checks?.state ?? 'dim'}`}>{checkLabel}</span>
     {children}
+    {pr.stack ? <span className="pr-chip pr-stack-badge" title={`Stack #${pr.stack.number} · PR ${pr.stack.position} of ${pr.stack.size} · ultimately targets ${pr.stack.baseRefName}`}>
+      stack #{pr.stack.number} · {pr.stack.position}/{pr.stack.size}
+    </span> : null}
     {unanswered > 0 ? (
       <span className="pr-chip warn" title="Open comment threads without replies">{unanswered}{pr.threadsTruncated ? '+' : ''} unanswered</span>
     ) : null}

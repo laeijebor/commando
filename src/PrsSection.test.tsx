@@ -96,6 +96,14 @@ afterEach(() => {
 })
 
 describe('PrsSection', () => {
+  it('shows native stack position and opens the creation form', async () => {
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({ stack: { number: 7, position: 2, size: 3, baseRefName: 'main' } })]) }) })
+    render(<PrsSection token="t" />)
+    expect(await screen.findByText('stack #7 · 2/3')).toHaveAttribute('title', 'Stack #7 · PR 2 of 3 · ultimately targets main')
+    fireEvent.click(screen.getByRole('button', { name: 'Create stack' }))
+    expect(screen.getByRole('region', { name: 'Create a native GitHub stack' })).toBeInTheDocument()
+    expect(screen.getByLabelText('PR numbers · bottom to top')).toBeInTheDocument()
+  })
   it('shows a non-main merge target in the PR card header', async () => {
     stubFetch({ list: () => jsonResponse({ list: listWith([pr({ baseRefName: 'release/mail' })]) }) })
     render(<PrsSection token="t" />)

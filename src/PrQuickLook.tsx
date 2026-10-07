@@ -9,10 +9,11 @@ import type { PrConflicts, PrConversationEntry, PrDetails, PrRemoteDiff } from '
 import { PrConversationPanel } from './PrConversationPanel'
 import { refreshPrCommentStatus } from './prStore'
 import { PrConflictPanel } from './PrConflictPanel'
+import { PrStackPanel } from './PrStackPanel'
 import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
 
-const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts'] as const
+const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts', 'Stack'] as const
 type Tab = (typeof tabs)[number]
 type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T }
 
@@ -290,6 +291,7 @@ export function PrQuickLook({
           </span>
           <span className="pass">+{pr.additions}</span>
           <span className="fail">−{pr.deletions}</span>
+          {pr.stack ? <button type="button" className="pr-pop-btn" onClick={() => setTab('Stack')}>Stack #{pr.stack.number} · {pr.stack.position}/{pr.stack.size}</button> : null}
         </div>
         {nonMainTarget ? (
           <div className="pr-quick-target-warning" role="note">
@@ -349,7 +351,7 @@ export function PrQuickLook({
           aria-labelledby={`pr-quick-tab-${tab}`}
           tabIndex={0}
         >
-          {error && tab !== 'Conflicts' ? (
+          {error && tab !== 'Conflicts' && tab !== 'Stack' ? (
             <div className="pr-quick-message" role="alert">
               {error}{' '}
               <button type="button" onClick={() => setRetry((value) => value + 1)}>
@@ -358,6 +360,7 @@ export function PrQuickLook({
               {onRefresh ? <button type="button" onClick={() => { void onRefresh().then(() => setRetry((value) => value + 1)) }}>Refresh PR</button> : null}
             </div>
           ) : null}
+          {tab === 'Stack' ? <PrStackPanel key={`${repo}:${pr.number}:${pr.stack?.number ?? ''}`} repo={repo} pr={pr} api={api} /> : null}
           {tab === 'Conflicts' ? (
             <PrConflictPanel
               key={references}

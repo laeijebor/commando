@@ -12,6 +12,7 @@ import {
 } from './prsApi'
 import { useRepoPrs } from './prStore'
 import { PrBadges } from './PrBadges'
+import { PrStackComposer } from './PrStackComposer'
 import { prMergeDisabledReason } from '../shared/pr-merge'
 import './prs-section.css'
 
@@ -96,6 +97,7 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
         <span className="pr-pop-dim">→</span>
         <span className={pr.baseRefName && pr.baseRefName !== 'main' ? 'pr-target-highlight' : undefined}>{pr.baseRefName}{pr.baseRefName && pr.baseRefName !== 'main' ? ' · merge target, not main' : ''}</span>
       </div>
+      {pr.stack ? <div className="pr-pop-row">Stack #{pr.stack.number} · {pr.stack.position} of {pr.stack.size} · targets {pr.stack.baseRefName}</div> : null}
       <div className="pr-pop-row">
         {pr.createdAt ? `opened ${relativeTime(pr.createdAt)}` : 'opened'}
         {pr.author ? ` by ${pr.author}` : ''} · {formatCount(pr.commitCount)} commits · {formatCount(pr.changedFiles)} files
@@ -429,6 +431,10 @@ export function PrsSection({
   const [localError, setLocalError] = useState('')
   const [addingRepo, setAddingRepo] = useState(false)
   const [repoDraft, setRepoDraft] = useState('')
+  const [creatingStack, setCreatingStack] = useState(false)
+  const [stackBusy, setStackBusy] = useState(false)
+  const stackBusyRef = useRef(stackBusy)
+  stackBusyRef.current = stackBusy
   repoRef.current = repo
   const paneContext = currentPaneId && currentPanePath ? `${currentPaneId}\u0000${currentPanePath}` : ''
   const repoState = useRepoPrs(repo, filter, api, { enabled: ready && active, scope })
@@ -466,11 +472,11 @@ export function PrsSection({
     let persistedRepo = ''
 
     const resolvePaneRepo = async () => {
-      if (inFlight || manualPaneContext.current === paneContext) return
+      if (inFlight || stackBusyRef.current || manualPaneContext.current === paneContext) return
       inFlight = true
       try {
         const next = await api.repoForPane(currentPaneId)
-        if (!active || !next || manualPaneContext.current === paneContext) return
+        if (!active || !next || stackBusyRef.current || manualPaneContext.current === paneContext) return
         setRepos((current) => current.some((candidate) => candidate.toLowerCase() === next.toLowerCase())
           ? current
           : [next, ...current])
@@ -536,6 +542,7 @@ export function PrsSection({
     void api.updatePrefs({ pinnedRepos: next }).catch(() => undefined)
   }
   const addRepo = () => {
+    if (stackBusyRef.current) return
     const next = repoDraft.trim()
     if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(next)) {
       setLocalError('Repos look like owner/name')
@@ -561,6 +568,7 @@ export function PrsSection({
           <select
             className="prs-repo-select"
             aria-label="Repository"
+            disabled={stackBusy}
             value={repo}
             onChange={(event) => changeRepo(event.target.value)}
           >
@@ -580,6 +588,7 @@ export function PrsSection({
           <button
             type="button"
             className="icon-button prs-add"
+            disabled={stackBusy}
             onClick={() => setAddingRepo((current) => !current)}
             aria-label="Add a repo"
             aria-expanded={addingRepo}
@@ -625,8 +634,11 @@ export function PrsSection({
             Everyone&rsquo;s{list ? <span className="count">{formatCount(list.totalCount)}</span> : null}
           </button>
         </div>
+        <button type="button" className="prs-filter" disabled={!repo || !list || stackBusy} aria-expanded={creatingStack} onClick={() => setCreatingStack((value) => !value)}>Create stack</button>
       </div>
       <div className="prs-stream">
+        {creatingStack && repo && list ? <PrStackComposer key={repo} repo={repo} prs={list.pullRequests} api={api} paneId={currentPaneId}
+          onBusyChange={setStackBusy} onRefresh={repoState.refresh} onClose={() => setCreatingStack(false)} /> : null}
         {!repo && ready && !loading ? (
           <div className="prs-empty">
             <GitPullRequestArrow aria-hidden="true" />

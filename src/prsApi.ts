@@ -1,3 +1,4 @@
+import type { NewStackedPr, PrStack, PrStackMembership, StackedPrResult } from '../shared/pr-stacks'
 export type PrStateFilter = 'open' | 'closed' | 'all'
 export type PrScope = 'mine' | 'everyone'
 export type PrCheckState = 'pass' | 'fail' | 'pending'
@@ -36,6 +37,7 @@ export type PrSummary = {
   viewerIsAuthor: boolean
   viewerReviewRequested: boolean
   commandoMarker: CommandoPrMarker | null
+  stack?: PrStackMembership | null
 }
 export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
 export type PrThreads = { repo: string; number: number; threads: PrThreadExcerpt[]; truncated: boolean; fetchedAt: number }
@@ -49,7 +51,7 @@ export type PrList = {
   mineTruncated: boolean
   fetchedAt: number
 }
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision'>
+export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision' | 'stack'>
 export type PanePrSummary = PrStatus & {
   repo: string
   preview?: PrSummary
@@ -99,6 +101,12 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    stack: async (repo: string, number: number) =>
+      (await request<{ stack: PrStack }>(`/stack?repo=${encodeURIComponent(repo)}&number=${number}`)).stack,
+    linkStack: async (repo: string, numbers: number[]) =>
+      (await request<{ stack: PrStack }>('/stack', { method: 'POST', body: JSON.stringify({ repo, numbers }) })).stack,
+    createStackedPr: async (repo: string, parentNumber: number, input: NewStackedPr, paneId?: string) =>
+      request<StackedPrResult>('/stacked-pr', { method: 'POST', body: JSON.stringify({ repo, parentNumber, ...input, ...(paneId ? { paneId } : {}) }) }),
     threadAction: async (repo: string, number: number, threadId: string, action: 'reply' | 'resolve' | 'reopen', body?: string) =>
       request<{ ok: true }>('/thread-action', { method: 'POST', body: JSON.stringify({ repo, number, threadId, action, ...(body !== undefined ? { body } : {}) }) }),
     conflicts: async (repo: string, number: number) =>
