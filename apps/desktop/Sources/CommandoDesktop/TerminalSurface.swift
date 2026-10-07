@@ -535,6 +535,12 @@ final class TerminalSurface: NSObject, @preconcurrency TerminalViewDelegate {
         applyMetadata(metadata)
     }
 
+    func applyProfileColors() {
+        guard !destroyed else { return }
+        TerminalProfile.applyColors(to: view)
+        backdropView.layer?.backgroundColor = view.nativeBackgroundColor.cgColor
+    }
+
     func setZoomScale(_ scale: CGFloat) {
         guard !destroyed,
               scale.isFinite,
