@@ -54,6 +54,7 @@ export function providerLabel(provider: AgentProvider): string {
   if (provider === 'claude') return 'Claude'
   if (provider === 'codex') return 'Codex'
   if (provider === 'opencode') return 'OpenCode'
+  if (provider === 'cursor') return 'Cursor'
   return 'Agent'
 }
 
@@ -143,6 +144,7 @@ export function buildNotification(
     sessionName: context.sessionName,
     provider: status.provider,
   }
+  if (status.details?.recap?.outcome === 'cancelled') return null
   const label = providerLabel(status.provider)
   if (status.status === 'needs_input') {
     const request = newestRequest(status.details?.requests ?? [])
@@ -239,10 +241,19 @@ export class PushNotifier {
     }
     const paneId = change.status.paneId
     const existing = this.pending.get(paneId)
+    if (existing && change.status.provider === 'cursor' && existing.status.provider === 'cursor' &&
+      change.status.details?.recap && existing.status.details?.recap &&
+      change.status.details.recap.completedAt === existing.status.details.recap.completedAt) {
+      // A late native response corrects this completion inside the existing
+      // debounce window; it must not restart the deadline or send twice.
+      existing.status = change.status
+      return
+    }
     if (existing) clearTimeout(existing.timer)
     const timer = setTimeout(() => {
+      const latest = this.pending.get(paneId)
       this.pending.delete(paneId)
-      this.dispatch(change.status)
+      if (latest) this.dispatch(latest.status)
     }, this.debounceMs)
     timer.unref?.()
     this.pending.set(paneId, { status: change.status, timer })

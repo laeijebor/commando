@@ -1,3 +1,4 @@
+import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -453,7 +454,8 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
 
 async function repairStaleAgentHooks(): Promise<void> {
   try {
-    const { repaired, staleBridgePaths } = await repairAgentStatusHooks()
+    const { repaired, staleBridgePaths, warnings } = await repairAgentStatusHooks()
+    for (const warning of warnings ?? []) console.warn(`[commando] hook repair skipped ${warning}`)
     if (!repaired) return
     console.log(`[commando] repaired agent hooks pointing at ${staleBridgePaths.join(', ')}`)
   } catch (error) {
@@ -845,7 +847,24 @@ async function main(): Promise<void> {
       status !== undefined &&
       status.status !== 'done' &&
       status.status !== 'failed' &&
-      processStatusForPane(pane).provider !== 'unknown'
+      status.details?.recap?.outcome !== 'cancelled' &&
+      (status.provider === 'cursor'
+        ? !pane.dead && agentStatuses.hasCursorHookProcess(paneId)
+        : processStatusForPane(pane).provider !== 'unknown')
+  }
+
+  const cursorOutputIsCurrent = async (paneId: string, expected?: CursorHookAssociation | null): Promise<boolean> => {
+    if (agentStatuses.get(paneId)?.provider !== 'cursor') return true
+    const association = agentStatuses.cursorAssociation(paneId)
+    if (expected !== undefined && (!association || !expected || cursorProducerIdentity(association) !== cursorProducerIdentity(expected))) return false
+    const valid = association !== null && await cursorAssociationIsCurrent(paneId, association)
+    const current = agentStatuses.cursorAssociation(paneId)
+    if (valid && (!current || cursorProducerIdentity(current) !== cursorProducerIdentity(association!))) return false
+    if (!valid) {
+      if (association) publishAgentStatusChange(agentStatuses.invalidateCursorAssociation(paneId, association))
+      if (companionOutputTails.delete(paneId)) scheduleCompanionPublish()
+    }
+    return valid
   }
 
   const scheduleCompanionOutputRefresh = (paneId: string): void => {
@@ -864,6 +883,8 @@ async function main(): Promise<void> {
         if (!companionObservesLiveOutput(paneId) && !completedByHook) return
         // Control-mode output contains every cursor rewrite and animation frame. Capture tmux's
         // rendered grid so the companion receives terminal state rather than the raw repaint stream.
+        const cursorAtCapture = agentStatuses.cursorAssociation(paneId)
+        if (!await cursorOutputIsCurrent(paneId, cursorAtCapture)) return
         const rendered = await captureRenderedCompanionOutput(tmux, pane.sessionId, paneId)
         if (companionOutputGenerations.get(paneId) !== generation) return
         const currentPane = paneForId(paneId)
@@ -879,7 +900,9 @@ async function main(): Promise<void> {
           dead: currentPane.dead,
           capturedAt: Date.now(),
         })
-        if (currentProcess.provider === 'unknown') return
+        if (currentProcess.provider === 'unknown' &&
+          (currentPane.dead || !agentStatuses.hasCursorHookProcess(paneId, rendered.command))) return
+        if (!await cursorOutputIsCurrent(paneId, cursorAtCapture) || companionOutputGenerations.get(paneId) !== generation) return
         companionOutputTails.set(paneId, rendered.output)
         scheduleCompanionPublish()
       })().catch(reportTmuxError)
@@ -983,9 +1006,10 @@ async function main(): Promise<void> {
     if (!pane) return
     const command = pane.command
     primingStatusTails.add(paneId)
+    const cursorAtCapture = agentStatuses.cursorAssociation(paneId)
     tmux
       .capturePane(pane.sessionId, paneId)
-      .then((capture) => {
+      .then(async (capture) => {
         const currentPane = paneForId(paneId)
         const observedByBrowser = [...clients].some((client) => (
           client.subscribedPaneIds.has(paneId) || client.statusPaneIds.has(paneId)
@@ -998,6 +1022,8 @@ async function main(): Promise<void> {
           currentPane.command !== command ||
           (!observedByBrowser && !companionObservesLiveOutput(paneId) && !completedByHook)
         ) return
+        const cursorCurrent = await cursorOutputIsCurrent(paneId, cursorAtCapture)
+        if (!observedByBrowser && !cursorCurrent) return
         const buffered = Buffer.from(paneTextTails.get(paneId)?.content ?? '')
         const normalizedCapture = normalizeCaptureLineEndings(capture)
         observePaneSeed(
@@ -1006,7 +1032,7 @@ async function main(): Promise<void> {
           buffered,
           Date.now(),
         )
-        if (companionObservesLiveOutput(paneId) || completedByHook) {
+        if (cursorCurrent && (companionObservesLiveOutput(paneId) || completedByHook)) {
           companionOutputTails.set(paneId, normalizedCapture.toString('utf8'))
           scheduleCompanionOutputRefresh(paneId)
           scheduleCompanionPublish()
@@ -1468,6 +1494,8 @@ async function main(): Promise<void> {
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
     interactions,
+    verifyCursorAssociation: verifyCursorHookAssociation,
+    cursorForeground: cursorForegroundIsCurrent,
   })
   const sessionBriefApi = new SessionBriefApi({
     token: agentHookToken,

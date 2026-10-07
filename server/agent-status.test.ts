@@ -229,3 +229,31 @@ describe('Claude Code process names', () => {
     expect(inferAgentProvider('zsh', '✳ Start fresh', '')).toMatchObject({ provider: 'unknown' })
   })
 })
+
+describe('Cursor CLI process evidence', () => {
+  it.each(['cursor-agent', '/opt/cursor-agent/agent', 'node /opt/cursor-agent/versions/2026.10.01/index.js'])('recognizes Cursor evidence %s', (command) => {
+    expect(inferAgentProcessStatus({ paneId: '%1', command, title: '', capturedAt: 1 })).toMatchObject({ provider: 'cursor', source: 'process' })
+  })
+  it.each(['agent', '/usr/local/bin/agent', '/home/test/.local/bin/agent', 'node', 'ssh-agent', 'gpg-agent', 'cursor', 'zsh'])('ignores ambiguous commands and prose: %s', (command) => {
+    expect(inferAgentProcessStatus({ paneId: '%1', command, title: 'Move the cursor to the agent', capturedAt: 1 }).provider).toBe('unknown')
+    expect(inferAgentProvider(command, '', 'Move the cursor to the agent').provider).toBe('unknown')
+  })
+  it('uses a specific Cursor CLI title for a runtime but leaves other providers intact', () => {
+    expect(inferAgentProcessStatus({ paneId: '%1', command: 'node', title: 'Cursor Agent', capturedAt: 1 }).provider).toBe('cursor')
+    expect(inferAgentProvider('claude', 'Cursor Agent', '').provider).toBe('claude')
+    expect(inferAgentProcessStatus({ paneId: '%1', command: 'zsh', title: 'Cursor Agent', capturedAt: 1 }).provider).toBe('unknown')
+  })
+})
+
+it.each(['zsh', '/bin/bash', 'sleep', 'vim'])('rejects Cursor titles on ineligible %s in both inference paths', (command) => {
+  const input = { paneId: '%1', command, title: 'Cursor Agent · workspace', dead: false, capturedAt: now, content: 'Cursor CLI running', lastChangedAt: now }
+  expect(inferAgentProvider(command, input.title, input.content).provider).toBe('unknown')
+  expect(inferAgentProcessStatus(input).provider).toBe('unknown')
+  expect(inferAgentStatus(input).provider).toBe('unknown')
+})
+it('uses the canonical Cursor display label for inferred process and live status summaries', () => {
+  const input = { paneId: '%1', command: 'cursor-agent', title: '', capturedAt: now, content: '', lastChangedAt: now, dead: false }
+  expect(inferAgentProcessStatus(input).summary).toBe('Cursor process detected')
+  expect(inferAgentProcessStatus({ ...input, dead: true }).summary).toBe('Cursor process exited')
+  expect(inferAgentStatus(input).summary).toContain('Cursor')
+})

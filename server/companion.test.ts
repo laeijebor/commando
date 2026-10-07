@@ -138,3 +138,10 @@ describe('parseCompanionMessage', () => {
     expect(parseCompanionMessage({ type: 'focus_output', paneId: '12' })).toBeNull()
   })
 })
+
+it('labels a native Cursor session with runtime process and preserves focused live output', () => {
+  const cursor: AgentStatus = { ...status, provider: 'cursor', agentSessionId: 'conversation-1', agentSessionName: undefined, status: 'working', summary: 'Cursor is working', details: { recentActivities: [], checks: [] } }
+  const runtime = { ...snapshot, panes: snapshot.panes.map((pane) => ({ ...pane, command: 'node', title: '' })) }
+  const result = buildCompanionSnapshot(runtime, [cursor], [], () => 'Cursor live output')
+  expect(result.sessions.find((session) => session.provider === 'cursor')).toMatchObject({ agentSessionName: 'Cursor · ation1', agentSessionId: 'conversation-1', lastOutput: 'Cursor live output' })
+})

@@ -8,6 +8,7 @@ import {
   compareAgentRows,
   groupAgentRows,
   pendingRequest,
+  providerLabel,
   sortStatusKinds,
   STATUS_PRIORITY,
 } from './selectors'
@@ -179,4 +180,9 @@ describe('buildSessionTree', () => {
   it('returns nothing before the first snapshot', () => {
     expect(buildSessionTree(null)).toEqual([])
   })
+})
+
+it('names Cursor without changing unknown-provider fallback', () => {
+  expect(providerLabel('cursor')).toBe('Cursor')
+  expect(providerLabel('unknown')).toBe('Agent')
 })

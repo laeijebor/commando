@@ -1,3 +1,5 @@
+import { AgentStatusRegistry } from './agent-status-registry.js'
+import { association } from './cursor-hook-test-fixtures.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentInteractionRequest, AgentStatus, AgentStatusKind } from '../shared/protocol.js'
@@ -351,5 +353,49 @@ describe('push notifier', () => {
     await notifier.sendTest(device({}, { needsInput: false, done: false, failed: false }))
 
     expect(messages()[0]).toMatchObject({ categoryId: 'test', data: { kind: 'test', deviceId: 'phone-1' } })
+  })
+})
+
+it('labels Cursor completion pushes and suppresses cancellation regardless of status fallback', () => {
+  const context = { sessionId: '$1', sessionName: 'work' }
+  expect(buildNotification(status('done', { provider: 'cursor' }), 'working', context)?.title).toBe('Cursor finished · work')
+  for (const kind of ['unknown', 'done', 'failed'] as const) expect(buildNotification(status(kind, { provider: 'cursor', details: { recentActivities: [], checks: [], recap: { outcome: 'cancelled', summary: 'Cursor turn cancelled', completedAt: 1 } } }), 'working', context)).toBeNull()
+})
+
+describe('Cursor late response notification corrections', () => {
+  it('coalesces an observed stop-first response within the original debounce deadline and never sends twice', async () => {
+    vi.useFakeTimers()
+    const { notifier, messages } = harness(); notifiers.push(notifier)
+    const registry = new AgentStatusRegistry()
+    const apply = (event: string, emittedAt: string, patch: Record<string, unknown> = {}) => {
+      const change = registry.applyCursorHook('%1', { hook_event_name: event, conversation_id: 'conv-abcdefgh', generation_id: 'turn-1', emittedAt, ...patch }, Number(emittedAt), 'node', association)
+      notifier.handleStatusChange(change)
+      return change
+    }
+    apply('beforeSubmitPrompt', '10')
+    apply('stop', '20', { status: 'completed' })
+    await vi.advanceTimersByTimeAsync(6)
+    apply('afterAgentResponse', '26', { text: '🟢 Cursor native acceptance complete' })
+    await vi.advanceTimersByTimeAsync(994)
+    expect(messages()).toHaveLength(1)
+    expect(messages()[0]).toMatchObject({ title: 'Cursor finished · island', body: 'Cursor native acceptance complete' })
+    expect(registry.get('%1')?.details?.recap?.completedAt).toBe(20)
+    expect(apply('afterAgentResponse', '27', { text: '🟢 Cursor native acceptance complete' })).toBeNull()
+    apply('afterAgentResponse', '28', { text: '🟢 Revised safe recap' })
+    await notifier.flush()
+    expect(messages()).toHaveLength(1)
+  })
+  it('suppresses a pending finished push when the late response says blocked', async () => {
+    vi.useFakeTimers()
+    const { notifier, messages } = harness(); notifiers.push(notifier)
+    const registry = new AgentStatusRegistry()
+    const base = { conversation_id: 'conv-abcdefgh', generation_id: 'turn-1' }
+    notifier.handleStatusChange(registry.applyCursorHook('%1', { ...base, hook_event_name: 'beforeSubmitPrompt', emittedAt: '10' }, 10, 'node', association))
+    notifier.handleStatusChange(registry.applyCursorHook('%1', { ...base, hook_event_name: 'stop', emittedAt: '20', status: 'completed' }, 20, 'node', association))
+    await vi.advanceTimersByTimeAsync(6)
+    notifier.handleStatusChange(registry.applyCursorHook('%1', { ...base, hook_event_name: 'afterAgentResponse', emittedAt: '26', text: '🔴 Need user approval' }, 26, 'node', association))
+    await vi.advanceTimersByTimeAsync(994)
+    expect(registry.get('%1')?.status).toBe('needs_input')
+    expect(messages()).toEqual([])
   })
 })

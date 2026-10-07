@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentStatus } from '../shared/protocol.js'
+import { AgentStatusRegistry } from './agent-status-registry.js'
+import { association } from './cursor-hook-test-fixtures.js'
 import { defaultSessionBriefStatePath, parseSessionBrief, SessionBriefStore } from './session-briefs.js'
 
 const directories: string[] = []
@@ -53,6 +55,121 @@ function status(
 afterEach(async () => {
   vi.unstubAllEnvs()
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
+
+describe('recap provenance', () => {
+  const targetId = '550e8400-e29b-41d4-a716-446655440000'
+  const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'cursor' }
+
+  function cursor(briefs: SessionBriefStore) {
+    const registry = new AgentStatusRegistry()
+    let now = 0
+    return async (event: string, patch: Record<string, unknown> = {}) => {
+      ++now
+      registry.applyCursorHook('%1', { hook_event_name: event, conversation_id: 'conversation-1',
+        generation_id: 'generation-1', emittedAt: String(now), ...patch }, now, 'node', association)
+      const current = registry.get('%1')!
+      await briefs.syncFromStatuses('$1', 'cursor', [current], now)
+      return briefs.get('%1')!
+    }
+  }
+
+  it('replaces a stop fallback with the late actual final recap', async () => {
+    const briefs = await store(); const apply = cursor(briefs)
+    await apply('beforeSubmitPrompt', { prompt: 'Verify recap projection' })
+    expect(await apply('stop', { status: 'completed' })).toMatchObject({
+      recapMarkdown: 'Cursor completed the turn', recapSource: 'hook',
+    })
+    expect(await apply('afterAgentResponse', { text: '🟢 Verified the final recap' })).toMatchObject({
+      headline: 'Verified the final recap', recapMarkdown: 'Verified the final recap', recapSource: 'hook',
+    })
+    const saved = new SessionBriefStore(briefs.statePath); await saved.load()
+    expect(saved.get('%1')).toEqual(briefs.get('%1'))
+  })
+
+  it('clears hook-owned recap on new working generation and reports cancellation truthfully', async () => {
+    const briefs = await store(); const apply = cursor(briefs)
+    await apply('beforeSubmitPrompt')
+    await apply('stop', { status: 'completed' })
+    const working = await apply('beforeSubmitPrompt', { generation_id: 'generation-2', prompt: 'Next turn' })
+    expect(working.state).toBe('working')
+    expect(working).not.toHaveProperty('recapMarkdown')
+    expect(working).not.toHaveProperty('recapSource')
+    const cancelled = await apply('stop', { generation_id: 'generation-2', status: 'aborted' })
+    expect(cancelled).toMatchObject({ headline: 'Cursor turn cancelled', recapMarkdown: 'Cursor turn cancelled', recapSource: 'hook' })
+    expect(cancelled.recapMarkdown).not.toContain('completed')
+  })
+
+  it('preserves an agent-authored handoff through hook activity, corrections and cancellation', async () => {
+    const briefs = await store(); const apply = cursor(briefs)
+    await apply('beforeSubmitPrompt')
+    await apply('stop', { status: 'completed' })
+    expect(await briefs.applyAgentPatch('$1', 'cursor', '%1', { recapMarkdown: '**Manual handoff**: review the changes' }, 10)).toMatchObject({ recapSource: 'agent' })
+    await apply('afterAgentResponse', { text: '🟢 Hook correction' })
+    await apply('beforeSubmitPrompt', { generation_id: 'generation-2' })
+    await apply('preToolUse', { generation_id: 'generation-2', tool_name: 'Read', tool_use_id: 'opaque-1' })
+    await apply('stop', { generation_id: 'generation-2', status: 'aborted' })
+    await briefs.applyAgentPatch('$1', 'cursor', '%1', { update: { kind: 'note', text: 'Reviewed handoff' } }, 11)
+    expect(briefs.get('%1')).toMatchObject({ recapMarkdown: '**Manual handoff**: review the changes', recapSource: 'agent' })
+    const saved = new SessionBriefStore(briefs.statePath); await saved.load()
+    expect(saved.get('%1')).toEqual(briefs.get('%1'))
+  })
+
+  it('clears provenance with an explicit recap removal and lets subsequent hooks own a fresh recap', async () => {
+    const briefs = await store(); const apply = cursor(briefs)
+    await briefs.applyAgentPatch('$1', 'cursor', '%1', { recapMarkdown: 'Old authored recap' }, 1)
+    const removed = await briefs.applyAgentPatch('$1', 'cursor', '%1', { recapMarkdown: null }, 2)
+    expect(removed).not.toHaveProperty('recapMarkdown')
+    expect(removed).not.toHaveProperty('recapSource')
+    await apply('beforeSubmitPrompt')
+    expect(await apply('stop', { status: 'completed' })).toMatchObject({ recapSource: 'hook', recapMarkdown: 'Cursor completed the turn' })
+  })
+
+  it.each([1, 2, 3, 4])('preserves unknown authorship when restoring legacy version %s', async (version) => {
+    const briefs = await store()
+    const legacy = { paneId: '%1', sessionId: '$1', sessionName: 'cursor', state: 'done',
+      headline: 'Saved headline', headlineSource: 'hook', recapMarkdown: 'Legacy manual handoff',
+      updates: [{ id: 'hook:1', paneId: '%1', kind: 'note', text: 'Saved update', source: 'hook', createdAt: 1 }], updatedAt: 1 }
+    await mkdir(dirname(briefs.statePath), { recursive: true })
+    await writeFile(briefs.statePath, JSON.stringify({ version, briefs: { [version === 1 ? '$1' : '%1']: legacy }, ...(version === 4 ? { detached: {} } : {}) }))
+    await briefs.load()
+    const apply = cursor(briefs)
+    await apply('beforeSubmitPrompt')
+    await apply('stop', { status: 'aborted' })
+    await briefs.applyAgentPatch('$1', 'cursor', '%1', { next: 'Review legacy handoff' }, 3)
+    expect(briefs.get('%1')).toMatchObject({ recapMarkdown: 'Legacy manual handoff' })
+    expect(briefs.get('%1')).not.toHaveProperty('recapSource')
+    const saved = new SessionBriefStore(briefs.statePath); await saved.load()
+    expect(saved.get('%1')).toEqual(briefs.get('%1'))
+    expect(JSON.parse(await readFile(briefs.statePath, 'utf8')).briefs['%1']).not.toHaveProperty('recapSource')
+  })
+
+  it.each(['hook', 'agent'] as const)('round-trips %s provenance through clones, detached storage and pane rebinding', async (source) => {
+    const briefs = await store(); await briefs.reconcilePanes([identity])
+    const apply = cursor(briefs)
+    await apply('beforeSubmitPrompt')
+    await apply('stop', { status: 'completed' })
+    if (source === 'agent') await briefs.applyAgentPatch('$1', 'cursor', '%1', { recapMarkdown: 'Authored handoff' }, 10)
+    const recap = briefs.get('%1')!.recapMarkdown
+    briefs.get('%1')!.recapSource = source === 'hook' ? 'agent' : 'hook'
+    briefs.values()[0].recapMarkdown = 'Mutated clone'
+    expect(briefs.get('%1')).toMatchObject({ recapSource: source, recapMarkdown: recap })
+    await briefs.removeMissingSessions([])
+    const saved = new SessionBriefStore(briefs.statePath); await saved.load()
+    await saved.reconcilePanes([{ ...identity, paneId: '%2', sessionId: '$2' }])
+    expect(saved.get('%2')).toMatchObject({ recapSource: source, recapMarkdown: recap })
+    await saved.syncFromStatuses('$2', 'cursor', [status('%2', 'working', 20, 'New turn')], 20)
+    if (source === 'hook') expect(saved.get('%2')).not.toHaveProperty('recapMarkdown')
+    else expect(saved.get('%2')).toMatchObject({ recapSource: 'agent', recapMarkdown: recap })
+  })
+
+  it('validates optional provenance without deriving it from headline or recap contents', () => {
+    const brief = { paneId: '%1', sessionId: '$1', sessionName: 'cursor', state: 'done', headline: 'Done',
+      headlineSource: 'hook', recapMarkdown: 'Cursor completed the turn', updates: [], updatedAt: 1 }
+    expect(parseSessionBrief(brief)).not.toHaveProperty('recapSource')
+    for (const recapSource of ['agent', 'hook']) expect(parseSessionBrief({ ...brief, recapSource })).toMatchObject({ recapSource })
+    for (const recapSource of ['unknown', null, true]) expect(parseSessionBrief({ ...brief, recapSource })).toBeNull()
+  })
 })
 
 describe('SessionBriefStore', () => {

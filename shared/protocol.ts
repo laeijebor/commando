@@ -1,4 +1,4 @@
-export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'unknown'
+export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
 export type AgentStatusKind =
   | 'working'
@@ -56,7 +56,7 @@ export type AgentCheck = {
 }
 
 export type AgentRecap = {
-  outcome: 'done' | 'follow_up' | 'blocked' | 'failed'
+  outcome: 'done' | 'follow_up' | 'blocked' | 'failed' | 'cancelled'
   summary: string
   completedAt: number
 }
@@ -176,6 +176,8 @@ export type SessionBrief = {
   headline: string
   headlineSource: 'hook' | 'agent'
   recapMarkdown?: string
+  /** Absent in legacy handoffs, whose authorship must be preserved. */
+  recapSource?: 'hook' | 'agent'
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
   references?: SessionReference[]

@@ -1,3 +1,5 @@
+import { cursorAssociationIsCurrent, type CursorHookAssociation } from './cursor-hook-ownership.js'
+import { isCursorInvocation, normalizeCursorHook } from './cursor-hooks.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
@@ -16,6 +18,9 @@ type AgentStatusApiDependencies = {
   onChange: (change: AgentStatusChange) => void
   interactions?: AgentInteractionBroker
   now?: () => number
+  verifyCursorAssociation?: (paneId: string, body: Record<string, unknown>) => Promise<CursorHookAssociation | null>
+  cursorForeground?: (paneId: string) => Promise<boolean>
+  cursorAssociationCurrent?: (paneId: string, association: CursorHookAssociation) => Promise<boolean>
 }
 
 type OpenCodeInteractionLifecycle = {
@@ -158,7 +163,7 @@ export class AgentStatusHookApi {
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
 
       const provider = url.pathname.slice(`${API_ROOT}/`.length)
-      if (provider !== 'claude' && provider !== 'codex' && provider !== 'opencode') {
+      if (provider !== 'claude' && provider !== 'codex' && provider !== 'opencode' && provider !== 'cursor') {
         throw new HttpError(404, 'Not found')
       }
       const targetPaneId = paneId(request)
@@ -170,9 +175,29 @@ export class AgentStatusHookApi {
       const body = await readJson(request)
       const updatedAt = this.dependencies.now?.() ?? Date.now()
       let change: AgentStatusChange
+      let cursorAssociation: CursorHookAssociation | null = null
       let openCodeInteraction: OpenCodeInteractionLifecycle | null = null
       let resolvedBeforeAsk = false
-      if (provider === 'claude') {
+      const nativeAssociation = this.dependencies.registry.cursorAssociation(targetPaneId)
+      const nativeOwnsProcess = provider === 'claude' && nativeAssociation && await (this.dependencies.cursorAssociationCurrent ?? cursorAssociationIsCurrent)(targetPaneId, nativeAssociation)
+      if (provider === 'claude' && (
+        isCursorInvocation(body) ||
+        nativeOwnsProcess || await this.dependencies.cursorForeground?.(targetPaneId)
+      )) {
+        // Old imported Claude bridges must not open a held interaction or replace
+        // native Cursor status, regardless of callback ordering.
+        writeJson(response, 200, { ok: true, changed: false })
+        return true
+      }
+      if (provider === 'cursor') {
+        requiredString(body, 'hook_event_name')
+        requiredString(body, 'conversation_id')
+        if (!normalizeCursorHook(body)) throw new HttpError(400, 'Invalid Cursor hook envelope')
+        const association = await this.dependencies.verifyCursorAssociation?.(targetPaneId, body)
+        cursorAssociation = association ?? null
+        if (!association) throw new HttpError(403, 'Cursor foreground association could not be verified')
+        change = this.dependencies.registry.applyCursorHook(targetPaneId, body, updatedAt, processCommand, association)
+      } else if (provider === 'claude') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
         change = this.dependencies.registry.applyClaudeHook(
@@ -245,6 +270,7 @@ export class AgentStatusHookApi {
       writeJson(response, 200, {
         ok: true,
         changed: change !== null,
+        ...(provider === 'cursor' ? { accepted: this.dependencies.registry.acceptsCursorContext(targetPaneId, body.conversation_id as string, cursorAssociation!) } : {}),
         ...(answer ? { answer } : {}),
       })
       return true

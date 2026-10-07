@@ -1,3 +1,4 @@
+import { association } from './cursor-hook-test-fixtures.js'
 import { createServer, type Server } from 'node:http'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
@@ -18,6 +19,8 @@ beforeEach(async () => {
   const api = new AgentStatusHookApi({
     token,
     registry,
+    verifyCursorAssociation: async () => association,
+    cursorAssociationCurrent: async () => true,
     paneExists: (paneId) => paneId === '%1',
     paneCommand: () => 'opencode',
     onChange: (change) => changes.push(change),
@@ -224,5 +227,44 @@ describe('AgentStatusHookApi', () => {
 
   it('does not claim unrelated API paths', async () => {
     expect((await post('/api/other', {})).status).toBe(404)
+  })
+})
+
+describe('authenticated Cursor native route', () => {
+  const native = (event: string, patch: Record<string, unknown> = {}) => ({
+    hook_event_name: event, conversation_id: 'cursor-conversation', generation_id: event === 'sessionStart' || event === 'sessionEnd' ? 'cursor-conversation' : 'generation-1', ...patch,
+  })
+  it('requires auth, validates conversation/generation/status and rejects aliases', async () => {
+    expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt'), { token: 'wrong' })).status).toBe(401)
+    expect((await post('/api/agent-status/hooks/agent', native('beforeSubmitPrompt'))).status).toBe(404)
+    for (const invalid of [native('stop', { status: 'idle' }), native('preToolUse', { generation_id: '' }), native('afterAgentThought'), native('stop', { status: 'completed', conversation_id: 'bad;id' })]) {
+      expect((await post('/api/agent-status/hooks/cursor', invalid)).status).toBe(400)
+    }
+    const response = await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt', { intent: 'Fix tests' }))
+    expect(response.status).toBe(200)
+    expect(registry.get('%1')).toMatchObject({ provider: 'cursor', source: 'hook', status: 'working', details: { intent: 'Fix tests' } })
+  })
+  it.each(['native-first', 'imported-first', 'interleaved'])('owns one status/recap stream without held imported interactions: %s', async (ordering) => {
+    const imported = { hook_event_name: 'PreToolUse', session_id: 'cursor-conversation', conversation_id: 'cursor-conversation', cursor_version: '2026.10.01',
+      tool_name: 'AskUserQuestion', request: { id: 'must-not-wait', kind: 'question', prompt: 'Wrong question' } }
+    const ignoreImported = async () => {
+      const response = await post('/api/agent-status/hooks/claude', imported)
+      expect(await response.json()).toEqual({ ok: true, changed: false })
+    }
+    if (ordering === 'imported-first') await ignoreImported()
+    await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt'))
+    await ignoreImported()
+    if (ordering === 'interleaved') await ignoreImported()
+    await post('/api/agent-status/hooks/cursor', native('afterAgentResponse', { finalMessage: '🟢 One result' }))
+    await post('/api/agent-status/hooks/cursor', native('stop', { status: 'completed' }))
+    await ignoreImported()
+    await post('/api/agent-status/hooks/cursor', native('stop', { status: 'completed' }))
+    expect(changes.filter((change) => change?.type === 'upsert' && change.status.details?.recap)).toHaveLength(1)
+    expect(registry.get('%1')).toMatchObject({ provider: 'cursor', status: 'done', details: { recap: { summary: 'One result' } } })
+    expect(registry.get('%1')?.details?.requests).toBeUndefined()
+  })
+  it('rejects oversized bodies and nonexistent panes', async () => {
+    expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt'), { paneId: '%9' })).status).toBe(404)
+    expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt', { intent: 'x'.repeat(70_000) }))).status).toBe(413)
   })
 })

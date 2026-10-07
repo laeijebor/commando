@@ -239,6 +239,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
     (value.headlineSource !== 'hook' && value.headlineSource !== 'agent') ||
+    (value.recapSource !== undefined && value.recapSource !== 'hook' && value.recapSource !== 'agent') ||
     typeof value.state !== 'string' || !STATUS_KINDS.has(value.state as AgentStatusKind) ||
     !Array.isArray(taskValues) || taskValues.length > 100 ||
     !Array.isArray(screenshotValues) || screenshotValues.length > 5 ||
@@ -269,6 +270,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     headline,
     headlineSource: value.headlineSource,
     ...(recapMarkdown ? { recapMarkdown } : {}),
+    ...(recapMarkdown && value.recapSource ? { recapSource: value.recapSource as SessionBrief['recapSource'] } : {}),
     ...(validTasks.length ? { tasks: validTasks } : {}),
     ...(validScreenshots.length ? { screenshots: validScreenshots } : {}),
     ...(validReferences.length ? { references: validReferences } : {}),
@@ -300,7 +302,10 @@ function migrateLegacyBrief(brief: LegacySessionBrief): SessionBrief[] {
     state: brief.state,
     headline: updates[0]?.text ?? brief.headline,
     headlineSource: updates[0]?.source ?? brief.headlineSource,
-    ...(paneId === leadPaneId && brief.recapMarkdown ? { recapMarkdown: brief.recapMarkdown } : {}),
+    ...(paneId === leadPaneId && brief.recapMarkdown ? {
+      recapMarkdown: brief.recapMarkdown,
+      ...(brief.recapSource ? { recapSource: brief.recapSource } : {}),
+    } : {}),
     updates,
     ...(paneId === leadPaneId && brief.next ? { next: brief.next } : {}),
     updatedAt: Math.max(...updates.map((update) => update.createdAt)),
@@ -584,7 +589,12 @@ export class SessionBriefStore {
       const taskEvents = taskTransitionUpdates(current?.tasks, status.details?.tasks, status)
       const updates = [...taskEvents, ...(statusEvent ? [statusEvent] : [])]
         .reduce(appendUpdate, current?.updates ?? [])
-      const recap = current?.recapMarkdown ?? status.details?.recap?.summary
+      // Explicit agent handoffs and legacy recaps with unknown authorship survive
+      // hooks. Only a hook-owned projection follows corrections and turn resets.
+      const preserveRecap = current?.recapMarkdown && current.recapSource !== 'hook'
+      const recap = preserveRecap ? current.recapMarkdown : status.status === 'working'
+        ? undefined : status.details?.recap?.summary ?? current?.recapMarkdown
+      const recapSource = preserveRecap ? current.recapSource : recap ? 'hook' as const : undefined
       const brief: SessionBrief = {
         paneId: status.paneId,
         ...(targetId ? { targetId } : {}),
@@ -596,6 +606,7 @@ export class SessionBriefStore {
           : statusHeadline(status).slice(0, MAX_HEADLINE),
         headlineSource: current?.headlineSource === 'agent' ? 'agent' : 'hook',
         ...(recap ? { recapMarkdown: recap.slice(0, MAX_RECAP) } : {}),
+        ...(recap && recapSource ? { recapSource } : {}),
         ...(status.details?.tasks !== undefined
           ? { tasks: status.details.tasks.map((task) => ({ ...task })) }
           : current?.tasks !== undefined
@@ -703,9 +714,9 @@ export class SessionBriefStore {
       ...(patch.recapMarkdown === null
         ? {}
         : patch.recapMarkdown !== undefined
-          ? { recapMarkdown: patch.recapMarkdown }
+          ? { recapMarkdown: patch.recapMarkdown, recapSource: 'agent' as const }
           : current?.recapMarkdown
-            ? { recapMarkdown: current.recapMarkdown }
+            ? { recapMarkdown: current.recapMarkdown, ...(current.recapSource ? { recapSource: current.recapSource } : {}) }
             : {}),
       ...(current?.tasks?.length ? { tasks: current.tasks.map((task) => ({ ...task })) } : {}),
       ...(references.length ? { references } : {}),

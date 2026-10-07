@@ -47,6 +47,7 @@ function providerName(provider: AgentProvider): string {
   if (provider === 'claude') return 'Claude'
   if (provider === 'codex') return 'Codex'
   if (provider === 'opencode') return 'OpenCode'
+  if (provider === 'cursor') return 'Cursor'
   return 'Agent'
 }
 

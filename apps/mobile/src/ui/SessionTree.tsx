@@ -252,13 +252,15 @@ function shortProvider(provider: string): string {
   if (provider === 'claude') return 'CL'
   if (provider === 'codex') return 'CX'
   if (provider === 'opencode') return 'OC'
+  if (provider === 'cursor') return 'CU'
   return 'sh'
 }
 
-function providerTone(provider: string): 'claude' | 'codex' | 'opencode' | 'shell' {
+function providerTone(provider: string): 'claude' | 'codex' | 'opencode' | 'cursor' | 'shell' {
   if (provider === 'claude') return 'claude'
   if (provider === 'codex') return 'codex'
   if (provider === 'opencode') return 'opencode'
+  if (provider === 'cursor') return 'cursor'
   return 'shell'
 }
 

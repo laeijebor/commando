@@ -4,13 +4,40 @@ enum AgentProvider: String, Codable, Sendable {
     case claude
     case codex
     case opencode
+    case cursor
     case unknown
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = AgentProvider(rawValue: value) ?? .unknown
+    }
+
+    var initials: String {
+        switch self {
+        case .claude: "CL"
+        case .codex: "CX"
+        case .opencode: "OC"
+        case .cursor: "CU"
+        case .unknown: "AG"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .claude: "sparkles"
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .opencode: "terminal.fill"
+        case .cursor: "cursorarrow"
+        case .unknown: "circle.dotted"
+        }
+    }
 
     var displayName: String {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
         case .opencode: "OpenCode"
+        case .cursor: "Cursor"
         case .unknown: "Agent"
         }
     }

@@ -1,3 +1,6 @@
+import { cursorProducerIdentity, type CursorHookAssociation } from './cursor-hook-ownership.js'
+import { isCursorInvocation, normalizeCursorHook } from './cursor-hooks.js'
+import { inferAgentProvider } from './agent-status.js'
 import type {
   AgentActivity,
   AgentActivityKind,
@@ -35,6 +38,7 @@ type RegistryRecord = {
   tasks: Map<string, AgentTask>
   turnId: string | null
   retainedCompletion: boolean
+  cursor?: { candidate: string | null; finished: boolean; ended: boolean; promptSubmitted: boolean; association?: CursorHookAssociation; turnStarted?: string }
 }
 
 type InferenceSuppression = {
@@ -98,6 +102,7 @@ const PROVIDER_NAMES: Record<Exclude<AgentProvider, 'unknown'>, string> = {
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  cursor: 'Cursor',
 }
 
 function providerName(provider: AgentProvider): string {
@@ -693,6 +698,7 @@ function recapFallback(
   outcome: AgentRecap['outcome'],
 ): string {
   const name = providerName(provider)
+  if (outcome === 'cancelled') return `${name} turn cancelled`
   if (outcome === 'failed') return `${name} stopped with an error`
   if (outcome === 'blocked') return `${name} is waiting for input`
   if (outcome === 'follow_up') return `${name} has follow-up work`
@@ -747,7 +753,8 @@ function hasRetainableRecap(record: RegistryRecord): boolean {
   return Boolean(recap && (
     record.status.status === 'done' ||
     record.status.status === 'failed' ||
-    (record.status.status === 'needs_input' && recap.outcome === 'blocked')
+    (record.status.status === 'needs_input' && recap.outcome === 'blocked') ||
+    recap.outcome === 'cancelled'
   ))
 }
 
@@ -755,6 +762,9 @@ export const PANE_EVICTION_GRACE_MS = 30_000
 
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
+  // Bounded tombstones reject late session/turn starts without retaining response text.
+  private readonly cursorProducers = new Map<string, { identity: string; turnStarted?: string }>()
+  private readonly retiredCursorTurns = new Map<string, Set<string>>()
   private readonly inferenceSuppressions = new Map<string, InferenceSuppression>()
   // When each pane first went missing from a snapshot. A record is evicted only
   // after its pane has been absent for PANE_EVICTION_GRACE_MS: hook-sourced
@@ -766,12 +776,44 @@ export class AgentStatusRegistry {
     return status ? cloneStatus(status) : undefined
   }
 
+  /** Hook evidence is scoped to the observed foreground process, never just the pane. */
+  hasCursorHookProcess(paneId: string, command?: string): boolean {
+    const record = this.records.get(paneId)
+    return record?.status.provider === 'cursor' && record.status.source === 'hook' &&
+      !record.retainedCompletion && record.cursor?.ended === false && record.cursor.association !== undefined &&
+      (command === undefined || (record.processCommand === command && /(?:^|\/)(?:agent|node|bun|deno|cursor-agent)$/i.test(command.trim())))
+  }
+
+  cursorAssociation(paneId: string): CursorHookAssociation | null {
+    const record = this.records.get(paneId)
+    return record?.status.provider === 'cursor' && !record.retainedCompletion && !record.cursor?.ended
+      ? record.cursor?.association ?? null : null
+  }
+
+  acceptsCursorContext(paneId: string, session: string, association: CursorHookAssociation): boolean {
+    const record = this.records.get(paneId)
+    return record?.status.provider === 'cursor' && record.providerSessionId === session &&
+      !record.cursor?.ended && record.cursor?.association !== undefined &&
+      cursorProducerIdentity(record.cursor.association) === cursorProducerIdentity(association)
+  }
+
+  invalidateCursorAssociation(paneId: string, association: CursorHookAssociation): AgentStatusChange {
+    const record = this.records.get(paneId)
+    if (!record?.cursor?.association || cursorProducerIdentity(record.cursor.association) !== cursorProducerIdentity(association)) return null
+    record.cursor.candidate = null
+    record.cursor.ended = true
+    this.retireCursorTurn(paneId, record, true)
+    return this.removeProviderSession(paneId, 'cursor', record.providerSessionId!)
+  }
+
   values(): AgentStatus[] {
     return [...this.records.values()].map(({ status }) => cloneStatus(status))
   }
 
   remove(paneId: string): AgentStatusChange {
     this.missingSince.delete(paneId)
+    this.retiredCursorTurns.delete(paneId)
+    this.cursorProducers.delete(paneId)
     if (!this.records.delete(paneId)) return null
     return { type: 'remove', paneId }
   }
@@ -792,10 +834,18 @@ export class AgentStatusRegistry {
       if (now - since < PANE_EVICTION_GRACE_MS) continue
       this.missingSince.delete(paneId)
       this.records.delete(paneId)
+      this.retiredCursorTurns.delete(paneId)
+      this.cursorProducers.delete(paneId)
       changes.push({ type: 'remove', paneId })
     }
     for (const paneId of this.missingSince.keys()) {
       if (retained.has(paneId) || !this.records.has(paneId)) this.missingSince.delete(paneId)
+    }
+    for (const paneId of this.retiredCursorTurns.keys()) {
+      if (!retained.has(paneId) && !this.records.has(paneId)) this.retiredCursorTurns.delete(paneId)
+    }
+    for (const paneId of this.cursorProducers.keys()) {
+      if (!retained.has(paneId) && !this.records.has(paneId)) this.cursorProducers.delete(paneId)
     }
     for (const paneId of this.inferenceSuppressions.keys()) {
       if (!retained.has(paneId) && !this.records.has(paneId)) this.inferenceSuppressions.delete(paneId)
@@ -896,6 +946,7 @@ export class AgentStatusRegistry {
     processCommand: string | null = null,
   ): AgentStatusChange {
     if (!isRecord(payload)) return null
+    if (isCursorInvocation(payload) || inferAgentProvider(processCommand ?? '', '', '').provider === 'cursor') return null
     const eventName = stringProperty(payload, 'hook_event_name', 80)
     const sessionId = stringProperty(payload, 'session_id')
     if (!eventName || !sessionId) return null
@@ -1080,6 +1131,129 @@ export class AgentStatusRegistry {
         ? nextTurnId
         : sameSession ? previous.turnId : null,
       retainedCompletion: false,
+    })
+  }
+
+  applyCursorHook(
+    paneId: string,
+    value: unknown,
+    updatedAt = Date.now(),
+    processCommand: string | null = null,
+    association: CursorHookAssociation | null = null,
+  ): AgentStatusChange {
+    const payload = normalizeCursorHook(value)
+    if (!payload) return null
+    const event = payload.hook_event_name as string
+    const conversation = payload.conversation_id as string
+    const generation = payload.generation_id as string | undefined
+    const parent = payload.parent_conversation_id as string | undefined
+    const subagent = event === 'subagentStart' || event === 'subagentStop'
+    const session = subagent ? parent ?? conversation : conversation
+    if (!subagent && payload.subagent_id) return null
+    const previous = this.records.get(paneId)
+    const identity = association ? cursorProducerIdentity(association) : undefined
+    const knownProducer = this.cursorProducers.get(paneId)
+    const sameIncarnation = !association || knownProducer?.identity === identity
+    const turnStarted = sameIncarnation ? knownProducer?.turnStarted ?? previous?.cursor?.turnStarted : undefined
+    const sameProducer = !association || (previous?.cursor?.association !== undefined &&
+      cursorProducerIdentity(previous.cursor.association) === cursorProducerIdentity(association))
+    const sameSession = previous?.status.provider === 'cursor' && previous.providerSessionId === session && sameProducer
+    const emitted = association && typeof (value as Record<string, unknown>).emittedAt === 'string'
+      ? (value as Record<string, unknown>).emittedAt as string : undefined
+    if (emitted && !/^\d{1,22}$/.test(emitted)) return null
+    // Compare hook emission clocks, never UUIDs or daemon receipt times. Lifecycle
+    // starts from the same producer cannot replace working prompts even when
+    // a conversation is unseen. A newly verified process incarnation can start.
+    if (event === 'sessionStart' && previous?.status.status === 'working' &&
+      (!association || sameProducer)) return null
+    if (sameIncarnation && emitted && turnStarted &&
+      BigInt(emitted) < BigInt(turnStarted) && !(event === 'sessionStart' && sameSession)) return null
+    if (association && !sameIncarnation) this.retiredCursorTurns.delete(paneId)
+    const key = JSON.stringify([session, generation ?? null])
+    const retired = this.retiredCursorTurns.get(paneId)
+    if (event !== 'sessionEnd' && (retired?.has(key) || retired?.has(JSON.stringify([session, null])))) return null
+    const starts = event === 'sessionStart' || event === 'beforeSubmitPrompt'
+    if (!sameSession && !starts) return null
+    if (sameSession && event === 'sessionStart') return null
+    if (sameSession && previous.cursor?.ended) return null
+    if (event === 'sessionEnd') {
+      if (!sameSession) return null
+      if (previous.cursor) { previous.cursor.candidate = null; previous.cursor.ended = true }
+      this.retireCursorTurn(paneId, previous, true)
+      return this.removeProviderSession(paneId, 'cursor', session)
+    }
+    const newTurn = event === 'beforeSubmitPrompt' && (!sameSession || previous.turnId !== generation)
+    if (newTurn && sameIncarnation && emitted && turnStarted &&
+      BigInt(emitted) <= BigInt(turnStarted)) return null
+    if (sameSession && !newTurn && generation && previous.turnId && previous.turnId !== generation) return null
+    const correctsCompletion = event === 'afterAgentResponse' && sameSession &&
+      association !== null && previous.cursor?.association !== undefined &&
+      previous.cursor.finished && generation === previous.turnId &&
+      previous.status.details?.recap !== undefined &&
+      previous.status.details.recap.outcome !== 'cancelled' && previous.status.details.recap.outcome !== 'failed'
+    if (sameSession && previous.cursor?.finished && !newTurn && !correctsCompletion) return null
+    if (correctsCompletion && !boundedText(payload.finalMessage, 180)) return null
+    if (sameSession && event === 'beforeSubmitPrompt' && previous.turnId === generation && previous.cursor?.promptSubmitted) return null
+    if (!this.acceptHookProcess(paneId, 'cursor', processCommand, starts)) return null
+    if (previous?.status.provider === 'cursor' && sameProducer && (!sameSession || newTurn)) {
+      this.retireCursorTurn(paneId, previous, !sameSession)
+    }
+    const reset = !sameSession || newTurn
+    const details = reset ? emptyDetails() : cloneDetails(previous.status.details ?? emptyDetails())
+    const runningActivities = reset ? new Map<string, AgentActivity>() : new Map(previous.runningActivities)
+    const runningChecks = reset ? new Map<string, AgentCheck>() : new Map(previous.runningChecks)
+    const changedFiles = reset ? new Set<string>() : new Set(previous.changedFiles)
+    const cursor = reset ? { candidate: null as string | null, finished: false, ended: false, promptSubmitted: false } :
+      { ...(previous.cursor ?? { candidate: null, finished: false, ended: false, promptSubmitted: false }) }
+    if (association) cursor.association = association
+    let status: AgentStatusKind = event === 'sessionStart' ? 'unknown' : 'working'
+    if (event === 'beforeSubmitPrompt') {
+      if (emitted) cursor.turnStarted = emitted
+      cursor.promptSubmitted = true
+      details.intent = boundedText(payload.intent, MAX_INTENT_LENGTH) ?? undefined
+    }
+    if (event === 'preToolUse' || event === 'postToolUse' || event === 'postToolUseFailure' ||
+      event === 'afterFileEdit' || event === 'subagentStart') cursor.candidate = null
+    if (event === 'preToolUse' || event === 'subagentStart') {
+      startActivity(details, runningActivities, payload.activity, payload.activityId, updatedAt)
+    }
+    if (event === 'postToolUse' || event === 'postToolUseFailure' || event === 'subagentStop') {
+      completeActivity(details, runningActivities, payload.activity, payload.activityId, updatedAt, event === 'postToolUseFailure')
+    }
+    updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
+    addChangedFile(details, changedFiles, payload.filePath)
+    if (event === 'afterAgentResponse') {
+      if (correctsCompletion) {
+        const recap = createRecap('cursor', 'done', details, false, payload.finalMessage, 0, undefined, details.recap!.completedAt)
+        setRecap(details, recap)
+        status = recap.outcome === 'blocked' ? 'needs_input' : 'done'
+      } else cursor.candidate = boundedText(payload.finalMessage, 180)
+    }
+    if (event === 'stop') {
+      cursor.finished = true
+      runningActivities.clear()
+      clearRunningChecks(details, runningChecks)
+      delete details.currentActivity
+      status = payload.status === 'error' ? 'failed' : payload.status === 'aborted' ? 'unknown' : 'done'
+      const recap = payload.status === 'aborted'
+        ? { outcome: 'cancelled' as const, summary: 'Cursor turn cancelled', completedAt: updatedAt }
+        : createRecap('cursor', status, details, false, cursor.candidate, 0, undefined, updatedAt)
+      if (recap.outcome === 'blocked' && status === 'done') status = 'needs_input'
+      setRecap(details, recap)
+      cursor.candidate = null
+    }
+    if (identity) this.cursorProducers.set(paneId, { identity, turnStarted: cursor.turnStarted ?? turnStarted })
+    const next = attachDetails(hookStatus(paneId, 'cursor', session, null, status, updatedAt), details)
+    if (details.recap?.outcome === 'cancelled') {
+      next.summary = details.recap.summary
+      next.confidence = 'high'
+      next.reason = 'Cursor stop reports aborted'
+    }
+    return this.upsert({
+      status: next, providerSessionId: session, processCommand,
+      pendingRequests: new Map(), runningActivities, runningChecks, changedFiles,
+      tasks: new Map(), turnId: event === 'sessionStart' ? null : generation ?? (sameSession ? previous.turnId : null),
+      retainedCompletion: false, cursor,
     })
   }
 
@@ -1399,6 +1573,16 @@ export class AgentStatusRegistry {
     })
   }
 
+  private retireCursorTurn(paneId: string, record: RegistryRecord, endedSession = false): void {
+    if (record.status.provider !== 'cursor') return
+    if (record.cursor) record.cursor.candidate = null
+    const retired = this.retiredCursorTurns.get(paneId) ?? new Set<string>()
+    if (record.turnId !== null) retired.add(JSON.stringify([record.providerSessionId, record.turnId]))
+    if (endedSession) retired.add(JSON.stringify([record.providerSessionId, null]))
+    while (retired.size > 100) retired.delete(retired.values().next().value!)
+    this.retiredCursorTurns.set(paneId, retired)
+  }
+
   private removeProviderSession(
     paneId: string,
     provider: Exclude<AgentProvider, 'unknown'>,
@@ -1410,7 +1594,7 @@ export class AgentStatusRegistry {
       record.providerSessionId !== sessionId
     ) return null
     if (
-      provider === 'claude' &&
+      (provider === 'claude' || provider === 'cursor') &&
       hasRetainableRecap(record)
     ) {
       const previousCommand = record.processCommand
@@ -1440,6 +1624,8 @@ export class AgentStatusRegistry {
       record.processCommand === null ||
       record.processCommand === processCommand
     ) return null
+    this.retireCursorTurn(paneId, record, true)
+    if (record.cursor) record.cursor.ended = true
     if (hasRetainableRecap(record)) {
       const previousCommand = record.processCommand
       record.processCommand = null

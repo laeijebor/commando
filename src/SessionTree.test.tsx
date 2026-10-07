@@ -537,6 +537,7 @@ describe('SessionTree', () => {
       pane('%1', 0, 'Claude pane'),
       pane('%2', 1, 'No agent'),
       pane('%3', 2, 'Codex pane'),
+      pane('%4', 3, 'Cursor pane'),
     ]
     const onSelectPane = vi.fn()
     const { container } = render(
@@ -549,6 +550,7 @@ describe('SessionTree', () => {
         statuses={{
           '%1': agentStatus('%1', 'claude', 'working'),
           '%3': agentStatus('%3', 'codex', 'needs_input'),
+          '%4': agentStatus('%4', 'cursor', 'stale'),
         }}
         selectedSessionId={null}
         focusedPaneId={null}
@@ -563,14 +565,16 @@ describe('SessionTree', () => {
     )
 
     const dots = [...container.querySelectorAll('.session-status-dot')]
-    expect(dots).toHaveLength(2)
+    expect(dots).toHaveLength(3)
     expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
       'Codex: needs input - Codex pane',
       'Claude: working - Claude pane',
+      'Cursor: stale - Cursor pane',
     ])
     expect(dots.map((dot) => dot.getAttribute('title'))).toEqual([
       'Codex: needs input - Codex pane',
       'Claude: working - Claude pane',
+      'Cursor: stale - Cursor pane',
     ])
     expect(dots[0]).toHaveClass('needs_input')
     expect(dots[1]).toHaveClass('working')

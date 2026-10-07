@@ -1,3 +1,5 @@
+import { CURSOR_HOOK_EVENTS, generatedCursorBridge, isCursorInvocation } from './cursor-hooks.js'
+export { CURSOR_HOOK_EVENTS } from './cursor-hooks.js'
 import { randomUUID } from 'node:crypto'
 import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -38,6 +40,8 @@ export const OPENCODE_HOOK_EVENTS = [
 ] as const
 
 const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
+const CURSOR_BRIDGE_FILENAME = 'commando-cursor-agent-status.mjs'
+const CURSOR_HOOK_MARKER = '--commando-cursor-status-hook'
 const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
@@ -48,6 +52,8 @@ const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 type JsonObject = Record<string, unknown>
 
 export type AgentHookInstallerOptions = {
+  cursorBridgePath?: string
+  cursorHooksPath?: string
   claudeBridgePath?: string
   claudeSettingsPath?: string
   codexBridgePath?: string
@@ -61,12 +67,15 @@ export type AgentHookInstallerOptions = {
 }
 
 export type AgentHookRepairResult = {
+  warnings?: string[]
   repaired: boolean
   /** Every stale bridge path found, across Claude hooks and the Codex notify. */
   staleBridgePaths: string[]
 }
 
 export type AgentHookInstallResult = {
+  cursorBridgePath: string
+  cursorHooksPath: string
   claudeBridgePath: string
   claudeSettingsPath: string
   codexBridgePath: string
@@ -142,6 +151,9 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
 function generatedClaudeBridge(tokenPath: string, instructions: string): string {
   return `import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+
+const __name = (target, name) => Object.defineProperty(target, 'name', { value: name, configurable: true })
+${isCursorInvocation.toString()}
 
 function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -444,18 +456,27 @@ function resumeContext(sessionId) {
 
 async function main() {
   try {
-    const pane = process.env.TMUX_PANE
-    if (!pane || !/^%\\d+$/.test(pane)) return
-    const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
-    if (token.length < 32) return
-    const port = process.env.COMMANDO_PORT || '4310'
-    if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
     let raw = ''
     for await (const chunk of process.stdin) {
       raw += chunk
       if (raw.length > 2_000_000) return
     }
     const input = JSON.parse(raw)
+    // Cursor imports Claude hooks by default. Native hooks own context, resume,
+    // status, and interactions; this guard uses invocation payload evidence.
+    if (isCursorInvocation(input)) {
+      const event = input.hook_event_name
+      const output = event === 'preToolUse' || event === 'subagentStart' || event === 'PreToolUse' || event === 'SubagentStart' ? { permission: 'allow' }
+        : event === 'beforeSubmitPrompt' || event === 'UserPromptSubmit' ? { continue: true } : {}
+      process.stdout.write(JSON.stringify(output) + '\\n')
+      return
+    }
+    const pane = process.env.TMUX_PANE
+    if (!pane || !/^%\\d+$/.test(pane)) return
+    const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
+    if (token.length < 32) return
+    const port = process.env.COMMANDO_PORT || '4310'
+    if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
     const event = input.hook_event_name
     if (event === 'UserPromptSubmit' && isTaskNotification(input.prompt)) return
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
@@ -2027,6 +2048,59 @@ async function readCodexConfig(path: string): Promise<{ mode: number; content: s
   }
 }
 
+function cursorCommand(bridgePath: string, event?: string): string {
+  const quote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'"
+  return `node ${quote(bridgePath)} ${CURSOR_HOOK_MARKER}${event ? ` ${event}` : ''}`
+}
+
+function installedCursorBridgePaths(settings: JsonObject): Set<string> {
+  const paths = new Set<string>()
+  if (!isObject(settings.hooks)) return paths
+  for (const entries of Object.values(settings.hooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries) {
+      if (!isObject(entry) || typeof entry.command !== 'string') continue
+      // Only the exact managed shell shape is ours, including paths with quotes.
+      const match = /^node '((?:[^']|'\\'')+)' --commando-cursor-status-hook(?: [A-Za-z]+)?$/.exec(entry.command)
+      if (match) paths.add(resolve(match[1].replace(/'\\''/g, "'")))
+    }
+  }
+  return paths
+}
+
+function mergeCursorHooks(settings: JsonObject, bridgePath: string, repair = false): JsonObject {
+  if (settings.version !== undefined && settings.version !== 1) throw new Error('Cursor hooks version must be 1')
+  if (settings.hooks !== undefined && !isObject(settings.hooks)) throw new Error('Cursor hooks must be an object')
+  const hooks: JsonObject = { ...(settings.hooks as JsonObject | undefined) }
+  for (const event of CURSOR_HOOK_EVENTS) {
+    const existing = hooks[event]
+    if (existing !== undefined && !Array.isArray(existing)) throw new Error(`Cursor hook "${event}" must be an array`)
+    const entries = (existing as unknown[] | undefined) ?? []
+    const managedEntry = (entry: unknown): entry is JsonObject => isObject(entry) && installedCursorBridgePaths({ hooks: { [event]: [entry] } }).size > 0
+    const command = cursorCommand(bridgePath, event)
+    const managed = entries.find(managedEntry)
+    if (repair && !managed) continue
+    hooks[event] = [...entries.filter((entry) => !managedEntry(entry)),
+      { ...(isObject(managed) ? managed : {}), command }]
+  }
+  return { ...settings, version: 1, hooks }
+}
+
+async function assertBoundedPath(home: string, path: string): Promise<void> {
+  if (!isWithin(home, path)) throw new Error(`${path} must be inside the installer home`)
+  let current = path
+  while (true) {
+    try {
+      const metadata = await lstat(current)
+      if (metadata.isSymbolicLink()) throw new Error(`${current} must not be a symbolic link`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (current === home) break
+    current = dirname(current)
+  }
+}
+
 export class AgentHookInstaller {
   readonly paths: AgentHookInstallResult
   private readonly home: string
@@ -2053,6 +2127,9 @@ export class AgentHookInstaller {
     }
     const configuredTokenPath = options.tokenPath ?? inherited(process.env[AGENT_HOOK_TOKEN_PATH_ENV])
     this.paths = {
+      cursorBridgePath: resolve(options.cursorBridgePath ?? resolve(resolvedHome, '.commando', 'hooks', CURSOR_BRIDGE_FILENAME)),
+      // Verified native hook loader uses homedir/.cursor, not the CLI config overrides.
+      cursorHooksPath: resolve(options.cursorHooksPath ?? resolve(resolvedHome, '.cursor', 'hooks.json')),
       tokenPath: resolve(
         configuredTokenPath
           ?? resolve(resolvedHome, '.commando', 'agent-hook-token'),
@@ -2131,7 +2208,11 @@ export class AgentHookInstaller {
   }
 
   async install(): Promise<AgentHookInstallResult> {
+    // Validate before changing any profile. Malformed Cursor configuration is left intact.
+    await this.validateCursorInstall()
+    for (const path of Object.values(this.paths)) await assertBoundedPath(this.home, path)
     await this.installGeneratedScripts()
+    await this.installCursorHooks()
     const codexNotifyWarning = await this.installCodexNotify()
     await this.installClaudeHooks()
     return {
@@ -2146,31 +2227,81 @@ export class AgentHookInstaller {
    * makes Commando take over a Codex notify it does not already manage.
    */
   async repair(): Promise<AgentHookRepairResult> {
-    const staleClaude = await this.staleClaudeBridgePaths()
-    const staleCodex = await this.staleCodexBridgePaths()
-    const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex])].sort()
-    if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths }
-    await this.installGeneratedScripts()
+    const warnings: string[] = []
+    const discover = async (provider: string, find: () => Promise<string[]>, paths: string[]): Promise<string[]> => {
+      try {
+        const stale = await find()
+        if (stale.length > 0) for (const path of paths) await assertBoundedPath(this.home, path)
+        return stale
+      } catch (error) {
+        warnings.push(`${provider}: ${error instanceof SyntaxError ? 'Invalid JSON configuration' : error instanceof Error ? error.message : 'Unable to inspect hook configuration'}`)
+        return []
+      }
+    }
+    const staleClaude = await discover('Claude', () => this.staleClaudeBridgePaths(), [this.paths.claudeBridgePath, this.paths.claudeSettingsPath])
+    const staleCodex = await discover('Codex', () => this.staleCodexBridgePaths(), [this.paths.codexBridgePath, this.paths.codexConfigPath])
+    const staleCursor = await discover('Cursor', async () => {
+      const stale = await this.staleCursorBridgePaths()
+      if (stale.length > 0) await this.validateCursorInstall()
+      return stale
+    }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
+    const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor])].sort()
+    if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
+    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
+    await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false })
+    if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
     if (staleClaude.length > 0) await this.installClaudeHooks()
-    return { repaired: true, staleBridgePaths }
+    return { repaired: true, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
   }
 
-  private async installGeneratedScripts(): Promise<void> {
+  async staleCursorBridgePaths(): Promise<string[]> {
+    if (!isWithin(this.home, this.paths.cursorHooksPath)) return []
+    await assertBoundedPath(this.home, this.paths.cursorHooksPath)
+    const { settings } = await readClaudeSettings(this.paths.cursorHooksPath)
+    const stale: string[] = []
+    for (const path of installedCursorBridgePaths(settings)) {
+      if (path !== this.paths.cursorBridgePath || !(await isReadableFile(path))) stale.push(path)
+    }
+    return stale.sort()
+  }
+
+  private async validateCursorInstall(): Promise<void> {
+    for (const path of [this.paths.cursorHooksPath, this.paths.cursorBridgePath, this.paths.tokenPath]) await assertBoundedPath(this.home, path)
+    const { settings } = await readClaudeSettings(this.paths.cursorHooksPath)
+    mergeCursorHooks(settings, this.paths.cursorBridgePath)
+  }
+
+  private async installCursorHooks(repair = false): Promise<void> {
+    const { settings, mode } = await readClaudeSettings(this.paths.cursorHooksPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath)
+    await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions), 0o600)
+    await writeAtomically(this.paths.cursorHooksPath, `${JSON.stringify(mergeCursorHooks(settings, this.paths.cursorBridgePath, repair), null, 2)}\n`, mode)
+    // Explicit install upgrades the healthy managed Claude bridge as well. Repair
+    // of unrelated provider paths never enables native Cursor hooks.
+  }
+
+  private async installGeneratedScripts(
+    providers = { claude: true, openCode: true },
+  ): Promise<void> {
     const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
-    await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
-    await chmod(dirname(this.paths.claudeBridgePath), 0o700)
-    await writeAtomically(
-      this.paths.claudeBridgePath,
-      generatedClaudeBridge(this.paths.tokenPath, instructions),
-      0o600,
-    )
-    await writeAtomically(
-      this.paths.openCodePluginPath,
-      generatedOpenCodePlugin(this.paths.tokenPath, instructions),
-      0o600,
-    )
+    if (providers.claude) {
+      await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
+      await chmod(dirname(this.paths.claudeBridgePath), 0o700)
+      await writeAtomically(
+        this.paths.claudeBridgePath,
+        generatedClaudeBridge(this.paths.tokenPath, instructions),
+        0o600,
+      )
+    }
+    if (providers.openCode) {
+      await writeAtomically(
+        this.paths.openCodePluginPath,
+        generatedOpenCodePlugin(this.paths.tokenPath, instructions),
+        0o600,
+      )
+    }
     await writeAtomically(
       this.paths.sessionBriefCliPath,
       generatedSessionBriefCli(this.paths.tokenPath),

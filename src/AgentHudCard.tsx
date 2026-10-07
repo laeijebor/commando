@@ -23,6 +23,7 @@ const RECAP_LABELS: Record<AgentRecap['outcome'], string> = {
   follow_up: 'Follow up',
   blocked: 'Blocked',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 }
 
 function providerInitials(provider: AgentProvider) {
@@ -33,6 +34,8 @@ function providerInitials(provider: AgentProvider) {
       return 'CX'
     case 'opencode':
       return 'OC'
+    case 'cursor':
+      return 'CU'
     case 'unknown':
       return 'AG'
   }
@@ -89,7 +92,7 @@ export function AgentHudCard({
   const hasPrimaryDetails = Boolean(
     details?.attention || recap || intent || primaryActivity,
   )
-  const providerLabel = status.provider === 'unknown' ? 'Agent' : status.provider
+  const providerLabel = status.provider === 'cursor' ? 'Cursor' : status.provider === 'unknown' ? 'Agent' : status.provider
   const paneLabel = paneIndex === undefined ? status.paneId : String(paneIndex)
   const accessibleLabel = [
     `Open ${providerLabel} agent in pane ${paneLabel}`,
