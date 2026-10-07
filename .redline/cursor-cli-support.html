@@ -16,7 +16,7 @@ main,section,article,details,li{min-width:0}h2{font-size:clamp(27px,4vw,34px);li
 </head>
 <body>
 <div class="redline-layout">
-<redline-nav mode="sections" eyebrow="Commando · provider integration" heading="Cursor CLI support" summary="Approved scope implemented, with real CLI evidence and a documented ACP spike." status="Verified · integration pending"></redline-nav>
+<redline-nav mode="sections" eyebrow="Commando · provider integration" heading="Cursor CLI support" summary="Approved scope implemented, with real CLI evidence and a documented ACP spike." status="Activated in local main"></redline-nav>
 <main class="redline-shell redline-stack">
 
 <section id="implementation-result" data-redline-section data-redline-label="Build result" data-redline-group="Result" data-redline-status="decided" data-redline-round="3" data-redline-changed="3" class="redline-panel">
@@ -32,7 +32,7 @@ main,section,article,details,li{min-width:0}h2{font-size:clamp(27px,4vw,34px);li
 </tbody></table></div>
 <h3>Important real-world fixes</h3><ul><li>Cursor can emit <code>stop</code> before <code>afterAgentResponse</code>; late recaps now correct without duplicate completion pushes.</li><li>Observed tool IDs contain a newline; correlation uses bounded hashes rather than treating them as safe shell identifiers.</li><li>Launch execs the CLI inside the pane and forwards the daemon’s provider profile environment.</li><li>Ownership validates the actual tmux socket/foreground producer, including installation paths with spaces.</li><li>Hook-owned worklog recaps update after late completion or cancellation while preserving agent-authored handoffs.</li></ul>
 <p>Automatic native todos, rich remote answers, and Cursor quota remain unsupported. <code>docs/cursor-acp-feasibility.md</code> explains the structured-client route and why loading a conversation is not proof of control over an existing interactive process.</p>
-<div class="callout warn"><strong>Local integration needs active-session approval.</strong><p>The main checkout’s daemon runs under <code>tsx watch</code>. Merging these source changes would reload that shared daemon. The implementation is verified in this worktree; no shared service or real user hook/profile configuration has been changed.</p></div>
+<div class="callout"><strong>Activated with your approval.</strong><p>You selected <strong>Activate now</strong>. The three verified implementation commits were fast-forwarded into local main; the existing watched daemon reloaded, and the user hook/skill installers completed successfully. Existing tmux sessions and unrelated main work were preserved.</p><p>You can now choose <strong>Cursor</strong> under <strong>New session → Start with</strong>, or run <code>agent</code> directly in a terminal pane. Mobile’s default remains Claude.</p></div>
 <p class="muted">The remaining sections preserve the reviewed audit and decisions. Source inventory line numbers refer to the original audit baseline; build changes are the current branch diff against <code>fc9df78</code>.</p>
 </section>
 

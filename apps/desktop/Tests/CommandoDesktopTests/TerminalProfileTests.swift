@@ -16,18 +16,21 @@ final class TerminalProfileTests: XCTestCase {
             "Liberation Mono",
         ])
         XCTAssertEqual(TerminalProfile.fontSize, 10)
-        XCTAssertEqual(TerminalProfile.backgroundHex, 0x232136)
-        XCTAssertEqual(TerminalProfile.foregroundHex, 0xe0def4)
-        XCTAssertEqual(TerminalProfile.cursorHex, 0xe0def4)
-        XCTAssertEqual(TerminalProfile.cursorTextHex, 0x232136)
-        XCTAssertEqual(TerminalProfile.selectionBackgroundHex, 0x44415a)
-        XCTAssertEqual(TerminalProfile.selectionForegroundHex, 0xe0def4)
-        XCTAssertEqual(TerminalProfile.ansiHex, [
-            0x393552, 0xeb6f92, 0x3e8fb0, 0xf6c177,
-            0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
-            0x6e6a86, 0xeb6f92, 0x3e8fb0, 0xf6c177,
-            0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
-        ])
+        XCTAssertEqual(TerminalPalette.rosePineMoon, TerminalPalette(
+            background: 0x232136,
+            foreground: 0xe0def4,
+            cursor: 0xe0def4,
+            cursorText: 0x232136,
+            selectionBackground: 0x44415a,
+            selectionForeground: 0xe0def4,
+            ansi: [
+                0x393552, 0xeb6f92, 0x3e8fb0, 0xf6c177,
+                0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+                0x6e6a86, 0xeb6f92, 0x3e8fb0, 0xf6c177,
+                0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+            ]
+        ))
+        XCTAssertEqual(TerminalProfile.palette, .rosePineMoon)
     }
 
     func testSurfaceAppliesFontAndNativeColors() {

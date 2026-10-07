@@ -164,7 +164,7 @@ describe('PrsSection', () => {
   })
 
   it.each(['closed', 'merged'] as const)('does not offer merging for %s PRs', async (state) => {
-    stubFetch({ list: () => jsonResponse({ list: listWith([pr({ state })]) }) })
+    stubFetch({ list: () => jsonResponse({ list: listWith([pr({ state })], 1, { filter: 'closed' }) }) })
     render(<PrsSection token="t" />)
     fireEvent.mouseEnter((await screen.findByRole('link', { name: 'feat: add thing' })).closest('article')!)
     await screen.findByRole('dialog')
@@ -308,7 +308,7 @@ describe('PrsSection', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +100 -25' }))
 
-    expect(onOpenDiff).toHaveBeenCalledWith(selected)
+    expect(onOpenDiff).toHaveBeenCalledWith(expect.objectContaining(selected))
   })
 
   it('keeps LOC counts non-interactive when the marked pane is no longer live', async () => {

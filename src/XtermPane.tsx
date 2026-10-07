@@ -15,6 +15,7 @@ import {
 import type { PaneTerminalSink } from './paneStream'
 import { modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
 import { sessionShortcutIndex } from './sessionShortcuts'
+import { activeTheme, onThemeChange } from './theme'
 
 export type XtermPaneProps = {
   paneId: string
@@ -44,32 +45,6 @@ const SEARCH_DECORATIONS = {
 }
 
 type ClipboardWriter = Pick<Clipboard, 'writeText'>
-
-const TERMINAL_THEME = {
-  background: '#232136',
-  foreground: '#e0def4',
-  cursor: '#e0def4',
-  cursorAccent: '#232136',
-  selectionBackground: '#44415a',
-  selectionForeground: '#e0def4',
-  selectionInactiveBackground: '#393552',
-  black: '#393552',
-  red: '#eb6f92',
-  green: '#3e8fb0',
-  yellow: '#f6c177',
-  blue: '#9ccfd8',
-  magenta: '#c4a7e7',
-  cyan: '#ea9a97',
-  white: '#e0def4',
-  brightBlack: '#6e6a86',
-  brightRed: '#eb6f92',
-  brightGreen: '#3e8fb0',
-  brightYellow: '#f6c177',
-  brightBlue: '#9ccfd8',
-  brightMagenta: '#c4a7e7',
-  brightCyan: '#ea9a97',
-  brightWhite: '#e0def4',
-} as const
 
 function sourceDimension(value: number, minimum: number): number {
   return Number.isFinite(value) ? Math.max(minimum, Math.floor(value)) : minimum
@@ -186,13 +161,16 @@ export function XtermPane({
       altClickMovesCursor: false,
       scrollback: TERMINAL_SCROLLBACK_LINES,
       scrollOnUserInput: true,
-      theme: TERMINAL_THEME,
+      theme: activeTheme().terminal,
     })
     const search = new SearchAddon()
     terminal.loadAddon(search)
     searchRef.current = search
     terminal.open(host)
     terminalRef.current = terminal
+    const unsubscribeTheme = onThemeChange((theme) => {
+      terminal.options.theme = theme.terminal
+    })
     const qaEnabled = new URLSearchParams(window.location.search).get('qa') === '1'
     if (qaEnabled) {
       window.__commandoQaTerminals ??= new Map()
@@ -328,6 +306,7 @@ export function XtermPane({
       window.__commandoQaTerminals?.delete(paneId)
       terminalRef.current = null
       searchRef.current = null
+      unsubscribeTheme()
       terminal.dispose()
     }
   }, [paneId, registerSink])

@@ -317,6 +317,61 @@ describe('pane pull request history', () => {
 })
 
 describe('pane PR status', () => {
+  const targetId = '123e4567-e89b-42d3-a456-426614174000'
+  function linkedPayload(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 1, nodes: [pullRequestNode({
+      body: `<!-- commando:v1 target=${targetId} relation=created -->`, repository: { nameWithOwner: 'acme/widgets' }, ...overrides,
+    })] } } })
+  }
+
+  it('hydrates cached pane status and previews from a repo refresh without another pane query', async () => {
+    let now = 1
+    const runner = vi.fn().mockResolvedValueOnce(linkedPayload())
+      .mockResolvedValueOnce(graphqlPayload([pullRequestNode({ mergeable: 'CONFLICTING', reviewThreads: {
+        totalCount: 2, nodes: [{ isResolved: false, comments: { totalCount: 1 } }, { isResolved: false, comments: { totalCount: 2 } }],
+      } })]))
+    const service = new PrService({ runner, now: () => now })
+    await service.listPanePullRequests(targetId)
+    now = 2
+    await service.listPullRequests('ACME/Widgets', 'open', { refresh: true })
+    const cached = await service.listPanePullRequests(targetId)
+    expect(cached.pullRequests[0]).toMatchObject({ conflicting: true, unresolvedThreads: 2, unansweredThreads: 1,
+      statusFetchedAt: 2, preview: { conflicting: true, unresolvedThreads: 2, unansweredThreads: 1 } })
+    expect(cached.fetchedAt).toBe(1)
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('hydrates repo scopes from a pane refresh and removes merged PRs only from open views', async () => {
+    let now = 1
+    const runner = vi.fn().mockResolvedValueOnce(graphqlPayload([pullRequestNode()]))
+      .mockResolvedValueOnce(graphqlPayload([pullRequestNode()]))
+      .mockResolvedValueOnce(linkedPayload({ state: 'MERGED' }))
+    const service = new PrService({ runner, now: () => now })
+    await service.listPullRequests('acme/widgets', 'open')
+    await service.listPullRequests('acme/widgets', 'all')
+    now = 2
+    await service.listPanePullRequests(targetId)
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toEqual([])
+    expect((await service.listPullRequests('acme/widgets', 'all')).pullRequests[0]).toMatchObject({ state: 'merged' })
+    expect(runner).toHaveBeenCalledTimes(3)
+  })
+
+  it('deduplicates forced pane reads and ignores their older result after a newer repository query', async () => {
+    let finish!: (output: string) => void
+    const runner = vi.fn().mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
+      .mockResolvedValueOnce(graphqlPayload([pullRequestNode({ title: 'Latest', mergeable: 'CONFLICTING' })]))
+    const service = new PrService({ runner, now: () => 1 })
+    const first = service.listPanePullRequests(targetId, { refresh: true })
+    const second = service.listPanePullRequests(targetId, { refresh: true })
+    await service.listPullRequests('acme/widgets', 'open')
+    finish(linkedPayload({ title: 'Old' }))
+    for (const result of await Promise.all([first, second])) {
+      expect(result.pullRequests[0]).toMatchObject({ title: 'Latest', conflicting: true })
+    }
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].title).toBe('Latest')
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
   it('matches HUD parsing for conflicts, truncated threads, reviews, and rerun checks', async () => {
     const targetId = '123e4567-e89b-42d3-a456-426614174000'
     const node = pullRequestNode({
@@ -337,9 +392,9 @@ describe('pane PR status', () => {
         ] },
       } } }] },
     })
-    const { service } = serviceWith(JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 1, nodes: [node] } } }))
+    const { service } = serviceWith(JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 1, nodes: [node] } } }), { now: () => 1 })
     const panePr = (await service.listPanePullRequests(targetId)).pullRequests[0]
-    const { service: hudService } = serviceWith(graphqlPayload([node]))
+    const { service: hudService } = serviceWith(graphqlPayload([node]), { now: () => 1 })
     const hudPr = (await hudService.listPullRequests('acme/widgets', 'open')).pullRequests[0]
     expect(panePr.preview).toEqual(hudPr)
     for (const field of ['additions', 'deletions', 'checks', 'conflicting', 'unresolvedThreads', 'unansweredThreads', 'threadsTruncated', 'reviewDecision'] as const) {
@@ -433,7 +488,7 @@ describe('pull request listing', () => {
     expect(mine.totalCount).toBe(733)
     const everyone = await service.listPullRequests('acme/widgets', 'open', { scope: 'everyone' })
     expect(everyone.pullRequests.map((pr) => pr.number)).toEqual([99, 13, 12])
-    expect(await service.listPullRequests('acme/widgets', 'open', { scope: 'mine' })).toBe(mine)
+    expect((await service.listPullRequests('acme/widgets', 'open', { scope: 'mine' })).pullRequests.map((pr) => pr.number)).toEqual([13, 12])
     expect(runner).toHaveBeenCalledTimes(2)
     await expect(service.listPullRequests('acme/widgets', 'open', { scope: 'bad' as 'mine' })).rejects.toMatchObject({ status: 400 })
     expect(runner).toHaveBeenCalledTimes(2)

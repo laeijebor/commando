@@ -13,36 +13,27 @@ enum TerminalProfile {
     ]
     static let fontSize: CGFloat = 10
 
-    static let backgroundHex: UInt32 = 0x232136
-    static let foregroundHex: UInt32 = 0xe0def4
-    static let cursorHex: UInt32 = 0xe0def4
-    static let cursorTextHex: UInt32 = 0x232136
-    static let selectionBackgroundHex: UInt32 = 0x44415a
-    static let selectionForegroundHex: UInt32 = 0xe0def4
+    @MainActor static var palette = TerminalPalette.rosePineMoon
 
-    static let ansiHex: [UInt32] = [
-        0x393552, 0xeb6f92, 0x3e8fb0, 0xf6c177,
-        0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
-        0x6e6a86, 0xeb6f92, 0x3e8fb0, 0xf6c177,
-        0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
-    ]
-
-    static var backgroundColor: NSColor { nativeColor(backgroundHex) }
-    static var foregroundColor: NSColor { nativeColor(foregroundHex) }
+    @MainActor static var backgroundColor: NSColor { nativeColor(palette.background) }
+    @MainActor static var foregroundColor: NSColor { nativeColor(palette.foreground) }
 
     @MainActor
     static func apply(to view: TerminalView) {
-        let terminal = view.getTerminal()
-        terminal.ansi256PaletteStrategy = .xterm
-
+        view.getTerminal().ansi256PaletteStrategy = .xterm
         view.font = font()
+        applyColors(to: view)
+    }
+
+    @MainActor
+    static func applyColors(to view: TerminalView) {
         view.nativeBackgroundColor = backgroundColor
         view.nativeForegroundColor = foregroundColor
-        view.caretColor = nativeColor(cursorHex)
-        view.caretTextColor = nativeColor(cursorTextHex)
-        view.selectedTextBackgroundColor = nativeColor(selectionBackgroundHex)
-        view.selectedTextForegroundColor = nativeColor(selectionForegroundHex)
-        view.installColors(ansiHex.map(terminalColor))
+        view.caretColor = nativeColor(palette.cursor)
+        view.caretTextColor = nativeColor(palette.cursorText)
+        view.selectedTextBackgroundColor = nativeColor(palette.selectionBackground)
+        view.selectedTextForegroundColor = nativeColor(palette.selectionForeground)
+        view.installColors(palette.ansi.map(terminalColor))
         view.layer?.backgroundColor = backgroundColor.cgColor
     }
 
@@ -75,4 +66,32 @@ enum TerminalProfile {
             blue: UInt16(hex & 0xff) * 257
         )
     }
+}
+
+/// Terminal colors as 0xRRGGBB values; the web page sends the active theme's palette.
+struct TerminalPalette: Equatable, Sendable {
+    static let ansiCount = 16
+
+    let background: UInt32
+    let foreground: UInt32
+    let cursor: UInt32
+    let cursorText: UInt32
+    let selectionBackground: UInt32
+    let selectionForeground: UInt32
+    let ansi: [UInt32]
+
+    static let rosePineMoon = TerminalPalette(
+        background: 0x232136,
+        foreground: 0xe0def4,
+        cursor: 0xe0def4,
+        cursorText: 0x232136,
+        selectionBackground: 0x44415a,
+        selectionForeground: 0xe0def4,
+        ansi: [
+            0x393552, 0xeb6f92, 0x3e8fb0, 0xf6c177,
+            0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+            0x6e6a86, 0xeb6f92, 0x3e8fb0, 0xf6c177,
+            0x9ccfd8, 0xc4a7e7, 0xea9a97, 0xe0def4,
+        ]
+    )
 }

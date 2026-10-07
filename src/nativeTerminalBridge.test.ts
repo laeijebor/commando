@@ -7,10 +7,12 @@ import {
   NativeTerminalBridge,
   NATIVE_TERMINAL_EVENT_LIMITS,
   NATIVE_TERMINAL_PROTOCOL,
+  NATIVE_TERMINAL_THEME_CAPABILITY,
   REQUIRED_NATIVE_TERMINAL_CAPABILITIES,
   resetNativeTerminalBridge,
   type NativeTerminalMessage,
 } from './nativeTerminalBridge'
+import { THEMES } from './theme'
 
 function installHandler(messages: NativeTerminalMessage[]) {
   Object.defineProperty(window, 'webkit', {
@@ -421,6 +423,53 @@ describe('NativeTerminalBridge event isolation', () => {
         },
       }),
     ])
+    bridge.dispose()
+  })
+})
+
+describe('NativeTerminalBridge theme', () => {
+  const cursor = THEMES.find((theme) => theme.name === 'cursor')!.terminal
+
+  it('posts the palette with ANSI colors in index order when the host supports themes', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const pending = bridge.connect()
+    receive(bridge, 1, 'bridge.connected', {
+      capabilities: [...REQUIRED_NATIVE_TERMINAL_CAPABILITIES, NATIVE_TERMINAL_THEME_CAPABILITY],
+      maxPanes: 4,
+    })
+    await pending
+
+    expect(bridge.setTheme(cursor)).toBe(true)
+    expect(messages.at(-1)).toMatchObject({
+      type: 'bridge.theme',
+      payload: {
+        background: '#181818',
+        foreground: cursor.foreground,
+        cursor: cursor.cursor,
+        cursorText: cursor.cursorAccent,
+        selectionBackground: cursor.selectionBackground,
+        selectionForeground: cursor.selectionForeground,
+        ansi: [
+          cursor.black, cursor.red, cursor.green, cursor.yellow,
+          cursor.blue, cursor.magenta, cursor.cyan, cursor.white,
+          cursor.brightBlack, cursor.brightRed, cursor.brightGreen, cursor.brightYellow,
+          cursor.brightBlue, cursor.brightMagenta, cursor.brightCyan, cursor.brightWhite,
+        ],
+      },
+    })
+    bridge.dispose()
+  })
+
+  it('does not post a theme to a host without the theme capability', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    await connect(bridge)
+
+    expect(bridge.setTheme(cursor)).toBe(false)
+    expect(messages.some((message) => message.type === 'bridge.theme')).toBe(false)
     bridge.dispose()
   })
 })

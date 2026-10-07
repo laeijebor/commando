@@ -1,75 +1,8 @@
-import type { NewStackedPr, PrStack, PrStackMembership, StackedPrResult } from '../shared/pr-stacks'
-export type PrStateFilter = 'open' | 'closed' | 'all'
-export type PrScope = 'mine' | 'everyone'
-export type PrCheckState = 'pass' | 'fail' | 'pending'
-export type PrCheckRun = { name: string; state: PrCheckState }
-export type PrChecks = { state: PrCheckState; runs: PrCheckRun[]; failed: number; pending: number; total: number; truncated: boolean } | null
-export type PrReview = { login: string; state: 'approved' | 'changes_requested' }
-export type PrSummary = {
-  number: number
-  title: string
-  url: string
-  state: 'open' | 'merged' | 'closed'
-  isDraft: boolean
-  author: string | null
-  bodyExcerpt: string
-  additions: number
-  deletions: number
-  changedFiles: number
-  commitCount: number
-  unresolvedThreads: number
-  // Optional while the frontend and daemon may be running different versions.
-  unansweredThreads?: number
-  threadsTruncated: boolean
-  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
-  reviews: PrReview[]
-  requestedReviewers: string[]
-  conflicting: boolean
-  mergeable?: string
-  mergeStateStatus?: string
-  checks: PrChecks
-  createdAt: string
-  updatedAt: string
-  headRefName: string
-  baseRefName: string
-  headRefOid: string
-  baseRefOid: string
-  viewerIsAuthor: boolean
-  viewerReviewRequested: boolean
-  commandoMarker: CommandoPrMarker | null
-  stack?: PrStackMembership | null
-}
+import type { NewStackedPr, PrStack, StackedPrResult } from '../shared/pr-stacks'
+import type { PanePrList, PrList, PrScope, PrStateFilter } from '../shared/pr-types'
+export type { PanePrList, PanePrSummary, PrList, PrScope, PrStateFilter, PrSummary, PrStatus, PrCheckState, PrCheckRun, PrChecks, PrReview } from '../shared/pr-types'
 export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
 export type PrThreads = { repo: string; number: number; threads: PrThreadExcerpt[]; truncated: boolean; fetchedAt: number }
-export type PrList = {
-  repo: string
-  filter: PrStateFilter
-  viewer: string
-  totalCount: number
-  pullRequests: PrSummary[]
-  truncated: boolean
-  mineTruncated: boolean
-  fetchedAt: number
-}
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision' | 'stack'>
-export type PanePrSummary = PrStatus & {
-  repo: string
-  preview?: PrSummary
-  number: number
-  title: string
-  url: string
-  state: 'open' | 'merged' | 'closed'
-  isDraft: boolean
-  createdAt: string
-  updatedAt: string
-}
-export type PanePrList = {
-  targetId: string
-  totalCount: number
-  pullRequests: PanePrSummary[]
-  truncated: boolean
-  fetchedAt: number
-}
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
 export type PrPreferences = {
   version: 1
@@ -80,7 +13,15 @@ export type PrPreferences = {
   lastScope: PrScope
 }
 
+// Separate clients for the same auth/transport share one store. Tests and other
+// credentials remain isolated without a process-wide singleton leaking data.
+const storeKeys = new WeakMap<typeof fetch, Map<string, object>>()
+
 export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
+  let keys = storeKeys.get(fetcher)
+  if (!keys) { keys = new Map(); storeKeys.set(fetcher, keys) }
+  let storeKey = keys.get(token)
+  if (!storeKey) { storeKey = {}; keys.set(token, storeKey) }
   const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const response = await fetcher(`/api/prs${path}`, {
       ...init,
@@ -101,6 +42,7 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     return result as T
   }
   return {
+    storeKey,
     stack: async (repo: string, number: number) =>
       (await request<{ stack: PrStack }>(`/stack?repo=${encodeURIComponent(repo)}&number=${number}`)).stack,
     linkStack: async (repo: string, numbers: number[]) =>
@@ -134,4 +76,3 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
   }
 }
 export type PrsApiClient = ReturnType<typeof createPrsApi>
-import type { CommandoPrMarker } from '../shared/pane-target'

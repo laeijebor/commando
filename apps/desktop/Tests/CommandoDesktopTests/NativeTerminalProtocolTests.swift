@@ -10,6 +10,44 @@ final class NativeTerminalProtocolTests: XCTestCase {
         XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.accessibilityValue.v1"))
     }
 
+    func testDecodesThemePaletteAndRejectsMalformedColors() throws {
+        XCTAssertTrue(NativeTerminalProtocol.requiredCapabilities.contains("terminal.theme.v1"))
+        let ansi = (0..<16).map { String(format: "#%06x", $0) }
+        let payload: [String: Any] = [
+            "background": "#181818",
+            "foreground": "#D6D6D6",
+            "cursor": "#e4e4e4",
+            "cursorText": "#181818",
+            "selectionBackground": "#264f78",
+            "selectionForeground": "#ffffff",
+            "ansi": ansi,
+        ]
+        XCTAssertEqual(
+            try decode("bridge.theme", payload: payload).command,
+            .theme(.init(
+                background: 0x181818,
+                foreground: 0xd6d6d6,
+                cursor: 0xe4e4e4,
+                cursorText: 0x181818,
+                selectionBackground: 0x264f78,
+                selectionForeground: 0xffffff,
+                ansi: (0..<16).map { UInt32($0) }
+            ))
+        )
+
+        for (key, value) in [
+            ("background", "181818" as Any),
+            ("background", "#18181" as Any),
+            ("background", "#+18181" as Any),
+            ("background", "#gggggg" as Any),
+            ("ansi", Array(ansi.prefix(15)) as Any),
+        ] {
+            var malformed = payload
+            malformed[key] = value
+            XCTAssertThrowsError(try decode("bridge.theme", payload: malformed), "\(key)=\(value)")
+        }
+    }
+
     func testDecodesConnectAndAllPaneCommands() throws {
         XCTAssertEqual(
             try decode("bridge.connect", payload: ["supportedVersions": [1]]).command,

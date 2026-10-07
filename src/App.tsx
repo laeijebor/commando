@@ -89,7 +89,7 @@ import {
 } from './layout'
 import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './paneStream'
 import { dispatchBoundedPaste } from './terminalInput'
-import { THEMES, applyTheme, storedTheme, type ThemeName } from './theme'
+import { THEMES, activeTheme, applyTheme, onThemeChange, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
@@ -1134,11 +1134,17 @@ export function App() {
     const bridge = getNativeTerminalBridge()
     if (!bridge) return
     let active = true
+    let unsubscribeTheme = () => {}
     void bridge.connect().then((result) => {
-      if (active) setNativeTerminalAvailable(result.available)
+      if (!active) return
+      setNativeTerminalAvailable(result.available)
+      if (!result.available) return
+      bridge.setTheme(activeTheme().terminal)
+      unsubscribeTheme = onThemeChange((theme) => bridge.setTheme(theme.terminal))
     })
     return () => {
       active = false
+      unsubscribeTheme()
     }
   }, [])
 

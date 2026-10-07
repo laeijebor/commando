@@ -1,4 +1,5 @@
 import { MAX_PASTE_BYTES, MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS } from '../shared/protocol'
+import type { TerminalTheme } from './theme'
 
 export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
@@ -54,6 +55,26 @@ export type NativeTerminalFramePayload = {
 }
 
 export const NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY = 'terminal.hitRegions.v1'
+export const NATIVE_TERMINAL_THEME_CAPABILITY = 'terminal.theme.v1'
+
+const ANSI_KEYS = [
+  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+  'brightBlack', 'brightRed', 'brightGreen', 'brightYellow',
+  'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
+] as const
+
+/** The subset of a terminal theme the native renderer applies, ANSI colors in index order. */
+function nativeTerminalThemePayload(theme: TerminalTheme): Record<string, unknown> {
+  return {
+    background: theme.background,
+    foreground: theme.foreground,
+    cursor: theme.cursor,
+    cursorText: theme.cursorAccent,
+    selectionBackground: theme.selectionBackground,
+    selectionForeground: theme.selectionForeground,
+    ansi: ANSI_KEYS.map((key) => theme[key]),
+  }
+}
 
 type NativeMessageHandler = {
   postMessage: (message: NativeTerminalMessage) => void
@@ -351,6 +372,7 @@ export class NativeTerminalBridge {
   private connected = false
   private maxPanes = 0
   private hitRegionsSupported = false
+  private themeSupported = false
   private readonly attachments = new Map<string, AttachmentRecord>()
   private readonly shortcutListeners = new Set<(key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
   private readonly previousReceiver = window.__commandoNativeTerminalReceive
@@ -439,6 +461,11 @@ export class NativeTerminalBridge {
     return this.postForAttachment('pane.frame', attachmentId, payload)
   }
 
+  setTheme(theme: TerminalTheme): boolean {
+    if (!this.themeSupported) return false
+    return this.post('bridge.theme', nativeTerminalThemePayload(theme))
+  }
+
   focus(attachmentId: string): boolean {
     return this.postForAttachment('pane.focus', attachmentId, {})
   }
@@ -521,6 +548,8 @@ export class NativeTerminalBridge {
     this.maxPanes = result.available ? result.maxPanes : 0
     this.hitRegionsSupported = result.available &&
       result.capabilities.includes(NATIVE_TERMINAL_HIT_REGIONS_CAPABILITY)
+    this.themeSupported = result.available &&
+      result.capabilities.includes(NATIVE_TERMINAL_THEME_CAPABILITY)
     finish(result)
   }
 
