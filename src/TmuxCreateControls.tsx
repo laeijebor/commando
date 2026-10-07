@@ -2,6 +2,10 @@ import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, us
 import {
   defaultWorktreePath,
   sanitizeBranchName,
+  SESSION_AGENT_CHOICES,
+  requireSessionAgentLaunch,
+  TmuxAgentLaunchCompatibilityError,
+  type SessionAgentProvider,
   type CreateTmuxSessionRequest,
   type GitRepoInfo,
   type TmuxCreatedTarget,
@@ -33,7 +37,7 @@ export type TmuxCreateControlsProps = {
   variant?: 'inline' | 'dialog'
   sessionCreateRequest?: SessionCreateRequest | null
   onCreateSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
-  onCreated?: (created: TmuxCreatedTarget, sessionGroupId?: string, worktree?: TmuxCreatedWorktree) => void
+  onCreated?: (created: TmuxCreatedTarget, sessionGroupId?: string, worktree?: TmuxCreatedWorktree) => void | Promise<void>
   onPendingChange?: (pending: boolean) => void
   /** Describes the repository behind a directory; without it the worktree block never appears. */
   probeRepo?: (directory: string) => Promise<GitRepoInfo>
@@ -153,6 +157,11 @@ export function TmuxCreateControls({
   const [prepareCommand, setPrepareCommand] = useState('')
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [pending, setPending] = useState(false)
+  const [agentProvider, setAgentProvider] = useState<SessionAgentProvider | 'shell'>('shell')
+  const [openingPrompt, setOpeningPrompt] = useState('')
+  const [partialCreation, setPartialCreation] = useState<{ response: TmuxCreateResponse; groupId: string } | null>(null)
+  const partialCreationRef = useRef<TmuxCreateResponse | null>(null)
+  const openingPartialCreationRef = useRef(false)
   const [probing, setProbing] = useState(false)
   const [probeTimedOut, setProbeTimedOut] = useState(false)
   const [error, setError] = useState('')
@@ -198,6 +207,7 @@ export function TmuxCreateControls({
     setDirectoryHistoryHighlight(0)
     setWorktreeEnabled(true)
     setPrepareEnabled(true)
+    setOpeningPrompt('')
     setBranchEdited(false)
     setWorktreePath(null)
     setError('')
@@ -291,14 +301,35 @@ export function TmuxCreateControls({
   const resetForm = (formElement: HTMLFormElement) => {
     formElement.reset()
     setSessionName('')
+    setOpeningPrompt('')
     setBranch('')
     setBranchEdited(false)
     setWorktreePath(null)
     setPrepareEnabled(true)
   }
 
+  const openPartialCreation = async (formElement: HTMLFormElement | null) => {
+    if (!formElement || !onCreated || !partialCreation || !partialCreationRef.current || openingPartialCreationRef.current) return
+    openingPartialCreationRef.current = true
+    setPending(true)
+    try {
+      await onCreated(partialCreation.response.created, partialCreation.groupId, partialCreation.response.worktree)
+      partialCreationRef.current = null
+      setPartialCreation(null)
+      setError('')
+      setStatus('')
+      resetForm(formElement)
+    } catch (openError) {
+      setError(errorMessage(openError))
+    } finally {
+      openingPartialCreationRef.current = false
+      setPending(false)
+    }
+  }
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (partialCreationRef.current) return
     const formElement = event.currentTarget
     const form = new FormData(formElement)
     setPending(true)
@@ -311,6 +342,12 @@ export function TmuxCreateControls({
         windowName: String(form.get('windowName') ?? ''),
         cwd,
       }
+      if (agentProvider !== 'shell') {
+        request.agent = {
+          provider: agentProvider,
+          ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+        }
+      }
       if (worktreeRequested) {
         request.worktree = {
           branch: effectiveBranch,
@@ -318,7 +355,7 @@ export function TmuxCreateControls({
           ...(prepareRequested ? { prepareCommand } : {}),
         }
       }
-      const result = await onCreateSession(request)
+      const result = requireSessionAgentLaunch(request, await onCreateSession(request))
       const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
       setWorkingDirectoryHistory(nextHistory)
       setDirectoryHistoryOpen(false)
@@ -329,6 +366,10 @@ export function TmuxCreateControls({
       onCreated?.(created, sessionGroupId, worktree)
       resetForm(formElement)
     } catch (submitError) {
+      if (submitError instanceof TmuxAgentLaunchCompatibilityError) {
+        partialCreationRef.current = submitError.response
+        setPartialCreation({ response: submitError.response, groupId: sessionGroupId })
+      }
       setError(errorMessage(submitError))
     } finally {
       setPending(false)
@@ -535,6 +576,26 @@ export function TmuxCreateControls({
 
         {worktreeBlock}
 
+        <label>
+          Start with
+          <select
+            className="tmux-create__provider"
+            value={agentProvider}
+            disabled={unavailable}
+            onChange={(event) => setAgentProvider(event.target.value as SessionAgentProvider | 'shell')}
+          >
+            {SESSION_AGENT_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+          </select>
+        </label>
+        {agentProvider !== 'shell' && agentProvider !== 'opencode' ? (
+          <label>
+            Opening prompt <span>optional</span>
+            <textarea value={openingPrompt} onChange={(event) => setOpeningPrompt(event.target.value)} disabled={unavailable} rows={3} />
+          </label>
+        ) : null}
+        {agentProvider === 'cursor' ? <p className="tmux-create__destination">Starts the Cursor CLI agent in the terminal pane.</p> : null}
+        {agentProvider === 'opencode' ? <p className="tmux-create__destination">OpenCode starts without an opening prompt.</p> : null}
+
         {probeTimedOut && (
           <p className="tmux-create__message is-warning" role="status">
             Repository check timed out. You can still create a session, but worktree details may be unavailable.
@@ -552,8 +613,15 @@ export function TmuxCreateControls({
           </p>
         )}
 
-        <button className="tmux-create__submit" type="submit" disabled={unavailable}>
-          {pending ? 'Creating...' : probing && !repo ? 'Checking repository...' : 'Create session'}
+        {partialCreation ? (
+          <button className="tmux-create__submit" type="button" disabled={!onCreated || pending} onClick={(event) => {
+            void openPartialCreation(event.currentTarget.form)
+          }}>
+            Open created session {partialCreation.response.created.paneId}
+          </button>
+        ) : null}
+        <button className="tmux-create__submit" type="submit" disabled={unavailable || Boolean(partialCreation)}>
+          {pending ? partialCreation ? 'Opening...' : 'Creating...' : probing && !repo ? 'Checking repository...' : 'Create session'}
         </button>
       </form>
     </div>
