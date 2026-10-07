@@ -28,7 +28,7 @@ vi.mock('./useDaemon', () => ({
 }))
 vi.mock('./nativeTerminalBridge', () => ({
   NATIVE_TERMINAL_SHORTCUT_EVENT: 'commando:native-terminal-shortcut',
-  getNativeTerminalBridge: () => ({ connect: appMocks.nativeConnect }),
+  getNativeTerminalBridge: () => ({ connect: appMocks.nativeConnect, setTheme: () => true }),
 }))
 vi.mock('./TerminalPaneRenderer', () => ({
   TerminalPaneRenderer: ({

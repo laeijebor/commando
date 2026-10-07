@@ -171,6 +171,14 @@ final class TerminalPaneHost {
         reapplyFrames()
     }
 
+    func applyPalette(_ palette: TerminalPalette) {
+        guard palette != TerminalProfile.palette else { return }
+        TerminalProfile.palette = palette
+        for record in registry.records.values {
+            record.value.applyProfileColors()
+        }
+    }
+
     func destroyAll() {
         let hadFocus = registry.records.values.contains(where: { $0.value.isFocused })
         for record in registry.removeAll() {

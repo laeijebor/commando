@@ -158,6 +158,8 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
         switch command {
         case .connect:
             break
+        case let .theme(palette):
+            paneHost.applyPalette(palette)
         case let .attach(payload):
             let result = paneHost.attach(payload)
             guard result != .capacityExceeded else {
@@ -272,7 +274,7 @@ final class NativeTerminalBridge: NativeTerminalMessageReceiving {
 
     private func identity(for command: NativeTerminalCommand) -> PaneIdentity? {
         switch command {
-        case .connect:
+        case .connect, .theme:
             nil
         case let .attach(payload):
             payload.identity

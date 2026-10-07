@@ -34,6 +34,7 @@ enum NativeTerminalProtocol {
         "terminal.contextMenu.v1",
         "terminal.accessibilityValue.v1",
         "terminal.hitRegions.v1",
+        "terminal.theme.v1",
         "terminal.coreGraphics",
     ]
 
@@ -164,6 +165,7 @@ struct PaneDataPayload: Equatable, Sendable {
 
 enum NativeTerminalCommand: Equatable, Sendable {
     case connect(BridgeConnectPayload)
+    case theme(TerminalPalette)
     case attach(PaneAttachPayload)
     case update(PaneUpdatePayload)
     case frame(PaneFramePayload)
@@ -175,6 +177,7 @@ enum NativeTerminalCommand: Equatable, Sendable {
     var type: String {
         switch self {
         case .connect: "bridge.connect"
+        case .theme: "bridge.theme"
         case .attach: "pane.attach"
         case .update: "pane.update"
         case .frame: "pane.frame"
@@ -258,6 +261,27 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                 )
             }
             return .connect(.init(supportedVersions: versions))
+        case "bridge.theme":
+            try payload.require(keys: [
+                "background", "foreground", "cursor", "cursorText",
+                "selectionBackground", "selectionForeground", "ansi",
+            ])
+            let ansi = try payload.stringArray("ansi", maximumCount: TerminalPalette.ansiCount)
+            guard ansi.count == TerminalPalette.ansiCount else {
+                throw ProtocolValidationError(
+                    code: "invalid_payload",
+                    message: "ansi must contain exactly 16 colors."
+                )
+            }
+            return .theme(.init(
+                background: try decodeHexColor(try payload.string("background")),
+                foreground: try decodeHexColor(try payload.string("foreground")),
+                cursor: try decodeHexColor(try payload.string("cursor")),
+                cursorText: try decodeHexColor(try payload.string("cursorText")),
+                selectionBackground: try decodeHexColor(try payload.string("selectionBackground")),
+                selectionForeground: try decodeHexColor(try payload.string("selectionForeground")),
+                ansi: try ansi.map(decodeHexColor)
+            ))
         case "pane.attach":
             try payload.require(keys: [
                 "paneId", "attachmentId", "ariaLabel", "accessibilityEnabled", "keyShortcuts",
@@ -389,6 +413,21 @@ struct NativeTerminalEnvelope: Equatable, Sendable {
                 height: height
             )
         }
+    }
+
+    private static func decodeHexColor(_ value: String) throws -> UInt32 {
+        let digits = value.utf8.dropFirst()
+        guard value.utf8.first == Character("#").asciiValue,
+              digits.count == 6,
+              digits.allSatisfy({ Character(UnicodeScalar($0)).isHexDigit }),
+              let color = UInt32(String(value.dropFirst()), radix: 16)
+        else {
+            throw ProtocolValidationError(
+                code: "invalid_payload",
+                message: "Theme colors must be #rrggbb hex strings."
+            )
+        }
+        return color
     }
 
     private static func decodeIdentity(_ payload: StrictObject) throws -> PaneIdentity {
