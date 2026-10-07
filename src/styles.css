@@ -129,6 +129,7 @@
   --muted-dim: #7a7a7a;
   --accent: #78aef8;
   --accent-ink: #07101c;
+  --terminal-bg: #181818;
 }
 
 * {

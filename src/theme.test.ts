@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { DEFAULT_THEME, THEMES, applyTheme, storedTheme } from './theme'
+import { DEFAULT_THEME, THEMES, activeTheme, applyTheme, onThemeChange, storedTheme } from './theme'
 
 function themeColorMeta(): HTMLMetaElement {
   let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
@@ -54,5 +54,29 @@ describe('applyTheme', () => {
     expect(document.documentElement.dataset.theme).toBeUndefined()
     expect(window.localStorage.getItem('commando-theme')).toBe(DEFAULT_THEME)
     expect(themeColorMeta().getAttribute('content')).toBe('#0c0a14')
+  })
+})
+
+describe('activeTheme and onThemeChange', () => {
+  it('reports the applied theme and notifies subscribers until they unsubscribe', () => {
+    expect(activeTheme().name).toBe(DEFAULT_THEME)
+    const listener = vi.fn()
+    const unsubscribe = onThemeChange(listener)
+
+    applyTheme('cursor')
+    expect(activeTheme().name).toBe('cursor')
+    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'cursor' }))
+
+    unsubscribe()
+    applyTheme(DEFAULT_THEME)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives the Cursor theme a neutral terminal and keeps Rose Pine elsewhere', () => {
+    const terminalBackground = (name: string) =>
+      THEMES.find((theme) => theme.name === name)!.terminal.background
+    expect(terminalBackground('cursor')).toBe('#181818')
+    expect(terminalBackground('purple')).toBe('#232136')
+    expect(terminalBackground('emerald')).toBe('#232136')
   })
 })
