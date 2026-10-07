@@ -4,11 +4,13 @@ import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
+import { PrEntities } from '../shared/pr-entities.js'
+import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
+export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 import {
   isCommandoTargetId,
   parseCommandoPrMarker,
   stripCommandoPrMarkers,
-  type CommandoPrMarker,
 } from '../shared/pane-target.js'
 
 const COMMAND_TIMEOUT_MS = 20_000
@@ -91,89 +93,6 @@ const MAX_PANE_LIST_CACHE_ENTRIES = 100
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
 type JsonRecord = Record<string, unknown>
-
-export type PrStateFilter = 'open' | 'closed' | 'all'
-export type PrScope = 'mine' | 'everyone'
-export type PrCheckState = 'pass' | 'fail' | 'pending'
-
-export type PrCheckRun = { name: string; state: PrCheckState }
-
-export type PrChecks = {
-  state: PrCheckState
-  runs: PrCheckRun[]
-  failed: number
-  pending: number
-  total: number
-  truncated: boolean
-} | null
-
-export type PrReview = { login: string; state: 'approved' | 'changes_requested' }
-
-export type PrSummary = {
-  number: number
-  title: string
-  url: string
-  state: 'open' | 'merged' | 'closed'
-  isDraft: boolean
-  author: string | null
-  bodyExcerpt: string
-  additions: number
-  deletions: number
-  changedFiles: number
-  commitCount: number
-  unresolvedThreads: number
-  unansweredThreads?: number
-  threadsTruncated: boolean
-  reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null
-  reviews: PrReview[]
-  requestedReviewers: string[]
-  conflicting: boolean
-  mergeable?: string
-  mergeStateStatus?: string
-  checks: PrChecks
-  createdAt: string
-  updatedAt: string
-  headRefName: string
-  baseRefName: string
-  headRefOid: string
-  baseRefOid: string
-  viewerIsAuthor: boolean
-  viewerReviewRequested: boolean
-  commandoMarker: CommandoPrMarker | null
-}
-
-export type PrList = {
-  repo: string
-  filter: PrStateFilter
-  viewer: string
-  totalCount: number
-  pullRequests: PrSummary[]
-  truncated: boolean
-  mineTruncated: boolean
-  fetchedAt: number
-}
-
-export type PrStatus = Pick<PrSummary, 'additions' | 'deletions' | 'checks' | 'conflicting' | 'unresolvedThreads' | 'unansweredThreads' | 'threadsTruncated' | 'reviewDecision'>
-
-export type PanePrSummary = PrStatus & {
-  repo: string
-  preview?: PrSummary
-  number: number
-  title: string
-  url: string
-  state: 'open' | 'merged' | 'closed'
-  isDraft: boolean
-  createdAt: string
-  updatedAt: string
-}
-
-export type PanePrList = {
-  targetId: string
-  totalCount: number
-  pullRequests: PanePrSummary[]
-  truncated: boolean
-  fetchedAt: number
-}
 
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
 
@@ -716,6 +635,7 @@ type CacheEntry<T> = { at: number; promise: Promise<T> }
 type SwrCacheEntry<T> = { at: number; value: T | null; refresh: Promise<T> | null }
 
 export class PrService {
+  private readonly entities = new PrEntities()
   private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
   private readonly runner: GhRunner
@@ -727,7 +647,7 @@ export class PrService {
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly batchedRepos = new Set<string>()
-  private readonly paneListCache = new Map<string, CacheEntry<PanePrList>>()
+  private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
@@ -762,6 +682,7 @@ export class PrService {
     const key = `${repo.toLowerCase()}::${number}`
     if (this.merging.has(key)) throw new PrServiceError(409, 'merge_in_progress', 'This pull request is already being merged')
     this.merging.add(key)
+    let merged = false
     try {
       const current = parseGhObject(await this.runner([
         'pr', 'view', String(number), '--repo', repo,
@@ -786,9 +707,12 @@ export class PrService {
         '-f', `sha=${headInput}`, '-f', `merge_method=${method}`,
       ]))
       if (result.merged !== true) throw new PrServiceError(409, 'merge_failed', typeof result.message === 'string' ? result.message : 'GitHub did not merge this pull request')
+      merged = true
       return { merged: true }
     } finally {
       this.merging.delete(key)
+      this.entities.invalidate(repo)
+      if (merged) this.entities.markMerged(repo, number, this.now())
       // A failed/ambiguous write can still have changed GitHub state.
       for (const cacheKey of this.listCache.keys()) {
         if (cacheKey.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(cacheKey)
@@ -841,46 +765,49 @@ export class PrService {
     const filter = validateStateFilter(filterInput)
     const scope = options?.scope ?? 'everyone'
     if (scope !== 'mine' && scope !== 'everyone') throw new PrServiceError(400, 'invalid_request', 'scope must be "mine" or "everyone"')
-    const key = `${repo}::${filter}::${scope}`
+    const key = `${repo.toLowerCase()}::${filter}::${scope}`
     const cached = this.listCache.get(key)
     if (cached?.value) {
       if (options?.refresh) {
-        return cached.refresh ?? this.refreshPullRequests(key, repo, filter, scope, cached)
+        return this.entities.repo(await (cached.refresh ?? this.refreshPullRequests(key, repo, filter, scope, cached)))
       }
       if (this.now() - cached.at >= this.listTtlMs && !cached.refresh) {
         void this.refreshPullRequests(key, repo, filter, scope, cached).catch(() => undefined)
       }
-      return cached.value
+      return this.entities.repo(cached.value)
     }
-    if (cached?.refresh) return cached.refresh
+    if (cached?.refresh) return this.entities.repo(await cached.refresh)
     const entry: SwrCacheEntry<PrList> = { at: 0, value: null, refresh: null }
     this.listCache.set(key, entry)
-    return this.refreshPullRequests(key, repo, filter, scope, entry)
+    return this.entities.repo(await this.refreshPullRequests(key, repo, filter, scope, entry))
   }
 
   async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (!options.refresh && cached && this.now() - cached.at < this.listTtlMs) return cached.promise
+    if (cached?.refresh) return this.entities.pane(await cached.refresh)
+    if (!options.refresh && cached?.value && this.now() - cached.at < this.listTtlMs) return this.entities.pane(cached.value)
     const promise = this.fetchPanePullRequests(targetId)
-    const entry = { at: this.now(), promise }
+    const entry: SwrCacheEntry<PanePrList> = { at: this.now(), value: cached?.value ?? null, refresh: promise }
     this.paneListCache.set(targetId, entry)
-    if (this.paneListCache.size > MAX_PANE_LIST_CACHE_ENTRIES) {
-      const oldest = [...this.paneListCache.entries()]
-        .filter(([key]) => key !== targetId)
-        .sort((left, right) => left[1].at - right[1].at)
-      for (const [key] of oldest) {
-        if (this.paneListCache.size <= MAX_PANE_LIST_CACHE_ENTRIES) break
-        this.paneListCache.delete(key)
-      }
+    this.trimPaneListCache()
+    try {
+      const value = await promise
+      entry.value = value
+      entry.at = this.now()
+      return this.entities.pane(value)
+    } catch (error) {
+      if (this.paneListCache.get(targetId) === entry && !entry.value) this.paneListCache.delete(targetId)
+      throw error
+    } finally {
+      entry.refresh = null
+      if (this.paneListCache.get(targetId) === entry) this.trimPaneListCache()
     }
-    promise.catch(() => {
-      if (this.paneListCache.get(targetId) === entry) this.paneListCache.delete(targetId)
-    })
-    return promise
   }
 
   private async fetchPanePullRequests(targetId: string): Promise<PanePrList> {
+    const order = this.entities.beginRead()
+    const fetchedAt = this.now()
     const output = await this.ghRead([
       'api', 'graphql',
       '-f', `query=${PANE_PULL_REQUESTS_QUERY}`,
@@ -903,13 +830,15 @@ export class PrService {
       .map((node) => parsePanePullRequest(node, targetId, typeof viewer?.login === 'string' ? viewer.login : ''))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    return {
+    const list: PanePrList = {
       targetId,
       totalCount: linked.totalCount,
       pullRequests,
       truncated: linked.truncated,
-      fetchedAt: this.now(),
+      fetchedAt,
     }
+    this.entities.ingest(list, order)
+    return list
   }
 
   private refreshPullRequests(
@@ -939,7 +868,6 @@ export class PrService {
   }
 
   private trimListCache(): void {
-    if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) return
     const oldest = [...this.listCache.entries()]
       .filter(([, entry]) => !entry.refresh)
       .sort((left, right) => left[1].at - right[1].at)
@@ -947,9 +875,30 @@ export class PrService {
       if (this.listCache.size <= MAX_LIST_CACHE_ENTRIES) break
       this.listCache.delete(key)
     }
+    this.retainEntities()
+  }
+
+  private retainEntities(): void {
+    const entries = [...this.listCache.values(), ...this.paneListCache.values()]
+    if (entries.some((entry) => entry.refresh)) return
+    this.entities.retain(entries
+      .flatMap((entry) => entry.value ? [entry.value] : []))
+  }
+
+  private trimPaneListCache(): void {
+    const oldest = [...this.paneListCache.entries()]
+      .filter(([, entry]) => !entry.refresh)
+      .sort((left, right) => left[1].at - right[1].at)
+    for (const [key] of oldest) {
+      if (this.paneListCache.size <= MAX_PANE_LIST_CACHE_ENTRIES) break
+      this.paneListCache.delete(key)
+    }
+    this.retainEntities()
   }
 
   private async fetchPullRequests(repo: string, filter: PrStateFilter, scope: PrScope): Promise<PrList> {
+    const order = this.entities.beginRead()
+    const fetchedAt = this.now()
     const [owner, name] = repo.split('/', 2) as [string, string]
     const args = [
       'api', 'graphql',
@@ -1006,7 +955,7 @@ export class PrService {
       if (!byNumber.has(pullRequest.number)) byNumber.set(pullRequest.number, pullRequest)
     }
     const pullRequests = [...byNumber.values()].sort((a, b) => b.number - a.number)
-    return {
+    const list: PrList = {
       repo,
       filter,
       viewer,
@@ -1014,8 +963,10 @@ export class PrService {
       pullRequests,
       truncated: totalCount > pullRequests.length,
       mineTruncated: authored.truncated || reviewRequested.truncated,
-      fetchedAt: this.now(),
+      fetchedAt,
     }
+    this.entities.ingest(list, order)
+    return list
   }
 
   private async fetchBatchedPullRequests(args: string[]): Promise<string> {
@@ -1231,6 +1182,7 @@ export class PrService {
   }
 
   private invalidateReviewThreadCaches(repo: string, number: number): void {
+    this.entities.invalidate(repo)
     for (const key of this.listCache.keys()) {
       if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)
     }

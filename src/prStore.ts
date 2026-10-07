@@ -1,13 +1,14 @@
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
 import type { PanePrList, PanePrSummary, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
+import { PrEntities } from '../shared/pr-entities'
 
 export const PR_FOREGROUND_INTERVAL_MS = 30_000
 export const PR_BACKGROUND_INTERVAL_MS = 5 * 60_000
 // The repo-wide list is the costliest query on busy repos.
 export const PR_EVERYONE_INTERVAL_MS = 10 * 60_000
 
-type StoreApi = Pick<PrsApiClient, 'pane' | 'list'>
+type StoreApi = Pick<PrsApiClient, 'pane' | 'list'> & Partial<Pick<PrsApiClient, 'storeKey'>>
 
 export type PrStoreSnapshot<T> = {
   list: T | null
@@ -27,6 +28,8 @@ type Entry<T> = {
   retryAt: number
   inFlight: Promise<void> | null
   load: (refresh: boolean) => Promise<T>
+  sourceList: T | null
+  project: (list: T) => T
 }
 
 const EMPTY_PANE: PrStoreSnapshot<PanePrList> = { list: null, loading: false, polling: false, error: '', errorCode: '' }
@@ -34,6 +37,7 @@ const EMPTY_REPO: PrStoreSnapshot<PrList> = { list: null, loading: false, pollin
 const stores = new WeakMap<object, PrStore>()
 
 class PrStore {
+  private readonly entities = new PrEntities()
   private readonly panes = new Map<string, Entry<PanePrList>>()
   private readonly repos = new Map<string, Entry<PrList>>()
   private timer: number | null = null
@@ -67,6 +71,11 @@ class PrStore {
     return this.refresh(this.paneEntry(paneId), true)
   }
 
+  markMerged(repo: string, number: number): void {
+    this.entities.markMerged(repo, number, Date.now())
+    this.publishEntities()
+  }
+
   async refreshCommentStatus(repo: string): Promise<void> {
     const entries = this.activeEntries().filter((entry) => {
       const list = entry.snapshot.list
@@ -87,7 +96,7 @@ class PrStore {
   private paneEntry(paneId: string): Entry<PanePrList> {
     let entry = this.panes.get(paneId)
     if (!entry) {
-      entry = this.createEntry((refresh) => refresh ? this.api.pane(paneId, { refresh: true }) : this.api.pane(paneId), EMPTY_PANE, PR_FOREGROUND_INTERVAL_MS)
+      entry = this.createEntry((refresh) => refresh ? this.api.pane(paneId, { refresh: true }) : this.api.pane(paneId), EMPTY_PANE, PR_FOREGROUND_INTERVAL_MS, (list) => this.entities.pane(list))
       this.panes.set(paneId, entry)
     }
     return entry
@@ -101,6 +110,7 @@ class PrStore {
         (refresh) => this.api.list(repo, filter, { scope, ...(refresh ? { refresh: true } : {}) }),
         EMPTY_REPO,
         scope === 'everyone' ? PR_EVERYONE_INTERVAL_MS : PR_FOREGROUND_INTERVAL_MS,
+        (list) => this.entities.repo(list),
       )
       this.repos.set(key, entry)
     }
@@ -108,14 +118,14 @@ class PrStore {
   }
 
   private repoKey(repo: string, filter: PrStateFilter, scope: PrScope): string {
-    return `${repo}\0${filter}\0${scope}`
+    return `${repo.toLowerCase()}\0${filter}\0${scope}`
   }
 
-  private createEntry<T>(load: (refresh: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number): Entry<T> {
-    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null, load }
+  private createEntry<T>(load: (refresh: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number, project: (list: T) => T): Entry<T> {
+    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null, load, sourceList: null, project }
   }
 
-  private subscribe<T>(entry: Entry<T>, background: boolean, listener: () => void): () => void {
+  private subscribe<T extends PanePrList | PrList>(entry: Entry<T>, background: boolean, listener: () => void): () => void {
     entry.listeners.add(listener)
     if (background) entry.background += 1
     else entry.foreground += 1
@@ -129,15 +139,19 @@ class PrStore {
     }
   }
 
-  private refresh<T>(entry: Entry<T>, force: boolean): Promise<void> {
+  private refresh<T extends PanePrList | PrList>(entry: Entry<T>, force: boolean): Promise<void> {
     if (entry.inFlight) return entry.inFlight
     const hasList = entry.snapshot.list !== null
     entry.snapshot = { ...entry.snapshot, loading: !hasList, polling: hasList, error: '', errorCode: '' }
     this.emit(entry)
+    const order = this.entities.beginRead()
     const operation = entry.load(force)
       .then((list) => {
-        entry.snapshot = { list, loading: false, polling: false, error: '', errorCode: '' }
+        this.entities.ingest(list, order)
+        entry.sourceList = list
+        entry.snapshot = { list: entry.project(list), loading: false, polling: false, error: '', errorCode: '' }
         entry.retryAt = 0
+        this.publishEntities()
       })
       .catch((cause: unknown) => {
         const retryAt = (cause as { retryAt?: unknown })?.retryAt
@@ -161,6 +175,16 @@ class PrStore {
 
   private emit<T>(entry: Entry<T>): void {
     for (const listener of entry.listeners) listener()
+  }
+
+  private publishEntities(): void {
+    for (const entry of this.activeEntries()) {
+      if (!entry.sourceList) continue
+      const list = entry.project(entry.sourceList)
+      if (list === entry.snapshot.list) continue
+      entry.snapshot = { ...entry.snapshot, list }
+      this.emit(entry)
+    }
   }
 
   private activeEntries(): Entry<PanePrList | PrList>[] {
@@ -196,7 +220,7 @@ class PrStore {
 }
 
 function storeFor(api: StoreApi): PrStore {
-  const key = api as object
+  const key = api.storeKey ?? api
   let store = stores.get(key)
   if (!store) {
     store = new PrStore(api)
@@ -207,6 +231,10 @@ function storeFor(api: StoreApi): PrStore {
 
 export function refreshPrCommentStatus(api: StoreApi, repo: string): Promise<void> {
   return storeFor(api).refreshCommentStatus(repo)
+}
+
+export function markPrMerged(api: StoreApi, repo: string, number: number): void {
+  storeFor(api).markMerged(repo, number)
 }
 
 export function usePanePrs(

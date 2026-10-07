@@ -10,7 +10,7 @@ import {
   type PrSummary,
   type PrThreads,
 } from './prsApi'
-import { useRepoPrs } from './prStore'
+import { markPrMerged, useRepoPrs } from './prStore'
 import { PrBadges } from './PrBadges'
 import { prMergeDisabledReason } from '../shared/pr-merge'
 import './prs-section.css'
@@ -260,6 +260,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
     try {
       await api.merge(repo, pr.number, pr.headRefOid, pr.baseRefName || undefined)
       setMerged(true)
+      markPrMerged(api, repo, pr.number)
       await onMerged()
     } catch (cause) {
       setMergeError(cause instanceof Error ? cause.message : 'Unable to merge pull request')
