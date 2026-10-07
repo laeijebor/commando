@@ -1,4 +1,4 @@
-export type ThemeName = 'purple' | 'emerald' | 'ocean' | 'rose' | 'amber'
+export type ThemeName = 'purple' | 'emerald' | 'ocean' | 'rose' | 'amber' | 'cursor'
 
 export type Theme = {
   name: ThemeName
@@ -13,6 +13,7 @@ export const THEMES: Theme[] = [
   { name: 'ocean', label: 'Ocean', bg: '#0a1014' },
   { name: 'rose', label: 'Rose', bg: '#140a0c' },
   { name: 'amber', label: 'Amber', bg: '#14110a' },
+  { name: 'cursor', label: 'Cursor', bg: '#141414' },
 ]
 
 export const DEFAULT_THEME: ThemeName = 'purple'
