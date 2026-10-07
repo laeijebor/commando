@@ -156,6 +156,52 @@ check on its own; the trusted-origins list only matters for browser clients on
 the same name. Token-only daemons work too — switch the sign-in sheet to "Use
 automation token" and paste `COMMANDO_TOKEN`.
 
+## Agent setup on the host
+
+Install and authenticate each CLI on the daemon/tmux host, under the account
+running its panes. Installing the mobile app or an Expo development client
+does not install providers. For Cursor, follow the
+[CLI installation guide](https://cursor.com/docs/cli/installation), ensure
+`agent` is on the pane shell's PATH, then run `agent login` and `agent status`
+on that host. Install Commando's bridges and skills there with
+`npm run hooks:install` and `npm run skills:install`. Skills are copied
+explicitly into `~/.cursor/skills`, including supporting directories/playbooks;
+confirm discovery in a live CLI session.
+
+The Cursor creation choice launches executable `agent` in the new terminal
+pane and uses the selected checkout/worktree after successful preparation.
+Claude remains the mobile default. Web/desktop has its own **Start with** selector.
+Provider selection acknowledges pane creation, not authentication or completed
+agent work. See the root README's
+[Cursor setup contract](../../README.md#cursor-cli-setup-launch-and-resume)
+for native hooks, Claude-import duplication guards and live acceptance checks.
+
+Cursor status/worklog activity depends on genuine authenticated native hooks.
+Operational pane context requires a supported foreground Cursor process with
+verified PID/ancestry and tmux socket association; unsupported, background or
+non-tmux processes get no operational pane context.
+Saved history after a tmux restore stays inactive until hooks reconnect; a
+provider label inferred from the pane is insufficient. Pin
+`agent --resume=<actual-conversation-id>` for the originating conversation and
+checkout/worktree. The web/desktop worklog's session reference types the command
+without submitting Enter, with a separate copy action. Mobile's Info sheet does
+not currently render those reference controls; enter the confirmed resume
+command in its terminal. No approval-bypass flag is added by default.
+Exact-ID resume retained conversation context without a fresh `sessionStart` in
+native acceptance; prompt hooks re-established live activity.
+For multiline Cursor input through tmux/SSH, use Ctrl+J. See
+[CLI parameters](https://cursor.com/docs/cli/reference/parameters) and
+[input shortcuts](https://cursor.com/docs/cli/using).
+
+The Answer screen requires a real pending request from a supported bridge.
+Remote Cursor permission/question answers and automatic todos are unsupported
+in the current integration; use the terminal for approvals/questions and a
+textual plan in the worklog. The completed ACP spike proves initialize-only
+transport, not production answer/todo support or attachment to a live tmux
+process. The shared worklog
+update helper accepts textual plans and next actions, not task snapshots.
+Commando does not fetch Cursor quota data.
+
 ## Push notifications
 
 The app registers one device per install with every host it knows:

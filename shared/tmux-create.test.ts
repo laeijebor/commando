@@ -1,5 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeBranchName } from './tmux-create.js'
+import { sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
+
+describe('interactive agent arguments', () => {
+  it.each([['claude', 'claude'], ['codex', 'codex'], ['opencode', 'opencode'], ['cursor', 'agent']] as const)('maps %s to its actual CLI', (provider, command) => {
+    expect(sessionAgentArgv({ provider })).toEqual([command])
+  })
+  it.each(['update', 'install', 'mcp', 'login', 'auth', 'exec', '--force'])('keeps the collision prompt %j out of all providers command parsers', (prompt) => {
+    const claude = sessionAgentArgv({ provider: 'claude', prompt })
+    // Exact matcher extracted and safely evaluated from installed Claude 2.1.292.
+    const commands = ['update', 'upgrade', 'install', 'mcp', 'auth', 'doctor']
+    const findClaudeCommand = (operand: string) => commands.find((name) => name === operand)
+    expect(claude.slice(1)).toEqual(['--', ` ${prompt}`])
+    expect(findClaudeCommand(claude[2])).toBeUndefined()
+    expect(claude[2].trimStart()).toBe(prompt)
+    expect(sessionAgentArgv({ provider: 'codex', prompt })).toEqual(['codex', '--', prompt])
+    expect(sessionAgentArgv({ provider: 'cursor', prompt })).toEqual(['agent', 'agent', '--', prompt])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt })).toEqual(['opencode'])
+  })
+  it('treats command-like and flag-like prompts as literal data and preserves newlines', () => {
+    expect(sessionAgentArgv({ provider: 'cursor', prompt: 'login' })).toEqual(['agent', 'agent', '--', 'login'])
+    expect(sessionAgentArgv({ provider: 'cursor', prompt: '--force\nsecond line' })).toEqual(['agent', 'agent', '--', '--force\nsecond line'])
+    expect(sessionAgentArgv({ provider: 'claude', prompt: 'Fix' })).toEqual(['claude', '--', ' Fix'])
+    expect(sessionAgentArgv({ provider: 'codex', prompt: 'Fix' })).toEqual(['codex', '--', 'Fix'])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode'])
+  })
+})
 
 describe('sanitizeBranchName', () => {
   it('lowercases and joins words with dashes', () => {

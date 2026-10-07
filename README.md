@@ -56,13 +56,13 @@ npm run build
 
 ## Agent Status Hooks
 
-Install the authenticated Claude Code, Codex, and OpenCode status bridges for the current user:
+Install the authenticated Claude Code, Codex, OpenCode, and Cursor CLI status bridges for the current user:
 
 ```bash
 npm run hooks:install
 ```
 
-The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`, and points Codex's `notify` program at `~/.commando/hooks/commando-codex-notify.mjs`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
+The command safely merges Commando entries into `~/.claude/settings.json`, writes the Claude bridge under `~/.commando/hooks/`, installs the global OpenCode plugin at `~/.config/opencode/plugins/commando-agent-status.js`, points Codex's `notify` program at `~/.commando/hooks/commando-codex-notify.mjs`, and registers the Cursor bridge in `~/.cursor/hooks.json`. It is safe to rerun after upgrading or changing configuration: unrelated settings, hooks, and plugin files are preserved, and prior Commando entries are replaced rather than duplicated.
 
 For a named Claude profile, set Claude's standard `CLAUDE_CONFIG_DIR` while installing. Repeat the command for each profile that should report to Commando; the bridge, update CLI, hook token, and OpenCode plugin remain shared:
 
@@ -83,7 +83,11 @@ Commando records pane identity bindings in `~/.commando/pane-identities.json` as
 
 After reinstalling hooks or skills, restart OpenCode when convenient so it loads the new plugin; existing sessions retain their loaded configuration. Install hooks for each named Claude profile you use. Missing hook data is reported in the worklog rather than making the worklog disappear.
 
-To restore only the worklog/PR skills without replacing other installed skills, run `npm run skills:install -- session-updates commando-prs`. Set `CLAUDE_CONFIG_DIR` to also install into a custom Claude profile's skills directory.
+To restore only the worklog/PR skills without replacing other installed skills, run `npm run skills:install -- session-updates commando-prs`. The installer copies complete skill directories, including Redline playbooks, into `~/.claude/skills`, `~/.claudep/skills`, `~/.claudey/skills`, `~/.cursor/skills`, and `~/.config/opencode/skills`. Set `CLAUDE_CONFIG_DIR` to also install into a custom Claude profile's skills directory, including one outside HOME. Selected names are validated before any destination is written; repeat runs refresh canonical files while preserving unrelated skills and extra destination files. A destination symlink to the same canonical skill is already current and is skipped.
+
+Cursor documents both user roots (`~/.cursor/skills`, `~/.agents/skills`) and project roots (`.cursor/skills`, `.agents/skills`), plus Claude/Codex compatibility paths. Commando explicitly distributes to `~/.cursor/skills`; it does not need another `.agents` copy. This repo's `.claude/skills/verify` is in a documented compatibility path. Confirm actual discovery in a live Cursor session after installation; a successful copy alone does not verify discovery. Cursor also reads root `AGENTS.md` and `CLAUDE.md`, so keep those shared instructions rather than creating Cursor copies. The PR marker, simulator, web-tile and Redline tools remain reusable from the same tmux pane. See [Cursor skill directories](https://cursor.com/docs/context/skills) and [CLI rules](https://cursor.com/docs/cli/using).
+
+Installer regression tests run only against a disposable source checkout and temporary HOME. They clear inherited profile paths, especially `CLAUDE_CONFIG_DIR`, before spawning the script; an explicit custom profile test stays inside the disposable sandbox. Worklog helper tests use explicit temporary state paths and never execute hook installation. Run `npm test -- scripts/install-show-in-commando-skill.test.ts scripts/cursor-worklog.test.ts` to exercise distribution, resume references, textual plans and restoration provenance without installing hooks or touching active profiles.
 
 Interactive bridges — Claude Code and OpenCode, not Codex — additionally forward bounded permission labels, question text, and answer labels while a request is pending. Values pass through the same credential redaction and size limits as HUD metadata. Claude Code receives answers through its synchronous `PermissionRequest` hook output; OpenCode receives them through its local permission and question SDK methods. If Commando Island is not connected, hooks return immediately and the normal terminal prompt remains in control.
 
@@ -97,6 +101,96 @@ notify = ["node", "/Users/you/.commando/hooks/commando-codex-notify.mjs"]
 ```
 
 The Codex bridge reports turn completion and nothing else. An `agent-turn-complete` callback becomes a hook-sourced `done` with the recap and headline taken from Codex's last assistant message and the turn intent from its input messages, so "Codex finished" stops being a guess. It cannot report tool activity, checks, file changes, or progress, and **Codex permission and approval prompts stay in the terminal** — they are never forwarded and cannot be answered from Commando or the companion app. Because the callback only describes the turn that just ended, heuristics take the pane back to `working` as soon as it visibly resumes, and the next callback records a fresh completion.
+
+### Cursor CLI setup, launch and resume
+
+Cursor uses provider identity `cursor` and executable `agent`. Install the
+[Cursor CLI](https://cursor.com/docs/cli/installation) and authenticate on the
+**daemon/tmux host**, under the account that runs its panes:
+
+```bash
+agent --version
+agent login
+agent status
+npm run hooks:install
+npm run skills:install
+```
+
+`agent login` uses Cursor's [authentication flow](https://cursor.com/docs/cli/reference/authentication).
+Commando's desktop, Island and mobile packages do not install or authenticate
+providers. Ensure `agent` is on the pane shell's PATH.
+
+Commando installs `~/.commando/hooks/commando-cursor-agent-status.mjs` and
+merges its native entries into `~/.cursor/hooks.json`, preserving unrelated
+hooks. Cursor's native contract uses lowerCamelCase events in user
+`~/.cursor/hooks.json` with schema `version: 1`, separate from
+[`~/.cursor/cli-config.json`](https://cursor.com/docs/cli/reference/configuration).
+`sessionStart` can supply `additional_context`; `beforeSubmitPrompt` begins
+work; tool/edit events provide activity; `afterAgentResponse` provides a
+response candidate; `stop` reports completed, aborted or error for a turn.
+`sessionEnd` describes the conversation ending. See the
+[native hook reference](https://cursor.com/docs/hooks).
+The Commando installers resolve native hooks and skills under HOME;
+`CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` are CLI configuration overrides, not
+destination overrides for this skill installer.
+
+Cursor [imports Claude hooks by default](https://cursor.com/docs/reference/third-party-hooks).
+Commando's native adapter owns Cursor telemetry and context; its Claude bridge
+guards recognized Cursor callbacks against duplicate or wrong-provider updates.
+Unrelated user hooks and import settings remain in place. Operational pane
+context requires a supported foreground Cursor process with verified PID/ancestry
+and tmux socket association; unsupported, background or non-tmux processes get
+no operational pane context. Synthetic collision tests pass, but actual imported
+Claude callbacks were not observed during native acceptance, so live collision
+prevention remains unproven.
+
+Reported native acceptance with Cursor CLI `2026.10.01-e373342` passed **22/22**
+checks. Initial launch and exact-ID resume produced 13 native HTTP 200 hook
+deliveries. The adapter supports both stop-before-response and
+response-before-stop ordering. The skill menu listed `session-updates` and
+`verify` once each; this did not establish project/global origin, precedence,
+or discovery of every installed skill.
+
+In web/desktop **New session**, choose **Cursor** in the **Start with** selector to
+start the CLI inside the newly created terminal pane, after any worktree
+preparation succeeds. It uses the selected checkout/worktree. Mobile adds
+Cursor as another choice and keeps Claude as the default; see its
+[host setup guidance](apps/mobile/README.md#agent-setup-on-the-host).
+Selecting a provider does not authenticate it or confirm successful agent work.
+Use Ctrl+J for multiline Cursor prompts through tmux or SSH; see
+[CLI input shortcuts](https://cursor.com/docs/cli/using).
+
+Resume a specific conversation from its original checkout/worktree with
+`agent --resume=<actual-conversation-id>`. Pin the exact command supplied by
+the bridge when available, or use a confirmed ID from Cursor's conversation
+history (`agent ls`). Avoid latest-session aliases for pane-specific handoffs.
+Exact-ID resume retained conversation context in native acceptance without a
+fresh `sessionStart`; prompt hooks re-established live activity. Resume does not
+depend on newly injected startup context.
+Do not add `--force`/`--yolo` by default; those flags alter approval policy.
+See [CLI parameters](https://cursor.com/docs/cli/reference/parameters).
+The worklog's session reference types the command without submitting Enter and
+offers a separate copy action. Restoring a tmux layout preserves saved history;
+fresh authenticated hooks are required to reconnect its live status. Process
+or title detection alone does not establish that provenance, and Commando does
+not ingest Cursor transcripts or automatically resume archived conversations.
+
+Use `node "$HOME/.commando/hooks/commando-session-update.mjs" --recap-markdown "Plan: inspect, fix, verify" --next "Inspect the failing path"`
+for a textual plan when structured tasks are unavailable. The helper has no
+tasks input and does not populate the checklist. Automatic Cursor todos and
+remote permission/question answers are unsupported in the current integration;
+use textual plans and the terminal for approvals/questions.
+Commando has no Cursor quota API integration.
+
+The completed [ACP feasibility spike](docs/cursor-acp-feasibility.md) proves
+initialize-only transport with a new ACP child. It does not provide a production
+integration, attachment to a live tmux process, or rich answer/todo parity.
+The default `node scripts/cursor-acp-spike.mjs` prints help without launching a
+subprocess. To opt into the bounded transport probe:
+
+```bash
+node scripts/cursor-acp-spike.mjs --live --timeout-ms 10000
+```
 
 ## Session IDE (code-server PoC)
 
@@ -248,8 +342,8 @@ or drop a Chrome-for-Testing build at `~/.commando/chrome-for-testing/chrome`).
 The trust policy still applies: navigating a chromium tile to an unconfirmed
 external origin blanks the page and re-shows the confirm card.
 
-For agents, install the `show-in-commando` skill into the Claude Code and
-OpenCode skill directories with `scripts/install-show-in-commando-skill`
+For agents, install the `show-in-commando` skill into the Claude Code, Cursor and
+OpenCode skill directories with `scripts/install-show-in-commando-skill show-in-commando`
 (canonical copy: `skills/show-in-commando/SKILL.md`, safe to rerun after
 edits). It teaches agents in any project to open served pages beside their
 own pane and to fall back to sharing the URL when Commando is absent.
@@ -345,7 +439,7 @@ Email delivery, address verification, password-reset emails, invitations, and ad
 
 ## Push Notifications
 
-The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Completion and failure pushes come only from hook-reported lifecycle events (Claude Code, OpenCode, Codex bridges), never from heuristic status, so an idle prompt does not read as a finished turn. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.
+The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Completion and failure pushes come only from hook-reported lifecycle events (Claude Code, OpenCode, Codex and Cursor bridges), never from heuristic status, so an idle prompt does not read as a finished turn. Cursor supports completion/failure lifecycle pushes; cancelled turns are excluded, and rich needs-input/answer support is unavailable. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.
 
 All routes are owner-authenticated, take JSON bodies of at most 16 KiB, and live under `/api/push`:
 

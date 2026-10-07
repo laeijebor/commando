@@ -1,6 +1,12 @@
 import { execFile } from 'node:child_process'
+import { constants } from 'node:fs'
+import { access, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   defaultWorktreePath,
+  SESSION_AGENT_EXECUTABLES,
+  sessionAgentArgv,
+  type SessionAgentLaunch,
   type CreateTmuxPaneRequest,
   type CreateTmuxSessionRequest,
   type CreateTmuxWindowRequest,
@@ -30,6 +36,68 @@ const CREATE_FORMAT = [
   '#{pane_current_path}',
   '#{pane_start_path}',
 ].join(FIELD_SEPARATOR)
+
+type LaunchEnvironment = Readonly<Record<string, string | undefined>>
+export const AGENT_LAUNCH_ENV_KEYS = [
+  'HOME', 'SHELL', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR', 'XDG_CONFIG_HOME',
+  'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_PORT', 'COMMANDO_TOKEN',
+  'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH',
+] as const
+export type AgentExecutableResolver = (command: string, env: LaunchEnvironment) => Promise<string>
+
+/** Resolve only absolute PATH entries: never execute a binary supplied by the checkout. */
+export async function resolveAgentExecutable(command: string, env: LaunchEnvironment): Promise<string> {
+  for (const directory of (env.PATH ?? '').split(':').filter((path) => path.startsWith('/'))) {
+    const candidate = join(directory, command)
+    try {
+      await access(candidate, constants.X_OK)
+      if ((await stat(candidate)).isFile()) return candidate
+    } catch { /* Try the next PATH entry. */ }
+  }
+  throw new Error(`Cannot start ${command}: executable not found on the daemon PATH. Install the CLI on the daemon host.`)
+}
+
+function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
+  const { provider, prompt } = value as { provider?: unknown; prompt?: unknown }
+  if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
+    throw new Error('Unsupported session agent provider')
+  }
+  if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
+    throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
+  }
+  return { provider: provider as SessionAgentLaunch['provider'], ...(typeof prompt === 'string' ? { prompt } : {}) }
+}
+
+/** Arguments/environment are quoted data; preparation is the user-authored shell code. */
+export function agentLaunchShellCommand(prepareCommand?: string, env?: LaunchEnvironment): string {
+  return [
+    // tmux can supply stale global values and overrides SHELL while spawning.
+    // Set/unset only these names again immediately before preparation and exec.
+    ...(env ? AGENT_LAUNCH_ENV_KEYS.map((key) => env[key] === undefined ? `unset ${key}` : `export ${key}=${shellQuote(env[key]!)}`) : []),
+    ...(prepareCommand ? [
+      "printf '\\n[commando] Preparing worktree...\\n'",
+      '(', prepareCommand, ')',
+      'commando_prepare_status=$?',
+      'if [ "$commando_prepare_status" -ne 0 ]; then',
+      "  printf '[commando] Worktree preparation failed (exit %s); agent was not started.\\n' \"$commando_prepare_status\" >&2",
+      '  exec "${SHELL:-/bin/sh}" -l',
+      'fi',
+      "printf '[commando] Worktree preparation complete.\\n'",
+    ] : []),
+    'exec "$@"',
+  ].join('\n')
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/gu, "'\\''")}'`
+}
+
+/** One tmux shell-command argument also protects literal `;` from tmux's command parser. */
+export function agentLaunchPaneCommand(argv: readonly string[], prepareCommand?: string, env?: LaunchEnvironment): string {
+  return `exec ${['/bin/sh', '-c', agentLaunchShellCommand(prepareCommand, env), 'commando-agent', ...argv].map(shellQuote).join(' ')}`
+}
 
 export type TmuxCreateCommandRunner = (args: readonly string[]) => Promise<string>
 
@@ -221,14 +289,23 @@ export class TmuxCreator {
     private readonly run: TmuxCreateCommandRunner = runTmuxCreateCommand,
     private readonly socketArgs: readonly string[] = tmuxSocketArgsFromEnv(),
     private readonly worktrees?: TmuxWorktreeProvider,
+    private readonly resolveExecutable: AgentExecutableResolver = resolveAgentExecutable,
+    private readonly launchEnv: LaunchEnvironment = process.env,
   ) {}
 
   async createSession(input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
     const name = validatedName(input.name, 'session name', true)
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
+    const agent = validatedAgent(input.agent)
+    const agentArgv = agent ? sessionAgentArgv(agent) : undefined
+    if (agentArgv) agentArgv[0] = await this.resolveExecutable(agentArgv[0], this.launchEnv)
+    const acknowledgment = (created: TmuxCreatedTarget): Pick<TmuxCreateResponse, 'agentLaunch'> => agent
+      ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
+      : {}
     if (input.worktree === undefined) {
-      return { created: await this.newSession(name, windowName, cwd) }
+      const created = await this.newSession(name, windowName, cwd, undefined, agentArgv)
+      return { created, ...acknowledgment(created) }
     }
 
     if (!this.worktrees) throw new Error('Worktree creation is not available')
@@ -249,15 +326,14 @@ export class TmuxCreator {
       ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
     })
     try {
-      return {
-        created: await this.newSession(
-          name,
-          windowName,
-          worktree.path,
-          prepareCommand ? worktreePreparationShellCommand(prepareCommand) : undefined,
-        ),
-        worktree,
-      }
+      const created = await this.newSession(
+        name,
+        windowName,
+        worktree.path,
+        prepareCommand,
+        agentArgv,
+      )
+      return { created, worktree, ...acknowledgment(created) }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       if (await this.sessionExists(name)) {
@@ -286,7 +362,8 @@ export class TmuxCreator {
     name: string,
     windowName: string | undefined,
     cwd: string | undefined,
-    shellCommand?: string,
+    prepareCommand?: string,
+    agentArgv?: string[],
   ): Promise<TmuxCreatedTarget> {
     const args = [
       ...this.socketArgs,
@@ -300,7 +377,15 @@ export class TmuxCreator {
     ]
     if (windowName) args.push('-n', windowName)
     if (cwd) args.push('-c', cwd)
-    if (shellCommand) args.push(shellCommand)
+    if (agentArgv) {
+      // An existing tmux server can have older global environment values. Scope
+      // the daemon context to this session; TMUX_PANE remains assigned by tmux.
+      for (const key of AGENT_LAUNCH_ENV_KEYS) {
+        const value = this.launchEnv[key]
+        if (value !== undefined) args.push('-e', `${key}=${value}`)
+      }
+      args.push(agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
+    } else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     return parseCreatedTarget(await this.run(args), 'session')
   }
 

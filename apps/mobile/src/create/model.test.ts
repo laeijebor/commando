@@ -1,13 +1,12 @@
 import { SNAPSHOT } from '../testing/fixtures'
 import {
-  agentRunCommand,
+  AGENT_CHOICES,
+  DEFAULT_AGENT_CHOICE,
   baseLabel,
   buildSessionRequest,
   effectiveBranch,
-  flattenPrompt,
   previewWorktreePath,
   repoOptions,
-  shellQuote,
 } from './model'
 
 const REPO = {
@@ -66,23 +65,20 @@ describe('the create form model', () => {
     expect(request.worktree).toEqual({ branch: 'companion-app', path: '/Volumes/work/companion' })
   })
 
-  it('quotes the prompt so a shell cannot reinterpret it', () => {
-    expect(shellQuote("don't $HOME `whoami`")).toBe("'don'\\''t $HOME `whoami`'")
-    expect(agentRunCommand('claude', "Read Leo's spec"))
-      .toBe("claude 'Read Leo'\\''s spec'")
-    expect(agentRunCommand('codex', 'Fix the poll')).toBe("codex 'Fix the poll'")
+  it('keeps Claude as the mobile default and offers Cursor', () => {
+    expect(DEFAULT_AGENT_CHOICE).toBe('claude')
+    expect(AGENT_CHOICES).toContainEqual({ value: 'cursor', label: 'Cursor' })
   })
 
-  it('runs the bare command without a prompt, never runs anything for a shell, and never prompts opencode', () => {
-    expect(agentRunCommand('claude', '   ')).toBe('claude')
-    expect(agentRunCommand('shell', 'anything')).toBeNull()
-    expect(agentRunCommand('opencode', 'anything')).toBe('opencode')
-  })
-
-  it('flattens a multi-line prompt, which the daemon would otherwise reject', () => {
-    expect(flattenPrompt('Read the spec\n\nthen update the checklist'))
-      .toBe('Read the spec then update the checklist')
-    expect(agentRunCommand('claude', 'one\ntwo')).toBe("claude 'one two'")
+  it('sends an interactive agent launch with an intact multiline prompt', () => {
+    const prompt = "Read Leo's spec\nthen inspect $HOME `whoami`"
+    expect(buildSessionRequest({ ...FORM, agent: 'cursor', prompt }, REPO).agent)
+      .toEqual({ provider: 'cursor', prompt })
+    expect(buildSessionRequest({ ...FORM, agent: 'shell', prompt }, REPO).agent).toBeUndefined()
+    expect(buildSessionRequest({ ...FORM, agent: 'opencode', prompt }, REPO).agent)
+      .toEqual({ provider: 'opencode' })
+    expect(buildSessionRequest({ ...FORM, agent: 'claude', prompt: '   ' }, REPO).agent)
+      .toEqual({ provider: 'claude' })
   })
 
   it('offers the repositories the panes are in, then the remembered directories', () => {

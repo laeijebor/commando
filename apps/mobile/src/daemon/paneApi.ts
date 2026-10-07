@@ -6,7 +6,7 @@ import type {
   GitRepoInfo,
   TmuxCreateResponse,
 } from '@commando/tmux-create'
-import { TMUX_CREATE_ROUTES } from '@commando/tmux-create'
+import { TMUX_CREATE_ROUTES, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
 
 import type { PrDetail } from '../pane/prs'
 import { authHeaders, daemonFetch, DaemonHttpError } from '../hosts/api'
@@ -180,8 +180,8 @@ export function runInPane(host: Host, paneId: string, command: string): Promise<
   )
 }
 
-export function createTmuxSession(host: Host, input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
-  return post(host, TMUX_CREATE_ROUTES.session, input, 'Creating the session failed')
+export async function createTmuxSession(host: Host, input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
+  return requireSessionAgentLaunch(input, parseTmuxCreateResponse(await post(host, TMUX_CREATE_ROUTES.session, input, 'Creating the session failed')))
 }
 
 export function createTmuxWindow(host: Host, input: CreateTmuxWindowRequest): Promise<TmuxCreateResponse> {

@@ -26,6 +26,17 @@ function status(overrides: Partial<AgentStatus> = {}): AgentStatus {
 afterEach(cleanup)
 
 describe('AgentHudCard', () => {
+  it('shows Cursor identity and a cancelled recap without a Done label', () => {
+    const { container } = render(<AgentHudCard
+      status={status({ provider: 'cursor', status: 'failed', details: { recentActivities: [], checks: [], recap: { outcome: 'cancelled', summary: 'Stopped by user', completedAt: NOW } } })}
+      now={NOW} onSelect={vi.fn()} onDismiss={vi.fn()}
+    />)
+    expect(screen.getByText('CU')).toBeVisible()
+    expect(container.querySelector('.agent-avatar')).toHaveClass('provider-cursor')
+    expect(screen.getByRole('button', { name: /Open Cursor agent/ })).toHaveAttribute('aria-label', expect.stringContaining('Cancelled: Stopped by user'))
+    expect(screen.getByText('Cancelled')).toBeVisible()
+    expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
   it('prioritizes intent and current activity while limiting recent activity labels', () => {
     render(
       <AgentHudCard

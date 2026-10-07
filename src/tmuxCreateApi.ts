@@ -1,10 +1,11 @@
 import {
   TMUX_CREATE_ROUTES,
+  parseTmuxCreateResponse,
+  requireSessionAgentLaunch,
   type CreateTmuxPaneRequest,
   type CreateTmuxSessionRequest,
   type CreateTmuxWindowRequest,
   type TmuxCreatedTarget,
-  type TmuxCreatedWorktree,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
 
@@ -12,22 +13,6 @@ export type TmuxCreateApi = {
   createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   createWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   createPane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
-}
-
-function isCreatedTarget(value: unknown): value is TmuxCreatedTarget {
-  if (!value || typeof value !== 'object') return false
-  const target = value as Partial<TmuxCreatedTarget>
-  return (
-    (target.kind === 'session' || target.kind === 'window' || target.kind === 'pane') &&
-    typeof target.sessionId === 'string' &&
-    typeof target.sessionName === 'string' &&
-    typeof target.windowId === 'string' &&
-    Number.isSafeInteger(target.windowIndex) &&
-    typeof target.windowName === 'string' &&
-    typeof target.paneId === 'string' &&
-    Number.isSafeInteger(target.paneIndex) &&
-    typeof target.panePath === 'string'
-  )
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -51,12 +36,6 @@ async function responseError(response: Response): Promise<string> {
   return `tmux create request returned ${response.status}`
 }
 
-function isCreatedWorktree(value: unknown): value is TmuxCreatedWorktree {
-  if (!value || typeof value !== 'object') return false
-  const worktree = value as Partial<TmuxCreatedWorktree>
-  return typeof worktree.path === 'string' && typeof worktree.branch === 'string' && typeof worktree.base === 'string'
-}
-
 export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch): TmuxCreateApi {
   const post = async (route: string, input: object): Promise<TmuxCreateResponse> => {
     const response = await fetcher(route, {
@@ -70,15 +49,11 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
       body: JSON.stringify(input),
     })
     if (!response.ok) throw new Error(await responseError(response))
-    const body = (await response.json()) as Partial<TmuxCreateResponse>
-    if (!isCreatedTarget(body.created)) {
-      throw new Error('tmux create response did not match the protocol')
-    }
-    return { created: body.created, ...(isCreatedWorktree(body.worktree) ? { worktree: body.worktree } : {}) }
+    return parseTmuxCreateResponse(await response.json())
   }
 
   return {
-    createSession: (input) => post(TMUX_CREATE_ROUTES.session, input),
+    createSession: async (input) => requireSessionAgentLaunch(input, await post(TMUX_CREATE_ROUTES.session, input)),
     createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
     createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
   }

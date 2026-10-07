@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
+import type { CreateTmuxSessionRequest, GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
 import {
   TMUX_CWD_HISTORY_STORAGE_KEY,
   TmuxCreateControls,
@@ -36,6 +36,133 @@ afterEach(() => {
 })
 
 describe('TmuxCreateControls', () => {
+  it.each(['inline', 'dialog'] as const)('retains old-host partial creation in the %s form and opens it without a duplicate create', async (variant) => {
+    const onCreateSession = vi.fn(async () => ({ created }))
+    const onCreated = vi.fn()
+    render(<TmuxCreateControls variant={variant} onCreateSession={onCreateSession} onCreated={onCreated} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('daemon did not confirm the requested Cursor interactive launch')
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeDisabled()
+    fireEvent.submit(screen.getByRole('button', { name: 'Create session' }).closest('form')!)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Open created session %3' }))
+    expect(onCreated).toHaveBeenCalledWith(created, 'ungrouped', undefined)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('opens an old-host target once and creates a second Shell session in the same mounted inline form', async () => {
+    const nextCreated = { ...created, sessionId: '$4', sessionName: 'next', paneId: '%5' }
+    const onCreateSession = vi.fn().mockResolvedValueOnce({ created }).mockResolvedValueOnce({ created: nextCreated })
+    let resolveOpen!: () => void
+    const onCreated = vi.fn().mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve }))
+    render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText(/Initial window name/), { target: { value: 'first-window' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'first prompt' } })
+    const form = screen.getByRole('button', { name: 'Create session' }).closest('form')!
+    fireEvent.submit(form)
+    expect(await screen.findByRole('alert')).toHaveTextContent('daemon did not confirm the requested Cursor interactive launch')
+    fireEvent.submit(form)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+
+    const openButton = screen.getByRole('button', { name: 'Open created session %3' })
+    fireEvent.click(openButton)
+    fireEvent.click(openButton)
+    fireEvent.submit(form)
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith(created, 'ungrouped', undefined)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    expect(openButton).toBeDisabled()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByLabelText('Session name')).toHaveValue('work')
+
+    await act(async () => resolveOpen())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open created session %3' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Create session' }).closest('form')).toBe(form)
+    expect(screen.getByLabelText('Session name')).toHaveValue('')
+    expect(screen.getByLabelText(/Initial window name/)).toHaveValue('')
+    expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+    expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
+
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'shell' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreated).toHaveBeenLastCalledWith(nextCreated, 'ungrouped', undefined))
+    expect(onCreateSession).toHaveBeenCalledTimes(2)
+    expect(onCreateSession).toHaveBeenNthCalledWith(2, { name: 'next', windowName: '', cwd: '' })
+    expect(onCreated).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('status')).toHaveTextContent('Created session %5 in next')
+  })
+
+  it('retains the partial target and creation guard when opening fails, then resets only after a successful retry', async () => {
+    const onCreateSession = vi.fn(async () => ({ created }))
+    const onCreated = vi.fn().mockRejectedValueOnce(new Error('Unable to open session')).mockResolvedValueOnce(undefined)
+    render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    const form = screen.getByRole('button', { name: 'Create session' }).closest('form')!
+    fireEvent.submit(form)
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Open created session %3' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Unable to open session'))
+    expect(screen.getByLabelText('Session name')).toHaveValue('work')
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeDisabled()
+    fireEvent.submit(form)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Open created session %3' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled()
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    expect(onCreated).toHaveBeenCalledTimes(2)
+  })
+
+  it('allows the dialog parent to close immediately when the preserved target is opened', async () => {
+    const onCreateSession = vi.fn(async () => ({ created }))
+    const onCreated = vi.fn((): void => view.unmount())
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} onCreated={onCreated} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await screen.findByRole('alert')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Open created session %3' })))
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith(created, 'ungrouped', undefined)
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    expect(view.container).toBeEmptyDOMElement()
+  })
+  it.each(['inline', 'dialog'] as const)('creates Cursor interactively in the %s form while preserving Shell as the default', async (variant) => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
+    render(<TmuxCreateControls variant={variant} onCreateSession={onCreateSession} />)
+    expect(screen.getByLabelText('Start with')).toHaveValue('shell')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    const prompt = "Read Leo's spec\nInspect $HOME `whoami`"
+    fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: prompt } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({ name: 'work', windowName: '', cwd: '', agent: { provider: 'cursor', prompt } }))
+    expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
+    expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+  })
+
+  it('omits a retained opening prompt when switching to OpenCode or Shell', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
+    render(<TmuxCreateControls onCreateSession={onCreateSession} />)
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'Read' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'opencode' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'opencode' } })))
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'shell' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith({ name: 'work', windowName: '', cwd: '' }))
+  })
   it('submits session fields and exposes pending and success states', async () => {
     let resolveCreate: ((value: TmuxCreateResponse) => void) | undefined
     const onCreateSession = vi.fn(
@@ -206,7 +333,7 @@ describe('TmuxCreateControls', () => {
     const directory = screen.getByRole('combobox', { name: /Working directory/ })
     expect(directory).toHaveValue('/Users/dev/gizmo')
     fireEvent.focus(directory)
-    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+    expect(within(screen.getByRole('listbox', { name: 'Suggested working directories' })).getAllByRole('option').map((option) => option.textContent)).toEqual([
       '/Users/dev/gizmo',
       '/Users/dev/shared',
       '/Users/dev/recent',

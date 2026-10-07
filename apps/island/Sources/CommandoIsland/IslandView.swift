@@ -180,10 +180,10 @@ private struct CompactUsage: View {
         HStack(spacing: 6) {
             ForEach(usage) { provider in
                 if let window = provider.windows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
-                    Text("\(provider.provider == .claude ? "CL" : "CX") \(window.label) \(Int(window.remainingPercent.rounded()))%")
+                    Text("\(provider.provider.initials) \(window.label) \(Int(window.remainingPercent.rounded()))%")
                         .foregroundStyle(usageColor(window.remainingPercent))
                 } else {
-                    Text("\(provider.provider == .claude ? "CL" : "CX") --")
+                    Text("\(provider.provider.initials) --")
                         .foregroundStyle(.white.opacity(0.3))
                 }
             }
@@ -281,8 +281,8 @@ private struct UsageStrip: View {
             HStack(spacing: 8) {
                 ForEach(usage) { provider in
                     HStack(spacing: 5) {
-                        Text(provider.provider == .claude ? "CL" : "CX")
-                            .foregroundStyle(provider.provider == .claude ? .orange : .cyan)
+                        Text(provider.provider.initials)
+                            .foregroundStyle(providerUsageColor(provider.provider))
                         if provider.windows.isEmpty {
                             Text("--")
                                 .foregroundStyle(.white.opacity(0.3))
@@ -742,7 +742,7 @@ private struct StatusGlyph: View {
         ZStack {
             RoundedRectangle(cornerRadius: large ? 11 : 7, style: .continuous)
                 .fill(statusColor(status).opacity(0.14))
-            Image(systemName: providerSymbol(provider))
+            Image(systemName: provider.symbolName)
                 .font(.system(size: large ? 16 : 10, weight: .bold))
                 .foregroundStyle(statusColor(status))
         }
@@ -753,15 +753,6 @@ private struct StatusGlyph: View {
                 .frame(width: large ? 8 : 6, height: large ? 8 : 6)
                 .overlay(Circle().stroke(Color.black, lineWidth: 2))
         }
-    }
-}
-
-private func providerSymbol(_ provider: AgentProvider) -> String {
-    switch provider {
-    case .claude: "sparkles"
-    case .codex: "chevron.left.forwardslash.chevron.right"
-    case .opencode: "terminal.fill"
-    case .unknown: "circle.dotted"
     }
 }
 
@@ -800,4 +791,14 @@ private func sessionLocation(_ session: CompanionSession) -> String? {
     guard let windowName = session.windowName else { return nil }
     if let paneIndex = session.paneIndex { return "\(windowName) / pane \(paneIndex)" }
     return windowName
+}
+
+private func providerUsageColor(_ provider: AgentProvider) -> Color {
+    switch provider {
+    case .claude: .orange
+    case .codex: .cyan
+    case .opencode: .mint
+    case .cursor: .primary
+    case .unknown: .secondary
+    }
 }

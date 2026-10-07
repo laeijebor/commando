@@ -2,6 +2,29 @@ import Foundation
 import Testing
 @testable import CommandoIsland
 
+@Test func preservesMixedProviderSnapshotsIncludingCursorAndFutureProviders() throws {
+    let original = pendingRequestSnapshot().sessions[0]
+    let encoded = try JSONEncoder().encode(original)
+    var session = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    var sessions: [[String: Any]] = []
+    for provider in ["claude", "codex", "opencode", "cursor", "future-agent"] {
+        session["provider"] = provider
+        session["id"] = provider
+        sessions.append(session)
+    }
+    let data = try JSONSerialization.data(withJSONObject: [
+        "type": "companion_snapshot",
+        "snapshot": ["revision": 1, "capturedAt": 1, "sessions": sessions, "usage": []],
+    ])
+    let snapshot = try #require(JSONDecoder().decode(CompanionEnvelope.self, from: data).snapshot)
+    #expect(snapshot.sessions.map(\.provider) == [.claude, .codex, .opencode, .cursor, .unknown])
+    #expect(snapshot.sessions[3].provider.displayName == "Cursor")
+    #expect(snapshot.sessions[3].provider.initials == "CU")
+    #expect(snapshot.sessions[3].provider.symbolName == "cursorarrow")
+    #expect(snapshot.sessions[4].provider.displayName == "Agent")
+    #expect(String(data: try JSONEncoder().encode(AgentProvider.cursor), encoding: .utf8) == "\"cursor\"")
+}
+
 @Test func decodesCompanionSnapshotWithOriginNamesAndUsage() throws {
     let payload = #"""
     {

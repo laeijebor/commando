@@ -1,3 +1,4 @@
+import { association } from './cursor-hook-test-fixtures.js'
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, AgentStatusKind } from '../shared/protocol.js'
 import { AgentStatusRegistry, PANE_EVICTION_GRACE_MS } from './agent-status-registry.js'
@@ -1372,5 +1373,324 @@ describe('AgentStatusRegistry', () => {
     expect(registry.retainPaneIds(new Set(), 2 * PANE_EVICTION_GRACE_MS)).toEqual([])
     expect(registry.retainPaneIds(new Set(), 2 * PANE_EVICTION_GRACE_MS + 2))
       .toEqual([{ type: 'remove', paneId: '%1' }])
+  })
+})
+
+describe('Cursor native lifecycle ownership', () => {
+  const event = (name: string, patch: Record<string, unknown> = {}) => ({
+    hook_event_name: name, conversation_id: 'cursor-conversation', generation_id: 'generation-1', ...patch,
+  })
+  it('resets each turn and records parent tool/check/file activity and a daemon-held response candidate', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('sessionStart'), 1, 'node')
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { prompt: 'Fix tests' }), 2, 'node')
+    registry.applyCursorHook('%1', event('preToolUse', { tool_name: 'Shell', tool_use_id: 't1', tool_input: { command: 'npm test' } }), 3, 'node')
+    expect(registry.get('%1')?.details).toMatchObject({ intent: 'Fix tests', currentActivity: { label: 'Run command' }, checks: [{ status: 'running' }] })
+    registry.applyCursorHook('%1', event('postToolUse', { tool_name: 'Shell', tool_use_id: 't1', tool_input: { command: 'npm test' }, tool_output: '{"exitCode":0}' }), 4, 'node')
+    registry.applyCursorHook('%1', event('afterFileEdit', { file_path: 'server/test.ts', edits: [{ old_string: 'secret' }] }), 5, 'node')
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: '🟢 Fixed tests\nprivate response body' }), 6, 'node')
+    expect(registry.get('%1')?.details?.recap).toBeUndefined()
+    registry.applyCursorHook('%1', event('stop', { status: 'completed' }), 7, 'node')
+    expect(registry.get('%1')).toMatchObject({ provider: 'cursor', source: 'hook', status: 'done', agentSessionId: 'cursor-conversation', details: {
+      recap: { outcome: 'done', summary: 'Fixed tests', completedAt: 7 }, checks: [{ status: 'passed' }], changes: { fileCount: 1 },
+    } })
+    expect(JSON.stringify(registry.get('%1'))).not.toMatch(/private response|secret/)
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2', prompt: 'Next task' }), 8, 'node')
+    expect(registry.get('%1')?.details).toEqual({ intent: 'Next task', recentActivities: [], checks: [] })
+  })
+  it.each(['completed', 'error', 'aborted'])('handles %s stop truthfully, once, and retains recap through sessionEnd/shell inference', (status) => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'agent')
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: '🟢 Claimed success' }), 2, 'agent')
+    registry.applyCursorHook('%1', event('stop', { status }), 3, 'agent')
+    const expected = status === 'completed' ? 'done' : status === 'error' ? 'failed' : 'cancelled'
+    expect(registry.get('%1')?.details?.recap?.outcome).toBe(expected)
+    if (status === 'aborted') expect(registry.get('%1')).toMatchObject({ status: 'unknown', summary: 'Cursor turn cancelled' })
+    expect(registry.applyCursorHook('%1', event('stop', { status }), 4, 'agent')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('preToolUse', { tool_name: 'Read' }), 5, 'agent')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('sessionEnd'), 6, 'agent')).toBeNull()
+    expect(registry.removeIfProcessChanged('%1', 'zsh')).toBeNull()
+    expect(registry.get('%1')?.details?.recap?.outcome).toBe(expected)
+  })
+  it('clears response candidates on more work and never confuses child stop/response with parent completion', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'node')
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: 'Intermediate message' }), 2, 'node')
+    registry.applyCursorHook('%1', event('preToolUse', { tool_name: 'Read', tool_use_id: 'read' }), 3, 'node')
+    registry.applyCursorHook('%1', event('subagentStart', { conversation_id: 'child-conversation', parent_conversation_id: 'cursor-conversation', subagent_id: 'child' }), 4, 'node')
+    expect(registry.applyCursorHook('%1', event('stop', { conversation_id: 'child-conversation', parent_conversation_id: 'cursor-conversation', status: 'completed' }), 5, 'node')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('afterAgentResponse', { conversation_id: 'child-conversation', parent_conversation_id: 'cursor-conversation', text: 'Child final' }), 6, 'node')).toBeNull()
+    registry.applyCursorHook('%1', event('subagentStop', { conversation_id: 'child-conversation', parent_conversation_id: 'cursor-conversation', subagent_id: 'child', status: 'completed' }), 7, 'node')
+    expect(registry.get('%1')).toMatchObject({ status: 'working', details: { currentActivity: { label: 'Read file' } } })
+    registry.applyCursorHook('%1', event('stop', { status: 'completed' }), 8, 'node')
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+  })
+  it('rejects late generations, sessions and reset callbacks, while isolating panes', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'node')
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: 'Old result' }), 2, 'node')
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2' }), 3, 'node')
+    for (const name of ['beforeSubmitPrompt', 'afterAgentResponse', 'stop']) expect(registry.applyCursorHook('%1', event(name, { status: 'completed', text: 'Old result' }), 4, 'node')).toBeNull()
+    registry.applyCursorHook('%2', event('beforeSubmitPrompt'), 5, 'node')
+    registry.applyCursorHook('%2', event('afterAgentResponse', { text: 'Other pane' }), 6, 'node')
+    registry.applyCursorHook('%1', event('stop', { generation_id: 'generation-2', status: 'completed' }), 7, 'node')
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+    registry.applyCursorHook('%1', event('sessionStart', { conversation_id: 'new-conversation' }), 8, 'node')
+    expect(registry.applyCursorHook('%1', event('sessionStart'), 9, 'node')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2' }), 10, 'node')).toBeNull()
+    expect(registry.get('%2')?.status).toBe('working')
+  })
+  it('never resumes a completed parent with a child callback or invents tasks/interactions', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { tasks: [{ content: 'fabricated' }], request: { id: 'q', kind: 'question' } }), 1, 'node')
+    registry.applyCursorHook('%1', event('stop', { status: 'completed' }), 2, 'node')
+    expect(registry.applyCursorHook('%1', event('subagentStop', { subagent_id: 'child', status: 'error' }), 3, 'node')).toBeNull()
+    expect(registry.get('%1')?.details?.tasks).toBeUndefined()
+    expect(registry.get('%1')?.details?.requests).toBeUndefined()
+  })
+  it('rejects verified native markers but preserves Claude with a matching session on an ambiguous runtime', () => {
+    const registry = new AgentStatusRegistry()
+    const claude = { hook_event_name: 'Stop', session_id: 'cursor-conversation', finalMessage: 'Wrong success' }
+    expect(registry.applyClaudeHook('%1', claude, 1, 'cursor-agent')).toBeNull()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 2, 'node')
+    expect(registry.applyClaudeHook('%1', { ...claude, cursor_version: '1', conversation_id: claude.session_id }, 3, 'node')).toBeNull()
+    expect(registry.applyClaudeHook('%1', claude, 4, 'node')?.type).toBe('upsert')
+    expect(registry.get('%1')?.provider).toBe('claude')
+    registry.applyClaudeHook('%2', { ...claude, session_id: 'real-claude' }, 4, 'claude')
+    expect(registry.get('%2')?.provider).toBe('claude')
+  })
+})
+
+describe('Cursor first prompt, cleanup, and companion process evidence', () => {
+  const event = (name: string, patch: Record<string, unknown> = {}) => ({
+    hook_event_name: name, conversation_id: 'conv-abcdefgh', generation_id: 'generation-1', ...patch,
+  })
+  it('accepts the first same-generation prompt once, preserving late/duplicate isolation', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('sessionStart'), 1, 'node')
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { prompt: 'First intent' }), 2, 'node')
+    expect(registry.get('%1')).toMatchObject({ status: 'working', details: { intent: 'First intent' } })
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt', { prompt: 'Duplicate' }), 3, 'node')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('sessionStart'), 4, 'node')).toBeNull()
+    expect(registry.get('%1')?.details?.intent).toBe('First intent')
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2', prompt: 'Second intent' }), 5, 'node')
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt', { prompt: 'Late first' }), 6, 'node')).toBeNull()
+    expect(registry.get('%1')?.details?.intent).toBe('Second intent')
+  })
+  it('clears unfinished-session candidates and rejects late callbacks after sessionEnd', () => {
+    const registry = new AgentStatusRegistry()
+    const replacement = { ...association, producerPid: 120, producerStarted: 'Tue Oct 6 12:01:01 2026' }
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'node', association)
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: 'Never complete this response' }), 2, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionEnd'), 3, 'node')).toEqual({ type: 'remove', paneId: '%1' })
+    expect(registry.hasCursorHookProcess('%1', 'node')).toBe(false)
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 4, 'node')).toBeNull()
+    expect(registry.applyCursorHook('%1', event('sessionStart'), 4, 'node')).toBeNull()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2' }), 5, 'node', replacement)
+    registry.applyCursorHook('%1', event('stop', { generation_id: 'generation-2', status: 'completed' }), 6, 'node', replacement)
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+  })
+
+  it.each(['agent', 'node', '/usr/bin/node', 'bun', 'deno'])('supports ambiguous %s only with matching native-hook process evidence', (command) => {
+    const registry = new AgentStatusRegistry()
+    expect(registry.hasCursorHookProcess('%1', command)).toBe(false)
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, command, association)
+    expect(registry.hasCursorHookProcess('%1', command)).toBe(true)
+    expect(registry.hasCursorHookProcess('%2', command)).toBe(false)
+    expect(registry.hasCursorHookProcess('%1', 'zsh')).toBe(false)
+    expect(registry.hasCursorHookProcess('%1', 'python')).toBe(false)
+    registry.applyCursorHook('%1', event('stop', { status: 'completed' }), 2, command, association)
+    expect(registry.hasCursorHookProcess('%1', command)).toBe(true)
+    registry.applyCursorHook('%1', event('sessionEnd'), 3, command)
+    expect(registry.hasCursorHookProcess('%1', command)).toBe(false)
+  })
+  it('rejects unrelated foreground programs even with a Cursor record', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'zsh')
+    expect(registry.hasCursorHookProcess('%1', 'zsh')).toBe(false)
+    expect(registry.hasCursorHookProcess('%1', 'node')).toBe(false)
+  })
+  it('retires process-owned evidence and response candidates when the foreground process changes', () => {
+    const registry = new AgentStatusRegistry()
+    const replacement = { ...association, producerPid: 120, producerStarted: 'Tue Oct 6 12:01:01 2026' }
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'node', association)
+    registry.applyCursorHook('%1', event('afterAgentResponse', { text: 'Old process response' }), 2, 'node', association)
+    registry.removeIfProcessChanged('%1', 'zsh')
+    expect(registry.hasCursorHookProcess('%1', 'node')).toBe(false)
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 3, 'node')).toBeNull()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', { generation_id: 'generation-2' }), 4, 'node', replacement)
+    registry.applyCursorHook('%1', event('stop', { generation_id: 'generation-2', status: 'completed' }), 5, 'node', replacement)
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+    registry.removeIfProcessChanged('%1', 'zsh')
+    expect(registry.hasCursorHookProcess('%1', 'node')).toBe(false)
+  })
+
+  it('cleans pane tombstones when explicitly removed', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 1, 'node')
+    registry.applyCursorHook('%1', event('sessionEnd'), 2, 'node')
+    registry.remove('%1')
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt'), 3, 'node')?.type).toBe('upsert')
+  })
+})
+
+it.each(['postToolUse', 'postToolUseFailure', 'afterFileEdit'])('invalidates an intermediate Cursor response on later parent %s work', (name) => {
+  const registry = new AgentStatusRegistry()
+  const base = { conversation_id: 'conv-abcdefgh', generation_id: 'gen-1' }
+  registry.applyCursorHook('%1', { ...base, hook_event_name: 'beforeSubmitPrompt' }, 1, 'node')
+  registry.applyCursorHook('%1', { ...base, hook_event_name: 'afterAgentResponse', text: 'Intermediate response' }, 2, 'node')
+  registry.applyCursorHook('%1', { ...base, hook_event_name: name, tool_name: 'Read', file_path: 'test.ts' }, 3, 'node')
+  registry.applyCursorHook('%1', { ...base, hook_event_name: 'stop', status: 'completed' }, 4, 'node')
+  expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+})
+
+describe('verified Cursor producer lifecycle ordering', () => {
+  const event = (name: string, emittedAt: string, patch: Record<string, unknown> = {}) => ({
+    hook_event_name: name, conversation_id: 'conversation-A',
+    generation_id: name === 'sessionStart' || name === 'sessionEnd' ? 'conversation-A' : 'turn-A', emittedAt, ...patch,
+  })
+  it('accepts realistic lifecycle IDs and enriches prompt-first starts without resetting working intent', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '20', { prompt: 'First intent' }), 1, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionStart', '10'), 2, 'node', association)).toBeNull()
+    expect(registry.acceptsCursorContext('%1', 'conversation-A', association)).toBe(true)
+    expect(registry.get('%1')).toMatchObject({ status: 'working', details: { intent: 'First intent' } })
+    expect(registry.applyCursorHook('%1', event('sessionStart', '15', { conversation_id: 'unseen-delayed', generation_id: 'unseen-delayed' }), 3, 'node', association)).toBeNull()
+    expect(registry.acceptsCursorContext('%1', 'unseen-delayed', association)).toBe(false)
+    registry.applyCursorHook('%1', event('stop', '30', { status: 'completed' }), 4, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionEnd', '40'), 5, 'node', association)).toBeNull()
+    expect(registry.cursorAssociation('%1')).toBeNull()
+    expect(registry.get('%1')?.details?.recap?.outcome).toBe('done')
+  })
+  it('ends an active conversation using conversation-scoped sessionEnd generation', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('sessionStart', '10'), 1, 'node', association)
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '20'), 2, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionEnd', '30'), 3, 'node', association)?.type).toBe('remove')
+    expect(registry.get('%1')).toBeUndefined()
+    expect(registry.cursorAssociation('%1')).toBeNull()
+  })
+  it('rejects unseen older-generation prompts and late unseen conversations by emission ordering', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '20', { generation_id: 'new-turn', prompt: 'New work' }), 1, 'node', association)
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt', '10', { generation_id: 'old-unseen-turn', prompt: 'Old work' }), 2, 'node', association)).toBeNull()
+    expect(registry.applyCursorHook('%1', event('beforeSubmitPrompt', '11', { conversation_id: 'old-unseen-conversation', generation_id: 'old-turn' }), 3, 'node', association)).toBeNull()
+    registry.applyCursorHook('%1', event('stop', '30', { generation_id: 'new-turn', status: 'completed' }), 4, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionStart', '12', { conversation_id: 'old-start' }), 5, 'node', association)).toBeNull()
+    expect(registry.get('%1')?.details?.intent).toBe('New work')
+  })
+  it('starts a new producer incarnation without inheriting candidates or tombstones', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '20'), 1, 'node', association)
+    registry.applyCursorHook('%1', event('afterAgentResponse', '30', { text: 'Old candidate' }), 2, 'node', association)
+    const replacement = { ...association, producerStarted: 'Tue Oct 6 12:01:01 2026', paneStarted: 'Tue Oct 6 12:01:01 2026' }
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '40', { prompt: 'Replacement' }), 3, 'node', replacement)
+    expect(registry.acceptsCursorContext('%1', 'conversation-A', association)).toBe(false)
+    registry.applyCursorHook('%1', event('stop', '50', { status: 'completed' }), 4, 'node', replacement)
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor completed the turn')
+  })
+  it('does not grant ownership from command equality without verified native association', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', '10'), 1, 'node')
+    expect(registry.hasCursorHookProcess('%1', 'node')).toBe(false)
+    expect(registry.cursorAssociation('%1')).toBeNull()
+  })
+})
+
+it('retires verified producer candidates when live ownership fails, without invalidating a newer producer', () => {
+  const registry = new AgentStatusRegistry()
+  const base = { conversation_id: 'conv-abcdefgh', generation_id: 'turn-1', emittedAt: '10' }
+  registry.applyCursorHook('%1', { ...base, hook_event_name: 'beforeSubmitPrompt' }, 1, 'node', association)
+  registry.applyCursorHook('%1', { ...base, emittedAt: '11', hook_event_name: 'afterAgentResponse', text: 'Old result' }, 2, 'node', association)
+  const other = { ...association, producerPid: 120 }
+  expect(registry.invalidateCursorAssociation('%1', other)).toBeNull()
+  expect(registry.get('%1')?.status).toBe('working')
+  expect(registry.invalidateCursorAssociation('%1', association)?.type).toBe('remove')
+  expect(registry.cursorAssociation('%1')).toBeNull()
+  expect(registry.applyCursorHook('%1', { ...base, emittedAt: '12', hook_event_name: 'sessionStart', generation_id: base.conversation_id }, 3, 'node', association)).toBeNull()
+  expect(registry.applyCursorHook('%1', { ...base, emittedAt: '13', hook_event_name: 'beforeSubmitPrompt', generation_id: 'unseen-late-turn' }, 4, 'node', association)).toBeNull()
+})
+it('allows a verified new incarnation to resume a retired conversation after the old record was removed', () => {
+  const registry = new AgentStatusRegistry()
+  const base = { conversation_id: 'conv-abcdefgh', generation_id: 'turn-1', emittedAt: '10' }
+  registry.applyCursorHook('%1', { ...base, hook_event_name: 'beforeSubmitPrompt' }, 1, 'node', association)
+  registry.invalidateCursorAssociation('%1', association)
+  const replacement = { ...association, producerPid: 120, producerStarted: 'Tue Oct 6 12:01:01 2026' }
+  expect(registry.applyCursorHook('%1', { ...base, emittedAt: '20', hook_event_name: 'beforeSubmitPrompt', prompt: 'Resumed' }, 2, 'node', replacement)?.type).toBe('upsert')
+  registry.applyCursorHook('%1', { ...base, emittedAt: '21', hook_event_name: 'stop', status: 'completed' }, 3, 'node', replacement)
+  expect(registry.get('%1')?.details?.recap?.outcome).toBe('done')
+})
+
+describe('observed Cursor stop/response ordering', () => {
+  const event = (name: string, emitted: number, patch: Record<string, unknown> = {}) => ({
+    hook_event_name: name, conversation_id: 'observed-conversation',
+    generation_id: name === 'sessionStart' || name === 'sessionEnd' ? 'observed-conversation' : 'observed-turn',
+    emittedAt: String(emitted), ...patch,
+  })
+  it.each(['stop-first', 'response-first'])('retains the explicit final recap and original completion time: %s', (ordering) => {
+    const registry = new AgentStatusRegistry()
+    const apply = (name: string, emitted: number, at: number, patch: Record<string, unknown> = {}) => registry.applyCursorHook('%1', event(name, emitted, patch), at, 'node', association)
+    apply('sessionStart', 1, 1)
+    apply('beforeSubmitPrompt', 2, 2)
+    apply('preToolUse', 3, 3, { tool_name: 'Read', tool_use_id: 'opaque/tool 读#one' })
+    apply('postToolUse', 4, 4, { tool_name: 'Read', tool_use_id: 'opaque/tool 读#one' })
+    if (ordering === 'response-first') apply('afterAgentResponse', 5, 999, { text: 'Narrative\n🟢 Cursor native acceptance complete' })
+    apply('stop', 6, 1000, { status: 'completed' })
+    if (ordering === 'stop-first') expect(apply('afterAgentResponse', 7, 1006, { text: 'Narrative\n🟢 Cursor native acceptance complete' })?.type).toBe('upsert')
+    expect(registry.get('%1')).toMatchObject({ status: 'done', details: { recap: { outcome: 'done', summary: 'Cursor native acceptance complete', completedAt: 1000 } } })
+    expect(apply('afterAgentResponse', 8, 1007, { text: 'Narrative\n🟢 Cursor native acceptance complete' })).toBeNull()
+    apply('sessionEnd', 9, 1008)
+    expect(apply('afterAgentResponse', 10, 1009, { text: '🟢 Too late' })).toBeNull()
+    expect(registry.get('%1')?.details?.recap?.summary).toBe('Cursor native acceptance complete')
+  })
+  it('reconciles a late blocked marker without returning to working or changing completion time', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 1), 1, 'node', association)
+    registry.applyCursorHook('%1', event('stop', 2, { status: 'completed' }), 20, 'node', association)
+    registry.applyCursorHook('%1', event('afterAgentResponse', 3, { text: '🔴 Need approval password=fixture-private' }), 26, 'node', association)
+    expect(registry.get('%1')).toMatchObject({ status: 'needs_input', details: { recap: { outcome: 'blocked', summary: 'Need approval password=[REDACTED]', completedAt: 20 } } })
+  })
+  it.each(['error', 'aborted'])('does not promote a late response after %s stop', (status) => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 1), 1, 'node', association)
+    registry.applyCursorHook('%1', event('stop', 2, { status }), 20, 'node', association)
+    const stopped = registry.get('%1')
+    expect(registry.applyCursorHook('%1', event('afterAgentResponse', 3, { text: '🟢 Never promote' }), 26, 'node', association)).toBeNull()
+    expect(registry.get('%1')).toEqual(stopped)
+  })
+  it('rejects child, old-generation, wrong-producer and unverified late responses', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 1), 1, 'node', association)
+    registry.applyCursorHook('%1', event('stop', 2, { status: 'completed' }), 20, 'node', association)
+    for (const patch of [{ generation_id: 'other-turn' }, { subagent_id: 'child' }, { conversation_id: 'child', parent_conversation_id: 'observed-conversation' }]) {
+      expect(registry.applyCursorHook('%1', event('afterAgentResponse', 3, { text: '🟢 Wrong', ...patch }), 26, 'node', association)).toBeNull()
+    }
+    expect(registry.applyCursorHook('%1', event('afterAgentResponse', 3, { text: '🟢 Wrong producer' }), 26, 'node', { ...association, producerPid: 120 })).toBeNull()
+    expect(registry.applyCursorHook('%1', event('afterAgentResponse', 3, { text: '🟢 Unverified' }), 26, 'node')).toBeNull()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 4, { generation_id: 'new-turn' }), 30, 'node', association)
+    expect(registry.applyCursorHook('%1', event('afterAgentResponse', 5, { text: '🟢 Retired turn' }), 31, 'node', association)).toBeNull()
+    expect(registry.get('%1')?.status).toBe('working')
+  })
+  it('allows a different verified producer PID/birth to start after a working predecessor', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 20, { prompt: 'Producer A intent' }), 1, 'node', association)
+    expect(registry.applyCursorHook('%1', event('sessionStart', 10, { conversation_id: 'unseen-A' }), 2, 'node', association)).toBeNull()
+    const replacement = { ...association, producerPid: 120, producerStarted: 'Tue Oct 6 12:01:01 2026' }
+    expect(registry.applyCursorHook('%1', event('sessionStart', 30, { conversation_id: 'producer-B', generation_id: 'producer-B' }), 3, 'node', replacement)?.type).toBe('upsert')
+    expect(registry.acceptsCursorContext('%1', 'producer-B', replacement)).toBe(true)
+    expect(registry.acceptsCursorContext('%1', 'observed-conversation', association)).toBe(false)
+    expect(registry.get('%1')).toMatchObject({ status: 'unknown', agentSessionId: 'producer-B' })
+    expect(registry.get('%1')?.details?.intent).toBeUndefined()
+  })
+  it('correlates overlapping Read calls using opaque IDs without forwarding them', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCursorHook('%1', event('beforeSubmitPrompt', 1), 1, 'node', association)
+    registry.applyCursorHook('%1', event('preToolUse', 2, { tool_name: 'Read', tool_use_id: 'opaque/one +=' }), 2, 'node', association)
+    registry.applyCursorHook('%1', event('preToolUse', 3, { tool_name: 'Read', tool_use_id: 'opaque/two 读' }), 3, 'node', association)
+    registry.applyCursorHook('%1', event('postToolUse', 4, { tool_name: 'Read', tool_use_id: 'opaque/one +=' }), 4, 'node', association)
+    expect(registry.get('%1')?.details?.currentActivity?.label).toBe('Read file')
+    registry.applyCursorHook('%1', event('postToolUse', 5, { tool_name: 'Read', tool_use_id: 'opaque/two 读' }), 5, 'node', association)
+    expect(registry.get('%1')?.details?.currentActivity).toBeUndefined()
+    expect(JSON.stringify(registry.get('%1'))).not.toContain('opaque/')
   })
 })

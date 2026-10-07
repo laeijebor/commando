@@ -40,11 +40,23 @@ function providerIn(value: string): Exclude<AgentProvider, 'unknown'> | null {
   return null
 }
 
+// Bare `agent` is shared by unrelated programs. Only Cursor-specific paths/titles
+// identify it; native hooks remain authoritative for generic node/agent processes.
+function cursorCommand(value: string): boolean {
+  return /(?:^|[\s/])cursor-agent(?:$|[\s/])/i.test(value) ||
+    /(?:^|\s)\S*[/\\]cursor-agent[/\\](?:versions[/\\][^\s]+[/\\])?(?:index\.js|agent)(?:$|\s)/i.test(value)
+}
+
+function cursorTitle(value: string): boolean {
+  return /^\s*Cursor (?:Agent|CLI)(?:\s|$|[·:—-])/i.test(value)
+}
+
 export function inferAgentProvider(
   command: string,
   title: string,
   content: string,
 ): ProviderEvidence {
+  if (cursorCommand(command)) return { provider: 'cursor', source: 'process', reason: 'foreground command identifies Cursor CLI' }
   const commandProvider = providerIn(command)
   if (commandProvider) {
     return {
@@ -54,6 +66,7 @@ export function inferAgentProvider(
     }
   }
 
+  if (/(?:^|\/)(?:agent|node|bun|deno|python\d*(?:\.\d+)?)$/i.test(command.trim()) && cursorTitle(title)) return { provider: 'cursor', source: 'heuristic', reason: 'pane title identifies Cursor CLI' }
   const titleProvider = providerIn(title)
   if (titleProvider) {
     return {
@@ -99,7 +112,7 @@ export function claudeVersionProcessEvidence(
 
 export function inferAgentProcessStatus(input: AgentProcessStatusInput): AgentStatus {
   const commandEvidence = inferAgentProvider(input.command, '', '')
-  const runtimeCanUseTitle = /(?:^|\/)(?:node|bun|deno|python\d*(?:\.\d+)?)$/i.test(
+  const runtimeCanUseTitle = /(?:^|\/)(?:agent|node|bun|deno|python\d*(?:\.\d+)?)$/i.test(
     input.command.trim(),
   )
   const evidence = commandEvidence.provider !== 'unknown'
@@ -107,14 +120,15 @@ export function inferAgentProcessStatus(input: AgentProcessStatusInput): AgentSt
     : claudeVersionProcessEvidence(input.command, input.title)
       ?? (runtimeCanUseTitle ? inferAgentProvider(input.command, input.title, '') : commandEvidence)
   const provider = evidence.provider
+  const label = provider === 'cursor' ? 'Cursor' : provider
   const knownProvider = provider !== 'unknown'
   return {
     paneId: input.paneId,
     provider,
     status: input.dead && knownProvider ? 'failed' : 'unknown',
     summary: input.dead && knownProvider
-      ? `${provider} process exited`
-      : knownProvider ? `${provider} process detected` : 'No supported agent detected',
+      ? `${label} process exited`
+      : knownProvider ? `${label} process detected` : 'No supported agent detected',
     source: input.dead && knownProvider ? 'process' : evidence.source,
     confidence: input.dead && knownProvider
       ? 'high'
@@ -156,7 +170,7 @@ export function inferAgentStatus(input: AgentStatusInput): AgentStatus {
     : claudeVersionProcessEvidence(input.command, input.title)
       ?? inferAgentProvider(input.command, input.title, input.content)
   const provider = providerEvidence.provider
-  const label = provider === 'unknown' ? 'Agent' : provider
+  const label = provider === 'unknown' ? 'Agent' : provider === 'cursor' ? 'Cursor' : provider
   const tail = input.content.slice(-16_000)
   const recentLines = tail.split(/\r?\n/).slice(-50).join('\n')
   const unchangedFor = Math.max(0, input.capturedAt - input.lastChangedAt)

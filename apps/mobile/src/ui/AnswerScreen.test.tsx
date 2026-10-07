@@ -41,6 +41,7 @@ async function renderScreen(): Promise<void> {
 
 describe('the answer screen', () => {
   beforeEach(() => {
+    mockHostState.agentStatuses['%14'] = NEEDS_INPUT_STATUS
     mockParams.interactionId = 'req-1'
     mockRouter.push.mockClear()
     mockRouter.back.mockClear()
@@ -54,6 +55,13 @@ describe('the answer screen', () => {
       }],
       hydrated: true,
     })
+  })
+
+  it('names Cursor in the answer context when a request is supplied', async () => {
+    mockHostState.agentStatuses['%14'] = { ...NEEDS_INPUT_STATUS, provider: 'cursor' }
+    await renderScreen()
+    expect(screen.getByText('Cursor is asking')).toBeTruthy()
+    expect(screen.getAllByText('Cursor').length).toBeGreaterThan(0)
   })
 
   it('renders the question, its options and their descriptions', async () => {

@@ -1,3 +1,4 @@
+import type { AgentProvider } from '@commando/protocol'
 import { act, render, screen } from '@testing-library/react-native'
 
 import type { Host } from '../hosts/types'
@@ -38,7 +39,7 @@ beforeEach(() => {
   }) as unknown as typeof fetch
 })
 
-async function renderSheet(): Promise<void> {
+async function renderSheet(provider: AgentProvider = 'claude'): Promise<void> {
   render(
     <ThemeProvider>
       <PaneInfo
@@ -49,7 +50,7 @@ async function renderSheet(): Promise<void> {
         paneId="%14"
         ports={SNAPSHOT.ports}
         sessionName="commando"
-        status={NEEDS_INPUT_STATUS}
+        status={{ ...NEEDS_INPUT_STATUS, provider }}
       />
     </ThemeProvider>,
   )
@@ -58,6 +59,11 @@ async function renderSheet(): Promise<void> {
 }
 
 describe('the pane Info sheet', () => {
+  it('labels Cursor in the Info heading', async () => {
+    await renderSheet('cursor')
+    expect(screen.getByText(/commando · Cursor/u)).toBeTruthy()
+  })
+
   it('heads the sheet with the session, provider, pane and status', async () => {
     await renderSheet()
     expect(screen.getByText(/commando · Claude/u)).toBeTruthy()

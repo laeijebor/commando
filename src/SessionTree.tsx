@@ -47,6 +47,7 @@ const providerLabels: Record<AgentStatus['provider'], string> = {
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  cursor: 'Cursor',
   unknown: 'Unknown agent',
 }
 

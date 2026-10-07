@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
-import { TmuxCreator, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, agentLaunchPaneCommand, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 
 const separator = '\u001f'
 const output = (
@@ -36,6 +36,59 @@ const runner = (response = output()) =>
   vi.fn(async (_args: readonly string[]): Promise<string> => response)
 
 describe('TmuxCreator', () => {
+  it('starts Cursor with literal argv in the newly owned PTY and scopes daemon environment to that session', async () => {
+    const run = runner()
+    const resolve = vi.fn(async () => '/host/bin/agent')
+    const env = { PATH: '/host/bin:/bin', COMMANDO_PORT: '4410', COMMANDO_TOKEN: 'fixture-token', COMMANDO_TMUX_SOCKET_NAME: 'test-create', TMUX_PANE: '%old' }
+    const creator = new TmuxCreator(run, ['-L', 'test-create'], undefined, resolve, env)
+    const prompt = "--force\nLeo's $HOME `touch /tmp/should-not-exist`"
+    const result = await creator.createSession({ name: 'cursor', cwd: '/tmp', agent: { provider: 'cursor', prompt } })
+    expect(result.agentLaunch).toEqual({ version: 1, provider: 'cursor', mode: 'interactive-pty', state: 'initiated', paneId: '%12' })
+    expect(resolve).toHaveBeenCalledWith('agent', env)
+    expect(run).toHaveBeenCalledOnce()
+    const args = run.mock.calls[0][0]
+    expect(args).toContain('new-session')
+    expect(args).not.toContain('send-keys')
+    expect(args).not.toContain('TMUX_PANE=%old')
+    expect(args).toContain('COMMANDO_PORT=4410')
+    expect(args).toContain('COMMANDO_TOKEN=fixture-token')
+    expect(args).toContain('COMMANDO_TMUX_SOCKET_NAME=test-create')
+    expect(args.at(-1)).toBe(agentLaunchPaneCommand(['/host/bin/agent', 'agent', '--', prompt], undefined, env))
+  })
+
+  it('forwards only the narrow allowlist and removes omitted profile variables before exec', async () => {
+    const env = Object.fromEntries(AGENT_LAUNCH_ENV_KEYS.map((key) => [key, `/daemon/${key}`]))
+    delete env.CURSOR_CONFIG_DIR
+    env.UNRELATED_SECRET = 'must-not-be-forwarded'
+    const run = runner()
+    await new TmuxCreator(run, [], undefined, async () => '/host/bin/agent', env).createSession({ name: 'cursor', agent: { provider: 'cursor' } })
+    const args = run.mock.calls[0][0]
+    for (const key of AGENT_LAUNCH_ENV_KEYS.filter((key) => key !== 'CURSOR_CONFIG_DIR')) expect(args).toContain(`${key}=${env[key]}`)
+    expect(args.at(-1)).toContain('unset CURSOR_CONFIG_DIR')
+    expect(args.join(' ')).not.toContain('UNRELATED_SECRET')
+    expect(args.join(' ')).not.toContain('must-not-be-forwarded')
+    expect(args.at(-1)).toMatch(/^exec /)
+  })
+
+  it('rejects a missing CLI before creating a session or a worktree', async () => {
+    const run = runner()
+    const git = { probe: vi.fn(), createWorktree: vi.fn() }
+    const resolve = vi.fn(async () => { throw new Error('Cannot start agent: executable not found on the daemon PATH') })
+    const creator = new TmuxCreator(run, [], git, resolve)
+    await expect(creator.createSession({ name: 'cursor', cwd: '/tmp', agent: { provider: 'cursor' }, worktree: { branch: 'cursor' } })).rejects.toThrow('executable not found')
+    expect(run).not.toHaveBeenCalled()
+    expect(git.probe).not.toHaveBeenCalled()
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it.each([null, [], 'cursor', { provider: 'cursor-editor' }, { provider: 'toString' }, { provider: 'cursor', prompt: 1 }, { provider: 'cursor', prompt: 'x\0y' }, { provider: 'cursor', prompt: 'x'.repeat(8193) }])('rejects invalid launch %j before execution', async (agent) => {
+    const run = runner()
+    const resolve = vi.fn()
+    await expect(new TmuxCreator(run, [], undefined, resolve).createSession({ name: 'test', agent } as never)).rejects.toThrow()
+    expect(run).not.toHaveBeenCalled()
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
   it('creates a detached named session and returns IDs reported by tmux', async () => {
     const run = runner()
     const creator = new TmuxCreator(run, ['-L', 'commando-test'])
@@ -399,6 +452,21 @@ describe('TmuxCreator worktree-backed sessions', () => {
     expect(createArgs?.at(-1)).toBe(worktreePreparationShellCommand('pnpm i\npnpm build'))
     expect(createArgs?.at(-1)).toContain('[commando] Preparing worktree')
     expect(createArgs?.at(-1)).toContain('exec "${SHELL:-/bin/sh}" -l')
+  })
+
+  it('prepares in the worktree before launching the agent and stops launch on preparation failure', async () => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const creator = new TmuxCreator(run, [], git, async () => '/host/bin/agent', {})
+    await creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow', prepareCommand: 'npm install\nnpm run build' }, agent: { provider: 'cursor', prompt: 'Review' } })
+    const args = run.mock.calls.map(([args]) => args).find((args) => args.includes('new-session'))!
+    expect(args).toContain(target)
+    expect(args.at(-1)).toBe(agentLaunchPaneCommand(['/host/bin/agent', 'agent', '--', 'Review'], 'npm install\nnpm run build', {}))
+    const script = agentLaunchShellCommand('npm install\nnpm run build')
+    expect(script).toMatch(/exec "\$@"$/)
+    expect(script).toContain('agent was not started')
+    expect(script.indexOf('exec "${SHELL')).toBeLessThan(script.indexOf('"$@"'))
+    expect(git.rollback).not.toHaveBeenCalled()
   })
 
   it('reports success and keeps the worktree when preparation starts before the current path is available', async () => {

@@ -11,13 +11,14 @@ import {
   View,
 } from 'react-native'
 
-import type { GitRepoInfo } from '@commando/tmux-create'
+import type { GitRepoInfo, TmuxCreatedTarget } from '@commando/tmux-create'
+import { requireSessionAgentLaunch, TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
 
-import { createTmuxSession, fetchRepoInfo, runInPane } from '../../../src/daemon/paneApi'
+import { createTmuxSession, fetchRepoInfo } from '../../../src/daemon/paneApi'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import {
   AGENT_CHOICES,
-  agentRunCommand,
+  DEFAULT_AGENT_CHOICE,
   baseLabel,
   buildSessionRequest,
   effectiveBranch,
@@ -37,14 +38,13 @@ import { toggleMutedSession, usePushStore } from '../../../src/notifications'
 import { useTheme } from '../../../src/theme'
 import { CreateSheet } from '../../../src/ui/CreateSheet'
 import { FormError, RowGroup, TextRow, ToggleRow, ValueRow } from '../../../src/ui/formPrimitives'
-import { Meta, SectionHeader, Segmented } from '../../../src/ui/primitives'
+import { Meta, SectionHeader } from '../../../src/ui/primitives'
 
 const REPO_PROBE_DEBOUNCE_MS = 200
 
 /**
- * Screen 07. One `POST /api/tmux/sessions` with the worktree block, then —
- * when an agent was picked — one `POST /api/pane-management/panes/:id/run` to
- * start it in the pane the daemon just created.
+ * Screen 07. A single creation request starts the selected CLI in the new
+ * pane's PTY, after worktree preparation, and returns that owned target.
  */
 export default function NewSessionScreen(): React.JSX.Element {
   const theme = useTheme()
@@ -64,12 +64,13 @@ export default function NewSessionScreen(): React.JSX.Element {
   const [pathEdit, setPathEdit] = useState<string | null>(null)
   const [prepareCommand, setPrepareCommand] = useState('')
   const [prepareEnabled, setPrepareEnabled] = useState(true)
-  const [agent, setAgent] = useState<AgentChoice>('claude')
+  const [agent, setAgent] = useState<AgentChoice>(DEFAULT_AGENT_CHOICE)
   const [prompt, setPrompt] = useState('')
   const [notify, setNotify] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const probeVersion = useRef(0)
+  const createdTarget = useRef<TmuxCreatedTarget | null>(null)
 
   const repos = useMemo(
     () => repoOptions(state.snapshot, directoryHistory),
@@ -129,14 +130,19 @@ export default function NewSessionScreen(): React.JSX.Element {
 
   const submit = useCallback(async () => {
     if (!host) return
+    if (createdTarget.current) {
+      router.replace({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: hostId ?? '', paneId: createdTarget.current.paneId } })
+      return
+    }
     setBusy(true)
     setError(null)
     try {
       const request = buildSessionRequest(
-        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled },
+        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled, agent, prompt },
         repo,
       )
-      const { created } = await createTmuxSession(host, request)
+      const { created } = requireSessionAgentLaunch(request, await createTmuxSession(host, request))
+      createdTarget.current = created
       setDirectoryHistory(await rememberDirectory(directory))
       if (repo?.mainRoot) await rememberPrepareCommand(repo.mainRoot, prepareCommand)
       // The daemon evaluates push rules per device, so "notify me" is the
@@ -146,24 +152,15 @@ export default function NewSessionScreen(): React.JSX.Element {
       if (muted === notify) {
         await push.setRules(toggleMutedSession(push.rules, created.sessionName), useHostsStore.getState().hosts)
       }
-      const command = agentRunCommand(agent, prompt)
-      if (command) {
-        try {
-          await runInPane(host, created.paneId, command)
-        } catch (runError) {
-          // The session exists either way, so the error is shown rather than
-          // swallowed, and the sheet stays open on the created session.
-          setError(runError instanceof Error ? runError.message : 'The agent did not start')
-          setBusy(false)
-          return
-        }
-      }
       router.replace({
         pathname: '/(host)/[hostId]/pane/[paneId]',
         params: { hostId: hostId ?? '', paneId: created.paneId },
       })
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : 'Creating the session failed')
+      const compatibilityError = createError instanceof TmuxAgentLaunchCompatibilityError
+      if (compatibilityError) createdTarget.current = createError.response.created
+      const detail = createError instanceof Error ? createError.message : 'Creating the session failed'
+      setError(compatibilityError ? detail : createdTarget.current ? `Session ${createdTarget.current.sessionName} was created, but preferences could not be saved: ${detail}` : detail)
       setBusy(false)
     }
   }, [
@@ -185,8 +182,8 @@ export default function NewSessionScreen(): React.JSX.Element {
 
   return (
     <CreateSheet
-      action="Create"
-      actionEnabled={name.trim().length > 0 && !busy}
+      action={createdTarget.current ? 'Open session' : 'Create'}
+      actionEnabled={(Boolean(createdTarget.current) || name.trim().length > 0) && !busy}
       busy={busy}
       onAction={() => void submit()}
       onCancel={() => router.back()}
@@ -264,11 +261,27 @@ export default function NewSessionScreen(): React.JSX.Element {
       ) : null}
 
       <SectionHeader label="Start with" />
-      <Segmented onChange={setAgent} options={AGENT_CHOICES} value={agent} />
+      <View style={styles.agentChoices}>
+        {AGENT_CHOICES.map((choice) => (
+          <Pressable
+            accessibilityRole="radio"
+            accessibilityState={{ checked: agent === choice.value, disabled: busy }}
+            disabled={busy}
+            key={choice.value}
+            onPress={() => setAgent(choice.value)}
+            style={[styles.agentChoice, {
+              backgroundColor: agent === choice.value ? theme.surfaceSoft : theme.surfaceRaised,
+              borderColor: agent === choice.value ? theme.accent : theme.border,
+            }]}
+          >
+            <Text style={{ color: agent === choice.value ? theme.text : theme.muted }}>{choice.label}</Text>
+          </Pressable>
+        ))}
+      </View>
       {agent === 'shell' ? (
         <Meta>The session opens an interactive shell and nothing is run in it.</Meta>
       ) : agent === 'opencode' ? (
-        <Meta>OpenCode takes no prompt argument, so it starts bare.</Meta>
+        <Meta>OpenCode starts without an opening prompt.</Meta>
       ) : (
         <View style={[styles.promptField, { backgroundColor: theme.surfaceRaised, borderColor: theme.border }]}>
           <TextInput
@@ -282,6 +295,8 @@ export default function NewSessionScreen(): React.JSX.Element {
           />
         </View>
       )}
+
+      {agent === 'cursor' ? <Meta>Starts the Cursor CLI agent in the terminal pane.</Meta> : null}
 
       <RowGroup>
         <ToggleRow
@@ -345,6 +360,8 @@ export default function NewSessionScreen(): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
+  agentChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  agentChoice: { flexBasis: '30%', flexGrow: 1, alignItems: 'center', borderRadius: 10, borderWidth: 1, padding: 10 },
   promptField: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   promptInput: { fontSize: 14, lineHeight: 20, minHeight: 92, textAlignVertical: 'top' },
   footnote: { fontSize: 12, lineHeight: 18 },

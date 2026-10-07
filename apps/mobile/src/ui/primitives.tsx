@@ -130,7 +130,7 @@ export function Pill({
   tone = 'mute',
 }: {
   label: string
-  tone?: 'claude' | 'codex' | 'opencode' | 'shell' | 'mute' | 'ok' | 'warn' | 'bad'
+  tone?: 'claude' | 'codex' | 'opencode' | 'cursor' | 'shell' | 'mute' | 'ok' | 'warn' | 'bad'
 }): React.JSX.Element {
   const theme = useTheme()
   const [background, color] = pillColors(theme, tone)
@@ -149,6 +149,8 @@ function pillColors(theme: Theme, tone: string): [string, string] {
       return [withAlpha(theme.cyan, 0.14), theme.cyan]
     case 'opencode':
       return [withAlpha(theme.amber, 0.14), theme.amber]
+    case 'cursor':
+      return [withAlpha(theme.textSoft, 0.14), theme.textSoft]
     case 'ok':
       return [withAlpha(theme.green, 0.14), theme.green]
     case 'warn':
@@ -161,7 +163,7 @@ function pillColors(theme: Theme, tone: string): [string, string] {
 }
 
 export function ProviderPill({ provider }: { provider: AgentProvider }): React.JSX.Element {
-  const tone = provider === 'claude' || provider === 'codex' || provider === 'opencode' ? provider : 'mute'
+  const tone = provider === 'claude' || provider === 'codex' || provider === 'opencode' || provider === 'cursor' ? provider : 'mute'
   return <Pill label={providerLabel(provider)} tone={tone} />
 }
 
