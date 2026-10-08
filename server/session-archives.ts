@@ -4,15 +4,30 @@ import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { layoutTreePanes, parseWindowLayout, type WindowLayoutNode } from '../shared/window-layout.js'
+import { isCommandoTargetId } from '../shared/pane-target.js'
+import { validArchivedAgent, type ArchivedAgent } from './agent-resume.js'
 import { tmuxSocketArgs, validateTmuxSessionId, validateTmuxSessionName, type TmuxProcessExecutor, type TmuxSocketEnvironment } from './tmux-session-actions.js'
+import { parseStoredPaneTarget, TMUX_PANE_TARGET_OPTION } from './tmux-pane-targets.js'
 
 const SEP = '\u001f'
 const ARCHIVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const OPTIONS = { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, shell: false, timeout: 5_000, windowsHide: true } as const
-const PANE_FORMAT = ['#{pane_id}', '#{pane_index}', '#{pane_current_path}', '#{pane_title}', '#{pane_active}'].join(SEP)
+const PANE_FORMAT = ['#{pane_id}', '#{pane_index}', '#{pane_current_path}', '#{pane_title}', '#{pane_active}', `#{${TMUX_PANE_TARGET_OPTION}}`].join(SEP)
 const WINDOW_FORMAT = ['#{window_id}', '#{window_index}', '#{window_name}', '#{window_layout}', '#{window_active}'].join(SEP)
 
-export type ArchivedPane = { id: string; index: number; path: string; title: string; active: boolean }
+export type ArchivedPane = {
+  id: string; index: number; path: string; title: string; active: boolean
+  /** Commando's durable pane identity, so worklogs and agents follow the pane back. */
+  targetId?: string
+  agent?: ArchivedAgent
+}
+
+/** Lets an archive carry each pane's agent conversation and hand it back on restore. */
+export type ArchivedAgentStore = {
+  archivedAgents(targetIds: readonly string[]): Record<string, ArchivedAgent>
+  forgetTargets(targetIds: readonly string[]): void
+  restoreArchived(agents: Readonly<Record<string, ArchivedAgent>>): void
+}
 export type ArchivedWindow = { index: number; name: string; layout: WindowLayoutNode; panes: ArchivedPane[]; active: boolean }
 export type SessionArchive = { version: 1; id: string; name: string; createdAt: number; windows: ArchivedWindow[] }
 export type ArchiveSummary = { id: string; name: string; createdAt: number; windowCount: number; paneCount: number }
@@ -57,7 +72,9 @@ function validArchive(value: unknown): value is SessionArchive {
     typeof window.active === 'boolean' && Array.isArray(window.panes) && window.panes.length > 0 && window.panes.length <= 32 &&
     window.panes.every((pane) => /^%\d+$/.test(pane.id) && Number.isSafeInteger(pane.index) && pane.index >= 0 &&
       typeof pane.path === 'string' && pane.path.startsWith('/') && !pane.path.includes('\0') &&
-      typeof pane.title === 'string' && typeof pane.active === 'boolean') &&
+      typeof pane.title === 'string' && typeof pane.active === 'boolean' &&
+      (pane.targetId === undefined || isCommandoTargetId(pane.targetId)) &&
+      (pane.agent === undefined || (pane.targetId !== undefined && validArchivedAgent(pane.agent)))) &&
     window.layout && layoutTreePanes(window.layout).length === window.panes.length &&
     layoutTreePanes(window.layout).every((pane) => window.panes.some((item) => item.id === pane.paneId)),
   )
@@ -67,11 +84,13 @@ export class SessionArchives {
   private readonly socketArgs: string[]
   private readonly directory: string
   private readonly execute: TmuxProcessExecutor
+  private readonly agents: ArchivedAgentStore | undefined
 
-  constructor(options: { directory?: string; execute?: TmuxProcessExecutor; environment?: TmuxSocketEnvironment } = {}) {
+  constructor(options: { directory?: string; execute?: TmuxProcessExecutor; environment?: TmuxSocketEnvironment; agents?: ArchivedAgentStore } = {}) {
     this.socketArgs = tmuxSocketArgs(options.environment ?? process.env)
     this.directory = options.directory ?? process.env.COMMANDO_SESSION_ARCHIVES_DIR ?? join(homedir(), '.commando', 'session-archives')
     this.execute = options.execute ?? defaultExecutor
+    this.agents = options.agents
   }
 
   private async run(args: string[]): Promise<string> {
@@ -113,10 +132,17 @@ export class SessionArchives {
       const layout = parseWindowLayout(rawLayout)
       if (!layout) throw new Error('Could not capture tmux pane layout')
       const panes: ArchivedPane[] = lines(await this.run(['list-panes', '-t', windowId, '-F', PANE_FORMAT])).map((parts) => {
-        if (parts.length !== 5 || !/^%\d+$/.test(parts[0]) || !parts[2].startsWith('/')) throw new Error('Could not capture tmux pane')
-        return { id: parts[0], index: Number(parts[1]), path: parts[2], title: parts[3], active: parts[4] === '1' }
+        if (parts.length !== 6 || !/^%\d+$/.test(parts[0]) || !parts[2].startsWith('/')) throw new Error('Could not capture tmux pane')
+        const targetId = parseStoredPaneTarget(parts[5], parts[0])
+        return { id: parts[0], index: Number(parts[1]), path: parts[2], title: parts[3], active: parts[4] === '1', ...(targetId ? { targetId } : {}) }
       })
       windows.push({ index: Number(index), name: windowName, layout, panes, active: active === '1' })
+    }
+    const targetIds = windows.flatMap((window) => window.panes.flatMap((pane) => pane.targetId ? [pane.targetId] : []))
+    const agents = this.agents?.archivedAgents(targetIds) ?? {}
+    for (const window of windows) for (const pane of window.panes) {
+      const agent = pane.targetId ? agents[pane.targetId] : undefined
+      if (agent) pane.agent = agent
     }
     const archive: SessionArchive = { version: 1, id: randomUUID(), name, createdAt: Date.now(), windows }
     if (!validArchive(archive)) throw new Error('Could not capture a complete session archive')
@@ -128,6 +154,7 @@ export class SessionArchives {
     await handle.close()
     try { await this.run(['kill-session', '-t', sessionId]) }
     catch (error) { await rm(path, { force: true }); throw error }
+    this.agents?.forgetTargets(targetIds)
     return { id: archive.id, name, createdAt: archive.createdAt, windowCount: windows.length, paneCount: windows.reduce((count, window) => count + window.panes.length, 0) }
   }
 
@@ -164,6 +191,11 @@ export class SessionArchives {
           if (Number(index) !== window.index) throw error
         })
         const created = new Map<string, string>([[first.paneId, paneId]])
+        const adopt = async (archivedPaneId: string, newPaneId: string): Promise<void> => {
+          const targetId = window.panes.find((pane) => pane.id === archivedPaneId)?.targetId
+          if (targetId) await this.run(['set-option', '-p', '-t', newPaneId, TMUX_PANE_TARGET_OPTION, `v1:${newPaneId}:${targetId}`])
+        }
+        await adopt(first.paneId, paneId)
         const build = async (node: WindowLayoutNode, existing: string): Promise<void> => {
           if (node.kind === 'pane') return
           const anchors = [existing]
@@ -173,6 +205,7 @@ export class SessionArchives {
             const newPane = await this.run(['split-window', '-d', node.direction === 'row' ? '-h' : '-v', '-P', '-F', '#{pane_id}', '-t', anchors[anchors.length - 1], '-c', path])
             if (!/^%\d+$/.test(newPane)) throw new Error('tmux did not create the archived pane')
             created.set(firstChild.paneId, newPane)
+            await adopt(firstChild.paneId, newPane)
             anchors.push(newPane)
           }
           for (let i = 0; i < node.children.length; i++) await build(node.children[i], anchors[i])
@@ -195,6 +228,9 @@ export class SessionArchives {
       throw error
     }
     await rm(this.path(id))
+    const agents = Object.fromEntries(archive.windows.flatMap((window) => window.panes.flatMap((pane) =>
+      pane.targetId && pane.agent ? [[pane.targetId, pane.agent] as const] : [])))
+    if (Object.keys(agents).length > 0) this.agents?.restoreArchived(agents)
     return sessionId!
   }
 }

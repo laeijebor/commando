@@ -54,6 +54,8 @@ import { handleNotesApi } from './notes-api.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { SessionArchives } from './session-archives.js'
+import { AgentResumeService } from './agent-resume.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -602,6 +604,23 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const agentResume = new AgentResumeService({
+    currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
+    sendCommand: async (pane, command) => {
+      await tmux.sendText(pane.sessionId, pane.id, command)
+      await tmux.sendKey(pane.sessionId, pane.id, 'Enter')
+    },
+    pathExists: (path) => stat(path).then((value) => value.isDirectory(), () => false),
+    onChange: (change) => {
+      broadcast(change.type === 'upsert'
+        ? { type: 'agent_resume', resume: change.resume }
+        : { type: 'agent_resume_removed', targetId: change.targetId })
+    },
+    onError: (error) => {
+      console.error('[commando] agent resume failed', error)
+    },
+  })
+  await agentResume.load()
   let companion: CompanionHub | null = null
   let pushNotifier: PushNotifier | null = null
   let companionClientCount = 0
@@ -729,6 +748,13 @@ async function main(): Promise<void> {
     }
     if (change) companion?.publish()
     pushNotifier?.handleStatusChange(change)
+    if (change?.type === 'upsert') {
+      void agentResume
+        .observeHookStatus(change.status, paneForId(change.status.paneId), tmux.serverId)
+        .catch((error: unknown) => {
+          console.error('[commando] failed to record agent resume command', error)
+        })
+    }
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1236,6 +1262,7 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
+        if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId)
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {
@@ -1356,6 +1383,7 @@ async function main(): Promise<void> {
   }
 
   const sessionManagement = new SessionManagementApi({
+    archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
     prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
@@ -1857,6 +1885,10 @@ async function main(): Promise<void> {
         }
         return
       }
+      case 'retry_agent_resume': {
+        agentResume.retry(message.targetId)
+        return
+      }
       case 'answer_agent_request': {
         if (!paneExists(message.paneId)) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
@@ -2002,6 +2034,7 @@ async function main(): Promise<void> {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
     })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
+    send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {

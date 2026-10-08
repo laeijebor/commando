@@ -134,6 +134,7 @@ export class TmuxClient {
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
   private readonly openPorts: OpenPortScanner
   private readonly paneIdentities = new TmuxPaneIdentityStore()
+  private discoveredServerId: string | null = null
   private readonly persistPaneTarget = (paneId: string, value: string) =>
     this.run(
       ['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, value],
@@ -173,6 +174,7 @@ export class TmuxClient {
         }),
       ])
       const { paneOutput: panes, serverId, identities } = parsePaneIdentityDiscovery(paneDiscovery)
+      this.discoveredServerId = serverId
       const restored = await this.paneIdentities.restore(serverId, identities, this.persistPaneTarget)
       const targetIds = await this.paneTargets.reconcile(restored)
       await this.paneIdentities.remember(serverId, restored, targetIds)
@@ -215,6 +217,11 @@ export class TmuxClient {
 
   setControllerHandlers(handlers: TmuxControllerHandlers): void {
     this.controllers.setHandlers(handlers)
+  }
+
+  /** The tmux server (`pid:start_time`) seen by the latest discovery; it changes when tmux restarts. */
+  get serverId(): string | null {
+    return this.discoveredServerId
   }
 
   setRequiredSessions(sessionIds: ReadonlySet<string>): void {

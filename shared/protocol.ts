@@ -115,6 +115,19 @@ export type AgentStatus = {
   details?: AgentDetails
 }
 
+export type AgentResumeState = 'queued' | 'resuming' | 'resumed' | 'failed'
+
+/** Commando bringing a pane's agent conversation back after tmux restored the pane. */
+export type AgentResume = {
+  targetId: string
+  paneId: string
+  provider: Exclude<AgentProvider, 'unknown'>
+  command: string
+  state: AgentResumeState
+  error?: string
+  updatedAt: number
+}
+
 export type SessionBriefUpdateKind = 'changed' | 'decision' | 'check' | 'blocker' | 'note' | 'screenshots'
 
 export type PaneScreenshotFile = {
@@ -643,6 +656,9 @@ export type ServerMessage =
   | { type: 'agent_status'; status: AgentStatus }
   | { type: 'agent_status_snapshot'; statuses: AgentStatus[] }
   | { type: 'agent_status_removed'; paneId: string }
+  | { type: 'agent_resume'; resume: AgentResume }
+  | { type: 'agent_resume_snapshot'; resumes: AgentResume[] }
+  | { type: 'agent_resume_removed'; targetId: string }
   | { type: 'session_brief'; brief: SessionBrief }
   | { type: 'session_brief_snapshot'; briefs: SessionBrief[] }
   | { type: 'pane_mark'; mark: PaneMark }
@@ -753,4 +769,6 @@ export type ClientMessage =
       requestId: string
     }
   | { type: 'watch_usage'; enabled: boolean; requestId: string }
+  /** Retries one failed agent resume, or every failed one when `targetId` is omitted. */
+  | { type: 'retry_agent_resume'; targetId?: string; requestId: string }
   | { type: 'refresh_usage'; requestId: string }
