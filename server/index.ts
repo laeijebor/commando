@@ -748,13 +748,6 @@ async function main(): Promise<void> {
     }
     if (change) companion?.publish()
     pushNotifier?.handleStatusChange(change)
-    if (change?.type === 'upsert') {
-      void agentResume
-        .observeHookStatus(change.status, paneForId(change.status.paneId), tmux.serverId)
-        .catch((error: unknown) => {
-          console.error('[commando] failed to record agent resume command', error)
-        })
-    }
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -1262,7 +1255,7 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
-        if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId)
+        if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => agentStatuses.get(paneId))
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {

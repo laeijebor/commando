@@ -52,9 +52,14 @@ describe('AgentResumeService', () => {
       now = next.at
       next.callback()
       // Let the runner's async steps settle before the next timer.
-      for (let index = 0; index < 10; index += 1) await Promise.resolve()
+      await settle()
     }
     now = until
+    await settle()
+  }
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
   }
 
   beforeEach(async () => {
@@ -144,6 +149,42 @@ describe('AgentResumeService', () => {
     await resume.observeHookStatus(hookStatus({ paneId: '%9' }), panes.get(TARGET), NEW_SERVER)
     expect(resumes.get(TARGET)?.state).toBe('resumed')
     expect(resume.get(TARGET)?.serverId).toBe(NEW_SERVER)
+  })
+
+  it('records from discovery, so a resumed agent moves to the new server without a status change', async () => {
+    const resume = await recordOn(OLD_SERVER)
+    panes.set(TARGET, pane({ id: '%9', command: 'zsh' }))
+    const status = hookStatus({ paneId: '%9' })
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER, () => status)
+    await advance(5_000)
+    expect(sent).toHaveLength(1)
+
+    // The registry still holds the same status; only the pane's process changed.
+    panes.set(TARGET, pane({ id: '%9' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER, () => status)
+    await advance(0)
+    expect(resume.get(TARGET)?.serverId).toBe(NEW_SERVER)
+    expect(resumes.get(TARGET)?.state).toBe('resumed')
+
+    // Exiting it now is deliberate, so the next restart leaves the pane alone.
+    resume.reconcile([pane({ id: '%9', command: 'zsh' })], NEW_SERVER, () => status)
+    expect(resume.get(TARGET)).toBeUndefined()
+  })
+
+  it('backs off reading the process table when the agent is not a child of the pane shell', async () => {
+    const readTable = vi.fn(async () => '')
+    const resume = service({ readProcessTable: readTable })
+    panes.set(TARGET, pane())
+    resume.reconcile([pane()], OLD_SERVER, () => hookStatus())
+    await advance(0)
+    resume.reconcile([pane()], OLD_SERVER, () => hookStatus())
+    await advance(0)
+    expect(readTable).toHaveBeenCalledTimes(1)
+    expect(resume.get(TARGET)).toBeUndefined()
+    await advance(30_000)
+    resume.reconcile([pane()], OLD_SERVER, () => hookStatus())
+    await advance(0)
+    expect(readTable).toHaveBeenCalledTimes(2)
   })
 
   it('tries each restore once, even across repeated discoveries', async () => {

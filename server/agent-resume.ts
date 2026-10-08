@@ -43,6 +43,8 @@ const SHELL_READY_MS = 4_000
 const STAGGER_MS = 2_500
 const VERIFY_MS = 20_000
 const RESUMED_RETENTION_MS = 5 * 60 * 1_000
+/** How long to wait before reading the process table again for a pane whose agent was not found. */
+const CAPTURE_RETRY_MS = 30_000
 
 export function defaultAgentResumePath(): string {
   if (process.env.COMMANDO_AGENT_RESUME_PATH) return process.env.COMMANDO_AGENT_RESUME_PATH
@@ -114,6 +116,7 @@ export class AgentResumeService {
   private records = new Map<string, AgentResumeRecord>()
   private readonly resumes = new Map<string, AgentResume>()
   private readonly capturing = new Set<string>()
+  private readonly captureMisses = new Map<string, { key: string; at: number }>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -150,7 +153,7 @@ export class AgentResumeService {
     return [...this.resumes.values()]
   }
 
-  /** Records the conversation a hook just reported. Only reads the process table when it changed. */
+  /** Records the conversation a hook reported for a pane. Only reads the process table when it changed. */
   async observeHookStatus(status: AgentStatus, pane: ResumePane | undefined, serverId: string | null): Promise<void> {
     if (status.source !== 'hook' || !pane || !serverId || pane.processId === undefined) return
     if (!isResumableProvider(status.provider) || !status.agentSessionId || !isValidAgentSessionId(status.agentSessionId)) return
@@ -162,14 +165,20 @@ export class AgentResumeService {
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path) return
     if (this.capturing.has(pane.targetId)) return
+    const key = `${status.provider}:${status.agentSessionId}@${serverId}:${pane.processId}`
+    const miss = this.captureMisses.get(pane.targetId)
+    if (miss?.key === key && this.now() - miss.at < CAPTURE_RETRY_MS) return
     this.capturing.add(pane.targetId)
     try {
       const rows = parseProcessTable(await (this.deps.readProcessTable ?? readProcessTable)())
       const agent = findAgentProcess(rows, pane.processId, status.provider)
-      if (!agent) return
-      const launch = launchFromProcess(status.provider, agent.args, await (this.deps.readProcessEnvironment ?? readProcessEnvironment)(agent.pid))
-      const command = buildResumeCommand(status.provider, status.agentSessionId, launch)
-      if (!command) return
+      const command = agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
+        status.provider, agent.args, await (this.deps.readProcessEnvironment ?? readProcessEnvironment)(agent.pid)))
+      if (!command) {
+        this.captureMisses.set(pane.targetId, { key, at: this.now() })
+        return
+      }
+      this.captureMisses.delete(pane.targetId)
       this.records.set(pane.targetId, {
         targetId: pane.targetId,
         provider: status.provider,
@@ -185,11 +194,17 @@ export class AgentResumeService {
     }
   }
 
-  /** Runs after every discovery: clears deliberate exits and queues restored panes. */
-  reconcile(panes: readonly ResumePane[], serverId: string): void {
+  /**
+   * Runs after every discovery: records the agents panes are running, clears deliberate exits,
+   * and queues restored panes. Status changes alone are not enough to record: a resumed agent
+   * reports the same session, so the registry sees nothing new.
+   */
+  reconcile(panes: readonly ResumePane[], serverId: string, statusFor: (paneId: string) => AgentStatus | undefined = () => undefined): void {
     let changed = false
     const queued: Job[] = []
     for (const pane of panes) {
+      const status = statusFor(pane.id)
+      if (status && !isShellCommand(pane.command)) void this.observeHookStatus(status, pane, serverId).catch(this.onError)
       const record = this.records.get(pane.targetId)
       if (!record || !isShellCommand(pane.command)) continue
       if (record.serverId === serverId) {
