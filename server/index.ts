@@ -56,6 +56,7 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { AgentResumeService } from './agent-resume.js'
+import { isShellCommand } from './agent-resume-command.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -759,7 +760,10 @@ async function main(): Promise<void> {
           paneForId(status.paneId)?.sessionId === session.id
         ))
         void sessionBriefs
-          .syncFromStatuses(session.id, session.name, statuses)
+          .syncFromStatuses(session.id, session.name, statuses, Date.now(), (paneId) => {
+            const statusPane = paneForId(paneId)
+            return statusPane && processStatusForPane(statusPane).provider
+          })
           .then((briefs) => {
             for (const brief of briefs) publishSessionBrief(brief)
           })
@@ -1265,6 +1269,11 @@ async function main(): Promise<void> {
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {
+          const previousCommand = previousCommands.get(pane.id)
+          if (previousCommand !== undefined && !isShellCommand(previousCommand) && isShellCommand(pane.command)) {
+            const ended = await sessionBriefs.markAgentExited(pane.id)
+            if (ended) publishSessionBrief(ended)
+          }
           if (
             previousCommands.get(pane.id) !== undefined &&
             previousCommands.get(pane.id) !== pane.command

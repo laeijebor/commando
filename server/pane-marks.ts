@@ -98,9 +98,11 @@ function newMilestones(
   current: SessionBrief,
   markedAt: number,
 ): SessionBriefUpdate[] {
+  // A conversation coming back from Earlier sessions brings its old updates; they are not new.
+  const seen = previous ? [...previous.updates, ...(previous.earlierSessions ?? []).flatMap((session) => session.updates)] : []
   return current.updates.filter((update) => (
     update.createdAt > markedAt &&
-    !previous?.updates.some((candidate) => sameUpdateMeaning(candidate, update))
+    !seen.some((candidate) => sameUpdateMeaning(candidate, update))
   ))
 }
 

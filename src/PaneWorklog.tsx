@@ -28,7 +28,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentResume, AgentTaskStatus, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
+import type { AgentProvider, AgentResume, AgentTaskStatus, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
 import { SESSION_AGENT_CHOICES } from '../shared/tmux-create'
 import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
 import type { PrsApiClient } from './prsApi'
@@ -188,7 +188,7 @@ function SessionReferenceRow({
   )
 }
 
-function agentLabel(provider: AgentResume['provider']): string {
+function agentLabel(provider: AgentProvider): string {
   return SESSION_AGENT_CHOICES.find((choice) => choice.value === provider)?.label ?? 'agent'
 }
 
@@ -200,6 +200,69 @@ function resumeMessage(resume: AgentResume): string {
     case 'resumed': return `Resumed the ${agent} conversation automatically after tmux restarted.`
     case 'failed': return `Couldn't resume the ${agent} conversation. ${resume.error ?? ''}`.trim()
   }
+}
+
+/** A conversation that ran earlier in the pane, folded so the current one stays in front. */
+function EarlierSession({ session, connected, onTypeCommand, onOpenScreenshot }: {
+  session: EarlierAgentSession
+  connected: boolean
+  onTypeCommand?: (command: string) => void
+  onOpenScreenshot: OpenPaneScreenshot
+}) {
+  const tasks = (session.tasks ?? []).filter((task) => task.status !== 'cancelled')
+  const completed = tasks.filter((task) => task.status === 'completed').length
+  const resume = session.references?.find((reference) => reference.kind === 'session')
+  const terms = session.references?.filter((reference) => reference.kind !== 'session') ?? []
+  return (
+    <details className="pane-worklog-earlier-session">
+      <summary>
+        <ChevronRight aria-hidden="true" />
+        <span>
+          <strong>{session.headline}</strong>
+          <small>
+            {agentLabel(session.agentSession.provider)} · ended {relativeAge(session.endedAt)}
+            {tasks.length ? ` · ${completed}/${tasks.length} tasks` : ''}
+          </small>
+        </span>
+      </summary>
+      <div className="pane-worklog-earlier-body">
+        {resume ? <SessionReferenceRow command={resume.value} connected={connected} onTypeCommand={onTypeCommand} /> : null}
+        {session.recapMarkdown ? (
+          <div className="pane-worklog-recap">
+            <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>{session.recapMarkdown}</ReactMarkdown>
+          </div>
+        ) : null}
+        {terms.length ? (
+          <ul className="pane-worklog-earlier-list">
+            {terms.map((reference) => <li key={`${reference.kind}:${reference.value}`}>{reference.label ?? reference.value}<small> · {referenceCaption(reference)}</small></li>)}
+          </ul>
+        ) : null}
+        {session.screenshots?.length ? (
+          <ul className="pane-worklog-earlier-list">
+            {session.screenshots.map((folder) => (
+              <li key={folder.id}>
+                <button type="button" className="pane-worklog-earlier-screenshots" onClick={(event) => onOpenScreenshot(folder, undefined, event.currentTarget)}>
+                  <Images aria-hidden="true" />{folder.topic}
+                </button>
+                <small> · {folder.imageCount} {folder.imageCount === 1 ? 'image' : 'images'}</small>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {tasks.length ? (
+          <ul className="pane-worklog-earlier-list">
+            {tasks.map((task) => <li key={task.id} className={`is-${task.status}`}>{taskIcon(task.status)}{task.content}</li>)}
+          </ul>
+        ) : null}
+        {session.updates.length ? (
+          <ul className="pane-worklog-earlier-list">
+            {session.updates.map((update) => <li key={update.id}>{update.text}<small> · {relativeAge(update.createdAt)}</small></li>)}
+          </ul>
+        ) : null}
+        {session.next ? <p className="pane-worklog-earlier-next"><small>Next</small> {session.next}</p> : null}
+      </div>
+    </details>
+  )
 }
 
 /** Commando bringing the pane's agent back after a tmux restart, with a retry when it failed. */
@@ -290,12 +353,13 @@ export function PaneWorklog({
     else node.scrollTop = 0
   }
 
+  // A different conversation brings a different update list, so its length says nothing about new updates.
   useEffect(() => {
     setPreferences(storedPreferences(brief))
     setFollowing(true)
     setUnread(0)
     previousUpdateCount.current = brief.updates.length
-  }, [brief.targetId ?? `${brief.sessionId}:${brief.paneId}`])
+  }, [brief.targetId ?? `${brief.sessionId}:${brief.paneId}`, brief.agentSession?.provider, brief.agentSession?.id])
 
   useEffect(() => {
     const node = activityRef.current?.closest('.terminal-pane-body')
@@ -564,6 +628,21 @@ export function PaneWorklog({
             <ArrowMarker />
             <span><small>Next</small><strong>{brief.next}</strong></span>
           </div>
+        ) : null}
+
+        {brief.earlierSessions?.length ? (
+          <section className="pane-worklog-earlier" aria-label={`Earlier sessions for ${paneLabel}`}>
+            <header><strong>Earlier sessions</strong><small>{brief.earlierSessions.length}</small></header>
+            {brief.earlierSessions.map((session) => (
+              <EarlierSession
+                key={`${session.agentSession.provider}:${session.agentSession.id}`}
+                session={session}
+                connected={connected}
+                onTypeCommand={onTypeCommand}
+                onOpenScreenshot={onOpenScreenshot}
+              />
+            ))}
+          </section>
         ) : null}
       </div>
 
