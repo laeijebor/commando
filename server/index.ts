@@ -604,6 +604,7 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const lastPaneInputAt = new Map<string, number>()
   const agentResume = new AgentResumeService({
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
@@ -611,6 +612,7 @@ async function main(): Promise<void> {
       await tmux.sendKey(pane.sessionId, pane.id, 'Enter')
     },
     readPromptLine: (pane) => tmux.promptLine(pane.id),
+    lastInputAt: (paneId) => lastPaneInputAt.get(paneId),
     pathExists: (path) => stat(path).then((value) => value.isDirectory(), () => false),
     onChange: (change) => {
       broadcast(change.type === 'upsert'
@@ -1363,6 +1365,7 @@ async function main(): Promise<void> {
     requestId: string,
     action: () => Promise<void>,
   ): void => {
+    lastPaneInputAt.set(paneId, Date.now())
     client.inputQueue = client.inputQueue
       .then(async () => {
         if (client.socket.readyState !== WebSocket.OPEN) return

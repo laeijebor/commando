@@ -99,6 +99,8 @@ export type AgentResumeDeps = {
   sendCommand: (pane: ResumePane, command: string) => Promise<void>
   /** The pane's cursor line up to the cursor, so typed input is not overwritten. */
   readPromptLine?: (pane: ResumePane) => Promise<string>
+  /** When a Commando client last sent input to the pane. */
+  lastInputAt?: (paneId: string) => number | undefined
   pathExists: (path: string) => Promise<boolean>
   onChange: (change: { type: 'upsert'; resume: AgentResume } | { type: 'remove'; targetId: string }) => void
   now?: () => number
@@ -106,7 +108,7 @@ export type AgentResumeDeps = {
   onError?: (error: unknown) => void
 }
 
-type Job = { targetId: string; serverId: string; notBefore: number; active: boolean; baseline?: string }
+type Job = { targetId: string; serverId: string; queuedAt: number; notBefore: number; active: boolean; baseline?: string }
 
 /**
  * Remembers which conversation each pane target runs and resumes it when tmux restores the
@@ -219,7 +221,7 @@ export class AgentResumeService {
         this.records.delete(pane.targetId)
         changed = true
       } else {
-        queued.push({ targetId: pane.targetId, serverId, notBefore: this.now() + SHELL_READY_MS, active: pane.active })
+        queued.push({ targetId: pane.targetId, serverId, queuedAt: this.now(), notBefore: this.now() + SHELL_READY_MS, active: pane.active })
       }
     }
     if (changed) this.persist()
@@ -261,7 +263,7 @@ export class AgentResumeService {
       if (targetId !== undefined && failedTarget !== targetId) continue
       this.failedRecords.delete(failedTarget)
       this.records.set(failedTarget, record)
-      jobs.push({ targetId: failedTarget, serverId: serverId ?? record.attemptedServerId ?? record.serverId, notBefore: this.now(), active: true })
+      jobs.push({ targetId: failedTarget, serverId: serverId ?? record.attemptedServerId ?? record.serverId, queuedAt: this.now(), notBefore: this.now(), active: true })
     }
     if (jobs.length > 0) this.persist()
     this.enqueue(jobs)
@@ -355,14 +357,22 @@ export class AgentResumeService {
       return this.dropResume(job.targetId)
     }
     if (!(await this.deps.pathExists(record.path))) return this.fail(resume, `The folder no longer exists: ${record.path}`)
+    // Input through Commando since queueing, or a prompt line that changed after the shell was
+    // ready (a terminal attached outside Commando), belongs to the user.
+    const typedAt = this.deps.lastInputAt?.(pane.id)
     const line = await this.promptLine(job.targetId)
-    if (job.baseline !== undefined && line !== undefined && line !== job.baseline) {
+    if ((typedAt !== undefined && typedAt >= job.queuedAt)
+      || (job.baseline !== undefined && line !== undefined && line !== job.baseline)) {
       return this.fail(resume, 'The pane has unsent input, so nothing was typed. Clear it, then retry.')
     }
     record.attemptedServerId = job.serverId
     this.persist()
     this.lastSentAt = this.now()
-    await this.deps.sendCommand(pane, record.command)
+    try {
+      await this.deps.sendCommand(pane, record.command)
+    } catch (error) {
+      return this.fail(resume, `Could not type into the pane: ${error instanceof Error ? error.message : String(error)}`)
+    }
     this.setResume({ ...resume, paneId: pane.id, state: 'resuming', error: undefined })
     this.setTimer(() => this.verify(job.targetId), VERIFY_MS)
   }

@@ -224,14 +224,20 @@ export function parseProcessTable(output: string): ProcessRow[] {
   return rows
 }
 
-/** The pane shell's child that runs the provider's CLI. */
+/**
+ * The process that runs the provider's CLI: a child of the pane's shell, or the pane's own
+ * process when Commando launched the agent as the pane command.
+ */
 export function findAgentProcess(
   rows: readonly ProcessRow[],
   panePid: number,
   provider: ResumableProvider,
 ): ProcessRow | null {
   const spec = PROVIDERS[provider]
-  return rows.find((row) => row.ppid === panePid && executableOf(spec, row.args.split(/\s+/)) !== null) ?? null
+  const runsAgent = (row: ProcessRow) => executableOf(spec, row.args.split(/\s+/)) !== null
+  return rows.find((row) => row.pid === panePid && runsAgent(row))
+    ?? rows.find((row) => row.ppid === panePid && runsAgent(row))
+    ?? null
 }
 
 /** Reads the provider's variables from `ps -E -o command=`, which appends the environment to argv. */

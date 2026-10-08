@@ -91,8 +91,10 @@ describe('process helpers', () => {
 
   it('finds the provider CLI among the pane shell children', () => {
     expect(findAgentProcess(table, 65922, 'claude')?.pid).toBe(740)
+    // Commando launches a new session's agent as the pane process itself.
+    expect(findAgentProcess(table, 740, 'claude')?.pid).toBe(740)
     expect(findAgentProcess(table, 65922, 'codex')).toBeNull()
-    expect(findAgentProcess(table, 740, 'claude')).toBeNull()
+    expect(findAgentProcess(table, 741, 'claude')).toBeNull()
   })
 
   it('reads only the provider variables from the process environment', () => {

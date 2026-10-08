@@ -312,6 +312,27 @@ describe('AgentResumeService', () => {
     expect(resumes.get(OTHER_TARGET)).toMatchObject({ state: 'failed', error: 'The pane has unsent input, so nothing was typed. Clear it, then retry.' })
   })
 
+  it('does not type into a pane the user typed in during the shell-ready wait', async () => {
+    let typedAt: number | undefined
+    const resume = await recordOn(OLD_SERVER, service({ lastInputAt: () => typedAt }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(1_000)
+    typedAt = now
+    await advance(4_000)
+    expect(sent).toEqual([])
+    expect(resumes.get(TARGET)?.state).toBe('failed')
+  })
+
+  it('offers a retry when typing into the pane fails', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ sendCommand: async () => { throw new Error('pane not found') } }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'Could not type into the pane: pane not found' })
+    expect(resume.retry(undefined, NEW_SERVER)).toBe(1)
+  })
+
   it('clears a failed resume whose pane has gone when retried', async () => {
     const resume = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
     panes.set(TARGET, pane({ command: 'zsh' }))
