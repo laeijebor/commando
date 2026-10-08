@@ -671,6 +671,19 @@ kbd {
   padding: 9px 6px 5px;
 }
 
+.tree-heading-action {
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, var(--border));
+  border-radius: 5px;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.tree-heading-action:disabled { cursor: default; opacity: 0.5; }
+
 .session-tree {
   min-height: 0;
   overflow-y: auto;
@@ -2298,6 +2311,48 @@ kbd {
 .pane-worklog-recap > :last-child { margin-bottom: 0; }
 .pane-worklog-recap a { color: var(--accent); }
 .pane-worklog-recap code { color: var(--amber); }
+
+.pane-worklog-resume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--surface-hover);
+  color: var(--muted);
+  font: 600 8px/1.45 var(--sans);
+}
+.pane-worklog-resume span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.pane-worklog-resume.is-resumed { color: var(--green); }
+.pane-worklog-resume.is-failed { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+.pane-worklog-resume button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, var(--border));
+  border-radius: 5px;
+  color: var(--text);
+  background: transparent;
+  font: 700 8px/1.2 var(--sans);
+  cursor: pointer;
+}
+.pane-worklog-resume button:disabled { cursor: default; opacity: 0.5; }
+.pane-worklog-resume button svg { width: 9px; height: 9px; }
+
+.pane-worklog-resume-indicator {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.pane-worklog-resume-indicator svg { width: 10px; height: 10px; }
+.pane-worklog-resume-indicator.is-failed { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .pane-worklog-recap ul,
 .pane-worklog-recap ol { padding-left: 16px; }
 

@@ -776,6 +776,16 @@ export class AgentStatusRegistry {
     return status ? cloneStatus(status) : undefined
   }
 
+  /**
+   * The hook status of the agent the pane runs now. A finished session kept for its recap, or a
+   * status recorded for another process (pane ids repeat after a tmux restart), is not live.
+   */
+  liveHookStatus(paneId: string, processCommand: string): AgentStatus | undefined {
+    const record = this.records.get(paneId)
+    if (record?.status.source !== 'hook' || record.retainedCompletion || record.processCommand !== processCommand) return undefined
+    return cloneStatus(record.status)
+  }
+
   /** Hook evidence is scoped to the observed foreground process, never just the pane. */
   hasCursorHookProcess(paneId: string, command?: string): boolean {
     const record = this.records.get(paneId)

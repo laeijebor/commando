@@ -134,6 +134,7 @@ export class TmuxClient {
   private readonly controllers = new TmuxControllerPool(this.socketArgs)
   private readonly openPorts: OpenPortScanner
   private readonly paneIdentities = new TmuxPaneIdentityStore()
+  private discoveredServerId: string | null = null
   private readonly persistPaneTarget = (paneId: string, value: string) =>
     this.run(
       ['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, value],
@@ -173,6 +174,7 @@ export class TmuxClient {
         }),
       ])
       const { paneOutput: panes, serverId, identities } = parsePaneIdentityDiscovery(paneDiscovery)
+      this.discoveredServerId = serverId
       const restored = await this.paneIdentities.restore(serverId, identities, this.persistPaneTarget)
       const targetIds = await this.paneTargets.reconcile(restored)
       await this.paneIdentities.remember(serverId, restored, targetIds)
@@ -217,6 +219,11 @@ export class TmuxClient {
     this.controllers.setHandlers(handlers)
   }
 
+  /** The tmux server (`pid:start_time`) seen by the latest discovery; it changes when tmux restarts. */
+  get serverId(): string | null {
+    return this.discoveredServerId
+  }
+
   setRequiredSessions(sessionIds: ReadonlySet<string>): void {
     this.controllers.setRequiredSessions(sessionIds)
   }
@@ -232,6 +239,16 @@ export class TmuxClient {
       { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 },
     )
     return command.trim()
+  }
+
+  /** The pane's cursor line, up to the cursor. */
+  async promptLine(paneId: string): Promise<string> {
+    if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
+    const options = { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 }
+    const [x, y] = (await this.run(['display-message', '-p', '-t', paneId, '#{cursor_x} #{cursor_y}'], options)).trim().split(' ').map(Number)
+    if (!Number.isInteger(x) || !Number.isInteger(y)) throw new Error('tmux did not report the cursor')
+    const line = await this.run(['capture-pane', '-p', '-t', paneId, '-S', String(y), '-E', String(y)], options)
+    return line.replace(/\n$/, '').slice(0, x)
   }
 
   capturePaneSeed(

@@ -17,6 +17,7 @@ import {
   isInteractionId,
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
+import { isCommandoTargetId } from '../shared/pane-target.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -502,6 +503,21 @@ export function parseClientMessage(value: unknown): ParseResult {
         }
       }
       return { ok: true, message: { type: 'watch_usage', enabled: value.enabled, requestId: id } }
+    }
+    case 'retry_agent_resume': {
+      const id = requestId(value.requestId)
+      const targetId = value.targetId
+      if (!id || (targetId !== undefined && (typeof targetId !== 'string' || !isCommandoTargetId(targetId)))) {
+        return {
+          ok: false,
+          error: 'Invalid agent resume retry',
+          requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
+        }
+      }
+      return {
+        ok: true,
+        message: { type: 'retry_agent_resume', ...(targetId === undefined ? {} : { targetId }), requestId: id },
+      }
     }
     case 'refresh_usage': {
       const id = requestId(value.requestId)

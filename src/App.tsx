@@ -60,6 +60,7 @@ import type {
   LayoutSpec,
   PaneLayoutCapacity,
   PaneMark,
+  AgentResume,
   PaneMarkTone,
   SavedWorkspace,
   ServerMessage,
@@ -278,6 +279,7 @@ type TerminalPaneProps = {
   status?: AgentStatus
   brief?: SessionBrief
   mark?: PaneMark
+  resume?: AgentResume
   index: number
   count: number
   solo: boolean
@@ -302,6 +304,7 @@ type TerminalPaneProps = {
   onFocus: () => void
   onOpenMenu: (x: number, y: number) => void
   onAcknowledgeMark?: () => void
+  onRetryResume?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -330,6 +333,7 @@ export function TerminalPaneCard({
   status,
   brief: suppliedBrief,
   mark,
+  resume,
   index,
   count,
   solo,
@@ -354,6 +358,7 @@ export function TerminalPaneCard({
   onFocus,
   onOpenMenu,
   onAcknowledgeMark,
+  onRetryResume,
   onRename,
   onRenameFinished,
   onMove,
@@ -644,6 +649,8 @@ export function TerminalPaneCard({
           revealInFinder={revealInFinder}
           onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
           onTypeCommand={onInput}
+          resume={resume}
+          onRetryResume={onRetryResume}
         />
       </div>
       <footer className="pane-footer">
@@ -919,6 +926,7 @@ export function App() {
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
+  const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -1244,6 +1252,20 @@ export function App() {
         break
       case 'pane_mark_removed':
         setPaneMarks((current) => {
+          if (!(message.targetId in current)) return current
+          const next = { ...current }
+          delete next[message.targetId]
+          return next
+        })
+        break
+      case 'agent_resume':
+        setAgentResumes((current) => ({ ...current, [message.resume.targetId]: message.resume }))
+        break
+      case 'agent_resume_snapshot':
+        setAgentResumes(Object.fromEntries(message.resumes.map((resume) => [resume.targetId, resume])))
+        break
+      case 'agent_resume_removed':
+        setAgentResumes((current) => {
           if (!(message.targetId in current)) return current
           const next = { ...current }
           delete next[message.targetId]
@@ -1975,6 +1997,10 @@ export function App() {
     send({ type: 'refresh', requestId: requestId('refresh') })
     setPaletteOpen(false)
   }
+  const retryAgentResume = (targetId?: string) => {
+    send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
+  }
+  const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
@@ -2658,6 +2684,17 @@ export function App() {
 
           <div className="tree-heading">
             <span>Session tree</span>
+            {failedResumeCount > 0 ? (
+              <button
+                type="button"
+                className="tree-heading-action"
+                onClick={() => retryAgentResume()}
+                disabled={!connected}
+                title="Retry every agent conversation Commando could not resume after tmux restarted"
+              >
+                Resume all ({failedResumeCount})
+              </button>
+            ) : null}
             <span>{snapshot?.panes.length ?? 0} panes</span>
           </div>
           <div className="session-tree">
@@ -2877,6 +2914,8 @@ export function App() {
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
                             mark={paneMarks[pane.targetId]}
+                            resume={agentResumes[pane.targetId]}
+                            onRetryResume={() => retryAgentResume(pane.targetId)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             solo={displayLeafCount === 1}

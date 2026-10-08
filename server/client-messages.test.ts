@@ -585,4 +585,17 @@ describe('usage messages', () => {
     expect(parseClientMessage({ type: 'refresh_usage' }).ok).toBe(false)
     expect(parseClientMessage({ type: 'refresh_usage', requestId: 42 }).ok).toBe(false)
   })
+  it('accepts agent resume retries for one target or all failed resumes', () => {
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    expect(parseClientMessage({ type: 'retry_agent_resume', targetId, requestId: 'retry-1' })).toEqual({
+      ok: true,
+      message: { type: 'retry_agent_resume', targetId, requestId: 'retry-1' },
+    })
+    expect(parseClientMessage({ type: 'retry_agent_resume', requestId: 'retry-2' })).toEqual({
+      ok: true,
+      message: { type: 'retry_agent_resume', requestId: 'retry-2' },
+    })
+    expect(parseClientMessage({ type: 'retry_agent_resume', targetId: '%1', requestId: 'retry-3' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'retry_agent_resume', targetId }).ok).toBe(false)
+  })
 })
