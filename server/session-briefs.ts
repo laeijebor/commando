@@ -56,7 +56,7 @@ const MAX_NEXT = 240
 const MAX_UPDATE_TEXT = 240
 const MAX_UPDATE_DETAIL = 360
 const MAX_EARLIER_SESSIONS = 5
-const MAX_EARLIER_UPDATES = 60
+const MAX_EARLIER_UPDATES = 30
 /** Real conversation ids only; Codex's `codex:%N` stand-in must not split a worklog. */
 const AGENT_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
 const AGENT_PROVIDERS = new Set<AgentProvider>(['claude', 'codex', 'opencode', 'cursor'])
@@ -261,7 +261,9 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
   return {
     agentSession,
     headline,
+    ...(value.headlineSource === 'hook' || value.headlineSource === 'agent' ? { headlineSource: value.headlineSource } : {}),
     ...(recapMarkdown ? { recapMarkdown } : {}),
+    ...(recapMarkdown && (value.recapSource === 'hook' || value.recapSource === 'agent') ? { recapSource: value.recapSource } : {}),
     ...(tasks.length ? { tasks } : {}),
     ...(screenshots.length ? { screenshots } : {}),
     ...(references.length ? { references } : {}),
@@ -272,7 +274,7 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
 }
 
 /** Session history is supplementary: a malformed entry is dropped, never a reason to reject the worklog. */
-function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions'> {
+function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions' | 'agentSessionEnded'> {
   const agentSession = parseAgentSessionRef(value.agentSession)
   const earlierSessions = Array.isArray(value.earlierSessions)
     ? value.earlierSessions.slice(0, MAX_EARLIER_SESSIONS).map(parseEarlierSession).filter((entry) => entry !== null)
@@ -280,6 +282,7 @@ function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief,
   return {
     ...(agentSession ? { agentSession } : {}),
     ...(earlierSessions.length ? { earlierSessions } : {}),
+    ...(value.agentSessionEnded === true ? { agentSessionEnded: true as const } : {}),
   }
 }
 
@@ -298,20 +301,27 @@ function cloneEarlierSession(session: EarlierAgentSession): EarlierAgentSession 
   }
 }
 
+/** Lifecycle-only history (a delegated `codex exec`, an empty start) is not worth a slot. */
+function conversationProducedWork(brief: SessionBrief): boolean {
+  return Boolean(brief.recapMarkdown || brief.tasks?.length || brief.references?.length || brief.screenshots?.length)
+    || brief.updates.some((update) => update.source === 'agent' || update.author === 'user')
+}
+
 /**
  * A new conversation in the pane: everything the previous one produced moves under Earlier
- * sessions, and returning to an earlier conversation brings its worklog back.
+ * sessions, and returning to an earlier conversation brings its worklog back as it was.
+ * `next` is null when the new conversation's id is not known yet.
  */
-function startAgentSession(current: SessionBrief, next: AgentSessionRef, now: number): SessionBrief {
+function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, now: number): SessionBrief {
   const previous = current.agentSession
-  const earlier = (current.earlierSessions ?? []).filter((session) => !sameAgentSession(session.agentSession, next))
-  const returning = current.earlierSessions?.find((session) => sameAgentSession(session.agentSession, next))
-  const producedWork = current.updates.length > 0 || Boolean(current.tasks?.length || current.recapMarkdown || current.references?.length)
-  if (previous && producedWork) {
+  const earlier = (current.earlierSessions ?? []).filter((session) => !next || !sameAgentSession(session.agentSession, next))
+  const returning = next ? current.earlierSessions?.find((session) => sameAgentSession(session.agentSession, next)) : undefined
+  if (previous && conversationProducedWork(current)) {
     earlier.unshift({
       agentSession: previous,
       headline: current.headline,
-      ...(current.recapMarkdown ? { recapMarkdown: current.recapMarkdown } : {}),
+      headlineSource: current.headlineSource,
+      ...(current.recapMarkdown ? { recapMarkdown: current.recapMarkdown, ...(current.recapSource ? { recapSource: current.recapSource } : {}) } : {}),
       ...(current.tasks?.length ? { tasks: current.tasks } : {}),
       ...(current.screenshots?.length ? { screenshots: current.screenshots } : {}),
       ...(current.references?.length ? { references: current.references } : {}),
@@ -322,14 +332,15 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef, now: nu
   }
   const {
     recapMarkdown: _recap, recapSource: _recapSource, tasks: _tasks, screenshots: _screenshots,
-    references: _references, next: _next, earlierSessions: _earlier, ...pane
+    references: _references, next: _next, earlierSessions: _earlier, agentSession: _session,
+    agentSessionEnded: _ended, ...pane
   } = current
   return {
     ...pane,
-    agentSession: next,
+    ...(next ? { agentSession: next } : {}),
     headline: returning?.headline ?? current.headline,
-    headlineSource: 'hook',
-    ...(returning?.recapMarkdown ? { recapMarkdown: returning.recapMarkdown, recapSource: 'hook' as const } : {}),
+    headlineSource: returning?.headlineSource ?? 'hook',
+    ...(returning?.recapMarkdown ? { recapMarkdown: returning.recapMarkdown, ...(returning.recapSource ? { recapSource: returning.recapSource } : {}) } : {}),
     ...(returning?.tasks ? { tasks: returning.tasks } : {}),
     ...(returning?.screenshots ? { screenshots: returning.screenshots } : {}),
     ...(returning?.references ? { references: returning.references } : {}),
@@ -684,11 +695,16 @@ export class SessionBriefStore {
       : previous.sessionId === sessionId) ? previous : undefined
   }
 
+  /**
+   * `foregroundProvider` names the agent the pane runs now. A hook from another provider is a
+   * child process (a delegated `codex exec`), never a new conversation for the pane.
+   */
   async syncFromStatuses(
     sessionId: string,
     sessionName: string,
     statuses: AgentStatus[],
     now = Date.now(),
+    foregroundProvider?: (paneId: string) => AgentProvider | undefined,
   ): Promise<SessionBrief[]> {
     if (!SESSION_ID.test(sessionId)) throw new Error('Invalid tmux session id')
     const cleanSessionName = cleanText(sessionName, 128)
@@ -703,8 +719,12 @@ export class SessionBriefStore {
         ? { provider: status.provider, id: status.agentSessionId }
         : null
       const saved = this.currentBrief(status.paneId, sessionId)
-      // A worklog from before session tracking adopts the running conversation instead of splitting.
+      const foreground = foregroundProvider?.(status.paneId)
+      const fromForeground = !foreground || foreground === 'unknown' || foreground === status.provider
+      // A worklog from before session tracking, or one waiting for its new conversation's id,
+      // adopts the running conversation instead of splitting.
       const current = saved && agentSession && saved.agentSession && !sameAgentSession(saved.agentSession, agentSession)
+        && (saved.agentSessionEnded || fromForeground)
         ? startAgentSession(saved, agentSession, now)
         : saved
       const targetId = this.livePanes.get(status.paneId)?.targetId ?? current?.targetId
@@ -739,7 +759,10 @@ export class SessionBriefStore {
         ...(current?.references?.length ? { references: current.references.map((reference) => ({ ...reference })) } : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
-        ...(agentSession ?? current?.agentSession ? { agentSession: { ...(agentSession ?? current!.agentSession!) } } : {}),
+        ...(current?.agentSession && agentSession && !sameAgentSession(current.agentSession, agentSession)
+          ? { agentSession: { ...current.agentSession } }
+          : agentSession ?? current?.agentSession ? { agentSession: { ...(agentSession ?? current!.agentSession!) } } : {}),
+        ...(current?.agentSessionEnded && !agentSession ? { agentSessionEnded: true as const } : {}),
         ...(current?.earlierSessions?.length ? { earlierSessions: current.earlierSessions.map(cloneEarlierSession) } : {}),
         updatedAt: Math.max(now, status.updatedAt),
       }
@@ -774,7 +797,10 @@ export class SessionBriefStore {
     if (!SESSION_ID.test(sessionId) || !PANE_ID.test(paneId)) throw new Error('Invalid tmux target')
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
-    const current = this.currentBrief(paneId, sessionId)
+    const saved = this.currentBrief(paneId, sessionId)
+    // The previous agent exited; this is the first word from the next one (Codex reports its id
+    // only after a turn), so it starts a new conversation.
+    const current = saved?.agentSessionEnded ? startAgentSession(saved, null, now) : saved
     const targetId = this.livePanes.get(paneId)?.targetId ?? current?.targetId
     const update = patch.update ? {
       id: `agent:${now}:${randomUUID()}`,
@@ -869,6 +895,16 @@ export class SessionBriefStore {
     this.prune()
     await this.persist()
     return cloneBrief(validated)
+  }
+
+  /** The pane's agent process exited while tmux lived; its conversation is over unless resumed. */
+  async markAgentExited(paneId: string): Promise<SessionBrief | null> {
+    const brief = this.briefs.get(paneId)
+    if (!brief?.agentSession || brief.agentSessionEnded) return null
+    const ended = { ...brief, agentSessionEnded: true as const }
+    this.briefs.set(paneId, ended)
+    await this.persist()
+    return cloneBrief(ended)
   }
 
   async removeMissingSessions(sessionIds: Iterable<string>): Promise<boolean> {

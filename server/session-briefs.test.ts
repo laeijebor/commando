@@ -794,6 +794,69 @@ describe('agent sessions in one pane', () => {
     expect(parsed).not.toHaveProperty('agentSession')
   })
 
+  it('restores an earlier conversation with the headline and recap its agent wrote', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.applyAgentPatch('$1', 'work', '%1', { headline: 'Agent headline A', recapMarkdown: 'Agent recap A' }, 11)
+    await briefs.syncFromStatuses('$1', 'work', [claude(second, 20, 'Write docs')], 20)
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 30, 'Fix login again')], 30)
+    expect(briefs.get('%1')).toMatchObject({
+      headline: 'Agent headline A', headlineSource: 'agent', recapMarkdown: 'Agent recap A', recapSource: 'agent',
+    })
+  })
+
+  it('ignores hooks from another provider running under the pane agent', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    const delegated = { ...claude('cccccccc-3333-4333-8333-333333333333', 20, 'Delegated review'), provider: 'codex' as const }
+    await briefs.syncFromStatuses('$1', 'work', [delegated], 20, () => 'claude')
+    expect(briefs.get('%1')).toMatchObject({ agentSession: { provider: 'claude', id: first } })
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+  })
+
+  it('starts the next conversation at its first update after the agent exits, before its id is known', async () => {
+    const briefs = await store()
+    const codex = (id: string, at: number, summary: string): AgentStatus => ({ ...claude(id, at, summary), provider: 'codex' })
+    await briefs.syncFromStatuses('$1', 'work', [codex('thread-AAAAAA', 10, 'Turn A')], 10)
+    await briefs.applyAgentPatch('$1', 'work', '%1', { reference: { action: 'upsert', kind: 'session', value: 'codex resume thread-AAAAAA' } }, 11)
+    expect(await briefs.markAgentExited('%1')).toMatchObject({ agentSessionEnded: true })
+
+    await briefs.applyAgentPatch('$1', 'work', '%1', {
+      update: { kind: 'note', text: 'B started work' },
+      reference: { action: 'upsert', kind: 'session', value: 'codex resume thread-BBBBBB' },
+    }, 20)
+    await briefs.syncFromStatuses('$1', 'work', [codex('thread-BBBBBB', 30, 'Turn B')], 30)
+    const brief = briefs.get('%1')!
+    expect(brief.agentSession).toEqual({ provider: 'codex', id: 'thread-BBBBBB' })
+    expect(brief.references).toEqual([{ kind: 'session', value: 'codex resume thread-BBBBBB' }])
+    expect(brief.updates.map((update) => update.text)).toContain('B started work')
+    expect(brief.earlierSessions?.[0]).toMatchObject({
+      agentSession: { id: 'thread-AAAAAA' },
+      references: [{ kind: 'session', value: 'codex resume thread-AAAAAA' }],
+    })
+    expect(brief).not.toHaveProperty('agentSessionEnded')
+  })
+
+  it('keeps one worklog when the exited conversation is resumed', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.markAgentExited('%1')
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 20, 'Fix login', 'done')], 20)
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+    expect(briefs.get('%1')).not.toHaveProperty('agentSessionEnded')
+  })
+
+  it('does not keep a conversation that only produced lifecycle updates', async () => {
+    const briefs = await store()
+    const lifecycleOnly = (id: string, at: number): AgentStatus => {
+      const base = claude(id, at, 'Lifecycle')
+      return { ...base, details: { ...base.details!, tasks: undefined } }
+    }
+    await briefs.syncFromStatuses('$1', 'work', [lifecycleOnly(first, 10)], 10)
+    await briefs.syncFromStatuses('$1', 'work', [claude(second, 20, 'Write docs')], 20)
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+  })
+
   it('keeps at most five earlier sessions', async () => {
     const briefs = await store()
     for (let index = 0; index < 8; index += 1) {

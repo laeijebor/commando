@@ -65,6 +65,18 @@ describe('PaneMarkStore', () => {
     expect(replay.get(TARGET_ID)).toBeNull()
   })
 
+  it('does not count a returning conversation\'s old updates as new activity', async () => {
+    const marks = await store()
+    await marks.set(TARGET_ID, { label: 'Blocked', tone: 'red' }, 100)
+    const conversationA = [update('a-1', 110, 'Edited App.tsx'), update('a-2', 120, 'Ran tests')]
+    const showingB: SessionBrief = {
+      ...brief([update('b-1', 130, 'Wrote docs')], 130),
+      earlierSessions: [{ agentSession: { provider: 'claude', id: 'aaaaaaaa-1' }, headline: 'A', updates: conversationA, endedAt: 130 }],
+    }
+    const backToA = brief(conversationA, 140)
+    expect(await marks.observeBrief(TARGET_ID, showingB, backToA)).toBeNull()
+  })
+
   it('counts only new semantic milestones after the mark', async () => {
     const marks = await store()
     await marks.set(TARGET_ID, { label: 'Blocked', tone: 'red' }, 100)

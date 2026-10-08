@@ -186,7 +186,9 @@ export type AgentSessionRef = { provider: AgentProvider; id: string }
 export type EarlierAgentSession = {
   agentSession: AgentSessionRef
   headline: string
+  headlineSource?: 'hook' | 'agent'
   recapMarkdown?: string
+  recapSource?: 'hook' | 'agent'
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
   references?: SessionReference[]
@@ -218,6 +220,8 @@ export type SessionBrief = {
   agentSession?: AgentSessionRef
   /** Conversations that ran before it in this pane, newest first. */
   earlierSessions?: EarlierAgentSession[]
+  /** The agent process exited while tmux lived; the next agent's work starts a new conversation. */
+  agentSessionEnded?: true
   updatedAt: number
 }
 

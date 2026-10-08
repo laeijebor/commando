@@ -340,12 +340,13 @@ export function PaneWorklog({
     else node.scrollTop = 0
   }
 
+  // A different conversation brings a different update list, so its length says nothing about new updates.
   useEffect(() => {
     setPreferences(storedPreferences(brief))
     setFollowing(true)
     setUnread(0)
     previousUpdateCount.current = brief.updates.length
-  }, [brief.targetId ?? `${brief.sessionId}:${brief.paneId}`])
+  }, [brief.targetId ?? `${brief.sessionId}:${brief.paneId}`, brief.agentSession?.provider, brief.agentSession?.id])
 
   useEffect(() => {
     const node = activityRef.current?.closest('.terminal-pane-body')
