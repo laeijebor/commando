@@ -4474,8 +4474,8 @@ body.is-resizing-hud-pinned-note {
 .pane-worklog-earlier-body { display: grid; gap: 6px; padding: 0 0 8px 15px; }
 .pane-worklog-earlier-body .pane-worklog-recap { padding: 0; border: 0; }
 .pane-worklog-earlier-list { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; color: var(--muted); font: 500 8px/1.4 var(--sans); }
-.pane-worklog-earlier-list li { display: flex; align-items: baseline; gap: 4px; overflow-wrap: anywhere; }
-.pane-worklog-earlier-list li svg { width: 8px; height: 8px; flex: 0 0 auto; }
+.pane-worklog-earlier-list li { overflow-wrap: anywhere; }
+.pane-worklog-earlier-list li svg { width: 8px; height: 8px; margin-right: 4px; vertical-align: -1px; }
 .pane-worklog-earlier-list small { color: var(--muted-dim); }
 .pane-worklog-earlier-next { margin: 0; color: var(--muted); font: 500 8px/1.4 var(--sans); }
 .pane-worklog-earlier-next small { color: var(--muted-dim); font: 700 7px/1 var(--mono); text-transform: uppercase; }
