@@ -18,10 +18,14 @@ type FlagSpec = {
   single: readonly string[]
   /** Flags that take values until the next flag. */
   multi?: readonly string[]
+  /** Flags whose single value is dropped with them: old resume targets, names, prompts. */
+  dropped?: readonly string[]
 }
 
 type ProviderSpec = {
   executables: readonly string[]
+  /** Arguments a launcher script inserts before the user's own. */
+  launcherArgs?: (rest: readonly string[]) => number
   env: readonly string[]
   flags: FlagSpec
   resume: (executable: string[], flags: string[], sessionId: string) => string[]
@@ -55,6 +59,7 @@ const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
         '--autocompact',
       ],
       multi: ['--add-dir', '--mcp-config', '--plugin-dir'],
+      dropped: ['-r', '--resume', '--session-id', '-n', '--name', '--append-system-prompt', '--system-prompt'],
     },
     resume: (executable, flags, id) => [...executable, ...flags, '--resume', id],
   },
@@ -94,11 +99,17 @@ const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
     flags: {
       bare: ['--yolo', '--auto', '--pure', '--mini', '--no-replay'],
       single: ['-m', '--model', '--agent', '--log-level', '--replay-limit'],
+      dropped: ['-s', '--session', '--prompt'],
     },
     resume: (executable, flags, id) => [...executable, ...flags, '-s', id],
   },
   cursor: {
     executables: ['agent', 'cursor-agent'],
+    // The launcher execs `node [--use-system-ca] <dir>/index.js "$@"` under the launcher's name.
+    launcherArgs: (rest) => {
+      const skip = rest[0] === '--use-system-ca' ? 1 : 0
+      return rest[skip]?.endsWith('/index.js') ? skip + 1 : 0
+    },
     env: [],
     flags: {
       bare: ['-f', '--force', '--yolo', '--auto-review', '--approve-mcps', '--trust', '--plan'],
@@ -142,10 +153,15 @@ function executableOf(spec: ProviderSpec, args: readonly string[]): { executable
   return null
 }
 
+/**
+ * `ps` joins argv with spaces, so a prompt's words look like separate arguments. Flags come
+ * before the prompt, so stop at the first word that is neither a flag nor a flag's value.
+ */
 function carriedFlags(flags: FlagSpec, rest: readonly string[]): string[] {
   const carried: string[] = []
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index]!
+    if (!arg.startsWith('-')) break
     const [name, inline] = arg.startsWith('--') && arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg] : [arg, null]
     if (flags.bare.includes(name)) {
       if (inline === null) carried.push(arg)
@@ -154,6 +170,10 @@ function carriedFlags(flags: FlagSpec, rest: readonly string[]): string[] {
     if (flags.single.includes(name)) {
       if (inline !== null) carried.push(inline)
       else if (index + 1 < rest.length) carried.push(arg, rest[++index]!)
+      continue
+    }
+    if (flags.dropped?.includes(name)) {
+      if (inline === null) index += 1
       continue
     }
     if (flags.multi?.includes(name)) {
@@ -182,7 +202,8 @@ export function buildResumeCommand(
   const spec = PROVIDERS[provider]
   const found = executableOf(spec, launch.args)
   if (!found) return null
-  const words = spec.resume(found.executable, carriedFlags(spec.flags, found.rest), sessionId)
+  const rest = found.rest.slice(spec.launcherArgs?.(found.rest) ?? 0)
+  const words = spec.resume(found.executable, carriedFlags(spec.flags, rest), sessionId)
   const env = spec.env
     .filter((name) => launch.env[name])
     .map((name) => `${name}=${launch.env[name]}`)

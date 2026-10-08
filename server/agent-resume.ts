@@ -97,6 +97,8 @@ export type AgentResumeDeps = {
   currentPane: (targetId: string) => ResumePane | undefined
   /** Types the command and presses Enter. */
   sendCommand: (pane: ResumePane, command: string) => Promise<void>
+  /** The pane's cursor line up to the cursor, so typed input is not overwritten. */
+  readPromptLine?: (pane: ResumePane) => Promise<string>
   pathExists: (path: string) => Promise<boolean>
   onChange: (change: { type: 'upsert'; resume: AgentResume } | { type: 'remove'; targetId: string }) => void
   now?: () => number
@@ -104,7 +106,7 @@ export type AgentResumeDeps = {
   onError?: (error: unknown) => void
 }
 
-type Job = { targetId: string; notBefore: number; active: boolean }
+type Job = { targetId: string; serverId: string; notBefore: number; active: boolean; baseline?: string }
 
 /**
  * Remembers which conversation each pane target runs and resumes it when tmux restores the
@@ -117,6 +119,8 @@ export class AgentResumeService {
   private readonly resumes = new Map<string, AgentResume>()
   private readonly capturing = new Set<string>()
   private readonly captureMisses = new Map<string, { key: string; at: number }>()
+  /** Records whose resume failed; only Retry brings them back, so a later restart never retypes them. */
+  private readonly failedRecords = new Map<string, AgentResumeRecord>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -169,17 +173,13 @@ export class AgentResumeService {
     const miss = this.captureMisses.get(pane.targetId)
     if (miss?.key === key && this.now() - miss.at < CAPTURE_RETRY_MS) return
     this.capturing.add(pane.targetId)
+    let recorded = false
     try {
       const rows = parseProcessTable(await (this.deps.readProcessTable ?? readProcessTable)())
       const agent = findAgentProcess(rows, pane.processId, status.provider)
       const command = agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
         status.provider, agent.args, await (this.deps.readProcessEnvironment ?? readProcessEnvironment)(agent.pid)))
-      if (!command) {
-        this.captureMisses.set(pane.targetId, { key, at: this.now() })
-        return
-      }
-      this.captureMisses.delete(pane.targetId)
-      this.records.set(pane.targetId, {
+      const record: AgentResumeRecord | null = command ? {
         targetId: pane.targetId,
         provider: status.provider,
         sessionId: status.agentSessionId,
@@ -187,10 +187,17 @@ export class AgentResumeService {
         command,
         serverId,
         updatedAt: this.now(),
-      })
+      } : null
+      if (!record || !validRecord(record)) return
+      this.records.set(pane.targetId, record)
+      this.failedRecords.delete(pane.targetId)
       this.persist()
+      recorded = true
     } finally {
       this.capturing.delete(pane.targetId)
+      // A miss, or a failing `ps`, waits before the next lookup instead of repeating every discovery.
+      if (recorded) this.captureMisses.delete(pane.targetId)
+      else this.captureMisses.set(pane.targetId, { key, at: this.now() })
     }
   }
 
@@ -206,14 +213,13 @@ export class AgentResumeService {
       const status = statusFor(pane.id)
       if (status && !isShellCommand(pane.command)) void this.observeHookStatus(status, pane, serverId).catch(this.onError)
       const record = this.records.get(pane.targetId)
-      if (!record || !isShellCommand(pane.command)) continue
-      if (record.serverId === serverId) {
+      if (!record || !isShellCommand(pane.command) || this.inFlight(pane.targetId)) continue
+      if (record.serverId === serverId || record.attemptedServerId === serverId) {
+        // Exited while its tmux server lived, or resumed here and gone again: both deliberate.
         this.records.delete(pane.targetId)
         changed = true
-      } else if (record.attemptedServerId !== serverId) {
-        record.attemptedServerId = serverId
-        changed = true
-        queued.push({ targetId: pane.targetId, notBefore: this.now() + SHELL_READY_MS, active: pane.active })
+      } else {
+        queued.push({ targetId: pane.targetId, serverId, notBefore: this.now() + SHELL_READY_MS, active: pane.active })
       }
     }
     if (changed) this.persist()
@@ -225,7 +231,9 @@ export class AgentResumeService {
     const agents: Record<string, ArchivedAgent> = {}
     for (const targetId of targetIds) {
       const record = this.records.get(targetId)
-      if (record) agents[targetId] = { provider: record.provider, sessionId: record.sessionId, path: record.path, command: record.command }
+      if (record && validRecord(record)) {
+        agents[targetId] = { provider: record.provider, sessionId: record.sessionId, path: record.path, command: record.command }
+      }
     }
     return agents
   }
@@ -247,22 +255,43 @@ export class AgentResumeService {
   }
 
   /** Retries one failed resume, or every failed one. */
-  retry(targetId?: string): number {
-    const failed = [...this.resumes.values()].filter((resume) =>
-      resume.state === 'failed' && (targetId === undefined || resume.targetId === targetId) && this.records.has(resume.targetId))
-    this.enqueue(failed.map((resume) => ({ targetId: resume.targetId, notBefore: this.now(), active: true })))
-    return failed.length
+  retry(targetId?: string, serverId?: string | null): number {
+    const jobs: Job[] = []
+    for (const [failedTarget, record] of this.failedRecords) {
+      if (targetId !== undefined && failedTarget !== targetId) continue
+      this.failedRecords.delete(failedTarget)
+      this.records.set(failedTarget, record)
+      jobs.push({ targetId: failedTarget, serverId: serverId ?? record.attemptedServerId ?? record.serverId, notBefore: this.now(), active: true })
+    }
+    if (jobs.length > 0) this.persist()
+    this.enqueue(jobs)
+    return jobs.length
+  }
+
+  private inFlight(targetId: string): boolean {
+    const state = this.resumes.get(targetId)?.state
+    return state === 'queued' || state === 'resuming'
   }
 
   private enqueue(jobs: Job[]): void {
     if (jobs.length === 0) return
-    const queuedIds = new Set(this.queue.map((job) => job.targetId))
     for (const job of jobs) {
-      if (queuedIds.has(job.targetId)) continue
+      if (this.queue.some((queued) => queued.targetId === job.targetId)) continue
       const record = this.records.get(job.targetId)
       const pane = this.deps.currentPane(job.targetId)
-      if (!record || !pane) continue
+      if (!record) continue
+      if (!pane) {
+        this.records.delete(job.targetId)
+        this.persist()
+        this.dropResume(job.targetId)
+        continue
+      }
       this.queue.push(job)
+      // What the prompt looks like once the shell is ready; anything typed after that is the user's.
+      this.setTimer(() => {
+        if (!this.queue.includes(job)) return
+        void this.promptLine(job.targetId).then((line) => { if (job.baseline === undefined) job.baseline = line })
+      }, Math.max(job.notBefore - this.now(), 0))
       this.setResume({
         targetId: job.targetId,
         paneId: pane.id,
@@ -279,12 +308,23 @@ export class AgentResumeService {
 
   private drain(): void {
     if (this.draining) return
-    const job = this.queue[0]
-    if (!job) return
-    const wait = Math.max(job.notBefore - this.now(), this.lastSentAt + STAGGER_MS - this.now(), 0)
+    const head = this.queue[0]
+    if (!head) return
+    const wait = Math.max(head.notBefore - this.now(), this.lastSentAt + STAGGER_MS - this.now(), 0)
     this.draining = true
     this.setTimer(() => {
-      this.queue.shift()
+      // An active pane may have been queued ahead while this timer waited; run whatever is first now.
+      const job = this.queue.shift()
+      if (!job) {
+        this.draining = false
+        return
+      }
+      if (job.notBefore > this.now()) {
+        this.queue.unshift(job)
+        this.draining = false
+        this.drain()
+        return
+      }
       void this.run(job).catch(this.onError).finally(() => {
         this.draining = false
         this.drain()
@@ -292,15 +332,35 @@ export class AgentResumeService {
     }, wait)
   }
 
+  private async promptLine(targetId: string): Promise<string | undefined> {
+    const pane = this.deps.currentPane(targetId)
+    if (!pane || !this.deps.readPromptLine) return undefined
+    return (await this.deps.readPromptLine(pane).catch(() => undefined))?.trimEnd()
+  }
+
   private async run(job: Job): Promise<void> {
     const record = this.records.get(job.targetId)
     const pane = this.deps.currentPane(job.targetId)
     const resume = this.resumes.get(job.targetId)
     if (!record || !resume) return
-    if (!pane) return this.fail(resume, 'The pane is gone.')
-    // Someone already started something here; leave it alone.
-    if (!isShellCommand(pane.command)) return this.dropResume(job.targetId)
+    if (!pane) {
+      this.records.delete(job.targetId)
+      this.persist()
+      return this.dropResume(job.targetId)
+    }
+    // Someone already started something here; it is theirs now.
+    if (!isShellCommand(pane.command)) {
+      this.records.delete(job.targetId)
+      this.persist()
+      return this.dropResume(job.targetId)
+    }
     if (!(await this.deps.pathExists(record.path))) return this.fail(resume, `The folder no longer exists: ${record.path}`)
+    const line = await this.promptLine(job.targetId)
+    if (job.baseline !== undefined && line !== undefined && line !== job.baseline) {
+      return this.fail(resume, 'The pane has unsent input, so nothing was typed. Clear it, then retry.')
+    }
+    record.attemptedServerId = job.serverId
+    this.persist()
     this.lastSentAt = this.now()
     await this.deps.sendCommand(pane, record.command)
     this.setResume({ ...resume, paneId: pane.id, state: 'resuming', error: undefined })
@@ -316,10 +376,17 @@ export class AgentResumeService {
   }
 
   private fail(resume: AgentResume, error: string): void {
+    const record = this.records.get(resume.targetId)
+    if (record) {
+      this.records.delete(resume.targetId)
+      this.failedRecords.set(resume.targetId, record)
+      this.persist()
+    }
     this.setResume({ ...resume, state: 'failed', error })
   }
 
   private dropResume(targetId: string): void {
+    this.failedRecords.delete(targetId)
     if (this.resumes.delete(targetId)) this.deps.onChange({ type: 'remove', targetId })
   }
 

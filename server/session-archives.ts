@@ -174,6 +174,7 @@ export class SessionArchives {
     }
 
     let sessionId: string | null = null
+    const adopted: Array<[paneId: string, targetId: string]> = []
     try {
       for (const [position, window] of archive.windows.entries()) {
         const first = layoutTreePanes(window.layout)[0]
@@ -193,7 +194,9 @@ export class SessionArchives {
         const created = new Map<string, string>([[first.paneId, paneId]])
         const adopt = async (archivedPaneId: string, newPaneId: string): Promise<void> => {
           const targetId = window.panes.find((pane) => pane.id === archivedPaneId)?.targetId
-          if (targetId) await this.run(['set-option', '-p', '-t', newPaneId, TMUX_PANE_TARGET_OPTION, `v1:${newPaneId}:${targetId}`])
+          if (!targetId) return
+          adopted.push([newPaneId, targetId])
+          await this.run(['set-option', '-p', '-t', newPaneId, TMUX_PANE_TARGET_OPTION, `v1:${newPaneId}:${targetId}`])
         }
         await adopt(first.paneId, paneId)
         const build = async (node: WindowLayoutNode, existing: string): Promise<void> => {
@@ -222,6 +225,10 @@ export class SessionArchives {
         const activePane = window.panes.find((pane) => pane.active)
         if (activePane) await this.run(['select-pane', '-t', created.get(activePane.id)!])
         if (window.active) await this.run(['select-window', '-t', windowId])
+      }
+      // A discovery between creating a pane and naming it may have given it a fresh identity.
+      for (const [paneId, targetId] of adopted) {
+        await this.run(['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, `v1:${paneId}:${targetId}`])
       }
     } catch (error) {
       if (sessionId) await this.run(['kill-session', '-t', sessionId]).catch(() => undefined)

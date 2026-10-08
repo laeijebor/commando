@@ -20,9 +20,16 @@ describe('buildResumeCommand', () => {
 
   it('drops prompts, print mode and the previous resume target', () => {
     expect(buildResumeCommand('claude', SESSION, {
-      args: [CLAUDE, '--resume', 'old-session-id', '-p', 'fix', 'the', 'bug', '--continue', '--verbose'],
+      args: [CLAUDE, '--resume', 'old-session-id', '--continue', '--verbose', '-p', 'fix', 'the', 'bug'],
       env: {},
     })).toBe(`${CLAUDE} --verbose --resume ${SESSION}`)
+  })
+
+  it('never turns words of a prompt into flags', () => {
+    expect(buildResumeCommand('claude', SESSION, {
+      args: [CLAUDE, '--model', 'opus', 'why', 'does', '--dangerously-skip-permissions', 'exist?'],
+      env: {},
+    })).toBe(`${CLAUDE} --model opus --resume ${SESSION}`)
   })
 
   it('keeps every value of a multi-value flag and inline values', () => {

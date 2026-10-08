@@ -610,6 +610,7 @@ async function main(): Promise<void> {
       await tmux.sendText(pane.sessionId, pane.id, command)
       await tmux.sendKey(pane.sessionId, pane.id, 'Enter')
     },
+    readPromptLine: (pane) => tmux.promptLine(pane.id),
     pathExists: (path) => stat(path).then((value) => value.isDirectory(), () => false),
     onChange: (change) => {
       broadcast(change.type === 'upsert'
@@ -1255,7 +1256,10 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
-        if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => agentStatuses.get(paneId))
+        if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
+          const pane = paneForId(paneId)
+          return pane && agentStatuses.liveHookStatus(paneId, pane.command)
+        })
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
         for (const pane of snapshot.panes) {
@@ -1879,7 +1883,7 @@ async function main(): Promise<void> {
         return
       }
       case 'retry_agent_resume': {
-        agentResume.retry(message.targetId)
+        agentResume.retry(message.targetId, tmux.serverId)
         return
       }
       case 'answer_agent_request': {

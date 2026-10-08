@@ -241,6 +241,16 @@ export class TmuxClient {
     return command.trim()
   }
 
+  /** The pane's cursor line, up to the cursor. */
+  async promptLine(paneId: string): Promise<string> {
+    if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
+    const options = { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 }
+    const [x, y] = (await this.run(['display-message', '-p', '-t', paneId, '#{cursor_x} #{cursor_y}'], options)).trim().split(' ').map(Number)
+    if (!Number.isInteger(x) || !Number.isInteger(y)) throw new Error('tmux did not report the cursor')
+    const line = await this.run(['capture-pane', '-p', '-t', paneId, '-S', String(y), '-E', String(y)], options)
+    return line.replace(/\n$/, '').slice(0, x)
+  }
+
   capturePaneSeed(
     sessionId: string,
     paneId: string,

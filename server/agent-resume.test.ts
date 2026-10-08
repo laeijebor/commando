@@ -242,7 +242,7 @@ describe('AgentResumeService', () => {
     expect(resumes.get(TARGET)?.state).toBe('resuming')
   })
 
-  it('persists records across daemon restarts and keeps the attempt marker', async () => {
+  it('requeues after a daemon restart that came before the send', async () => {
     const first = await recordOn(OLD_SERVER)
     panes.set(TARGET, pane({ command: 'zsh' }))
     first.reconcile([panes.get(TARGET)!], NEW_SERVER)
@@ -250,10 +250,88 @@ describe('AgentResumeService', () => {
 
     const second = service()
     await second.load()
-    expect(second.get(TARGET)).toMatchObject({ serverId: OLD_SERVER, attemptedServerId: NEW_SERVER })
+    expect(second.get(TARGET)?.attemptedServerId).toBeUndefined()
     second.reconcile([panes.get(TARGET)!], NEW_SERVER)
     expect(resumes.get(TARGET)?.state).toBe('queued')
-    expect(timers.filter((timer) => timer.at > now)).toHaveLength(1)
+  })
+
+  it('forgets a record whose agent came back on this server and then went away', async () => {
+    const first = await recordOn(OLD_SERVER)
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(first.get(TARGET)?.attemptedServerId).toBe(NEW_SERVER)
+    await first.flush()
+
+    // The daemon restarted after sending, before learning the outcome.
+    resumes.clear()
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(second.get(TARGET)).toBeUndefined()
+  })
+
+  it('never retypes a failed resume on a later restart unless retried', async () => {
+    const resume = await recordOn(OLD_SERVER)
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(25_000)
+    expect(resumes.get(TARGET)?.state).toBe('failed')
+    expect(resume.get(TARGET)).toBeUndefined()
+
+    resume.reconcile([panes.get(TARGET)!], '300:3000')
+    await advance(30_000)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('runs the pane at the front of the queue when an active pane jumps ahead', async () => {
+    const resume = await recordOn(OLD_SERVER)
+    await recordOn(OLD_SERVER, resume, pane({ id: '%2', targetId: OTHER_TARGET, processId: 501 }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(1_000)
+    panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh', active: true }))
+    resume.reconcile([panes.get(OTHER_TARGET)!], NEW_SERVER)
+    await advance(30_000)
+    expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%1', '%2'])
+  })
+
+  it('does not type over input the user started in a waiting pane', async () => {
+    const lines = new Map([['%1', '➜  repo '], ['%2', '➜  repo ']])
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async (target) => lines.get(target.id)! }))
+    await recordOn(OLD_SERVER, resume, pane({ id: '%2', targetId: OTHER_TARGET, processId: 501 }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh' }))
+    resume.reconcile([...panes.values()], NEW_SERVER)
+    await advance(4_000)
+    expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
+    // The second pane waits out the stagger while the user starts typing in it.
+    lines.set('%2', '➜  repo git checkout ma')
+    await advance(2_500)
+    expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
+    expect(resumes.get(OTHER_TARGET)).toMatchObject({ state: 'failed', error: 'The pane has unsent input, so nothing was typed. Clear it, then retry.' })
+  })
+
+  it('clears a failed resume whose pane has gone when retried', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)?.state).toBe('failed')
+    panes.delete(TARGET)
+    resume.retry(undefined, NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(resume.retry()).toBe(0)
+  })
+
+  it('backs off when reading the process table fails', async () => {
+    const readTable = vi.fn(async () => { throw new Error('ps timed out') })
+    const resume = service({ readProcessTable: readTable, onError: () => {} })
+    resume.reconcile([pane()], OLD_SERVER, () => hookStatus())
+    await advance(0)
+    resume.reconcile([pane()], OLD_SERVER, () => hookStatus())
+    await advance(0)
+    expect(readTable).toHaveBeenCalledTimes(1)
   })
 
   it('hands records to an archive and queues them again after its restore', async () => {
