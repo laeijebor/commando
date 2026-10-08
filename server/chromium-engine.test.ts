@@ -1146,18 +1146,41 @@ describe('ChromiumEngine', () => {
       maxLiveTiles: 1,
       classify: (url) => ({ kind: externalAllowed || new URL(url).hostname === 'localhost' ? 'open' : 'confirm' }),
     })
-    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const stop = await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
     stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'https://docs.example/page' } })
+    stub.emit('T1', 'Page.screencastFrame', { data: 'EXTERNAL', sessionId: 1, metadata: {} })
+    await until(() => stub.calls.some((call) => call.method === 'Page.screencastFrameAck'), 'frame ack')
+    stop()
     await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
     await until(() => stub.closedTargets.includes('T1'), 'hibernation')
 
     externalAllowed = false
-    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const sink = vi.fn()
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', sink)
     expect(stub.calls).toContainEqual({
       targetId: 'T3',
       method: 'Page.navigate',
       params: { url: 'http://localhost:5173/' },
     })
+    // No picture of the page the policy now rejects.
+    expect(sink).not.toHaveBeenCalled()
+  })
+
+  it('never hibernates a tile whose first navigation is still in flight', async () => {
+    const { stub, engine } = await createHarness({ maxLiveTiles: 2 })
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    stub.holdNext('Page.navigate')
+    const opening = engine.subscribeScreencast('w-22222222', 'http://localhost:5174/', () => undefined)
+    opening.catch(() => undefined)
+    await until(
+      () => stub.calls.some((call) => call.targetId === 'T2' && call.method === 'Page.navigate'),
+      'held navigation',
+    )
+
+    // An agent ensuring a third tile meanwhile must not close the opening one.
+    await engine.cdpInfo('w-33333333', 'http://localhost:5175/')
+    expect(stub.closedTargets).toEqual([])
+    expect(engine.hasTile('w-22222222')).toBe(true)
   })
 
   it('forgets hibernated tiles that were closed', async () => {

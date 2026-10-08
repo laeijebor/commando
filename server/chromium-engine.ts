@@ -801,6 +801,8 @@ export class ChromiumEngine {
   private readonly pendingSnapshots = new Map<string, BufferedPendingState>()
   /** Tiles whose target was closed to stay under maxLiveTiles, keyed by pane id. */
   private readonly hibernated = new Map<string, HibernatedTile>()
+  /** In-flight screencast subscriptions per pane, which pin their tile. */
+  private readonly subscribing = new Map<string, number>()
   private useCounter = 0
   private disposed = false
 
@@ -863,7 +865,17 @@ export class ChromiumEngine {
    * stops when the last subscriber leaves.
    */
   async subscribeScreencast(webPaneId: string, url: string, sink: ScreencastSink): Promise<() => void> {
-    const tile = await this.ensureTarget(webPaneId, url)
+    // Pinned until the sink lands, so a sibling's creation cannot hibernate
+    // the target this viewer is about to watch.
+    this.subscribing.set(webPaneId, (this.subscribing.get(webPaneId) ?? 0) + 1)
+    let tile: TileTarget
+    try {
+      tile = await this.ensureTarget(webPaneId, url)
+    } finally {
+      const remaining = (this.subscribing.get(webPaneId) ?? 1) - 1
+      if (remaining > 0) this.subscribing.set(webPaneId, remaining)
+      else this.subscribing.delete(webPaneId)
+    }
     tile.sinks.add(sink)
     if (tile.lastFrame) sink(tile.lastFrame)
     if (!tile.screencasting) {
@@ -1207,10 +1219,17 @@ export class ChromiumEngine {
    */
   private hibernateIdleTiles(limit: number): void {
     const idle = [...this.tiles.values()]
-      .filter((tile) => tile.sinks.size === 0 && !tile.screencastStarting)
+      .filter((tile) =>
+        tile.sinks.size === 0 &&
+        !tile.screencastStarting &&
+        !this.targetStarting.has(tile.webPaneId) &&
+        !this.subscribing.has(tile.webPaneId))
       .sort((a, b) => a.lastUsed - b.lastUsed)
+    // A tile joins `tiles` before its first navigation settles; count it once.
+    const live = new Set([...this.tiles.keys(), ...this.targetStarting.keys()])
     for (const tile of idle) {
-      if (this.tiles.size + this.targetStarting.size <= limit) return
+      if (live.size <= limit) return
+      live.delete(tile.webPaneId)
       if (tile.currentUrl !== 'about:blank') {
         this.hibernated.set(tile.webPaneId, { url: tile.currentUrl, lastFrame: tile.lastFrame })
       }
@@ -1310,7 +1329,8 @@ export class ChromiumEngine {
     const starting = this.targetStarting.get(webPaneId)
     if (starting) return starting
     this.hibernateIdleTiles(this.maxLiveTiles - 1)
-    const promise = this.createTarget(webPaneId, this.resumeUrl(webPaneId, url))
+    const resume = this.resumption(webPaneId, url)
+    const promise = this.createTarget(webPaneId, resume.url, resume.lastFrame)
     this.targetStarting.set(webPaneId, promise)
     try {
       return await promise
@@ -1321,16 +1341,21 @@ export class ChromiumEngine {
 
   /**
    * Where a recreated target should load: the hibernated tile's last accepted
-   * URL while the trust policy still admits it, otherwise the pane URL.
+   * URL and frame while the trust policy still admits that URL, otherwise the
+   * pane URL with no stale picture of a page that is no longer allowed.
    */
-  private resumeUrl(webPaneId: string, paneUrl: string): string {
+  private resumption(webPaneId: string, paneUrl: string): HibernatedTile {
     const resume = this.hibernated.get(webPaneId)
-    if (!resume) return paneUrl
+    if (!resume) return { url: paneUrl, lastFrame: null }
     const admitted = this.options.classify(resume.url).kind === 'open' || sameOrigin(resume.url, paneUrl)
-    return admitted ? resume.url : paneUrl
+    return admitted ? resume : { url: paneUrl, lastFrame: null }
   }
 
-  private async createTarget(webPaneId: string, url: string): Promise<TileTarget> {
+  private async createTarget(
+    webPaneId: string,
+    url: string,
+    resumeFrame: ScreencastFrame | null = null,
+  ): Promise<TileTarget> {
     const browser = await this.ensureBrowser()
     // One window per tile, never a tab: in a shared window only the active
     // tab's compositor runs, so every backgrounded tile's screencast would
@@ -1378,7 +1403,7 @@ export class ChromiumEngine {
       pollTimer: null,
       fallbackEpoch: 0,
       // A hibernated tile replays its last picture until the reload paints.
-      lastFrame: this.hibernated.get(webPaneId)?.lastFrame ?? null,
+      lastFrame: resumeFrame,
       lastUsed: ++this.useCounter,
     }
     cdp.on('Page.screencastFrame', (params) => {
