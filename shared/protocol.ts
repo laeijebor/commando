@@ -179,6 +179,22 @@ export type SimulatorClaim = {
   idle: boolean
 }
 
+/** The agent conversation a worklog belongs to. */
+export type AgentSessionRef = { provider: AgentProvider; id: string }
+
+/** An agent conversation that ran earlier in the pane, kept read-only below its worklog. */
+export type EarlierAgentSession = {
+  agentSession: AgentSessionRef
+  headline: string
+  recapMarkdown?: string
+  tasks?: AgentTask[]
+  screenshots?: PaneScreenshotFolder[]
+  references?: SessionReference[]
+  updates: SessionBriefUpdate[]
+  next?: string
+  endedAt: number
+}
+
 export type SessionBrief = {
   paneId: string
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
@@ -198,6 +214,10 @@ export type SessionBrief = {
   simulator?: SimulatorClaim
   updates: SessionBriefUpdate[]
   next?: string
+  /** The conversation the worklog currently shows; absent until a hook names one. */
+  agentSession?: AgentSessionRef
+  /** Conversations that ran before it in this pane, newest first. */
+  earlierSessions?: EarlierAgentSession[]
   updatedAt: number
 }
 

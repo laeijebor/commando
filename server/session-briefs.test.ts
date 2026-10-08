@@ -712,3 +712,95 @@ describe('SessionBriefStore', () => {
     })).toBeNull()
   })
 })
+
+describe('agent sessions in one pane', () => {
+  const claude = (id: string, updatedAt: number, summary: string, state: AgentStatus['status'] = 'working'): AgentStatus => {
+    const base = status('%1', state, updatedAt, summary, `${summary} task`)
+    return { ...base, provider: 'claude', agentSessionId: id, details: { ...base.details!, intent: summary } }
+  }
+  const first = 'aaaaaaaa-1111-4111-8111-111111111111'
+  const second = 'bbbbbbbb-2222-4222-8222-222222222222'
+
+  it('moves the previous conversation under earlier sessions when a new one starts', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.applyAgentPatch('$1', 'work', '%1', {
+      headline: 'Login fix',
+      recapMarkdown: 'Fixed the token refresh.',
+      reference: { action: 'upsert', kind: 'session', value: `claudep --resume ${first}` },
+      update: { kind: 'decision', text: 'Refresh tokens eagerly' },
+    }, 11)
+
+    await briefs.syncFromStatuses('$1', 'work', [claude(second, 20, 'Write docs')], 20)
+    const brief = briefs.get('%1')!
+    expect(brief.agentSession).toEqual({ provider: 'claude', id: second })
+    expect(brief.headline).not.toBe('Login fix')
+    expect(brief).not.toHaveProperty('recapMarkdown')
+    expect(brief).not.toHaveProperty('references')
+    expect(brief.tasks?.map((task) => task.content)).toEqual(['Write docs task'])
+    expect(brief.updates.some((update) => update.text === 'Refresh tokens eagerly')).toBe(false)
+    expect(brief.earlierSessions).toHaveLength(1)
+    expect(brief.earlierSessions![0]).toMatchObject({
+      agentSession: { provider: 'claude', id: first },
+      headline: 'Login fix',
+      recapMarkdown: 'Fixed the token refresh.',
+      references: [{ kind: 'session', value: `claudep --resume ${first}` }],
+      endedAt: 20,
+    })
+    expect(brief.earlierSessions![0]!.updates.some((update) => update.text === 'Refresh tokens eagerly')).toBe(true)
+
+    const saved = new SessionBriefStore(briefs.statePath)
+    await saved.load()
+    expect(saved.get('%1')).toEqual(brief)
+  })
+
+  it('keeps one worklog when the same conversation is resumed', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 20, 'Fix login', 'done')], 20)
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+  })
+
+  it('brings an earlier conversation back when the pane returns to it', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.applyAgentPatch('$1', 'work', '%1', { update: { kind: 'decision', text: 'Refresh tokens eagerly' } }, 11)
+    await briefs.syncFromStatuses('$1', 'work', [claude(second, 20, 'Write docs')], 20)
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 30, 'Fix login again')], 30)
+    const brief = briefs.get('%1')!
+    expect(brief.agentSession?.id).toBe(first)
+    expect(brief.updates.map((update) => update.text)).toContain('Refresh tokens eagerly')
+    expect(brief.earlierSessions?.map((session) => session.agentSession.id)).toEqual([second])
+  })
+
+  it('adopts the running conversation for a worklog saved before sessions were tracked', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [status('%1', 'working', 10, 'Legacy work', 'Legacy task')], 10)
+    expect(briefs.get('%1')).not.toHaveProperty('agentSession')
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 20, 'Same pane')], 20)
+    expect(briefs.get('%1')).toMatchObject({ agentSession: { id: first } })
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+  })
+
+  it('ignores stand-in ids and drops malformed history instead of the worklog', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
+    await briefs.syncFromStatuses('$1', 'work', [{ ...claude(first, 20, 'Codex turn'), provider: 'codex', agentSessionId: 'codex:%1' }], 20)
+    expect(briefs.get('%1')).not.toHaveProperty('earlierSessions')
+
+    const parsed = parseSessionBrief({ ...briefs.get('%1'), earlierSessions: [{ headline: 'broken' }], agentSession: { provider: 'claude', id: 'x' } })
+    expect(parsed).not.toBeNull()
+    expect(parsed).not.toHaveProperty('earlierSessions')
+    expect(parsed).not.toHaveProperty('agentSession')
+  })
+
+  it('keeps at most five earlier sessions', async () => {
+    const briefs = await store()
+    for (let index = 0; index < 8; index += 1) {
+      await briefs.syncFromStatuses('$1', 'work', [claude(`session-${index}-abcdef`, index * 10 + 10, `Turn ${index}`)], index * 10 + 10)
+    }
+    expect(briefs.get('%1')?.earlierSessions?.map((session) => session.agentSession.id)).toEqual([
+      'session-6-abcdef', 'session-5-abcdef', 'session-4-abcdef', 'session-3-abcdef', 'session-2-abcdef',
+    ])
+  })
+})
