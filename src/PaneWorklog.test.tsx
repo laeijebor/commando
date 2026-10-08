@@ -79,7 +79,7 @@ describe('PaneWorklog', () => {
           recapMarkdown: 'Fixed the **token refresh**.',
           tasks: [{ id: 'a', content: 'Refresh eagerly', status: 'completed', priority: 'high' }],
           references: [{ kind: 'session', value: 'claudep --resume aaaaaaaa-1111-4111-8111-111111111111' }],
-          screenshots: [{ id: 'shots', dir: '/tmp/shots', topic: 'Login screens', imageCount: 2, otherCount: 0, bytes: 10, updatedAt: 5, stale: false, preview: [] }],
+          screenshots: [{ id: 'shots', dir: '/tmp/shots', topic: 'Login screens', imageCount: 2, otherCount: 0, bytes: 10, updatedAt: 5, preview: [] }],
           updates: [{ id: 'old', paneId: '%12', kind: 'decision', text: 'Refresh tokens eagerly', source: 'agent', createdAt: 5 }],
           endedAt: 6,
         }],
