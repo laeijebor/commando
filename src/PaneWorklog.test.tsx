@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionBrief } from '../shared/protocol'
+import type { AgentResume, SessionBrief } from '../shared/protocol'
 import { PaneWorklog } from './PaneWorklog'
 
 const brief: SessionBrief = {
@@ -45,6 +45,25 @@ describe('PaneWorklog', () => {
     view.rerender(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected />)
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Worklog for Tests')).toHaveClass(`state-${brief.state}`)
+  })
+
+  it('shows an automatic resume in place of the restore hint, and retries a failed one', () => {
+    const resume: AgentResume = {
+      targetId: '11111111-1111-4111-8111-111111111111', paneId: '%12', provider: 'claude',
+      command: 'env claude --resume ba080dbd-899d-41d3-a94d-44032d806009', state: 'resuming', updatedAt: 1,
+    }
+    const onRetryResume = vi.fn()
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected={false} resume={resume} onRetryResume={onRetryResume} />)
+    expect(screen.getByLabelText('Resuming the Claude conversation…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Resuming the Claude conversation…')
+    expect(screen.queryByText(/Saved worklog restored/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+
+    view.rerender(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected={false} resume={{ ...resume, state: 'failed', error: 'The folder no longer exists: /repo' }} onRetryResume={onRetryResume} />)
+    expect(screen.getAllByRole('status')[0]).toHaveTextContent("Couldn't resume the Claude conversation. The folder no longer exists: /repo")
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetryResume).toHaveBeenCalledOnce()
   })
 
   it('renders a simulator first, counts it with references and handles both actions', async () => {

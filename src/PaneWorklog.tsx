@@ -28,7 +28,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentTaskStatus, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
+import type { AgentResume, AgentTaskStatus, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
+import { SESSION_AGENT_CHOICES } from '../shared/tmux-create'
 import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
 import type { PrsApiClient } from './prsApi'
 import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
@@ -187,6 +188,35 @@ function SessionReferenceRow({
   )
 }
 
+function agentLabel(provider: AgentResume['provider']): string {
+  return SESSION_AGENT_CHOICES.find((choice) => choice.value === provider)?.label ?? 'agent'
+}
+
+function resumeMessage(resume: AgentResume): string {
+  const agent = agentLabel(resume.provider)
+  switch (resume.state) {
+    case 'queued': return `Resuming the ${agent} conversation shortly. tmux restored this pane after a restart.`
+    case 'resuming': return `Resuming the ${agent} conversation…`
+    case 'resumed': return `Resumed the ${agent} conversation automatically after tmux restarted.`
+    case 'failed': return `Couldn't resume the ${agent} conversation. ${resume.error ?? ''}`.trim()
+  }
+}
+
+/** Commando bringing the pane's agent back after a tmux restart, with a retry when it failed. */
+function AgentResumeNotice({ resume, connected, onRetry }: { resume: AgentResume; connected: boolean; onRetry?: () => void }) {
+  return (
+    <div className={`pane-worklog-resume is-${resume.state}`} role="status">
+      <span>{resumeMessage(resume)}</span>
+      {resume.state === 'failed' && onRetry ? (
+        <button type="button" onClick={onRetry} disabled={!connected} title={resume.command}>
+          <RotateCcw aria-hidden="true" />
+          Retry
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export function PaneWorklog({
   brief,
   paneLabel,
@@ -201,6 +231,8 @@ export function PaneWorklog({
   connected = true,
   empty = false,
   hookConnected = true,
+  resume,
+  onRetryResume,
 }: {
   brief: SessionBrief
   paneLabel: string
@@ -216,6 +248,9 @@ export function PaneWorklog({
   connected?: boolean
   empty?: boolean
   hookConnected?: boolean
+  resume?: AgentResume
+  /** Asks the daemon to resume the agent again after a failed attempt. */
+  onRetryResume?: () => void
 }) {
   const [preferences, setPreferences] = useState(() => storedPreferences(brief))
   const displayState = !hookConnected && !empty ? 'stale' : brief.state
@@ -316,6 +351,11 @@ export function PaneWorklog({
         >
           <ChevronLeft aria-hidden="true" />
           <span className={`pane-worklog-state ${displayState}`} aria-hidden="true" />
+          {resume && resume.state !== 'resumed' ? (
+            <span className={`pane-worklog-resume-indicator is-${resume.state}`} title={resumeMessage(resume)} aria-label={resumeMessage(resume)}>
+              <RotateCcw aria-hidden="true" />
+            </span>
+          ) : null}
           {preferences.note.trim() ? (
             <span className="pane-worklog-note-indicator" title="Personal note saved" aria-label="Personal note saved">
               <MessageSquareText aria-hidden="true" />
@@ -358,7 +398,8 @@ export function PaneWorklog({
         setFollowing(atStart)
         if (atStart) setUnread(0)
       }}>
-        {(!hookConnected || empty) ? (
+        {resume ? <AgentResumeNotice resume={resume} connected={connected} onRetry={onRetryResume} /> : null}
+        {(!hookConnected || empty) && !(resume && resume.state !== 'failed') ? (
           <div className="pane-worklog-recap" role="status">
             {!connected ? 'Disconnected from Commando. Saved notes and history remain available.'
               : !hookConnected && !empty ? 'Saved worklog restored. No agent is connected yet; resume the agent to continue receiving tasks and activity.'
