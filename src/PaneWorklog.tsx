@@ -203,10 +203,11 @@ function resumeMessage(resume: AgentResume): string {
 }
 
 /** A conversation that ran earlier in the pane, folded so the current one stays in front. */
-function EarlierSession({ session, connected, onTypeCommand }: {
+function EarlierSession({ session, connected, onTypeCommand, onOpenScreenshot }: {
   session: EarlierAgentSession
   connected: boolean
   onTypeCommand?: (command: string) => void
+  onOpenScreenshot: OpenPaneScreenshot
 }) {
   const tasks = (session.tasks ?? []).filter((task) => task.status !== 'cancelled')
   const completed = tasks.filter((task) => task.status === 'completed').length
@@ -234,6 +235,18 @@ function EarlierSession({ session, connected, onTypeCommand }: {
         {terms.length ? (
           <ul className="pane-worklog-earlier-list">
             {terms.map((reference) => <li key={`${reference.kind}:${reference.value}`}>{reference.label ?? reference.value}<small> · {referenceCaption(reference)}</small></li>)}
+          </ul>
+        ) : null}
+        {session.screenshots?.length ? (
+          <ul className="pane-worklog-earlier-list">
+            {session.screenshots.map((folder) => (
+              <li key={folder.id}>
+                <button type="button" className="pane-worklog-earlier-screenshots" onClick={(event) => onOpenScreenshot(folder, undefined, event.currentTarget)}>
+                  <Images aria-hidden="true" />{folder.topic}
+                </button>
+                <small> · {folder.imageCount} {folder.imageCount === 1 ? 'image' : 'images'}</small>
+              </li>
+            ))}
           </ul>
         ) : null}
         {tasks.length ? (
@@ -626,6 +639,7 @@ export function PaneWorklog({
                 session={session}
                 connected={connected}
                 onTypeCommand={onTypeCommand}
+                onOpenScreenshot={onOpenScreenshot}
               />
             ))}
           </section>

@@ -4479,3 +4479,5 @@ body.is-resizing-hud-pinned-note {
 .pane-worklog-earlier-list small { color: var(--muted-dim); }
 .pane-worklog-earlier-next { margin: 0; color: var(--muted); font: 500 8px/1.4 var(--sans); }
 .pane-worklog-earlier-next small { color: var(--muted-dim); font: 700 7px/1 var(--mono); text-transform: uppercase; }
+.pane-worklog-earlier-screenshots { padding: 0; border: 0; color: var(--cyan); background: none; font: inherit; text-align: left; cursor: pointer; }
+.pane-worklog-earlier-screenshots:hover { text-decoration: underline; }
