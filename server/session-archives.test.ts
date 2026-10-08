@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SessionArchives } from './session-archives.js'
+import type { ArchivedAgent } from './agent-resume.js'
 import { parseWindowLayout, type WindowLayoutNode } from '../shared/window-layout.js'
 
 const exec = promisify(execFile)
@@ -53,6 +54,38 @@ describe('per-session tmux archives', () => {
     expect(await tmux('list-panes', '-t', `${newSessionId}:4`, '-F', '#{pane_title}')).toContain('Plan')
     expect(await archives.list()).toEqual([])
     expect(await tmux('has-session', '-t', '=keep')).toBe('')
+  })
+
+  it('carries pane targets and their agents through an archive', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-archive-'))
+    directories.push(directory)
+    const target = '33333333-3333-4333-8333-333333333333'
+    const agent: ArchivedAgent = { provider: 'claude', sessionId: 'ba080dbd-899d-41d3-a94d-44032d806009', path: '/repo', command: 'env claude --resume ba080dbd-899d-41d3-a94d-44032d806009' }
+    const forgotten: string[][] = []
+    const restored: Array<Record<string, ArchivedAgent>> = []
+    const archives = new SessionArchives({
+      directory,
+      environment: { COMMANDO_TMUX_SOCKET_NAME: socket },
+      agents: {
+        archivedAgents: (targetIds): Record<string, ArchivedAgent> => targetIds.includes(target) ? { [target]: agent } : {},
+        forgetTargets: (targetIds) => { forgotten.push([...targetIds]) },
+        restoreArchived: (agents) => { restored.push({ ...agents }) },
+      },
+    })
+    await tmux('new-session', '-d', '-s', 'keep')
+    const sessionId = await tmux('new-session', '-d', '-P', '-F', '#{session_id}', '-s', 'restored', '-c', directory)
+    const agentPane = await tmux('display-message', '-p', '-t', sessionId, '#{pane_id}')
+    await tmux('set-option', '-p', '-t', agentPane, '@commando_target', `v1:${agentPane}:${target}`)
+    await tmux('split-window', '-d', '-h', '-t', agentPane, '-c', directory)
+
+    const summary = await archives.archive(sessionId, 'restored')
+    expect(forgotten).toEqual([[target]])
+    const newSessionId = await archives.restore(summary.id)
+    const targets = (await tmux('list-panes', '-t', newSessionId, '-F', '#{pane_id} #{@commando_target}')).split('\n')
+    const [newAgentPane] = targets[0]!.split(' ')
+    expect(targets[0]).toBe(`${newAgentPane} v1:${newAgentPane}:${target}`)
+    expect(targets[1]!.split(' ')[1] ?? '').toBe('')
+    expect(restored).toEqual([{ [target]: agent }])
   })
 
   it('keeps the archive if restoration conflicts with a live session', async () => {
