@@ -9,9 +9,11 @@ skills_root="$(cd "$(dirname "$0")/../skills" && pwd)"
 destination_roots=(
   "$HOME/.claude/skills"
   "$HOME/.claudep/skills"
+  "$HOME/.claudew/skills"
   "$HOME/.claudey/skills"
   "$HOME/.cursor/skills"
   "$HOME/.config/opencode/skills"
+  "$HOME/.codex/skills"
 )
 # Custom Claude profiles may intentionally live outside HOME. Test callers must
 # clear inherited CLAUDE_CONFIG_DIR before invoking this installer in a sandbox.

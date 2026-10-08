@@ -22,7 +22,8 @@ async function fixture() {
   await mkdir(home)
   await cp(join(repository, 'scripts/install-show-in-commando-skill'), join(checkout, 'scripts/install-show-in-commando-skill'))
   await cp(join(repository, 'skills'), join(checkout, 'skills'), { recursive: true })
-  const roots = ['.claude/skills', '.claudep/skills', '.claudey/skills', '.cursor/skills', '.config/opencode/skills']
+  const roots = ['.claude/skills', '.claudep/skills', '.claudew/skills', '.claudey/skills', '.cursor/skills',
+    '.config/opencode/skills', '.codex/skills']
     .map((root) => join(home, root))
   return { directory, checkout, home, roots }
 }
