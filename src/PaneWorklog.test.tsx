@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -64,6 +64,37 @@ describe('PaneWorklog', () => {
     expect(screen.getAllByRole('status')[0]).toHaveTextContent("Couldn't resume the Claude conversation. The folder no longer exists: /repo")
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetryResume).toHaveBeenCalledOnce()
+  })
+
+  it('folds earlier conversations below the current one and can type their resume command', () => {
+    const onTypeCommand = vi.fn()
+    render(<PaneWorklog
+      brief={{
+        ...brief,
+        agentSession: { provider: 'claude', id: 'bbbbbbbb-2222-4222-8222-222222222222' },
+        earlierSessions: [{
+          agentSession: { provider: 'claude', id: 'aaaaaaaa-1111-4111-8111-111111111111' },
+          headline: 'Login fix',
+          recapMarkdown: 'Fixed the **token refresh**.',
+          tasks: [{ id: 'a', content: 'Refresh eagerly', status: 'completed', priority: 'high' }],
+          references: [{ kind: 'session', value: 'claudep --resume aaaaaaaa-1111-4111-8111-111111111111' }],
+          updates: [{ id: 'old', paneId: '%12', kind: 'decision', text: 'Refresh tokens eagerly', source: 'agent', createdAt: 5 }],
+          endedAt: 6,
+        }],
+      }}
+      paneLabel="Tests"
+      onTypeCommand={onTypeCommand}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const earlier = screen.getByLabelText('Earlier sessions for Tests')
+    expect(earlier).toHaveTextContent('Login fix')
+    expect(earlier).toHaveTextContent('Claude · ended')
+    expect(earlier).toHaveTextContent('1/1 tasks')
+    expect(screen.getByLabelText('Activity for Tests')).not.toHaveTextContent('Refresh tokens eagerly')
+    fireEvent.click(earlier.querySelector('summary')!)
+    expect(earlier).toHaveTextContent('Refresh tokens eagerly')
+    fireEvent.click(within(earlier).getByRole('button', { name: /claudep --resume/ }))
+    expect(onTypeCommand).toHaveBeenCalledWith('claudep --resume aaaaaaaa-1111-4111-8111-111111111111')
   })
 
   it('renders a simulator first, counts it with references and handles both actions', async () => {
