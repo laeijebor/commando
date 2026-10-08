@@ -450,7 +450,7 @@ export type WebPane = {
   createdAt: number
 }
 
-export const MAX_WEB_PANES = 16
+export const MAX_WEB_PANES = 64
 export const MAX_WEB_PANE_URL_LENGTH = 2_048
 /** Cap on notes per POST /feedback body — client and server must agree on this. */
 export const MAX_FEEDBACK_NOTES_PER_POST = 20

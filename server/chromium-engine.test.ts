@@ -1084,6 +1084,92 @@ describe('ChromiumEngine', () => {
     expect(engine.hasTile('w-22222222')).toBe(false)
   })
 
+  it('hibernates the least recently used unviewed tile past the live cap', async () => {
+    const { stub, engine, onTargetDown } = await createHarness({ maxLiveTiles: 2 })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
+    // Touching the first tile makes the second the least recently used.
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+
+    await engine.cdpInfo('w-33333333', 'http://localhost:5175/')
+    await until(() => stub.closedTargets.includes('T2'), 'lru target close')
+    expect(engine.hasTile('w-11111111')).toBe(true)
+    expect(engine.hasTile('w-22222222')).toBe(false)
+    expect(engine.isHibernated('w-22222222')).toBe(true)
+    // Hibernation is not a crash: viewers and questions stay attached.
+    expect(onTargetDown).not.toHaveBeenCalled()
+  })
+
+  it('never hibernates a tile that has a viewer', async () => {
+    const { stub, engine } = await createHarness({ maxLiveTiles: 2 })
+    const stopFirst = await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    await engine.subscribeScreencast('w-22222222', 'http://localhost:5174/', () => undefined)
+
+    // Over the cap while both are viewed: the soft cap lets the third start.
+    await engine.cdpInfo('w-33333333', 'http://localhost:5175/')
+    expect(stub.closedTargets).toEqual([])
+    expect(engine.hasTile('w-33333333')).toBe(true)
+
+    // The newest viewer leaving ranks its tile recent, so the older idle
+    // agent tile is the one closed to get back under the cap.
+    stopFirst()
+    await until(() => stub.closedTargets.includes('T3'), 'idle target close')
+    expect(engine.hasTile('w-11111111')).toBe(true)
+  })
+
+  it('resumes a hibernated tile at its last accepted URL with its last frame', async () => {
+    const { stub, engine } = await createHarness({ maxLiveTiles: 1 })
+    const stop = await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', () => undefined)
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/deep?tab=2' } })
+    stub.emit('T1', 'Page.screencastFrame', { data: 'BEFORE', sessionId: 1, metadata: {} })
+    await until(() => stub.calls.some((call) => call.method === 'Page.screencastFrameAck'), 'frame ack')
+    stop()
+
+    await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
+    await until(() => stub.closedTargets.includes('T1'), 'hibernation')
+
+    const sink = vi.fn()
+    await engine.subscribeScreencast('w-11111111', 'http://localhost:5173/', sink)
+    expect(sink).toHaveBeenCalledWith({ data: 'BEFORE', format: 'png', metadata: {} })
+    expect(stub.calls).toContainEqual({
+      targetId: 'T3',
+      method: 'Page.navigate',
+      params: { url: 'http://localhost:5173/deep?tab=2' },
+    })
+    expect(engine.isHibernated('w-11111111')).toBe(false)
+    expect(stub.closedTargets).toContain('T2')
+  })
+
+  it('resumes at the pane URL once the trust policy no longer admits the last page', async () => {
+    let externalAllowed = true
+    const { stub, engine } = await createHarness({
+      maxLiveTiles: 1,
+      classify: (url) => ({ kind: externalAllowed || new URL(url).hostname === 'localhost' ? 'open' : 'confirm' }),
+    })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'https://docs.example/page' } })
+    await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
+    await until(() => stub.closedTargets.includes('T1'), 'hibernation')
+
+    externalAllowed = false
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    expect(stub.calls).toContainEqual({
+      targetId: 'T3',
+      method: 'Page.navigate',
+      params: { url: 'http://localhost:5173/' },
+    })
+  })
+
+  it('forgets hibernated tiles that were closed', async () => {
+    const { stub, engine } = await createHarness({ maxLiveTiles: 1 })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    await engine.cdpInfo('w-22222222', 'http://localhost:5174/')
+    await until(() => stub.closedTargets.includes('T1'), 'hibernation')
+
+    engine.syncTiles(new Set(['w-22222222']))
+    expect(engine.isHibernated('w-11111111')).toBe(false)
+  })
+
   it('recovers after the browser process dies', async () => {
     const harness = await createHarness()
     await harness.engine.cdpInfo('w-11111111', 'http://localhost:5173/')

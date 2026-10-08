@@ -58,6 +58,11 @@ const MAX_VIEWPORT_DIMENSION = 8_192
 const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
 const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
+/**
+ * Live page targets (one browser window each) kept before the least recently
+ * used unviewed tile is hibernated. Viewed tiles are never hibernated.
+ */
+export const MAX_LIVE_CHROMIUM_TILES = 32
 
 type ChromiumProfileOwner = {
   ownerPid: number
@@ -728,7 +733,12 @@ type TileTarget = {
   fallbackEpoch: number
   /** Last frame delivered to subscribers, available for replay and fallback deduplication. */
   lastFrame: ScreencastFrame | null
+  /** LRU stamp; the lowest unviewed stamp is hibernated first. */
+  lastUsed: number
 }
+
+/** What a hibernated tile resumes with when its target is recreated. */
+type HibernatedTile = { url: string; lastFrame: ScreencastFrame | null }
 
 export type ChromiumEngineOptions = {
   profileDir?: string
@@ -760,6 +770,8 @@ export type ChromiumEngineOptions = {
   screencastFallbackAfterMs?: number
   /** captureScreenshot cadence while in fallback mode. */
   screencastPollIntervalMs?: number
+  /** Live targets kept before unviewed tiles are hibernated. */
+  maxLiveTiles?: number
 }
 
 /** The engine's live browser: the process handle plus its browser-level CDP socket. */
@@ -777,6 +789,7 @@ export class ChromiumEngine {
   private readonly connectTimeoutMs: number
   private readonly screencastFallbackAfterMs: number
   private readonly screencastPollIntervalMs: number
+  private readonly maxLiveTiles: number
   private browser: BrowserSession | null = null
   private browserStarting: Promise<BrowserSession> | null = null
   private browserStartingAbort: AbortController | null = null
@@ -786,6 +799,9 @@ export class ChromiumEngine {
   private readonly viewports = new Map<string, TileViewport>()
   /** Latest sanitized controls, retained independently of targets/viewers. */
   private readonly pendingSnapshots = new Map<string, BufferedPendingState>()
+  /** Tiles whose target was closed to stay under maxLiveTiles, keyed by pane id. */
+  private readonly hibernated = new Map<string, HibernatedTile>()
+  private useCounter = 0
   private disposed = false
 
   constructor(private readonly options: ChromiumEngineOptions) {
@@ -795,6 +811,7 @@ export class ChromiumEngine {
     this.connectTimeoutMs = options.connectTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.screencastFallbackAfterMs = options.screencastFallbackAfterMs ?? SCREENCAST_FALLBACK_AFTER_MS
     this.screencastPollIntervalMs = options.screencastPollIntervalMs ?? SCREENCAST_POLL_INTERVAL_MS
+    this.maxLiveTiles = Math.max(1, options.maxLiveTiles ?? MAX_LIVE_CHROMIUM_TILES)
   }
 
   hasTile(webPaneId: string): boolean {
@@ -807,6 +824,8 @@ export class ChromiumEngine {
   }
 
   async navigate(webPaneId: string, url: string): Promise<void> {
+    // An explicit navigation supersedes wherever a hibernated tile was.
+    this.hibernated.delete(webPaneId)
     const tile = await this.ensureTarget(webPaneId, url)
     tile.currentUrl = url
     tile.pendingSnapshotPageReady = false
@@ -896,10 +915,16 @@ export class ChromiumEngine {
     }
     return () => {
       tile.sinks.delete(sink)
-      if (tile.sinks.size === 0 && tile.screencasting) {
-        tile.screencasting = false
-        tile.cdp.sendAndForget('Page.stopScreencast')
-        this.stopScreencastFallback(tile)
+      if (tile.sinks.size === 0) {
+        if (tile.screencasting) {
+          tile.screencasting = false
+          tile.cdp.sendAndForget('Page.stopScreencast')
+          this.stopScreencastFallback(tile)
+        }
+        // Viewed until now, so it ranks as recently used; this hibernates
+        // older idle tiles that piled up while every tile was being viewed.
+        tile.lastUsed = ++this.useCounter
+        this.hibernateIdleTiles(this.maxLiveTiles)
       }
     }
   }
@@ -1158,19 +1183,47 @@ export class ChromiumEngine {
   /** Closes the target of a removed tile; safe to call for unknown ids. */
   closeTile(webPaneId: string): void {
     this.viewports.delete(webPaneId)
+    this.hibernated.delete(webPaneId)
     const tile = this.tiles.get(webPaneId)
-    if (!tile) return
-    this.tiles.delete(webPaneId)
-    this.stopScreencastFallback(tile)
-    tile.cdp.close()
-    this.browser?.cdp.sendAndForget('Target.closeTarget', { targetId: tile.targetId })
+    if (tile) this.closeTarget(tile)
   }
 
   /** Drops targets whose tiles no longer exist or switched engines. */
   syncTiles(livePaneIds: ReadonlySet<string>): void {
-    for (const webPaneId of [...this.tiles.keys()]) {
+    for (const webPaneId of [...this.tiles.keys(), ...this.hibernated.keys()]) {
       if (!livePaneIds.has(webPaneId)) this.closeTile(webPaneId)
     }
+  }
+
+  isHibernated(webPaneId: string): boolean {
+    return this.hibernated.has(webPaneId)
+  }
+
+  /**
+   * Closes least recently used unviewed targets until at most `limit` are
+   * live or starting. Each keeps its accepted URL and last frame so the next
+   * viewer gets a picture at once and the page reloads where it was; in-page
+   * state (scroll, form input, attached debuggers) does not survive.
+   */
+  private hibernateIdleTiles(limit: number): void {
+    const idle = [...this.tiles.values()]
+      .filter((tile) => tile.sinks.size === 0 && !tile.screencastStarting)
+      .sort((a, b) => a.lastUsed - b.lastUsed)
+    for (const tile of idle) {
+      if (this.tiles.size + this.targetStarting.size <= limit) return
+      if (tile.currentUrl !== 'about:blank') {
+        this.hibernated.set(tile.webPaneId, { url: tile.currentUrl, lastFrame: tile.lastFrame })
+      }
+      this.closeTarget(tile)
+    }
+  }
+
+  /** Removed from the map first, so the socket close is not reported as the target going down. */
+  private closeTarget(tile: TileTarget): void {
+    this.tiles.delete(tile.webPaneId)
+    this.stopScreencastFallback(tile)
+    tile.cdp.close()
+    this.browser?.cdp.sendAndForget('Target.closeTarget', { targetId: tile.targetId })
   }
 
   dispose(): void {
@@ -1250,16 +1303,31 @@ export class ChromiumEngine {
 
   private async ensureTarget(webPaneId: string, url: string): Promise<TileTarget> {
     const existing = this.tiles.get(webPaneId)
-    if (existing) return existing
+    if (existing) {
+      existing.lastUsed = ++this.useCounter
+      return existing
+    }
     const starting = this.targetStarting.get(webPaneId)
     if (starting) return starting
-    const promise = this.createTarget(webPaneId, url)
+    this.hibernateIdleTiles(this.maxLiveTiles - 1)
+    const promise = this.createTarget(webPaneId, this.resumeUrl(webPaneId, url))
     this.targetStarting.set(webPaneId, promise)
     try {
       return await promise
     } finally {
       this.targetStarting.delete(webPaneId)
     }
+  }
+
+  /**
+   * Where a recreated target should load: the hibernated tile's last accepted
+   * URL while the trust policy still admits it, otherwise the pane URL.
+   */
+  private resumeUrl(webPaneId: string, paneUrl: string): string {
+    const resume = this.hibernated.get(webPaneId)
+    if (!resume) return paneUrl
+    const admitted = this.options.classify(resume.url).kind === 'open' || sameOrigin(resume.url, paneUrl)
+    return admitted ? resume.url : paneUrl
   }
 
   private async createTarget(webPaneId: string, url: string): Promise<TileTarget> {
@@ -1309,7 +1377,9 @@ export class ChromiumEngine {
       fallbackTimer: null,
       pollTimer: null,
       fallbackEpoch: 0,
-      lastFrame: null,
+      // A hibernated tile replays its last picture until the reload paints.
+      lastFrame: this.hibernated.get(webPaneId)?.lastFrame ?? null,
+      lastUsed: ++this.useCounter,
     }
     cdp.on('Page.screencastFrame', (params) => {
       const sessionId = params.sessionId
@@ -1440,6 +1510,7 @@ export class ChromiumEngine {
       await this.applyViewport(tile, bufferedViewport).catch(() => undefined)
     }
     this.tiles.set(webPaneId, tile)
+    this.hibernated.delete(webPaneId)
     await cdp.send('Page.navigate', { url })
     return tile
   }
