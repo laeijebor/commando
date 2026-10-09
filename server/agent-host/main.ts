@@ -142,6 +142,10 @@ async function main(): Promise<void> {
       write(line)
     }
   })
+  session.on('closed', () => {
+    const { session: info } = session.snapshot()
+    write(color(31, `Session ended${info.error ? `: ${info.error}` : ''}. Press Ctrl-C twice to quit.`))
+  })
   host.add(session)
   write(dim(`Commando chat · Claude${parsed.configDir ? ` (${parsed.configDir.replace(homedir(), '~')})` : ''} · ${process.cwd().replace(homedir(), '~')}`))
   write(dim('Type here or in the Commando chat. Ctrl-C interrupts a turn; press it twice to quit.'))

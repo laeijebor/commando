@@ -55,8 +55,8 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
-import { AgentResumeService } from './agent-resume.js'
-import { isShellCommand } from './agent-resume-command.js'
+import { AgentResumeService, readProcessTable } from './agent-resume.js'
+import { isShellCommand, parseProcessTable } from './agent-resume-command.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -82,7 +82,7 @@ import { SimLogsService, simLogsUdid } from './sim-logs.js'
 import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
-import { AgentHostHub } from './agent-host-hub.js'
+import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -794,6 +794,10 @@ async function main(): Promise<void> {
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast,
+    verifyHost: async (paneId, hostPid) => {
+      const panePid = paneForId(paneId)?.processId
+      return panePid !== undefined && hostRunsInPane(parseProcessTable(await readProcessTable()), hostPid, panePid)
+    },
     log: (message) => console.log(message),
   })
 
@@ -1272,7 +1276,7 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
-        agentHosts.reconcile()
+        await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
           return pane && agentStatuses.liveHookStatus(paneId, pane.command)

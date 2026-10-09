@@ -81,6 +81,53 @@ describe('ClaudeItemMapper', () => {
   })
 })
 
+describe('ClaudeItemMapper ordering', () => {
+  const stream = (event: Record<string, unknown>, parent: string | null = null) => ({ type: 'stream_event', event, parent_tool_use_id: parent, uuid: 'u', session_id: 's' }) as unknown as SDKMessage
+  const assistant = (id: string, content: unknown[], parent: string | null = null) => ({ type: 'assistant', message: { id, content }, parent_tool_use_id: parent, uuid: 'a', session_id: 's' }) as unknown as SDKMessage
+
+  it('keeps a subagent stream from stealing the main stream deltas', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('go')
+    mapper.handle(stream({ type: 'message_start', message: { id: 'main' } }))
+    mapper.handle(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
+    mapper.handle(stream({ type: 'message_start', message: { id: 'sub' } }, 'task-1'))
+    mapper.handle(stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 'task-1'))
+    mapper.handle(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'main text' } }))
+    mapper.handle(stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'sub text' } }, 'task-1'))
+    const texts = Object.fromEntries(mapper.list().filter((item) => item.kind === 'assistant_message').map((item) => [item.id, item.kind === 'assistant_message' && item.text]))
+    expect(texts).toEqual({ 'main:0': 'main text', 'sub:0': 'sub text' })
+  })
+
+  it('keys blocks by order when there are no stream events, so text never overwrites thinking', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('go')
+    mapper.handle(assistant('m1', [{ type: 'thinking', thinking: 'plan' }]))
+    mapper.handle(assistant('m1', [{ type: 'text', text: 'answer' }]))
+    expect(mapper.list().map((item) => [item.id, item.kind])).toEqual([
+      ['user-' + mapper.currentTurnId, 'user_message'],
+      ['m1:0', 'reasoning'],
+      ['m1:1', 'assistant_message'],
+    ])
+  })
+
+  it('keeps one todo list per turn', () => {
+    let clock = 1
+    const mapper = new ClaudeItemMapper(() => clock++)
+    mapper.startTurn('first')
+    mapper.handle(assistant('a', [{ type: 'tool_use', id: 't1', name: 'TodoWrite', input: { todos: [{ content: 'A', status: 'pending' }] } }]))
+    mapper.startTurn('second')
+    mapper.handle(assistant('b', [{ type: 'tool_use', id: 't2', name: 'TodoWrite', input: { todos: [{ content: 'B', status: 'pending' }] } }]))
+    expect(mapper.list().filter((item) => item.kind === 'todo_list')).toHaveLength(2)
+  })
+
+  it('keeps only the newest items', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    for (let index = 0; index < 2100; index += 1) mapper.notice('info', `n${index}`)
+    expect(mapper.list()).toHaveLength(2000)
+    expect(mapper.list()[0]).toMatchObject({ text: 'n100' })
+  })
+})
+
 describe('tool helpers', () => {
   it('titles common tools and MCP tools', () => {
     expect(toolTitle('Grep', { pattern: 'drain', path: 'server' })).toBe('Search "drain" in server')

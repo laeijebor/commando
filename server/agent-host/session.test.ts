@@ -111,6 +111,41 @@ describe('AgentSession', () => {
   })
 })
 
+describe('AgentSession endings', () => {
+  it('reads a turn the user stopped as interrupted, not failed', async () => {
+    const { fake, session, items, sessions } = started()
+    session.send('long job')
+    fake.push({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'sleep 60' } }] }, parent_tool_use_id: null, uuid: 'a', session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    await session.interrupt()
+    fake.push({ type: 'result', subtype: 'error_during_execution', errors: ['aborted'], session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    expect(items.get('tool-1')).toMatchObject({ status: 'interrupted' })
+    const notices = [...items.values()].filter((item) => item.kind === 'notice')
+    expect(notices).toEqual([expect.objectContaining({ level: 'info', text: 'Interrupted' })])
+    expect(sessions.at(-1)?.status).toBe('idle')
+  })
+
+  it('refuses new turns once the SDK stream has ended', async () => {
+    const { fake, session, items, sessions } = started()
+    session.close()
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('closed')
+    session.send('anyone there?')
+    expect(fake.prompts).toEqual([])
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', level: 'error' })
+  })
+
+  it('denies at once when the permission check was already cancelled', async () => {
+    const { fake, items } = started()
+    const controller = new AbortController()
+    controller.abort()
+    const result = await fake.canUseTool('Bash', { command: 'ls' }, { signal: controller.signal, toolUseID: 't', requestId: 'r-gone' })
+    expect(result).toMatchObject({ behavior: 'deny' })
+    expect(items.has('request-r-gone')).toBe(false)
+  })
+})
+
 describe('commando-agent arguments', () => {
   it('reads the config dir from the environment and flags, and maps permissions', () => {
     expect(parseHostArgs(['claude', '--dangerously-skip-permissions'], { CLAUDE_CONFIG_DIR: '/x/.claudep' }))

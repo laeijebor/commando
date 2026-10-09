@@ -2,6 +2,8 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
+/** The host keeps the latest items only; the daemon keeps the same window. */
+export const MAX_HOST_ITEMS = 2000
 const MAX_PATCH_LINES = 400
 const MAX_DETAIL = 4_000
 
@@ -170,9 +172,15 @@ export class ClaudeItemMapper {
   private readonly items = new Map<string, ChatItem>()
   private turnId = 'turn-0'
   private turnCounter = 0
-  /** Last block index started per API message id, to key `assistant` blocks. */
-  private readonly blockIndex = new Map<string, number>()
-  private currentMessageId = ''
+  private noticeCounter = 0
+  /** Open API message per stream (main agent or a subagent's tool_use id). */
+  private readonly currentMessage = new Map<string, string>()
+  /**
+   * Blocks already confirmed by `assistant` messages, per API message id. The
+   * SDK confirms blocks in stream order, so this count is the next block's
+   * stream index, with or without stream events.
+   */
+  private readonly confirmedBlocks = new Map<string, number>()
   private readonly hiddenTools = new Set(['AskUserQuestion', 'TodoWrite', 'ExitPlanMode'])
 
   constructor(private readonly now: () => number = Date.now) {}
@@ -200,6 +208,10 @@ export class ClaudeItemMapper {
 
   private put(item: ChatItem): ChatItem {
     this.items.set(item.id, item)
+    if (this.items.size > MAX_HOST_ITEMS) {
+      const oldest = this.items.keys().next().value
+      if (oldest !== undefined) this.items.delete(oldest)
+    }
     return item
   }
 
@@ -210,7 +222,8 @@ export class ClaudeItemMapper {
   }
 
   notice(level: 'info' | 'error', text: string): ChatItem[] {
-    const id = `notice-${this.now()}-${this.items.size}`
+    this.noticeCounter += 1
+    const id = `notice-${this.noticeCounter}`
     return [this.put({ ...this.base(id, 'completed'), kind: 'notice', level, text })]
   }
 
@@ -259,14 +272,16 @@ export class ClaudeItemMapper {
 
   private handleStreamEvent(event: Record<string, unknown>, parent: string | null): ChatItem[] {
     switch (event.type) {
-      case 'message_start':
-        this.currentMessageId = str(record(event.message).id) ?? this.currentMessageId
+      case 'message_start': {
+        const id = str(record(event.message).id)
+        if (id) this.currentMessage.set(parent ?? '', id)
         return []
+      }
       case 'content_block_start': {
+        const messageId = this.currentMessage.get(parent ?? '') ?? ''
         const index = typeof event.index === 'number' ? event.index : 0
-        this.blockIndex.set(this.currentMessageId, index)
         const block = record(event.content_block) as Block
-        const id = `${this.currentMessageId}:${index}`
+        const id = `${messageId}:${index}`
         if (block.type === 'text') return [this.put({ ...this.base(id, 'running', parent), kind: 'assistant_message', text: block.text ?? '' })]
         if (block.type === 'thinking') return [this.put({ ...this.base(id, 'running', parent), kind: 'reasoning', text: block.thinking ?? '' })]
         if (block.type === 'tool_use' && block.id && block.name && !this.hiddenTools.has(block.name)) {
@@ -279,7 +294,7 @@ export class ClaudeItemMapper {
       case 'content_block_delta': {
         const index = typeof event.index === 'number' ? event.index : 0
         const delta = record(event.delta)
-        const item = this.items.get(`${this.currentMessageId}:${index}`)
+        const item = this.items.get(`${this.currentMessage.get(parent ?? '') ?? ''}:${index}`)
         if (!item) return []
         if (delta.type === 'text_delta' && item.kind === 'assistant_message' && typeof delta.text === 'string') {
           return [this.put({ ...item, text: item.text + delta.text, updatedAt: this.now() })]
@@ -290,8 +305,8 @@ export class ClaudeItemMapper {
         return []
       }
       case 'content_block_stop': {
-        const index = typeof event.index === 'number' ? event.index : this.blockIndex.get(this.currentMessageId) ?? 0
-        const item = this.items.get(`${this.currentMessageId}:${index}`)
+        if (typeof event.index !== 'number') return []
+        const item = this.items.get(`${this.currentMessage.get(parent ?? '') ?? ''}:${event.index}`)
         if (item && item.status === 'running' && (item.kind === 'assistant_message' || item.kind === 'reasoning')) {
           return [this.put({ ...item, status: 'completed', updatedAt: this.now() })]
         }
@@ -304,12 +319,14 @@ export class ClaudeItemMapper {
 
   private handleAssistant(message: { id: string; content: Block[] }, parent: string | null): ChatItem[] {
     const changed: ChatItem[] = []
-    const lastIndex = this.blockIndex.get(message.id)
+    const first = this.confirmedBlocks.get(message.id) ?? 0
+    this.confirmedBlocks.set(message.id, first + message.content.length)
+    if (this.confirmedBlocks.size > 500) {
+      const oldest = this.confirmedBlocks.keys().next().value
+      if (oldest !== undefined && oldest !== message.id) this.confirmedBlocks.delete(oldest)
+    }
     message.content.forEach((block, position) => {
-      // The SDK emits one block per assistant message; its stream index is the
-      // block most recently started for this API message.
-      const index = message.content.length === 1 && lastIndex !== undefined ? lastIndex : position
-      const id = `${message.id}:${index}`
+      const id = `${message.id}:${first + position}`
       if (block.type === 'text') {
         changed.push(this.put({ ...this.base(id, 'completed', parent), kind: 'assistant_message', text: block.text ?? '' }))
       } else if (block.type === 'thinking') {
@@ -318,7 +335,8 @@ export class ClaudeItemMapper {
         changed.push(this.put({ ...this.base(id, 'completed', parent), kind: 'reasoning', text }))
       } else if (block.type === 'tool_use' && block.id && block.name) {
         if (block.name === 'TodoWrite') {
-          changed.push(this.put({ ...this.base('todo_list', 'completed', parent), kind: 'todo_list', todos: todosFromInput(block.input) }))
+          // One list per turn (and per subagent), updated in place as it changes.
+          changed.push(this.put({ ...this.base(`todo_list:${this.turnId}:${parent ?? ''}`, 'completed', parent), kind: 'todo_list', todos: todosFromInput(block.input) }))
           return
         }
         if (this.hiddenTools.has(block.name)) return

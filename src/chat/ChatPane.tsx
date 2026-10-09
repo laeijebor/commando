@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { Component, useMemo, type ReactNode } from 'react'
 import { PlugZap } from 'lucide-react'
 import type { ChatAnswer, ChatState } from '../../shared/agent-chat'
 import { ChatComposer } from './ChatComposer'
@@ -6,8 +6,30 @@ import { ChatTimeline } from './ChatTimeline'
 import { latestTodos, pendingRequests } from './timelineRows'
 import './chat.css'
 
+/** Keeps a rendering bug in the chat from taking down the whole app. */
+export class ChatErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="terminal-chat-shell commando-chat flex flex-col items-start gap-2 p-4 text-sm text-destructive" role="alert">
+        The chat view failed to render: {this.state.error.message}. Use the terminal toggle to keep working.
+      </div>
+    )
+  }
+}
+
 /** A chat pane: the agent host's turns as a narrow, readable column. */
-export function ChatPane({
+export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
+  return <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+}
+
+function ChatColumn({
   chat,
   connected,
   focused,

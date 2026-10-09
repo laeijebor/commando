@@ -174,9 +174,49 @@ export function parseChatAnswer(value: unknown): ChatAnswer | null {
   return null
 }
 
+function optionalText(value: unknown, max = MAX_TEXT): string | undefined {
+  return typeof value === 'string' ? value.slice(0, max) : undefined
+}
+
+function withOptional<T extends object>(target: T, fields: Record<string, unknown>): T {
+  for (const [key, value] of Object.entries(fields)) if (value !== undefined) (target as Record<string, unknown>)[key] = value
+  return target
+}
+
+function parseTodos(value: unknown): ChatTodo[] | null {
+  if (!Array.isArray(value) || value.length > 200) return null
+  return value.flatMap((todo) => {
+    if (!isRecord(todo) || typeof todo.content !== 'string') return []
+    const status = todo.status === 'completed' || todo.status === 'in_progress' ? todo.status : 'pending'
+    return [{ content: todo.content.slice(0, 2000), status }]
+  })
+}
+
+function parseQuestions(value: unknown): ChatQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.slice(0, 16).flatMap((question) => {
+    if (!isRecord(question) || typeof question.question !== 'string') return []
+    const options = Array.isArray(question.options)
+      ? question.options.slice(0, 32).flatMap((option) => (
+          isRecord(option) && typeof option.label === 'string'
+            ? [withOptional({ label: option.label.slice(0, 500) } as ChatQuestionOption, { description: optionalText(option.description, 2000) })]
+            : []
+        ))
+      : []
+    return [withOptional({ question: question.question.slice(0, 4096), options, multiSelect: question.multiSelect === true } as ChatQuestion, { header: optionalText(question.header, 200) })]
+  })
+}
+
+function parseRequestAnswer(value: unknown): ChatRequestAnswer | undefined {
+  if (!isRecord(value)) return undefined
+  if (value.kind === 'cancelled') return { kind: 'cancelled', reason: optionalText(value.reason, 500) ?? 'Cancelled' }
+  return parseChatAnswer(value) ?? undefined
+}
+
 /**
  * Items come from our own host process, but the socket is still an input
- * boundary: keep only well-formed items and drop the rest rather than the batch.
+ * boundary: copy only known, well-typed fields (they render straight into the
+ * UI), and drop malformed items rather than the batch.
  */
 export function parseChatItem(value: unknown): ChatItem | null {
   if (!isRecord(value)) return null
@@ -184,29 +224,47 @@ export function parseChatItem(value: unknown): ChatItem | null {
   if (!ITEM_STATUSES.has(value.status as ChatItemStatus)) return null
   if (typeof value.createdAt !== 'number' || typeof value.updatedAt !== 'number') return null
   if (value.parentToolUseId !== undefined && !shortString(value.parentToolUseId)) return null
-  if (JSON.stringify(value).length > 2 * MAX_TEXT) return null
+  const base = withOptional(
+    { id: value.id, turnId: value.turnId, status: value.status as ChatItemStatus, createdAt: value.createdAt, updatedAt: value.updatedAt },
+    { parentToolUseId: value.parentToolUseId },
+  )
+  const isError = value.isError === true ? true : undefined
   switch (value.kind) {
     case 'user_message':
     case 'assistant_message':
     case 'reasoning':
-      return typeof value.text === 'string' ? (value as unknown as ChatItem) : null
+      return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
     case 'command':
-      return shortString(value.toolUseId) && typeof value.command === 'string' ? (value as unknown as ChatItem) : null
+      if (!shortString(value.toolUseId) || typeof value.command !== 'string') return null
+      return withOptional({ ...base, kind: 'command' as const, toolUseId: value.toolUseId, command: value.command.slice(0, 16_384) }, {
+        description: optionalText(value.description, 2000), output: optionalText(value.output), isError,
+      })
     case 'file_change':
-      return shortString(value.toolUseId) && typeof value.path === 'string'
-        && typeof value.additions === 'number' && typeof value.deletions === 'number'
-        ? (value as unknown as ChatItem) : null
+      if (!shortString(value.toolUseId) || typeof value.path !== 'string' || typeof value.toolName !== 'string') return null
+      if (!Number.isFinite(value.additions) || !Number.isFinite(value.deletions)) return null
+      return withOptional({
+        ...base, kind: 'file_change' as const, toolUseId: value.toolUseId, toolName: value.toolName.slice(0, 200), path: value.path.slice(0, 4096),
+        additions: value.additions as number, deletions: value.deletions as number,
+      }, { patch: optionalText(value.patch), output: optionalText(value.output), isError })
     case 'tool':
-      return shortString(value.toolUseId) && typeof value.toolName === 'string' && typeof value.title === 'string'
-        ? (value as unknown as ChatItem) : null
-    case 'todo_list':
-      return Array.isArray(value.todos) ? (value as unknown as ChatItem) : null
+      if (!shortString(value.toolUseId) || typeof value.toolName !== 'string' || typeof value.title !== 'string') return null
+      return withOptional({ ...base, kind: 'tool' as const, toolUseId: value.toolUseId, toolName: value.toolName.slice(0, 200), title: value.title.slice(0, 4096) }, {
+        detail: optionalText(value.detail), output: optionalText(value.output), isError,
+      })
+    case 'todo_list': {
+      const todos = parseTodos(value.todos)
+      return todos ? { ...base, kind: 'todo_list', todos } : null
+    }
     case 'request':
-      return shortString(value.requestId) && (value.requestKind === 'approval' || value.requestKind === 'question')
-        && typeof value.title === 'string' ? (value as unknown as ChatItem) : null
+      if (!shortString(value.requestId) || (value.requestKind !== 'approval' && value.requestKind !== 'question')) return null
+      if (typeof value.title !== 'string' || typeof value.toolName !== 'string') return null
+      return withOptional({
+        ...base, kind: 'request' as const, requestId: value.requestId, requestKind: value.requestKind as 'approval' | 'question', toolName: value.toolName.slice(0, 200), title: value.title.slice(0, 1000),
+      }, { detail: optionalText(value.detail, 16_384), questions: parseQuestions(value.questions), answer: parseRequestAnswer(value.answer) })
     case 'notice':
       return (value.level === 'info' || value.level === 'error') && typeof value.text === 'string'
-        ? (value as unknown as ChatItem) : null
+        ? { ...base, kind: 'notice', level: value.level, text: value.text.slice(0, 16_384) }
+        : null
     default:
       return null
   }
@@ -236,8 +294,9 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
 }
 
 function parseItems(value: unknown): ChatItem[] | null {
-  if (!Array.isArray(value) || value.length > 5000) return null
-  return value.map(parseChatItem).filter((item): item is ChatItem => item !== null)
+  if (!Array.isArray(value)) return null
+  // Keep the newest items rather than refusing a long conversation outright.
+  return value.slice(-5000).map(parseChatItem).filter((item): item is ChatItem => item !== null)
 }
 
 export function parseHostMessage(value: unknown): HostToDaemonMessage | null {

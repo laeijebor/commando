@@ -10,6 +10,21 @@ import {
 import type { AgentSession } from './session.js'
 
 const FLUSH_MS = 50
+/** Keeps snapshots well under the daemon's 4 MB frame limit. */
+const MAX_SNAPSHOT_BYTES = 2_000_000
+
+/** The newest items that fit in a snapshot frame, oldest first. */
+export function snapshotItems(items: readonly ChatItem[], maxBytes = MAX_SNAPSHOT_BYTES): ChatItem[] {
+  const kept: ChatItem[] = []
+  let bytes = 0
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const size = JSON.stringify(items[index]).length
+    if (bytes + size > maxBytes) break
+    bytes += size
+    kept.push(items[index]!)
+  }
+  return kept.reverse()
+}
 const MIN_BACKOFF_MS = 250
 const MAX_BACKOFF_MS = 5_000
 
@@ -59,6 +74,7 @@ export class DaemonLink {
       this.retry()
       return
     }
+    if (this.stopped) return
     const socket = new WebSocket(this.url, { headers: { Authorization: `Bearer ${token}` } })
     this.socket = socket
     socket.on('open', () => {
@@ -159,7 +175,7 @@ export class AgentHost {
 
   private sendSnapshot(session: AgentSession): void {
     const { session: info, items } = session.snapshot()
-    this.link.send({ type: 'session_snapshot', session: info, items })
+    this.link.send({ type: 'session_snapshot', session: info, items: snapshotItems(items) })
   }
 
   private async onMessage(message: DaemonToHostMessage): Promise<void> {

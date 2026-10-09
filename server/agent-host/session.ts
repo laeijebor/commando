@@ -86,6 +86,8 @@ export class AgentSession {
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   private turnsInFlight = 0
+  /** Set by interrupt(); the turn's error result then reads as interrupted. */
+  private interruptRequested = false
 
   constructor(
     private readonly spec: AgentSessionSpec,
@@ -148,6 +150,10 @@ export class AgentSession {
   send(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
+    if (this.info.status === 'closed' || this.info.status === 'error') {
+      this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
+      return
+    }
     this.emitItems(this.mapper.startTurn(trimmed))
     this.turnsInFlight += 1
     this.setStatus('running')
@@ -160,6 +166,7 @@ export class AgentSession {
   }
 
   async interrupt(): Promise<void> {
+    if (this.info.status === 'running' || this.info.status === 'waiting') this.interruptRequested = true
     for (const [requestId, request] of this.pending) {
       request.resolve({ behavior: 'deny', message: 'The user interrupted.', interrupt: true })
       this.emitItems(this.mapper.resolveRequest(requestId, { kind: 'cancelled', reason: 'Interrupted' }))
@@ -208,6 +215,7 @@ export class AgentSession {
       ? 'Claude is asking'
       : options.title ?? `Allow ${options.displayName ?? toolTitle(toolName, input)}?`
     const detail = requestKind === 'approval' ? approvalDetail(toolName, input) : undefined
+    if (options.signal.aborted) return Promise.resolve({ behavior: 'deny', message: 'Cancelled.' })
     return new Promise<PermissionResult>((resolve) => {
       this.pending.set(requestId, { requestKind, input, suggestions: options.suggestions, resolve })
       this.emitItems(this.mapper.request(requestId, {
@@ -250,14 +258,20 @@ export class AgentSession {
       this.info = { ...this.info, model: message.model, permissionMode: message.permissionMode }
       this.emitSession()
     }
-    this.emitItems(this.mapper.handle(message))
     if (message.type === 'result') {
+      const interrupted = this.interruptRequested
+      this.interruptRequested = false
       this.turnsInFlight = Math.max(0, this.turnsInFlight - 1)
-      if (message.subtype !== 'success' && 'errors' in message && Array.isArray(message.errors) && message.errors.length) {
+      this.emitItems(this.mapper.settleRunning(message.subtype === 'success' ? 'completed' : interrupted ? 'interrupted' : 'failed'))
+      if (interrupted) {
+        this.emitItems(this.mapper.notice('info', 'Interrupted'))
+      } else if (message.subtype !== 'success' && 'errors' in message && Array.isArray(message.errors) && message.errors.length) {
         this.emitItems(this.mapper.notice('error', message.errors.join('\n')))
       }
       this.setStatus(this.turnsInFlight > 0 ? 'running' : 'idle')
+      return
     }
+    this.emitItems(this.mapper.handle(message))
   }
 
   private setStatus(status: ChatSessionStatus): void {
