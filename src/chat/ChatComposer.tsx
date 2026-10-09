@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowUp, CheckSquare, Square, SquareCheckBig } from 'lucide-react'
+import { ArrowUp, CheckSquare, Circle, CircleDot, Square, SquareCheckBig } from 'lucide-react'
 import type { ChatAnswer, ChatItem, ChatSessionInfo } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { shortPath } from './timelineRows'
@@ -9,7 +9,7 @@ type RequestItem = Extract<ChatItem, { kind: 'request' }>
 type TodoItem = Extract<ChatItem, { kind: 'todo_list' }>
 
 // Approval panel, after t3code's ComposerPendingApprovalPanel/Actions.
-function ApprovalPanel({ request, pendingCount, cwd, onAnswer }: { request: RequestItem; pendingCount: number; cwd: string; onAnswer: (answer: ChatAnswer) => void }) {
+function ApprovalPanel({ request, pendingCount, cwd, disabled, onAnswer }: { request: RequestItem; pendingCount: number; cwd: string; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
   return (
     <div className="flex flex-col gap-2 border-b border-border bg-warning-surface px-3 py-2.5" role="group" aria-label={request.title}>
       <div className="flex min-w-0 items-center gap-2 text-2xs text-muted-foreground">
@@ -22,16 +22,16 @@ function ApprovalPanel({ request, pendingCount, cwd, onAnswer }: { request: Requ
         </code>
       ) : null}
       <div className="flex flex-wrap gap-1.5">
-        <Button size="xs" onClick={() => onAnswer({ kind: 'approval', decision: 'allow' })}>Allow once</Button>
-        <Button size="xs" variant="outline" onClick={() => onAnswer({ kind: 'approval', decision: 'allow_always' })}>Always allow</Button>
-        <Button size="xs" variant="destructive-outline" onClick={() => onAnswer({ kind: 'approval', decision: 'deny' })}>Deny</Button>
+        <Button size="xs" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'allow' })}>Allow once</Button>
+        <Button size="xs" variant="outline" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'allow_always' })}>Always allow</Button>
+        <Button size="xs" variant="destructive-outline" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'deny' })}>Deny</Button>
       </div>
     </div>
   )
 }
 
 // AskUserQuestion, after t3code's ComposerPendingUserInputPanel.
-function QuestionPanel({ request, onAnswer }: { request: RequestItem; onAnswer: (answer: ChatAnswer) => void }) {
+function QuestionPanel({ request, disabled, onAnswer }: { request: RequestItem; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
   const questions = request.questions ?? []
   const [selected, setSelected] = useState<Record<string, string[]>>({})
   const [other, setOther] = useState<Record<string, string>>({})
@@ -60,7 +60,7 @@ function QuestionPanel({ request, onAnswer }: { request: RequestItem; onAnswer: 
             </legend>
             {question.options.map((option) => {
               const active = chosen.includes(option.label)
-              const Icon = question.multiSelect ? (active ? SquareCheckBig : Square) : active ? CheckSquare : Square
+              const Icon = question.multiSelect ? (active ? SquareCheckBig : Square) : active ? CircleDot : Circle
               return (
                 <button
                   key={option.label}
@@ -90,7 +90,7 @@ function QuestionPanel({ request, onAnswer }: { request: RequestItem; onAnswer: 
         )
       })}
       <div className="flex gap-1.5">
-        <Button size="xs" disabled={!complete} onClick={() => onAnswer({ kind: 'question', answers: Object.fromEntries(questions.map((question) => [question.question, answerFor(question.question)])) })}>
+        <Button size="xs" disabled={disabled || !complete} onClick={() => onAnswer({ kind: 'question', answers: Object.fromEntries(questions.map((question) => [question.question, answerFor(question.question)])) })}>
           Answer
         </Button>
       </div>
@@ -194,8 +194,8 @@ export function ChatComposer({
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] overflow-hidden rounded-xl border border-input bg-card shadow-sm focus-within:border-primary/60">
         {request ? (
           request.requestKind === 'question'
-            ? <QuestionPanel key={request.requestId} request={request} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
-            : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
+            ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
+            : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
         ) : null}
         <textarea
           ref={textarea}

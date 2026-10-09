@@ -638,6 +638,7 @@ export function TerminalPaneCard({
         {showChat && chat ? (
           <ChatPane
             chat={chat}
+            connected={connected}
             focused={focused}
             onFocus={onFocus}
             onSend={(text) => onChatSend?.(text)}

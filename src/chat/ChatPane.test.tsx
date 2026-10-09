@@ -32,7 +32,7 @@ function chat(overrides: Partial<ChatState> = {}, extra: ChatItem[] = []): ChatS
 
 function renderPane(state: ChatState) {
   const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn() }
-  render(<ChatPane chat={state} focused={false} {...handlers} />)
+  render(<ChatPane chat={state} connected focused={false} {...handlers} />)
   return handlers
 }
 
@@ -109,6 +109,14 @@ describe('ChatPane', () => {
     fireEvent.change(screen.getAllByPlaceholderText('Or type an answer')[1]!, { target: { value: 'sessions' } })
     fireEvent.click(answer)
     expect(handlers.onAnswer).toHaveBeenCalledWith('q1', { kind: 'question', answers: { 'Which store?': 'Redis', 'Name?': 'sessions' } })
+  })
+
+  it('disables answers while this browser is offline', () => {
+    const request: ChatItem = { ...base, id: 'request-r1', status: 'running', kind: 'request', requestId: 'r1', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?' }
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn() }
+    render(<ChatPane chat={chat({}, [request])} connected={false} focused={false} {...handlers} />)
+    expect(screen.getByRole('status')).toHaveTextContent('Reconnecting to Commando')
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeDisabled()
   })
 
   it('says when the host is away and disables the composer', () => {

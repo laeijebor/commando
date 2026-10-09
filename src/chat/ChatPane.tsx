@@ -9,6 +9,7 @@ import './chat.css'
 /** A chat pane: the agent host's turns as a narrow, readable column. */
 export function ChatPane({
   chat,
+  connected,
   focused,
   onFocus,
   onSend,
@@ -16,6 +17,8 @@ export function ChatPane({
   onAnswer,
 }: {
   chat: ChatState
+  /** Whether this browser is connected to the Commando daemon. */
+  connected: boolean
   focused: boolean
   onFocus: () => void
   onSend: (text: string) => void
@@ -24,10 +27,15 @@ export function ChatPane({
 }) {
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
-  const working = chat.session.status === 'running' || chat.session.status === 'waiting'
+  const working = chat.session.status === 'running'
   return (
     <section className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col" onMouseDown={onFocus} aria-label="Agent chat" data-testid="chat-pane">
-      {!chat.hostConnected ? (
+      {!connected ? (
+        <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
+          <PlugZap className="size-3.5" aria-hidden="true" />
+          Reconnecting to Commando… The agent keeps working in its pane.
+        </div>
+      ) : !chat.hostConnected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
           The agent host is disconnected. It keeps working in its pane and will reconnect.
@@ -39,7 +47,7 @@ export function ChatPane({
       <ChatTimeline items={chat.items} cwd={chat.session.cwd} working={working} />
       <ChatComposer
         session={chat.session}
-        hostConnected={chat.hostConnected}
+        hostConnected={connected && chat.hostConnected}
         requests={requests}
         {...(todos ? { todos } : {})}
         onSend={onSend}

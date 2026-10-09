@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Brain, ChevronRight, CircleAlert, FilePen, Info, LoaderCircle, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
+import { Brain, ChevronRight, CircleAlert, FilePen, Info, LoaderCircle, MessageCircleQuestion, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
 import type { ChatItem } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { deriveTimelineRows, patchLines, shortPath, type TimelineRow, type WorkItem } from './timelineRows'
@@ -28,7 +28,8 @@ function WorkIcon({ item }: { item: WorkItem }) {
     case 'command': return <SquareTerminal className={className} aria-hidden="true" />
     case 'file_change': return <FilePen className={className} aria-hidden="true" />
     case 'reasoning': return <Brain className={cn(className, item.status === 'running' && 'chat-pulse')} aria-hidden="true" />
-    case 'request': return item.answer?.kind === 'approval' && item.answer.decision !== 'deny'
+    case 'request': if (item.requestKind === 'question') return <MessageCircleQuestion className={className} aria-hidden="true" />
+      return item.answer?.kind === 'approval' && item.answer.decision !== 'deny'
       ? <ShieldCheck className={className} aria-hidden="true" />
       : <ShieldX className={className} aria-hidden="true" />
     default: return item.toolName === 'Grep' || item.toolName === 'Glob' || item.toolName === 'WebSearch'

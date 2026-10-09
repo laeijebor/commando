@@ -67,6 +67,31 @@
   --container-chat: 46rem;
 }
 
+/*
+ * A minimal reset for the chat subtree only (Tailwind's preflight would touch
+ * all of Commando). Zero specificity, so every utility still wins.
+ */
+:where(.commando-chat) :where(*, ::before, ::after) {
+  box-sizing: border-box;
+  border: 0 solid var(--border);
+}
+:where(.commando-chat) :where(button, input, textarea, select) {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+:where(.commando-chat) :where(fieldset, legend) {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+:where(.commando-chat) :where(p, ul, ol, pre, h1, h2, h3, h4) {
+  margin: 0;
+}
+
 .commando-chat {
   --control-radius: 6px;
   --chat-content-max-width: 736px;
