@@ -202,6 +202,9 @@ export class AgentStatusHookApi {
       } else if (provider === 'claude') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
+        // The chat host shows and answers its own prompts, so a hook request
+        // must not linger as a pending interaction nobody can resolve.
+        if (this.dependencies.chatOwnsPane?.(targetPaneId)) delete body.request
         change = this.dependencies.registry.applyClaudeHook(
           targetPaneId,
           body,

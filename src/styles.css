@@ -1159,7 +1159,8 @@ kbd {
 }
 
 .pane-split-child > .terminal-pane .terminal-source-grid,
-.pane-split-child > .terminal-pane .terminal-find-shell {
+.pane-split-child > .terminal-pane .terminal-find-shell,
+.pane-split-child > .terminal-pane .terminal-chat-shell {
   height: 100%;
 }
 
@@ -1350,7 +1351,8 @@ kbd {
 }
 
 .terminal-pane-body > .terminal-source-grid,
-.terminal-pane-body > .terminal-find-shell {
+.terminal-pane-body > .terminal-find-shell,
+.terminal-pane-body > .terminal-chat-shell {
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -1701,6 +1703,13 @@ kbd {
   height: 204px;
 }
 
+/* Chat panes take the terminal's place and follow the same size rules. */
+.terminal-chat-shell {
+  min-width: 0;
+  min-height: 0;
+  height: 204px;
+}
+
 .terminal-find-shell > .terminal-source-grid {
   width: 100%;
   height: 100%;
@@ -1817,15 +1826,19 @@ kbd {
 
 .terminal-pane-body > .terminal-source-grid,
 .terminal-pane-body > .terminal-find-shell,
+.terminal-pane-body > .terminal-chat-shell,
 .terminal-pane.is-maximized .terminal-source-grid,
 .terminal-pane.is-maximized .terminal-find-shell,
+.terminal-pane.is-maximized .terminal-chat-shell,
 .layout-lead-and-stack .terminal-pane:first-child .terminal-source-grid,
-.layout-lead-and-stack .terminal-pane:first-child .terminal-find-shell {
+.layout-lead-and-stack .terminal-pane:first-child .terminal-find-shell,
+.layout-lead-and-stack .terminal-pane:first-child .terminal-chat-shell {
   height: 100%;
 }
 
 .terminal-pane.is-solo:not(.is-maximized) .terminal-source-grid,
-.terminal-pane.is-solo:not(.is-maximized) .terminal-find-shell {
+.terminal-pane.is-solo:not(.is-maximized) .terminal-find-shell,
+.terminal-pane.is-solo:not(.is-maximized) .terminal-chat-shell {
   height: max(320px, calc(100vh - 200px));
 }
 
@@ -4373,6 +4386,11 @@ body.is-resizing-hud-pinned-note {
   .terminal-source-grid,
   .terminal-find-shell {
     height: 220px;
+  }
+
+  /* A chat reads better than a terminal on a phone, so it keeps more room. */
+  .terminal-chat-shell {
+    height: max(360px, calc(100vh - 220px));
   }
 
   .palette-backdrop {

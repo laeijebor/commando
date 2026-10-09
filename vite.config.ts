@@ -1,3 +1,4 @@
+import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 // `vitest/config` re-exports Vite's defineConfig with the `test` block typed.
 import { configDefaults, defineConfig } from 'vitest/config'
@@ -7,7 +8,7 @@ const daemonHttpTarget = `http://127.0.0.1:${daemonPort}`
 const daemonWebSocketTarget = `ws://127.0.0.1:${daemonPort}`
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   test: {
     setupFiles: ['./server/test-env-sandbox.ts'],
     // apps/mobile is an Expo app with its own jest-expo suite; Vite cannot
