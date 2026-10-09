@@ -17,6 +17,8 @@ type AgentStatusApiDependencies = {
   paneCommand: (paneId: string) => string | undefined
   onChange: (change: AgentStatusChange) => void
   interactions?: AgentInteractionBroker
+  /** A chat pane's host answers permission prompts itself (SDK canUseTool), so hooks never hold them. */
+  chatOwnsPane?: (paneId: string) => boolean
   now?: () => number
   verifyCursorAssociation?: (paneId: string, body: Record<string, unknown>) => Promise<CursorHookAssociation | null>
   cursorForeground?: (paneId: string) => Promise<boolean>
@@ -262,7 +264,8 @@ export class AgentStatusHookApi {
             request.id === requestId
           ))
         : undefined
-      const answerPending = interaction && this.dependencies.interactions?.hasConsumers()
+      const answerPending = interaction && this.dependencies.interactions?.hasConsumers() &&
+        !this.dependencies.chatOwnsPane?.(targetPaneId)
         ? this.dependencies.interactions.wait(targetPaneId, interaction)
         : null
       this.dependencies.onChange(change)

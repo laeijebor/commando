@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Runs an agent session in this tmux pane and shows it as a chat in Commando.
+#   commando-agent claude [--config-dir ~/.claudep] [--resume ID] [--dangerously-skip-permissions]
+set -euo pipefail
+root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec node --import "$root/node_modules/tsx/dist/loader.mjs" "$root/server/agent-host/main.ts" "$@"

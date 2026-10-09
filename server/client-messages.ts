@@ -18,6 +18,7 @@ import {
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
+import { parseChatAnswer } from '../shared/agent-chat.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -524,6 +525,37 @@ export function parseClientMessage(value: unknown): ParseResult {
       return id
         ? { ok: true, message: { type: 'refresh_usage', requestId: id } }
         : { ok: false, error: 'Invalid usage refresh request' }
+    }
+    case 'chat_send': {
+      const id = requestId(value.requestId)
+      if (
+        !id ||
+        !isPaneId(value.paneId) ||
+        typeof value.text !== 'string' ||
+        value.text.trim().length === 0 ||
+        value.text.includes('\0') ||
+        Buffer.byteLength(value.text, 'utf8') > MAX_PASTE_BYTES
+      ) {
+        return { ok: false, error: 'Invalid chat message', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+      }
+      return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, requestId: id } }
+    }
+    case 'chat_interrupt': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId)
+        ? { ok: true, message: { type: 'chat_interrupt', paneId: value.paneId, requestId: id } }
+        : { ok: false, error: 'Invalid chat interrupt', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_answer': {
+      const id = requestId(value.requestId)
+      const answer = parseChatAnswer(value.answer)
+      const chatRequestId = typeof value.chatRequestId === 'string' && value.chatRequestId.length > 0 && value.chatRequestId.length <= 200
+        ? value.chatRequestId
+        : null
+      if (!id || !isPaneId(value.paneId) || !answer || !chatRequestId) {
+        return { ok: false, error: 'Invalid chat answer', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+      }
+      return { ok: true, message: { type: 'chat_answer', paneId: value.paneId, chatRequestId, answer, requestId: id } }
     }
     default:
       return { ok: false, error: 'Unsupported message type' }
