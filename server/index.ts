@@ -2382,6 +2382,8 @@ async function main(): Promise<void> {
     resurrectSaver.stop()
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
+    // Agent hosts keep their turns running and reconnect to the next daemon.
+    for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
     pushNotifier?.close()
     simLive.close()

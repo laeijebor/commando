@@ -17,12 +17,22 @@ type HubDependencies = {
   targetIdFor: (paneId: string) => string | undefined
   broadcast: (message: ServerMessage) => void
   log?: (message: string) => void
+  now?: () => number
 }
 
 type ChatEntry = {
   state: ChatState
   socket: WebSocket | null
+  /**
+   * False until the pane shows up in the tmux snapshot. After a daemon restart
+   * a host can reconnect before the first snapshot, so its session waits here
+   * instead of being dropped.
+   */
+  visible: boolean
+  receivedAt: number
 }
+
+const PENDING_PANE_MS = 60_000
 
 /**
  * Daemon side of chat panes. Agent hosts run inside tmux panes and connect
@@ -58,7 +68,7 @@ export class AgentHostHub {
           return
         case 'session_snapshot': {
           const { paneId } = message.session
-          if (!this.dependencies.paneExists(paneId)) return
+          const visible = this.dependencies.paneExists(paneId)
           const previous = this.chats.get(paneId)
           // A newer host for the same pane replaces the old link.
           if (previous?.socket && previous.socket !== socket) previous.socket.close()
@@ -71,22 +81,22 @@ export class AgentHostHub {
             items: mergeChatItems([], message.items),
             hostConnected: true,
           }
-          this.chats.set(paneId, { state, socket })
-          this.dependencies.broadcast({ type: 'chat_state', chat: state })
+          this.chats.set(paneId, { state, socket, visible, receivedAt: this.now() })
+          if (visible) this.dependencies.broadcast({ type: 'chat_state', chat: state })
           return
         }
         case 'session_update': {
           const entry = this.owned(owned, message.session.paneId)
           if (!entry) return
           entry.state = { ...entry.state, session: message.session }
-          this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
+          if (entry.visible) this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
           return
         }
         case 'items': {
           const entry = this.owned(owned, message.paneId)
           if (!entry || message.items.length === 0) return
           entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, message.items) }
-          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
+          if (entry.visible) this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
           return
         }
         case 'session_closed':
@@ -101,18 +111,20 @@ export class AgentHostHub {
         if (!entry || entry.socket !== socket) continue
         entry.socket = null
         entry.state = { ...entry.state, hostConnected: false }
-        this.dependencies.broadcast({ type: 'chat_session', paneId, session: entry.state.session, hostConnected: false })
+        if (entry.visible) this.dependencies.broadcast({ type: 'chat_session', paneId, session: entry.state.session, hostConnected: false })
+        else this.chats.delete(paneId)
       }
     })
   }
 
   states(): ChatState[] {
-    return [...this.chats.values()].map((entry) => entry.state)
+    return [...this.chats.values()].filter((entry) => entry.visible).map((entry) => entry.state)
   }
 
   /** True while a live host drives this pane's agent. */
   owns(paneId: string): boolean {
-    return this.chats.get(paneId)?.socket != null
+    const entry = this.chats.get(paneId)
+    return entry?.visible === true && entry.socket != null
   }
 
   items(paneId: string): ChatItem[] {
@@ -133,20 +145,29 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'answer', paneId, chatRequestId, answer, requestId })
   }
 
-  /** Drops chats whose pane is gone, and refreshes target ids after restores. */
+  /**
+   * Runs after each tmux snapshot: shows sessions whose pane has appeared,
+   * drops chats whose pane is gone, and refreshes target ids after restores.
+   */
   reconcile(): void {
     for (const [paneId, entry] of this.chats) {
       if (!this.dependencies.paneExists(paneId)) {
+        if (!entry.visible && this.now() - entry.receivedAt < PENDING_PANE_MS) continue
         entry.socket?.close()
         this.remove(paneId)
         continue
       }
       const targetId = this.dependencies.targetIdFor(paneId)
-      if (targetId && targetId !== entry.state.targetId) {
-        entry.state = { ...entry.state, targetId }
+      if (!entry.visible || (targetId && targetId !== entry.state.targetId)) {
+        entry.visible = true
+        entry.state = { ...entry.state, ...(targetId ? { targetId } : {}) }
         this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
       }
     }
+  }
+
+  private now(): number {
+    return this.dependencies.now?.() ?? Date.now()
   }
 
   private owned(owned: Set<string>, paneId: string): ChatEntry | undefined {
@@ -154,8 +175,10 @@ export class AgentHostHub {
   }
 
   private remove(paneId: string): void {
-    if (!this.chats.delete(paneId)) return
-    this.dependencies.broadcast({ type: 'chat_removed', paneId })
+    const entry = this.chats.get(paneId)
+    if (!entry) return
+    this.chats.delete(paneId)
+    if (entry.visible) this.dependencies.broadcast({ type: 'chat_removed', paneId })
   }
 
   private toHost(paneId: string, message: DaemonToHostMessage): boolean {

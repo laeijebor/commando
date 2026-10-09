@@ -55,11 +55,37 @@ describe('AgentHostHub', () => {
     expect(hub.owns('%1')).toBe(true)
   })
 
-  it('ignores sessions for unknown panes, malformed items and panes the socket does not own', () => {
+  it('holds a session for a pane tmux has not reported yet, then shows it once the pane appears', () => {
+    let now = 0
+    const panes = new Set<string>()
+    const broadcasts: ServerMessage[] = []
+    const hub = new AgentHostHub({ paneExists: (paneId) => panes.has(paneId), targetIdFor: () => 'target-7', broadcast: (message) => broadcasts.push(message), now: () => now })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%7'), items: [item('a', 'kept')] })
+    socket.host({ type: 'items', paneId: '%7', items: [item('b', 'while hidden')] })
+    expect(hub.states()).toEqual([])
+    expect(broadcasts).toEqual([])
+    hub.reconcile()
+    expect(hub.states()).toEqual([])
+    panes.add('%7')
+    hub.reconcile()
+    expect(hub.states()).toEqual([expect.objectContaining({ paneId: '%7', targetId: 'target-7' })])
+    expect(hub.items('%7')).toHaveLength(2)
+    expect(broadcasts.map((message) => message.type)).toEqual(['chat_state'])
+
+    const late = new FakeSocket()
+    hub.connect(late as unknown as WebSocket)
+    late.host({ type: 'session_snapshot', session: session('%8'), items: [] })
+    now = 61_000
+    hub.reconcile()
+    expect(late.readyState).toBe(3)
+  })
+
+  it('ignores malformed items and panes the socket does not own', () => {
     const { hub, connect } = setup()
     const first = connect()
     const second = connect()
-    first.host({ type: 'session_snapshot', session: session('%9'), items: [] })
     first.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'x'), { id: 'bad' }] })
     second.host({ type: 'items', paneId: '%1', items: [item('z', 'hijack')] })
     expect(hub.states().map((chat) => chat.paneId)).toEqual(['%1'])

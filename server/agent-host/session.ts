@@ -82,7 +82,7 @@ export class AgentSession {
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly listeners: Partial<AgentSessionEvents> = {}
+  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], closed: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   private turnsInFlight = 0
@@ -108,7 +108,7 @@ export class AgentSession {
   }
 
   on<K extends keyof AgentSessionEvents>(event: K, listener: AgentSessionEvents[K]): void {
-    this.listeners[event] = listener
+    this.listeners[event].push(listener)
   }
 
   get paneId(): string {
@@ -237,7 +237,7 @@ export class AgentSession {
       this.info = { ...this.info, error: text }
       this.setStatus('error')
     } finally {
-      this.listeners.closed?.()
+      for (const listener of this.listeners.closed) listener()
     }
   }
 
@@ -267,10 +267,11 @@ export class AgentSession {
   }
 
   private emitSession(): void {
-    this.listeners.session?.({ ...this.info })
+    for (const listener of this.listeners.session) listener({ ...this.info })
   }
 
   private emitItems(items: ChatItem[]): void {
-    if (items.length) this.listeners.items?.(items)
+    if (!items.length) return
+    for (const listener of this.listeners.items) listener(items)
   }
 }
