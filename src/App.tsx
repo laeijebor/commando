@@ -17,6 +17,7 @@ import {
   LogOut,
   Mail,
   Maximize2,
+  MessageSquare,
   Minimize2,
   NotebookPen,
   PanelLeft,
@@ -119,6 +120,8 @@ import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
+import { ChatPane } from './chat/ChatPane'
+import { mergeChatItems, type ChatAnswer, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -305,6 +308,13 @@ type TerminalPaneProps = {
   onOpenMenu: (x: number, y: number) => void
   onAcknowledgeMark?: () => void
   onRetryResume?: () => void
+  /** Set when an agent host drives this pane: the card can show a chat instead of the terminal. */
+  chat?: ChatState
+  chatView?: 'chat' | 'terminal'
+  onChatView?: (view: 'chat' | 'terminal') => void
+  onChatSend?: (text: string) => void
+  onChatInterrupt?: () => void
+  onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -359,6 +369,12 @@ export function TerminalPaneCard({
   onOpenMenu,
   onAcknowledgeMark,
   onRetryResume,
+  chat,
+  chatView = 'chat',
+  onChatView,
+  onChatSend,
+  onChatInterrupt,
+  onChatAnswer,
   onRename,
   onRenameFinished,
   onMove,
@@ -382,6 +398,7 @@ export function TerminalPaneCard({
   registerFocusable,
 }: TerminalPaneProps) {
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
+  const showChat = Boolean(chat) && chatView === 'chat'
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
   const worklogBrief = useMemo<SessionBrief>(() => brief ? { ...brief, targetId: pane.targetId } : ({
     paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
@@ -541,6 +558,18 @@ export function TerminalPaneCard({
         ) : null}
         <span className="pane-index">{pane.index}</span>
         <span className="pane-actions">
+          {chat ? (
+            <button
+              type="button"
+              className={`icon-button compact${showChat ? ' is-active' : ''}`}
+              onClick={() => onChatView?.(showChat ? 'terminal' : 'chat')}
+              aria-pressed={showChat}
+              aria-label={showChat ? 'Show the terminal' : 'Show the chat'}
+              title={showChat ? 'Show the terminal' : 'Show the chat'}
+            >
+              {showChat ? <Terminal aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
+            </button>
+          ) : null}
           <button
             type="button"
             className="icon-button compact"
@@ -606,7 +635,17 @@ export function TerminalPaneCard({
         </button>
       ) : null}
       <div className="terminal-pane-body has-worklog">
-        <TerminalPaneRenderer
+        {showChat && chat ? (
+          <ChatPane
+            chat={chat}
+            connected={connected}
+            focused={focused}
+            onFocus={onFocus}
+            onSend={(text) => onChatSend?.(text)}
+            onInterrupt={() => onChatInterrupt?.()}
+            onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
+          />
+        ) : <TerminalPaneRenderer
           paneId={pane.id}
           cols={pane.width}
           rows={pane.height}
@@ -633,7 +672,7 @@ export function TerminalPaneCard({
           onRendererChange={onRendererChange}
           registerSink={registerSink}
           registerFocusable={registerFocusable}
-        />
+        />}
         <PaneWorklog
           key={pane.targetId}
           brief={worklogBrief}
@@ -927,6 +966,8 @@ export function App() {
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
+  const [chats, setChats] = useState<Record<string, ChatState>>({})
+  const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -1269,6 +1310,32 @@ export function App() {
           if (!(message.targetId in current)) return current
           const next = { ...current }
           delete next[message.targetId]
+          return next
+        })
+        break
+      case 'chat_snapshot':
+        setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
+        break
+      case 'chat_state':
+        setChats((current) => ({ ...current, [message.chat.paneId]: message.chat }))
+        break
+      case 'chat_session':
+        setChats((current) => {
+          const chat = current[message.paneId]
+          return chat ? { ...current, [message.paneId]: { ...chat, session: message.session, hostConnected: message.hostConnected } } : current
+        })
+        break
+      case 'chat_items':
+        setChats((current) => {
+          const chat = current[message.paneId]
+          return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } } : current
+        })
+        break
+      case 'chat_removed':
+        setChats((current) => {
+          if (!(message.paneId in current)) return current
+          const next = { ...current }
+          delete next[message.paneId]
           return next
         })
         break
@@ -1999,6 +2066,15 @@ export function App() {
   }
   const retryAgentResume = (targetId?: string) => {
     send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
+  }
+  const sendChat = (paneId: string, text: string) => {
+    send({ type: 'chat_send', paneId, text, requestId: requestId('chat-send') })
+  }
+  const interruptChat = (paneId: string) => {
+    send({ type: 'chat_interrupt', paneId, requestId: requestId('chat-interrupt') })
+  }
+  const answerChat = (paneId: string, chatRequestId: string, answer: ChatAnswer) => {
+    send({ type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
@@ -2916,6 +2992,12 @@ export function App() {
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}
+                            chat={chats[pane.id]}
+                            chatView={chatViews[pane.id] ?? 'chat'}
+                            onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
+                            onChatSend={(text) => sendChat(pane.id, text)}
+                            onChatInterrupt={() => interruptChat(pane.id)}
+                            onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             solo={displayLeafCount === 1}

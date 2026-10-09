@@ -55,8 +55,8 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
-import { AgentResumeService } from './agent-resume.js'
-import { isShellCommand } from './agent-resume-command.js'
+import { AgentResumeService, readProcessTable } from './agent-resume.js'
+import { isShellCommand, parseProcessTable } from './agent-resume-command.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -82,6 +82,8 @@ import { SimLogsService, simLogsUdid } from './sim-logs.js'
 import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
+import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
+import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -787,6 +789,18 @@ async function main(): Promise<void> {
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
 
+  // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
+  const agentHosts = new AgentHostHub({
+    paneExists,
+    targetIdFor: (paneId) => paneForId(paneId)?.targetId,
+    broadcast,
+    verifyHost: async (paneId, hostPid) => {
+      const panePid = paneForId(paneId)?.processId
+      return panePid !== undefined && hostRunsInPane(parseProcessTable(await readProcessTable()), hostPid, panePid)
+    },
+    log: (message) => console.log(message),
+  })
+
   const processStatusForPane = (pane: CommandoSnapshot['panes'][number]): AgentStatus => (
     inferAgentProcessStatus({
       paneId: pane.id,
@@ -1262,6 +1276,7 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
+        await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
           return pane && agentStatuses.liveHookStatus(paneId, pane.command)
@@ -1531,6 +1546,7 @@ async function main(): Promise<void> {
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
     interactions,
+    chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
     cursorForeground: cursorForegroundIsCurrent,
   })
@@ -1972,6 +1988,21 @@ async function main(): Promise<void> {
         })
         return
       }
+      case 'chat_send':
+      case 'chat_interrupt':
+      case 'chat_answer': {
+        const delivered = message.type === 'chat_send'
+          ? agentHosts.send(message.paneId, message.text, message.requestId)
+          : message.type === 'chat_interrupt'
+            ? agentHosts.interrupt(message.paneId, message.requestId)
+            : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
+        if (!delivered) {
+          sendError(client, 'chat_unavailable', message.type === 'chat_answer'
+            ? 'That request is no longer waiting for an answer'
+            : 'No agent host is connected for this pane', message.requestId)
+        }
+        return
+      }
       case 'save_workspace': {
         const canonicalWorkspace = {
           ...message.workspace,
@@ -2017,6 +2048,12 @@ async function main(): Promise<void> {
   })
 
   companionWebSocketServer.on('connection', (socket) => companion?.connect(socket))
+  const agentHostWebSocketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: 4 * 1024 * 1024,
+    perMessageDeflate: false,
+  })
+  agentHostWebSocketServer.on('connection', (socket) => agentHosts.connect(socket))
 
   webSocketServer.on('connection', (socket) => {
     const client: ClientState = {
@@ -2044,6 +2081,7 @@ async function main(): Promise<void> {
     })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
+    send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
@@ -2249,7 +2287,7 @@ async function main(): Promise<void> {
         const liveUdid = url ? simLiveUdid(url.pathname) : null
         const logsUdid = url ? simLogsUdid(url.pathname) : null
         const webTileId = url ? webTilePathId(url.pathname) : null
-        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && !webTileId && !liveUdid && !logsUdid)) {
+        if (!url || (url.pathname !== '/ws' && url.pathname !== '/companion/ws' && url.pathname !== AGENT_HOST_WS_PATH && !webTileId && !liveUdid && !logsUdid)) {
           rejectUpgrade(socket, 404, 'Not Found')
           return
         }
@@ -2259,6 +2297,21 @@ async function main(): Promise<void> {
             return
           }
           webTileRelay.handleUpgrade(request, socket, head, webTileId)
+          return
+        }
+        if (url.pathname === AGENT_HOST_WS_PATH) {
+          // Agent hosts run locally in tmux panes and authenticate with the hook token.
+          if (!isLoopbackAddress(request.socket.remoteAddress)) {
+            rejectUpgrade(socket, 403, 'Forbidden')
+            return
+          }
+          if (!requestHasValidToken(request, url, companionTokenDigest)) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
+          agentHostWebSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+            agentHostWebSocketServer.emit('connection', webSocket, request)
+          })
           return
         }
         if (url.pathname === '/companion/ws') {
@@ -2333,6 +2386,8 @@ async function main(): Promise<void> {
     resurrectSaver.stop()
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
+    // Agent hosts keep their turns running and reconnect to the next daemon.
+    for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
     pushNotifier?.close()
     simLive.close()
@@ -2345,6 +2400,7 @@ async function main(): Promise<void> {
       tmux.close()
       webSocketServer.close()
       companionWebSocketServer.close()
+      agentHostWebSocketServer.close()
       void Promise.all(httpServers.map(({ server }) => new Promise<void>((resolveClose) => {
         server.close(() => resolveClose())
       }))).finally(() => auth?.close())

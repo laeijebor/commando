@@ -268,3 +268,47 @@ describe('authenticated Cursor native route', () => {
     expect((await post('/api/agent-status/hooks/cursor', native('beforeSubmitPrompt', { intent: 'x'.repeat(70_000) }))).status).toBe(413)
   })
 })
+
+describe('chat panes', () => {
+  it('neither holds nor records PermissionRequest prompts that the chat host answers itself', async () => {
+    const chatRegistry = new AgentStatusRegistry()
+    const chatInteractions = new AgentInteractionBroker()
+    const release = chatInteractions.registerConsumer()
+    const api = new AgentStatusHookApi({
+      token,
+      registry: chatRegistry,
+      paneExists: (paneId) => paneId === '%1',
+      paneCommand: () => 'node',
+      onChange: () => {},
+      interactions: chatInteractions,
+      chatOwnsPane: () => true,
+      now: () => 123,
+    })
+    const chatServer = createServer((request, response) => {
+      void api.handle(request, response, new URL(request.url ?? '/', 'http://127.0.0.1'))
+    })
+    await new Promise<void>((resolve) => chatServer.listen(0, '127.0.0.1', resolve))
+    const address = chatServer.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    try {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/agent-status/hooks/claude`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Commando-Pane': '%1' },
+        body: JSON.stringify({
+          hook_event_name: 'PermissionRequest',
+          session_id: 'session-1',
+          tool_name: 'Edit',
+          attention: 'Allow Edit?',
+          request: { id: 'request-1', kind: 'permission', prompt: 'Allow Edit?', toolName: 'Edit' },
+        }),
+        signal: AbortSignal.timeout(2_000),
+      })
+      expect(await response.json()).toEqual({ ok: true, changed: true })
+      expect(chatRegistry.get('%1')?.details?.requests ?? []).toEqual([])
+      expect(chatInteractions.hasPending('%1', 'request-1')).toBe(false)
+    } finally {
+      release()
+      await new Promise<void>((resolve) => chatServer.close(() => resolve()))
+    }
+  })
+})

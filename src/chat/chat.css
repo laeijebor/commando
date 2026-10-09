@@ -1,0 +1,148 @@
+/*
+ * Chat panes use Tailwind so t3code's chat components port closely. Scope:
+ * - no preflight: Commando's own base styles stay authoritative;
+ * - utilities are generated only from src/chat, so class names elsewhere in
+ *   Commando never pick up Tailwind rules;
+ * - utilities are unlayered so they win over Commando's element rules
+ *   (e.g. `svg { width: 18px }`) by specificity inside the chat;
+ * - t3code's colour names map onto Commando's theme variables, so every
+ *   Commando theme restyles the chat.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" source(none);
+@source "./";
+
+@theme inline {
+  --color-background: var(--surface-deep);
+  --color-foreground: var(--text);
+  --color-muted-foreground: var(--muted);
+  --color-secondary-label: var(--text-soft);
+  --color-icon-muted: var(--muted-dim);
+  --color-border: var(--border);
+  --color-input: var(--border-mid);
+  --color-ring: var(--accent);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--surface-soft);
+  --color-secondary-foreground: var(--text-soft);
+  --color-accent: var(--surface-hover);
+  --color-accent-foreground: var(--text);
+  --color-popover: var(--surface-raised);
+  --color-card: var(--surface);
+  --color-message: var(--surface-soft);
+  --color-code: var(--surface-soft);
+  --color-warning: var(--amber);
+  --color-warning-foreground: var(--amber);
+  --color-warning-surface: color-mix(in srgb, var(--amber) 7%, var(--surface));
+  --color-destructive: var(--red);
+  --color-destructive-foreground: var(--red);
+  --color-success: var(--green);
+  --color-diff-addition: color-mix(in srgb, var(--green) 11%, transparent);
+  --color-diff-deletion: color-mix(in srgb, var(--red) 11%, transparent);
+  --color-diff-addition-foreground: color-mix(in srgb, var(--green) 70%, var(--text));
+  --color-diff-deletion-foreground: color-mix(in srgb, var(--red) 70%, var(--text));
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: var(--mono);
+}
+
+/* Commando's root font size is 10px, so Tailwind's rem scale is restated in px. */
+@theme {
+  --spacing: 4px;
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 17px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 22px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --container-chat: 46rem;
+}
+
+/*
+ * A minimal reset for the chat subtree only (Tailwind's preflight would touch
+ * all of Commando). Zero specificity, so every utility still wins.
+ */
+:where(.commando-chat) :where(*, ::before, ::after) {
+  box-sizing: border-box;
+  border: 0 solid var(--border);
+}
+:where(.commando-chat) :where(button, input, textarea, select) {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+:where(.commando-chat) :where(fieldset, legend) {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+:where(.commando-chat) :where(p, ul, ol, pre, h1, h2, h3, h4) {
+  margin: 0;
+}
+
+.commando-chat {
+  --control-radius: 6px;
+  --chat-content-max-width: 736px;
+  font-family: var(--font-sans);
+  color: var(--color-foreground);
+  background: var(--color-background);
+}
+
+.commando-chat :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Markdown inside assistant messages (no typography plugin). */
+.chat-markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
+}
+.chat-markdown > * + * { margin-top: 10px; }
+.chat-markdown p, .chat-markdown ul, .chat-markdown ol, .chat-markdown pre, .chat-markdown blockquote, .chat-markdown table { margin: 0; }
+.chat-markdown * + p, .chat-markdown * + ul, .chat-markdown * + ol, .chat-markdown * + pre, .chat-markdown * + table, .chat-markdown * + blockquote, .chat-markdown * + h1, .chat-markdown * + h2, .chat-markdown * + h3 { margin-top: 10px; }
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3, .chat-markdown h4 { margin: 0; color: var(--text); font-weight: 600; line-height: 1.35; }
+.chat-markdown h1 { font-size: 18px; }
+.chat-markdown h2 { font-size: 16px; }
+.chat-markdown h3, .chat-markdown h4 { font-size: 14px; }
+.chat-markdown strong { color: var(--text); font-weight: 600; }
+.chat-markdown ul, .chat-markdown ol { padding-left: 20px; }
+.chat-markdown li + li { margin-top: 3px; }
+.chat-markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.chat-markdown code {
+  font: 12.5px/1.5 var(--mono);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-soft);
+  color: var(--text);
+}
+.chat-markdown pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.chat-markdown pre code { padding: 0; border: 0; background: none; font-size: 12.5px; }
+.chat-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--muted); }
+.chat-markdown table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 13px; }
+.chat-markdown th, .chat-markdown td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; }
+.chat-markdown hr { border: 0; border-top: 1px solid var(--border); }
+
+@keyframes chat-pulse { 50% { opacity: 0.35; } }
+.chat-pulse { animation: chat-pulse 1.2s ease-in-out infinite; }

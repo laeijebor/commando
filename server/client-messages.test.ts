@@ -599,3 +599,21 @@ describe('usage messages', () => {
     expect(parseClientMessage({ type: 'retry_agent_resume', targetId }).ok).toBe(false)
   })
 })
+
+describe('chat pane messages', () => {
+  it('accepts sends, interrupts and answers for a pane', () => {
+    expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: 'hello', requestId: 'r1' }))
+      .toEqual({ ok: true, message: { type: 'chat_send', paneId: '%4', text: 'hello', requestId: 'r1' } })
+    expect(parseClientMessage({ type: 'chat_interrupt', paneId: '%4', requestId: 'r2' }))
+      .toEqual({ ok: true, message: { type: 'chat_interrupt', paneId: '%4', requestId: 'r2' } })
+    expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'deny', message: 'no' }, requestId: 'r3' }))
+      .toEqual({ ok: true, message: { type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'deny', message: 'no' }, requestId: 'r3' } })
+  })
+
+  it('rejects blank sends, bad panes and malformed answers', () => {
+    expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: '   ', requestId: 'r1' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_send', paneId: '4', text: 'hi', requestId: 'r1' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'maybe' }, requestId: 'r3' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'question', answers: { q: 1 } }, requestId: 'r3' }).ok).toBe(false)
+  })
+})

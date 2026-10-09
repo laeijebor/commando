@@ -1,3 +1,5 @@
+import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatState } from './agent-chat.js'
+
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
 export type AgentStatusKind =
@@ -711,6 +713,13 @@ export type ServerMessage =
       requestId: string
     }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
+  | { type: 'chat_snapshot'; chats: ChatState[] }
+  /** A chat pane's whole state: sent when its host connects or reconnects. */
+  | { type: 'chat_state'; chat: ChatState }
+  | { type: 'chat_session'; paneId: string; session: ChatSessionInfo; hostConnected: boolean }
+  /** Upserts by item id. */
+  | { type: 'chat_items'; paneId: string; items: ChatItem[] }
+  | { type: 'chat_removed'; paneId: string }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -796,3 +805,6 @@ export type ClientMessage =
   /** Retries one failed agent resume, or every failed one when `targetId` is omitted. */
   | { type: 'retry_agent_resume'; targetId?: string; requestId: string }
   | { type: 'refresh_usage'; requestId: string }
+  | { type: 'chat_send'; paneId: string; text: string; requestId: string }
+  | { type: 'chat_interrupt'; paneId: string; requestId: string }
+  | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
