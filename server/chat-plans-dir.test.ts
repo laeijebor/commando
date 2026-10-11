@@ -20,5 +20,7 @@ describe('stashed plan folders', () => {
     expect(isChatPlanDir('/state/chat-plans/not-a-plan-folder', env)).toBe(false)
     expect(isChatPlanDir(undefined, env)).toBe(false)
     expect(isChatPlanDir(join(chatPlansDir({}), folder), {})).toBe(true)
+    // A trailing slash in the setting still matches the folders stashed under it.
+    expect(isChatPlanDir(`/state/chat-plans/${folder}`, { COMMANDO_CHAT_PLANS_DIR: '/state/chat-plans/' })).toBe(true)
   })
 })

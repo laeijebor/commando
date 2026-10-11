@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 /**
@@ -8,7 +8,8 @@ import { homedir } from 'node:os'
  * read the others. (Its own module so the host doesn't load the notes code.)
  */
 export function chatPlansDir(env: Record<string, string | undefined> = process.env): string {
-  return env.COMMANDO_CHAT_PLANS_DIR || join(homedir(), '.commando', 'chat-plans')
+  // Resolved, so a trailing slash or relative setting still matches the folders stashed under it.
+  return env.COMMANDO_CHAT_PLANS_DIR ? resolve(env.COMMANDO_CHAT_PLANS_DIR) : join(homedir(), '.commando', 'chat-plans')
 }
 
 /** A stashed plan's folder name: random, so one chat can't guess another's. */
@@ -17,5 +18,5 @@ export const CHAT_PLAN_FOLDER = /^[0-9a-f]{32}$/
 /** True for one plan's folder: a direct child of the plans folder, nothing above or beside it. */
 export function isChatPlanDir(path: unknown, env: Record<string, string | undefined> = process.env): path is string {
   if (typeof path !== 'string' || !isAbsolute(path) || normalize(path) !== path || path.endsWith('/')) return false
-  return dirname(path) === normalize(chatPlansDir(env)) && CHAT_PLAN_FOLDER.test(basename(path))
+  return dirname(path) === chatPlansDir(env) && CHAT_PLAN_FOLDER.test(basename(path))
 }

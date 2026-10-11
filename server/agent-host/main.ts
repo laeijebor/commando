@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -210,6 +211,9 @@ async function main(): Promise<void> {
     return undefined
   })
 
+  // A plan folder pruned since this chat started (after 30 days) isn't handed to Claude.
+  const readableDir = parsed.readableDir && existsSync(parsed.readableDir) ? parsed.readableDir : undefined
+  if (parsed.readableDir && !readableDir) write(dim(`The plan this chat started from is no longer saved (${parsed.readableDir}).`))
   const host = new AgentHost(
     `ws://127.0.0.1:${port}${AGENT_HOST_WS_PATH}`,
     async () => (await readFile(tokenPath, 'utf8')).trim(),
@@ -232,7 +236,7 @@ async function main(): Promise<void> {
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
     images: new ChatImageStore(undefined, (message) => write(dim(message))),
-    ...(parsed.readableDir ? { readableDirectories: [parsed.readableDir] } : {}),
+    ...(readableDir ? { readableDirectories: [readableDir] } : {}),
     log: (message) => write(dim(message)),
   })
 
