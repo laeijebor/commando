@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -80,9 +81,6 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
   if (args.resume && !/^[A-Za-z0-9-]{8,80}$/.test(args.resume)) return `Invalid session id: ${args.resume}`
   return args
 }
-
-/** Exit code the launcher reads as "start me again with the restart file's arguments". */
-const RESTART_EXIT_CODE = 75
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
@@ -201,18 +199,23 @@ async function main(): Promise<void> {
   let restarting = false
   const restartNow = async () => {
     const sessionId = session.snapshot().session.sessionId
-    const restartFile = process.env.COMMANDO_AGENT_RESTART_FILE
-    if (!restartFile) {
+    if (!launcher) {
       write(color(31, 'Restart needs the commando-agent launcher; quit and start it again instead.'))
       restarting = false
       return
     }
-    const argv = ['claude', ...sessionFlags(parsed), ...(sessionId ? ['--resume', sessionId] : [])]
-    await writeFile(restartFile, argv.map(shellQuote).join(' '), { mode: 0o600 })
+    // tmux replaces this process with a fresh host in the same pane (same pane id
+    // and Commando target), continuing the same conversation.
+    const command = ['exec', launcher, 'claude', ...sessionFlags(parsed), ...(sessionId ? ['--resume', sessionId] : [])]
+      .map((word, index) => index === 0 ? word : shellQuote(word)).join(' ')
     write(dim('Restarting to update…'))
     session.close()
     host.stop()
-    setTimeout(() => process.exit(RESTART_EXIT_CODE), 100)
+    execFile('tmux', ['respawn-pane', '-k', '-t', paneId, '-c', process.cwd(), command], (error) => {
+      if (!error) return
+      write(color(31, `Restart failed: ${error.message}. Quit and start commando-agent again.`))
+      restarting = false
+    })
   }
   const requestRestart = () => {
     if (restarting) return
