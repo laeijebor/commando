@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
-import { LoaderCircle, X } from 'lucide-react'
+import { ImageOff, LoaderCircle, X } from 'lucide-react'
 import { chatImageUrl, type ChatImageRef } from '../../shared/agent-chat'
 import { cn } from './cn'
 
@@ -41,17 +41,25 @@ export function Thumbnail({ src, name, onOpen, onRemove, busy, size = 'md' }: {
   busy?: boolean
   size?: 'sm' | 'md'
 }) {
+  // Pruned after 30 days, or never stored: say so instead of showing a broken image.
+  const [missing, setMissing] = useState(false)
   return (
     <span className={cn('relative inline-flex shrink-0', size === 'sm' ? 'size-12' : 'size-16')}>
-      <button
-        type="button"
-        onClick={onOpen}
-        className="size-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background"
-        aria-label={`Open ${name}`}
-        title={name}
-      >
-        <img src={src} alt={name} className={cn('size-full object-cover', busy && 'opacity-50')} draggable={false} />
-      </button>
+      {missing ? (
+        <span className="flex size-full items-center justify-center rounded-md border border-dashed border-border text-icon-muted" role="img" aria-label={`${name} is no longer available`} title={`${name} is no longer available`}>
+          <ImageOff className="size-4" aria-hidden="true" />
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="size-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background"
+          aria-label={`Open ${name}`}
+          title={name}
+        >
+          <img src={src} alt={name} className={cn('size-full object-cover', busy && 'opacity-50')} draggable={false} onError={() => setMissing(true)} />
+        </button>
+      )}
       {busy ? <LoaderCircle className="pointer-events-none absolute inset-0 m-auto size-4 animate-spin text-primary" aria-label="Uploading" /> : null}
       {onRemove ? (
         <button

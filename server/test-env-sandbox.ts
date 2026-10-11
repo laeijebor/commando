@@ -11,6 +11,8 @@ export const SANDBOXED_AGENT_PROFILE_ENV = [
   'CURSOR_CONFIG_DIR',
   'XDG_CONFIG_HOME',
   'COMMANDO_AGENT_HOOK_TOKEN_PATH',
+  // Chat hosts and the daemon share this image folder.
+  'COMMANDO_CHAT_IMAGES_DIR',
 ] as const
 
 for (const name of SANDBOXED_AGENT_PROFILE_ENV) delete process.env[name]

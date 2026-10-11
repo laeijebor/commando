@@ -42,7 +42,10 @@ export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
 export type ChatImageSaveError = 'unsupported' | 'too_large' | 'empty'
 
 export class ChatImageStore {
-  constructor(readonly dir: string = chatImagesDir()) {}
+  private loggedWriteFailure = false
+
+  /** `log` hears about images that couldn't be stored (once per kind of failure). */
+  constructor(readonly dir: string = chatImagesDir(), private readonly log?: (message: string) => void) {}
 
   path(id: string): string | null {
     return isChatImageId(id) ? join(this.dir, id) : null
@@ -82,13 +85,9 @@ export class ChatImageStore {
    * is not a usable image.
    */
   saveBase64(data: string, name?: string): ChatImageRef | undefined {
-    let bytes: Buffer
-    try {
-      bytes = Buffer.from(data, 'base64')
-    } catch {
-      return undefined
-    }
+    const bytes = Buffer.from(data, 'base64')
     const checked = this.check(bytes, MAX_STORED_IMAGE_BYTES)
+    // Not an image Commando can show (another type, or too big); the row keeps its [image] text.
     if ('error' in checked) return undefined
     try {
       mkdirSync(this.dir, { recursive: true, mode: 0o700 })
@@ -101,7 +100,11 @@ export class ChatImageStore {
         writeFileSync(temporary, bytes, { mode: 0o600 })
         renameSync(temporary, path)
       }
-    } catch {
+    } catch (error) {
+      if (!this.loggedWriteFailure) {
+        this.loggedWriteFailure = true
+        this.log?.(`Couldn't store chat images in ${this.dir}: ${error instanceof Error ? error.message : String(error)}`)
+      }
       return undefined
     }
     return name ? { id: checked.id, name } : { id: checked.id }
@@ -121,8 +124,10 @@ export class ChatImageStore {
     let names: string[]
     try {
       names = await readdir(this.dir)
-    } catch {
-      return 0
+    } catch (error) {
+      // No folder yet means nothing to prune.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+      throw error
     }
     let removed = 0
     for (const name of names) {
@@ -135,8 +140,8 @@ export class ChatImageStore {
           await unlink(path)
           removed += 1
         }
-      } catch {
-        // gone already
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
     }
     return removed
@@ -162,19 +167,27 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body))
 }
 
-/** Reads a request body, or null once it passes `maxBytes`. */
+/** Past this, an oversized upload is cut off instead of read to the end. */
+const MAX_DRAIN_BYTES = 64 * 1024 * 1024
+
+/**
+ * Reads a request body, or null when it is over `maxBytes`. An oversized body
+ * is still read (and dropped) so the client receives the 413 rather than a
+ * reset connection, unless it is absurdly large.
+ */
 async function readBody(request: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > maxBytes) return null
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {
     const buffer = chunk as Buffer
     size += buffer.length
-    if (size > maxBytes) return null
-    chunks.push(buffer)
+    if (size > MAX_DRAIN_BYTES) {
+      request.destroy()
+      return null
+    }
+    if (size <= maxBytes) chunks.push(buffer)
   }
-  return Buffer.concat(chunks)
+  return size > maxBytes ? null : Buffer.concat(chunks)
 }
 
 /**
@@ -191,12 +204,17 @@ export async function handleChatImageUpload(request: IncomingMessage, response: 
   }
   const body = await readBody(request, MAX_CHAT_IMAGE_BYTES)
   if (!body) {
-    // Drain nothing more: the client gets the error and the socket closes.
-    response.setHeader('Connection', 'close')
-    json(response, 413, { error: UPLOAD_ERRORS.too_large[1] })
+    if (!response.destroyed) json(response, 413, { error: UPLOAD_ERRORS.too_large[1] })
     return true
   }
-  const saved = await store.save(body)
+  let saved: Awaited<ReturnType<ChatImageStore['save']>>
+  try {
+    saved = await store.save(body)
+  } catch (error) {
+    console.error('[commando] chat image upload could not be stored', error)
+    json(response, 507, { error: `Commando couldn't store the image: ${(error as NodeJS.ErrnoException).code ?? 'write failed'}` })
+    return true
+  }
   if ('error' in saved) {
     const [status, message] = UPLOAD_ERRORS[saved.error]
     json(response, status, { error: message })

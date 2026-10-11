@@ -308,9 +308,11 @@ export class ClaudeItemMapper {
         if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
           this.handleToolResults(message as { content: unknown })
         } else if (!REPLAY_NOISE.test(text)) {
-          const images = Array.isArray(message.content) ? this.saveImages(message.content) : []
+          const blocks = Array.isArray(message.content) ? message.content.filter((part) => record(part).type === 'image') : []
+          const images = this.saveImages(blocks)
           const typed = stripAttachmentNotes(text)
-          if (typed || images.length) this.startTurn(typed, images)
+          // An image that can't be shown still marks the turn, so it isn't lost from the timeline.
+          if (typed || blocks.length) this.startTurn(typed || (images.length ? '' : '[image]'), images)
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })

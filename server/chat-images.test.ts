@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatImageStore, chatImagesDir, handleChatImage, handleChatImageUpload, sniffImageType } from './chat-images.js'
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex')
@@ -63,6 +63,24 @@ describe('chat image store', () => {
     await utimes(join(store.dir, 'notes.txt'), old, old)
     expect(await store.prune()).toBe(1)
     expect((await readdir(store.dir)).sort()).toEqual(['id' in fresh ? fresh.id : '', 'notes.txt'].sort())
+  })
+
+  it('logs once when images cannot be written, and keeps going', async () => {
+    const blocked = join(dir, 'not-a-folder')
+    await writeFile(blocked, 'x')
+    const log = vi.fn()
+    const store = new ChatImageStore(join(blocked, 'images'), log)
+    expect(store.saveBase64(PNG.toString('base64'))).toBeUndefined()
+    expect(store.saveBase64(JPEG.toString('base64'))).toBeUndefined()
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log.mock.calls[0]![0]).toMatch(/Couldn't store chat images in .*not-a-folder\/images/)
+  })
+
+  it('prunes nothing before the folder exists, but reports other failures', async () => {
+    expect(await new ChatImageStore(join(dir, 'never-made')).prune()).toBe(0)
+    const file = join(dir, 'file')
+    await writeFile(file, 'x')
+    await expect(new ChatImageStore(file).prune()).rejects.toThrow(/ENOTDIR/)
   })
 
   it('can be pointed at another folder', () => {

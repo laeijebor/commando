@@ -2121,7 +2121,10 @@ export function App() {
       delete next[paneId]
       return next
     })
-    send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })
+    if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })) {
+      chatSendPanes.current.delete(id)
+      setChatSendErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so the message wasn't sent" }))
+    }
   }
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })

@@ -117,10 +117,13 @@ describe('the / menu', () => {
     expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
   })
 
-  it('says when Claude has not listed its commands yet', () => {
-    const { type } = renderComposer({ commands: undefined })
+  it('says when Claude has not listed its commands yet, or the chat needs a restart', () => {
+    const { type, view } = renderComposer({ commands: undefined })
     type('/zz')
     expect(screen.getByRole('status')).toHaveTextContent("Claude's commands appear once the session has started")
+    view.rerender(<ChatComposer session={{ ...session, hostVersion: 2 }} hostConnected requests={[]} services={services()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    type('/zzz')
+    expect(screen.getByRole('status')).toHaveTextContent("Restart this chat to list Claude's commands")
   })
 })
 
@@ -213,10 +216,16 @@ describe('image attachments', () => {
     expect(screen.queryByRole('button', { name: 'Open shot.png' })).toBeNull()
   })
 
-  it('shows why the daemon refused a send', () => {
+  it('shows why the daemon refused a send and puts the text back', () => {
     const onDismissSendError = vi.fn()
-    renderComposer({ sendError: 'An attached image is no longer stored; attach it again', onDismissSendError })
-    expect(screen.getByRole('alert')).toHaveTextContent('no longer stored')
+    const { input, type, view, onSend } = renderComposer({ onDismissSendError })
+    type('look at this')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('look at this')
+    expect(input.value).toBe('')
+    view.rerender(<ChatComposer session={session} hostConnected requests={[]} commands={commands} services={services()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} sendError="Not connected to Commando, so the message wasn't sent" onDismissSendError={onDismissSendError} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('Not connected to Commando')
+    expect(input.value).toBe('look at this')
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(onDismissSendError).toHaveBeenCalled()
   })

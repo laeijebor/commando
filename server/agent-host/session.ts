@@ -351,7 +351,8 @@ export class AgentSession {
       try {
         this.deliver(trimmed, images, await this.imageBlocks(images))
       } catch (error) {
-        this.emitItems(this.mapper.notice('error', `Couldn't attach the image${images.length > 1 ? 's' : ''}, so the message wasn't sent: ${errorText(error)}`))
+        const quoted = trimmed ? ` Your message was: "${trimmed.length > 500 ? `${trimmed.slice(0, 500)}…` : trimmed}"` : ''
+        this.emitItems(this.mapper.notice('error', `Couldn't attach the image${images.length > 1 ? 's' : ''}, so the message wasn't sent: ${errorText(error)}.${quoted}`))
       } finally {
         this.queuedSends -= 1
       }
@@ -515,8 +516,10 @@ export class AgentSession {
     try {
       this.setSlashCommands(await handle.supportedCommands())
     } catch (error) {
-      // The menu falls back to Commando's own entries.
-      this.spec.log?.(`Couldn't list Claude's commands: ${errorText(error)}`)
+      if (this.info.status === 'closed' || this.info.status === 'error') return
+      // The menu keeps Commando's own entries; an empty list stops it waiting for Claude's.
+      this.emitItems(this.mapper.notice('error', `Couldn't list Claude's commands for the / menu: ${errorText(error)}`))
+      this.setSlashCommands([])
     }
   }
 
