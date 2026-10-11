@@ -7,6 +7,7 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
+import { chatPlansDir } from '../chat-plans-dir.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { AgentSession } from './session.js'
@@ -220,6 +221,7 @@ async function main(): Promise<void> {
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
     images: new ChatImageStore(undefined, (message) => write(dim(message))),
+    readableDirectories: [chatPlansDir()],
     log: (message) => write(dim(message)),
   })
 

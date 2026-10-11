@@ -5,6 +5,7 @@ import {
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
   hostTakesSettings,
+  hostTakesTurnFlow,
   isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
@@ -12,7 +13,11 @@ import {
   type ChatFileSearchResult,
   type ChatImageRef,
   type ChatItem,
+  type ChatQueueAction,
+  type ChatSendOptions,
   type ChatSettingsChange,
+  type ChatSubagentTranscript,
+  type ChatTaskAction,
   type ChatState,
   type DaemonToHostMessage,
   type HostToDaemonMessage,
@@ -27,6 +32,8 @@ const PENDING_PANE_MS = 60_000
 const DISCONNECTED_GRACE_MS = 60_000
 /** A file search the host hasn't answered by then reports an error instead. */
 const FILE_SEARCH_TIMEOUT_MS = 10_000
+/** Reading a long subagent transcript can take a moment. */
+const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
 
 type HubDependencies = {
   paneExists: (paneId: string) => boolean
@@ -62,16 +69,17 @@ type ChatEntry = {
  * late (or after a daemon restart, once the host reconnects) gets the whole
  * conversation, and routes the browser's sends, interrupts and answers back.
  */
-type PendingFileSearch = {
+type PendingHostRequest<T> = {
   paneId: string
   socket: WebSocket
   timer: ReturnType<typeof setTimeout>
-  resolve: (result: ChatFileSearchResult) => void
+  resolve: (result: T) => void
 }
 
 export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
-  private readonly fileSearches = new Map<string, PendingFileSearch>()
+  private readonly fileSearches = new Map<string, PendingHostRequest<ChatFileSearchResult>>()
+  private readonly transcripts = new Map<string, PendingHostRequest<ChatSubagentTranscript>>()
 
   constructor(private readonly dependencies: HubDependencies) {}
 
@@ -101,6 +109,9 @@ export class AgentHostHub {
     socket.on('close', () => {
       for (const [requestId, search] of this.fileSearches) {
         if (search.socket === socket) this.finishFileSearch(requestId, { entries: [], truncated: false, error: 'The agent host disconnected' })
+      }
+      for (const [requestId, read] of this.transcripts) {
+        if (read.socket === socket) this.finish(this.transcripts, requestId, { items: [], error: 'The agent host disconnected' })
       }
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
@@ -186,6 +197,12 @@ export class AgentHostHub {
         if (!search || search.socket !== socket || search.paneId !== message.paneId) return
         const { type: _type, paneId: _paneId, requestId, ...result } = message
         this.finishFileSearch(requestId, result)
+        return
+      }
+      case 'subagent_transcript_result': {
+        const read = this.transcripts.get(message.requestId)
+        if (!read || read.socket !== socket || read.paneId !== message.paneId) return
+        this.finish(this.transcripts, message.requestId, message.error ? { items: message.items, error: message.error } : { items: message.items })
       }
     }
   }
@@ -206,8 +223,39 @@ export class AgentHostHub {
     return this.chats.get(paneId)?.state.items ?? []
   }
 
-  send(paneId: string, text: string, requestId: string, images: ChatImageRef[] = []): boolean {
-    return this.toHost(paneId, { type: 'send', paneId, text, ...(images.length ? { images } : {}), requestId })
+  send(paneId: string, text: string, requestId: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): boolean {
+    return this.toHost(paneId, { type: 'send', paneId, text, ...(images.length ? { images } : {}), ...options, requestId })
+  }
+
+  /** Hosts before protocol 4 would send a queued message straight to Claude. */
+  takesTurnFlow(paneId: string): boolean {
+    const session = this.chats.get(paneId)?.state.session
+    return session ? hostTakesTurnFlow(session) : false
+  }
+
+  updateQueue(paneId: string, change: ChatQueueAction, requestId: string): boolean {
+    return this.takesTurnFlow(paneId) && this.toHost(paneId, { type: 'queue', paneId, requestId, ...change })
+  }
+
+  /** Stops or backgrounds one of the pane's running subagents. */
+  controlTask(paneId: string, action: ChatTaskAction, agentId: string, toolUseId: string, requestId: string): boolean {
+    return this.takesTurnFlow(paneId) && this.toHost(paneId, { type: 'task', paneId, action, agentId, toolUseId, requestId })
+  }
+
+  /** A subagent's saved transcript, read by the pane's host. */
+  subagentTranscript(paneId: string, agentId: string): Promise<ChatSubagentTranscript> {
+    const entry = this.chats.get(paneId)
+    if (!entry?.socket) return Promise.resolve({ items: [], error: 'No agent host is connected for this pane' })
+    if (!hostTakesTurnFlow(entry.state.session)) return Promise.resolve({ items: [], error: 'Restart this chat to open subagent transcripts' })
+    const socket = entry.socket
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.finish(this.transcripts, requestId, { items: [], error: 'Reading the transcript timed out' }), SUBAGENT_TRANSCRIPT_TIMEOUT_MS)
+      this.transcripts.set(requestId, { paneId, socket, timer, resolve })
+      if (!this.sendTo(socket, { type: 'subagent_transcript', paneId, agentId, requestId })) {
+        this.finish(this.transcripts, requestId, { items: [], error: 'No agent host is connected for this pane' })
+      }
+    })
   }
 
   /** Hosts started before images existed would drop them, so the daemon refuses instead. */
@@ -233,15 +281,19 @@ export class AgentHostHub {
   }
 
   private finishFileSearch(requestId: string, result: ChatFileSearchResult): void {
-    const search = this.fileSearches.get(requestId)
-    if (!search) return
-    this.fileSearches.delete(requestId)
-    clearTimeout(search.timer)
-    search.resolve(result)
+    this.finish(this.fileSearches, requestId, result)
   }
 
-  interrupt(paneId: string, requestId: string): boolean {
-    return this.toHost(paneId, { type: 'interrupt', paneId, requestId })
+  private finish<T>(pending: Map<string, PendingHostRequest<T>>, requestId: string, result: T): void {
+    const request = pending.get(requestId)
+    if (!request) return
+    pending.delete(requestId)
+    clearTimeout(request.timer)
+    request.resolve(result)
+  }
+
+  interrupt(paneId: string, requestId: string, dropQueued: string[] = []): boolean {
+    return this.toHost(paneId, { type: 'interrupt', paneId, requestId, ...(dropQueued.length ? { dropQueued } : {}) })
   }
 
   /** Switches the pane's model, effort or permission mode for the rest of its session. */

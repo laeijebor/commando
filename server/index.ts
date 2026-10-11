@@ -52,6 +52,7 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService } from './prs.js'
 import { handlePrsApi } from './prs-api.js'
 import { handleNotesApi } from './notes-api.js'
+import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
@@ -840,10 +841,21 @@ async function main(): Promise<void> {
         return
       }
     }
-    if (!agentHosts.send(message.paneId, message.text, message.requestId, images)) {
+    const { type: _type, paneId: _paneId, text: _text, images: _images, requestId: _requestId, ...options } = message
+    // An older host would send a queued or relayed message straight away, so it isn't offered one.
+    if ((options.delivery || options.relayTo) && !agentHosts.takesTurnFlow(message.paneId)) {
+      sendError(client, 'chat_unavailable', 'This chat started before queueing and steering; restart it to use them', message.requestId)
+      return
+    }
+    if (!agentHosts.send(message.paneId, message.text, message.requestId, images, options)) {
       sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
     }
   }
+  const chatPlans = new ChatPlanStore(notes)
+  void chatPlans.prune().then(
+    (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat plan files`) },
+    (error: unknown) => console.error('[commando] chat plan prune failed', error),
+  )
   void chatImages.prune().then(
     (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat images`) },
     (error: unknown) => console.error('[commando] chat image prune failed', error),
@@ -2042,6 +2054,12 @@ async function main(): Promise<void> {
         })
         return
       }
+      case 'chat_subagent_transcript': {
+        void agentHosts.subagentTranscript(message.paneId, message.agentId).then((result) => {
+          send(client, { type: 'chat_subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })
+        return
+      }
       case 'chat_send': {
         // Image sends check their files first; later sends to the pane wait so turns keep their order.
         const paneId = message.paneId
@@ -2057,7 +2075,7 @@ async function main(): Promise<void> {
       case 'chat_configure':
       case 'chat_answer': {
         const delivered = message.type === 'chat_interrupt'
-            ? agentHosts.interrupt(message.paneId, message.requestId)
+            ? agentHosts.interrupt(message.paneId, message.requestId, message.dropQueued)
             : message.type === 'chat_restart'
               ? agentHosts.restart(message.paneId, message.requestId)
               : message.type === 'chat_configure'
@@ -2068,6 +2086,24 @@ async function main(): Promise<void> {
             ? 'That request is no longer waiting for an answer'
             : 'No agent host is connected for this pane', message.requestId)
         }
+        return
+      }
+      case 'chat_queue':
+      case 'chat_task': {
+        if (!agentHosts.takesTurnFlow(message.paneId)) {
+          sendError(client, 'chat_unavailable', agentHosts.owns(message.paneId)
+            ? 'This chat started before queueing and subagent controls; restart it to use them'
+            : 'No agent host is connected for this pane', message.requestId)
+          return
+        }
+        let delivered: boolean
+        if (message.type === 'chat_queue') {
+          const { type: _type, paneId, requestId, ...change } = message
+          delivered = agentHosts.updateQueue(paneId, change, requestId)
+        } else {
+          delivered = agentHosts.controlTask(message.paneId, message.action, message.agentId, message.toolUseId, message.requestId)
+        }
+        if (!delivered) sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
         return
       }
       case 'save_workspace': {
@@ -2293,6 +2329,7 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return

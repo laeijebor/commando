@@ -47,6 +47,8 @@ export interface AgentSessionSpec {
   hostBuild?: string
   /** Where uploaded images are read from and tool-result images are kept. */
   images?: SessionImageStore
+  /** More folders Claude may read without asking (e.g. plans a new pane starts from). */
+  readableDirectories?: string[]
   /** Problems worth a line in the pane's terminal but not a chat notice. */
   log?: (message: string) => void
 }
@@ -336,8 +338,10 @@ export class AgentSession {
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : {}),
-        // Claude's tools can open the saved copies of attached images without asking.
-        ...(this.spec.images ? { additionalDirectories: [this.spec.images.dir] } : {}),
+        // Claude's tools can open the saved copies of attached images (and stashed plans) without asking.
+        ...(this.spec.images || this.spec.readableDirectories?.length
+          ? { additionalDirectories: [...(this.spec.images ? [this.spec.images.dir] : []), ...(this.spec.readableDirectories ?? [])] }
+          : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.

@@ -18,7 +18,7 @@ import {
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import { MAX_FILE_QUERY, parseChatAnswer, parseChatImageRefs, parseChatSettingsChange } from '../shared/agent-chat.js'
+import { MAX_FILE_QUERY, isAgentId, parseChatAnswer, parseChatImageRefs, parseChatQueueAction, parseChatSendOptions, parseChatSettingsChange, parseQueueIds } from '../shared/agent-chat.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -529,18 +529,40 @@ export function parseClientMessage(value: unknown): ParseResult {
     case 'chat_send': {
       const id = requestId(value.requestId)
       const images = value.images === undefined ? [] : parseChatImageRefs(value.images)
+      const options = parseChatSendOptions(value)
       if (
         !id ||
         !isPaneId(value.paneId) ||
         typeof value.text !== 'string' ||
         !images ||
+        !options ||
         (value.text.trim().length === 0 && images.length === 0) ||
         value.text.includes('\0') ||
         Buffer.byteLength(value.text, 'utf8') > MAX_PASTE_BYTES
       ) {
         return { ok: false, error: 'Invalid chat message', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
       }
-      return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, ...(images.length ? { images } : {}), requestId: id } }
+      return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, ...(images.length ? { images } : {}), ...options, requestId: id } }
+    }
+    case 'chat_queue': {
+      const id = requestId(value.requestId)
+      const change = parseChatQueueAction(value)
+      return id && isPaneId(value.paneId) && change
+        ? { ok: true, message: { type: 'chat_queue', paneId: value.paneId, requestId: id, ...change } }
+        : { ok: false, error: 'Invalid queue change', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_task': {
+      const id = requestId(value.requestId)
+      const toolUseId = typeof value.toolUseId === 'string' && value.toolUseId.length > 0 && value.toolUseId.length <= 200 ? value.toolUseId : null
+      return id && isPaneId(value.paneId) && (value.action === 'stop' || value.action === 'background') && isAgentId(value.agentId) && toolUseId
+        ? { ok: true, message: { type: 'chat_task', paneId: value.paneId, action: value.action, agentId: value.agentId, toolUseId, requestId: id } }
+        : { ok: false, error: 'Invalid subagent action', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_subagent_transcript': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId) && isAgentId(value.agentId)
+        ? { ok: true, message: { type: 'chat_subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: id } }
+        : { ok: false, error: 'Invalid subagent transcript request', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     case 'chat_file_search': {
       const id = requestId(value.requestId)
@@ -548,12 +570,18 @@ export function parseClientMessage(value: unknown): ParseResult {
         ? { ok: true, message: { type: 'chat_file_search', paneId: value.paneId, query: value.query, requestId: id } }
         : { ok: false, error: 'Invalid file search', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
-    case 'chat_interrupt':
+    case 'chat_interrupt': {
+      const id = requestId(value.requestId)
+      const dropQueued = parseQueueIds(value.dropQueued)
+      return id && isPaneId(value.paneId) && dropQueued !== null
+        ? { ok: true, message: { type: 'chat_interrupt', paneId: value.paneId, requestId: id, ...(dropQueued?.length ? { dropQueued } : {}) } }
+        : { ok: false, error: 'Invalid chat interrupt', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
     case 'chat_restart': {
       const id = requestId(value.requestId)
       return id && isPaneId(value.paneId)
-        ? { ok: true, message: { type: value.type, paneId: value.paneId, requestId: id } }
-        : { ok: false, error: value.type === 'chat_restart' ? 'Invalid chat restart' : 'Invalid chat interrupt', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+        ? { ok: true, message: { type: 'chat_restart', paneId: value.paneId, requestId: id } }
+        : { ok: false, error: 'Invalid chat restart', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     case 'chat_answer': {
       const id = requestId(value.requestId)
