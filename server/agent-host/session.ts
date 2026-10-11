@@ -857,11 +857,17 @@ export class AgentSession {
   private applySessionState(state: 'idle' | 'running' | 'requires_action'): void {
     if (this.info.status === 'closed' || this.info.status === 'error') return
     if (state === 'idle') {
-      this.setStatus('idle')
       this.refreshBetweenTurns()
-      // A backstop: the turn's result normally sent the queue already. An idle
-      // that trails a result we already answered with a send is not the end of that send.
-      if (!this.deliveredSinceResult) this.closeTurn()
+      if (this.deliveredSinceResult) {
+        // The idle that trails a result we already answered with a send (the
+        // flushed queue): that send's turn is running, so the chat stays running
+        // and Enter keeps queueing. Only one such idle trails each result.
+        this.deliveredSinceResult = false
+        return
+      }
+      this.setStatus('idle')
+      // A backstop: the turn's result normally sent the queue already.
+      this.closeTurn()
     } else {
       this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
     }

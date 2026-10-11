@@ -959,6 +959,45 @@ describe('AgentSession queue review fixes', () => {
     expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued', 'wait for the flushed turn'])
   })
 
+  it("stays running through the stale idle after a flush, so the composer keeps queueing", async () => {
+    const { fake, session, sessions } = started()
+    fake.push(system('session_state_changed', { state: 'running' }))
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    await tick()
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued'])
+    const seen = sessions.length
+    // The idle for the first turn's result arrives after the queue went out.
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.slice(seen).map((info) => info.status)).not.toContain('idle')
+    expect(sessions.at(-1)?.status).toBe('running')
+    expect(session.busy).toBe(true)
+    // The flushed turn's own result and idle end it.
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
+  })
+
+  it('ignores only one stale idle, so a send that never gets a result cannot stick the chat running', async () => {
+    const { fake, session, sessions } = started()
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('running')
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
+  })
+
   it('waits for every steer when two cut the turn short', async () => {
     const { fake, session } = started()
     session.send('long job')
