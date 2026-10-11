@@ -1,6 +1,10 @@
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
+import { ChatImageStore } from '../chat-images.js'
 import { chatResumeCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, type SessionStore } from './session.js'
 
@@ -480,13 +484,20 @@ describe('commando-agent settings flags', () => {
 describe('AgentSession richer input', () => {
   const imageId = `${'c'.repeat(64)}.png`
   const images = {
-    dir: '/images',
-    path: (id: string) => `/images/${id}`,
     read: vi.fn(async (id: string) => {
       if (id !== imageId) throw new Error('ENOENT: no such file')
       return Buffer.from('png-bytes')
     }),
     saveBase64: vi.fn(() => undefined),
+    sessionDir: vi.fn((sessionId: string) => `/sessions/${sessionId}`),
+    stage: vi.fn(async (id: string, sessionId: string) => {
+      if (id !== imageId) throw new Error('ENOENT: no such file')
+      return `/sessions/${sessionId}/${id}`
+    }),
+    stagedImage: (path: string) => {
+      const match = /^\/sessions\/([^/]+)\/([^/]+)$/.exec(path)
+      return match ? { sessionId: match[1]!, id: match[2]! } : null
+    },
   }
 
   it('lists commands and skills, hiding TUI-only built-ins but not same-named user entries', async () => {
@@ -514,8 +525,9 @@ describe('AgentSession richer input', () => {
     expect(session.commands?.map((command) => [command.name, command.kind])).toEqual([['redline', 'skill'], ['new-skill', 'command']])
   })
 
-  it('sends images before the text and names their saved copies', async () => {
+  it('sends images before the text and names their copies in the session folder', async () => {
     const { fake, session, items } = started({ images })
+    const sessionId = fake.options.sessionId
     session.send('what is this?', [{ id: imageId, name: 'pane.png' }])
     session.send('and a follow-up')
     await tick()
@@ -523,12 +535,81 @@ describe('AgentSession richer input', () => {
     expect(fake.prompts).toHaveLength(2)
     expect(fake.prompts[0]!.message.content).toEqual([
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from('png-bytes').toString('base64') } },
-      { type: 'text', text: `what is this?\n\n[Attached image "pane.png" is saved at: /images/${imageId}]` },
+      { type: 'text', text: `what is this?\n\n[Attached image "pane.png" is saved at: /sessions/${sessionId}/${imageId}]` },
     ])
     expect(fake.prompts[1]!.message.content).toBe('and a follow-up')
     const users = [...items.values()].filter((item) => item.kind === 'user_message')
     expect(users[0]).toMatchObject({ text: 'what is this?', images: [{ id: imageId, name: 'pane.png' }] })
-    expect(fake.options.additionalDirectories).toEqual(['/images'])
+  })
+
+  it('gives Claude only its own session folder, never the whole image store', async () => {
+    const { fake } = started({ images })
+    await tick()
+    // A new conversation gets its id up front, so resuming it finds the same folder.
+    expect(fake.options.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(fake.options.additionalDirectories).toEqual([`/sessions/${fake.options.sessionId}`])
+    const resumed = started({ images, resume: 'abcd1234-0000' })
+    await tick()
+    expect(resumed.fake.options).toMatchObject({ resume: 'abcd1234-0000', additionalDirectories: ['/sessions/abcd1234-0000'] })
+    expect(resumed.fake.options.sessionId).toBeUndefined()
+  })
+
+  it('copies a resumed conversation\'s attached images back to the folders its notes name', async () => {
+    const store = { ...images, saveBase64: vi.fn(() => ({ id: imageId })), stage: vi.fn(async (id: string, sessionId: string) => `/sessions/${sessionId}/${id}`) }
+    const attached = (path: string) => ({ type: 'user', message: { role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cG5n' } },
+      { type: 'text', text: `look\n\n[Attached image "pane.png" is saved at: ${path}]` },
+    ] }, parent_tool_use_id: null })
+    const history = [
+      // Saved before a /clear gave the conversation its current id.
+      attached(`/sessions/beforeclear-0000/${imageId}`),
+      attached(`/sessions/abcd1234-0000/${imageId}`),
+      // From before session folders: the shared store stays closed.
+      attached(`/images/${imageId}`),
+      // A note-shaped line someone typed, with no image beside it, opens nothing.
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: `[Attached image "x" is saved at: /sessions/someoneelse-0000/${imageId}]` }] }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'A pane.' }] }, parent_tool_use_id: null },
+    ]
+    const { fake } = started({ images: store, resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => undefined })
+    await tick()
+    expect(store.stage.mock.calls).toEqual([[imageId, 'beforeclear-0000'], [imageId, 'abcd1234-0000']])
+    expect(fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', '/sessions/beforeclear-0000'])
+  })
+
+  it('still sends an image it could not copy for Claude, without a note', async () => {
+    const log = vi.fn()
+    const { fake, session } = started({ images: { ...images, stage: vi.fn(async () => { throw new Error('ENOSPC') }) }, log })
+    session.send('look', [{ id: imageId }])
+    session.send('', [{ id: imageId }])
+    await tick()
+    await tick()
+    expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: 'look' }])
+    // No empty text block, which the API refuses.
+    expect(fake.prompts[1]!.message.content).toEqual([expect.objectContaining({ type: 'image' })])
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/ENOSPC/))
+  })
+
+  it('opens each chat to its own attachments only, on disk', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'chat-session-images-'))
+    try {
+      const store = new ChatImageStore(join(root, 'images'))
+      const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex')
+      const saved = await store.save(png)
+      const id = 'id' in saved ? saved.id : ''
+      const mine = started({ images: store })
+      const theirs = started({ images: store })
+      mine.session.send('look', [{ id, name: 'mine.png' }])
+      await vi.waitFor(() => expect(mine.fake.prompts).toHaveLength(1))
+      const [myDir] = mine.fake.options.additionalDirectories!
+      const [theirDir] = theirs.fake.options.additionalDirectories!
+      expect(myDir).not.toBe(theirDir)
+      for (const dir of [myDir, theirDir]) expect(dir!.startsWith(store.dir)).toBe(false)
+      expect(await readdir(myDir!)).toEqual([id])
+      expect(await readdir(theirDir!)).toEqual([])
+      expect(JSON.stringify(mine.fake.prompts[0]!.message.content)).toContain(join(myDir!, id))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('sends an image on its own, and refuses a send whose image is gone', async () => {
@@ -538,7 +619,7 @@ describe('AgentSession richer input', () => {
     await tick()
     await tick()
     expect(fake.prompts).toHaveLength(1)
-    expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: `[Attached image "${imageId}" is saved at: /images/${imageId}]` }])
+    expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: `[Attached image "${imageId}" is saved at: /sessions/${fake.options.sessionId}/${imageId}]` }])
     expect([...items.values()].some((item) => item.kind === 'notice' && /message wasn't sent: ENOENT/.test(item.text))).toBe(true)
   })
 
