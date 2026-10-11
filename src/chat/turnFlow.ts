@@ -95,8 +95,9 @@ export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[]
   const running = agent.state === 'running'
   return {
     toolUses: Math.max(agent.toolUses ?? 0, work.length),
-    // Live elapsed time ticks from when Claude started it; afterwards Claude's own total.
-    elapsedMs: running ? now - agent.createdAt : agent.durationMs ?? agent.updatedAt - agent.createdAt,
+    // Live elapsed time ticks from when Claude started it. Afterwards, Claude's own
+    // total; a stopped subagent's last progress report undercounts, so never less than it ran.
+    elapsedMs: running ? now - agent.createdAt : Math.max(agent.durationMs ?? 0, agent.updatedAt - agent.createdAt),
     lastAction: running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
   }
 }

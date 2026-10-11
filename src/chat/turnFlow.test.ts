@@ -77,6 +77,8 @@ describe('subagent helpers', () => {
     expect(subagentActivity(agent('a1', { state: 'running', status: 'running', toolUses: 4, summary: 'Reading the tests' }), items, 2_000))
       .toMatchObject({ toolUses: 4, lastAction: 'Reading the tests' })
     expect(subagentActivity(agent('a1', { durationMs: 65_000 }), [], 99_000)).toMatchObject({ toolUses: 0, elapsedMs: 65_000, lastAction: null })
+    // Stopped after 20s, with a progress report from its third second.
+    expect(subagentActivity(agent('a1', { state: 'stopped', durationMs: 3_000, updatedAt: 21_000 }), [], 99_000)).toMatchObject({ elapsedMs: 20_000 })
     expect(elapsedLabel(65_000)).toBe('1m 05s')
     expect(elapsedLabel(3_720_000)).toBe('1h 02m')
   })

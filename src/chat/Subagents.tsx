@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowLeft, Bot, CircleCheck, CircleSlash, CircleX, LoaderCircle, MessageSquareShare, MoveDownRight, Square } from 'lucide-react'
+import { ArrowLeft, Bot, ChevronDown, CircleCheck, CircleSlash, CircleX, LoaderCircle, MessageSquareShare, MoveDownRight, Square } from 'lucide-react'
 import type { ChatItem, ChatTaskAction } from '../../shared/agent-chat'
 import { cn } from './cn'
 import type { SubagentItem, TimelineRow } from './timelineRows'
@@ -138,14 +138,27 @@ export function AgentSwitcher({ agents, items, viewing, now, disabled, onSelect,
     }
   }
   const running = agents.filter((agent) => agent.state === 'running').length
+  // Open while something runs or a subagent is on screen, so a short pane keeps its timeline otherwise.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const open = userOpen ?? (running > 0 || viewing !== undefined)
+  const viewed = agents.find((agent) => agent.id === viewing)
   return (
     <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-content-max-width)] rounded-lg border border-border bg-card" data-testid="agent-switcher">
-      <div className="flex items-center gap-1.5 px-2.5 pt-1 text-2xs text-muted-foreground">
+      <button
+        type="button"
+        className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1 text-left text-2xs text-muted-foreground hover:text-foreground"
+        aria-expanded={open}
+        onClick={() => setUserOpen(!open)}
+      >
         <Bot className="size-3" aria-hidden="true" />
-        <span className="flex-1">Agents{running ? ` · ${running} running` : ''}</span>
-        <span className="hidden sm:inline">↑↓ to choose · Enter to open</span>
-      </div>
-      <ul ref={list} role="listbox" aria-label="Agents" className="flex max-h-36 flex-col overflow-y-auto p-1" onKeyDown={onKeyDown}>
+        <span className="min-w-0 flex-1 truncate">
+          Agents · viewing {viewed ? subagentLabel(viewed) : 'Main'}{running ? ` · ${running} running` : ''}
+        </span>
+        {open ? <span className="hidden sm:inline">↑↓ to choose · Enter to open</span> : null}
+        <ChevronDown className={cn('size-3 shrink-0 transition-transform', !open && '-rotate-90')} aria-hidden="true" />
+      </button>
+      {open ? (
+      <ul ref={list} role="listbox" aria-label="Agents" className="flex max-h-28 flex-col overflow-y-auto px-1 pb-1" onKeyDown={onKeyDown}>
         {entries.map((agent, index) => {
           const selected = (agent?.id ?? undefined) === viewing
           const info = agent ? metrics(agent, items, now) : null
@@ -167,6 +180,7 @@ export function AgentSwitcher({ agents, items, viewing, now, disabled, onSelect,
           )
         })}
       </ul>
+      ) : null}
     </div>
   )
 }
