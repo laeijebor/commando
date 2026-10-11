@@ -1184,6 +1184,82 @@ describe('web pane tiles', () => {
     expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBe(frame)
   })
 
+  it('auto-selects DevTools as the maximized panel tab and marks only the visible tab seen', async () => {
+    vi.stubGlobal('WebSocket', class {
+      readyState = 0
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+      close() {}
+    })
+    const browser = { ...openWebPane, dock: 'panel' as const, engine: 'chromium' as const, activeTab: true, unseen: false, order: 0 }
+    const hidden = { ...browser, id: 'w-hidden', engine: 'webkit' as const, url: 'http://localhost:4111/notes', activeTab: false, unseen: true, order: 1 }
+    const devtools = { ...hidden, id: 'w-devtools', url: 'http://localhost:9222/devtools/inspector.html', order: 2 }
+    const seenVisibility: boolean[] = []
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith(`/${devtools.id}/seen`)) {
+        const tile = document.querySelector(`[data-web-pane-id="${devtools.id}"]`)
+        seenVisibility.push(Boolean(tile && !tile.closest('[hidden]')))
+      }
+      return new Response(JSON.stringify(url.endsWith('/cdp') ? { devtoolsFrontendUrl: devtools.url } : {}), { status: 200 })
+    })
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, hidden] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open DevTools as a tile' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web-panes', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ url: devtools.url, anchor: pane.id, placement: browser.placement }),
+    })))
+    appMocks.send.mockClear()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, hidden, devtools] }))
+    const frame = screen.getByTitle('Web pane: localhost:9222')
+    expect(frame).toBeVisible()
+    expect(document.querySelector('.window-panel-layout')).toHaveClass('is-panel-maximized')
+    expect(screen.getByTestId('renderer-%12')).not.toBeVisible()
+    expect(screen.getByRole('tab', { name: /localhost:9222/ })).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${devtools.id}/active-tab`, expect.objectContaining({ method: 'POST' })))
+    await waitFor(() => expect(seenVisibility).toEqual([true]))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith(`/${hidden.id}/seen`))).toHaveLength(0)
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...browser, activeTab: false }, hidden, { ...devtools, activeTab: true, unseen: false }] }))
+    expect(frame).toBeVisible()
+    expect(document.querySelector(`[data-web-pane-id="${browser.id}"]`)).not.toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate measured resize %12', hidden: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    expect(screen.getByTestId('renderer-%12')).toBeVisible()
+    expect(frame).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate measured resize %12' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Simulate measured resize %13' }))
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'apply_window_layout', windowId: pane.windowId,
+    })))
+    for (const [message] of appMocks.send.mock.calls) {
+      expect(JSON.stringify(message)).not.toContain(browser.id)
+      expect(JSON.stringify(message)).not.toContain(devtools.id)
+      expect(JSON.stringify(message)).not.toContain(hidden.id)
+    }
+  })
+
+  it('keeps a newly selected tab of another pane unseen behind the maximized panel tab', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const paneB = { ...adjacentPane, active: false }
+    const browser = { ...openWebPane, dock: 'panel' as const, activeTab: true, unseen: false }
+    await renderAppWithSnapshot(snapshotWith([pane, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...pane, active: false }, { ...paneB, active: true }]) }))
+    const later = { ...browser, id: 'w-other', url: 'http://localhost:4111/later', anchorPaneId: paneB.id, activeTab: false, unseen: true }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, later] }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${later.id}/active-tab`, expect.objectContaining({ method: 'POST' })))
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBeVisible()
+    expect(screen.getByTitle('Web pane: localhost:4111')).not.toBeVisible()
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/seen'))).toHaveLength(0)
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, { ...later, activeTab: true }] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${later.id}/seen`, expect.objectContaining({ method: 'POST' })))
+    expect(screen.getByTitle('Web pane: localhost:4111')).toBeVisible()
+  })
+
   it.each(['split', 'panel'] as const)('never leaks a %s web tile id into daemon protocol messages while maximized', async (dock) => {
     // Arrange: workspace with terminal panes %12, %13 and one web tile.
     await renderAppWithSnapshot()

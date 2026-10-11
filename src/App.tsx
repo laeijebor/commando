@@ -1661,6 +1661,16 @@ export function App() {
     setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
   }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
+  const selectPanelTab = useCallback(async (tab: WebPane) => {
+    if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)) setMaximizedPaneId(tab.id)
+    setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
+      ? { ...pane, activeTab: pane.id === tab.id }
+      : pane))
+    try { await createWebPanesApi(token).setActiveTab(tab.id) } catch (error) {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
+    }
+  }, [webPanes, maximizedPaneId, token])
+
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
     const previous = knownPanelTabs.current
@@ -1673,10 +1683,10 @@ export function App() {
     if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
     pendingTabSelection.current.set(effectivePaneId, selected.id)
-    void createWebPanesApi(token).setActiveTab(selected.id).catch(() => undefined).finally(() => {
+    void selectPanelTab(selected).finally(() => {
       if (pendingTabSelection.current.get(effectivePaneId) === selected.id) pendingTabSelection.current.delete(effectivePaneId)
     })
-  }, [webPanes, effectivePaneId, activeGroup?.windowId, connected, token])
+  }, [webPanes, effectivePaneId, activeGroup?.windowId, connected, selectPanelTab])
 
   const currentPrPane = (
     (maximizedTmuxPaneId ? paneMap.get(maximizedTmuxPaneId) : undefined) ??
@@ -2366,16 +2376,6 @@ export function App() {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark tab seen')
     })
   }, [token])
-
-  const selectPanelTab = async (tab: WebPane) => {
-    if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split')) setMaximizedPaneId(tab.id)
-    setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
-      ? { ...pane, activeTab: pane.id === tab.id }
-      : pane))
-    try { await webPanesApi.setActiveTab(tab.id) } catch (error) {
-      setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
-    }
-  }
 
   const openWebPane = async (url: string, anchorPaneId: string, engine?: WebPaneEngine) => {
     setPaneActionError('')
