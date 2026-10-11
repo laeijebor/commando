@@ -837,6 +837,11 @@ export class NoteStore {
     }
   }
 
+  /** Where a note's Markdown file lives. */
+  pathFor(note: Pick<Note, 'id' | 'title' | 'folder'>): string {
+    return this.notePath(note)
+  }
+
   private notePath(note: Pick<Note, 'id' | 'title' | 'folder'>): string {
     return join(this.directory, note.folder, noteFileName(note))
   }

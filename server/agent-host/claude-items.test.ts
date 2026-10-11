@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
-import { ClaudeItemMapper, questionsFromInput, todosFromInput, toolTitle } from './claude-items.js'
+import { ClaudeItemMapper, agentIdFromResult, parseRelayPrompt, planFromInput, questionsFromInput, relayPrompt, subagentReport, taskNotificationFromText, todosFromInput, toolTitle } from './claude-items.js'
 
 // Recorded from Claude Code 2.1.296 via Agent SDK 0.3.295 (Haiku): Write, Read,
 // Edit and Bash calls followed by a one-word reply. Paths rewritten to /work.
@@ -60,8 +60,8 @@ describe('ClaudeItemMapper', () => {
   it('keeps requests on the timeline and cancels unanswered ones when the turn ends', () => {
     const mapper = new ClaudeItemMapper(() => 5)
     mapper.startTurn('go')
-    mapper.request('r1', { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'git push' })
-    mapper.request('r2', { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'rm -rf build' })
+    mapper.request('r1', undefined, { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'git push' })
+    mapper.request('r2', undefined, { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'rm -rf build' })
     mapper.resolveRequest('r1', { kind: 'approval', decision: 'allow' })
     mapper.settleRunning('interrupted')
     const [first, second] = mapper.list().filter((item) => item.kind === 'request')
@@ -191,5 +191,138 @@ describe('ClaudeItemMapper replay of unstorable images', () => {
     const mapper = new ClaudeItemMapper(() => 1, { saveBase64: () => undefined })
     const items = mapper.replay([{ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'eA==' } }] } }])
     expect(items).toEqual([expect.objectContaining({ kind: 'user_message', text: '[image]' })])
+  })
+})
+
+// Recorded from Claude Code 2.1.296 via Agent SDK 0.3.295 (Haiku, plan mode):
+// the canUseTool call for ExitPlanMode, which the host denies after capturing
+// the plan, and the stream around it. Paths rewritten to /work and /home/me.
+const planFixture = JSON.parse(readFileSync(new URL('./fixtures/claude-exit-plan-mode.json', import.meta.url), 'utf8')) as {
+  canUseTool: { toolName: string; input: Record<string, unknown>; options: { toolUseID: string } }[]
+  messages: SDKMessage[]
+}
+
+// Recorded the same way (bypass mode): two Agent calls in one turn, each
+// running one Bash command, with forwardSubagentText on.
+const subagentFixture = JSON.parse(readFileSync(new URL('./fixtures/claude-subagents.json', import.meta.url), 'utf8')) as SDKMessage[]
+
+describe('ClaudeItemMapper plans', () => {
+  it('pins the ExitPlanMode input shape: the plan is an untyped `plan` string', () => {
+    const call = planFixture.canUseTool.find((entry) => entry.toolName === 'ExitPlanMode')!
+    expect(Object.keys(call.input).sort()).toEqual(['plan', 'planFilePath'])
+    expect(planFromInput(call.input)).toMatch(/^# Add greeting\.txt\n/)
+    expect(planFromInput({ allowedPrompts: [] })).toBeNull()
+    expect(planFromInput({ plan: '   ' })).toBeNull()
+  })
+
+  it('turns the recorded ExitPlanMode call into one plan item, not a tool row', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('plan it')
+    const items = replay(mapper, planFixture.messages)
+    const call = planFixture.canUseTool[0]!
+    expect(items.filter((item) => item.kind === 'plan')).toEqual([
+      expect.objectContaining({ id: `plan-${call.options.toolUseID}`, toolUseId: call.options.toolUseID, text: planFromInput(call.input), status: 'completed' }),
+    ])
+    expect(items.some((item) => item.kind === 'tool' && item.toolName === 'ExitPlanMode')).toBe(false)
+    // canUseTool emits the same item first; the assistant message only upserts it.
+    expect(mapper.plan(call.options.toolUseID, 'x')).toHaveLength(1)
+    expect(mapper.list().filter((item) => item.kind === 'plan')).toHaveLength(1)
+  })
+})
+
+describe('ClaudeItemMapper subagents', () => {
+  it('maps the recorded parallel Agent calls and their task events to subagent rows', () => {
+    let clock = 1_000
+    const mapper = new ClaudeItemMapper(() => clock++)
+    mapper.startTurn('two subagents')
+    const items = replay(mapper, subagentFixture)
+    const subagents = items.filter((item) => item.kind === 'subagent')
+    expect(subagents).toEqual([
+      expect.objectContaining({ description: 'count files', subagentType: 'general-purpose', agentId: 'ab05457106921d1bd', state: 'completed', status: 'completed', toolUses: 1, prompt: 'Run `ls` with Bash and reply with how many entries you saw.' }),
+      expect.objectContaining({ description: 'print date', subagentType: 'general-purpose', agentId: 'a04229816544e4527', state: 'completed', status: 'completed', toolUses: 1 }),
+    ])
+    // The report without Claude Code's hand-back frame and trailer.
+    expect(subagents[1]).toMatchObject({ output: 'The output of `date` is:\n\n```\nSun 11 Oct 2026 11:14:18 BST\n```' })
+    // Each subagent's own work and text carry its Agent call as their parent.
+    const own = items.filter((item) => item.parentToolUseId === subagents[1]!.id)
+    expect(own.map((item) => item.kind)).toEqual(['command', 'assistant_message'])
+    expect(items.filter((item) => item.kind === 'tool' && (item.toolName === 'Agent' || item.toolName === 'Task'))).toEqual([])
+  })
+
+  const system = (fields: Record<string, unknown>) => ({ type: 'system', uuid: 'u', session_id: 's', ...fields }) as unknown as SDKMessage
+  const agentCall = (id: string, input: Record<string, unknown>) => ({ type: 'assistant', message: { id: `m-${id}`, content: [{ type: 'tool_use', id, name: 'Agent', input }] }, parent_tool_use_id: null }) as unknown as SDKMessage
+  const result = (id: string, text: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] }] }, parent_tool_use_id: null }) as unknown as SDKMessage
+
+  it('keeps a background subagent running past the turn until its notification', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('go')
+    mapper.handle(agentCall('tu1', { description: 'fruit waiter', subagent_type: 'general-purpose', run_in_background: true, prompt: 'wait' }))
+    mapper.handle(system({ subtype: 'task_started', task_id: 'a711', tool_use_id: 'tu1', description: 'fruit waiter', subagent_type: 'general-purpose', task_type: 'local_agent', is_backgrounded: true }))
+    mapper.handle(result('tu1', 'Async agent launched successfully.\nagentId: a711 (internal ID)'))
+    mapper.handle({ type: 'assistant', message: { id: 'm-sub', content: [{ type: 'tool_use', id: 'tu-bash', name: 'Bash', input: { command: 'sleep 1' } }] }, parent_tool_use_id: 'tu1' } as unknown as SDKMessage)
+    mapper.handle({ type: 'result', subtype: 'success' } as unknown as SDKMessage)
+    expect(mapper.list().find((item) => item.id === 'tu1')).toMatchObject({ state: 'running', status: 'running', background: true, agentId: 'a711' })
+    expect(mapper.list().find((item) => item.id === 'tu-bash')).toMatchObject({ status: 'running' })
+    mapper.handle(system({ subtype: 'task_progress', task_id: 'a711', tool_use_id: 'tu1', description: 'Running Sleep', usage: { total_tokens: 10, tool_uses: 2, duration_ms: 3000 }, last_tool_name: 'Bash' }))
+    expect(mapper.list().find((item) => item.id === 'tu1')).toMatchObject({ toolUses: 2, durationMs: 3000, lastToolName: 'Bash', summary: 'Running Sleep' })
+    mapper.handle(system({ subtype: 'task_notification', task_id: 'a711', tool_use_id: 'tu1', status: 'stopped', summary: 'Stopped by the user', output_file: '' }))
+    expect(mapper.list().find((item) => item.id === 'tu1')).toMatchObject({ state: 'stopped', status: 'interrupted', summary: 'Stopped by the user' })
+  })
+
+  it('runs a subagent again when SendMessage resumes it under another tool_use id', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('go')
+    mapper.handle(agentCall('tu1', { description: 'waiter', run_in_background: true }))
+    mapper.handle(system({ subtype: 'task_started', task_id: 'a711', tool_use_id: 'tu1', description: 'waiter', subagent_type: 'general-purpose' }))
+    mapper.handle(system({ subtype: 'task_notification', task_id: 'a711', tool_use_id: 'tu1', status: 'completed', summary: 'NONE', output_file: '' }))
+    mapper.handle(system({ subtype: 'task_started', task_id: 'a711', tool_use_id: 'tu-send', description: 'waiter', subagent_type: 'general-purpose' }))
+    expect(mapper.list().filter((item) => item.kind === 'subagent')).toEqual([expect.objectContaining({ id: 'tu1', state: 'running', status: 'running' })])
+    mapper.handle(system({ subtype: 'task_notification', task_id: 'a711', tool_use_id: 'tu-send', status: 'completed', summary: 'MANGO', output_file: '' }))
+    expect(mapper.list().find((item) => item.id === 'tu1')).toMatchObject({ state: 'completed', summary: 'MANGO' })
+  })
+
+  it('ignores shell tasks and marks a foreground subagent stopped when the session ends', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('go')
+    expect(mapper.handle(system({ subtype: 'task_started', task_id: 'b1', tool_use_id: 'tu-bash', description: 'Sleep', task_type: 'local_bash' }))).toEqual([])
+    mapper.handle(agentCall('tu1', { description: 'reviewer' }))
+    expect(mapper.settleRunning('interrupted')).toEqual([expect.objectContaining({ id: 'tu1', state: 'stopped', status: 'interrupted' })])
+  })
+
+  it('rebuilds subagent ids and endings from a saved transcript', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    const items = mapper.replay([
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'start a waiter' } },
+      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu1', name: 'Agent', input: { description: 'waiter', run_in_background: true } }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: [{ type: 'text', text: 'Async agent launched successfully.\nagentId: a8b6 (internal ID)' }] }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: '<task-notification>\n<task-id>a8b6</task-id>\n<tool-use-id>tu1</tool-use-id>\n<status>completed</status>\n<summary>Agent "waiter" finished</summary>\n</task-notification>' } },
+    ])
+    expect(items.map((item) => item.kind)).toEqual(['user_message', 'subagent'])
+    expect(items[1]).toMatchObject({ agentId: 'a8b6', state: 'completed', status: 'completed', summary: 'Agent "waiter" finished' })
+    const stopped = new ClaudeItemMapper(() => 1).replay([
+      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm2', content: [{ type: 'tool_use', id: 'tu2', name: 'Agent', input: { description: 'slow one' } }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu2', is_error: true, content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }] } },
+    ])
+    expect(stopped[0]).toMatchObject({ state: 'stopped', status: 'interrupted' })
+  })
+
+  it('shows a relayed message as the user typed it, with its target', () => {
+    const prompt = relayPrompt('The fruit is MANGO.', { agentId: 'a711', label: 'fruit waiter' })
+    expect(parseRelayPrompt(prompt)).toEqual({ text: 'The fruit is MANGO.', relayTo: { agentId: 'a711', label: 'fruit waiter' } })
+    const items = new ClaudeItemMapper(() => 1).replay([{ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: prompt } }])
+    expect(items).toEqual([expect.objectContaining({ kind: 'user_message', text: 'The fruit is MANGO.', relayTo: { agentId: 'a711', label: 'fruit waiter' } })])
+  })
+
+  it('reads ids and reports from Agent results', () => {
+    expect(agentIdFromResult('done\nagentId: a04229816544e4527 (use SendMessage…)')).toBe('a04229816544e4527')
+    expect(agentIdFromResult('no id here')).toBeUndefined()
+    expect(subagentReport('plain text')).toBe('plain text')
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.replay([
+      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm', content: [{ type: 'tool_use', id: 'tu', name: 'Agent', input: { description: 'd' } }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu', content: [{ type: 'text', text: 'done\nagentId: a1 (x)\n<usage>subagent_tokens: 9\ntool_uses: 3\nduration_ms: 5373</usage>' }] }] } },
+    ])
+    expect(mapper.list()[0]).toMatchObject({ toolUses: 3, durationMs: 5373, output: 'done\nagentId: a1 (x)\n<usage>subagent_tokens: 9\ntool_uses: 3\nduration_ms: 5373</usage>' })
+    expect(taskNotificationFromText('hello')).toBeNull()
   })
 })

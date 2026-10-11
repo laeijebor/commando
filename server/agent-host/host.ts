@@ -146,7 +146,9 @@ export class AgentHost {
   ) {
     this.link = new DaemonLink(url, token, {
       open: () => this.onOpen(),
-      message: (message) => void this.onMessage(message),
+      message: (message) => {
+        this.onMessage(message).catch((error: unknown) => this.log.info(`Couldn't handle a ${message.type} message from Commando: ${error instanceof Error ? error.message : String(error)}`))
+      },
       close: (code, reason) => this.log.info(code === HOST_REFUSED_CLOSE_CODE
         ? `The Commando daemon refused this host (${reason}). Is COMMANDO_PORT pointing at the daemon for this tmux server? Retrying every 30 s.`
         : `Lost the Commando daemon (${code}${reason ? `: ${reason}` : ''}); reconnecting…`),
@@ -203,12 +205,22 @@ export class AgentHost {
     if (message.type === 'welcome') return
     const session = this.sessions.get(message.paneId)
     if (!session) return
-    if (message.type === 'send') session.send(message.text, message.images)
-    else if (message.type === 'file_search') {
+    if (message.type === 'send') {
+      const { type: _type, paneId: _paneId, requestId: _requestId, text, images, ...options } = message
+      session.send(text, images, options)
+    } else if (message.type === 'file_search') {
       const result = await session.searchFiles(message.query)
       this.link.send({ type: 'file_search_result', paneId: message.paneId, requestId: message.requestId, ...result })
+    } else if (message.type === 'subagent_transcript') {
+      const result = await session.subagentTranscript(message.agentId)
+      this.link.send({ type: 'subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, items: snapshotItems(result.items), ...(result.error ? { error: result.error } : {}) })
     }
-    else if (message.type === 'interrupt') await session.interrupt()
+    else if (message.type === 'queue') {
+      const { type: _type, paneId: _paneId, requestId: _requestId, ...change } = message
+      session.updateQueue(change)
+    }
+    else if (message.type === 'task') await session.controlTask(message.action, message.agentId, message.toolUseId)
+    else if (message.type === 'interrupt') await session.interrupt(message.dropQueued)
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)
     else if (message.type === 'configure') await session.configure(message.settings)

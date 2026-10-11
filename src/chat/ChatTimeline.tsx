@@ -1,16 +1,21 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, CircleAlert, Diamond, FilePen, Info, LoaderCircle, MessageCircleQuestion, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
-import type { ChatItem } from '../../shared/agent-chat'
+import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
+import { PlanCard, type SavePlan } from './PlanCard'
+import { SubagentGroup, useNow } from './Subagents'
 import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from './timelineRows'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
 
-const Markdown = memo(function Markdown({ text }: { text: string }) {
+/** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan }>({ items: [], now: 0 })
+
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="chat-markdown">
       <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>
@@ -194,19 +199,47 @@ function ThoughtRow({ item }: { item: ReasoningItem }) {
   )
 }
 
+/** "Implement this plan" messages carry the whole plan; it is already on the card above. */
+function UserText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  if (!text.startsWith(PLAN_IMPLEMENTATION_PREFIX)) return <>{text}</>
+  const plan = text.slice(PLAN_IMPLEMENTATION_PREFIX.length)
+  return (
+    <>
+      <button type="button" className="flex cursor-pointer items-center gap-1.5 text-left" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <ListChecks className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+        Implement the plan: {chatPlanTitle(plan)}
+        <ChevronRight className={cn('size-3 shrink-0 text-icon-muted transition-transform', open && 'rotate-90')} aria-hidden="true" />
+      </button>
+      {open ? <div className="mt-1.5 text-sm text-secondary-label">{plan}</div> : null}
+    </>
+  )
+}
+
 function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
+  const context = use(TimelineContext)
   switch (row.kind) {
     case 'user':
       return (
         <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+          {row.item.steered || row.item.relayTo ? (
+            <span className="flex max-w-[85%] items-center gap-1 text-2xs text-muted-foreground">
+              {row.item.relayTo ? <MessageSquareShare className="size-3" aria-hidden="true" /> : <Zap className="size-3" aria-hidden="true" />}
+              <span className="truncate">{row.item.relayTo ? `To @${row.item.relayTo.label}, relayed through main Claude` : 'Steered: sent while Claude worked'}</span>
+            </span>
+          ) : null}
           {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
           {row.item.text ? (
             <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground">
-              {row.item.text}
+              <UserText text={row.item.text} />
             </div>
           ) : null}
         </div>
       )
+    case 'plan':
+      return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
+    case 'subagents':
+      return <SubagentGroup row={row} items={context.items} now={context.now} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
       return <div className="pb-3"><Markdown text={row.item.text} /></div>
     case 'work':
@@ -223,8 +256,23 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ items, cwd, working }: { items: readonly ChatItem[]; cwd: string; working: boolean }) {
-  const rows = useMemo(() => deriveTimelineRows(items), [items])
+export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan }: {
+  items: readonly ChatItem[]
+  cwd: string
+  working: boolean
+  /** A subagent's Agent call id to show its transcript; the main conversation otherwise. */
+  scope?: string
+  /** Shown above the first row (a subagent's task). */
+  header?: ReactNode
+  footer?: ReactNode
+  emptyText?: string
+  onOpenSubagent?: (toolUseId: string) => void
+  onSavePlan?: SavePlan
+}) {
+  const rows = useMemo(() => deriveTimelineRows(items, scope), [items, scope])
+  const live = rows.some((row) => row.kind === 'subagents' && row.live)
+  const now = useNow(live)
+  const context = useMemo(() => ({ items, now, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, onOpenSubagent, onSavePlan])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -245,19 +293,23 @@ export function ChatTimeline({ items, cwd, working }: { items: readonly ChatItem
 
   const last = rows.at(-1)
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
-  const liveWork = (last?.kind === 'work' && last.live) || (last?.kind === 'thought' && last.item.status === 'running')
+  const liveWork = ((last?.kind === 'work' || last?.kind === 'subagents') && last.live) || (last?.kind === 'thought' && last.item.status === 'running')
   return (
     <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
-        {rows.length === 0 ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">Ask Claude anything about this folder.</div>
-        ) : rows.map((row) => <Row key={row.id} row={row} cwd={cwd} />)}
+        {header}
+        <TimelineContext value={context}>
+          {rows.length === 0 && !header ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? 'Ask Claude anything about this folder.'}</div>
+          ) : rows.map((row) => <Row key={row.id} row={row} cwd={cwd} />)}
+        </TimelineContext>
         {working && !streaming && !liveWork ? (
           <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
             <span className="size-1.5 rounded-full bg-primary chat-pulse" aria-hidden="true" />
             Working…
           </div>
         ) : null}
+        {footer}
       </div>
     </div>
   )

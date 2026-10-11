@@ -5,7 +5,7 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 3
+export const AGENT_HOST_PROTOCOL_VERSION = 4
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -21,6 +21,15 @@ export const CHAT_INPUT_HOST_VERSION = 3
 
 export function hostTakesInput(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_INPUT_HOST_VERSION
+}
+/**
+ * Hosts from this version hold a send queue, steer, capture plans and report
+ * subagents; older ones would send a queued message straight to Claude.
+ */
+export const CHAT_FLOW_HOST_VERSION = 4
+
+export function hostTakesTurnFlow(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_FLOW_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -115,6 +124,23 @@ export interface ChatFileSearchResult {
   error?: string
 }
 
+/** A message the host holds until Claude's turn ends (Enter while Claude works). */
+export interface ChatQueuedMessage {
+  id: string
+  text: string
+  images?: ChatImageRef[]
+}
+
+/**
+ * How a send reaches Claude. `queue` waits for the running turn to end; `steer`
+ * goes in at once with `priority: 'now'`, ending the running turn at its next
+ * safe point. Without one, the message goes straight to Claude (older clients).
+ */
+export type ChatDelivery = 'queue' | 'steer'
+
+/** A subagent run: its Agent tool call, kept up to date from Claude's task events. */
+export type ChatSubagentState = 'running' | 'completed' | 'failed' | 'stopped'
+
 interface ChatItemBase {
   id: string
   /** Groups items into turns; a turn starts with the user's message. */
@@ -127,7 +153,15 @@ interface ChatItemBase {
 }
 
 export type ChatItem = ChatItemBase & (
-  | { kind: 'user_message'; text: string; images?: ChatImageRef[] }
+  | {
+      kind: 'user_message'
+      text: string
+      images?: ChatImageRef[]
+      /** Sent with ⌘Enter while Claude worked: it ended the running turn early. */
+      steered?: boolean
+      /** Relayed through main Claude's SendMessage tool to this subagent. */
+      relayTo?: { agentId: string; label: string }
+    }
   | { kind: 'assistant_message'; text: string }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
@@ -156,6 +190,28 @@ export type ChatItem = ChatItemBase & (
       answer?: ChatRequestAnswer
     }
   | { kind: 'notice'; level: 'info' | 'error'; text: string }
+  /** Claude's plan from ExitPlanMode, captured instead of a generic approval. */
+  | { kind: 'plan'; toolUseId: string; text: string }
+  | {
+      kind: 'subagent'
+      /** The Agent tool call that started it; its own items carry this as parentToolUseId. */
+      toolUseId: string
+      description: string
+      subagentType?: string
+      /** The task id from task events, which is also the subagent's agent id. */
+      agentId?: string
+      prompt?: string
+      /** Runs in the background: the Agent call returned at once and the turn went on. */
+      background?: boolean
+      state: ChatSubagentState
+      toolUses?: number
+      durationMs?: number
+      totalTokens?: number
+      lastToolName?: string
+      /** Claude's one-line progress summary, or its final report once done. */
+      summary?: string
+      output?: string
+    }
 )
 
 export type ChatItemKind = ChatItem['kind']
@@ -228,6 +284,10 @@ export interface ChatSessionInfo {
   resumeCommand?: string
   /** Last error that stopped or broke the session. */
   error?: string
+  /** Messages held until the running turn ends, oldest first. */
+  queue?: ChatQueuedMessage[]
+  /** The mode the chat had before it entered plan mode; Implement returns to it. */
+  prePlanPermissionMode?: ChatSessionPermissionMode
 }
 
 /** The model the session runs, as a row of its list: the explicit pick, else the default row while it runs. */
@@ -270,6 +330,44 @@ export type HostToDaemonMessage =
   /** The full command list; replaces the previous one. */
   | { type: 'commands'; paneId: string; commands: ChatCommand[] }
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
+  | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
+
+/** A finished subagent's own turns, read from its saved transcript. */
+export interface ChatSubagentTranscript {
+  items: ChatItem[]
+  error?: string
+}
+
+/** Extra instructions for one send; see `ChatDelivery`. */
+export interface ChatSendOptions {
+  delivery?: ChatDelivery
+  /** Switch to this permission mode first (Implement leaves plan mode). */
+  permissionMode?: ChatSessionPermissionMode
+  relayTo?: { agentId: string; label: string }
+}
+
+export type ChatQueueAction =
+  | { action: 'edit'; id: string; text: string }
+  | { action: 'remove'; id: string }
+  /** Take it out of the queue and send it now, steering the running turn. */
+  | { action: 'steer'; id: string }
+
+export type ChatTaskAction = 'stop' | 'background'
+
+/** What Implement sends, after t3code's buildPlanImplementationPrompt. */
+export const PLAN_IMPLEMENTATION_PREFIX = 'PLEASE IMPLEMENT THIS PLAN:\n'
+
+export function planImplementationPrompt(plan: string): string {
+  return `${PLAN_IMPLEMENTATION_PREFIX}${plan.trim()}`
+}
+
+/** A plan's first heading (as t3code's proposedPlanTitle reads it), else its first line. */
+export function chatPlanTitle(markdown: string, max = 200): string {
+  const heading = /^\s{0,3}#{1,6}\s+(.+)$/m.exec(markdown)?.[1]?.trim()
+  const firstLine = markdown.split('\n').find((line) => line.trim())?.trim()
+  const title = (heading || firstLine || 'Claude plan').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  return title.length > max ? `${title.slice(0, max - 1)}…` : title
+}
 
 export type ChatAnswer =
   | { kind: 'approval'; decision: 'allow' | 'allow_always' | 'deny'; message?: string }
@@ -277,10 +375,15 @@ export type ChatAnswer =
 
 export type DaemonToHostMessage =
   | { type: 'welcome'; version: number }
-  | { type: 'send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string }
+  | ({ type: 'send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string } & ChatSendOptions)
+  | ({ type: 'queue'; paneId: string; requestId: string } & ChatQueueAction)
+  /** Stop or background one running subagent. */
+  | { type: 'task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
+  | { type: 'subagent_transcript'; paneId: string; agentId: string; requestId: string }
   /** Finds files and folders in the session's folder for an `@` mention. */
   | { type: 'file_search'; paneId: string; query: string; requestId: string }
-  | { type: 'interrupt'; paneId: string; requestId: string }
+  /** `dropQueued` names queued messages the client took back into its draft. */
+  | { type: 'interrupt'; paneId: string; requestId: string; dropQueued?: string[] }
   | { type: 'answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Restart the host on the same conversation once the current turn ends. */
   | { type: 'restart'; paneId: string; requestId: string }
@@ -471,6 +574,55 @@ function parseFileEntries(value: unknown): ChatFileEntry[] | null {
   ))
 }
 
+/** Agent ids are task ids (`a711460f062a7b1ef`); they reach Claude in a relay prompt. */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+export function isAgentId(value: unknown): value is string {
+  return typeof value === 'string' && AGENT_ID.test(value)
+}
+
+const RELAY_LABEL_MAX = 200
+
+function parseRelayTarget(value: unknown): { agentId: string; label: string } | null | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || !isAgentId(value.agentId) || typeof value.label !== 'string') return null
+  return { agentId: value.agentId, label: value.label.replace(/[\r\n"]/g, ' ').slice(0, RELAY_LABEL_MAX) }
+}
+
+/** The optional delivery fields of a send; null when one is malformed. */
+export function parseChatSendOptions(value: Record<string, unknown>): ChatSendOptions | null {
+  if (value.delivery !== undefined && value.delivery !== 'queue' && value.delivery !== 'steer') return null
+  if (value.permissionMode !== undefined && !isChatPermissionMode(value.permissionMode)) return null
+  const relayTo = parseRelayTarget(value.relayTo)
+  if (relayTo === null) return null
+  return withOptional({} as ChatSendOptions, { delivery: value.delivery, permissionMode: value.permissionMode, relayTo })
+}
+
+/** The most messages the host holds in a chat's queue. */
+export const MAX_QUEUED_MESSAGES = 20
+const MAX_QUEUED = MAX_QUEUED_MESSAGES
+
+export function parseChatQueueAction(value: Record<string, unknown>): ChatQueueAction | null {
+  if (!shortString(value.id)) return null
+  if (value.action === 'remove' || value.action === 'steer') return { action: value.action, id: value.id }
+  if (value.action === 'edit' && typeof value.text === 'string' && value.text.trim() && value.text.length <= MAX_TEXT) return { action: 'edit', id: value.id, text: value.text }
+  return null
+}
+
+function parseQueue(value: unknown): ChatQueuedMessage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.slice(0, MAX_QUEUED).flatMap((entry) => {
+    if (!isRecord(entry) || !shortString(entry.id) || typeof entry.text !== 'string') return []
+    return [withOptional({ id: entry.id, text: entry.text.slice(0, MAX_TEXT) } as ChatQueuedMessage, { images: optionalImages(entry.images) })]
+  })
+}
+
+const SUBAGENT_STATES = new Set<ChatSubagentState>(['running', 'completed', 'failed', 'stopped'])
+
+function optionalCount(value: unknown): number | undefined {
+  return finiteCount(value) ? value : undefined
+}
+
 function parseRequestAnswer(value: unknown): ChatRequestAnswer | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'cancelled') return { kind: 'cancelled', reason: optionalText(value.reason, 500) ?? 'Cancelled' }
@@ -496,7 +648,11 @@ export function parseChatItem(value: unknown): ChatItem | null {
   switch (value.kind) {
     case 'user_message':
       return typeof value.text === 'string'
-        ? withOptional({ ...base, kind: 'user_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: optionalImages(value.images) })
+        ? withOptional({ ...base, kind: 'user_message' as const, text: value.text.slice(0, MAX_TEXT) }, {
+            images: optionalImages(value.images),
+            steered: value.steered === true ? true : undefined,
+            relayTo: parseRelayTarget(value.relayTo) ?? undefined,
+          })
         : null
     case 'assistant_message':
     case 'reasoning':
@@ -532,6 +688,26 @@ export function parseChatItem(value: unknown): ChatItem | null {
       return (value.level === 'info' || value.level === 'error') && typeof value.text === 'string'
         ? { ...base, kind: 'notice', level: value.level, text: value.text.slice(0, 16_384) }
         : null
+    case 'plan':
+      return shortString(value.toolUseId) && typeof value.text === 'string'
+        ? { ...base, kind: 'plan', toolUseId: value.toolUseId, text: value.text.slice(0, MAX_TEXT) }
+        : null
+    case 'subagent':
+      if (!shortString(value.toolUseId) || typeof value.description !== 'string' || !SUBAGENT_STATES.has(value.state as ChatSubagentState)) return null
+      return withOptional({
+        ...base, kind: 'subagent' as const, toolUseId: value.toolUseId, description: value.description.slice(0, 500), state: value.state as ChatSubagentState,
+      }, {
+        subagentType: optionalText(value.subagentType, 200),
+        agentId: isAgentId(value.agentId) ? value.agentId : undefined,
+        prompt: optionalText(value.prompt, 16_384),
+        background: value.background === true ? true : undefined,
+        toolUses: optionalCount(value.toolUses),
+        durationMs: optionalCount(value.durationMs),
+        totalTokens: optionalCount(value.totalTokens),
+        lastToolName: optionalText(value.lastToolName, 200),
+        summary: optionalText(value.summary, 4000),
+        output: optionalText(value.output),
+      })
     default:
       return null
   }
@@ -549,6 +725,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
   const models = parseModels(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
+  const queue = parseQueue(value.queue)
   return {
     paneId: value.paneId,
     provider: 'claude',
@@ -569,6 +746,8 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    ...(queue?.length ? { queue } : {}),
+    ...(isChatPermissionMode(value.prePlanPermissionMode) ? { prePlanPermissionMode: value.prePlanPermissionMode } : {}),
   }
 }
 
@@ -611,6 +790,13 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
         error: optionalText(value.error, 1000),
       })
     }
+    case 'subagent_transcript_result': {
+      const items = parseItems(value.items)
+      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !items) return null
+      return withOptional({ type: 'subagent_transcript_result' as const, paneId: value.paneId, requestId: value.requestId, items }, {
+        error: optionalText(value.error, 1000),
+      })
+    }
     default:
       return null
   }
@@ -624,17 +810,35 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
     case 'send': {
       if (!isPaneId(value.paneId) || typeof value.text !== 'string' || value.text.length > MAX_TEXT || !shortString(value.requestId)) return null
       const images = value.images === undefined ? [] : parseChatImageRefs(value.images)
-      if (!images) return null
-      return withOptional({ type: 'send' as const, paneId: value.paneId, text: value.text, requestId: value.requestId }, { images: images.length ? images : undefined })
+      const options = parseChatSendOptions(value)
+      if (!images || !options) return null
+      return withOptional({ type: 'send' as const, paneId: value.paneId, text: value.text, requestId: value.requestId, ...options }, { images: images.length ? images : undefined })
     }
+    case 'queue': {
+      const action = parseChatQueueAction(value)
+      return isPaneId(value.paneId) && action && shortString(value.requestId) ? { type: 'queue', paneId: value.paneId, requestId: value.requestId, ...action } : null
+    }
+    case 'task':
+      return isPaneId(value.paneId) && (value.action === 'stop' || value.action === 'background') && isAgentId(value.agentId) && shortString(value.toolUseId) && shortString(value.requestId)
+        ? { type: 'task', paneId: value.paneId, action: value.action, agentId: value.agentId, toolUseId: value.toolUseId, requestId: value.requestId }
+        : null
+    case 'subagent_transcript':
+      return isPaneId(value.paneId) && isAgentId(value.agentId) && shortString(value.requestId)
+        ? { type: 'subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: value.requestId }
+        : null
     case 'file_search':
       return isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
         ? { type: 'file_search', paneId: value.paneId, query: value.query, requestId: value.requestId }
         : null
-    case 'interrupt':
+    case 'interrupt': {
+      const dropQueued = parseQueueIds(value.dropQueued)
+      return isPaneId(value.paneId) && shortString(value.requestId) && dropQueued !== null
+        ? withOptional({ type: 'interrupt' as const, paneId: value.paneId, requestId: value.requestId }, { dropQueued })
+        : null
+    }
     case 'restart':
       return isPaneId(value.paneId) && shortString(value.requestId)
-        ? { type: value.type, paneId: value.paneId, requestId: value.requestId }
+        ? { type: 'restart', paneId: value.paneId, requestId: value.requestId }
         : null
     case 'configure': {
       const settings = parseChatSettingsChange(value.settings)
@@ -651,6 +855,13 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
     default:
       return null
   }
+}
+
+/** Queued message ids a client names; undefined when absent, null when malformed. */
+export function parseQueueIds(value: unknown): string[] | null | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_QUEUED || !value.every((id) => shortString(id))) return null
+  return value as string[]
 }
 
 /** Upserts items by id, keeping first-seen order. Returns a new array. */

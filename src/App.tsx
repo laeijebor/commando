@@ -73,6 +73,7 @@ import type {
   WebPaneEngine,
   WebPaneFeedbackInfo,
   WebPaneNavigateRequest,
+  ClientMessage,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -120,12 +121,24 @@ import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
-import { ChatPane } from './chat/ChatPane'
+import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
-import { openPullRequestsForPane, uploadChatImage } from './chatInputApi'
+import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
-import { mergeChatItems, type ChatAnswer, type ChatFileSearchResult, type ChatImageRef, type ChatSettingsChange, type ChatState } from '../shared/agent-chat'
+import {
+  mergeChatItems,
+  planImplementationPrompt,
+  type ChatAnswer,
+  type ChatFileSearchResult,
+  type ChatImageRef,
+  type ChatSendOptions,
+  type ChatSessionPermissionMode,
+  type ChatSettingsChange,
+  type ChatState,
+  type ChatSubagentTranscript,
+} from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -316,15 +329,19 @@ type TerminalPaneProps = {
   chat?: ChatState
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
-  onChatSend?: (text: string, images?: ChatImageRef[]) => string | void
-  onChatInterrupt?: () => void
+  onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
+  onChatInterrupt?: (dropQueued?: string[]) => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   chatServices?: ChatInputServices
+  chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
   chatSendError?: ChatSendError
   onDismissChatSendError?: () => void
+  /** Why the daemon refused a queue, subagent or interrupt action in this pane. */
+  chatActionError?: string
+  onDismissChatActionError?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -388,8 +405,11 @@ export function TerminalPaneCard({
   onChatConfigure,
   onChatRestart,
   chatServices,
+  chatFlow,
   chatSendError,
   onDismissChatSendError,
+  chatActionError,
+  onDismissChatActionError,
   onRename,
   onRenameFinished,
   onMove,
@@ -656,14 +676,17 @@ export function TerminalPaneCard({
             connected={connected}
             focused={focused}
             onFocus={onFocus}
-            onSend={(text, images) => onChatSend?.(text, images)}
-            onInterrupt={() => onChatInterrupt?.()}
+            onSend={(text, images, options) => onChatSend?.(text, images, options)}
+            onInterrupt={(dropQueued) => onChatInterrupt?.(dropQueued)}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
             {...(chatServices ? { services: chatServices } : {})}
+            {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
             {...(onDismissChatSendError ? { onDismissSendError: onDismissChatSendError } : {})}
+            {...(chatActionError ? { actionError: chatActionError } : {})}
+            {...(onDismissChatActionError ? { onDismissActionError: onDismissChatActionError } : {})}
           />
         ) : <TerminalPaneRenderer
           paneId={pane.id}
@@ -988,8 +1011,13 @@ export function App() {
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
+  const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
+  /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
+  const chatActionPanes = useRef(new Map<string, string>())
   /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
+  /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
+  const chatTranscripts = useRef(new Map<string, (result: ChatSubagentTranscript) => void>())
   /** Recent chat sends by request id, so a refusal shows on the right pane. */
   const chatSendPanes = useRef(new Map<string, string>())
   const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
@@ -1367,6 +1395,11 @@ export function App() {
         chatFileSearches.current.get(searchId)?.(result)
         break
       }
+      case 'chat_subagent_transcript_result': {
+        const { type: _type, paneId: _paneId, requestId: readId, ...result } = message
+        chatTranscripts.current.get(readId)?.(result)
+        break
+      }
       case 'chat_removed':
         setChats((current) => {
           if (!(message.paneId in current)) return current
@@ -1407,6 +1440,7 @@ export function App() {
         console.error(`[commando:${message.code}] ${message.message}`)
         if (message.requestId) {
           chatFileSearches.current.get(message.requestId)?.({ entries: [], truncated: false, error: message.message })
+          chatTranscripts.current.get(message.requestId)?.({ items: [], error: message.message })
           const chatPane = chatSendPanes.current.get(message.requestId)
           if (chatPane) {
             chatSendPanes.current.delete(message.requestId)
@@ -1415,6 +1449,11 @@ export function App() {
               ...current,
               [chatPane]: { message: message.message, refused: [...(current[chatPane]?.refused ?? []), refused] },
             }))
+          }
+          const actionPane = chatActionPanes.current.get(message.requestId)
+          if (actionPane) {
+            chatActionPanes.current.delete(message.requestId)
+            setChatActionErrors((current) => ({ ...current, [actionPane]: message.message }))
           }
         }
         if (
@@ -2115,7 +2154,7 @@ export function App() {
   const retryAgentResume = (targetId?: string) => {
     send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
   }
-  const sendChat = (paneId: string, text: string, images?: ChatImageRef[]): string => {
+  const sendChat = (paneId: string, text: string, images?: ChatImageRef[], options: ChatSendOptions = {}): string => {
     const id = requestId('chat-send')
     chatSendPanes.current.set(id, paneId)
     window.setTimeout(() => chatSendPanes.current.delete(id), CHAT_SEND_REFUSAL_MS)
@@ -2125,7 +2164,7 @@ export function App() {
       delete next[paneId]
       return next
     })
-    if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })) {
+    if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), ...options, requestId: id })) {
       chatSendPanes.current.delete(id)
       setChatSendErrors((current) => ({ ...current, [paneId]: { message: "Not connected to Commando, so the message wasn't sent", refused: [{ requestId: id }] } }))
     }
@@ -2134,8 +2173,17 @@ export function App() {
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })
   }
-  const interruptChat = (paneId: string) => {
-    send({ type: 'chat_interrupt', paneId, requestId: requestId('chat-interrupt') })
+  /** Sends a queue, subagent or interrupt action; a refusal or a dropped connection shows in the pane. */
+  const sendChatAction = (paneId: string, message: ClientMessage & { requestId: string }) => {
+    chatActionPanes.current.set(message.requestId, paneId)
+    window.setTimeout(() => chatActionPanes.current.delete(message.requestId), 30_000)
+    if (!latestChatDeps.current.send(message)) {
+      chatActionPanes.current.delete(message.requestId)
+      setChatActionErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so that didn't reach the chat" }))
+    }
+  }
+  const interruptChat = (paneId: string, dropQueued?: string[]) => {
+    sendChatAction(paneId, { type: 'chat_interrupt', paneId, ...(dropQueued?.length ? { dropQueued } : {}), requestId: requestId('chat-interrupt') })
   }
   const configureChat = (paneId: string, settings: ChatSettingsChange) => {
     send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
@@ -2151,10 +2199,38 @@ export function App() {
   const gitDiffApi = createGitDiffApi(token)
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
+  /**
+   * "Implement in a new chat pane": splits the chat's pane and starts a fresh
+   * chat with the same profile and folder, in the mode the chat had before plan
+   * mode, whose opening prompt is the plan (or, when too long for a pane's
+   * prompt, a pointer to it saved where the new chat can read it).
+   */
+  const implementPlanInNewPane = async (paneId: string, plan: string, mode: ChatSessionPermissionMode): Promise<void> => {
+    const pane = paneMap.get(paneId)
+    if (!pane) throw new Error('The chat pane is gone')
+    const session = chats[paneId]?.session
+    let prompt = planImplementationPrompt(plan)
+    // A plan too long for the prompt goes in a folder only this new chat may read.
+    let readableDir: string | undefined
+    if (new TextEncoder().encode(prompt).length > MAX_PANE_PROMPT_BYTES) {
+      const stashed = await stashChatPlan(token, plan)
+      prompt = implementPlanFilePrompt(stashed.path)
+      readableDir = stashed.dir
+    }
+    const created = await tmuxCreateApi.createPane({
+      targetId: paneId,
+      direction: 'horizontal',
+      placement: 'after',
+      cwd: session?.cwd ?? pane.path,
+      agent: { provider: 'claude-chat', permissionMode: launchPermissionMode(mode), prompt, ...(session?.configDir ? { configDir: session.configDir } : {}), ...(readableDir ? { readableDir } : {}) },
+    })
+    setMaximizedPaneId(null)
+    setPendingPaneFocus({ paneId: created.paneId })
+  }
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
-  const latestChatDeps = useRef({ send, token, prsApi })
-  latestChatDeps.current = { send, token, prsApi }
+  const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction })
+  latestChatDeps.current = { send, token, prsApi, implementPlanInNewPane, sendChatAction }
   const chatServicesFor = (paneId: string): ChatInputServices => {
     let services = chatServiceCache.current.get(paneId)
     if (!services) {
@@ -2178,6 +2254,33 @@ export function App() {
       chatServiceCache.current.set(paneId, services)
     }
     return services
+  }
+  const chatFlowCache = useRef(new Map<string, ChatFlowServices>())
+  const chatFlowFor = (paneId: string): ChatFlowServices => {
+    let flow = chatFlowCache.current.get(paneId)
+    if (!flow) {
+      flow = {
+        queue: (change) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_queue', paneId, ...change, requestId: requestId('chat-queue') }),
+        task: (action, agentId, toolUseId) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_task', paneId, action, agentId, toolUseId, requestId: requestId('chat-task') }),
+        subagentTranscript: (agentId) => new Promise<ChatSubagentTranscript>((resolve) => {
+          const id = requestId('chat-transcript')
+          const finish = (result: ChatSubagentTranscript) => {
+            window.clearTimeout(timer)
+            chatTranscripts.current.delete(id)
+            resolve(result)
+          }
+          const timer = window.setTimeout(() => finish({ items: [], error: 'Reading the transcript timed out' }), 25_000)
+          chatTranscripts.current.set(id, finish)
+          if (!latestChatDeps.current.send({ type: 'chat_subagent_transcript', paneId, agentId, requestId: id })) {
+            finish({ items: [], error: 'Not connected to Commando' })
+          }
+        }),
+        savePlan: (markdown) => saveChatPlan(latestChatDeps.current.token, markdown),
+        implementInNewPane: (plan, mode) => latestChatDeps.current.implementPlanInNewPane(paneId, plan, mode),
+      }
+      chatFlowCache.current.set(paneId, flow)
+    }
+    return flow
   }
   const webPanesApi = createWebPanesApi(token)
 
@@ -3109,15 +3212,22 @@ export function App() {
                             chat={chats[pane.id]}
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
-                            onChatSend={(text, images) => sendChat(pane.id, text, images)}
+                            onChatSend={(text, images, options) => sendChat(pane.id, text, images, options)}
                             chatServices={chatServicesFor(pane.id)}
+                            chatFlow={chatFlowFor(pane.id)}
                             {...(chatSendErrors[pane.id] ? { chatSendError: chatSendErrors[pane.id] } : {})}
                             onDismissChatSendError={() => setChatSendErrors((current) => {
                               const next = { ...current }
                               delete next[pane.id]
                               return next
                             })}
-                            onChatInterrupt={() => interruptChat(pane.id)}
+                            {...(chatActionErrors[pane.id] ? { chatActionError: chatActionErrors[pane.id] } : {})}
+                            onDismissChatActionError={() => setChatActionErrors((current) => {
+                              const next = { ...current }
+                              delete next[pane.id]
+                              return next
+                            })}
+                            onChatInterrupt={(dropQueued) => interruptChat(pane.id, dropQueued)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}

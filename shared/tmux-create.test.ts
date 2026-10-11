@@ -78,3 +78,12 @@ describe('defaultWorktreePath', () => {
     expect(defaultWorktreePath('/Users/leo/vivifit/', 'chat-video')).toBe('/Users/leo/vivifit-worktrees/chat-video')
   })
 })
+
+describe('chat launch arguments', () => {
+  it('passes a stashed plan folder before the prompt, which the host reads to the end', () => {
+    const dir = `/home/me/.commando/chat-plans/${'e'.repeat(32)}`
+    expect(sessionAgentArgv({ provider: 'claude-chat', permissionMode: 'acceptEdits', readableDir: dir, prompt: 'PLEASE IMPLEMENT --now' })).toEqual([
+      'commando-agent', 'claude', '--permission-mode', 'acceptEdits', '--readable-dir', dir, '--prompt', 'PLEASE IMPLEMENT --now',
+    ])
+  })
+})

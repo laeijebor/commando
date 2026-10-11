@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -7,6 +8,7 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
+import { isChatPlanDir } from '../chat-plans-dir.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { AgentSession } from './session.js'
@@ -26,6 +28,7 @@ Options:
   --allow-dangerously-skip-permissions
                                    Allow switching to bypassPermissions later in the chat
   --claude-path PATH               Claude Code executable (default: claude on PATH)
+  --readable-dir DIR               Let Claude read DIR without asking (a stashed plan's folder only)
   --prompt TEXT                    Send TEXT as the first message
 `
 
@@ -45,6 +48,8 @@ export interface HostArgs {
   /** The chat may switch to bypassPermissions (it was started with it). */
   bypassAllowed?: boolean
   claudePath?: string
+  /** A stashed plan's folder this chat (only) may read. */
+  readableDir?: string
   prompt?: string
 }
 
@@ -74,6 +79,12 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           break
         }
         case '--claude-path': args.claudePath = expandHome(needValue()); break
+        case '--readable-dir': {
+          const dir = needValue()
+          if (!isChatPlanDir(dir, env)) return `--readable-dir must be a stashed plan's folder: ${dir}\n\n${USAGE}`
+          args.readableDir = dir
+          break
+        }
         case '--prompt': args.prompt = needValue(true); break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
@@ -105,7 +116,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 }
 
 /** Variables a respawned host needs to find the same daemon. */
-const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR'] as const
+const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
@@ -116,6 +127,8 @@ export function sessionFlags(args: HostArgs): string[] {
     '--permission-mode', args.permissionMode,
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
+    // The plan it started from stays readable after a restart or resume.
+    ...(args.readableDir ? ['--readable-dir', args.readableDir] : []),
   ]
 }
 
@@ -165,6 +178,8 @@ export function terminalLine(item: ChatItem): string | null {
       if (item.answer) return dim(`  ↳ ${item.answer.kind === 'approval' ? item.answer.decision : item.answer.kind === 'question' ? 'answered' : 'cancelled'}`)
       return `${color(33, '?')} ${item.title}${item.detail ? ` ${dim(item.detail.split('\n')[0] ?? '')}` : ''} ${dim('(answer in Commando)')}`
     case 'notice': return item.level === 'error' ? color(31, `! ${item.text}`) : dim(`  ${item.text}`)
+    case 'plan': return `${color(36, '▤')} ${bold('Plan ready')} ${dim('(Implement or Refine in Commando)')}\n${item.text}`
+    case 'subagent': return dim(`  ⑂ ${item.description}${item.subagentType ? ` (${item.subagentType})` : ''}: ${item.state}`)
   }
 }
 
@@ -196,6 +211,9 @@ async function main(): Promise<void> {
     return undefined
   })
 
+  // A plan folder pruned since this chat started (after 30 days) isn't handed to Claude.
+  const readableDir = parsed.readableDir && existsSync(parsed.readableDir) ? parsed.readableDir : undefined
+  if (parsed.readableDir && !readableDir) write(dim(`The plan this chat started from is no longer saved (${parsed.readableDir}).`))
   const host = new AgentHost(
     `ws://127.0.0.1:${port}${AGENT_HOST_WS_PATH}`,
     async () => (await readFile(tokenPath, 'utf8')).trim(),
@@ -218,6 +236,7 @@ async function main(): Promise<void> {
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
     images: new ChatImageStore(undefined, (message) => write(dim(message))),
+    ...(readableDir ? { readableDirectories: [readableDir] } : {}),
     log: (message) => write(dim(message)),
   })
 
@@ -280,7 +299,8 @@ async function main(): Promise<void> {
     if (!session.busy) return void restartNow()
     write(dim('Will restart to update when this turn finishes.'))
     session.on('session', (info) => {
-      if (restarting && info.status === 'idle') void restartNow()
+      // Queued messages go out when a turn ends; wait until they have been answered too.
+      if (restarting && info.status === 'idle' && !session.busy) void restartNow()
     })
   }
 

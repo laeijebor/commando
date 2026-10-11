@@ -133,6 +133,13 @@ describe('chat hosts', () => {
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: ['node', 'other.js'], env: {} })).toBeNull()
     expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
   })
+
+  it("keeps a chat's stashed plan folder when tmux auto-resumes it", () => {
+    const dir = `/state/chat-plans/${'d'.repeat(32)}`
+    const planHost = `node /c/server/agent-host/main.ts claude --permission-mode acceptEdits --readable-dir ${dir} --prompt PLEASE IMPLEMENT THE PLAN`
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: planHost.split(' '), env: {} }))
+      .toBe(`/c/launcher claude --permission-mode acceptEdits --readable-dir ${dir} --resume abcdef12-3456`)
+  })
 })
 
 describe('chat resume hardening', () => {

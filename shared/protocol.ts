@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatSessionInfo, ChatSettingsChange, ChatState } from './agent-chat.js'
+import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatTaskAction } from './agent-chat.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -724,6 +724,8 @@ export type ServerMessage =
   | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }
   /** Answers one client's `chat_file_search`. */
   | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
+  /** Answers one client's `chat_subagent_transcript`. */
+  | ({ type: 'chat_subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -810,10 +812,15 @@ export type ClientMessage =
   | { type: 'retry_agent_resume'; targetId?: string; requestId: string }
   | { type: 'refresh_usage'; requestId: string }
   /** Images were uploaded to `/api/chat/images` first; the message names them by id. */
-  | { type: 'chat_send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string }
+  | ({ type: 'chat_send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string } & ChatSendOptions)
+  /** Edits, removes or steers a message the host holds in the chat's queue. */
+  | ({ type: 'chat_queue'; paneId: string; requestId: string } & ChatQueueAction)
+  | { type: 'chat_task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
+  | { type: 'chat_subagent_transcript'; paneId: string; agentId: string; requestId: string }
   /** Files and folders for an `@` mention, searched in the chat's folder by its host. */
   | { type: 'chat_file_search'; paneId: string; query: string; requestId: string }
-  | { type: 'chat_interrupt'; paneId: string; requestId: string }
+  /** `dropQueued`: queued messages the client took back into its draft. */
+  | { type: 'chat_interrupt'; paneId: string; requestId: string; dropQueued?: string[] }
   | { type: 'chat_restart'; paneId: string; requestId: string }
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Switches a chat's model, effort or permission mode while it runs. */

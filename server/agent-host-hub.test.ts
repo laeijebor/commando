@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
-import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
+import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 
@@ -58,7 +58,7 @@ describe('AgentHostHub', () => {
     socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'Hel')] })
     socket.host({ type: 'items', paneId: '%1', items: [item('a', 'Hello'), item('b', 'more')] })
     await settle()
-    expect(socket.sent).toEqual([{ type: 'welcome', version: 3 }])
+    expect(socket.sent).toEqual([{ type: 'welcome', version: AGENT_HOST_PROTOCOL_VERSION }])
     expect(hub.states()).toEqual([expect.objectContaining({ paneId: '%1', targetId: 'target-1', hostConnected: true })])
     expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && entry.text)).toEqual(['Hello', 'more'])
     expect(broadcasts.map((message) => message.type)).toEqual(['chat_state', 'chat_items'])
@@ -327,5 +327,46 @@ describe('AgentHostHub richer input', () => {
     expect(socket.sent.at(-1)).toEqual({ type: 'send', paneId: '%1', text: 'look', images: [{ id: imageId, name: 'a.png' }], requestId: 'r1' })
     hub.send('%1', 'plain', 'r2')
     expect(socket.sent.at(-1)).toEqual({ type: 'send', paneId: '%1', text: 'plain', requestId: 'r2' })
+  })
+
+  it('routes queue changes, subagent controls, steers and dropped queue ids only to hosts that take them', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    expect(hub.takesTurnFlow('%1')).toBe(false)
+    expect(hub.updateQueue('%1', { action: 'remove', id: 'q1' }, 'r0')).toBe(false)
+    expect(hub.controlTask('%1', 'stop', 'a711', 'toolu_1', 'r0')).toBe(false)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: AGENT_HOST_PROTOCOL_VERSION }), items: [] })
+    await settle()
+    expect(hub.updateQueue('%1', { action: 'edit', id: 'q1', text: 'new' }, 'r1')).toBe(true)
+    expect(socket.sent.at(-1)).toEqual({ type: 'queue', paneId: '%1', requestId: 'r1', action: 'edit', id: 'q1', text: 'new' })
+    expect(hub.controlTask('%1', 'background', 'a711', 'toolu_1', 'r2')).toBe(true)
+    expect(socket.sent.at(-1)).toEqual({ type: 'task', paneId: '%1', action: 'background', agentId: 'a711', toolUseId: 'toolu_1', requestId: 'r2' })
+    hub.send('%1', 'now', 'r3', [], { delivery: 'steer' })
+    expect(socket.sent.at(-1)).toEqual({ type: 'send', paneId: '%1', text: 'now', delivery: 'steer', requestId: 'r3' })
+    hub.interrupt('%1', 'r4', ['q1'])
+    expect(socket.sent.at(-1)).toEqual({ type: 'interrupt', paneId: '%1', requestId: 'r4', dropQueued: ['q1'] })
+  })
+
+  it('asks the host for a subagent transcript and answers only with its own reply', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    const other = connect()
+    expect((await hub.subagentTranscript('%1', 'a711')).error).toMatch(/No agent host/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    expect((await hub.subagentTranscript('%1', 'a711')).error).toMatch(/Restart this chat/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: AGENT_HOST_PROTOCOL_VERSION }), items: [] })
+    await settle()
+    const pending = hub.subagentTranscript('%1', 'a711')
+    const request = socket.sent.at(-1) as { type: string; requestId: string }
+    expect(request).toMatchObject({ type: 'subagent_transcript', paneId: '%1', agentId: 'a711' })
+    other.host({ type: 'subagent_transcript_result', paneId: '%1', requestId: request.requestId, items: [item('evil', 'x')] })
+    socket.host({ type: 'subagent_transcript_result', paneId: '%1', requestId: request.requestId, items: [item('m1', 'It is Sunday.')] })
+    expect((await pending).items.map((entry) => entry.id)).toEqual(['m1'])
+    const dropped = hub.subagentTranscript('%1', 'a711')
+    socket.close()
+    expect((await dropped).error).toMatch(/disconnected/)
   })
 })

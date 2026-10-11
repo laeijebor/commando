@@ -18,6 +18,7 @@ import {
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
 } from '../shared/tmux-create.js'
+import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
 const COMMAND_TIMEOUT_MS = 3_000
@@ -123,7 +124,7 @@ type LaunchEnvironment = Readonly<Record<string, string | undefined>>
 export const AGENT_LAUNCH_ENV_KEYS = [
   'HOME', 'SHELL', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR', 'XDG_CONFIG_HOME',
   'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_PORT', 'COMMANDO_TOKEN',
-  'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR',
+  'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR',
 ] as const
 export type AgentExecutableResolver = (command: string, env: LaunchEnvironment) => Promise<string>
 
@@ -142,15 +143,19 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && (configDir !== undefined || permissionMode !== undefined)) {
-    throw new Error('Only Claude chat accepts a profile and permission mode')
+  if (provider !== 'claude-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
+    throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
+  }
+  // Only one stashed plan's own folder: a chat must not be handed any other path.
+  if (readableDir !== undefined && !isChatPlanDir(readableDir)) {
+    throw new Error('A chat can only be given a stashed plan folder to read')
   }
   if (configDir !== undefined && (typeof configDir !== 'string' || !validClaudeConfigDir(configDir))) {
     throw new Error('Claude profile must be a ~/.claude… folder')
@@ -163,6 +168,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     ...(typeof prompt === 'string' ? { prompt } : {}),
     ...(typeof configDir === 'string' ? { configDir } : {}),
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
+    ...(typeof readableDir === 'string' ? { readableDir } : {}),
   }
 }
 

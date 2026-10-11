@@ -155,6 +155,26 @@ export class NoteVaultManager {
     return store
   }
 
+  /**
+   * The store for the default vault folder (`~/.commando/notes-vaults/default`)
+   * whichever vault is open, for things Commando files on its own, such as
+   * saved chat plans. It shares the open vault's store when that is the same folder.
+   */
+  async defaultStore(): Promise<{ store: NoteStore; directory: string }> {
+    await this.writes
+    await this.ensureInitialized()
+    await mkdir(this.defaultDirectory, { recursive: true, mode: 0o700 })
+    const directory = await this.canonicalDirectory(this.defaultDirectory)
+    const vault = this.state!.vaults.find((candidate) => candidate.path === directory)
+    if (vault) return { store: await this.store(vault.id), directory }
+    let store = this.stores.get(directory)
+    if (!store) {
+      store = new NoteStore({ directory, legacyPath: null })
+      this.stores.set(directory, store)
+    }
+    return { store, directory }
+  }
+
   async browse(path?: unknown): Promise<NoteVaultBrowseResult> {
     await this.writes
     await this.ensureInitialized()

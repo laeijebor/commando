@@ -1,7 +1,9 @@
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chatProfileConfigDir, defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { chatPlansDir } from './chat-plans-dir.js'
 
 const separator = '\u001f'
 const output = (
@@ -611,12 +613,29 @@ describe('Claude chat launches', () => {
     expect(args.at(-1)).toContain(COMMANDO_AGENT_LAUNCHER)
   })
 
+  it("launches a chat with its stashed plan's folder ahead of the prompt", async () => {
+    const run = runner()
+    const dir = join(chatPlansDir(), 'f'.repeat(32))
+    await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }).createPane({
+      targetId: '%3', direction: 'horizontal', cwd: '/tmp', agent: { provider: 'claude-chat', permissionMode: 'acceptEdits', readableDir: dir, prompt: 'PLEASE IMPLEMENT THE PLAN' },
+    })
+    const command = run.mock.calls[0][0].at(-1) as string
+    // The command is shell-quoted; the folder follows its flag, and both come before the prompt.
+    expect(command.indexOf('--readable-dir')).toBeGreaterThan(-1)
+    expect(command.indexOf(dir)).toBeGreaterThan(command.indexOf('--readable-dir'))
+    expect(command.indexOf(dir)).toBeLessThan(command.indexOf('--prompt'))
+  })
+
   it('accepts only home-folder Claude profiles, known permission modes, and chat-only options', async () => {
     const creator = new TmuxCreator(runner(), [], undefined, async () => '/bin/claude', {})
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: '/etc/passwd' } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: `${home}/../.claudep` } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', permissionMode: 'yolo' as never } })).rejects.toThrow(/permission/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude chat/)
+    // A chat may be handed one stashed plan's folder, never the plans folder or anything else.
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: chatPlansDir() } })).rejects.toThrow(/stashed plan folder/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: home } })).rejects.toThrow(/stashed plan folder/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only Claude chat/)
     expect(validClaudeConfigDir(`${home}/.claudep`)).toBe(true)
     expect(validClaudeConfigDir(`${home}/projects/.claude`)).toBe(false)
   })

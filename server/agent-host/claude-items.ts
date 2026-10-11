@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { ChatImageRef, ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
+import { isAgentId, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatSubagentState, type ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
 /** Transcript user entries that Claude Code wrote itself, not the person. */
@@ -104,6 +104,24 @@ function toolResultContent(content: unknown, images: ChatImageSink | undefined):
   return { text, images: refs }
 }
 
+/** The text main Claude gets for a message the user relays to a subagent. */
+export function relayPrompt(text: string, target: { agentId: string; label: string }): string {
+  return [
+    `The user wants this message relayed to your subagent "${target.label}" (agentId: ${target.agentId}).`,
+    'Send it to that subagent with your SendMessage tool, word for word, then reply in one short line that you relayed it.',
+    '',
+    text,
+  ].join('\n')
+}
+
+const RELAY_PROMPT = /^The user wants this message relayed to your subagent "([^"\n]*)" \(agentId: ([A-Za-z0-9_-]+)\)\.\nSend it to that subagent with your SendMessage tool, word for word, then reply in one short line that you relayed it\.\n\n([\s\S]*)$/
+
+/** A relayed message as the user typed it, from the prompt the host built. */
+export function parseRelayPrompt(text: string): { text: string; relayTo: { agentId: string; label: string } } | null {
+  const match = RELAY_PROMPT.exec(text)
+  return match ? { text: match[3]!, relayTo: { label: match[1]!, agentId: match[2]! } } : null
+}
+
 /** Short, human title for a tool call, in the spirit of t3code's work-log labels. */
 export function toolTitle(name: string, input: unknown): string {
   const value = record(input)
@@ -195,12 +213,78 @@ export function questionsFromInput(input: unknown): ChatQuestion[] {
   })
 }
 
+/**
+ * The plan text of an ExitPlanMode call. The SDK types the input with only
+ * `allowedPrompts`; the plan is an untyped `plan` string (after t3code's
+ * claudeProposedPlan).
+ */
+export function planFromInput(input: unknown): string | null {
+  const plan = record(input).plan
+  return typeof plan === 'string' && plan.trim() ? plan.trim() : null
+}
+
+/** The subagent id an Agent tool result names, for reading its transcript later. */
+export function agentIdFromResult(text: string): string | undefined {
+  const id = /\bagentId: ([A-Za-z0-9_-]+)/.exec(text)?.[1]
+  return isAgentId(id) ? id : undefined
+}
+
+/**
+ * A subagent's final report without the frame Claude Code wraps it in (the
+ * "[Subagent hand-back]" preamble, two-space indent, agentId and usage lines).
+ */
+export function subagentReport(text: string): string {
+  const marker = 'The report follows:\n'
+  const start = text.startsWith('[Subagent hand-back]') ? text.indexOf(marker) : -1
+  if (start < 0) return text
+  return text
+    .slice(start + marker.length)
+    .replace(/\nagentId: [\s\S]*$/, '')
+    .split('\n')
+    .map((line) => line.replace(/^ {2}/, ''))
+    .join('\n')
+    .trim()
+}
+
+/** What a stopped or interrupted Agent call leaves as its result. */
+const STOPPED_RESULT = /^\s*\[Request interrupted/
+
+/** An Agent result that only says the subagent went on in the background. */
+const BACKGROUND_RESULT = /^\s*(?:Async agent launched|.{0,200}running in the background)/i
+
+/** Fields of `<task-notification>` text, which a resumed transcript holds instead of task events. */
+export function taskNotificationFromText(text: string): { taskId: string; toolUseId?: string; status: string; summary?: string } | null {
+  if (!text.trimStart().startsWith('<task-notification>')) return null
+  const field = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text)?.[1]?.trim()
+  const taskId = field('task-id')
+  const status = field('status')
+  if (!taskId || !status) return null
+  const toolUseId = field('tool-use-id')
+  const summary = field('summary')
+  return { taskId, status, ...(toolUseId ? { toolUseId } : {}), ...(summary ? { summary } : {}) }
+}
+
+const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
+
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-type ToolItemFields = DistributiveOmit<Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' }>, keyof ItemBase>
+type ToolItemFields = DistributiveOmit<Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' | 'subagent' }>, keyof ItemBase>
 
 /** Tool calls that render as something other than a generic tool row. */
 function toolItemFields(name: string, input: unknown, toolUseId: string): ToolItemFields | null {
   const value = record(input)
+  if (SUBAGENT_TOOLS.has(name)) {
+    const subagentType = str(value.subagent_type)
+    const prompt = str(value.prompt)
+    return {
+      kind: 'subagent',
+      toolUseId,
+      description: str(value.description) ?? subagentType ?? 'Subagent',
+      state: 'running',
+      ...(subagentType ? { subagentType } : {}),
+      ...(prompt ? { prompt: truncate(prompt, 16_000) } : {}),
+      ...(value.run_in_background === true ? { background: true } : {}),
+    }
+  }
   if (name === 'Bash') {
     const description = str(value.description)
     return { kind: 'command', toolUseId, command: str(value.command) ?? '', ...(description ? { description } : {}) }
@@ -233,6 +317,8 @@ export class ClaudeItemMapper {
    */
   private readonly confirmedBlocks = new Map<string, number>()
   private readonly hiddenTools = new Set(['AskUserQuestion', 'TodoWrite', 'ExitPlanMode'])
+  /** Subagent item (its Agent tool_use id) per task id; a SendMessage resume reuses the task id. */
+  private readonly subagentByTask = new Map<string, string>()
 
   constructor(private readonly now: () => number = Date.now, private readonly images?: ChatImageSink) {}
 
@@ -266,10 +352,10 @@ export class ClaudeItemMapper {
     return item
   }
 
-  startTurn(text: string, images: ChatImageRef[] = []): ChatItem[] {
+  startTurn(text: string, images: ChatImageRef[] = [], extra: { steered?: true; relayTo?: { agentId: string; label: string } } = {}): ChatItem[] {
     this.turnCounter += 1
     this.turnId = `turn-${this.now()}-${this.turnCounter}`
-    return [this.put({ ...this.base(`user-${this.turnId}`, 'completed'), kind: 'user_message', text, ...(images.length ? { images } : {}) })]
+    return [this.put({ ...this.base(`user-${this.turnId}`, 'completed'), kind: 'user_message', text, ...(images.length ? { images } : {}), ...extra })]
   }
 
   notice(level: 'info' | 'error', text: string): ChatItem[] {
@@ -278,8 +364,13 @@ export class ClaudeItemMapper {
     return [this.put({ ...this.base(id, 'completed'), kind: 'notice', level, text })]
   }
 
-  request(requestId: string, fields: { requestKind: 'approval' | 'question'; toolName: string; title: string; detail?: string; questions?: ChatQuestion[] }): ChatItem[] {
-    return [this.put({ ...this.base(`request-${requestId}`, 'running'), kind: 'request', requestId, ...fields })]
+  /**
+   * A permission request. One from a subagent (`agentId`) belongs to its Agent
+   * call, so a background subagent's request outlives the main turn's end.
+   */
+  request(requestId: string, agentId: string | undefined, fields: { requestKind: 'approval' | 'question'; toolName: string; title: string; detail?: string; questions?: ChatQuestion[] }): ChatItem[] {
+    const parent = agentId ? this.subagentByTask.get(agentId) : undefined
+    return [this.put({ ...this.base(`request-${requestId}`, 'running', parent), kind: 'request', requestId, ...fields })]
   }
 
   resolveRequest(requestId: string, answer: ChatRequestAnswer): ChatItem[] {
@@ -289,11 +380,25 @@ export class ClaudeItemMapper {
     return [this.put({ ...existing, status, answer, updatedAt: this.now() })]
   }
 
-  /** Ends whatever is still running, e.g. after an interrupt or a crash. */
-  settleRunning(status: Exclude<ChatItemStatus, 'running'>): ChatItem[] {
+  /** A plan Claude proposed with ExitPlanMode; one per call, so a repeat upserts. */
+  plan(toolUseId: string, text: string, parentToolUseId?: string | null): ChatItem[] {
+    return [this.put({ ...this.base(`plan-${toolUseId}`, 'completed', parentToolUseId), kind: 'plan', toolUseId, text })]
+  }
+
+  /**
+   * Ends whatever is still running, e.g. after an interrupt or a crash. At the
+   * end of a turn (`keepBackground`), background subagents and their work go
+   * on: their own task events finish them.
+   */
+  settleRunning(status: Exclude<ChatItemStatus, 'running'>, options: { keepBackground?: boolean } = {}): ChatItem[] {
     const changed: ChatItem[] = []
     for (const item of this.items.values()) {
       if (item.status !== 'running') continue
+      if (options.keepBackground && this.inBackground(item)) continue
+      if (item.kind === 'subagent') {
+        changed.push(this.put({ ...item, status, state: status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'stopped', updatedAt: this.now() }))
+        continue
+      }
       if (item.kind === 'request' && !item.answer) {
         changed.push(this.put({ ...item, status, answer: { kind: 'cancelled', reason: 'The turn ended before this was answered.' }, updatedAt: this.now() }))
       } else {
@@ -301,6 +406,15 @@ export class ClaudeItemMapper {
       }
     }
     return changed
+  }
+
+  /** True for a running background subagent and anything inside one. */
+  private inBackground(item: ChatItem): boolean {
+    for (let current: ChatItem | undefined = item, depth = 0; current && depth < 8; depth += 1) {
+      if (current.kind === 'subagent' && current.status === 'running' && current.background) return true
+      current = current.parentToolUseId ? this.items.get(current.parentToolUseId) : undefined
+    }
+    return false
   }
 
   /**
@@ -318,14 +432,21 @@ export class ClaudeItemMapper {
           : Array.isArray(message.content)
             ? message.content.map((part) => record(part).type === 'text' ? str(record(part).text) ?? '' : '').join('\n')
             : ''
-        if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
+        const notification = taskNotificationFromText(text)
+        if (notification) {
+          this.updateSubagent(notification.taskId, notification.toolUseId, {
+            state: notificationState(notification.status),
+            ...(notification.summary ? { summary: notification.summary } : {}),
+          })
+        } else if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
           this.handleToolResults(message as { content: unknown })
         } else if (!REPLAY_NOISE.test(text)) {
           const blocks = Array.isArray(message.content) ? message.content.filter((part) => record(part).type === 'image') : []
           const images = this.saveImages(blocks)
-          const typed = stripAttachmentNotes(text)
+          const relayed = parseRelayPrompt(text)
+          const typed = stripAttachmentNotes(relayed?.text ?? text)
           // An image that can't be shown still marks the turn, so it isn't lost from the timeline.
-          if (typed || blocks.length) this.startTurn(typed || (images.length ? '' : '[image]'), images)
+          if (typed || blocks.length) this.startTurn(typed || (images.length ? '' : '[image]'), images, relayed ? { relayTo: relayed.relayTo } : {})
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })
@@ -345,9 +466,12 @@ export class ClaudeItemMapper {
       case 'user':
         return this.handleToolResults(message.message as unknown as { content: unknown })
       case 'result':
-        return this.settleRunning(message.subtype === 'success' ? 'completed' : 'failed')
+        return this.settleRunning(message.subtype === 'success' ? 'completed' : 'failed', { keepBackground: true })
       case 'system':
         if (message.subtype === 'compact_boundary') return this.notice('info', 'Conversation compacted')
+        if (message.subtype === 'task_started' || message.subtype === 'task_progress' || message.subtype === 'task_updated' || message.subtype === 'task_notification') {
+          return this.handleTask(message)
+        }
         return []
       case 'conversation_reset':
         // /clear: Claude carries on in a fresh conversation; the earlier turns stay visible above.
@@ -426,9 +550,20 @@ export class ClaudeItemMapper {
           changed.push(this.put({ ...this.base(`todo_list:${this.turnId}:${parent ?? ''}`, 'completed', parent), kind: 'todo_list', todos: todosFromInput(block.input) }))
           return
         }
+        if (block.name === 'ExitPlanMode') {
+          const plan = planFromInput(block.input)
+          if (plan) changed.push(...this.plan(block.id, plan, parent))
+          return
+        }
         if (this.hiddenTools.has(block.name)) return
         const fields = toolItemFields(block.name, block.input, block.id)
-        if (fields) changed.push(this.put({ ...this.base(block.id, 'running', parent), ...fields } as ChatItem))
+        if (!fields) return
+        const existing = this.items.get(block.id)
+        // A task event can land first; keep what it reported.
+        const merged = fields.kind === 'subagent' && existing?.kind === 'subagent'
+          ? { ...fields, ...pickDefined(existing, ['agentId', 'state', 'toolUses', 'durationMs', 'totalTokens', 'lastToolName', 'summary', 'output']), background: Boolean(fields.background || existing.background) || undefined }
+          : fields
+        changed.push(this.put({ ...this.base(block.id, existing?.status ?? 'running', parent), ...merged } as ChatItem))
       }
     })
     return changed
@@ -450,13 +585,141 @@ export class ClaudeItemMapper {
       const value = record(part)
       if (value.type !== 'tool_result' || typeof value.tool_use_id !== 'string') continue
       const item = this.items.get(value.tool_use_id)
-      if (!item || (item.kind !== 'command' && item.kind !== 'file_change' && item.kind !== 'tool')) continue
+      if (!item) continue
       const isError = value.is_error === true
       const result = toolResultContent(value.content, this.images)
       const output = truncate(result.text, MAX_OUTPUT)
+      if (item.kind === 'subagent') {
+        changed.push(this.subagentResult(item, result.text, isError))
+        continue
+      }
+      if (item.kind !== 'command' && item.kind !== 'file_change' && item.kind !== 'tool') continue
       const images = item.kind === 'tool' && result.images.length ? { images: result.images } : {}
       changed.push(this.put({ ...item, status: isError ? 'failed' : 'completed', output, ...(isError ? { isError } : {}), ...images, updatedAt: this.now() } as ChatItem))
     }
     return changed
   }
+
+  private subagentResult(item: Extract<ChatItem, { kind: 'subagent' }>, text: string, isError: boolean): ChatItem {
+    const agentId = item.agentId ?? agentIdFromResult(text)
+    if (agentId) this.subagentByTask.set(agentId, item.id)
+    if (!isError && BACKGROUND_RESULT.test(text)) {
+      // The subagent goes on; its task events (or notification) finish it.
+      return this.put({ ...item, ...(agentId ? { agentId } : {}), background: true, updatedAt: this.now() })
+    }
+    // A task notification may already have said how it ended; a stopped one reads as interrupted.
+    const state: ChatSubagentState = item.state !== 'running' ? item.state : isError ? (STOPPED_RESULT.test(text) ? 'stopped' : 'failed') : 'completed'
+    // A resumed transcript has no task events; the report's usage trailer stands in for them.
+    const toolUses = item.toolUses ?? usageField(text, 'tool_uses')
+    const durationMs = item.durationMs ?? usageField(text, 'duration_ms')
+    return this.put({
+      ...item,
+      ...(agentId ? { agentId } : {}),
+      ...(toolUses !== undefined ? { toolUses } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      state,
+      status: itemStatus(state),
+      output: truncate(subagentReport(text), MAX_OUTPUT),
+      updatedAt: this.now(),
+    })
+  }
+
+  private handleTask(message: Extract<SDKMessage, { type: 'system'; subtype: 'task_started' | 'task_progress' | 'task_updated' | 'task_notification' }>): ChatItem[] {
+    switch (message.subtype) {
+      case 'task_started': {
+        // Shells and monitors are tasks too; only subagents get a row.
+        const known = this.subagentByTask.has(message.task_id) || this.items.get(message.tool_use_id ?? '')?.kind === 'subagent'
+        if (!known && !message.subagent_type && message.task_type !== 'local_agent') return []
+        return this.updateSubagent(message.task_id, message.tool_use_id, {
+          state: 'running',
+          ...(message.is_backgrounded ? { background: true } : {}),
+          ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
+        }, message.description, message.prompt)
+      }
+      case 'task_progress':
+        return this.updateSubagent(message.task_id, message.tool_use_id, {
+          toolUses: message.usage.tool_uses,
+          durationMs: message.usage.duration_ms,
+          totalTokens: message.usage.total_tokens,
+          ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+          // Claude's own summary when it makes one, else what the subagent is doing.
+          summary: message.summary || message.description,
+        }, undefined, undefined, false)
+      case 'task_updated': {
+        const status = message.patch.status
+        const state: ChatSubagentState | undefined = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'killed' ? 'stopped' : undefined
+        return this.updateSubagent(message.task_id, undefined, {
+          ...(state ? { state } : {}),
+          ...(message.patch.is_backgrounded ? { background: true } : {}),
+          ...(message.patch.error ? { summary: message.patch.error } : {}),
+        }, undefined, undefined, false)
+      }
+      case 'task_notification':
+        return this.updateSubagent(message.task_id, message.tool_use_id, {
+          state: notificationState(message.status),
+          ...(message.summary ? { summary: message.summary } : {}),
+          ...(message.usage ? { toolUses: message.usage.tool_uses, durationMs: message.usage.duration_ms, totalTokens: message.usage.total_tokens } : {}),
+        }, undefined, undefined, false)
+    }
+  }
+
+  /**
+   * Applies a task event to its subagent row: found by task id, else by the
+   * Agent call it names. `create` lets task_started add a row for an Agent
+   * call the mapper hasn't seen (its tool_use can arrive after the event).
+   */
+  private updateSubagent(
+    taskId: string,
+    toolUseId: string | undefined,
+    patch: Partial<Extract<ChatItem, { kind: 'subagent' }>>,
+    description?: string,
+    prompt?: string,
+    create = true,
+  ): ChatItem[] {
+    const id = this.subagentByTask.get(taskId) ?? toolUseId
+    if (!id) return []
+    const existing = this.items.get(id)
+    if (existing && existing.kind !== 'subagent') return []
+    if (!existing && !create) return []
+    if (!isAgentId(taskId)) return []
+    this.subagentByTask.set(taskId, id)
+    if (this.subagentByTask.size > 500) {
+      const oldest = this.subagentByTask.keys().next().value
+      if (oldest !== undefined && oldest !== taskId) this.subagentByTask.delete(oldest)
+    }
+    const current: Extract<ChatItem, { kind: 'subagent' }> = existing ?? {
+      ...this.base(id, 'running'), kind: 'subagent', toolUseId: id, description: description ?? 'Subagent', state: 'running',
+    }
+    const state = patch.state ?? current.state
+    const next = {
+      ...current,
+      ...patch,
+      agentId: taskId,
+      ...(!current.prompt && prompt ? { prompt: truncate(prompt, 16_000) } : {}),
+      // A resumed subagent runs again until its next notification.
+      status: itemStatus(state),
+      updatedAt: this.now(),
+    }
+    return [this.put(next)]
+  }
+}
+
+/** A number from the `<usage>` trailer of a subagent's report. */
+function usageField(text: string, name: 'tool_uses' | 'duration_ms'): number | undefined {
+  const value = new RegExp(`<usage>[\\s\\S]*?\\b${name}: (\\d+)`).exec(text)?.[1]
+  return value === undefined ? undefined : Number(value)
+}
+
+function itemStatus(state: ChatSubagentState): ChatItemStatus {
+  return state === 'running' ? 'running' : state === 'completed' ? 'completed' : state === 'failed' ? 'failed' : 'interrupted'
+}
+
+function notificationState(status: string): ChatSubagentState {
+  return status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'stopped'
+}
+
+function pickDefined<T extends object, K extends keyof T>(value: T, keys: K[]): Partial<Pick<T, K>> {
+  const picked: Partial<Pick<T, K>> = {}
+  for (const key of keys) if (value[key] !== undefined) picked[key] = value[key]
+  return picked
 }

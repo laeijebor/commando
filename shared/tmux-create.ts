@@ -21,6 +21,8 @@ export type SessionAgentLaunch = {
   configDir?: string
   /** claude-chat only. */
   permissionMode?: ChatPermissionMode
+  /** claude-chat only: one stashed plan's folder, which this chat alone may read. */
+  readableDir?: string
 }
 
 export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
@@ -67,6 +69,8 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       'claude',
       ...(launch.configDir ? ['--config-dir', launch.configDir] : []),
       '--permission-mode', launch.permissionMode ?? 'default',
+      ...(launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
+      // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
   }

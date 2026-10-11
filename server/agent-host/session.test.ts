@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
 import { chatResumeCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
-import { AgentSession, type SessionStore } from './session.js'
+import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
 function fakeQuery() {
@@ -19,6 +19,8 @@ function fakeQuery() {
   const setModel = vi.fn(async (_model?: string) => undefined)
   const applyFlagSettings = vi.fn(async (_settings: Record<string, unknown>) => undefined)
   const setPermissionMode = vi.fn(async (_mode: string) => undefined)
+  const stopTask = vi.fn(async (_taskId: string) => undefined)
+  const backgroundTasks = vi.fn(async (_toolUseId?: string) => true)
   const supportedModels = vi.fn(async () => [
     { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', description: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'max'], supportsAutoMode: true },
     { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Fast', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
@@ -52,7 +54,7 @@ function fakeQuery() {
       }
     }
     const handle = stream() as unknown as Query
-    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, supportedModels, supportedCommands, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
+    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
     return handle
   }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query
   return {
@@ -62,6 +64,8 @@ function fakeQuery() {
     setModel,
     applyFlagSettings,
     setPermissionMode,
+    stopTask,
+    backgroundTasks,
     supportedModels,
     supportedCommands,
     contextUsage,
@@ -477,6 +481,17 @@ describe('commando-agent settings flags', () => {
     expect(parseHostArgs(['claude', '--permission-mode', 'bypassPermissions'], {})).toMatchObject({ bypassAllowed: true })
   })
 
+  it("takes one stashed plan's folder to read, keeps it across restarts, and refuses any other", () => {
+    const env = { COMMANDO_CHAT_PLANS_DIR: '/state/chat-plans' }
+    const dir = `/state/chat-plans/${'b'.repeat(32)}`
+    const args = parseHostArgs(['claude', '--readable-dir', dir, '--prompt', 'PLEASE IMPLEMENT'], env)
+    expect(args).toMatchObject({ readableDir: dir, prompt: 'PLEASE IMPLEMENT' })
+    expect(sessionFlags(args as Exclude<typeof args, string>)).toEqual(['--permission-mode', 'default', '--readable-dir', dir])
+    expect(chatResumeCommand('/c/commando-agent', args as Exclude<typeof args, string>)).toContain(`--readable-dir ${dir}`)
+    expect(parseHostArgs(['claude', '--readable-dir', '/state/chat-plans'], env)).toMatch(/stashed plan's folder/)
+    expect(parseHostArgs(['claude', '--readable-dir', '/Users/me'], env)).toMatch(/stashed plan's folder/)
+  })
+
   it('carries what the pickers changed into the restart and resume flags', () => {
     const args = parseHostArgs(['claude', '--config-dir', '/x/.claudew', '--model', 'haiku', '--dangerously-skip-permissions', '--prompt', 'hi'], {})
     if (typeof args === 'string') throw new Error(args)
@@ -561,6 +576,16 @@ describe('AgentSession richer input', () => {
     await tick()
     expect(resumed.fake.options).toMatchObject({ resume: 'abcd1234-0000', additionalDirectories: ['/sessions/abcd1234-0000'] })
     expect(resumed.fake.options.sessionId).toBeUndefined()
+  })
+
+  it("adds only the stashed plan folder it was started with, and no plans folder otherwise", async () => {
+    const plan = `/state/chat-plans/${'c'.repeat(32)}`
+    const withPlan = started({ images, resume: 'abcd1234-0000', readableDirectories: [plan] })
+    await tick()
+    expect(withPlan.fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', plan])
+    const plain = started({ resume: 'abcd1234-0000' })
+    await tick()
+    expect(plain.fake.options.additionalDirectories).toBeUndefined()
   })
 
   it('copies a resumed conversation\'s attached images back to the folders its notes name', async () => {
@@ -668,5 +693,261 @@ describe('AgentSession command list failures', () => {
     await tick()
     expect(session.commands).toEqual([])
     expect(notices).toEqual(["Couldn't list Claude's commands for the / menu: control request timed out"])
+  })
+})
+
+const resultMessage = (fields: Record<string, unknown> = {}) => ({ type: 'result', subtype: 'success', session_id: 's', ...fields }) as unknown as SDKMessage
+const userTexts = (items: Map<string, ChatItem>) => [...items.values()].flatMap((item) => (item.kind === 'user_message' ? [item.text] : []))
+
+describe('AgentSession plans', () => {
+  it('captures an ExitPlanMode plan as a card and tells Claude to wait', async () => {
+    const { fake, items } = started({ permissionMode: 'plan' })
+    const result = await fake.canUseTool('ExitPlanMode', { plan: '# Plan\n- one', planFilePath: '/p.md' }, { ...signalOptions('p1'), toolUseID: 'toolu_plan' })
+    expect(result).toEqual({ behavior: 'deny', message: PLAN_CAPTURED_MESSAGE })
+    expect(items.get('plan-toolu_plan')).toMatchObject({ kind: 'plan', text: '# Plan\n- one', toolUseId: 'toolu_plan' })
+    expect([...items.values()].some((item) => item.kind === 'request')).toBe(false)
+  })
+
+  it('falls back to the approval when ExitPlanMode carries no plan, or comes from a subagent', async () => {
+    const { fake, items } = started({ permissionMode: 'plan' })
+    void fake.canUseTool('ExitPlanMode', { allowedPrompts: [] }, signalOptions('p2'))
+    expect(items.get('request-p2')).toMatchObject({ kind: 'request', requestKind: 'approval', toolName: 'ExitPlanMode' })
+    void fake.canUseTool('ExitPlanMode', { plan: 'sub plan' }, { ...signalOptions('p3'), agentID: 'a1' })
+    expect(items.get('request-p3')).toMatchObject({ kind: 'request' })
+  })
+
+  it('remembers the mode the chat left for plan mode, from the picker or from Claude', async () => {
+    const { fake, session, sessions } = started({ permissionMode: 'acceptEdits' })
+    await session.configure({ permissionMode: 'plan' })
+    expect(sessions.at(-1)).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' })
+    await session.configure({ permissionMode: 'default' })
+    fake.push(system('status', { status: null, permissionMode: 'plan' }))
+    await tick()
+    expect(sessions.at(-1)).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'default' })
+  })
+
+  it('implements: switches back to the pre-plan mode before sending, and refuses to send if that fails', async () => {
+    const { fake, session, items, sessions } = started({ permissionMode: 'plan' })
+    session.send('PLEASE IMPLEMENT THIS PLAN:\n# Plan', [], { permissionMode: 'acceptEdits' })
+    await tick()
+    expect(fake.setPermissionMode).toHaveBeenCalledWith('acceptEdits')
+    expect(fake.prompts).toHaveLength(1)
+    expect(sessions.at(-1)?.permissionMode).toBe('acceptEdits')
+    fake.push(resultMessage())
+    await tick()
+    fake.setPermissionMode.mockRejectedValueOnce(new Error('nope'))
+    session.send('again', [], { permissionMode: 'default' })
+    await tick()
+    expect(fake.prompts).toHaveLength(1)
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: expect.stringContaining("message wasn't sent") })
+  })
+})
+
+describe('AgentSession queue and steer', () => {
+  it('holds queued sends while a turn runs and sends them together when it ends', async () => {
+    const { fake, session, sessions } = started()
+    session.send('first', [], { delivery: 'queue' })
+    session.send('second', [], { delivery: 'queue' })
+    session.send('third', [], { delivery: 'queue' })
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first'])
+    expect(sessions.at(-1)?.queue?.map((queued) => queued.text)).toEqual(['second', 'third'])
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'second\n\nthird'])
+    expect(sessions.at(-1)?.queue).toBeUndefined()
+  })
+
+  it('edits and removes queued messages, and steers one in with priority now', async () => {
+    const { fake, session, sessions, items } = started()
+    session.send('first')
+    session.send('typo', [], { delivery: 'queue' })
+    session.send('drop me', [], { delivery: 'queue' })
+    session.send('steer me', [], { delivery: 'queue' })
+    const [typo, drop, steer] = sessions.at(-1)!.queue!
+    session.updateQueue({ action: 'edit', id: typo!.id, text: 'fixed' })
+    session.updateQueue({ action: 'remove', id: drop!.id })
+    session.updateQueue({ action: 'steer', id: steer!.id })
+    await tick()
+    expect(fake.prompts.at(-1)).toMatchObject({ message: { content: 'steer me' }, priority: 'now' })
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'user_message', text: 'steer me', steered: true })
+    expect(sessions.at(-1)?.queue?.map((queued) => queued.text)).toEqual(['fixed'])
+    // The steer cuts the turn short: no failure, and the queue waits for the steered turn.
+    fake.push(resultMessage({ terminal_reason: 'aborted_tools' }))
+    await tick()
+    expect(fake.prompts).toHaveLength(2)
+    expect([...items.values()].some((item) => item.kind === 'notice')).toBe(false)
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'steer me', 'fixed'])
+  })
+
+  it('sends a steer or queued send straight away when no turn runs', async () => {
+    const { fake, session } = started()
+    session.send('queued but idle', [], { delivery: 'queue' })
+    fake.push(resultMessage())
+    await tick()
+    session.send('steer but idle', [], { delivery: 'steer' })
+    await tick()
+    expect(fake.prompts.map((prompt) => [prompt.message.content, prompt.priority])).toEqual([['queued but idle', undefined], ['steer but idle', undefined]])
+  })
+
+  it('reads an aborted turn as interrupted work, not a failure', async () => {
+    const { fake, session, items } = started()
+    session.send('write a story')
+    fake.push({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'sleep 9' } }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    fake.push(resultMessage({ subtype: 'error_during_execution', terminal_reason: 'aborted_streaming', errors: ['aborted'] }))
+    await tick()
+    expect(items.get('tool-1')).toMatchObject({ status: 'interrupted' })
+    expect([...items.values()].some((item) => item.kind === 'notice')).toBe(false)
+  })
+
+  it('holds the queue during a turn Claude starts itself, and drops what Stop took back', async () => {
+    const { fake, session, sessions } = started()
+    fake.push({ type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'Your subagent finished.' }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    await tick()
+    session.send('keep', [], { delivery: 'queue' })
+    session.send('take back', [], { delivery: 'queue' })
+    const back = sessions.at(-1)!.queue!.find((queued) => queued.text === 'take back')!
+    await session.interrupt([back.id])
+    expect(fake.interrupt).toHaveBeenCalled()
+    fake.push(resultMessage({ terminal_reason: 'aborted_streaming' }))
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['keep'])
+  })
+
+  it('relays a message to a subagent through main Claude, labelled in the timeline', async () => {
+    const { fake, session, items } = started()
+    session.send('The fruit is MANGO.', [], { relayTo: { agentId: 'a711', label: 'fruit waiter' } })
+    await tick()
+    expect(fake.prompts[0]!.message.content).toContain('SendMessage tool')
+    expect(fake.prompts[0]!.message.content).toContain('(agentId: a711)')
+    expect([...items.values()][0]).toMatchObject({ kind: 'user_message', text: 'The fruit is MANGO.', relayTo: { agentId: 'a711', label: 'fruit waiter' } })
+    expect(userTexts(items)).toEqual(['The fruit is MANGO.'])
+  })
+})
+
+describe('AgentSession subagents', () => {
+  it('forwards subagent text, and stops or backgrounds one subagent', async () => {
+    const { fake, session, items } = started()
+    await tick()
+    expect(fake.options.forwardSubagentText).toBe(true)
+    await session.controlTask('stop', 'a711', 'toolu_1')
+    expect(fake.stopTask).toHaveBeenCalledWith('a711')
+    await session.controlTask('background', 'a711', 'toolu_1')
+    expect(fake.backgroundTasks).toHaveBeenCalledWith('toolu_1')
+    fake.backgroundTasks.mockResolvedValueOnce(false)
+    await session.controlTask('background', 'a711', 'toolu_1')
+    fake.stopTask.mockRejectedValueOnce(new Error('no such task'))
+    await session.controlTask('stop', 'a711', 'toolu_1')
+    expect([...items.values()].filter((item) => item.kind === 'notice').map((item) => item.kind === 'notice' && item.text)).toEqual([
+      'That subagent already runs in the background or has finished.',
+      "Couldn't stop the subagent: no such task",
+    ])
+  })
+
+  it('reads a subagent transcript from the saved session', async () => {
+    const subagentMessages = vi.fn(async () => [
+      // As saved: every message carries the Agent call that started the subagent.
+      { type: 'user', parent_tool_use_id: 'toolu_agent', message: { role: 'user', content: 'Run date' } },
+      { type: 'assistant', parent_tool_use_id: 'toolu_agent', message: { id: 'm1', content: [{ type: 'text', text: 'It is Sunday.' }] } },
+    ])
+    const { fake, session } = started({}, { messages: async () => [], title: async () => undefined, subagentMessages })
+    expect(await session.subagentTranscript('a711')).toEqual({ items: [], error: 'This chat has no saved conversation yet' })
+    fake.push(resultMessage({ session_id: 'sess-9' }))
+    await tick()
+    const transcript = await session.subagentTranscript('a711')
+    expect(subagentMessages).toHaveBeenCalledWith('sess-9', 'a711', '/work')
+    expect(transcript.items.map((item) => [item.kind, item.parentToolUseId])).toEqual([['user_message', undefined], ['assistant_message', undefined]])
+    subagentMessages.mockRejectedValueOnce(new Error('gone'))
+    expect(await session.subagentTranscript('a711')).toEqual({ items: [], error: "Couldn't read the subagent's transcript: gone" })
+    subagentMessages.mockResolvedValueOnce([])
+    expect((await session.subagentTranscript('a711')).error).toMatch(/hasn't saved/)
+  })
+})
+
+describe('AgentSession queue review fixes', () => {
+  it("keeps queueing when Claude's idle for the flushed turn's predecessor arrives late", async () => {
+    const { fake, session } = started()
+    fake.push(system('session_state_changed', { state: 'running' }))
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(resultMessage())
+    // Claude reports idle for that result after the host already sent the queue.
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    session.send('wait for the flushed turn', [], { delivery: 'queue' })
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued'])
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued', 'wait for the flushed turn'])
+  })
+
+  it('waits for every steer when two cut the turn short', async () => {
+    const { fake, session } = started()
+    session.send('long job')
+    session.send('steer one', [], { delivery: 'steer' })
+    session.send('steer two', [], { delivery: 'steer' })
+    session.send('later', [], { delivery: 'queue' })
+    fake.push(resultMessage({ terminal_reason: 'aborted_tools' }))
+    fake.push(resultMessage({ terminal_reason: 'aborted_streaming' }))
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['long job', 'steer one', 'steer two'])
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.at(-1)?.message.content).toBe('later')
+  })
+
+  it('stays busy (so a restart waits) while messages are queued or a turn is open', async () => {
+    const { fake, session } = started()
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(session.busy).toBe(true)
+    fake.push(resultMessage())
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(session.busy).toBe(false)
+  })
+
+  it('says when an edit or removal reaches a message that was already sent', async () => {
+    const { session, items } = started()
+    session.updateQueue({ action: 'edit', id: 'gone', text: 'my edit' })
+    session.updateQueue({ action: 'remove', id: 'gone' })
+    expect([...items.values()].flatMap((item) => (item.kind === 'notice' ? [item.text] : []))).toEqual([
+      `That queued message was already sent, so your edit wasn't applied: "my edit"`,
+      'That queued message was already sent.',
+    ])
+  })
+
+  it('caps the queue and reports queued messages a session ended with', async () => {
+    const { fake, session, items, sessions } = started()
+    session.send('first')
+    for (let index = 0; index < 21; index += 1) session.send(`q${index}`, [], { delivery: 'queue' })
+    expect(sessions.at(-1)?.queue).toHaveLength(20)
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('"q20"') })
+    session.close()
+    await tick()
+    expect(sessions.at(-1)?.queue).toBeUndefined()
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('"q0", "q1"') })
+    expect(fake.prompts).toHaveLength(1)
+  })
+
+  it("keeps a background subagent's approval open past the main turn's end", async () => {
+    const { fake, session, items } = started()
+    session.send('go')
+    fake.push({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'bg', run_in_background: true } }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    fake.push(system('task_started', { task_id: 'a711', tool_use_id: 'tu-agent', description: 'bg', subagent_type: 'general-purpose', is_backgrounded: true }))
+    await tick()
+    const pending = fake.canUseTool('Bash', { command: 'make' }, { ...signalOptions('r9'), agentID: 'a711' })
+    fake.push(resultMessage())
+    await tick()
+    expect(items.get('request-r9')).toMatchObject({ status: 'running', parentToolUseId: 'tu-agent' })
+    expect(items.get('request-r9')).not.toHaveProperty('answer')
+    session.answer('r9', { kind: 'approval', decision: 'allow' })
+    expect(await pending).toMatchObject({ behavior: 'allow' })
   })
 })
