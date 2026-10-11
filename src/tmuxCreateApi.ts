@@ -4,6 +4,7 @@ import {
   requireSessionAgentLaunch,
   type CreateTmuxPaneRequest,
   type CreateTmuxSessionRequest,
+  type ClaudeProfile,
   type CreateTmuxWindowRequest,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
@@ -13,6 +14,8 @@ export type TmuxCreateApi = {
   createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   createWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   createPane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
+  /** Claude config dirs (profiles) that chat panes can use. */
+  claudeProfiles: () => Promise<ClaudeProfile[]>
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -56,5 +59,16 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
     createSession: async (input) => requireSessionAgentLaunch(input, await post(TMUX_CREATE_ROUTES.session, input)),
     createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
     createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
+    claudeProfiles: async () => {
+      const response = await fetcher(TMUX_CREATE_ROUTES.claudeProfiles, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (!response.ok) throw new Error(await responseError(response))
+      const body = await response.json() as { profiles?: unknown }
+      return Array.isArray(body.profiles)
+        ? body.profiles.filter((profile): profile is ClaudeProfile => Boolean(profile) && typeof profile.name === 'string' && typeof profile.configDir === 'string')
+        : []
+    },
   }
 }

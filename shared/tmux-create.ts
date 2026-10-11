@@ -2,30 +2,62 @@ export const TMUX_CREATE_ROUTES = {
   session: '/api/tmux/sessions',
   window: '/api/tmux/windows',
   pane: '/api/tmux/panes',
+  claudeProfiles: '/api/tmux/claude-profiles',
 } as const
 
 export type TmuxSplitDirection = 'horizontal' | 'vertical'
 export type TmuxSplitPlacement = 'before' | 'after'
 
-/** Interactive CLIs supported by creation; provider names are not executable names. */
-export type SessionAgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor'
-export type SessionAgentLaunch = { provider: SessionAgentProvider; prompt?: string }
+/**
+ * Interactive CLIs supported by creation; provider names are not executable names.
+ * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
+ */
+export type SessionAgentProvider = 'claude-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+export type SessionAgentLaunch = {
+  provider: SessionAgentProvider
+  prompt?: string
+  /** claude-chat only: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
+  configDir?: string
+  /** claude-chat only. */
+  permissionMode?: ChatPermissionMode
+}
+
+export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
+  { value: 'default', label: 'Ask before edits' },
+  { value: 'acceptEdits', label: 'Accept edits' },
+  { value: 'plan', label: 'Plan mode' },
+  { value: 'bypassPermissions', label: 'Bypass permissions' },
+]
+
+/** A Claude config dir the daemon found in the home folder. */
+export type ClaudeProfile = { name: string; configDir: string }
 
 export const SESSION_AGENT_CHOICES = [
   { value: 'shell', label: 'Shell' },
-  { value: 'claude', label: 'Claude' },
+  { value: 'claude-chat', label: 'Claude chat' },
+  { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
   { value: 'cursor', label: 'Cursor' },
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */
 export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
   const executable = SESSION_AGENT_EXECUTABLES[launch.provider]
+  if (launch.provider === 'claude-chat') {
+    return [
+      executable,
+      'claude',
+      ...(launch.configDir ? ['--config-dir', launch.configDir] : []),
+      '--permission-mode', launch.permissionMode ?? 'default',
+      ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
+    ]
+  }
   if (launch.provider === 'opencode' || !launch.prompt?.trim()) return [executable]
   // Claude's Commander parser dispatches exact command names even after `--`.
   // An inert leading space keeps arbitrary prompts in the interactive action.
@@ -65,6 +97,8 @@ export type CreateTmuxPaneRequest = {
   direction: TmuxSplitDirection
   placement?: TmuxSplitPlacement
   cwd?: string
+  /** Started interactively inside the new pane. */
+  agent?: SessionAgentLaunch
 }
 
 export type TmuxCreatedTarget = {

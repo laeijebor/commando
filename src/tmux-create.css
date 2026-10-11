@@ -306,3 +306,13 @@
   border-color: var(--amber);
   color: var(--amber);
 }
+
+/* Claude chat: profile and permission mode side by side. */
+.tmux-create__chat-launch {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.tmux-create__chat-launch label { min-width: 0; }
+.tmux-create__chat-launch select { width: 100%; min-width: 0; }

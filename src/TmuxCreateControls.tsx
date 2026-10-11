@@ -1,10 +1,13 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
+  CHAT_PERMISSION_MODES,
   defaultWorktreePath,
   sanitizeBranchName,
   SESSION_AGENT_CHOICES,
   requireSessionAgentLaunch,
   TmuxAgentLaunchCompatibilityError,
+  type ChatPermissionMode,
+  type ClaudeProfile,
   type SessionAgentProvider,
   type CreateTmuxSessionRequest,
   type GitRepoInfo,
@@ -12,6 +15,7 @@ import {
   type TmuxCreatedWorktree,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
+import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
@@ -41,6 +45,8 @@ export type TmuxCreateControlsProps = {
   onPendingChange?: (pending: boolean) => void
   /** Describes the repository behind a directory; without it the worktree block never appears. */
   probeRepo?: (directory: string) => Promise<GitRepoInfo>
+  /** Claude profiles (config dirs) a chat pane can start with. */
+  loadClaudeProfiles?: () => Promise<ClaudeProfile[]>
 }
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
@@ -134,6 +140,7 @@ export function TmuxCreateControls({
   onCreated,
   onPendingChange,
   probeRepo,
+  loadClaudeProfiles,
 }: TmuxCreateControlsProps) {
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
@@ -159,6 +166,8 @@ export function TmuxCreateControls({
   const [pending, setPending] = useState(false)
   const [agentProvider, setAgentProvider] = useState<SessionAgentProvider | 'shell'>('shell')
   const [openingPrompt, setOpeningPrompt] = useState('')
+  const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(null)
+  const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined))
   const [partialCreation, setPartialCreation] = useState<{ response: TmuxCreateResponse; groupId: string } | null>(null)
   const partialCreationRef = useRef<TmuxCreateResponse | null>(null)
   const openingPartialCreationRef = useRef(false)
@@ -194,6 +203,25 @@ export function TmuxCreateControls({
   useEffect(() => {
     setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
   }, [repo?.mainRoot])
+
+  // Chat panes remember their profile and permission mode per repository.
+  const chatLaunchKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
+  useEffect(() => {
+    setChatLaunch(loadChatLaunch(chatLaunchKey))
+  }, [chatLaunchKey])
+
+  useEffect(() => {
+    if (agentProvider !== 'claude-chat' || claudeProfiles || !loadClaudeProfiles) return
+    let cancelled = false
+    void loadClaudeProfiles().then(
+      (profiles) => { if (!cancelled) setClaudeProfiles(profiles) },
+      () => { if (!cancelled) setClaudeProfiles([]) },
+    )
+    return () => { cancelled = true }
+  }, [agentProvider, claudeProfiles, loadClaudeProfiles])
+  const chatConfigDir = chatLaunch.configDir && claudeProfiles?.some((profile) => profile.configDir === chatLaunch.configDir)
+    ? chatLaunch.configDir
+    : claudeProfiles?.[0]?.configDir
 
   useEffect(() => {
     if (!sessionCreateRequest) return
@@ -346,6 +374,13 @@ export function TmuxCreateControls({
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+          ...(agentProvider === 'claude-chat' ? {
+            ...(chatConfigDir ? { configDir: chatConfigDir } : {}),
+            permissionMode: chatLaunch.permissionMode,
+          } : {}),
+        }
+        if (agentProvider === 'claude-chat') {
+          saveChatLaunch(chatLaunchKey, { ...(chatConfigDir ? { configDir: chatConfigDir } : {}), permissionMode: chatLaunch.permissionMode })
         }
       }
       if (worktreeRequested) {
@@ -587,6 +622,32 @@ export function TmuxCreateControls({
             {SESSION_AGENT_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           </select>
         </label>
+        {agentProvider === 'claude-chat' ? (
+          <div className="tmux-create__chat-launch">
+            <label>
+              Profile
+              <select
+                value={chatConfigDir ?? ''}
+                disabled={unavailable || !claudeProfiles?.length}
+                onChange={(event) => setChatLaunch((current) => ({ ...current, configDir: event.target.value }))}
+              >
+                {claudeProfiles === null ? <option value="">Loading…</option> : null}
+                {claudeProfiles?.length === 0 ? <option value="">Default Claude login</option> : null}
+                {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{profile.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Permissions
+              <select
+                value={chatLaunch.permissionMode}
+                disabled={unavailable}
+                onChange={(event) => setChatLaunch((current) => ({ ...current, permissionMode: event.target.value as ChatPermissionMode }))}
+              >
+                {CHAT_PERMISSION_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+              </select>
+            </label>
+          </div>
+        ) : null}
         {agentProvider !== 'shell' && agentProvider !== 'opencode' ? (
           <label>
             Opening prompt <span>optional</span>

@@ -562,3 +562,41 @@ describe('TmuxCreateControls worktrees', () => {
     expect(screen.getByLabelText('Session name')).toBeInTheDocument()
   })
 })
+
+describe('Claude chat launches', () => {
+  const profiles = [
+    { name: 'claudep', configDir: '/Users/dev/.claudep' },
+    { name: 'claudew', configDir: '/Users/dev/.claudew' },
+  ]
+  const chatResponse = (input: CreateTmuxSessionRequest): TmuxCreateResponse => ({
+    created,
+    agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+  })
+
+  it('offers chat before the terminal, sends the chosen profile and permissions, and remembers them per repository', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest) => chatResponse(input))
+    const probe = probeFor({ [MAIN]: repo })
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
+    const startWith = screen.getByLabelText('Start with') as HTMLSelectElement
+    const labels = [...startWith.options].map((option) => option.textContent)
+    expect(labels.indexOf('Claude chat')).toBeLessThan(labels.indexOf('Claude (terminal)'))
+
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    fireEvent.change(startWith, { target: { value: 'claude-chat' } })
+    const profile = await screen.findByLabelText('Profile')
+    await waitFor(() => expect(profile).toHaveValue('/Users/dev/.claudep'))
+    fireEvent.change(profile, { target: { value: '/Users/dev/.claudew' } })
+    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'acceptEdits' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'acceptEdits' })
+
+    view.unmount()
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
+    await waitFor(() => expect(screen.getByLabelText('Profile')).toHaveValue('/Users/dev/.claudew'))
+    expect(screen.getByLabelText('Permissions')).toHaveValue('acceptEdits')
+  })
+})

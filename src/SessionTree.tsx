@@ -14,7 +14,7 @@ import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCards, SessionPrCount } from './SessionPrCount'
 
-type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo'> & {
+type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
 }
 
@@ -452,6 +452,7 @@ export function SessionTree(props: Props) {
         disabled={props.creation.disabled}
         onCreateSession={props.creation.onCreateSession}
         probeRepo={props.creation.probeRepo}
+        loadClaudeProfiles={props.creation.loadClaudeProfiles}
         onCreated={(created, sessionGroupId, worktree) => finishCreated(created, sessionGroupId, worktree)}
       /> : null}
       {props.creation && sessionCreateRequest ? <SessionCreateDialog
@@ -459,6 +460,7 @@ export function SessionTree(props: Props) {
         disabled={props.creation.disabled}
         onCreateSession={props.creation.onCreateSession}
         probeRepo={props.creation.probeRepo}
+        loadClaudeProfiles={props.creation.loadClaudeProfiles}
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
