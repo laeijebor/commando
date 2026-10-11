@@ -371,6 +371,20 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)?.effort).toBe('high')
   })
 
+  it('refuses an effort the current model does not offer', async () => {
+    const { fake, session, sessions, items } = started({ effort: 'high' })
+    await tick()
+    await session.configure({ model: 'sonnet' })
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', effort: 'high' })
+    expect([...items.values()].filter((item) => item.kind === 'notice').map((item) => item.kind === 'notice' && item.text))
+      .toEqual(["Sonnet 5.5 doesn't offer max effort."])
+    await session.configure({ model: 'default', effort: 'max' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
+    expect(sessions.at(-1)?.effort).toBe('max')
+  })
+
   it('retries a model list that failed to load once a turn ends', async () => {
     const { fake, sessions } = (() => {
       const fake = fakeQuery()
