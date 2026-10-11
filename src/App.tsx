@@ -121,9 +121,11 @@ import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
+import type { ChatInputServices } from './chat/ChatComposer'
+import { openPullRequestsForPane, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
-import { mergeChatItems, type ChatAnswer, type ChatSettingsChange, type ChatState } from '../shared/agent-chat'
+import { mergeChatItems, type ChatAnswer, type ChatFileSearchResult, type ChatImageRef, type ChatSettingsChange, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -314,11 +316,15 @@ type TerminalPaneProps = {
   chat?: ChatState
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
-  onChatSend?: (text: string) => void
+  onChatSend?: (text: string, images?: ChatImageRef[]) => void
   onChatInterrupt?: () => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
+  chatServices?: ChatInputServices
+  /** Why the daemon refused this pane's last chat send. */
+  chatSendError?: string
+  onDismissChatSendError?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -381,6 +387,9 @@ export function TerminalPaneCard({
   onChatAnswer,
   onChatConfigure,
   onChatRestart,
+  chatServices,
+  chatSendError,
+  onDismissChatSendError,
   onRename,
   onRenameFinished,
   onMove,
@@ -647,11 +656,14 @@ export function TerminalPaneCard({
             connected={connected}
             focused={focused}
             onFocus={onFocus}
-            onSend={(text) => onChatSend?.(text)}
+            onSend={(text, images) => onChatSend?.(text, images)}
             onInterrupt={() => onChatInterrupt?.()}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
+            {...(chatServices ? { services: chatServices } : {})}
+            {...(chatSendError ? { sendError: chatSendError } : {})}
+            {...(onDismissChatSendError ? { onDismissSendError: onDismissChatSendError } : {})}
           />
         ) : <TerminalPaneRenderer
           paneId={pane.id}
@@ -975,6 +987,11 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
+  const [chatSendErrors, setChatSendErrors] = useState<Record<string, string>>({})
+  /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
+  const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
+  /** Recent chat sends by request id, so a refusal shows on the right pane. */
+  const chatSendPanes = useRef(new Map<string, string>())
   const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
   const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
@@ -1339,6 +1356,17 @@ export function App() {
           return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } } : current
         })
         break
+      case 'chat_commands':
+        setChats((current) => {
+          const chat = current[message.paneId]
+          return chat ? { ...current, [message.paneId]: { ...chat, commands: message.commands } } : current
+        })
+        break
+      case 'chat_file_search_result': {
+        const { type: _type, paneId: _paneId, requestId: searchId, ...result } = message
+        chatFileSearches.current.get(searchId)?.(result)
+        break
+      }
       case 'chat_removed':
         setChats((current) => {
           if (!(message.paneId in current)) return current
@@ -1377,6 +1405,14 @@ export function App() {
         break
       case 'error':
         console.error(`[commando:${message.code}] ${message.message}`)
+        if (message.requestId) {
+          chatFileSearches.current.get(message.requestId)?.({ entries: [], truncated: false, error: message.message })
+          const chatPane = chatSendPanes.current.get(message.requestId)
+          if (chatPane) {
+            chatSendPanes.current.delete(message.requestId)
+            setChatSendErrors((current) => ({ ...current, [chatPane]: message.message }))
+          }
+        }
         if (
           message.code === 'tmux_layout_failed' ||
           message.code === 'invalid_window_layout' ||
@@ -2075,8 +2111,20 @@ export function App() {
   const retryAgentResume = (targetId?: string) => {
     send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
   }
-  const sendChat = (paneId: string, text: string) => {
-    send({ type: 'chat_send', paneId, text, requestId: requestId('chat-send') })
+  const sendChat = (paneId: string, text: string, images?: ChatImageRef[]) => {
+    const id = requestId('chat-send')
+    chatSendPanes.current.set(id, paneId)
+    window.setTimeout(() => chatSendPanes.current.delete(id), 30_000)
+    setChatSendErrors((current) => {
+      if (!(paneId in current)) return current
+      const next = { ...current }
+      delete next[paneId]
+      return next
+    })
+    if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })) {
+      chatSendPanes.current.delete(id)
+      setChatSendErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so the message wasn't sent" }))
+    }
   }
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })
@@ -2098,6 +2146,34 @@ export function App() {
   const gitDiffApi = createGitDiffApi(token)
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
+  // One stable service object per pane, so the composer's effects don't refire each render.
+  const chatServiceCache = useRef(new Map<string, ChatInputServices>())
+  const latestChatDeps = useRef({ send, token, prsApi })
+  latestChatDeps.current = { send, token, prsApi }
+  const chatServicesFor = (paneId: string): ChatInputServices => {
+    let services = chatServiceCache.current.get(paneId)
+    if (!services) {
+      services = {
+        searchFiles: (query) => new Promise<ChatFileSearchResult>((resolve) => {
+          const id = requestId('chat-files')
+          const finish = (result: ChatFileSearchResult) => {
+            window.clearTimeout(timer)
+            chatFileSearches.current.delete(id)
+            resolve(result)
+          }
+          const timer = window.setTimeout(() => finish({ entries: [], truncated: false, error: 'The file search timed out' }), 15_000)
+          chatFileSearches.current.set(id, finish)
+          if (!latestChatDeps.current.send({ type: 'chat_file_search', paneId, query, requestId: id })) {
+            finish({ entries: [], truncated: false, error: 'Not connected to Commando' })
+          }
+        }),
+        pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
+        uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
+      }
+      chatServiceCache.current.set(paneId, services)
+    }
+    return services
+  }
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -3028,7 +3104,14 @@ export function App() {
                             chat={chats[pane.id]}
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
-                            onChatSend={(text) => sendChat(pane.id, text)}
+                            onChatSend={(text, images) => sendChat(pane.id, text, images)}
+                            chatServices={chatServicesFor(pane.id)}
+                            {...(chatSendErrors[pane.id] ? { chatSendError: chatSendErrors[pane.id] } : {})}
+                            onDismissChatSendError={() => setChatSendErrors((current) => {
+                              const next = { ...current }
+                              delete next[pane.id]
+                              return next
+                            })}
                             onChatInterrupt={() => interruptChat(pane.id)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}

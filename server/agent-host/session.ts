@@ -1,18 +1,23 @@
-import { getSessionInfo, getSessionMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { getSessionInfo, getSessionMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
+  chatImageType,
   isChatEffort,
   isModelValue,
   type ChatAnswer,
+  type ChatCommand,
   type ChatContextUsage,
   type ChatEffort,
+  type ChatFileSearchResult,
+  type ChatImageRef,
   type ChatItem,
   type ChatModelOption,
   type ChatSessionInfo,
   type ChatSessionStatus,
   type ChatSettingsChange,
 } from '../../shared/agent-chat.js'
-import { ClaudeItemMapper, questionsFromInput, toolTitle } from './claude-items.js'
+import { ClaudeItemMapper, attachmentNote, questionsFromInput, toolTitle, type ChatImageSink } from './claude-items.js'
+import { WorkspaceFileIndex } from './file-index.js'
 
 export interface AgentSessionSpec {
   paneId: string
@@ -32,8 +37,17 @@ export interface AgentSessionSpec {
   /** Resumes this conversation as a chat pane, without the session id (hooks append it). */
   resumeCommand?: string
   hostBuild?: string
+  /** Where uploaded images are read from and tool-result images are kept. */
+  images?: SessionImageStore
   /** Problems worth a line in the pane's terminal but not a chat notice. */
   log?: (message: string) => void
+}
+
+/** The chat image folder as a session uses it (see server/chat-images.ts). */
+export interface SessionImageStore extends ChatImageSink {
+  readonly dir: string
+  path(id: string): string | null
+  read(id: string): Promise<Buffer>
 }
 
 /** Reads saved transcripts and titles; swapped out in tests. */
@@ -89,6 +103,36 @@ export function toContextUsage(usage: SDKControlGetContextUsageResponse): ChatCo
   }
 }
 
+/**
+ * Built-in commands left out of the `/` menu: TUI-only ones that only print
+ * "use the terminal" or "not available" through the SDK, internal ones, and
+ * /model and /effort, which Commando's own pickers replace so they stay in sync.
+ */
+export const HIDDEN_BUILTIN_COMMANDS = new Set([
+  'mcp', 'config', 'focus', 'fast', 'color', 'agents', 'heapdump', 'extra-usage',
+  '__remote-workflow', 'workflow-launch-exec', 'model', 'effort',
+])
+
+/**
+ * The `/` menu's list. Skills are the commands Claude also sees in its skill
+ * list (from the context breakdown), so it can run them from mid-message;
+ * until that list is known, Claude Code's own entries count as commands.
+ */
+export function toChatCommands(commands: readonly SlashCommand[], skillNames: ReadonlySet<string> | null): ChatCommand[] {
+  return commands.flatMap((command) => {
+    if (command.builtin && HIDDEN_BUILTIN_COMMANDS.has(command.name)) return []
+    const skill = skillNames ? skillNames.has(command.name) : !command.builtin
+    const aliases = command.aliases?.filter((alias) => alias !== command.name)
+    return [{
+      name: command.name,
+      description: command.description.slice(0, 500),
+      ...(command.argumentHint ? { argumentHint: command.argumentHint.slice(0, 200) } : {}),
+      ...(aliases?.length ? { aliases } : {}),
+      kind: skill ? 'skill' : 'command',
+    }]
+  })
+}
+
 function shortTitle(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
@@ -97,6 +141,8 @@ function shortTitle(text: string): string {
 export interface AgentSessionEvents {
   items: (items: ChatItem[]) => void
   session: (info: ChatSessionInfo) => void
+  /** The `/` menu's list changed. */
+  commands: (commands: ChatCommand[]) => void
   closed: () => void
 }
 
@@ -162,7 +208,7 @@ export class AgentSession {
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], closed: [] }
+  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
@@ -174,7 +220,14 @@ export class AgentSession {
    * Sends that arrive while a resumed transcript is still replaying wait here,
    * so they land after the earlier turns instead of inside them.
    */
-  private heldSends: string[] | null
+  private heldSends: { text: string; images: ChatImageRef[] }[] | null
+  /** Sends with images read files first; later sends wait so turns keep their order. */
+  private sendChain: Promise<void> = Promise.resolve()
+  private queuedSends = 0
+  private slashCommands: SlashCommand[] = []
+  private skillNames: Set<string> | null = null
+  private commandList: ChatCommand[] | null = null
+  private files: WorkspaceFileIndex | null = null
 
   constructor(
     private readonly spec: AgentSessionSpec,
@@ -182,7 +235,7 @@ export class AgentSession {
     now: () => number = Date.now,
     private readonly store: SessionStore = sdkSessionStore,
   ) {
-    this.mapper = new ClaudeItemMapper(now)
+    this.mapper = new ClaudeItemMapper(now, spec.images)
     this.heldSends = spec.resume ? [] : null
     this.info = {
       paneId: spec.paneId,
@@ -212,6 +265,11 @@ export class AgentSession {
 
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } {
     return { session: { ...this.info }, items: this.mapper.list() }
+  }
+
+  /** The `/` menu's list, once Claude has reported it. */
+  get commands(): ChatCommand[] | null {
+    return this.commandList
   }
 
   /** True while a turn runs or waits for an answer. */
@@ -246,6 +304,8 @@ export class AgentSession {
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : {}),
+        // Claude's tools can open the saved copies of attached images without asking.
+        ...(this.spec.images ? { additionalDirectories: [this.spec.images.dir] } : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
@@ -262,34 +322,84 @@ export class AgentSession {
     this.setStatus('idle')
     void this.consume(this.queryHandle)
     void this.loadModels(this.queryHandle)
+    void this.loadCommands(this.queryHandle)
     void this.refreshContext()
     const held = this.heldSends ?? []
     this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
-    for (const text of held) this.send(text)
+    for (const send of held) this.send(send.text, send.images)
   }
 
-  send(text: string): void {
+  /**
+   * Sends a message. Typed `/commands` and `@paths` reach Claude Code as text
+   * (never `client_composed`), so it expands them as the TUI does. Images go
+   * before the text, which also names their saved copies.
+   */
+  send(text: string, images: ChatImageRef[] = []): void {
     const trimmed = text.trim()
-    if (!trimmed) return
+    if (!trimmed && !images.length) return
     if (this.heldSends) {
-      this.heldSends.push(trimmed)
+      this.heldSends.push({ text: trimmed, images })
       return
     }
+    if (!images.length && this.queuedSends === 0) {
+      this.deliver(trimmed, [], [])
+      return
+    }
+    this.queuedSends += 1
+    this.sendChain = this.sendChain.then(async () => {
+      try {
+        this.deliver(trimmed, images, await this.imageBlocks(images))
+      } catch (error) {
+        const quoted = trimmed ? ` Your message was: "${trimmed.length > 500 ? `${trimmed.slice(0, 500)}…` : trimmed}"` : ''
+        this.emitItems(this.mapper.notice('error', `Couldn't attach the image${images.length > 1 ? 's' : ''}, so the message wasn't sent: ${errorText(error)}.${quoted}`))
+      } finally {
+        this.queuedSends -= 1
+      }
+    })
+  }
+
+  private async imageBlocks(images: readonly ChatImageRef[]): Promise<unknown[]> {
+    if (!images.length) return []
+    const store = this.spec.images
+    if (!store) throw new Error('this host has no image folder')
+    return Promise.all(images.map(async (image) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: chatImageType(image.id), data: (await store.read(image.id)).toString('base64') },
+    })))
+  }
+
+  private deliver(text: string, images: ChatImageRef[], imageBlocks: unknown[]): void {
     if (this.info.status === 'closed' || this.info.status === 'error') {
       this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
       return
     }
-    this.emitItems(this.mapper.startTurn(trimmed))
-    if (!this.info.title) this.info = { ...this.info, title: shortTitle(trimmed) }
+    this.emitItems(this.mapper.startTurn(text, images))
+    if (!this.info.title && text) this.info = { ...this.info, title: shortTitle(text) }
     // Shown at once; Claude's own session state confirms it (or folds this into the running turn).
     this.setStatus('running')
+    const notes = images.flatMap((image) => {
+      const path = this.spec.images?.path(image.id)
+      return path ? [attachmentNote(image.name ?? image.id, path)] : []
+    })
+    const withNotes = [text, ...notes].filter(Boolean).join('\n\n')
     this.input.push({
       type: 'user',
-      message: { role: 'user', content: trimmed },
+      // Images first: a /command in a text block after them still expands.
+      message: { role: 'user', content: imageBlocks.length ? [...imageBlocks, { type: 'text', text: withNotes }] : text },
       parent_tool_use_id: null,
       origin: { kind: 'human' },
     } as SDKUserMessage)
+  }
+
+  /** Files and folders for an `@` mention, from the session's folder. */
+  async searchFiles(query: string): Promise<ChatFileSearchResult> {
+    this.files ??= new WorkspaceFileIndex(this.spec.cwd)
+    try {
+      return await this.files.search(query)
+    } catch (error) {
+      return { entries: [], truncated: false, error: `Couldn't list files: ${errorText(error)}` }
+    }
   }
 
   async interrupt(): Promise<void> {
@@ -402,15 +512,47 @@ export class AgentSession {
     }
   }
 
+  private async loadCommands(handle: Query): Promise<void> {
+    try {
+      this.setSlashCommands(await handle.supportedCommands())
+    } catch (error) {
+      if (this.info.status === 'closed' || this.info.status === 'error') return
+      // The menu keeps Commando's own entries; an empty list stops it waiting for Claude's.
+      this.emitItems(this.mapper.notice('error', `Couldn't list Claude's commands for the / menu: ${errorText(error)}`))
+      this.setSlashCommands([])
+    }
+  }
+
+  private setSlashCommands(commands: SlashCommand[]): void {
+    this.slashCommands = commands
+    this.updateCommandList()
+  }
+
+  private updateCommandList(): void {
+    const next = toChatCommands(this.slashCommands, this.skillNames)
+    if (this.commandList && JSON.stringify(next) === JSON.stringify(this.commandList)) return
+    this.commandList = next
+    for (const listener of this.listeners.commands) listener(next)
+  }
+
   /** Reads how full the context window is, for the composer's meter. */
   private async refreshContext(): Promise<void> {
     const handle = this.queryHandle
     if (!handle) return
     const read = ++this.contextReads
     try {
-      const usage = toContextUsage(await handle.getContextUsage({ detail: 'summary' }))
+      const raw = await handle.getContextUsage({ detail: 'summary' })
+      const usage = toContextUsage(raw)
       // A slower, older read must not overwrite a newer one.
       if (read !== this.contextReads || !usage) return
+      const skills = raw.skills?.skillFrontmatter
+      if (skills) {
+        const names = new Set(skills.map((skill) => skill.name))
+        if (!this.skillNames || names.size !== this.skillNames.size || [...names].some((name) => !this.skillNames!.has(name))) {
+          this.skillNames = names
+          if (this.slashCommands.length) this.updateCommandList()
+        }
+      }
       this.info = { ...this.info, contextUsage: usage }
       this.emitSession()
     } catch (error) {
@@ -489,6 +631,17 @@ export class AgentSession {
       this.applySessionState(message.state)
       return
     }
+    if (message.type === 'system' && message.subtype === 'commands_changed') {
+      // The SDK pushes the whole list (e.g. a skill was installed); it replaces ours.
+      this.setSlashCommands(message.commands)
+      return
+    }
+    if (message.type === 'conversation_reset' && this.info.title) {
+      // /clear starts a new conversation, which gets its own title.
+      const { title: _previous, ...rest } = this.info
+      this.info = rest
+      this.emitSession()
+    }
     if (message.type === 'system' && (message.subtype === 'init' || message.subtype === 'status')) {
       // Claude re-sends init each turn, and status when the mode changes (e.g. entering plan mode itself).
       const model = message.subtype === 'init' ? message.model : this.info.model
@@ -502,10 +655,13 @@ export class AgentSession {
       const interrupted = this.interruptRequested
       this.interruptRequested = false
       this.emitItems(this.mapper.settleRunning(message.subtype === 'success' ? 'completed' : interrupted ? 'interrupted' : 'failed'))
+      const errors = 'errors' in message && Array.isArray(message.errors) ? message.errors.join('\n') : ''
       if (interrupted) {
         this.emitItems(this.mapper.notice('info', 'Interrupted'))
-      } else if (message.subtype !== 'success' && 'errors' in message && Array.isArray(message.errors) && message.errors.length) {
-        this.emitItems(this.mapper.notice('error', message.errors.join('\n')))
+      } else if (message.terminal_reason === 'image_error') {
+        this.emitItems(this.mapper.notice('error', `Claude couldn't read an attached image${errors ? `: ${errors}` : ''}. Try a smaller PNG or JPEG.`))
+      } else if (message.subtype !== 'success' && errors) {
+        this.emitItems(this.mapper.notice('error', errors))
       }
       // Claude reports idle itself once queued work is done; older CLIs only send results.
       if (!this.stateEvents) {

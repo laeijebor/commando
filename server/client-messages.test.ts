@@ -626,4 +626,15 @@ describe('chat pane messages', () => {
     expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'maybe' }, requestId: 'r3' }).ok).toBe(false)
     expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'question', answers: { q: 1 } }, requestId: 'r3' }).ok).toBe(false)
   })
+
+  it('accepts image refs on a send, alone or with text, and file searches', () => {
+    const id = `${'f'.repeat(64)}.webp`
+    expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: '', images: [{ id, name: 'drop.webp' }], requestId: 'r6' }))
+      .toEqual({ ok: true, message: { type: 'chat_send', paneId: '%4', text: '', images: [{ id, name: 'drop.webp' }], requestId: 'r6' } })
+    expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: 'hi', images: [{ id: 'nope' }], requestId: 'r6' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: 'hi', images: Array.from({ length: 11 }, () => ({ id })), requestId: 'r6' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_file_search', paneId: '%4', query: 'src/', requestId: 'r7' }))
+      .toEqual({ ok: true, message: { type: 'chat_file_search', paneId: '%4', query: 'src/', requestId: 'r7' } })
+    expect(parseClientMessage({ type: 'chat_file_search', paneId: '%4', query: 'x'.repeat(513), requestId: 'r7' }).ok).toBe(false)
+  })
 })

@@ -18,7 +18,7 @@ import {
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import { parseChatAnswer, parseChatSettingsChange } from '../shared/agent-chat.js'
+import { MAX_FILE_QUERY, parseChatAnswer, parseChatImageRefs, parseChatSettingsChange } from '../shared/agent-chat.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -528,17 +528,25 @@ export function parseClientMessage(value: unknown): ParseResult {
     }
     case 'chat_send': {
       const id = requestId(value.requestId)
+      const images = value.images === undefined ? [] : parseChatImageRefs(value.images)
       if (
         !id ||
         !isPaneId(value.paneId) ||
         typeof value.text !== 'string' ||
-        value.text.trim().length === 0 ||
+        !images ||
+        (value.text.trim().length === 0 && images.length === 0) ||
         value.text.includes('\0') ||
         Buffer.byteLength(value.text, 'utf8') > MAX_PASTE_BYTES
       ) {
         return { ok: false, error: 'Invalid chat message', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
       }
-      return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, requestId: id } }
+      return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, ...(images.length ? { images } : {}), requestId: id } }
+    }
+    case 'chat_file_search': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && !value.query.includes('\0')
+        ? { ok: true, message: { type: 'chat_file_search', paneId: value.paneId, query: value.query, requestId: id } }
+        : { ok: false, error: 'Invalid file search', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     case 'chat_interrupt':
     case 'chat_restart': {

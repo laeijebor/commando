@@ -22,6 +22,7 @@ export default defineConfig({
     proxy: {
       '/api': daemonHttpTarget,
       '/screenshots': daemonHttpTarget,
+      '/chat-images': daemonHttpTarget,
       '/ide': { target: daemonHttpTarget, ws: true },
       '/ws': {
         target: daemonWebSocketTarget,

@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
+import type { ChatImageRef, ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
 /** Transcript user entries that Claude Code wrote itself, not the person. */
@@ -39,20 +39,56 @@ function capPatch(lines: string[]): string {
     : lines.join('\n')
 }
 
-function toolResultText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        const value = record(part)
-        if (value.type === 'text' && typeof value.text === 'string') return value.text
-        if (value.type === 'image') return '[image]'
-        return ''
-      })
-      .filter(Boolean)
-      .join('\n')
-  }
-  return ''
+/** Stores images found in tool results and transcripts so the UI can show them. */
+export interface ChatImageSink {
+  saveBase64(data: string, name?: string): ChatImageRef | undefined
+}
+
+/** The base64 data of an image content block, if it is one. */
+function imageData(part: unknown): string | undefined {
+  const value = record(part)
+  if (value.type !== 'image') return undefined
+  const source = record(value.source)
+  return source.type === 'base64' ? str(source.data) : undefined
+}
+
+/**
+ * Names the saved copy of an attached image in the text Claude gets, so its
+ * tools can open the file (after t3code's AttachmentPrompt).
+ */
+export function attachmentNote(name: string, path: string): string {
+  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
+}
+
+const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: [^\]\n]+\]/g
+
+/** The text the person typed, without the notes the host added for Claude. */
+export function stripAttachmentNotes(text: string): string {
+  return text.replace(ATTACHMENT_NOTES, '').trim()
+}
+
+function toolResultContent(content: unknown, images: ChatImageSink | undefined): { text: string; images: ChatImageRef[] } {
+  if (typeof content === 'string') return { text: content, images: [] }
+  const refs: ChatImageRef[] = []
+  if (!Array.isArray(content)) return { text: '', images: refs }
+  const text = content
+    .map((part) => {
+      const value = record(part)
+      if (value.type === 'text' && typeof value.text === 'string') return value.text
+      if (value.type === 'image') {
+        const data = imageData(part)
+        const ref = data ? images?.saveBase64(data) : undefined
+        if (ref) {
+          refs.push(ref)
+          return ''
+        }
+        return '[image]'
+      }
+      return ''
+    })
+    .filter(Boolean)
+    .join('\n')
+  return { text, images: refs }
 }
 
 /** Short, human title for a tool call, in the spirit of t3code's work-log labels. */
@@ -185,7 +221,7 @@ export class ClaudeItemMapper {
   private readonly confirmedBlocks = new Map<string, number>()
   private readonly hiddenTools = new Set(['AskUserQuestion', 'TodoWrite', 'ExitPlanMode'])
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(private readonly now: () => number = Date.now, private readonly images?: ChatImageSink) {}
 
   list(): ChatItem[] {
     return [...this.items.values()]
@@ -217,10 +253,10 @@ export class ClaudeItemMapper {
     return item
   }
 
-  startTurn(text: string): ChatItem[] {
+  startTurn(text: string, images: ChatImageRef[] = []): ChatItem[] {
     this.turnCounter += 1
     this.turnId = `turn-${this.now()}-${this.turnCounter}`
-    return [this.put({ ...this.base(`user-${this.turnId}`, 'completed'), kind: 'user_message', text })]
+    return [this.put({ ...this.base(`user-${this.turnId}`, 'completed'), kind: 'user_message', text, ...(images.length ? { images } : {}) })]
   }
 
   notice(level: 'info' | 'error', text: string): ChatItem[] {
@@ -271,8 +307,12 @@ export class ClaudeItemMapper {
             : ''
         if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
           this.handleToolResults(message as { content: unknown })
-        } else if (text.trim() && !REPLAY_NOISE.test(text)) {
-          this.startTurn(text.trim())
+        } else if (!REPLAY_NOISE.test(text)) {
+          const blocks = Array.isArray(message.content) ? message.content.filter((part) => record(part).type === 'image') : []
+          const images = this.saveImages(blocks)
+          const typed = stripAttachmentNotes(text)
+          // An image that can't be shown still marks the turn, so it isn't lost from the timeline.
+          if (typed || blocks.length) this.startTurn(typed || (images.length ? '' : '[image]'), images)
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })
@@ -296,6 +336,9 @@ export class ClaudeItemMapper {
       case 'system':
         if (message.subtype === 'compact_boundary') return this.notice('info', 'Conversation compacted')
         return []
+      case 'conversation_reset':
+        // /clear: Claude carries on in a fresh conversation; the earlier turns stay visible above.
+        return this.notice('info', 'Context cleared: Claude starts a new conversation from here')
       default:
         return []
     }
@@ -378,6 +421,15 @@ export class ClaudeItemMapper {
     return changed
   }
 
+  private saveImages(content: unknown[]): ChatImageRef[] {
+    if (!this.images) return []
+    return content.flatMap((part) => {
+      const data = imageData(part)
+      const ref = data ? this.images!.saveBase64(data) : undefined
+      return ref ? [ref] : []
+    })
+  }
+
   private handleToolResults(message: { content: unknown }): ChatItem[] {
     if (!Array.isArray(message.content)) return []
     const changed: ChatItem[] = []
@@ -387,8 +439,10 @@ export class ClaudeItemMapper {
       const item = this.items.get(value.tool_use_id)
       if (!item || (item.kind !== 'command' && item.kind !== 'file_change' && item.kind !== 'tool')) continue
       const isError = value.is_error === true
-      const output = truncate(toolResultText(value.content), MAX_OUTPUT)
-      changed.push(this.put({ ...item, status: isError ? 'failed' : 'completed', output, ...(isError ? { isError } : {}), updatedAt: this.now() }))
+      const result = toolResultContent(value.content, this.images)
+      const output = truncate(result.text, MAX_OUTPUT)
+      const images = item.kind === 'tool' && result.images.length ? { images: result.images } : {}
+      changed.push(this.put({ ...item, status: isError ? 'failed' : 'completed', output, ...(isError ? { isError } : {}), ...images, updatedAt: this.now() } as ChatItem))
     }
     return changed
   }

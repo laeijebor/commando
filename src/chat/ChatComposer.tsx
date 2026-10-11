@@ -1,10 +1,44 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowUp, CheckSquare, Circle, CircleDot, Square, SquareCheckBig } from 'lucide-react'
-import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatSettingsChange } from '../../shared/agent-chat'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X } from 'lucide-react'
+import {
+  CHAT_IMAGE_TYPES,
+  hostTakesInput,
+  hostTakesSettings,
+  type ChatAnswer,
+  type ChatCommand,
+  type ChatFileSearchResult,
+  type ChatImageRef,
+  type ChatItem,
+  type ChatSessionInfo,
+  type ChatSettingsChange,
+} from '../../shared/agent-chat'
+import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
+import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
-import { ContextMeter, ModelPicker, PermissionPicker } from './ComposerControls'
+import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
+import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable } from './ComposerControls'
+import {
+  detectTrigger,
+  filterCommands,
+  filterPullRequests,
+  mentionText,
+  moveCommandToStart,
+  pullRequestText,
+  replaceRange,
+  useTriggerState,
+  type ComposerTrigger,
+  type PullRequestOption,
+} from './composerTriggers'
 import { shortPath } from './timelineRows'
 import { Button } from './ui/button'
+
+/** What the composer asks of the app for `@`, `#` and images. */
+export interface ChatInputServices {
+  searchFiles: (query: string) => Promise<ChatFileSearchResult>
+  /** Open pull requests in the chat's repository. */
+  pullRequests: () => Promise<PullRequestOption[]>
+  uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
+}
 
 type RequestItem = Extract<ChatItem, { kind: 'request' }>
 type TodoItem = Extract<ChatItem, { kind: 'todo_list' }>
@@ -122,6 +156,104 @@ function TodoChip({ todos }: { todos: TodoItem }) {
   )
 }
 
+type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
+
+const FILE_SEARCH_DEBOUNCE_MS = 80
+const PR_CACHE_MS = 60_000
+/** A failed load is retried sooner (e.g. once the branch is pushed). */
+const PR_ERROR_CACHE_MS = 5_000
+
+/** `@` results for the trigger's query; stale answers are dropped. */
+function useFileSearch(trigger: ComposerTrigger | null, services: ChatInputServices | undefined, enabled: boolean) {
+  const query = trigger?.kind === 'mention' && enabled ? trigger.query : null
+  const [state, setState] = useState<{ query: string; result: ChatFileSearchResult } | null>(null)
+  useEffect(() => {
+    if (query === null || !services) return
+    let current = true
+    const timer = setTimeout(() => {
+      services.searchFiles(query).then(
+        (result) => { if (current) setState({ query, result }) },
+        (error: unknown) => { if (current) setState({ query, result: { entries: [], truncated: false, error: error instanceof Error ? error.message : 'File search failed' } }) },
+      )
+    }, FILE_SEARCH_DEBOUNCE_MS)
+    return () => {
+      current = false
+      clearTimeout(timer)
+    }
+  }, [query, services])
+  // Keep showing the last answer while the next one loads, so the list doesn't flicker.
+  return { result: state?.result ?? null, loading: query !== null && state?.query !== query }
+}
+
+/** Open pull requests, loaded when `#` opens and reused for a minute. */
+function usePullRequests(open: boolean, services: ChatInputServices | undefined) {
+  const [state, setState] = useState<{ at: number; prs: PullRequestOption[]; error?: string } | null>(null)
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    if (!open || !services || loading || (state && Date.now() - state.at < (state.error ? PR_ERROR_CACHE_MS : PR_CACHE_MS))) return
+    setLoading(true)
+    services.pullRequests().then(
+      (prs) => setState({ at: Date.now(), prs }),
+      (error: unknown) => setState({ at: Date.now(), prs: [], error: error instanceof Error ? error.message : 'Pull requests failed to load' }),
+    ).finally(() => setLoading(false))
+  }, [open, services, loading, state])
+  return { prs: state?.prs ?? [], error: state?.error, loading: loading && !state }
+}
+
+const MENU_LABELS: Record<ComposerTrigger['kind'], string> = { slash: 'Commands and skills', mention: 'Files and folders', pr: 'Pull requests' }
+
+function menuGroups(
+  trigger: ComposerTrigger,
+  session: ChatSessionInfo,
+  commands: readonly ChatCommand[] | undefined,
+  files: { result: ChatFileSearchResult | null; loading: boolean },
+  prs: { prs: PullRequestOption[]; error?: string; loading: boolean },
+): { groups: ComposerMenuGroup[]; status: string | null } {
+  if (trigger.kind === 'slash') {
+    const query = trigger.query.toLowerCase()
+    const natives = [
+      ...(modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
+      ...(hostTakesSettings(session) && session.permissionMode
+        ? [{ name: 'plan', description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
+        : []),
+    ].filter((native) => native.name.includes(query))
+    const matched = filterCommands(commands ?? [], trigger.query)
+    const skills = matched.filter((command) => command.kind === 'skill')
+    const rest = matched.filter((command) => command.kind === 'command')
+    const skillGroup: ComposerMenuGroup = {
+      label: 'Skills',
+      ...(trigger.atStart ? {} : { note: 'Claude can run these mid-message' }),
+      items: skills.map((command) => ({ key: `skill:${command.name}`, type: 'command' as const, command, runsHere: true })),
+    }
+    const commandGroup: ComposerMenuGroup = {
+      label: 'Commands',
+      ...(trigger.atStart ? {} : { note: 'only run at the start of a message' }),
+      items: [
+        ...natives.map((native) => ({ key: `native:${native.name}`, type: 'native' as const, ...native })),
+        ...rest.map((command) => ({ key: `command:${command.name}`, type: 'command' as const, command, runsHere: trigger.atStart })),
+      ],
+    }
+    // Whichever group holds the best match comes first (`/re` → recap and rename before skills).
+    const commandsFirst = Boolean(query) && (natives.some((native) => native.name.startsWith(query)) || matched[0]?.kind === 'command')
+    return {
+      groups: commandsFirst ? [commandGroup, skillGroup] : [skillGroup, commandGroup],
+      status: commands ? null : hostTakesInput(session) ? "Claude's commands appear once the session has started" : "Restart this chat to list Claude's commands",
+    }
+  }
+  if (trigger.kind === 'mention') {
+    const entries = files.result?.entries ?? []
+    return {
+      groups: [{ label: 'Files and folders', items: entries.map((entry) => ({ key: `file:${entry.path}`, type: 'file' as const, entry })) }],
+      status: files.result?.error ?? (files.loading && !entries.length ? 'Searching files…' : !entries.length && files.result ? 'No matching files or folders' : files.result?.truncated ? 'Showing the best matches; type more to narrow' : null),
+    }
+  }
+  const matching = filterPullRequests(prs.prs, trigger.query)
+  return {
+    groups: [{ label: 'Pull requests', items: matching.map((pr) => ({ key: `pr:${pr.number}`, type: 'pr' as const, pr })) }],
+    status: prs.error ?? (prs.loading ? 'Loading open pull requests…' : matching.length ? null : 'No open pull requests match'),
+  }
+}
+
 function profileLabel(configDir: string | undefined): string | null {
   if (!configDir) return null
   const name = configDir.split('/').filter(Boolean).pop() ?? ''
@@ -133,6 +265,10 @@ export function ChatComposer({
   hostConnected,
   requests,
   todos,
+  commands,
+  services,
+  sendError,
+  onDismissSendError,
   onSend,
   onInterrupt,
   onAnswer,
@@ -143,7 +279,12 @@ export function ChatComposer({
   hostConnected: boolean
   requests: RequestItem[]
   todos?: TodoItem
-  onSend: (text: string) => void
+  /** Claude Code's commands and skills, for the `/` menu. */
+  commands?: ChatCommand[]
+  services?: ChatInputServices
+  sendError?: string
+  onDismissSendError?: () => void
+  onSend: (text: string, images?: ChatImageRef[]) => void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   onConfigure: (change: ChatSettingsChange) => void
@@ -151,10 +292,24 @@ export function ChatComposer({
 }) {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const pendingCaret = useRef<number | null>(null)
+  const menuId = useId()
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
   const disabled = !hostConnected || closed
   const request = requests[0]
+  // Hosts started before 1b·2 can't search files or take images.
+  const richInput = Boolean(services) && hostTakesInput(session)
+  const { trigger, update: updateTrigger, dismiss } = useTriggerState()
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [viewing, setViewing] = useState<ViewableImage | null>(null)
+  const files = useFileSearch(trigger, services, richInput)
+  const prs = usePullRequests(trigger?.kind === 'pr', services)
 
   useEffect(() => {
     const element = textarea.current
@@ -167,14 +322,158 @@ export function ChatComposer({
     if (autoFocus) textarea.current?.focus()
   }, [autoFocus])
 
-  const submit = () => {
-    const text = draft.trim()
-    if (!text || disabled) return
-    onSend(text)
-    setDraft('')
+  // Object URLs for previews are released when attachments go or the composer unmounts.
+  const previews = useRef(new Set<string>())
+  useEffect(() => () => { for (const url of previews.current) URL.revokeObjectURL(url) }, [])
+  const release = (attachment: Attachment) => {
+    URL.revokeObjectURL(attachment.previewUrl)
+    previews.current.delete(attachment.previewUrl)
   }
+
+  const syncTrigger = useCallback((element: HTMLTextAreaElement) => {
+    updateTrigger(element.selectionStart === element.selectionEnd ? detectTrigger(element.value, element.selectionStart) : null)
+  }, [updateTrigger])
+
+  // After a pick rewrites the draft, put the caret after the inserted text.
+  useLayoutEffect(() => {
+    const element = textarea.current
+    const caret = pendingCaret.current
+    if (!element || caret === null) return
+    pendingCaret.current = null
+    element.focus()
+    element.setSelectionRange(caret, caret)
+    syncTrigger(element)
+  }, [draft, syncTrigger])
+
+  // `@` needs a host that can search; `#` needs the app's PR access.
+  const menuOpen = trigger !== null && !disabled
+    && (trigger.kind === 'slash' || (trigger.kind === 'mention' && richInput) || (trigger.kind === 'pr' && Boolean(services)))
+  const { groups, status } = useMemo(
+    () => (menuOpen && trigger ? menuGroups(trigger, session, commands, files, prs) : { groups: [], status: null }),
+    [menuOpen, trigger, session, commands, files, prs],
+  )
+  const items = useMemo(() => groups.flatMap((group) => group.items), [groups])
+  const active = items.find((item) => item.key === activeKey) ?? items[0]
+
+  useEffect(() => { setActiveKey(null) }, [trigger?.kind, trigger?.rangeStart, trigger?.query])
+
+  const applyText = (next: { text: string; cursor: number }) => {
+    pendingCaret.current = next.cursor
+    setDraft(next.text)
+  }
+
+  const pick = (item: ComposerMenuItem) => {
+    if (!trigger) return
+    switch (item.type) {
+      case 'native':
+        applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
+        if (item.name === 'model') setModelMenuOpen(true)
+        else onConfigure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
+        return
+      case 'command':
+        applyText(item.runsHere
+          ? replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, `/${item.command.name} `)
+          : moveCommandToStart(draft, trigger, item.command.name))
+        return
+      case 'file':
+        applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, mentionText(item.entry)))
+        return
+      case 'pr':
+        applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, pullRequestText(item.pr)))
+    }
+  }
+
+  const addImages = (incoming: File[]) => {
+    if (!incoming.length) return
+    if (!richInput || !services) {
+      setAttachError('Restart this chat to attach images')
+      return
+    }
+    const fit = fitAttachments(attachments.length, incoming.length)
+    setAttachError(fit.error ?? null)
+    for (const file of incoming.slice(0, fit.accepted)) {
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const previewUrl = URL.createObjectURL(file)
+      previews.current.add(previewUrl)
+      const name = file.name || 'pasted image'
+      setAttachments((current) => [...current, { key, name, previewUrl }])
+      const drop = (error: string) => {
+        setAttachments((current) => current.filter((attachment) => {
+          if (attachment.key === key) release(attachment)
+          return attachment.key !== key
+        }))
+        setAttachError(error)
+      }
+      void (async () => {
+        const prepared = await prepareImage(file)
+        if (!prepared.ok) return drop(prepared.error)
+        try {
+          const ref = await services.uploadImage(prepared.image)
+          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, ref } : attachment)))
+        } catch (error) {
+          drop(`${name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })()
+    }
+  }
+
+  const removeAttachment = (key: string) => {
+    // A limit or upload error is about the set being changed now.
+    setAttachError(null)
+    setAttachments((current) => current.filter((attachment) => {
+      if (attachment.key === key) release(attachment)
+      return attachment.key !== key
+    }))
+  }
+
+  // A refused send puts its text back (when nothing new was typed), so it isn't lost.
+  const lastSent = useRef<string | null>(null)
+  useEffect(() => {
+    if (!sendError || lastSent.current === null) return
+    const text = lastSent.current
+    lastSent.current = null
+    setDraft((current) => current || text)
+  }, [sendError])
+
+  const uploading = attachments.some((attachment) => !attachment.ref)
+  const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
+  const submit = () => {
+    if (!canSend) return
+    const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+    lastSent.current = draft.trim()
+    if (images.length) onSend(draft.trim(), images)
+    else onSend(draft.trim())
+    for (const attachment of attachments) release(attachment)
+    setAttachments([])
+    setAttachError(null)
+    setDraft('')
+    updateTrigger(null)
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.nativeEvent.isComposing) return
+    if (menuOpen && trigger) {
+      if (items.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault()
+        const index = active ? items.indexOf(active) : -1
+        const next = (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+        setActiveKey(items[next]!.key)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        dismiss(trigger)
+        return
+      }
+      // A fully typed command sends on Enter, as in the TUI; Tab still completes it.
+      const exact = active?.type === 'command' && active.runsHere && active.command.name === trigger.query
+      if (active && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exact))) {
+        event.preventDefault()
+        pick(active)
+        return
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit()
     } else if (event.key === 'Escape' && running) {
@@ -182,30 +481,131 @@ export function ChatComposer({
       onInterrupt()
     }
   }
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'))
+    if (!images.length) return
+    event.preventDefault()
+    addImages(images)
+  }
+
+  const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes('Files')
+  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragging(true)
+  }
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFiles(event)) return
+    event.preventDefault()
+    setDragging(false)
+    addImages([...event.dataTransfer.files])
+  }
+
+  const shownError = attachError ?? sendError ?? null
+  const dismissError = () => {
+    if (attachError) setAttachError(null)
+    else onDismissSendError?.()
+  }
   const profile = profileLabel(session.configDir)
   return (
     <div className="px-4 pb-3 pt-2">
-      <div className="mx-auto w-full max-w-[var(--chat-content-max-width)] overflow-hidden rounded-xl border border-input bg-card shadow-sm focus-within:border-primary/60">
+      <div
+        className={cn(
+          'mx-auto w-full max-w-[var(--chat-content-max-width)] overflow-hidden rounded-xl border border-input bg-card shadow-sm focus-within:border-primary/60',
+          dragging && 'border-primary ring-2 ring-primary/30',
+        )}
+        onDragOver={onDragOver}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
+        onDrop={onDrop}
+        data-testid="chat-composer"
+      >
         {request ? (
           request.requestKind === 'question'
             ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
             : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
+        ) : null}
+        {menuOpen && trigger ? (
+          <ComposerMenu
+            id={menuId}
+            label={MENU_LABELS[trigger.kind]}
+            groups={groups}
+            activeKey={active?.key ?? null}
+            status={status}
+            onHighlight={setActiveKey}
+            onPick={pick}
+          />
+        ) : null}
+        {attachments.length || shownError ? (
+          <div className="flex flex-col gap-1.5 px-3 pt-2.5">
+            {attachments.length ? (
+              <div className="flex flex-wrap gap-2" aria-label="Attached images">
+                {attachments.map((attachment) => (
+                  <Thumbnail
+                    key={attachment.key}
+                    src={attachment.previewUrl}
+                    name={attachment.name}
+                    busy={!attachment.ref}
+                    onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name })}
+                    onRemove={() => removeAttachment(attachment.key)}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {shownError ? (
+              <p className="flex items-start gap-1 text-xs text-destructive" role="alert">
+                <span className="min-w-0 flex-1">{shownError}</span>
+                <button type="button" className="shrink-0 cursor-pointer text-muted-foreground hover:text-foreground" aria-label="Dismiss" onClick={dismissError}>
+                  <X className="size-3.5" aria-hidden="true" />
+                </button>
+              </p>
+            ) : null}
+          </div>
         ) : null}
         <textarea
           ref={textarea}
           rows={1}
           value={draft}
           disabled={disabled}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            syncTrigger(event.target)
+          }}
+          onSelect={(event) => syncTrigger(event.currentTarget)}
+          onBlur={() => updateTrigger(null)}
           onKeyDown={onKeyDown}
-          placeholder={!hostConnected ? 'Reconnecting to the agent host…' : closed ? 'This session has ended' : running ? 'Queue a follow-up…' : 'Ask Claude…'}
+          onPaste={onPaste}
+          placeholder={!hostConnected ? 'Reconnecting to the agent host…' : closed ? 'This session has ended' : running ? 'Queue a follow-up…' : 'Ask Claude… / for commands, @ for files'}
           aria-label="Message Claude"
+          aria-controls={menuOpen ? menuId : undefined}
+          aria-autocomplete="list"
+          aria-activedescendant={menuOpen && active ? `${menuId}-${active.key}` : undefined}
           className="block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+            {richInput ? (
+              <>
+                <Button size="icon-sm" variant="ghost-muted" aria-label="Attach images" title="Attach images (or paste / drop them)" disabled={disabled} onClick={() => fileInput.current?.click()}>
+                  <Paperclip aria-hidden="true" />
+                </Button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept={CHAT_IMAGE_TYPES.join(',')}
+                  multiple
+                  hidden
+                  data-testid="chat-image-input"
+                  onChange={(event) => {
+                    addImages([...(event.target.files ?? [])])
+                    event.target.value = ''
+                  }}
+                />
+              </>
+            ) : null}
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
-            <ModelPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
+            <ModelPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} open={modelMenuOpen} onOpenChange={setModelMenuOpen} />
             <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
@@ -218,11 +618,12 @@ export function ChatComposer({
               <span className="size-2.5 rounded-[2px] bg-destructive" aria-hidden="true" />
             </Button>
           ) : null}
-          <Button size="icon-sm" aria-label="Send" title="Send (Enter)" onClick={submit} disabled={disabled || !draft.trim()}>
+          <Button size="icon-sm" aria-label="Send" title={uploading ? 'Waiting for images to upload' : 'Send (Enter)'} onClick={submit} disabled={!canSend}>
             <ArrowUp aria-hidden="true" />
           </Button>
         </div>
       </div>
+      <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     </div>
   )
 }
