@@ -632,7 +632,7 @@ describe('Claude chat launches', () => {
       await mkdir(`${dir}/.claude-empty`)
       await mkdir(`${dir}/.config`)
       expect(await listClaudeProfiles(dir)).toEqual([
-        { name: 'claudep', configDir: `${dir}/.claudep` },
+        { name: 'claudep', configDir: `${dir}/.claudep`, lastUsedAt: expect.any(Number) },
         { name: 'claudew', configDir: `${dir}/.claudew` },
       ])
     } finally {

@@ -565,8 +565,9 @@ describe('TmuxCreateControls worktrees', () => {
 
 describe('Claude chat launches', () => {
   const profiles = [
-    { name: 'claudep', configDir: '/Users/dev/.claudep' },
-    { name: 'claudew', configDir: '/Users/dev/.claudew' },
+    { name: 'claude', configDir: '/Users/dev/.claude', lastUsedAt: 1 },
+    { name: 'claudep', configDir: '/Users/dev/.claudep', lastUsedAt: 30 },
+    { name: 'claudew', configDir: '/Users/dev/.claudew', lastUsedAt: 20 },
   ]
   const chatResponse = (input: CreateTmuxSessionRequest): TmuxCreateResponse => ({
     created,

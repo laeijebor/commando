@@ -63,7 +63,10 @@ export async function listClaudeProfiles(home = homedir()): Promise<ClaudeProfil
       access(join(configDir, 'settings.json')),
       access(join(configDir, 'projects')),
     ].map((check) => check.then(() => true))).catch(() => false)
-    if (used) profiles.push({ name: entry.name.slice(1), configDir })
+    if (!used) continue
+    // Sessions write to projects/, so its modification time says which login is in use.
+    const lastUsedAt = await stat(join(configDir, 'projects')).then((info) => info.mtimeMs, () => undefined)
+    profiles.push({ name: entry.name.slice(1), configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) })
   }
   return profiles.sort((a, b) => a.name.localeCompare(b.name))
 }

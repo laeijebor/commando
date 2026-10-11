@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
   CHAT_PERMISSION_MODES,
+  defaultClaudeProfile,
   defaultWorktreePath,
   sanitizeBranchName,
   SESSION_AGENT_CHOICES,
@@ -221,7 +222,7 @@ export function TmuxCreateControls({
   }, [agentProvider, claudeProfiles, loadClaudeProfiles])
   const chatConfigDir = chatLaunch.configDir && claudeProfiles?.some((profile) => profile.configDir === chatLaunch.configDir)
     ? chatLaunch.configDir
-    : claudeProfiles?.[0]?.configDir
+    : claudeProfiles ? defaultClaudeProfile(claudeProfiles)?.configDir : undefined
 
   useEffect(() => {
     if (!sessionCreateRequest) return

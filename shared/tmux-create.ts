@@ -31,7 +31,12 @@ export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label:
 ]
 
 /** A Claude config dir the daemon found in the home folder. */
-export type ClaudeProfile = { name: string; configDir: string }
+export type ClaudeProfile = { name: string; configDir: string; /** Last session activity, ms. */ lastUsedAt?: number }
+
+/** The profile to offer when none is remembered: the one used most recently. */
+export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): ClaudeProfile | undefined {
+  return [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
+}
 
 export const SESSION_AGENT_CHOICES = [
   { value: 'shell', label: 'Shell' },
