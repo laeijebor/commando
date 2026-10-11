@@ -82,6 +82,44 @@ export type ChatItem = ChatItemBase & (
 
 export type ChatItemKind = ChatItem['kind']
 
+/** How hard Claude works on a reply (the SDK's effort levels). */
+export type ChatEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export const CHAT_EFFORTS: readonly ChatEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** The SDK's permission modes; a chat can switch between them while it runs. */
+export type ChatSessionPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions'
+export const CHAT_SESSION_PERMISSION_MODES: readonly ChatSessionPermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']
+
+/** A model the session can switch to, as `supportedModels()` lists it. */
+export interface ChatModelOption {
+  /** What `setModel` and `--model` take: an alias (`sonnet`) or a full id. */
+  value: string
+  displayName: string
+  description?: string
+  /** The model id the value runs as, to match the id `system/init` reports. */
+  resolvedModel?: string
+  efforts?: ChatEffort[]
+  supportsAutoMode?: boolean
+}
+
+/** How full the context window is, from `getContextUsage({detail: 'summary'})`. */
+export interface ChatContextUsage {
+  usedTokens: number
+  maxTokens: number
+  /** Tokens at which Claude compacts the conversation by itself. */
+  autoCompactThreshold?: number
+  autoCompact: boolean
+  /** What fills the used part of the window, largest first. */
+  categories: { name: string; tokens: number }[]
+}
+
+/** A picker change; at least one field is set. */
+export interface ChatSettingsChange {
+  model?: string
+  effort?: ChatEffort
+  permissionMode?: ChatSessionPermissionMode
+}
+
 export interface ChatSessionInfo {
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
@@ -89,8 +127,17 @@ export interface ChatSessionInfo {
   cwd: string
   status: ChatSessionStatus
   sessionId?: string
+  /** The model running, as `system/init` reports it (a full id). */
   model?: string
+  /** The model value picked in the chat or at launch; restarts and resumes carry it. */
+  selectedModel?: string
+  /** The effort picked in the chat or at launch (Claude does not report its default). */
+  effort?: ChatEffort
   permissionMode?: string
+  /** Bypass needs a flag at launch, so only a chat started with it can switch to it. */
+  bypassAllowed?: boolean
+  models?: ChatModelOption[]
+  contextUsage?: ChatContextUsage
   /** Claude config directory (`~/.claudep`, `~/.claudew`); decides the login used. */
   configDir?: string
   hostPid: number
@@ -139,6 +186,8 @@ export type DaemonToHostMessage =
   | { type: 'answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Restart the host on the same conversation once the current turn ends. */
   | { type: 'restart'; paneId: string; requestId: string }
+  /** Switch the model, effort or permission mode for the rest of the session. */
+  | { type: 'configure'; paneId: string; settings: ChatSettingsChange; requestId: string }
 
 // ---- validation (host and client input both cross a trust boundary) ----
 
@@ -163,6 +212,62 @@ export function isPaneId(value: unknown): value is string {
 }
 
 const ITEM_STATUSES = new Set<ChatItemStatus>(['running', 'completed', 'failed', 'interrupted'])
+/** Model values reach a shell command line (quoted), so keep them to id characters. */
+const MODEL_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:@[\]/-]{0,199}$/
+
+export function isChatEffort(value: unknown): value is ChatEffort {
+  return CHAT_EFFORTS.includes(value as ChatEffort)
+}
+
+export function isChatPermissionMode(value: unknown): value is ChatSessionPermissionMode {
+  return CHAT_SESSION_PERMISSION_MODES.includes(value as ChatSessionPermissionMode)
+}
+
+export function isModelValue(value: unknown): value is string {
+  return typeof value === 'string' && MODEL_VALUE.test(value)
+}
+
+/** A picker change from the client or daemon: known fields only, at least one set. */
+export function parseChatSettingsChange(value: unknown): ChatSettingsChange | null {
+  if (!isRecord(value)) return null
+  if (value.model !== undefined && !isModelValue(value.model)) return null
+  if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  if (value.permissionMode !== undefined && !isChatPermissionMode(value.permissionMode)) return null
+  const change = withOptional({} as ChatSettingsChange, { model: value.model, effort: value.effort, permissionMode: value.permissionMode })
+  return Object.keys(change).length ? change : null
+}
+
+function finiteCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function parseModels(value: unknown): ChatModelOption[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.slice(0, 64).flatMap((model) => {
+    if (!isRecord(model) || !isModelValue(model.value) || typeof model.displayName !== 'string') return []
+    const efforts = Array.isArray(model.efforts) ? model.efforts.filter(isChatEffort) : undefined
+    return [withOptional({ value: model.value, displayName: model.displayName.slice(0, 200) } as ChatModelOption, {
+      description: optionalText(model.description, 500),
+      resolvedModel: isModelValue(model.resolvedModel) ? model.resolvedModel : undefined,
+      efforts: efforts?.length ? efforts : undefined,
+      supportsAutoMode: model.supportsAutoMode === true ? true : undefined,
+    })]
+  })
+}
+
+function parseContextUsage(value: unknown): ChatContextUsage | undefined {
+  if (!isRecord(value) || !finiteCount(value.usedTokens) || !finiteCount(value.maxTokens) || value.maxTokens === 0) return undefined
+  const categories = Array.isArray(value.categories)
+    ? value.categories.slice(0, 32).flatMap((category) => (
+        isRecord(category) && typeof category.name === 'string' && finiteCount(category.tokens)
+          ? [{ name: category.name.slice(0, 120), tokens: category.tokens }]
+          : []
+      ))
+    : []
+  return withOptional({ usedTokens: value.usedTokens, maxTokens: value.maxTokens, autoCompact: value.autoCompact === true, categories } as ChatContextUsage, {
+    autoCompactThreshold: finiteCount(value.autoCompactThreshold) ? value.autoCompactThreshold : undefined,
+  })
+}
 const SESSION_STATUSES = new Set<ChatSessionStatus>(['starting', 'idle', 'running', 'waiting', 'closed', 'error'])
 
 export function parseChatAnswer(value: unknown): ChatAnswer | null {
@@ -290,6 +395,10 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
     if (!optionalString(value[key], 4096)) return null
   }
+  if (value.selectedModel !== undefined && !isModelValue(value.selectedModel)) return null
+  if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  const models = parseModels(value.models)
+  const contextUsage = parseContextUsage(value.contextUsage)
   return {
     paneId: value.paneId,
     provider: 'claude',
@@ -305,6 +414,11 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(typeof value.hostBuild === 'string' ? { hostBuild: value.hostBuild } : {}),
     ...(typeof value.title === 'string' ? { title: value.title } : {}),
     ...(typeof value.resumeCommand === 'string' ? { resumeCommand: value.resumeCommand } : {}),
+    ...(typeof value.selectedModel === 'string' ? { selectedModel: value.selectedModel } : {}),
+    ...(isChatEffort(value.effort) ? { effort: value.effort } : {}),
+    ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
+    ...(models ? { models } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
   }
 }
 
@@ -355,6 +469,12 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
       return isPaneId(value.paneId) && shortString(value.requestId)
         ? { type: value.type, paneId: value.paneId, requestId: value.requestId }
         : null
+    case 'configure': {
+      const settings = parseChatSettingsChange(value.settings)
+      return isPaneId(value.paneId) && settings && shortString(value.requestId)
+        ? { type: 'configure', paneId: value.paneId, settings, requestId: value.requestId }
+        : null
+    }
     case 'answer': {
       const answer = parseChatAnswer(value.answer)
       return isPaneId(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)
