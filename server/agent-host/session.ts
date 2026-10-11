@@ -454,8 +454,8 @@ export class AgentSession {
           const explicit = change.model === DEFAULT_MODEL ? undefined : change.model
           await handle.setModel(explicit)
           const { selectedModel: _previous, effort, ...rest } = this.info
-          // An effort the new model lacks runs as something else, so stop claiming it.
-          const keepEffort = effort && (!option?.efforts || option.efforts.includes(effort))
+          // An effort the new model lacks runs as something else (or not at all), so stop claiming it.
+          const keepEffort = effort && (!option || option.efforts?.includes(effort))
           this.info = {
             ...rest,
             model: option?.resolvedModel ?? change.model,
