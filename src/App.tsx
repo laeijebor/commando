@@ -109,7 +109,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
   insertWebPaneLeaves,
@@ -588,7 +588,7 @@ export function TerminalPaneCard({
           <small>{pane.command || pane.path}</small>
         </span>
         {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
-          {paneTabs.length} tabs{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}
+          {paneTabs.length} {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}
         </span>}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
@@ -676,7 +676,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className="terminal-pane-body has-worklog">
+      <div className="terminal-pane-body has-worklog" onPointerDownCapture={onFocus}>
         {showChat && chat ? (
           <ChatPane
             chat={chat}
@@ -1036,9 +1036,9 @@ export function App() {
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
-  const previousTmuxActivePanes = useRef<Record<string, string | undefined>>({})
   const knownPanelTabs = useRef(new Set<string>())
   const pendingTabSelection = useRef(new Map<string, string>())
+  const seenPanelTabs = useRef(new Set<string>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
@@ -1284,6 +1284,15 @@ export function App() {
           message.snapshot.revision < previousSnapshotRef.current.revision
         ) {
           setPaneRendererControls(new Map())
+        }
+        // Consume tmux focus transitions at snapshot time so a later click
+        // cannot be overridden by an unchanged active pane on a rerender.
+        if (activeGroup && previousSnapshotRef.current) {
+          const previousActive = previousSnapshotRef.current.panes.find((pane) =>
+            pane.windowId === activeGroup.windowId && pane.active)?.id
+          const nextActive = message.snapshot.panes.find((pane) =>
+            pane.windowId === activeGroup.windowId && pane.active)?.id
+          if (previousActive && nextActive && previousActive !== nextActive) setFocusedPaneId(nextActive)
         }
         previousSnapshotRef.current = message.snapshot
         setSnapshot(message.snapshot)
@@ -1641,15 +1650,10 @@ export function App() {
     ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
     : []
   const tmuxActivePaneId = allVisiblePaneIds.find((id) => paneMap.get(id)?.active)
-  const effectivePaneId = effectiveFocusedPane(
-    focusedPaneId, allVisiblePaneIds, tmuxActivePaneId,
-    activeGroup ? previousTmuxActivePanes.current[activeGroup.windowId] : undefined,
-  )
+  const effectivePaneId = effectiveFocusedPane(focusedPaneId, allVisiblePaneIds, tmuxActivePaneId)
   useEffect(() => {
-    if (!activeGroup) return
-    previousTmuxActivePanes.current[activeGroup.windowId] = tmuxActivePaneId
-    if (effectivePaneId && effectivePaneId !== focusedPaneId) setFocusedPaneId(effectivePaneId)
-  }, [activeGroup?.windowId, tmuxActivePaneId, effectivePaneId, focusedPaneId])
+    setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
+  }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
@@ -1658,8 +1662,8 @@ export function App() {
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
     const newTabs = focusedTabs.filter((tab) => !previous.has(tab.id))
-    const selected = newTabs.at(-1) ?? activePanelTab(focusedTabs)
-    if (!selected || (!newTabs.length && !selected.unseen)) return
+    const selected = newTabs.at(-1)
+    if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
     pendingTabSelection.current.set(effectivePaneId, selected.id)
     void createWebPanesApi(token).setActiveTab(selected.id).catch(() => undefined).finally(() => {
@@ -2344,6 +2348,17 @@ export function App() {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to rename session')
     }
   }
+
+  const markPanelTabSeen = useCallback((tab: WebPane) => {
+    if (seenPanelTabs.current.has(tab.id)) return
+    seenPanelTabs.current.add(tab.id)
+    void createWebPanesApi(token).clearUnseen(tab.id).then(() => {
+      setWebPanes((current) => current.map((pane) => pane.id === tab.id ? { ...pane, unseen: false } : pane))
+    }).catch((cause) => {
+      seenPanelTabs.current.delete(tab.id)
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark tab seen')
+    })
+  }, [token])
 
   const selectPanelTab = async (tab: WebPane) => {
     if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split')) setMaximizedPaneId(tab.id)
@@ -3349,6 +3364,7 @@ export function App() {
                     simulatorNames={simulatorNames}
                     titles={webPaneTitles}
                     onSelect={(tab) => { void selectPanelTab(tab) }}
+                    onSeen={connected ? markPanelTabSeen : undefined}
                     onClose={(id) => { void closeWebPane(id) }}
                     onOpen={(url, anchor, engine) => { void openWebPane(url, anchor, engine) }}
                     renderTab={renderWebPane}>

@@ -4560,6 +4560,7 @@ body.is-resizing-hud-pinned-note {
 .side-panel-tab button:hover, .side-panel-expand:hover { background: var(--surface-hover); }
 .side-panel-tab svg, .side-panel-expand svg { width: 13px; height: 13px; }
 .side-panel-tab button span { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-panel-tab-label[dir="rtl"] { text-align: left; }
 .side-panel-tab.is-active { background: var(--surface); box-shadow: inset 0 -1px var(--accent); }
 .side-panel-tab.is-active button { color: var(--text); }
 .side-panel-tab .side-panel-tab-close { padding: 0 4px; }

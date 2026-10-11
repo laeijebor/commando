@@ -759,6 +759,87 @@ const openWebPane = {
   createdAt: Date.now(),
 } as const
 
+describe('panel focus and attention', () => {
+  const paneA = { ...pane, title: 'Agent A', active: true }
+  const paneB = { ...adjacentPane, title: 'Agent B', active: false }
+  const tabA = { ...openWebPane, dock: 'panel' as const, activeTab: true, unseen: false }
+  const tabB = { ...tabA, id: 'w-1234abcd', anchorPaneId: paneB.id, url: 'http://localhost/two' }
+  const owner = () => document.querySelector('.side-panel-owner')
+  const footer = (id: string) => document.querySelector(`[data-pane-id="${id}"] .pane-footer-focus`)
+
+  it('lets a newer terminal click win after tmux active-pane transitions and unchanged snapshots', async () => {
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, tabB] }))
+    const terminalB = screen.getByTestId(`renderer-${paneB.id}`)
+    act(() => terminalB.focus())
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...paneA, active: false }, { ...paneB, active: true }]) }))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    expect(owner()).toHaveTextContent(`${paneA.id} · Agent A`)
+    expect(footer(paneA.id)).toHaveTextContent('Focused / keys go here')
+
+    // Tmux selection changes client focus, but B still owns DOM focus. Clicking
+    // B again emits pointer events without another browser focus event.
+    expect(document.activeElement).toBe(terminalB)
+    fireEvent.pointerDown(terminalB)
+    fireEvent.click(terminalB)
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+    expect(footer(paneB.id)).toHaveTextContent('Focused / keys go here')
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+  })
+
+  it('keeps a click newer than a tmux change received in the same render batch', async () => {
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, tabB] }))
+    fireEvent.focus(screen.getByTestId(`renderer-${paneB.id}`))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...paneA, active: false }, { ...paneB, active: true }]) }))
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) })
+      fireEvent.pointerDown(screen.getByTestId(`renderer-${paneB.id}`))
+    })
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+    expect(footer(paneB.id)).toHaveTextContent('Focused / keys go here')
+  })
+
+  it('clears unseen once when the pane owning the visible active tab is focused', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, { ...tabB, unseen: true }] }))
+    const chip = () => document.querySelector(`[data-pane-id="${paneB.id}"] .pane-tab-count`)
+    expect(chip()).toHaveTextContent(/1 tabs? · 1 new/)
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith(`/${tabB.id}/seen`))).toHaveLength(0)
+
+    fireEvent.focus(screen.getByTestId(`renderer-${paneB.id}`))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tabB.id}/seen`, expect.objectContaining({ method: 'POST' })))
+    await waitFor(() => expect(chip()).not.toHaveTextContent('new'))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    fireEvent.focus(screen.getByTestId(`renderer-${paneB.id}`))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith(`/${tabB.id}/seen`))).toHaveLength(1)
+  })
+
+  it('leaves a collapsed tab unseen until it becomes visible on expansion', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, { ...tabB, unseen: true }] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    fireEvent.focus(screen.getByTestId(`renderer-${paneB.id}`))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith(`/${tabB.id}/seen`))).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand side panel' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tabB.id}/seen`, expect.objectContaining({ method: 'POST' })))
+  })
+
+  it('uses singular tab counts in pane headers, including unseen counts', async () => {
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, { ...tabB, unseen: true }] }))
+    expect(document.querySelector(`[data-pane-id="${paneA.id}"] .pane-tab-count`)).toHaveTextContent(/^1 tab$/)
+    expect(document.querySelector(`[data-pane-id="${paneB.id}"] .pane-tab-count`)).toHaveTextContent(/^1 tab · 1 new$/)
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, { ...tabB, anchorPaneId: paneA.id, unseen: false }] }))
+    expect(document.querySelector(`[data-pane-id="${paneA.id}"] .pane-tab-count`)).toHaveTextContent(/^2 tabs$/)
+  })
+})
+
 describe('web pane tiles', () => {
   it('does not treat a terminal sharing its layout with a web tile as solo', async () => {
     await renderAppWithSnapshot(snapshotWith([pane]))

@@ -11,9 +11,9 @@ const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
   placement: 'right', engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: index,
 }))
 
-function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs) {
+function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs, titles: Record<string, string> = {}) {
   return <SidePanel windowId="@1" tabs={panes} focusedPaneId={focusedPaneId} paneLabel={`${focusedPaneId} · claude`}
-    simulatorNames={{}} titles={{}} onSelect={() => undefined} onClose={() => undefined} onOpen={onOpen}
+    simulatorNames={{}} titles={titles} onSelect={() => undefined} onClose={() => undefined} onOpen={onOpen}
     renderTab={(tab) => <iframe title={tab.id} src={tab.url} />}><div>Terminal grid</div></SidePanel>
 }
 
@@ -62,6 +62,23 @@ describe('SidePanel', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Tab URL' }), { target: { value: 'localhost:5173' } })
     fireEvent.click(screen.getByRole('button', { name: 'Open' }))
     expect(onOpen).toHaveBeenCalledWith('http://localhost:5173', '%14', 'chromium')
+  })
+
+  it('distinguishes same-host tabs by path, retains the path end, and exposes the full URL', () => {
+    const panes = ['one', 'two', 'four'].map((path, order) => ({ ...tabs[0], id: `w-${order}`, order, url: `http://127.0.0.1:4471/${path}` }))
+    render(panel('%12', vi.fn(), panes))
+    for (const pane of panes) {
+      const path = new URL(pane.url).pathname
+      const tab = screen.getByRole('tab', { name: `127.0.0.1:4471${path}` })
+      expect(tab).toHaveAttribute('title', pane.url)
+      expect(tab.querySelector('.side-panel-tab-label')).toHaveAttribute('dir', 'rtl')
+      expect(tab.querySelector('bdi')).toHaveAttribute('dir', 'ltr')
+    }
+  })
+
+  it('prefers a known page title and still puts the full URL in the tooltip', () => {
+    render(panel('%12', vi.fn(), tabs, { [tabs[0].id]: 'Deployment plan' }))
+    expect(screen.getByRole('tab', { name: 'Deployment plan' })).toHaveAttribute('title', tabs[0].url)
   })
 
   it('renders only the grid when the window has no panel tabs', () => {

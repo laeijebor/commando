@@ -14,12 +14,15 @@ function loadWidth(windowId: string): number {
 function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
   if (title) return title
   if (tab.content) return simulatorName ?? 'Simulator'
-  try { return new URL(tab.url).host } catch { return 'Browser' }
+  try {
+    const url = new URL(tab.url)
+    return `${url.host}${url.pathname}`
+  } catch { return 'Browser' }
 }
 
 export function SidePanel({
   windowId, tabs, focusedPaneId, maximizedTabId, gridMaximized = false, paneLabel, simulatorNames, titles,
-  onSelect, onClose, onOpen, renderTab, children,
+  onSelect, onSeen, onClose, onOpen, renderTab, children,
 }: {
   windowId: string
   tabs: WebPane[]
@@ -30,6 +33,7 @@ export function SidePanel({
   simulatorNames: Record<string, string>
   titles: Record<string, string>
   onSelect: (tab: WebPane) => void
+  onSeen?: (tab: WebPane) => void
   onClose: (id: string) => void
   onOpen: (url: string, anchor: string, engine: WebPaneEngine) => void
   renderTab: (tab: WebPane, visible: boolean) => ReactNode
@@ -49,6 +53,9 @@ export function SidePanel({
     try { localStorage.setItem(`commando.side-panel.width.${windowId}`, String(width)) } catch { /* Best effort. */ }
   }, [windowId, width])
   useEffect(() => { setAdding(null); setUrl('') }, [focusedPaneId])
+  useEffect(() => {
+    if (!gridMaximized && expanded && active?.unseen) onSeen?.(active)
+  }, [active?.id, active?.unseen, gridMaximized, expanded, onSeen])
   if (!tabs.length) return <>{children}</>
   const open = () => {
     if (!focusedPaneId || !adding || !url.trim()) return
@@ -91,8 +98,10 @@ export function SidePanel({
                 const Icon = tab.content ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
                 const label = tabLabel(tab, titles[tab.id], tab.content ? simulatorNames[tab.content.udid] : undefined)
                 return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}`} key={tab.id}>
-                  <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)} title={label}>
-                    <Icon aria-hidden="true" /><span>{label}</span>{tab.unseen && <i className="side-panel-new" aria-label="New tab" />}
+                  <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)} title={tab.url || label}>
+                    <Icon aria-hidden="true" />
+                    <span className="side-panel-tab-label" dir={!titles[tab.id] && !tab.content ? 'rtl' : undefined}><bdi dir="ltr">{label}</bdi></span>
+                    {tab.unseen && <i className="side-panel-new" aria-label="New tab" />}
                   </button>
                   <button type="button" className="side-panel-tab-close" aria-label={`Close ${label}`} onClick={() => onClose(tab.id)}><X /></button>
                 </div>

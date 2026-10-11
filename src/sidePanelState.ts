@@ -6,7 +6,7 @@ export function effectiveFocusedPane(
   focusedPaneId: string | null,
   paneIds: readonly string[],
   tmuxActivePaneId: string | undefined,
-  previousTmuxActivePaneId: string | undefined,
+  previousTmuxActivePaneId?: string,
 ): string | undefined {
   if (tmuxActivePaneId && previousTmuxActivePaneId && tmuxActivePaneId !== previousTmuxActivePaneId) {
     return tmuxActivePaneId
