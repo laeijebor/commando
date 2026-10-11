@@ -213,3 +213,27 @@ describe('commando-agent prompt parsing', () => {
     expect(parseHostArgs(['claude', '--prompt'], {})).toMatch(/needs a value/)
   })
 })
+
+describe('AgentSession resume replay', () => {
+  it('holds sends until the earlier turns have replayed, then starts a new turn after them', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const history = [
+      { type: 'user', message: { role: 'user', content: 'Earlier question' }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'Earlier answer' }] }, parent_tool_use_id: null },
+    ]
+    const { fake, session, items } = started({ resume: 'abcd1234-0000' }, { messages: async () => { await gate; return history }, title: async () => undefined })
+    session.send('new question')
+    await tick()
+    expect(fake.prompts).toEqual([])
+    expect(items.size).toBe(0)
+    release()
+    await tick()
+    await tick()
+    const ordered = [...items.values()]
+    expect(ordered.map((item) => item.kind === 'user_message' || item.kind === 'assistant_message' ? item.text : item.kind))
+      .toEqual(['Earlier question', 'Earlier answer', 'new question'])
+    expect(ordered[2]!.turnId).not.toBe(ordered[1]!.turnId)
+    expect(fake.prompts).toEqual([expect.objectContaining({ message: { role: 'user', content: 'new question' } })])
+  })
+})

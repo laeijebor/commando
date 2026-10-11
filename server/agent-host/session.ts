@@ -116,6 +116,11 @@ export class AgentSession {
   private turnsInFlight = 0
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
+  /**
+   * Sends that arrive while a resumed transcript is still replaying wait here,
+   * so they land after the earlier turns instead of inside them.
+   */
+  private heldSends: string[] | null
 
   constructor(
     private readonly spec: AgentSessionSpec,
@@ -124,6 +129,7 @@ export class AgentSession {
     private readonly store: SessionStore = sdkSessionStore,
   ) {
     this.mapper = new ClaudeItemMapper(now)
+    this.heldSends = spec.resume ? [] : null
     this.info = {
       paneId: spec.paneId,
       provider: 'claude',
@@ -194,12 +200,19 @@ export class AgentSession {
     })
     this.setStatus('idle')
     void this.consume(this.queryHandle)
+    const held = this.heldSends ?? []
+    this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
+    for (const text of held) this.send(text)
   }
 
   send(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
+    if (this.heldSends) {
+      this.heldSends.push(trimmed)
+      return
+    }
     if (this.info.status === 'closed' || this.info.status === 'error') {
       this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
       return
