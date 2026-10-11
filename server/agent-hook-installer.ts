@@ -448,8 +448,13 @@ function planUpdateFor(input) {
 }
 
 // The profile launcher matches the config dir in use: ~/.claudew -> claudew, ~/.claudep -> claudep.
+// A Commando chat pane passes its own resume command, so following it reopens the chat.
 function resumeContext(sessionId) {
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9-]{8,80}$/.test(sessionId)) return ''
+  const chat = process.env.COMMANDO_CHAT_RESUME
+  if (typeof chat === 'string' && chat.length > 0 && chat.length < 2000 && !/[\\x00-\\x1f]/.test(chat)) {
+    return '\\nResume command for this conversation: ' + chat + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
+  }
   const profile = /^\\.(claude[wp])$/.exec((process.env.CLAUDE_CONFIG_DIR ?? '').split('/').filter(Boolean).pop() ?? '')?.[1] ?? 'claude'
   return '\\nResume command for this conversation: ' + profile + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
 }

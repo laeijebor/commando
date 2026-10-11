@@ -61,7 +61,7 @@ import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
-import { runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
+import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
 import { GitWorktreeService } from './git-worktree.js'
 import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { PaneRepoResolver } from './pane-repos.js'
@@ -83,6 +83,7 @@ import { defaultSimSnapshotDirectory, SimWallApi } from './sim-wall.js'
 import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief-sims.js'
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
+import { agentHostBuild } from './agent-host/build.js'
 import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -609,6 +610,7 @@ async function main(): Promise<void> {
   const agentStatuses = new AgentStatusRegistry()
   const lastPaneInputAt = new Map<string, number>()
   const agentResume = new AgentResumeService({
+    chatLauncher: COMMANDO_AGENT_LAUNCHER,
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
       await tmux.sendText(pane.sessionId, pane.id, command)
@@ -790,7 +792,16 @@ async function main(): Promise<void> {
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
 
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
+  // The checkout's host fingerprint, re-read at most every 10 s, flags hosts left behind by a merge.
+  let hostBuildCache: { at: number; build: Promise<string | undefined> } | undefined
+  const currentHostBuild = (): Promise<string | undefined> => {
+    if (!hostBuildCache || Date.now() - hostBuildCache.at > 10_000) {
+      hostBuildCache = { at: Date.now(), build: agentHostBuild().catch(() => undefined) }
+    }
+    return hostBuildCache.build
+  }
   const agentHosts = new AgentHostHub({
+    currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast,
@@ -1990,12 +2001,15 @@ async function main(): Promise<void> {
       }
       case 'chat_send':
       case 'chat_interrupt':
+      case 'chat_restart':
       case 'chat_answer': {
         const delivered = message.type === 'chat_send'
           ? agentHosts.send(message.paneId, message.text, message.requestId)
           : message.type === 'chat_interrupt'
             ? agentHosts.interrupt(message.paneId, message.requestId)
-            : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
+            : message.type === 'chat_restart'
+              ? agentHosts.restart(message.paneId, message.requestId)
+              : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
         if (!delivered) {
           sendError(client, 'chat_unavailable', message.type === 'chat_answer'
             ? 'That request is no longer waiting for an answer'

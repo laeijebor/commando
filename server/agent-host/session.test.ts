@@ -1,8 +1,8 @@
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
-import { parseHostArgs, terminalLine } from './main.js'
-import { AgentSession } from './session.js'
+import { chatResumeCommand, parseHostArgs, terminalLine } from './main.js'
+import { AgentSession, type SessionStore } from './session.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
 function fakeQuery() {
@@ -38,9 +38,9 @@ function fakeQuery() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-function started(spec: Partial<ConstructorParameters<typeof AgentSession>[0]> = {}) {
+function started(spec: Partial<ConstructorParameters<typeof AgentSession>[0]> = {}, store: SessionStore = { messages: async () => [], title: async () => undefined }) {
   const fake = fakeQuery()
-  const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, configDir: '/home/me/.claudew', ...spec }, fake.run, () => 1)
+  const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, configDir: '/home/me/.claudew', ...spec }, fake.run, () => 1, store)
   const items = new Map<string, ChatItem>()
   const sessions: ChatSessionInfo[] = []
   session.on('items', (changed) => { for (const item of changed) items.set(item.id, item) })
@@ -52,8 +52,10 @@ function started(spec: Partial<ConstructorParameters<typeof AgentSession>[0]> = 
 const signalOptions = (requestId: string) => ({ signal: new AbortController().signal, toolUseID: `tool-${requestId}`, requestId })
 
 describe('AgentSession', () => {
-  it('starts the SDK with the pane cwd, chosen config dir and the TUI settings', () => {
-    const { fake } = started({ resume: 'abcd1234-0000', permissionMode: 'bypassPermissions' })
+  it('starts the SDK with the pane cwd, chosen config dir and the TUI settings', async () => {
+    const { fake } = started({ resume: 'abcd1234-0000', permissionMode: 'bypassPermissions', resumeCommand: '/c/commando-agent claude' })
+    await tick()
+    expect(fake.options.env).toMatchObject({ COMMANDO_CHAT_RESUME: '/c/commando-agent claude' })
     expect(fake.options).toMatchObject({
       cwd: '/work',
       resume: 'abcd1234-0000',
@@ -160,5 +162,47 @@ describe('commando-agent arguments', () => {
   it('prints finished items as terminal lines and skips streaming ones', () => {
     expect(terminalLine({ id: 'a', turnId: 't', status: 'running', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text: 'partial' })).toBeNull()
     expect(terminalLine({ id: 'b', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'command', toolUseId: 'x', command: 'npm test' })).toContain('npm test')
+  })
+})
+
+describe('AgentSession start-up', () => {
+  it('shows the earlier turns of a resumed conversation before continuing it', async () => {
+    const history = [
+      { type: 'user', message: { role: 'user', content: 'What changed?' }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git log' } }] }, parent_tool_use_id: null },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'abc fix' }] }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'One fix landed.' }] }, parent_tool_use_id: null },
+      { type: 'user', message: { role: 'user', content: '<local-command-caveat>noise</local-command-caveat>' }, parent_tool_use_id: null },
+    ]
+    const { items, sessions } = started({ resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => 'Recent changes' })
+    await tick()
+    await tick()
+    expect([...items.values()].map((item) => [item.kind, item.status])).toEqual([
+      ['user_message', 'completed'], ['command', 'completed'], ['assistant_message', 'completed'],
+    ])
+    expect(sessions.at(-1)?.title).toBe('Recent changes')
+  })
+
+  it('reports a history it cannot read and still starts', async () => {
+    const { fake, items } = started({ resume: 'abcd1234-0000' }, { messages: async () => { throw new Error('no transcript') }, title: async () => undefined })
+    await tick()
+    expect([...items.values()][0]).toMatchObject({ kind: 'notice', level: 'error' })
+    expect(fake.options).toBeDefined()
+  })
+
+  it('sends the opening prompt and titles the chat after it', async () => {
+    const { fake, sessions } = started({ initialPrompt: 'Tidy the README please' })
+    await tick()
+    expect(fake.prompts).toEqual([expect.objectContaining({ message: { role: 'user', content: 'Tidy the README please' } })])
+    expect(sessions.at(-1)?.title).toBe('Tidy the README please')
+  })
+})
+
+describe('commando-agent resume and prompt arguments', () => {
+  it('takes an opening prompt and builds the chat resume command from session flags only', () => {
+    const args = parseHostArgs(['claude', '--config-dir', '/x/.claudew', '--permission-mode', 'acceptEdits', '--prompt', 'hi there'], {})
+    if (typeof args === 'string') throw new Error(args)
+    expect(args.prompt).toBe('hi there')
+    expect(chatResumeCommand('/c/scripts/commando-agent', args)).toBe('/c/scripts/commando-agent claude --config-dir /x/.claudew --permission-mode acceptEdits')
   })
 })

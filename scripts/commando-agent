@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # Runs an agent session in this tmux pane and shows it as a chat in Commando.
-#   commando-agent claude [--config-dir ~/.claudep] [--resume ID] [--dangerously-skip-permissions]
-set -euo pipefail
+#   commando-agent claude [--config-dir ~/.claudep] [--resume ID] [--permission-mode MODE] [--prompt TEXT]
+#
+# The host exits with 75 to ask for a restart (to pick up new code); it then
+# leaves its next arguments, shell-quoted, in COMMANDO_AGENT_RESTART_FILE.
+set -uo pipefail
 root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-exec node --import "$root/node_modules/tsx/dist/loader.mjs" "$root/server/agent-host/main.ts" "$@"
+export COMMANDO_AGENT_LAUNCHER="$root/scripts/commando-agent"
+restart_file="$(mktemp "${TMPDIR:-/tmp}/commando-agent-restart.XXXXXX")"
+export COMMANDO_AGENT_RESTART_FILE="$restart_file"
+trap 'rm -f "$restart_file"' EXIT
+
+while :; do
+  : > "$restart_file"
+  node --import "$root/node_modules/tsx/dist/loader.mjs" "$root/server/agent-host/main.ts" "$@"
+  status=$?
+  [ "$status" -eq 75 ] && [ -s "$restart_file" ] || exit "$status"
+  # The host wrote these words with shellQuote, so eval only re-splits them.
+  eval "set -- $(cat "$restart_file")"
+done

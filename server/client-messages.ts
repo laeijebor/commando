@@ -540,11 +540,12 @@ export function parseClientMessage(value: unknown): ParseResult {
       }
       return { ok: true, message: { type: 'chat_send', paneId: value.paneId, text: value.text, requestId: id } }
     }
-    case 'chat_interrupt': {
+    case 'chat_interrupt':
+    case 'chat_restart': {
       const id = requestId(value.requestId)
       return id && isPaneId(value.paneId)
-        ? { ok: true, message: { type: 'chat_interrupt', paneId: value.paneId, requestId: id } }
-        : { ok: false, error: 'Invalid chat interrupt', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+        ? { ok: true, message: { type: value.type, paneId: value.paneId, requestId: id } }
+        : { ok: false, error: value.type === 'chat_restart' ? 'Invalid chat restart' : 'Invalid chat interrupt', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     case 'chat_answer': {
       const id = requestId(value.requestId)

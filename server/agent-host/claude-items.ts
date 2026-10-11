@@ -252,6 +252,34 @@ export class ClaudeItemMapper {
     return changed
   }
 
+  /**
+   * Rebuilds items from a saved transcript (getSessionMessages) so a resumed
+   * conversation shows its earlier turns. Everything replayed is finished.
+   */
+  replay(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): ChatItem[] {
+    for (const entry of messages) {
+      const message = record(entry.message)
+      if (entry.type === 'assistant' && typeof message.id === 'string' && Array.isArray(message.content)) {
+        this.handleAssistant(message as unknown as { id: string; content: Block[] }, entry.parent_tool_use_id)
+      } else if (entry.type === 'user' && !entry.parent_tool_use_id) {
+        const text = typeof message.content === 'string'
+          ? message.content
+          : Array.isArray(message.content)
+            ? message.content.map((part) => record(part).type === 'text' ? str(record(part).text) ?? '' : '').join('\n')
+            : ''
+        if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
+          this.handleToolResults(message as { content: unknown })
+        } else if (text.trim() && !/^\s*<(?:local-command-|command-|system-reminder|task-notification)/.test(text)) {
+          this.startTurn(text.trim())
+        }
+      } else if (entry.type === 'user') {
+        this.handleToolResults(message as { content: unknown })
+      }
+    }
+    this.settleRunning('completed')
+    return this.list()
+  }
+
   handle(message: SDKMessage): ChatItem[] {
     switch (message.type) {
       case 'stream_event':

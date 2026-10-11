@@ -93,6 +93,12 @@ export interface ChatSessionInfo {
   configDir?: string
   hostPid: number
   hostVersion: number
+  /** Fingerprint of the host's source; the daemon compares it with the checkout. */
+  hostBuild?: string
+  /** Conversation title (Claude's summary, a custom title, or the first prompt). */
+  title?: string
+  /** The command that resumes this conversation as a chat pane. */
+  resumeCommand?: string
   /** Last error that stopped or broke the session. */
   error?: string
 }
@@ -105,6 +111,8 @@ export interface ChatState {
   items: ChatItem[]
   /** False while the host is disconnected (daemon restarted, host gone). */
   hostConnected: boolean
+  /** The host runs older code than the daemon's checkout; restarting it picks up the update. */
+  updateAvailable?: boolean
 }
 
 // ---- host ⇄ daemon ----
@@ -127,6 +135,8 @@ export type DaemonToHostMessage =
   | { type: 'send'; paneId: string; text: string; requestId: string }
   | { type: 'interrupt'; paneId: string; requestId: string }
   | { type: 'answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
+  /** Restart the host on the same conversation once the current turn ends. */
+  | { type: 'restart'; paneId: string; requestId: string }
 
 // ---- validation (host and client input both cross a trust boundary) ----
 
@@ -275,7 +285,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isPaneId(value.paneId) || value.provider !== 'claude' || typeof value.cwd !== 'string') return null
   if (!SESSION_STATUSES.has(value.status as ChatSessionStatus)) return null
   if (typeof value.hostPid !== 'number' || typeof value.hostVersion !== 'number') return null
-  for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error'] as const) {
+  for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
     if (!optionalString(value[key], 4096)) return null
   }
   return {
@@ -290,6 +300,9 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}),
     ...(typeof value.configDir === 'string' ? { configDir: value.configDir } : {}),
     ...(typeof value.error === 'string' ? { error: value.error } : {}),
+    ...(typeof value.hostBuild === 'string' ? { hostBuild: value.hostBuild } : {}),
+    ...(typeof value.title === 'string' ? { title: value.title } : {}),
+    ...(typeof value.resumeCommand === 'string' ? { resumeCommand: value.resumeCommand } : {}),
   }
 }
 
@@ -336,8 +349,9 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
         ? { type: 'send', paneId: value.paneId, text: value.text, requestId: value.requestId }
         : null
     case 'interrupt':
+    case 'restart':
       return isPaneId(value.paneId) && shortString(value.requestId)
-        ? { type: 'interrupt', paneId: value.paneId, requestId: value.requestId }
+        ? { type: value.type, paneId: value.paneId, requestId: value.requestId }
         : null
     case 'answer': {
       const answer = parseChatAnswer(value.answer)

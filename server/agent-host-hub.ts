@@ -26,6 +26,8 @@ type HubDependencies = {
    * that merely holds the hook token cannot take over another pane's chat.
    */
   verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>
+  /** Fingerprint of the agent host code in the daemon's checkout. */
+  currentHostBuild?: () => Promise<string | undefined>
   log?: (message: string) => void
   now?: () => number
 }
@@ -108,12 +110,14 @@ export class AgentHostHub {
         // A newer host for the same pane replaces the old link.
         if (previous?.socket && previous.socket !== socket) previous.socket.close()
         const targetId = this.dependencies.targetIdFor(paneId)
+        const updateAvailable = await this.updateAvailable(message.session.hostBuild)
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
           session: message.session,
           items: mergeChatItems([], message.items),
           hostConnected: true,
+          ...(updateAvailable ? { updateAvailable } : {}),
         }
         this.chats.set(paneId, { state, socket, visible: known, receivedAt: this.now() })
         if (known) this.dependencies.broadcast({ type: 'chat_state', chat: state })
@@ -163,6 +167,11 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'interrupt', paneId, requestId })
   }
 
+  /** Asks the pane's host to restart on the same conversation, to run the current code. */
+  restart(paneId: string, requestId: string): boolean {
+    return this.toHost(paneId, { type: 'restart', paneId, requestId })
+  }
+
   answer(paneId: string, chatRequestId: string, answer: ChatAnswer, requestId: string): boolean {
     const request = this.chats.get(paneId)?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
     if (!request || request.kind !== 'request' || request.answer) return false
@@ -186,6 +195,14 @@ export class AgentHostHub {
         this.remove(paneId)
         continue
       }
+      if (entry.visible && entry.socket) {
+        const updateAvailable = await this.updateAvailable(entry.state.session.hostBuild)
+        if (updateAvailable !== Boolean(entry.state.updateAvailable) && this.chats.get(paneId) === entry) {
+          const { updateAvailable: _previous, ...rest } = entry.state
+          entry.state = updateAvailable ? { ...rest, updateAvailable } : rest
+          this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
+        }
+      }
       if (!entry.visible) {
         if (!entry.socket) continue
         if (!(await this.verified(paneId, entry.state.session.hostPid))) {
@@ -203,6 +220,12 @@ export class AgentHostHub {
       entry.state = { ...entry.state, ...(targetId ? { targetId } : {}) }
       this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
     }
+  }
+
+  private async updateAvailable(hostBuild: string | undefined): Promise<boolean> {
+    if (!hostBuild || !this.dependencies.currentHostBuild) return false
+    const current = await this.dependencies.currentHostBuild().catch(() => undefined)
+    return current !== undefined && current !== hostBuild
   }
 
   private async verified(paneId: string, hostPid: number): Promise<boolean> {

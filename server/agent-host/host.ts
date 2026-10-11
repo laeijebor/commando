@@ -32,6 +32,11 @@ export interface HostLog {
   info(message: string): void
 }
 
+export interface HostEvents {
+  /** The daemon asked to restart a session's host on the same conversation. */
+  restart?: (paneId: string) => void
+}
+
 /**
  * A reconnecting link to the daemon. While disconnected nothing is queued: the
  * host resends full session snapshots on every (re)connect instead.
@@ -127,6 +132,7 @@ export class AgentHost {
     token: () => Promise<string>,
     private readonly mode: 'pane' | 'shared',
     private readonly log: HostLog,
+    private readonly events: HostEvents = {},
   ) {
     this.link = new DaemonLink(url, token, {
       open: () => this.onOpen(),
@@ -185,6 +191,7 @@ export class AgentHost {
     if (message.type === 'send') session.send(message.text)
     else if (message.type === 'interrupt') await session.interrupt()
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
+    else if (message.type === 'restart') this.events.restart?.(message.paneId)
   }
 
   /** Coalesces streaming updates so a long reply is not resent per token. */
