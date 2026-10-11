@@ -66,7 +66,7 @@ export function moveCommandToStart(text: string, trigger: ComposerTrigger, name:
   return { text: `${head}${rest}`, cursor: head.length + rest.length }
 }
 
-/** Ranks `/` entries: name prefix, then alias prefix, then name, then description. */
+/** Ranks `/` entries: name prefix, then alias prefix, then (from three letters) name, then description. */
 export function filterCommands(commands: readonly ChatCommand[], rawQuery: string, limit = 60): ChatCommand[] {
   const query = rawQuery.toLowerCase()
   if (!query) return commands.slice(0, limit)
@@ -77,7 +77,8 @@ export function filterCommands(commands: readonly ChatCommand[], rawQuery: strin
     const score = name.startsWith(query) ? 0
       : short.startsWith(query) ? 1
         : command.aliases?.some((alias) => alias.toLowerCase().startsWith(query)) ? 2
-          : name.includes(query) ? 3
+          // Two letters match too much of a long list mid-word; wait for a third.
+          : query.length >= 3 && name.includes(query) ? 3
             : query.length >= 3 && command.description.toLowerCase().includes(query) ? 4
               : -1
     return score < 0 ? [] : [{ command, score }]

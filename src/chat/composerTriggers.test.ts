@@ -66,9 +66,10 @@ describe('filtering', () => {
   ]
 
   it('ranks name prefixes, plugin names, aliases, then descriptions', () => {
-    expect(filterCommands(commands, 're').map((command) => command.name)).toEqual(['recap', 'rename', 'review', 'codex:review', 'code-review'])
+    expect(filterCommands(commands, 're').map((command) => command.name)).toEqual(['recap', 'rename', 'review', 'codex:review'])
     expect(filterCommands(commands, 'cr').map((command) => command.name)).toEqual(['code-review'])
     expect(filterCommands(commands, 'context').map((command) => command.name)).toEqual(['compact'])
+    expect(filterCommands(commands, 'view').map((command) => command.name)).toEqual(['review', 'code-review', 'codex:review'])
     expect(filterCommands(commands, '')).toHaveLength(6)
   })
 

@@ -64,10 +64,11 @@ describe('the / menu', () => {
   it('filters as you type and inserts the pick with Enter', () => {
     const { input, type, onSend } = renderComposer()
     type('/re')
-    expect(options()).toEqual(['/redlineReview in a tile', '/recapOne-line recap', '/rename[name]Rename the conversation'])
+    // The group with the best match leads: recap and rename before the redline skill.
+    expect(options()).toEqual(['/recapOne-line recap', '/rename[name]Rename the conversation', '/redlineReview in a tile'])
     fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
-    expect(input.value).toBe('/recap ')
+    expect(input.value).toBe('/rename ')
     expect(onSend).not.toHaveBeenCalled()
     expect(screen.queryByTestId('composer-menu')).toBeNull()
   })
@@ -85,6 +86,7 @@ describe('the / menu', () => {
     expect(within(menu()).getByRole('group', { name: 'Skills' })).toHaveTextContent('Claude can run these mid-message')
     expect(within(menu()).getByRole('group', { name: 'Commands' })).toHaveTextContent('only run at the start of a message')
     expect(options()).toContain('/recapOne-line recapmoves to start')
+    type('please ask for /red')
     fireEvent.keyDown(input, { key: 'Tab' })
     expect(input.value).toBe('please ask for /redline ')
     type('keep the notes /comp')
