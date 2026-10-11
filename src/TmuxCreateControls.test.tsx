@@ -601,3 +601,21 @@ describe('Claude chat launches', () => {
     expect(screen.getByLabelText('Permissions')).toHaveValue('acceptEdits')
   })
 })
+
+describe('Claude chat profile loading', () => {
+  it('keeps the remembered profile when the profile list cannot be loaded', async () => {
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudew', permissionMode: 'plan' } }))
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({
+      created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+    }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={async () => { throw new Error('offline') }} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
+    const submit = screen.getByRole('button', { name: 'Create session' })
+    await waitFor(() => expect(submit).not.toBeDisabled())
+    fireEvent.click(submit)
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
+    expect(JSON.parse(window.localStorage.getItem('commando.chat-launch.by-repo')!)['*']).toEqual({ configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
+  })
+})

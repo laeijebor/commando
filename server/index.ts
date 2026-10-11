@@ -611,6 +611,8 @@ async function main(): Promise<void> {
   const lastPaneInputAt = new Map<string, number>()
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
+    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH'] as const)
+      .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
       await tmux.sendText(pane.sessionId, pane.id, command)
@@ -794,9 +796,11 @@ async function main(): Promise<void> {
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
   // The checkout's host fingerprint, re-read at most every 10 s, flags hosts left behind by a merge.
   let hostBuildCache: { at: number; build: Promise<string | undefined> } | undefined
+  let lastHostBuild: string | undefined
   const currentHostBuild = (): Promise<string | undefined> => {
     if (!hostBuildCache || Date.now() - hostBuildCache.at > 10_000) {
-      hostBuildCache = { at: Date.now(), build: agentHostBuild().catch(() => undefined) }
+      // A read that fails mid-checkout keeps the last good fingerprint, so the banner does not flicker.
+      hostBuildCache = { at: Date.now(), build: agentHostBuild().then((build) => (lastHostBuild = build), () => lastHostBuild) }
     }
     return hostBuildCache.build
   }
@@ -806,8 +810,12 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast,
     verifyHost: async (paneId, hostPid) => {
-      const panePid = paneForId(paneId)?.processId
-      return panePid !== undefined && hostRunsInPane(parseProcessTable(await readProcessTable()), hostPid, panePid)
+      const rows = parseProcessTable(await readProcessTable())
+      const known = paneForId(paneId)?.processId
+      if (known !== undefined && hostRunsInPane(rows, hostPid, known)) return true
+      // After respawn-pane the snapshot can still hold the old pane process; ask tmux.
+      const current = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
+      return Number.isInteger(current) && current > 0 && current !== known && hostRunsInPane(rows, hostPid, current)
     },
     log: (message) => console.log(message),
   })

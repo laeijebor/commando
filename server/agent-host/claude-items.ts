@@ -2,6 +2,8 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
+/** Transcript user entries that Claude Code wrote itself, not the person. */
+const REPLAY_NOISE = /^\s*(?:<(?:local-command-|command-|system-reminder|task-notification|bash-|user-memory-input)|\[Request interrupted|This session is being continued from a previous conversation|Caveat: The messages below)/
 /** The host keeps the latest items only; the daemon keeps the same window. */
 export const MAX_HOST_ITEMS = 2000
 const MAX_PATCH_LINES = 400
@@ -269,14 +271,15 @@ export class ClaudeItemMapper {
             : ''
         if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
           this.handleToolResults(message as { content: unknown })
-        } else if (text.trim() && !/^\s*<(?:local-command-|command-|system-reminder|task-notification)/.test(text)) {
+        } else if (text.trim() && !REPLAY_NOISE.test(text)) {
           this.startTurn(text.trim())
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })
       }
     }
-    this.settleRunning('completed')
+    // A tool call that never got a result was cut off when the session ended.
+    this.settleRunning('interrupted')
     return this.list()
   }
 

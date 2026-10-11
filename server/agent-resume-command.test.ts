@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  shellQuote,
   buildChatResumeCommand,
   findChatHost,
   buildResumeCommand,
@@ -131,5 +132,25 @@ describe('chat hosts', () => {
     expect(command).toBe('/c/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode default --resume abcdef12-3456')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: ['node', 'other.js'], env: {} })).toBeNull()
     expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
+  })
+})
+
+describe('chat resume hardening', () => {
+  it('never carries flag-looking words from the prompt', () => {
+    const args = 'node --import /c/l.mjs /c/server/agent-host/main.ts claude --config-dir /u/.claudep --permission-mode default --prompt Use --dangerously-skip-permissions --model x'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/scripts/commando-agent', { args, env: {} }))
+      .toBe('/c/scripts/commando-agent claude --config-dir /u/.claudep --permission-mode default --resume abcdef12-3456')
+  })
+
+  it('prefixes the daemon environment a restored shell may lack', () => {
+    const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, { COMMANDO_PORT: '4410' }))
+      .toBe('env COMMANDO_PORT=4410 /c/launcher claude --permission-mode plan --resume abcdef12-3456')
+  })
+
+  it('quotes words zsh would expand', () => {
+    expect(shellQuote('~root/x')).toBe("'~root/x'")
+    expect(shellQuote('=ls')).toBe("'=ls'")
+    expect(shellQuote('/plain/path')).toBe('/plain/path')
   })
 })

@@ -218,8 +218,12 @@ export function TmuxCreateControls({
       (profiles) => { if (!cancelled) setClaudeProfiles(profiles) },
       () => { if (!cancelled) setClaudeProfiles([]) },
     )
+    // A failed load leaves an empty list; the remembered profile is still sent.
+
     return () => { cancelled = true }
   }, [agentProvider, claudeProfiles, loadClaudeProfiles])
+  // Wait for the profile list so a chat never starts on the wrong login by accident.
+  const chatProfilesLoading = agentProvider === 'claude-chat' && Boolean(loadClaudeProfiles) && claudeProfiles === null
   const chatConfigDir = chatLaunch.configDir && claudeProfiles?.some((profile) => profile.configDir === chatLaunch.configDir)
     ? chatLaunch.configDir
     : claudeProfiles ? defaultClaudeProfile(claudeProfiles)?.configDir : undefined
@@ -376,12 +380,14 @@ export function TmuxCreateControls({
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(agentProvider === 'claude-chat' ? {
-            ...(chatConfigDir ? { configDir: chatConfigDir } : {}),
+            ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
             permissionMode: chatLaunch.permissionMode,
           } : {}),
         }
         if (agentProvider === 'claude-chat') {
-          saveChatLaunch(chatLaunchKey, { ...(chatConfigDir ? { configDir: chatConfigDir } : {}), permissionMode: chatLaunch.permissionMode })
+          // Keep a remembered profile even when the list could not be loaded this time.
+          const configDir = chatConfigDir ?? chatLaunch.configDir
+          saveChatLaunch(chatLaunchKey, { ...(configDir ? { configDir } : {}), permissionMode: chatLaunch.permissionMode })
         }
       }
       if (worktreeRequested) {
@@ -682,7 +688,7 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button className="tmux-create__submit" type="submit" disabled={unavailable || Boolean(partialCreation)}>
+        <button className="tmux-create__submit" type="submit" disabled={unavailable || Boolean(partialCreation) || chatProfilesLoading}>
           {pending ? partialCreation ? 'Opening...' : 'Creating...' : probing && !repo ? 'Checking repository...' : 'Create session'}
         </button>
       </form>

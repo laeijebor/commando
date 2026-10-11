@@ -215,6 +215,21 @@ describe('host updates', () => {
   })
 })
 
+describe('host registration races', () => {
+  it('does not register a host whose socket closed while its snapshot was being checked', async () => {
+    let release!: (build: string) => void
+    const { hub, connect } = setup({ currentHostBuild: () => new Promise((resolve) => { release = resolve }) })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostBuild: 'a' }), items: [] })
+    await settle()
+    socket.close()
+    release('a')
+    await settle()
+    expect(hub.owns('%1')).toBe(false)
+    expect(hub.states()).toEqual([])
+  })
+})
+
 describe('hostRunsInPane', () => {
   const rows = [{ pid: 100, ppid: 1 }, { pid: 200, ppid: 100 }, { pid: 300, ppid: 200 }, { pid: 400, ppid: 1 }]
   it('accepts the pane process or its descendants and nothing else', () => {

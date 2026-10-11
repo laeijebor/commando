@@ -206,3 +206,10 @@ describe('commando-agent resume and prompt arguments', () => {
     expect(chatResumeCommand('/c/scripts/commando-agent', args)).toBe('/c/scripts/commando-agent claude --config-dir /x/.claudew --permission-mode acceptEdits')
   })
 })
+
+describe('commando-agent prompt parsing', () => {
+  it('keeps a prompt that starts with dashes', () => {
+    expect(parseHostArgs(['claude', '--prompt', '--- yaml notes'], {})).toMatchObject({ prompt: '--- yaml notes' })
+    expect(parseHostArgs(['claude', '--prompt'], {})).toMatch(/needs a value/)
+  })
+})

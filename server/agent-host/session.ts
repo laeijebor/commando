@@ -25,8 +25,12 @@ export interface SessionStore {
   title: (sessionId: string, cwd: string) => Promise<string | undefined>
 }
 
+/** Enough recent messages to fill the item window; older turns stay in the transcript. */
+const HISTORY_MESSAGES = 1500
+
 const sdkSessionStore: SessionStore = {
-  messages: (sessionId, cwd) => getSessionMessages(sessionId, { dir: cwd, limit: 400 }),
+  // `limit` counts from the start, so read everything and keep the newest part.
+  messages: async (sessionId, cwd) => (await getSessionMessages(sessionId, { dir: cwd })).slice(-HISTORY_MESSAGES),
   title: async (sessionId, cwd) => {
     const info = await getSessionInfo(sessionId, { dir: cwd })
     return info?.customTitle || info?.summary || info?.firstPrompt

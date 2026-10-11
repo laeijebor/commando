@@ -49,8 +49,9 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
     const value = rest[index + 1]
-    const needValue = () => {
-      if (value === undefined || value.startsWith('--')) throw new Error(`${flag} needs a value`)
+    const needValue = (freeText = false) => {
+      // A prompt is free text: it may itself start with dashes.
+      if (value === undefined || (!freeText && value.startsWith('--'))) throw new Error(`${flag} needs a value`)
       index += 1
       return value
     }
@@ -60,7 +61,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         case '--resume': args.resume = needValue(); break
         case '--model': args.model = needValue(); break
         case '--claude-path': args.claudePath = expandHome(needValue()); break
-        case '--prompt': args.prompt = needValue(); break
+        case '--prompt': args.prompt = needValue(true); break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; break
         case '--permission-mode': {
           const mode = needValue()
@@ -81,6 +82,9 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
   if (args.resume && !/^[A-Za-z0-9-]{8,80}$/.test(args.resume)) return `Invalid session id: ${args.resume}`
   return args
 }
+
+/** Variables a respawned host needs to find the same daemon. */
+const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH'] as const
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
@@ -205,15 +209,17 @@ async function main(): Promise<void> {
       return
     }
     // tmux replaces this process with a fresh host in the same pane (same pane id
-    // and Commando target), continuing the same conversation.
+    // and Commando target), continuing the same conversation. Nothing is closed
+    // first: on success -k ends this process, on failure this host keeps going.
     const command = ['exec', launcher, 'claude', ...sessionFlags(parsed), ...(sessionId ? ['--resume', sessionId] : [])]
       .map((word, index) => index === 0 ? word : shellQuote(word)).join(' ')
+    // The tmux server's environment can differ from this host's (a dev daemon on
+    // another port), so carry the variables that find the daemon.
+    const env = DAEMON_ENV_KEYS.flatMap((key) => process.env[key] ? ['-e', `${key}=${process.env[key]}`] : [])
     write(dim('Restarting to update…'))
-    session.close()
-    host.stop()
-    execFile('tmux', ['respawn-pane', '-k', '-t', paneId, '-c', process.cwd(), command], (error) => {
+    execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), command], (error) => {
       if (!error) return
-      write(color(31, `Restart failed: ${error.message}. Quit and start commando-agent again.`))
+      write(color(31, `Restart failed: ${error.message}. The chat keeps running; quit and start commando-agent again to update.`))
       restarting = false
     })
   }

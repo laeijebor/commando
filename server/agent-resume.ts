@@ -97,6 +97,8 @@ export type AgentResumeDeps = {
   readProcessEnvironment?: (pid: number) => Promise<string>
   /** The chat-pane launcher that resumes chat hosts (this checkout's scripts/commando-agent). */
   chatLauncher?: string
+  /** Variables a resumed chat host needs to reach this daemon (e.g. a non-default COMMANDO_PORT). */
+  chatEnv?: Readonly<Record<string, string>>
   /** The pane with this target in the latest snapshot. */
   currentPane: (targetId: string) => ResumePane | undefined
   /** Types the command and presses Enter. */
@@ -188,7 +190,7 @@ export class AgentResumeService {
       const agent = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
       const command = chatHost
         ? this.deps.chatLauncher
-          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)))
+          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv)
           : null
         : agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
           status.provider, agent.args, await readEnvironment(agent.pid)))

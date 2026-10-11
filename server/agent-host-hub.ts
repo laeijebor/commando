@@ -113,8 +113,10 @@ export class AgentHostHub {
           this.dependencies.log?.(`[agent-host] a new host for ${paneId} replaces the previous one`)
           previous.socket.close()
         }
-        const targetId = this.dependencies.targetIdFor(paneId)
         const updateAvailable = await this.updateAvailable(message.session.hostBuild)
+        // The socket may have closed while we waited; never register a dead host.
+        if (socket.readyState !== socket.OPEN) return
+        const targetId = this.dependencies.targetIdFor(paneId)
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
