@@ -305,6 +305,7 @@ export class WebPaneService {
   private readonly paneSocketHashes = new Map<string, string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
+  private titleWriteTimer: ReturnType<typeof setTimeout> | null = null
   private readonly now: () => number
   private readonly migrationStatePath: string | undefined
   private readonly socketHash: string
@@ -376,7 +377,13 @@ export class WebPaneService {
     const updated = { ...pane, title: next }
     if (!next) delete updated.title
     this.panes.set(id, updated)
-    this.persist()
+    if (this.titleWriteTimer === null) {
+      this.titleWriteTimer = setTimeout(() => {
+        this.titleWriteTimer = null
+        this.persist()
+      }, 2_000)
+      this.titleWriteTimer.unref()
+    }
     return true
   }
 
@@ -453,6 +460,7 @@ export class WebPaneService {
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
     const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
+    if (pended.url !== pane.url) delete pended.title
     this.panes.set(id, pended)
     this.persist()
     return pended
@@ -596,6 +604,7 @@ export class WebPaneService {
           }
         : {}),
     }
+    if (navigated.url !== pane.url) delete navigated.title
     if (attribution && attribution.openerLabel === undefined) delete navigated.openerLabel
     this.panes.set(id, navigated)
     this.persist()
@@ -711,6 +720,10 @@ export class WebPaneService {
   }
 
   private persist(): void {
+    if (this.titleWriteTimer !== null) {
+      clearTimeout(this.titleWriteTimer)
+      this.titleWriteTimer = null
+    }
     const state: StateFile = {
       version: 1,
       allowedOrigins: [...this.allowedOrigins],
@@ -727,8 +740,9 @@ export class WebPaneService {
       })
   }
 
-  /** Resolves once every persist() queued so far has hit disk. */
+  /** Flushes pending titles and resolves once queued state has hit disk. */
   async flush(): Promise<void> {
+    if (this.titleWriteTimer !== null) this.persist()
     await this.writes
   }
 

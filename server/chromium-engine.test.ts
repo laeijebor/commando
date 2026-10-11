@@ -926,6 +926,27 @@ describe('ChromiumEngine', () => {
     expect(stub.calls.some((call) => call.method === 'Page.startScreencast' || call.method === 'Page.captureScreenshot')).toBe(false)
   })
 
+  it('reports an unchanged page title again after main-frame navigation clears service state', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'commando-navigation-title-'))
+    const service = new WebPaneService(join(directory, 'web-panes.json'))
+    const pane = service.open({ url: 'http://localhost:5173/', engine: 'chromium', anchorPaneId: '%12', sessionId: '$1', windowId: '@1', openedBy: 'agent' })
+    const onPageTitle = vi.fn((id: string, title: string) => { service.setTitle(id, title) })
+    cleanups.push(async () => { await service.flush(); rmSync(directory, { recursive: true, force: true }) })
+    const { stub, engine } = await createHarness({ onPageTitle })
+    await engine.cdpInfo(pane.id, pane.url)
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: pane.url } })
+    stub.emit('T1', 'Runtime.executionContextCreated', { context: { id: 1, auxData: { frameId: 'F1', isDefault: true } } })
+    stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload: 'Shared side panel' })
+    await until(() => service.get(pane.id)?.title === 'Shared side panel', 'initial title')
+    const next = service.navigate(pane.id, 'http://localhost:5173/other')
+    expect(next.title).toBeUndefined()
+    await engine.navigate(pane.id, next.url)
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: next.url } })
+    stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload: 'Shared side panel' })
+    await until(() => service.get(pane.id)?.title === 'Shared side panel', 'same title on new page')
+    expect(onPageTitle).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces title changes and caps the latest title independently of frames', async () => {
     const onPageTitle = vi.fn()
     const { stub, engine } = await createHarness({ onPageTitle })

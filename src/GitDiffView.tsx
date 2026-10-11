@@ -301,6 +301,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     summaryRequest
       .then((next) => {
         if (request !== generation.current) return
+        setSummaryError('')
         setSummary(next)
       })
       .catch((cause: unknown) => {
@@ -378,6 +379,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       })
       .then((next) => {
         if (request !== diffGeneration.current) return
+        setDiffError('')
         setDiff(next.diff)
       })
       .catch((cause: unknown) => {

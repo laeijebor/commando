@@ -53,6 +53,23 @@ function renderView(api = fakeApi(), onClose = vi.fn(), initialSummary = summary
   return { api, onClose }
 }
 
+it.each(['summary', 'diff'] as const)('clears an initial %s error after a successful silent refresh', async (failedRequest) => {
+  vi.useFakeTimers()
+  const api = fakeApi()
+  if (failedRequest === 'summary') vi.mocked(api.summary).mockRejectedValueOnce(new Error('Summary unavailable'))
+  else vi.mocked(api.fileDiff).mockRejectedValueOnce(new Error('Diff unavailable'))
+  await act(async () => { renderView(api) })
+  expect(screen.getByRole('alert')).toHaveTextContent(failedRequest === 'summary' ? 'Summary unavailable' : 'Diff unavailable')
+  // Changed stats cause the failed selected file to be retried silently.
+  vi.mocked(api.summary).mockResolvedValue({ ...summary, files: [{ ...summary.files![0], additions: 4 }] })
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.getByRole('tree', { name: 'Changed file tree' })).toBeInTheDocument()
+  expect(document.querySelector('.git-diff-output pre')).toHaveTextContent('DIFF')
+  expect(screen.queryByText('Loading changes')).not.toBeInTheDocument()
+  expect(screen.queryByText('Running difftastic')).not.toBeInTheDocument()
+})
+
 it('refreshes silently and only re-fetches a selected diff when its stats change', async () => {
   vi.useFakeTimers()
   const api = fakeApi()

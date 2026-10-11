@@ -1471,6 +1471,9 @@ export class ChromiumEngine {
     cdp.on('Page.frameNavigated', (params) => {
       const frame = params.frame as { id?: string; parentId?: string; url?: string } | undefined
       if (!frame || frame.parentId || typeof frame.url !== 'string') return
+      if (tile.titleTimer) clearTimeout(tile.titleTimer)
+      tile.titleTimer = null
+      tile.pageTitle = null
       if (typeof frame.id === 'string') tile.mainFrameId = frame.id
       tile.questionSnapshot = EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT
       this.options.onPageQuestions?.(

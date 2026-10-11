@@ -26,6 +26,7 @@ function track(service: WebPaneService): WebPaneService {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   // Persistence is queued asynchronously; settle it before deleting the
   // directories or an in-flight temp file races the rm.
   await Promise.all(services.splice(0).map((service) => service.flush()))
@@ -111,6 +112,78 @@ describe('WebPaneService', () => {
     expect(service.setTitle(webkit.id, 'Ignored')).toBe(false)
     service.close(pane.id)
     expect(service.setTitle(pane.id, 'Closed tile')).toBe(false)
+  })
+
+  it.each([
+    ['navigate', 'http://localhost:5173/other', 'open'],
+    ['navigate', 'https://untrusted.example/page', 'pending'],
+    ['repend', 'https://untrusted.example/page', 'pending'],
+  ] as const)('%s clears the title when the URL changes to %s', async (method, url, status) => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    service.setTitle(pane.id, 'Original page')
+    expect(service[method](pane.id, pane.url)?.title).toBe('Original page')
+    const navigated = service[method](pane.id, url)
+    expect(navigated).toMatchObject({ url, status })
+    expect(navigated).not.toHaveProperty('title')
+    await service.flush()
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+    expect(persisted.panes[0]).not.toHaveProperty('title')
+  })
+
+  it('coalesces title-only disk writes every two seconds while publishing state immediately', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const first = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    const second = service.open({ ...anchor, url: 'http://localhost:5173/second', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    for (let index = 0; index < 8; index++) {
+      service.setTitle(first.id, `First ${index}`)
+      service.setTitle(second.id, `Second ${index}`)
+      expect(service.get(first.id)?.title).toBe(`First ${index}`)
+      expect(service.list()[1].title).toBe(`Second ${index}`)
+      const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+      expect(persisted.panes.every((pane) => pane.title === undefined)).toBe(true)
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    await service.flush()
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+    expect(persisted.panes.map((pane) => pane.title)).toEqual(['First 7', 'Second 7'])
+    service.setTitle(first.id, 'Next batch')
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('First 7')
+    await vi.advanceTimersByTimeAsync(1)
+    await service.flush()
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Next batch')
+  })
+
+  it('flushes a pending title write and cancels its timer', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    service.setTitle(pane.id, 'Pending title')
+    expect(vi.getTimerCount()).toBe(1)
+    await service.flush()
+    expect(vi.getTimerCount()).toBe(0)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Pending title')
+  })
+
+  it('includes pending titles in a normal write without delaying other pane changes', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    service.setTitle(pane.id, 'Current title')
+    service.open({ ...anchor, url: 'http://localhost:5173/new' })
+    expect(vi.getTimerCount()).toBe(0)
+    await service.flush()
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes).toHaveLength(2)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Current title')
   })
 
   it('opens localhost tiles immediately and external tiles as pending', async () => {
