@@ -181,11 +181,14 @@ export function claudeCodeFlags(args: HostArgs): string[] {
 /**
  * The pane command for a switch to Claude Code: the TUI on the same
  * conversation, then (when it exits, however it exits) this chat again.
+ * bash runs it with job control, so Claude Code is the pane's foreground
+ * process: tmux names the pane after it (auto-resume needs that to see an
+ * agent, not a shell), and Ctrl-C reaches only Claude Code.
  */
 export function claudeCodeSwitchCommand(args: HostArgs, claudePath: string, launcher: string, sessionId: string): string {
   const tui = [claudePath, ...claudeCodeFlags(args), '--resume', sessionId].map(shellQuote).join(' ')
   const back = ['exec', ...[launcher, 'claude', ...sessionFlags(args), '--resume', sessionId, '--from-claude-code'].map(shellQuote)].join(' ')
-  return `${tui}; ${back}`
+  return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
 }
 
 /** The command that resumes a conversation as a chat pane; hooks append `--resume <id>`. */

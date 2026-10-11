@@ -1242,12 +1242,12 @@ describe('commando-agent switch command', () => {
     const args = parseHostArgs(['claude', '--config-dir', '/x/.claudep', '--model', 'sonnet', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allow-dangerously-skip-permissions', '--resume', 'abcd1234-0000'], {})
     if (typeof args === 'string') throw new Error(args)
     expect(claudeCodeSwitchCommand(args, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toBe(
-      '/bin/claude --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000; '
-      + 'exec /c/commando-agent claude --config-dir /x/.claudep --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000 --from-claude-code',
+      "exec /bin/bash -c 'set -m; /bin/claude --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000; "
+      + "exec /c/commando-agent claude --config-dir /x/.claudep --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000 --from-claude-code'",
     )
     const bypass = parseHostArgs(['claude', '--dangerously-skip-permissions'], {})
     if (typeof bypass === 'string') throw new Error(bypass)
-    expect(claudeCodeSwitchCommand(bypass, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toMatch(/^\/bin\/claude --dangerously-skip-permissions --resume/)
+    expect(claudeCodeSwitchCommand(bypass, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toContain('set -m; /bin/claude --dangerously-skip-permissions --resume')
     expect(parseHostArgs(['claude', '--from-claude-code', '--resume', 'abcd1234-0000'], {})).toMatchObject({ fromClaudeCode: true })
     // A restart or resume of the returned chat doesn't claim to be back from Claude Code again.
     expect(sessionFlags({ ...args, fromClaudeCode: true })).not.toContain('--from-claude-code')

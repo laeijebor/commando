@@ -167,7 +167,7 @@ describe('AgentResumeService', () => {
     // The chat switched: the same conversation now runs in Claude Code, under the switch's shell.
     settings = undefined
     chatReturn = `/c/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode default --resume ${SESSION} --from-claude-code`
-    table = [`  500     1 /bin/zsh -c ${CLAUDE} --resume ${SESSION}; exec /c/scripts/commando-agent claude`, `  700   500 ${CLAUDE} --resume ${SESSION}`].join('\n')
+    table = [`  500     1 /bin/bash -c set -m; ${CLAUDE} --resume ${SESSION}; exec /c/scripts/commando-agent claude`, `  700   500 ${CLAUDE} --resume ${SESSION}`].join('\n')
     await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
     expect(resume.get(TARGET)?.command).toBe(`env CLAUDE_CONFIG_DIR=/Users/me/.claudep ${CLAUDE} --resume ${SESSION}; ${chatReturn}`)
   })
