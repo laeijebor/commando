@@ -155,4 +155,9 @@ describe('selectedModelOption', () => {
     expect(selectedModelOption({ models, selectedModel: 'claude-sonnet-5' })).toBeUndefined()
     expect(selectedModelOption({ models, model: 'claude-opus-5-5' })?.value).toBe('default')
   })
+
+  it('takes the default row before Claude reports a model', () => {
+    expect(selectedModelOption({ models })?.value).toBe('default')
+    expect(selectedModelOption({ models: [] })).toBeUndefined()
+  })
 })

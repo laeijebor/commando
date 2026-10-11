@@ -30,10 +30,13 @@ export function modelMenuAvailable(session: ChatSessionInfo): boolean {
 /** "Opus 5.5": the named row for the running model, never the "Default" alias. */
 export function modelLabel(session: ChatSessionInfo): string | undefined {
   const models = session.models ?? []
-  const picked = session.selectedModel ?? session.model
+  const fallback = models.find((model) => model.value === DEFAULT_MODEL)
+  // Claude reports the running model with its first turn; until then a fresh chat runs the default.
+  const running = session.model ?? fallback?.resolvedModel
+  const picked = session.selectedModel ?? running
   const named = models.find((model) => model.value !== DEFAULT_MODEL && model.value === picked)
-    ?? models.find((model) => model.value !== DEFAULT_MODEL && model.resolvedModel === session.model)
-  return named?.displayName ?? session.model
+    ?? models.find((model) => model.value !== DEFAULT_MODEL && model.resolvedModel === running)
+  return named?.displayName ?? session.model ?? fallback?.displayName
 }
 
 function Pill({ children, title }: { children: ReactNode; title?: string }) {
