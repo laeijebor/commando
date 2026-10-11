@@ -7,7 +7,7 @@ import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
-import { chatPlansDir } from '../chat-plans-dir.js'
+import { isChatPlanDir } from '../chat-plans-dir.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { AgentSession } from './session.js'
@@ -27,6 +27,7 @@ Options:
   --allow-dangerously-skip-permissions
                                    Allow switching to bypassPermissions later in the chat
   --claude-path PATH               Claude Code executable (default: claude on PATH)
+  --readable-dir DIR               Let Claude read DIR without asking (a stashed plan's folder only)
   --prompt TEXT                    Send TEXT as the first message
 `
 
@@ -46,6 +47,8 @@ export interface HostArgs {
   /** The chat may switch to bypassPermissions (it was started with it). */
   bypassAllowed?: boolean
   claudePath?: string
+  /** A stashed plan's folder this chat (only) may read. */
+  readableDir?: string
   prompt?: string
 }
 
@@ -75,6 +78,12 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           break
         }
         case '--claude-path': args.claudePath = expandHome(needValue()); break
+        case '--readable-dir': {
+          const dir = needValue()
+          if (!isChatPlanDir(dir, env)) return `--readable-dir must be a stashed plan's folder: ${dir}\n\n${USAGE}`
+          args.readableDir = dir
+          break
+        }
         case '--prompt': args.prompt = needValue(true); break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
@@ -106,7 +115,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 }
 
 /** Variables a respawned host needs to find the same daemon. */
-const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR'] as const
+const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
@@ -117,6 +126,8 @@ export function sessionFlags(args: HostArgs): string[] {
     '--permission-mode', args.permissionMode,
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
+    // The plan it started from stays readable after a restart or resume.
+    ...(args.readableDir ? ['--readable-dir', args.readableDir] : []),
   ]
 }
 
@@ -221,7 +232,7 @@ async function main(): Promise<void> {
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
     images: new ChatImageStore(undefined, (message) => write(dim(message))),
-    readableDirectories: [chatPlansDir()],
+    ...(parsed.readableDir ? { readableDirectories: [parsed.readableDir] } : {}),
     log: (message) => write(dim(message)),
   })
 

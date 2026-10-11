@@ -1,7 +1,9 @@
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chatProfileConfigDir, defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { chatPlansDir } from './chat-plans-dir.js'
 
 const separator = '\u001f'
 const output = (
@@ -617,6 +619,10 @@ describe('Claude chat launches', () => {
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: `${home}/../.claudep` } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', permissionMode: 'yolo' as never } })).rejects.toThrow(/permission/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude chat/)
+    // A chat may be handed one stashed plan's folder, never the plans folder or anything else.
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: chatPlansDir() } })).rejects.toThrow(/stashed plan folder/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: home } })).rejects.toThrow(/stashed plan folder/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only Claude chat/)
     expect(validClaudeConfigDir(`${home}/.claudep`)).toBe(true)
     expect(validClaudeConfigDir(`${home}/projects/.claude`)).toBe(false)
   })

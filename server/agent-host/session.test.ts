@@ -481,6 +481,17 @@ describe('commando-agent settings flags', () => {
     expect(parseHostArgs(['claude', '--permission-mode', 'bypassPermissions'], {})).toMatchObject({ bypassAllowed: true })
   })
 
+  it("takes one stashed plan's folder to read, keeps it across restarts, and refuses any other", () => {
+    const env = { COMMANDO_CHAT_PLANS_DIR: '/state/chat-plans' }
+    const dir = `/state/chat-plans/${'b'.repeat(32)}`
+    const args = parseHostArgs(['claude', '--readable-dir', dir, '--prompt', 'PLEASE IMPLEMENT'], env)
+    expect(args).toMatchObject({ readableDir: dir, prompt: 'PLEASE IMPLEMENT' })
+    expect(sessionFlags(args as Exclude<typeof args, string>)).toEqual(['--permission-mode', 'default', '--readable-dir', dir])
+    expect(chatResumeCommand('/c/commando-agent', args as Exclude<typeof args, string>)).toContain(`--readable-dir ${dir}`)
+    expect(parseHostArgs(['claude', '--readable-dir', '/state/chat-plans'], env)).toMatch(/stashed plan's folder/)
+    expect(parseHostArgs(['claude', '--readable-dir', '/Users/me'], env)).toMatch(/stashed plan's folder/)
+  })
+
   it('carries what the pickers changed into the restart and resume flags', () => {
     const args = parseHostArgs(['claude', '--config-dir', '/x/.claudew', '--model', 'haiku', '--dangerously-skip-permissions', '--prompt', 'hi'], {})
     if (typeof args === 'string') throw new Error(args)
@@ -565,6 +576,16 @@ describe('AgentSession richer input', () => {
     await tick()
     expect(resumed.fake.options).toMatchObject({ resume: 'abcd1234-0000', additionalDirectories: ['/sessions/abcd1234-0000'] })
     expect(resumed.fake.options.sessionId).toBeUndefined()
+  })
+
+  it("adds only the stashed plan folder it was started with, and no plans folder otherwise", async () => {
+    const plan = `/state/chat-plans/${'c'.repeat(32)}`
+    const withPlan = started({ images, resume: 'abcd1234-0000', readableDirectories: [plan] })
+    await tick()
+    expect(withPlan.fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', plan])
+    const plain = started({ resume: 'abcd1234-0000' })
+    await tick()
+    expect(plain.fake.options.additionalDirectories).toBeUndefined()
   })
 
   it('copies a resumed conversation\'s attached images back to the folders its notes name', async () => {

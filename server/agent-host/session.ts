@@ -50,7 +50,7 @@ export interface AgentSessionSpec {
   hostBuild?: string
   /** Where uploaded images are read from and tool-result images are kept. */
   images?: SessionImageStore
-  /** More folders Claude may read without asking (e.g. plans a new pane starts from). */
+  /** More folders Claude may read without asking: the stashed plan this pane was started with, if any. */
   readableDirectories?: string[]
   /** Problems worth a line in the pane's terminal but not a chat notice. */
   log?: (message: string) => void
@@ -364,8 +364,8 @@ export class AgentSession {
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : this.spec.images ? { sessionId: this.imageSessionId } : {}),
-        // Claude's tools can open this chat's attached images without asking, and no other chat's,
-        // nor the plans a new pane starts from.
+        // Claude's tools can open this chat's attached images (and the plan it was started with)
+        // without asking, and no other chat's.
         ...(readableDirs.length ? { additionalDirectories: readableDirs } : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),

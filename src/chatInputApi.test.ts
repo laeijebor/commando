@@ -30,8 +30,11 @@ describe('chat input API', () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ path: '/v/Plans/p.md', title: 'P' }), { status: 201 }))
     expect(await saveChatPlan('tok', '# P', fetcher as unknown as typeof fetch)).toEqual({ path: '/v/Plans/p.md' })
     expect(fetcher).toHaveBeenCalledWith('/api/chat/plans/vault', expect.objectContaining({ method: 'POST', body: JSON.stringify({ markdown: '# P' }), headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } }))
-    await stashChatPlan('tok', '# P', fetcher as unknown as typeof fetch)
-    expect(fetcher).toHaveBeenLastCalledWith('/api/chat/plans/file', expect.anything())
+    // A stash names its own folder, the one the new chat is given.
+    await expect(stashChatPlan('tok', '# P', fetcher as unknown as typeof fetch)).rejects.toThrow("didn't say where")
+    const stashing = vi.fn(async () => new Response(JSON.stringify({ path: '/p/abc/plan.md', dir: '/p/abc' }), { status: 201 }))
+    expect(await stashChatPlan('tok', '# P', stashing as unknown as typeof fetch)).toEqual({ path: '/p/abc/plan.md', dir: '/p/abc' })
+    expect(stashing).toHaveBeenLastCalledWith('/api/chat/plans/file', expect.anything())
     const refusing = vi.fn(async () => new Response(JSON.stringify({ error: 'The plan is too long' }), { status: 413 }))
     await expect(saveChatPlan('', 'x', refusing as unknown as typeof fetch)).rejects.toThrow('The plan is too long')
   })

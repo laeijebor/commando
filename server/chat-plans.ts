@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
-import { chatPlansDir } from './chat-plans-dir.js'
+import { CHAT_PLAN_FOLDER, chatPlansDir } from './chat-plans-dir.js'
 import type { NoteVaultManager } from './note-vaults.js'
 import { chatPlanTitle } from '../shared/agent-chat.js'
 import { MAX_NOTE_BODY_LENGTH, MAX_NOTE_TITLE_LENGTH } from './notes.js'
@@ -10,7 +10,7 @@ import { MAX_NOTE_BODY_LENGTH, MAX_NOTE_TITLE_LENGTH } from './notes.js'
 /** Saved plans go in this folder of the default vault. */
 export const CHAT_PLANS_FOLDER = 'Plans'
 const MAX_PLAN_BYTES = 256 * 1024
-/** Plan files a new chat pane read on start are pruned like chat images. */
+/** Plan folders a new chat pane read on start are pruned like chat images. */
 const CHAT_PLAN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 export class ChatPlanStore {
@@ -24,18 +24,20 @@ export class ChatPlanStore {
     return { path: store.pathFor(note), title, noteId: note.id }
   }
 
-  /** Writes the plan where a new chat can read it, named by its content. */
-  async stash(markdown: string): Promise<{ path: string }> {
+  /**
+   * Writes the plan into a folder of its own, which only the pane started
+   * with it is given (`--readable-dir`), so no other chat can read it.
+   */
+  async stash(markdown: string): Promise<{ path: string; dir: string }> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 })
-    const path = join(this.dir, `${createHash('sha256').update(markdown).digest('hex')}.md`)
+    const dir = join(this.dir, randomBytes(16).toString('hex'))
+    await mkdir(dir, { mode: 0o700 })
+    const path = join(dir, 'plan.md')
     await writeFile(path, markdown, { mode: 0o600 })
-    // Re-saving an old plan counts as using it.
-    const now = new Date()
-    await utimes(path, now, now)
-    return { path }
+    return { path, dir }
   }
 
-  /** Removes plan files nobody has used for a month. */
+  /** Removes plan folders older than a month; the chats started from them have long read them. */
   async prune(now = Date.now()): Promise<number> {
     let names: string[]
     try {
@@ -46,16 +48,15 @@ export class ChatPlanStore {
     }
     let removed = 0
     for (const name of names) {
-      if (!/^[0-9a-f]{64}\.md$/.test(name)) continue
+      if (!CHAT_PLAN_FOLDER.test(name)) continue
       const path = join(this.dir, name)
       const info = await stat(path).catch(() => null)
-      if (info && now - info.mtimeMs > CHAT_PLAN_MAX_AGE_MS) {
-        try {
-          await unlink(path)
-          removed += 1
-        } catch (error) {
-          console.warn(`[commando] couldn't prune the chat plan ${path}`, error)
-        }
+      if (!info?.isDirectory() || now - info.mtimeMs <= CHAT_PLAN_MAX_AGE_MS) continue
+      try {
+        await rm(path, { recursive: true })
+        removed += 1
+      } catch (error) {
+        console.warn(`[commando] couldn't prune the chat plan ${path}`, error)
       }
     }
     return removed

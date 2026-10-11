@@ -2210,13 +2210,19 @@ export function App() {
     if (!pane) throw new Error('The chat pane is gone')
     const session = chats[paneId]?.session
     let prompt = planImplementationPrompt(plan)
-    if (new TextEncoder().encode(prompt).length > MAX_PANE_PROMPT_BYTES) prompt = implementPlanFilePrompt((await stashChatPlan(token, plan)).path)
+    // A plan too long for the prompt goes in a folder only this new chat may read.
+    let readableDir: string | undefined
+    if (new TextEncoder().encode(prompt).length > MAX_PANE_PROMPT_BYTES) {
+      const stashed = await stashChatPlan(token, plan)
+      prompt = implementPlanFilePrompt(stashed.path)
+      readableDir = stashed.dir
+    }
     const created = await tmuxCreateApi.createPane({
       targetId: paneId,
       direction: 'horizontal',
       placement: 'after',
       cwd: session?.cwd ?? pane.path,
-      agent: { provider: 'claude-chat', permissionMode: launchPermissionMode(mode), prompt, ...(session?.configDir ? { configDir: session.configDir } : {}) },
+      agent: { provider: 'claude-chat', permissionMode: launchPermissionMode(mode), prompt, ...(session?.configDir ? { configDir: session.configDir } : {}), ...(readableDir ? { readableDir } : {}) },
     })
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })

@@ -72,18 +72,21 @@ describe('chat plan routes', () => {
     expect(await readdir(other)).toEqual([])
   })
 
-  it('stashes a plan for a new chat by content, and prunes old ones', async () => {
+  it('stashes each plan in a folder of its own, and prunes old folders', async () => {
     const { root, store, post } = await setup()
-    const first = await (await post('/api/chat/plans/file', { markdown: '# Long plan' })).json() as { path: string }
-    const again = await (await post('/api/chat/plans/file', { markdown: '# Long plan' })).json() as { path: string }
-    expect(first.path).toBe(again.path)
-    expect(first.path.startsWith(join(root, 'chat-plans'))).toBe(true)
+    const first = await (await post('/api/chat/plans/file', { markdown: '# Long plan' })).json() as { path: string; dir: string }
+    const again = await (await post('/api/chat/plans/file', { markdown: '# Long plan' })).json() as { path: string; dir: string }
+    // The same plan twice still gets two folders: each new chat is given only its own.
+    expect(first.dir).not.toBe(again.dir)
+    expect(first.dir).toMatch(new RegExp(`^${join(root, 'chat-plans')}/[0-9a-f]{32}$`))
+    expect(first.path).toBe(join(first.dir, 'plan.md'))
     expect(await readFile(first.path, 'utf8')).toBe('# Long plan')
-    const old = join(root, 'chat-plans', `${'0'.repeat(64)}.md`)
-    await writeFile(old, 'old')
+    const old = join(root, 'chat-plans', '0'.repeat(32))
+    await mkdir(old)
+    await writeFile(join(old, 'plan.md'), 'old')
     await utimes(old, new Date(0), new Date(0))
     expect(await store.prune()).toBe(1)
-    expect(await readdir(join(root, 'chat-plans'))).toEqual([first.path.slice(first.path.lastIndexOf('/') + 1)])
+    expect((await readdir(join(root, 'chat-plans'))).sort()).toEqual([first.dir, again.dir].map((dir) => dir.slice(dir.lastIndexOf('/') + 1)).sort())
   })
 
   it('refuses empty, oversized, non-JSON and non-POST requests', async () => {

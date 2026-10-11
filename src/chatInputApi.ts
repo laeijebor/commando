@@ -25,24 +25,26 @@ export async function openPullRequestsForPane(prs: Pick<PrsApiClient, 'repoForPa
   return list.pullRequests.map((pr) => ({ number: pr.number, title: pr.title, url: pr.url, isDraft: pr.isDraft, author: pr.author }))
 }
 
-async function postPlan(token: string, target: 'vault' | 'file', markdown: string, fetcher: typeof fetch): Promise<{ path: string }> {
+async function postPlan(token: string, target: 'vault' | 'file', markdown: string, fetcher: typeof fetch): Promise<{ path: string; dir?: string }> {
   const response = await fetcher(`/api/chat/plans/${target}`, {
     method: 'POST',
     body: JSON.stringify({ markdown }),
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   })
-  const result = await response.json().catch(() => ({})) as { path?: unknown; error?: string }
+  const result = await response.json().catch(() => ({})) as { path?: unknown; dir?: unknown; error?: string }
   if (!response.ok || typeof result.path !== 'string') throw new Error(result.error ?? `Saving the plan failed (${response.status})`)
-  return { path: result.path }
+  return { path: result.path, ...(typeof result.dir === 'string' ? { dir: result.dir } : {}) }
 }
 
 /** Files a chat's plan as a note in the default Commando vault. */
-export function saveChatPlan(token: string, markdown: string, fetcher: typeof fetch = fetch): Promise<{ path: string }> {
-  return postPlan(token, 'vault', markdown, fetcher)
+export async function saveChatPlan(token: string, markdown: string, fetcher: typeof fetch = fetch): Promise<{ path: string }> {
+  return { path: (await postPlan(token, 'vault', markdown, fetcher)).path }
 }
 
-/** Saves a plan too long for a pane's opening prompt where a new chat can read it. */
-export function stashChatPlan(token: string, markdown: string, fetcher: typeof fetch = fetch): Promise<{ path: string }> {
-  return postPlan(token, 'file', markdown, fetcher)
+/** Saves a plan too long for a pane's opening prompt in a folder of its own, for the new chat to read. */
+export async function stashChatPlan(token: string, markdown: string, fetcher: typeof fetch = fetch): Promise<{ path: string; dir: string }> {
+  const saved = await postPlan(token, 'file', markdown, fetcher)
+  if (!saved.dir) throw new Error("Commando didn't say where it saved the plan")
+  return { path: saved.path, dir: saved.dir }
 }
