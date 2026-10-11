@@ -20,7 +20,16 @@ function fakeQuery() {
     { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Fast', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
     { value: 'bad model', displayName: 'Bad', description: '' },
   ])
+  const supportedCommands = vi.fn(async () => [
+    { name: 'compact', description: 'Free up context', argumentHint: '<instructions>', builtin: true },
+    { name: 'mcp', description: 'Manage MCP servers', argumentHint: '', builtin: true },
+    { name: 'model', description: 'Set the model', argumentHint: '<model>', builtin: true },
+    { name: 'code-review', description: 'Review the diff', argumentHint: '', aliases: ['review'], builtin: true },
+    { name: 'redline', description: 'Review in a tile', argumentHint: '<what>' },
+    { name: 'mcp', description: 'A user skill that happens to be called mcp', argumentHint: '' },
+  ])
   const contextUsage = vi.fn(async () => ({
+    skills: { totalSkills: 2, includedSkills: 2, tokens: 10, skillFrontmatter: [{ name: 'code-review', source: 'built-in', tokens: 5 }, { name: 'redline', source: 'userSettings', tokens: 5 }] },
     categories: [
       { name: 'System tools', tokens: 12_000, color: 'inactive', kind: 'used' },
       { name: 'Messages', tokens: 30_000, color: 'purple', kind: 'used' },
@@ -39,7 +48,7 @@ function fakeQuery() {
       }
     }
     const handle = stream() as unknown as Query
-    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, supportedModels, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
+    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, supportedModels, supportedCommands, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
     return handle
   }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query
   return {
@@ -50,6 +59,7 @@ function fakeQuery() {
     applyFlagSettings,
     setPermissionMode,
     supportedModels,
+    supportedCommands,
     contextUsage,
     get options() { return options! },
     push(message: SDKMessage) { outbox.push(message); wake?.(); wake = null },
@@ -434,5 +444,94 @@ describe('commando-agent settings flags', () => {
     // Picking the default model drops the explicit one; an unknown mode keeps the launch mode.
     const { selectedModel: _picked, ...defaults } = info
     expect(sessionFlags(withSessionSettings(args, { ...defaults, permissionMode: 'weird' }))).toEqual(['--config-dir', '/x/.claudew', '--effort', 'high', '--permission-mode', 'bypassPermissions'])
+  })
+})
+
+describe('AgentSession richer input', () => {
+  const imageId = `${'c'.repeat(64)}.png`
+  const images = {
+    dir: '/images',
+    path: (id: string) => `/images/${id}`,
+    read: vi.fn(async (id: string) => {
+      if (id !== imageId) throw new Error('ENOENT: no such file')
+      return Buffer.from('png-bytes')
+    }),
+    saveBase64: vi.fn(() => undefined),
+  }
+
+  it('lists commands and skills, hiding TUI-only built-ins but not same-named user entries', async () => {
+    const { fake, session } = started()
+    const lists: unknown[] = []
+    session.on('commands', (commands) => lists.push(commands))
+    await tick()
+    await tick()
+    expect(fake.supportedCommands).toHaveBeenCalled()
+    expect(session.commands).toEqual([
+      { name: 'compact', description: 'Free up context', argumentHint: '<instructions>', kind: 'command' },
+      { name: 'code-review', description: 'Review the diff', aliases: ['review'], kind: 'skill' },
+      { name: 'redline', description: 'Review in a tile', argumentHint: '<what>', kind: 'skill' },
+      { name: 'mcp', description: 'A user skill that happens to be called mcp', kind: 'command' },
+    ])
+    expect(lists.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('replaces the list when Claude reports new commands', async () => {
+    const { fake, session } = started()
+    await tick()
+    await tick()
+    fake.push({ type: 'system', subtype: 'commands_changed', commands: [{ name: 'redline', description: 'Review', argumentHint: '' }, { name: 'new-skill', description: 'Fresh', argumentHint: '' }], session_id: 's', uuid: 'u' } as unknown as SDKMessage)
+    await tick()
+    expect(session.commands?.map((command) => [command.name, command.kind])).toEqual([['redline', 'skill'], ['new-skill', 'command']])
+  })
+
+  it('sends images before the text and names their saved copies', async () => {
+    const { fake, session, items } = started({ images })
+    session.send('what is this?', [{ id: imageId, name: 'pane.png' }])
+    session.send('and a follow-up')
+    await tick()
+    await tick()
+    expect(fake.prompts).toHaveLength(2)
+    expect(fake.prompts[0]!.message.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from('png-bytes').toString('base64') } },
+      { type: 'text', text: `what is this?\n\n[Attached image "pane.png" is saved at: /images/${imageId}]` },
+    ])
+    expect(fake.prompts[1]!.message.content).toBe('and a follow-up')
+    const users = [...items.values()].filter((item) => item.kind === 'user_message')
+    expect(users[0]).toMatchObject({ text: 'what is this?', images: [{ id: imageId, name: 'pane.png' }] })
+    expect(fake.options.additionalDirectories).toEqual(['/images'])
+  })
+
+  it('sends an image on its own, and refuses a send whose image is gone', async () => {
+    const { fake, session, items } = started({ images })
+    session.send('', [{ id: imageId }])
+    session.send('look', [{ id: `${'d'.repeat(64)}.png` }])
+    await tick()
+    await tick()
+    expect(fake.prompts).toHaveLength(1)
+    expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: `[Attached image "${imageId}" is saved at: /images/${imageId}]` }])
+    expect([...items.values()].some((item) => item.kind === 'notice' && /message wasn't sent: ENOENT/.test(item.text))).toBe(true)
+  })
+
+  it('shows an image error from Claude as a notice', async () => {
+    const { fake, session, items } = started()
+    session.send('look')
+    fake.push({ type: 'result', subtype: 'error_during_execution', terminal_reason: 'image_error', errors: ['Could not process image'], session_id: 's', uuid: 'r' } as unknown as SDKMessage)
+    await tick()
+    expect([...items.values()].find((item) => item.kind === 'notice')).toMatchObject({ level: 'error', text: "Claude couldn't read an attached image: Could not process image. Try a smaller PNG or JPEG." })
+  })
+
+  it('marks /clear in the timeline and drops the old title', async () => {
+    const { fake, session, items, sessions } = started()
+    session.send('first question')
+    await tick()
+    fake.push({ type: 'conversation_reset', new_conversation_id: 'n', uuid: 'n', trigger: 'clear', session_id: 's2' } as unknown as SDKMessage)
+    await tick()
+    expect([...items.values()].some((item) => item.kind === 'notice' && /Context cleared/.test(item.text))).toBe(true)
+    expect(sessions.at(-1)?.title).toBeUndefined()
+  })
+
+  it('answers @ searches from the session folder', async () => {
+    const { session } = started({ cwd: '/definitely/missing/folder' })
+    expect(await session.searchFiles('x')).toEqual({ entries: [], truncated: false })
   })
 })

@@ -156,3 +156,32 @@ describe('tool helpers', () => {
     expect(todosFromInput({ todos: [{ content: ' x ', status: 'weird' }, {}] })).toEqual([{ content: 'x', status: 'pending' }])
   })
 })
+
+describe('ClaudeItemMapper images', () => {
+  const sink = { saveBase64: (data: string) => (data === 'cGln' ? { id: `${'e'.repeat(64)}.png` } : undefined) }
+  const image = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
+
+  it('shows images from tool results instead of an [image] placeholder', () => {
+    const mapper = new ClaudeItemMapper(() => 1, sink)
+    mapper.startTurn('read the screenshot')
+    mapper.handle({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/w/shot.png' } }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    const [item] = mapper.handle({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: [image('cGln'), image('bad'), { type: 'text', text: 'done' }] }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    expect(item).toMatchObject({ kind: 'tool', images: [{ id: `${'e'.repeat(64)}.png` }], output: '[image]\ndone' })
+  })
+
+  it('replays sent images and hides the saved-path notes the host added', () => {
+    const mapper = new ClaudeItemMapper(() => 1, sink)
+    const items = mapper.replay([{
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [image('cGln'), { type: 'text', text: 'what is this?\n\n[Attached image "pane.png" is saved at: /images/x.png]' }] },
+    }])
+    expect(items).toEqual([expect.objectContaining({ kind: 'user_message', text: 'what is this?', images: [{ id: `${'e'.repeat(64)}.png` }] })])
+  })
+
+  it('marks /clear with a notice', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    expect(mapper.handle({ type: 'conversation_reset', new_conversation_id: 'n', uuid: 'n', session_id: 's' } as unknown as SDKMessage))
+      .toEqual([expect.objectContaining({ kind: 'notice', level: 'info' })])
+  })
+})

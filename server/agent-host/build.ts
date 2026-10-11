@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HOST_DIR = fileURLToPath(new URL('.', import.meta.url))
-/** Files outside agent-host/ that the host runs: the protocol, its resume helpers and the launcher. */
+/** Files outside agent-host/ that the host runs: the protocol, its resume and image helpers and the launcher. */
 const SHARED_FILES = [
   fileURLToPath(new URL('../../shared/agent-chat.ts', import.meta.url)),
   fileURLToPath(new URL('../agent-resume-command.ts', import.meta.url)),
+  fileURLToPath(new URL('../chat-images.ts', import.meta.url)),
   fileURLToPath(new URL('../../scripts/commando-agent', import.meta.url)),
 ]
 const SDK_PACKAGE = '@anthropic-ai/claude-agent-sdk'
