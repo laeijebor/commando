@@ -659,7 +659,7 @@ export class WebPaneService {
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0) return false
+    if (this.panes.size === 0 && Object.keys(this.activeTabs).length === 0) return false
     const totalPaneCount = currentWindows.reduce(
       (count, window) => count + window.paneIds.length,
       0,
@@ -677,12 +677,21 @@ export class WebPaneService {
       windowsBySession.set(window.sessionId, windows)
     }
     let changed = false
+    // Built-in selections have no window or socket metadata. Only a complete,
+    // matching snapshot can prove their anchors disappeared.
+    let canPruneActiveTabs = currentWindows.every((window) => window.paneIds.length > 0)
     for (const [id, pane] of [...this.panes].sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))) {
       const paneSocketHash = this.paneSocketHashes.get(id)
-      if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) continue
+      if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) {
+        canPruneActiveTabs = false
+        continue
+      }
       const sessionWindows = windowsBySession.get(pane.sessionId)
       if (!sessionWindows) {
-        if (paneSocketHash === undefined) continue
+        if (paneSocketHash === undefined) {
+          canPruneActiveTabs = false
+          continue
+        }
         this.panes.delete(id)
         this.paneSocketHashes.delete(id)
         changed = true
@@ -712,10 +721,16 @@ export class WebPaneService {
         changed = true
       }
     }
-    if (changed) {
-      this.reconcileActiveTabs()
-      this.persist()
+    if (changed) this.reconcileActiveTabs()
+    if (canPruneActiveTabs) {
+      const livePaneIds = new Set(currentWindows.flatMap((window) => window.paneIds))
+      for (const anchor of Object.keys(this.activeTabs)) {
+        if (livePaneIds.has(anchor)) continue
+        delete this.activeTabs[anchor]
+        changed = true
+      }
     }
+    if (changed) this.persist()
     return changed
   }
 
