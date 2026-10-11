@@ -1,7 +1,7 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
   CHAT_PERMISSION_MODES,
-  defaultClaudeProfile,
+  chatProfileConfigDir,
   defaultWorktreePath,
   sanitizeBranchName,
   SESSION_AGENT_CHOICES,
@@ -224,9 +224,7 @@ export function TmuxCreateControls({
   }, [agentProvider, claudeProfiles, loadClaudeProfiles])
   // Wait for the profile list so a chat never starts on the wrong login by accident.
   const chatProfilesLoading = agentProvider === 'claude-chat' && Boolean(loadClaudeProfiles) && claudeProfiles === null
-  const chatConfigDir = chatLaunch.configDir && claudeProfiles?.some((profile) => profile.configDir === chatLaunch.configDir)
-    ? chatLaunch.configDir
-    : claudeProfiles ? defaultClaudeProfile(claudeProfiles)?.configDir : undefined
+  const chatConfigDir = claudeProfiles ? chatProfileConfigDir(chatLaunch.configDir, claudeProfiles) : undefined
 
   useEffect(() => {
     if (!sessionCreateRequest) return

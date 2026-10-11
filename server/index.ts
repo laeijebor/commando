@@ -56,7 +56,7 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { AgentResumeService, readProcessTable } from './agent-resume.js'
-import { isShellCommand, parseProcessTable } from './agent-resume-command.js'
+import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -609,8 +609,11 @@ async function main(): Promise<void> {
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
   const lastPaneInputAt = new Map<string, number>()
+  // The hub is created further down; resumes read a chat's current settings from it.
+  let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
+    chatSettings: (paneId) => chatResumeSettings(paneId),
     chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH'] as const)
       .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
@@ -819,6 +822,7 @@ async function main(): Promise<void> {
     },
     log: (message) => console.log(message),
   })
+  chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
 
   const processStatusForPane = (pane: CommandoSnapshot['panes'][number]): AgentStatus => (
     inferAgentProcessStatus({
@@ -2010,6 +2014,7 @@ async function main(): Promise<void> {
       case 'chat_send':
       case 'chat_interrupt':
       case 'chat_restart':
+      case 'chat_configure':
       case 'chat_answer': {
         const delivered = message.type === 'chat_send'
           ? agentHosts.send(message.paneId, message.text, message.requestId)
@@ -2017,7 +2022,9 @@ async function main(): Promise<void> {
             ? agentHosts.interrupt(message.paneId, message.requestId)
             : message.type === 'chat_restart'
               ? agentHosts.restart(message.paneId, message.requestId)
-              : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
+              : message.type === 'chat_configure'
+                ? agentHosts.configure(message.paneId, message.settings, message.requestId)
+                : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
         if (!delivered) {
           sendError(client, 'chat_unavailable', message.type === 'chat_answer'
             ? 'That request is no longer waiting for an answer'

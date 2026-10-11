@@ -142,6 +142,15 @@ describe('chat resume hardening', () => {
       .toBe('/c/scripts/commando-agent claude --config-dir /u/.claudep --permission-mode default --resume abcdef12-3456')
   })
 
+  it('replaces the launch model, effort and permission flags with the chat\'s current settings', () => {
+    const args = 'node /c/server/agent-host/main.ts claude --config-dir /u/.claudew --model haiku --effort low --dangerously-skip-permissions --claude-path /bin/claude'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { model: 'sonnet', effort: 'high', permissionMode: 'plan', bypassAllowed: true }))
+      .toBe('/c/launcher claude --config-dir /u/.claudew --claude-path /bin/claude --model sonnet --effort high --permission-mode plan --allow-dangerously-skip-permissions --resume abcdef12-3456')
+    // The default model is no explicit model; a chat without bypass never gains it.
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: 'node /c/server/agent-host/main.ts claude --model=haiku --permission-mode default'.split(' '), env: {} }, {}, { permissionMode: 'acceptEdits' }))
+      .toBe('/c/launcher claude --permission-mode acceptEdits --resume abcdef12-3456')
+  })
+
   it('prefixes the daemon environment a restored shell may lack', () => {
     const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan'.split(' ')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, { COMMANDO_PORT: '4410' }))

@@ -1,5 +1,17 @@
-import { getSessionInfo, getSessionMessages, query, type CanUseTool, type PermissionMode, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import { AGENT_HOST_PROTOCOL_VERSION, type ChatAnswer, type ChatItem, type ChatSessionInfo, type ChatSessionStatus } from '../../shared/agent-chat.js'
+import { getSessionInfo, getSessionMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import {
+  AGENT_HOST_PROTOCOL_VERSION,
+  isChatEffort,
+  isModelValue,
+  type ChatAnswer,
+  type ChatContextUsage,
+  type ChatEffort,
+  type ChatItem,
+  type ChatModelOption,
+  type ChatSessionInfo,
+  type ChatSessionStatus,
+  type ChatSettingsChange,
+} from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, questionsFromInput, toolTitle } from './claude-items.js'
 
 export interface AgentSessionSpec {
@@ -9,7 +21,10 @@ export interface AgentSessionSpec {
   configDir?: string
   resume?: string
   model?: string
+  effort?: ChatEffort
   permissionMode: PermissionMode
+  /** Lets the session switch to bypassPermissions later (the SDK needs this at launch). */
+  bypassAllowed?: boolean
   claudePath?: string
   env: Record<string, string | undefined>
   /** Sent as the first turn once the session starts. */
@@ -17,6 +32,8 @@ export interface AgentSessionSpec {
   /** Resumes this conversation as a chat pane, without the session id (hooks append it). */
   resumeCommand?: string
   hostBuild?: string
+  /** Problems worth a line in the pane's terminal but not a chat notice. */
+  log?: (message: string) => void
 }
 
 /** Reads saved transcripts and titles; swapped out in tests. */
@@ -35,6 +52,41 @@ const sdkSessionStore: SessionStore = {
     const info = await getSessionInfo(sessionId, { dir: cwd })
     return info?.customTitle || info?.summary || info?.firstPrompt
   },
+}
+
+/** The picker's value for "no explicit model": Claude Code's own default. */
+const DEFAULT_MODEL = 'default'
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function toModelOption(model: ModelInfo): ChatModelOption[] {
+  if (!isModelValue(model.value)) return []
+  const efforts = model.supportedEffortLevels?.filter(isChatEffort)
+  return [{
+    value: model.value,
+    displayName: model.displayName,
+    ...(model.description ? { description: model.description } : {}),
+    ...(isModelValue(model.resolvedModel) ? { resolvedModel: model.resolvedModel } : {}),
+    ...(model.supportsEffort && efforts?.length ? { efforts } : {}),
+    ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+  }]
+}
+
+export function toContextUsage(usage: SDKControlGetContextUsageResponse): ChatContextUsage | undefined {
+  if (!(usage.maxTokens > 0)) return undefined
+  return {
+    usedTokens: usage.totalTokens,
+    maxTokens: usage.maxTokens,
+    ...(usage.autoCompactThreshold ? { autoCompactThreshold: usage.autoCompactThreshold } : {}),
+    autoCompact: usage.isAutoCompactEnabled,
+    // Free space, the compaction reserve and deferred tool schemas are not in the window.
+    categories: usage.categories
+      .filter((category) => category.kind === 'used' && category.tokens > 0)
+      .sort((a, b) => b.tokens - a.tokens)
+      .map(({ name, tokens }) => ({ name, tokens })),
+  }
 }
 
 function shortTitle(text: string): string {
@@ -113,9 +165,16 @@ export class AgentSession {
   private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], closed: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
-  private turnsInFlight = 0
+  /** Set once Claude reports session_state_changed; it then decides idle and running. */
+  private stateEvents = false
+  private contextReads = 0
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
+  /**
+   * Sends that arrive while a resumed transcript is still replaying wait here,
+   * so they land after the earlier turns instead of inside them.
+   */
+  private heldSends: string[] | null
 
   constructor(
     private readonly spec: AgentSessionSpec,
@@ -124,6 +183,7 @@ export class AgentSession {
     private readonly store: SessionStore = sdkSessionStore,
   ) {
     this.mapper = new ClaudeItemMapper(now)
+    this.heldSends = spec.resume ? [] : null
     this.info = {
       paneId: spec.paneId,
       provider: 'claude',
@@ -133,7 +193,9 @@ export class AgentSession {
       hostVersion: AGENT_HOST_PROTOCOL_VERSION,
       permissionMode: spec.permissionMode,
       ...(spec.resume ? { sessionId: spec.resume } : {}),
-      ...(spec.model ? { model: spec.model } : {}),
+      ...(spec.model ? { model: spec.model, selectedModel: spec.model } : {}),
+      ...(spec.effort ? { effort: spec.effort } : {}),
+      ...(spec.bypassAllowed || spec.permissionMode === 'bypassPermissions' ? { bypassAllowed: true } : {}),
       ...(spec.configDir ? { configDir: spec.configDir } : {}),
       ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
       ...(spec.resumeCommand ? { resumeCommand: spec.resumeCommand } : {}),
@@ -154,7 +216,7 @@ export class AgentSession {
 
   /** True while a turn runs or waits for an answer. */
   get busy(): boolean {
-    return this.info.status === 'running' || this.info.status === 'waiting' || this.turnsInFlight > 0
+    return this.info.status === 'running' || this.info.status === 'waiting'
   }
 
   async start(): Promise<void> {
@@ -179,12 +241,17 @@ export class AgentSession {
           ...(this.spec.configDir ? { CLAUDE_CONFIG_DIR: this.spec.configDir } : {}),
           // Commando's SessionStart hook pins this as the pane's resume command.
           ...(this.spec.resumeCommand ? { COMMANDO_CHAT_RESUME: this.spec.resumeCommand } : {}),
+          // Idle and running come from Claude itself, so queued or folded-in sends never leave the chat stuck.
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
+        ...(this.spec.effort ? { effort: this.spec.effort } : {}),
+        // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
+        thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
-        ...(this.spec.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+        ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
         systemPrompt: { type: 'preset', preset: 'claude_code' },
@@ -194,19 +261,28 @@ export class AgentSession {
     })
     this.setStatus('idle')
     void this.consume(this.queryHandle)
+    void this.loadModels(this.queryHandle)
+    void this.refreshContext()
+    const held = this.heldSends ?? []
+    this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
+    for (const text of held) this.send(text)
   }
 
   send(text: string): void {
     const trimmed = text.trim()
     if (!trimmed) return
+    if (this.heldSends) {
+      this.heldSends.push(trimmed)
+      return
+    }
     if (this.info.status === 'closed' || this.info.status === 'error') {
       this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
       return
     }
     this.emitItems(this.mapper.startTurn(trimmed))
     if (!this.info.title) this.info = { ...this.info, title: shortTitle(trimmed) }
-    this.turnsInFlight += 1
+    // Shown at once; Claude's own session state confirms it (or folds this into the running turn).
     this.setStatus('running')
     this.input.push({
       type: 'user',
@@ -250,9 +326,112 @@ export class AgentSession {
     return true
   }
 
+  /** Switches model, effort or permission mode for the rest of the session. */
+  async configure(change: ChatSettingsChange): Promise<void> {
+    const handle = this.queryHandle
+    if (!handle || this.info.status === 'closed' || this.info.status === 'error') {
+      this.emitItems(this.mapper.notice('error', "This session isn't running, so its settings can't change."))
+      return
+    }
+    if (change.model !== undefined) {
+      const option = this.info.models?.find((model) => model.value === change.model)
+      if (this.info.models && !option) {
+        this.emitItems(this.mapper.notice('error', `Claude doesn't offer the model ${change.model} here.`))
+      } else {
+        try {
+          // "default" means no explicit model, so a resume follows Claude Code's default too.
+          const explicit = change.model === DEFAULT_MODEL ? undefined : change.model
+          await handle.setModel(explicit)
+          const { selectedModel: _previous, effort, ...rest } = this.info
+          // An effort the new model lacks runs as something else, so stop claiming it.
+          const keepEffort = effort && (!option?.efforts || option.efforts.includes(effort))
+          this.info = {
+            ...rest,
+            model: option?.resolvedModel ?? change.model,
+            ...(explicit ? { selectedModel: explicit } : {}),
+            ...(keepEffort ? { effort } : {}),
+          }
+        } catch (error) {
+          this.emitItems(this.mapper.notice('error', `Couldn't switch the model: ${errorText(error)}`))
+        }
+      }
+    }
+    if (change.effort !== undefined) {
+      try {
+        await handle.applyFlagSettings({ effortLevel: change.effort })
+        this.info = { ...this.info, effort: change.effort }
+      } catch (error) {
+        this.emitItems(this.mapper.notice('error', `Couldn't change the effort: ${errorText(error)}`))
+      }
+    }
+    if (change.permissionMode !== undefined) {
+      if (change.permissionMode === 'bypassPermissions' && !this.info.bypassAllowed) {
+        this.emitItems(this.mapper.notice('error', 'Bypass permissions is only available in a chat started with it.'))
+      } else {
+        try {
+          await handle.setPermissionMode(change.permissionMode)
+          this.info = { ...this.info, permissionMode: change.permissionMode }
+        } catch (error) {
+          this.emitItems(this.mapper.notice('error', `Couldn't change the permission mode: ${errorText(error)}`))
+        }
+      }
+    }
+    this.emitSession()
+  }
+
+  /** Points the session's resume command at its current settings. */
+  setResumeCommand(command: string): void {
+    if (command === this.info.resumeCommand) return
+    this.info = { ...this.info, resumeCommand: command }
+    this.emitSession()
+  }
+
   close(): void {
     this.input.end()
     this.queryHandle?.close()
+  }
+
+  private async loadModels(handle: Query): Promise<void> {
+    try {
+      const models = (await handle.supportedModels()).flatMap(toModelOption)
+      this.info = { ...this.info, models }
+      this.emitSession()
+    } catch (error) {
+      // The pickers stay read-only without a list.
+      this.spec.log?.(`Couldn't list Claude's models: ${errorText(error)}`)
+    }
+  }
+
+  /** Reads how full the context window is, for the composer's meter. */
+  private async refreshContext(): Promise<void> {
+    const handle = this.queryHandle
+    if (!handle) return
+    const read = ++this.contextReads
+    try {
+      const usage = toContextUsage(await handle.getContextUsage({ detail: 'summary' }))
+      // A slower, older read must not overwrite a newer one.
+      if (read !== this.contextReads || !usage) return
+      this.info = { ...this.info, contextUsage: usage }
+      this.emitSession()
+    } catch (error) {
+      if (this.info.status !== 'closed' && this.info.status !== 'error') this.spec.log?.(`Couldn't read context usage: ${errorText(error)}`)
+    }
+  }
+
+  /** After a turn: the meter changed, and a model list that failed to load gets another try. */
+  private refreshBetweenTurns(): void {
+    void this.refreshContext()
+    if (!this.info.models && this.queryHandle) void this.loadModels(this.queryHandle)
+  }
+
+  private applySessionState(state: 'idle' | 'running' | 'requires_action'): void {
+    if (this.info.status === 'closed' || this.info.status === 'error') return
+    if (state === 'idle') {
+      this.setStatus('idle')
+      this.refreshBetweenTurns()
+    } else {
+      this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
+    }
   }
 
   private requestPermission(
@@ -305,21 +484,34 @@ export class AgentSession {
       this.info = { ...this.info, sessionId: message.session_id }
       this.emitSession()
     }
-    if (message.type === 'system' && message.subtype === 'init') {
-      this.info = { ...this.info, model: message.model, permissionMode: message.permissionMode }
-      this.emitSession()
+    if (message.type === 'system' && message.subtype === 'session_state_changed') {
+      this.stateEvents = true
+      this.applySessionState(message.state)
+      return
+    }
+    if (message.type === 'system' && (message.subtype === 'init' || message.subtype === 'status')) {
+      // Claude re-sends init each turn, and status when the mode changes (e.g. entering plan mode itself).
+      const model = message.subtype === 'init' ? message.model : this.info.model
+      const permissionMode = message.permissionMode ?? this.info.permissionMode
+      if (model !== this.info.model || permissionMode !== this.info.permissionMode) {
+        this.info = { ...this.info, ...(model ? { model } : {}), ...(permissionMode ? { permissionMode } : {}) }
+        this.emitSession()
+      }
     }
     if (message.type === 'result') {
       const interrupted = this.interruptRequested
       this.interruptRequested = false
-      this.turnsInFlight = Math.max(0, this.turnsInFlight - 1)
       this.emitItems(this.mapper.settleRunning(message.subtype === 'success' ? 'completed' : interrupted ? 'interrupted' : 'failed'))
       if (interrupted) {
         this.emitItems(this.mapper.notice('info', 'Interrupted'))
       } else if (message.subtype !== 'success' && 'errors' in message && Array.isArray(message.errors) && message.errors.length) {
         this.emitItems(this.mapper.notice('error', message.errors.join('\n')))
       }
-      this.setStatus(this.turnsInFlight > 0 ? 'running' : 'idle')
+      // Claude reports idle itself once queued work is done; older CLIs only send results.
+      if (!this.stateEvents) {
+        this.setStatus('idle')
+        this.refreshBetweenTurns()
+      }
       void this.refreshTitle()
       return
     }

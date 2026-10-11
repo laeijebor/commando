@@ -18,7 +18,7 @@ import {
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import { parseChatAnswer } from '../shared/agent-chat.js'
+import { parseChatAnswer, parseChatSettingsChange } from '../shared/agent-chat.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -557,6 +557,13 @@ export function parseClientMessage(value: unknown): ParseResult {
         return { ok: false, error: 'Invalid chat answer', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
       }
       return { ok: true, message: { type: 'chat_answer', paneId: value.paneId, chatRequestId, answer, requestId: id } }
+    }
+    case 'chat_configure': {
+      const id = requestId(value.requestId)
+      const settings = parseChatSettingsChange(value.settings)
+      return id && isPaneId(value.paneId) && settings
+        ? { ok: true, message: { type: 'chat_configure', paneId: value.paneId, settings, requestId: id } }
+        : { ok: false, error: 'Invalid chat settings', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     default:
       return { ok: false, error: 'Unsupported message type' }

@@ -612,6 +612,14 @@ describe('chat pane messages', () => {
       .toEqual({ ok: true, message: { type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'deny', message: 'no' }, requestId: 'r3' } })
   })
 
+  it('accepts picker changes and rejects unknown values', () => {
+    expect(parseClientMessage({ type: 'chat_configure', paneId: '%4', settings: { model: 'sonnet', permissionMode: 'plan' }, requestId: 'r5' }))
+      .toEqual({ ok: true, message: { type: 'chat_configure', paneId: '%4', settings: { model: 'sonnet', permissionMode: 'plan' }, requestId: 'r5' } })
+    expect(parseClientMessage({ type: 'chat_configure', paneId: '%4', settings: { effort: 'ludicrous' }, requestId: 'r5' })).toMatchObject({ ok: false, error: 'Invalid chat settings', requestId: 'r5' })
+    expect(parseClientMessage({ type: 'chat_configure', paneId: '%4', settings: {}, requestId: 'r5' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_configure', paneId: '%4', settings: { model: 'x; rm -rf /' }, requestId: 'r5' }).ok).toBe(false)
+  })
+
   it('rejects blank sends, bad panes and malformed answers', () => {
     expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: '   ', requestId: 'r1' }).ok).toBe(false)
     expect(parseClientMessage({ type: 'chat_send', paneId: '4', text: 'hi', requestId: 'r1' }).ok).toBe(false)

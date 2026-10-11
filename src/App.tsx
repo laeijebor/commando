@@ -122,8 +122,8 @@ import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import type { SessionAgentLaunch } from '../shared/tmux-create'
-import { mergeChatItems, type ChatAnswer, type ChatState } from '../shared/agent-chat'
+import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { mergeChatItems, type ChatAnswer, type ChatSettingsChange, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -317,6 +317,7 @@ type TerminalPaneProps = {
   onChatSend?: (text: string) => void
   onChatInterrupt?: () => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
+  onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
@@ -378,6 +379,7 @@ export function TerminalPaneCard({
   onChatSend,
   onChatInterrupt,
   onChatAnswer,
+  onChatConfigure,
   onChatRestart,
   onRename,
   onRenameFinished,
@@ -648,6 +650,7 @@ export function TerminalPaneCard({
             onSend={(text) => onChatSend?.(text)}
             onInterrupt={() => onChatInterrupt?.()}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
+            onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
           />
         ) : <TerminalPaneRenderer
@@ -2081,6 +2084,9 @@ export function App() {
   const interruptChat = (paneId: string) => {
     send({ type: 'chat_interrupt', paneId, requestId: requestId('chat-interrupt') })
   }
+  const configureChat = (paneId: string, settings: ChatSettingsChange) => {
+    send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
+  }
   const answerChat = (paneId: string, chatRequestId: string, answer: ChatAnswer) => {
     send({ type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
   }
@@ -2269,9 +2275,19 @@ export function App() {
       let agent: SessionAgentLaunch | undefined
       if (chat) {
         // The profile is remembered per repository, as in the new-session dialog.
-        const repoRoot = await gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined)
+        const [repoRoot, profiles] = await Promise.all([
+          gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined),
+          tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
+            console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
+            return null
+          }),
+        ])
         const preference = loadChatLaunch(repoRoot ?? pane.path)
-        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(preference.configDir ? { configDir: preference.configDir } : {}) }
+        // Check the remembered profile against the current ones, as the dialog does, so a
+        // stale or missing preference never falls back to the daemon's own login.
+        const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
+        if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
+        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
       }
       const created = await tmuxCreateApi.createPane({
         targetId: paneId,
@@ -3015,6 +3031,7 @@ export function App() {
                             onChatSend={(text) => sendChat(pane.id, text)}
                             onChatInterrupt={() => interruptChat(pane.id)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
+                            onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}

@@ -2,15 +2,19 @@ import type { WebSocket } from 'ws'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
+  hostTakesSettings,
+  isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
   type ChatAnswer,
   type ChatItem,
+  type ChatSettingsChange,
   type ChatState,
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
+import type { ChatResumeSettings } from './agent-resume-command.js'
 
 const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
 /** How long a session may wait for its pane to appear in the tmux snapshot. */
@@ -71,7 +75,11 @@ export class AgentHostHub {
         return
       }
       const message = parseHostMessage(parsed)
-      if (!message) return
+      if (!message) {
+        const type = typeof parsed === 'object' && parsed !== null && 'type' in parsed ? String((parsed as { type: unknown }).type).slice(0, 40) : 'unknown'
+        this.dependencies.log?.(`[agent-host] dropped an invalid ${type} message from a host`)
+        return
+      }
       queue = queue.then(() => this.handle(socket, message)).catch((error: unknown) => {
         this.dependencies.log?.(`[agent-host] message failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -171,6 +179,27 @@ export class AgentHostHub {
 
   interrupt(paneId: string, requestId: string): boolean {
     return this.toHost(paneId, { type: 'interrupt', paneId, requestId })
+  }
+
+  /** Switches the pane's model, effort or permission mode for the rest of its session. */
+  configure(paneId: string, settings: ChatSettingsChange, requestId: string): boolean {
+    return this.toHost(paneId, { type: 'configure', paneId, settings, requestId })
+  }
+
+  /**
+   * The settings a resume of this pane's chat should carry: what its pickers
+   * show now, not the flags it was launched with.
+   */
+  resumeSettings(paneId: string): ChatResumeSettings | undefined {
+    const session = this.chats.get(paneId)?.state.session
+    // An older host reports no picks; its launch flags are still right.
+    if (!session || !hostTakesSettings(session) || !isChatPermissionMode(session.permissionMode)) return undefined
+    return {
+      permissionMode: session.permissionMode,
+      ...(session.selectedModel ? { model: session.selectedModel } : {}),
+      ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.bypassAllowed ? { bypassAllowed: true } : {}),
+    }
   }
 
   /** Asks the pane's host to restart on the same conversation, to run the current code. */

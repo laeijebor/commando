@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatState } from './agent-chat.js'
+import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatSettingsChange, ChatState } from './agent-chat.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -809,3 +809,5 @@ export type ClientMessage =
   | { type: 'chat_interrupt'; paneId: string; requestId: string }
   | { type: 'chat_restart'; paneId: string; requestId: string }
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
+  /** Switches a chat's model, effort or permission mode while it runs. */
+  | { type: 'chat_configure'; paneId: string; settings: ChatSettingsChange; requestId: string }

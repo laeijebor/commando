@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatItem, ChatState } from '../../shared/agent-chat'
 import { ChatPane } from './ChatPane'
-import { deriveTimelineRows, patchLines, pendingRequests, shortPath, workSummary } from './timelineRows'
+import { deriveTimelineRows, patchLines, pendingRequests, shortPath, thoughtLabel, workSummary } from './timelineRows'
 
 afterEach(cleanup)
 
@@ -31,7 +31,7 @@ function chat(overrides: Partial<ChatState> = {}, extra: ChatItem[] = []): ChatS
 }
 
 function renderPane(state: ChatState) {
-  const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn() }
+  const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
   render(<ChatPane chat={state} connected focused={false} {...handlers} />)
   return handlers
 }
@@ -54,7 +54,7 @@ describe('timeline rows', () => {
   })
 
   it('summarises, splits patches and shortens session paths', () => {
-    expect(workSummary([{ ...base, id: 'x', kind: 'reasoning', text: 'hmm' }])).toBe('Thought')
+    expect(workSummary([{ ...base, id: 'x', kind: 'command', toolUseId: 'x', command: 'ls' }])).toBe('Ran 1 command')
     expect(patchLines('-a\n+b\n@@\n… 3 more lines').map((line) => line.kind)).toEqual(['del', 'add', 'gap', 'gap'])
     expect(shortPath('Read /work/a.ts and /work/b.ts', '/work')).toBe('Read a.ts and b.ts')
   })
@@ -70,6 +70,7 @@ describe('ChatPane', () => {
     fireEvent.click(group)
     expect(screen.getByText('server/agent-resume.ts', { selector: 'span' })).toBeInTheDocument()
     expect(screen.getByText('claude-opus-5-5')).toBeInTheDocument()
+    expect(screen.getByText('Ask before edits')).toBeInTheDocument()
     expect(screen.getByText('claudew')).toBeInTheDocument()
   })
 
@@ -113,7 +114,7 @@ describe('ChatPane', () => {
 
   it('disables answers while this browser is offline', () => {
     const request: ChatItem = { ...base, id: 'request-r1', status: 'running', kind: 'request', requestId: 'r1', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?' }
-    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn() }
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
     render(<ChatPane chat={chat({}, [request])} connected={false} focused={false} {...handlers} />)
     expect(screen.getByRole('status')).toHaveTextContent('Reconnecting to Commando')
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeDisabled()
@@ -121,7 +122,7 @@ describe('ChatPane', () => {
 
   it('offers a restart when Commando has updated since the chat started', () => {
     const onRestart = vi.fn()
-    render(<ChatPane chat={chat({ updateAvailable: true })} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onRestart={onRestart} />)
+    render(<ChatPane chat={chat({ updateAvailable: true })} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} onRestart={onRestart} />)
     fireEvent.click(screen.getByRole('button', { name: 'Restart to update' }))
     expect(onRestart).toHaveBeenCalled()
   })
@@ -130,5 +131,118 @@ describe('ChatPane', () => {
     renderPane(chat({ hostConnected: false }))
     expect(screen.getByRole('status')).toHaveTextContent('disconnected')
     expect(screen.getByRole('textbox', { name: 'Message Claude' })).toBeDisabled()
+  })
+})
+
+const models = [
+  { value: 'default', displayName: 'Default (recommended)', description: 'Opus 5.5', resolvedModel: 'claude-opus-5-5', efforts: ['low', 'medium', 'high', 'max'] as const, supportsAutoMode: true },
+  { value: 'opus', displayName: 'Opus 5.5', description: 'Most capable', resolvedModel: 'claude-opus-5-5', efforts: ['low', 'medium', 'high', 'max'] as const, supportsAutoMode: true },
+  { value: 'haiku', displayName: 'Haiku 5.5', description: 'Quickest', resolvedModel: 'claude-haiku-5-5', efforts: ['low', 'high'] as const },
+].map((model) => ({ ...model, efforts: [...model.efforts] }))
+
+function pickerChat(session: Partial<ChatState['session']> = {}): ChatState {
+  const state = chat()
+  return { ...state, session: { ...state.session, hostVersion: 2, models, effort: 'high', ...session } }
+}
+
+/** Each option's label, ticked ones marked with `*`. */
+function optionLabels(menu: HTMLElement): string[] {
+  return within(menu).getAllByRole('menuitemradio').map((item) => `${item.getAttribute('aria-checked') === 'true' ? '*' : ''}${item.children[1]?.textContent ?? ''}`)
+}
+
+describe('composer pickers', () => {
+  it('names the running model and effort, and switches model from the menu', () => {
+    const handlers = renderPane(pickerChat())
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5 · High' }))
+    const menu = screen.getByRole('menu', { name: 'Model' })
+    // No explicit pick: the default row is ticked while it is what runs.
+    expect(within(menu).getByRole('menuitemradio', { name: /Default \(recommended\)/ })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Haiku 5.5/ }))
+    expect(handlers.onConfigure).toHaveBeenCalledWith({ model: 'haiku' })
+  })
+
+  it('offers the efforts of the picked model and switches effort', () => {
+    const handlers = renderPane(pickerChat({ selectedModel: 'haiku', model: 'claude-haiku-5-5', effort: 'low' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Haiku 5.5 · Low' }))
+    const efforts = screen.getByRole('radiogroup', { name: 'Effort' })
+    expect(within(efforts).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Low', 'High'])
+    fireEvent.click(within(efforts).getByRole('radio', { name: 'High' }))
+    expect(handlers.onConfigure).toHaveBeenCalledWith({ effort: 'high' })
+  })
+
+  it('switches permission mode, offering auto only when the model supports it and bypass only when started with it', () => {
+    const handlers = renderPane(pickerChat())
+    fireEvent.click(screen.getByRole('button', { name: 'Ask before edits' }))
+    const modes = screen.getByRole('menu', { name: 'Permissions' })
+    expect(optionLabels(modes)).toEqual(['*Ask before edits', 'Accept edits', 'Plan mode', 'Auto'])
+    fireEvent.click(within(modes).getByRole('menuitemradio', { name: /Plan mode/ }))
+    expect(handlers.onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
+    cleanup()
+    renderPane(pickerChat({ selectedModel: 'haiku', model: 'claude-haiku-5-5', permissionMode: 'plan', bypassAllowed: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Plan mode' }))
+    expect(optionLabels(screen.getByRole('menu', { name: 'Permissions' }))).toEqual(['Ask before edits', 'Accept edits', '*Plan mode', 'Bypass permissions'])
+  })
+
+  it('keeps the pills read-only until Claude lists its models, and disabled while the host is away', () => {
+    renderPane(chat())
+    expect(screen.queryByRole('button', { name: /claude-opus-5-5/ })).toBeNull()
+    cleanup()
+    renderPane({ ...pickerChat(), hostConnected: false })
+    expect(screen.getByRole('button', { name: 'Opus 5.5 · High' })).toBeDisabled()
+    cleanup()
+    // A resumed chat replays its history before Claude can switch anything.
+    renderPane(pickerChat({ status: 'starting' }))
+    expect(screen.getByRole('button', { name: 'Ask before edits' })).toBeDisabled()
+  })
+
+  it('keeps the pills read-only for a host that predates the pickers', () => {
+    renderPane(pickerChat({ hostVersion: 1 }))
+    expect(screen.getByText('Opus 5.5 · High')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Opus 5.5 · High' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ask before edits' })).toBeNull()
+    expect(screen.getByTitle('Restart this chat to change its settings')).toHaveTextContent('Ask before edits')
+  })
+})
+
+describe('context meter', () => {
+  const usage = { usedTokens: 84_000, maxTokens: 200_000, autoCompactThreshold: 184_000, autoCompact: true, categories: [{ name: 'Messages', tokens: 54_000 }, { name: 'System tools', tokens: 18_000 }, { name: 'Skills', tokens: 12_000 }] }
+
+  it('shows used and max tokens, the categories and the auto-compact point, and compacts on demand', () => {
+    const handlers = renderPane(pickerChat({ contextUsage: usage }))
+    fireEvent.click(screen.getByRole('button', { name: 'Context window 42% used' }))
+    const popup = screen.getByRole('dialog', { name: 'Context window' })
+    expect(popup).toHaveTextContent('84k / 200k · 42%')
+    expect(popup).toHaveTextContent('Messages54k')
+    expect(popup).toHaveTextContent('Auto-compacts at 92%')
+    fireEvent.click(within(popup).getByRole('button', { name: 'Compact now' }))
+    expect(handlers.onSend).toHaveBeenCalledWith('/compact')
+  })
+
+  it('turns red above 90% and cannot compact mid-turn', () => {
+    renderPane(pickerChat({ status: 'running', contextUsage: { ...usage, usedTokens: 190_000 } }))
+    const ring = screen.getByRole('button', { name: 'Context window 95% used' })
+    expect(ring).toHaveAttribute('data-overloaded', 'true')
+    fireEvent.click(ring)
+    expect(screen.getByRole('button', { name: 'Compact now' })).toBeDisabled()
+  })
+})
+
+describe('thinking rows', () => {
+  const thought: ChatItem = { ...base, id: 'th', kind: 'reasoning', text: 'Checking how the hub routes chat_send.', createdAt: 1_000, updatedAt: 15_000 }
+
+  it('labels a thought by how long it took, or not at all when replayed', () => {
+    expect(thoughtLabel({ ...thought, kind: 'reasoning' } as Extract<ChatItem, { kind: 'reasoning' }>)).toBe('Thought for 14s')
+    expect(thoughtLabel({ ...thought, updatedAt: 1_000 } as Extract<ChatItem, { kind: 'reasoning' }>)).toBe('Thought')
+    expect(thoughtLabel({ ...thought, status: 'running' } as Extract<ChatItem, { kind: 'reasoning' }>)).toBe('Thinking…')
+  })
+
+  it('shows a collapsed row that opens to the summary, apart from the work group', () => {
+    renderPane(chat({}, [thought]))
+    const row = screen.getByRole('button', { name: 'Thought for 14s' })
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(/Checking how the hub/)).toBeNull()
+    fireEvent.click(row)
+    expect(screen.getByText('Checking how the hub routes chat_send.')).toBeInTheDocument()
+    expect(deriveTimelineRows([...items, thought]).at(-1)).toMatchObject({ kind: 'thought', id: 'th' })
   })
 })

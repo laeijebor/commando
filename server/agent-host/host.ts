@@ -204,6 +204,7 @@ export class AgentHost {
     else if (message.type === 'interrupt') await session.interrupt()
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)
+    else if (message.type === 'configure') await session.configure(message.settings)
   }
 
   /** Coalesces streaming updates so a long reply is not resent per token. */

@@ -1,6 +1,6 @@
 import { Component, useMemo, type ReactNode } from 'react'
 import { PlugZap, RefreshCw } from 'lucide-react'
-import type { ChatAnswer, ChatState } from '../../shared/agent-chat'
+import type { ChatAnswer, ChatSettingsChange, ChatState } from '../../shared/agent-chat'
 import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
 import { Button } from './ui/button'
@@ -38,6 +38,7 @@ function ChatColumn({
   onSend,
   onInterrupt,
   onAnswer,
+  onConfigure,
   onRestart,
 }: {
   chat: ChatState
@@ -48,6 +49,8 @@ function ChatColumn({
   onSend: (text: string) => void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
+  /** Switches the model, effort or permission mode while the chat runs. */
+  onConfigure: (change: ChatSettingsChange) => void
   /** Restarts the host on the same conversation, to run the current code. */
   onRestart?: () => void
 }) {
@@ -88,6 +91,7 @@ function ChatColumn({
         onSend={onSend}
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}
+        onConfigure={onConfigure}
         autoFocus={focused}
       />
     </section>

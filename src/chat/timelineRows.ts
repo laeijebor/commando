@@ -1,15 +1,24 @@
 import type { ChatItem } from '../../shared/agent-chat'
 
-export type WorkItem = Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' | 'reasoning' | 'request' }>
+export type WorkItem = Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' | 'request' }>
+export type ReasoningItem = Extract<ChatItem, { kind: 'reasoning' }>
 
 export type TimelineRow =
   | { kind: 'user'; id: string; item: Extract<ChatItem, { kind: 'user_message' }> }
   | { kind: 'assistant'; id: string; item: Extract<ChatItem, { kind: 'assistant_message' }> }
   | { kind: 'work'; id: string; items: WorkItem[]; live: boolean; summary: string }
+  | { kind: 'thought'; id: string; item: ReasoningItem }
   | { kind: 'notice'; id: string; item: Extract<ChatItem, { kind: 'notice' }> }
 
 function isWork(item: ChatItem): item is WorkItem {
-  return item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'reasoning' || item.kind === 'request'
+  return item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'request'
+}
+
+/** "Thought for 14s"; a replayed thought has no timing, so just "Thought". */
+export function thoughtLabel(item: ReasoningItem): string {
+  if (item.status === 'running') return 'Thinking…'
+  const seconds = Math.round((item.updatedAt - item.createdAt) / 1000)
+  return item.updatedAt > item.createdAt ? `Thought for ${Math.max(1, seconds)}s` : 'Thought'
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -23,13 +32,11 @@ export function workSummary(items: readonly WorkItem[]): string {
   let reads = 0
   let searches = 0
   let tools = 0
-  let thoughts = 0
   let requests = 0
   const editedPaths = new Set<string>()
   for (const item of items) {
     if (item.kind === 'command') commands += 1
     else if (item.kind === 'file_change') { edits += 1; editedPaths.add(item.path) }
-    else if (item.kind === 'reasoning') thoughts += 1
     else if (item.kind === 'request') requests += 1
     else if (item.toolName === 'Read') reads += 1
     else if (item.toolName === 'Grep' || item.toolName === 'Glob' || item.toolName === 'WebSearch') searches += 1
@@ -42,32 +49,28 @@ export function workSummary(items: readonly WorkItem[]): string {
   if (searches) parts.push(`searched ${plural(searches, 'time', 'times')}`)
   if (tools) parts.push(`used ${plural(tools, 'tool', 'tools')}`)
   if (requests) parts.push(plural(requests, 'approval', 'approvals'))
-  if (!parts.length && thoughts) parts.push('thought')
   const text = parts.join(', ')
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 /**
  * Groups consecutive tool activity into collapsible work rows between the
- * user's messages and Claude's replies, as t3code's timeline does. Pending
- * requests and todo lists are shown in the composer, not the timeline.
+ * user's messages and Claude's replies, as t3code's timeline does. Thinking
+ * gets its own collapsed row. Pending requests and todo lists are shown in
+ * the composer, not the timeline.
  */
 export function deriveTimelineRows(items: readonly ChatItem[]): TimelineRow[] {
   const rows: TimelineRow[] = []
   let group: WorkItem[] = []
   const flush = () => {
     if (!group.length) return
-    // An empty, finished thought on its own adds nothing worth a row.
-    const meaningful = group.filter((item) => item.kind !== 'reasoning' || item.text || item.status === 'running')
-    if (meaningful.length) {
-      rows.push({
-        kind: 'work',
-        id: `work-${meaningful[0]!.id}`,
-        items: meaningful,
-        live: meaningful.some((item) => item.status === 'running'),
-        summary: workSummary(meaningful),
-      })
-    }
+    rows.push({
+      kind: 'work',
+      id: `work-${group[0]!.id}`,
+      items: group,
+      live: group.some((item) => item.status === 'running'),
+      summary: workSummary(group),
+    })
     group = []
   }
   for (const item of items) {
@@ -78,11 +81,14 @@ export function deriveTimelineRows(items: readonly ChatItem[]): TimelineRow[] {
       continue
     }
     if (item.kind === 'todo_list') continue
+    // An empty, finished thought adds nothing worth a row (and keeps a work group whole).
+    if (item.kind === 'reasoning' && !item.text && item.status !== 'running') continue
     flush()
     if (item.kind === 'user_message') rows.push({ kind: 'user', id: item.id, item })
     else if (item.kind === 'assistant_message') {
       if (item.text || item.status === 'running') rows.push({ kind: 'assistant', id: item.id, item })
-    } else if (item.kind === 'notice') rows.push({ kind: 'notice', id: item.id, item })
+    } else if (item.kind === 'reasoning') rows.push({ kind: 'thought', id: item.id, item })
+    else if (item.kind === 'notice') rows.push({ kind: 'notice', id: item.id, item })
   }
   flush()
   return rows

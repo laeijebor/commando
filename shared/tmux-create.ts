@@ -38,6 +38,13 @@ export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): Claude
   return [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
 }
 
+/** The remembered profile while it still exists, else the most recently used one. */
+export function chatProfileConfigDir(remembered: string | undefined, profiles: readonly ClaudeProfile[]): string | undefined {
+  return remembered && profiles.some((profile) => profile.configDir === remembered)
+    ? remembered
+    : defaultClaudeProfile(profiles)?.configDir
+}
+
 export const SESSION_AGENT_CHOICES = [
   { value: 'shell', label: 'Shell' },
   { value: 'claude-chat', label: 'Claude chat' },
