@@ -934,6 +934,10 @@ export class AgentStatusRegistry {
     return this.upsertChat(paneId, updatedAt)
   }
 
+  hasChatHost(paneId: string): boolean {
+    return this.chatHosts.has(paneId)
+  }
+
   /**
    * Lists a chat pane's open request, as hooks list a terminal agent's.
    * Returns the request as it is stored, bounded like a hook's.

@@ -50,7 +50,12 @@ function setup() {
   const registry = new AgentStatusRegistry()
   const broker = new AgentInteractionBroker()
   const changes: AgentStatusChange[] = []
-  const publish = (change: AgentStatusChange) => { if (change) changes.push(change) }
+  const restored: string[] = []
+  const publish = (change: AgentStatusChange, quiet?: boolean) => {
+    if (!change) return
+    changes.push(change)
+    if (quiet && change.type === 'upsert') restored.push(change.status.status)
+  }
   const hub: AgentHostHub = new AgentHostHub({
     paneExists: (paneId) => paneId === '%1',
     targetIdFor: () => 'target-1',
@@ -71,7 +76,7 @@ function setup() {
     { action },
   )
   const answersToHost = () => socket.sent.filter((message) => message.type === 'answer')
-  return { registry, broker, hub, socket, changes, answerFromPhone, answersToHost }
+  return { registry, broker, hub, socket, changes, restored, answerFromPhone, answersToHost }
 }
 
 const companionRequests = (registry: AgentStatusRegistry, broker: AgentInteractionBroker) => buildCompanionSnapshot(
@@ -238,6 +243,8 @@ describe('chat status for the HUD', () => {
     restarted.socket.host({ type: 'session_snapshot', session: session({ status: 'idle' }), items: [userMessage] })
     await settle()
     expect(restarted.registry.get('%1')).toMatchObject({ status: 'done', confidence: 'high' })
+    // Not news, so no "finished" push for it.
+    expect(restarted.restored).toEqual(['done'])
   })
 
   it('shows needs input while a request waits, and drops the status with the chat', async () => {

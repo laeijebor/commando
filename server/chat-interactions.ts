@@ -83,9 +83,10 @@ export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean): Chat
 }
 
 type BrokerChatInteractionsDependencies = {
-  registry: Pick<AgentStatusRegistry, 'applyChatHost' | 'openChatRequest' | 'closeChatRequest'>
+  registry: Pick<AgentStatusRegistry, 'applyChatHost' | 'hasChatHost' | 'openChatRequest' | 'closeChatRequest'>
   broker: Pick<AgentInteractionBroker, 'offer' | 'cancel'>
-  publish: (change: AgentStatusChange) => void
+  /** `restored` marks a pane's first report, which is what the host already had, not news. */
+  publish: (change: AgentStatusChange, restored?: boolean) => void
   /** Hands an island, phone or HUD answer to the chat's host (`AgentHostHub.answerInteraction`). */
   answer: (paneId: string, chatRequestId: string, answer: AgentInteractionAnswer) => boolean
   log?: (message: string) => void
@@ -99,7 +100,11 @@ type BrokerChatInteractionsDependencies = {
 export function brokerChatInteractions(dependencies: BrokerChatInteractionsDependencies): ChatInteractions {
   const { registry, broker, publish } = dependencies
   return {
-    status: (paneId, report) => publish(registry.applyChatHost(paneId, report)),
+    status: (paneId, report) => {
+      // E.g. after a daemon restart: the chat finished long ago, so nobody is told it just did.
+      const restored = !registry.hasChatHost(paneId)
+      publish(registry.applyChatHost(paneId, report), restored)
+    },
     open: (paneId, item) => {
       const { request, attention } = chatInteraction(item)
       const opened = registry.openChatRequest(paneId, request, attention)

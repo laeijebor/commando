@@ -741,7 +741,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const publishAgentStatusChange = (change: AgentStatusChange): void => {
+  const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
     for (const client of clients) sendAgentStatusChange(client, change)
     if (change && companionClientCount > 0) {
       if (change.type === 'remove') {
@@ -764,7 +764,8 @@ async function main(): Promise<void> {
       ) primeStatusTail(change.status.paneId)
     }
     if (change) companion?.publish()
-    pushNotifier?.handleStatusChange(change)
+    if (restored) pushNotifier?.observe(change)
+    else pushNotifier?.handleStatusChange(change)
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
