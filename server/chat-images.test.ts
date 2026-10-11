@@ -49,8 +49,8 @@ describe('chat image store', () => {
   })
 
   it('stores base64 images from tool results and keeps their name', () => {
-    expect(store.saveBase64Sync(JPEG.toString('base64'), 'shot.jpg')).toMatchObject({ id: expect.stringMatching(/\.jpg$/), name: 'shot.jpg' })
-    expect(store.saveBase64Sync(Buffer.from('not an image').toString('base64'))).toBeUndefined()
+    expect(store.saveBase64(JPEG.toString('base64'), 'shot.jpg')).toMatchObject({ id: expect.stringMatching(/\.jpg$/), name: 'shot.jpg' })
+    expect(store.saveBase64(Buffer.from('not an image').toString('base64'))).toBeUndefined()
   })
 
   it('prunes old images and leftover temporaries, and nothing else', async () => {

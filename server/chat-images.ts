@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, renameSync, utimesSync, writeFileSync } from 'node:fs'
-import { mkdir, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -81,7 +81,7 @@ export class ChatImageStore {
    * item mapper can attach the ref as it maps; returns undefined when the data
    * is not a usable image.
    */
-  saveBase64Sync(data: string, name?: string): ChatImageRef | undefined {
+  saveBase64(data: string, name?: string): ChatImageRef | undefined {
     let bytes: Buffer
     try {
       bytes = Buffer.from(data, 'base64')
@@ -105,6 +105,15 @@ export class ChatImageStore {
       return undefined
     }
     return name ? { id: checked.id, name } : { id: checked.id }
+  }
+
+  /** An uploaded image's bytes, for the message that sends it to Claude. */
+  async read(id: string): Promise<Buffer> {
+    const path = this.path(id)
+    if (!path) throw new Error('Invalid image id')
+    const stats = await stat(path)
+    if (!stats.isFile() || stats.size > MAX_STORED_IMAGE_BYTES) throw new Error('Not a stored image')
+    return readFile(path)
   }
 
   /** Deletes images nobody has stored or replayed for `maxAgeMs`. */

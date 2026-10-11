@@ -172,6 +172,7 @@ export class AgentHost {
       this.flush()
       this.link.send({ type: 'session_update', session: info })
     })
+    session.on('commands', (commands) => this.link.send({ type: 'commands', paneId: session.paneId, commands }))
     session.on('closed', () => {
       this.flush()
       this.link.send({ type: 'session_update', session: session.snapshot().session })
@@ -194,13 +195,19 @@ export class AgentHost {
   private sendSnapshot(session: AgentSession): void {
     const { session: info, items } = session.snapshot()
     this.link.send({ type: 'session_snapshot', session: info, items: snapshotItems(items) })
+    const commands = session.commands
+    if (commands) this.link.send({ type: 'commands', paneId: session.paneId, commands })
   }
 
   private async onMessage(message: DaemonToHostMessage): Promise<void> {
     if (message.type === 'welcome') return
     const session = this.sessions.get(message.paneId)
     if (!session) return
-    if (message.type === 'send') session.send(message.text)
+    if (message.type === 'send') session.send(message.text, message.images)
+    else if (message.type === 'file_search') {
+      const result = await session.searchFiles(message.query)
+      this.link.send({ type: 'file_search_result', paneId: message.paneId, requestId: message.requestId, ...result })
+    }
     else if (message.type === 'interrupt') await session.interrupt()
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)

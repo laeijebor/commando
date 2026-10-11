@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
+import { ChatImageStore } from '../chat-images.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { AgentSession } from './session.js'
@@ -104,7 +105,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 }
 
 /** Variables a respawned host needs to find the same daemon. */
-const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH'] as const
+const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR'] as const
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
@@ -150,7 +151,10 @@ const color = (code: number, text: string) => `\x1b[${code}m${text}\x1b[39m`
 export function terminalLine(item: ChatItem): string | null {
   if (item.status === 'running' && item.kind !== 'request') return null
   switch (item.kind) {
-    case 'user_message': return `${color(35, '›')} ${bold(item.text)}`
+    case 'user_message': {
+      const images = item.images?.length ? dim(` (${item.images.length} image${item.images.length === 1 ? '' : 's'})`) : ''
+      return `${color(35, '›')} ${bold(item.text)}${images}`
+    }
     case 'assistant_message': return item.text ? `${color(37, '●')} ${item.text}` : null
     case 'reasoning': return null
     case 'command': return `${dim('  $')} ${item.command}${item.isError ? color(31, ' (failed)') : ''}`
@@ -213,6 +217,7 @@ async function main(): Promise<void> {
     ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
+    images: new ChatImageStore(),
     log: (message) => write(dim(message)),
   })
 
