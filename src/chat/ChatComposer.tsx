@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowUp, CheckSquare, Circle, CircleDot, Square, SquareCheckBig } from 'lucide-react'
-import type { ChatAnswer, ChatItem, ChatSessionInfo } from '../../shared/agent-chat'
+import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatSettingsChange } from '../../shared/agent-chat'
 import { cn } from './cn'
+import { ContextMeter, ModelPicker, PermissionPicker } from './ComposerControls'
 import { shortPath } from './timelineRows'
 import { Button } from './ui/button'
 
@@ -127,15 +128,6 @@ function profileLabel(configDir: string | undefined): string | null {
   return name.replace(/^\./, '') || null
 }
 
-const PERMISSION_LABELS: Record<string, string> = {
-  default: 'Ask before edits',
-  acceptEdits: 'Accept edits',
-  plan: 'Plan mode',
-  auto: 'Auto',
-  dontAsk: "Don't ask",
-  bypassPermissions: 'Bypass permissions',
-}
-
 export function ChatComposer({
   session,
   hostConnected,
@@ -144,6 +136,7 @@ export function ChatComposer({
   onSend,
   onInterrupt,
   onAnswer,
+  onConfigure,
   autoFocus,
 }: {
   session: ChatSessionInfo
@@ -153,6 +146,7 @@ export function ChatComposer({
   onSend: (text: string) => void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
+  onConfigure: (change: ChatSettingsChange) => void
   autoFocus?: boolean
 }) {
   const [draft, setDraft] = useState('')
@@ -210,11 +204,14 @@ export function ChatComposer({
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-            {session.model ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground">{session.model}</span> : null}
-            {session.permissionMode ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground">{PERMISSION_LABELS[session.permissionMode] ?? session.permissionMode}</span> : null}
+            <ModelPicker session={session} disabled={disabled} onConfigure={onConfigure} />
+            <PermissionPicker session={session} disabled={disabled} onConfigure={onConfigure} />
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
           </span>
+          {session.contextUsage ? (
+            <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />
+          ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title="Stop (Esc)" onClick={onInterrupt} disabled={!hostConnected}>
               <span className="size-2.5 rounded-[2px] bg-destructive" aria-hidden="true" />

@@ -123,7 +123,7 @@ import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
-import { mergeChatItems, type ChatAnswer, type ChatState } from '../shared/agent-chat'
+import { mergeChatItems, type ChatAnswer, type ChatSettingsChange, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -317,6 +317,7 @@ type TerminalPaneProps = {
   onChatSend?: (text: string) => void
   onChatInterrupt?: () => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
+  onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
@@ -378,6 +379,7 @@ export function TerminalPaneCard({
   onChatSend,
   onChatInterrupt,
   onChatAnswer,
+  onChatConfigure,
   onChatRestart,
   onRename,
   onRenameFinished,
@@ -648,6 +650,7 @@ export function TerminalPaneCard({
             onSend={(text) => onChatSend?.(text)}
             onInterrupt={() => onChatInterrupt?.()}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
+            onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
           />
         ) : <TerminalPaneRenderer
@@ -2081,6 +2084,9 @@ export function App() {
   const interruptChat = (paneId: string) => {
     send({ type: 'chat_interrupt', paneId, requestId: requestId('chat-interrupt') })
   }
+  const configureChat = (paneId: string, settings: ChatSettingsChange) => {
+    send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
+  }
   const answerChat = (paneId: string, chatRequestId: string, answer: ChatAnswer) => {
     send({ type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
   }
@@ -3021,6 +3027,7 @@ export function App() {
                             onChatSend={(text) => sendChat(pane.id, text)}
                             onChatInterrupt={() => interruptChat(pane.id)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
+                            onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}

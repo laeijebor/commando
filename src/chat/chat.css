@@ -71,11 +71,11 @@
  * A minimal reset for the chat subtree only (Tailwind's preflight would touch
  * all of Commando). Zero specificity, so every utility still wins.
  */
-:where(.commando-chat) :where(*, ::before, ::after) {
+:where(.commando-chat, .chat-floating) :where(*, ::before, ::after) {
   box-sizing: border-box;
   border: 0 solid var(--border);
 }
-:where(.commando-chat) :where(button, input, textarea, select) {
+:where(.commando-chat, .chat-floating) :where(button, input, textarea, select) {
   margin: 0;
   padding: 0;
   background: transparent;
@@ -88,7 +88,7 @@
   padding: 0;
   min-width: 0;
 }
-:where(.commando-chat) :where(p, ul, ol, pre, h1, h2, h3, h4) {
+:where(.commando-chat, .chat-floating) :where(p, ul, ol, pre, h1, h2, h3, h4, h5) {
   margin: 0;
 }
 
@@ -100,7 +100,14 @@
   background: var(--color-background);
 }
 
-.commando-chat :focus-visible {
+/* Composer menus portal to <body>, outside the chat subtree. */
+.chat-floating {
+  font-family: var(--font-sans);
+  color: var(--color-foreground);
+}
+
+.commando-chat :focus-visible,
+.chat-floating :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -146,3 +153,6 @@
 
 @keyframes chat-pulse { 50% { opacity: 0.35; } }
 .chat-pulse { animation: chat-pulse 1.2s ease-in-out infinite; }
+
+/* Thinking summaries read as an aside, not as Claude's reply. */
+.chat-thought .chat-markdown { color: inherit; font-size: 13px; line-height: 20px; }

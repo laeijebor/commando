@@ -1,10 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Brain, ChevronRight, CircleAlert, FilePen, Info, LoaderCircle, MessageCircleQuestion, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
+import { ChevronRight, CircleAlert, Diamond, FilePen, Info, LoaderCircle, MessageCircleQuestion, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
 import type { ChatItem } from '../../shared/agent-chat'
 import { cn } from './cn'
-import { deriveTimelineRows, patchLines, shortPath, type TimelineRow, type WorkItem } from './timelineRows'
+import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from './timelineRows'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
@@ -23,11 +23,10 @@ const Markdown = memo(function Markdown({ text }: { text: string }) {
 
 function WorkIcon({ item }: { item: WorkItem }) {
   const className = cn('size-3.5', item.status === 'running' ? 'text-primary' : item.status === 'failed' ? 'text-destructive' : 'text-icon-muted')
-  if (item.status === 'running' && item.kind !== 'reasoning') return <LoaderCircle className={cn(className, 'animate-spin')} aria-hidden="true" />
+  if (item.status === 'running') return <LoaderCircle className={cn(className, 'animate-spin')} aria-hidden="true" />
   switch (item.kind) {
     case 'command': return <SquareTerminal className={className} aria-hidden="true" />
     case 'file_change': return <FilePen className={className} aria-hidden="true" />
-    case 'reasoning': return <Brain className={cn(className, item.status === 'running' && 'chat-pulse')} aria-hidden="true" />
     case 'request': if (item.requestKind === 'question') return <MessageCircleQuestion className={className} aria-hidden="true" />
       return item.answer?.kind === 'approval' && item.answer.decision !== 'deny'
       ? <ShieldCheck className={className} aria-hidden="true" />
@@ -49,8 +48,6 @@ function workLabel(item: WorkItem, cwd: string) {
           <span className="font-mono text-xs text-foreground">{shortPath(item.path, cwd)}</span>
         </span>
       )
-    case 'reasoning':
-      return item.status === 'running' ? 'Thinking…' : 'Thought'
     case 'request': {
       const answer = item.answer
       if (answer?.kind === 'approval') return `${answer.decision === 'deny' ? 'Denied' : answer.decision === 'allow_always' ? 'Always allowed' : 'Allowed'} ${item.toolName}`
@@ -66,7 +63,6 @@ function hasDetails(item: WorkItem): boolean {
   switch (item.kind) {
     case 'command': return Boolean(item.output)
     case 'file_change': return Boolean(item.patch || item.output)
-    case 'reasoning': return Boolean(item.text)
     case 'tool': return Boolean(item.detail || item.output)
     default: return false
   }
@@ -102,8 +98,6 @@ function WorkDetails({ item }: { item: WorkItem }) {
       return <WorkLogDetails>{item.output ? <Output text={item.output} /> : null}</WorkLogDetails>
     case 'file_change':
       return <WorkLogDetails>{item.patch ? <PatchView patch={item.patch} /> : null}{item.isError && item.output ? <Output text={item.output} /> : null}</WorkLogDetails>
-    case 'reasoning':
-      return <WorkLogDetails><div className="text-sm text-muted-foreground"><Markdown text={item.text} /></div></WorkLogDetails>
     case 'tool':
       return <WorkLogDetails>{item.detail ? <Output text={item.detail} /> : null}{item.output ? <Output text={item.output} /> : null}</WorkLogDetails>
     default:
@@ -164,6 +158,35 @@ function WorkGroup({ row, cwd }: { row: Extract<TimelineRow, { kind: 'work' }>; 
   )
 }
 
+/** Claude's thinking summary: a collapsed "Thought for 14s" row that opens to the text. */
+function ThoughtRow({ item }: { item: ReasoningItem }) {
+  const [open, setOpen] = useState(false)
+  const running = item.status === 'running'
+  const expandable = Boolean(item.text)
+  return (
+    <div className="pb-2">
+      <button
+        type="button"
+        className={cn('flex min-h-6 items-center gap-1.5 rounded-md px-0.5 text-left text-sm text-muted-foreground', expandable && 'hover:text-foreground')}
+        aria-expanded={expandable ? open : undefined}
+        disabled={!expandable}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center">
+          <Diamond className={cn('size-3 text-primary', running && 'chat-pulse')} aria-hidden="true" />
+        </span>
+        {thoughtLabel(item)}
+        {expandable ? <ChevronRight className={cn('size-3 text-icon-muted transition-transform', open && 'rotate-90')} aria-hidden="true" /> : null}
+      </button>
+      {open ? (
+        <div className="chat-thought ms-[18px] max-h-96 overflow-auto border-s-2 border-border ps-2.5 text-sm italic text-muted-foreground">
+          <Markdown text={item.text} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   switch (row.kind) {
     case 'user':
@@ -178,6 +201,8 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
       return <div className="pb-3"><Markdown text={row.item.text} /></div>
     case 'work':
       return <WorkGroup row={row} cwd={cwd} />
+    case 'thought':
+      return <ThoughtRow item={row.item} />
     case 'notice':
       return (
         <div className={cn('flex items-start gap-1.5 pb-2 text-xs', row.item.level === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
@@ -210,7 +235,7 @@ export function ChatTimeline({ items, cwd, working }: { items: readonly ChatItem
 
   const last = rows.at(-1)
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
-  const liveWork = last?.kind === 'work' && last.live
+  const liveWork = (last?.kind === 'work' && last.live) || (last?.kind === 'thought' && last.item.status === 'running')
   return (
     <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
