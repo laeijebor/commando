@@ -418,6 +418,8 @@ export function ChatComposer({
   }
 
   const removeAttachment = (key: string) => {
+    // A limit or upload error is about the set being changed now.
+    setAttachError(null)
     setAttachments((current) => current.filter((attachment) => {
       if (attachment.key === key) release(attachment)
       return attachment.key !== key
