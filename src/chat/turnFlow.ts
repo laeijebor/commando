@@ -102,7 +102,7 @@ export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[]
     toolUses: agent.toolUses !== undefined || work.length ? Math.max(agent.toolUses ?? 0, work.length) : null,
     // Live elapsed time ticks from when Claude started it. Afterwards, Claude's own
     // total; a stopped subagent's last progress report undercounts, so never less than it ran.
-    elapsedMs: running ? now - agent.createdAt : agent.durationMs !== undefined || spanMs > 0 ? Math.max(agent.durationMs ?? 0, spanMs) : null,
+    elapsedMs: running ? now - agent.createdAt : agent.durationMs !== undefined || spanMs >= 1000 ? Math.max(agent.durationMs ?? 0, spanMs) : null,
     lastAction: running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
   }
 }
