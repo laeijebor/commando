@@ -9,6 +9,7 @@ import {
   hostTakesSettings,
   hostTakesTurnFlow,
   type ChatAnswer,
+  type ChatCarriedDraft,
   type ChatCommand,
   type ChatFileSearchResult,
   type ChatImageRef,
@@ -177,6 +178,12 @@ function TodoChip({ todos }: { todos: TodoItem }) {
 
 type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
 
+/** The draft a switch to Claude Code carries across: text and uploaded images. */
+export type ChatDraft = { text: string; images: ChatImageRef[] }
+
+/** Carried drafts this page already put in a composer, so a remount before the daemon clears it doesn't add it twice. */
+const takenCarries = new Set<string>()
+
 const FILE_SEARCH_DEBOUNCE_MS = 80
 const PR_CACHE_MS = 60_000
 /** A failed load is retried sooner (e.g. once the branch is pushed). */
@@ -301,6 +308,9 @@ export function ChatComposer({
   onQueue,
   relayTarget,
   onClearRelay,
+  carried,
+  onCarriedTaken,
+  registerDraft,
 }: {
   session: ChatSessionInfo
   hostConnected: boolean
@@ -329,6 +339,11 @@ export function ChatComposer({
   /** Messages go to this subagent, relayed through main Claude. */
   relayTarget?: { agentId: string; label: string }
   onClearRelay?: () => void
+  /** The draft and queue the chat had when it switched to Claude Code, back in the composer. */
+  carried?: ChatCarriedDraft
+  onCarriedTaken?: (carryId: string) => void
+  /** Lets a switch to Claude Code read the unsent draft. */
+  registerDraft?: (read: (() => ChatDraft) | null) => void
 }) {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -337,7 +352,9 @@ export function ChatComposer({
   const menuId = useId()
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
-  const disabled = !hostConnected || closed
+  // A switch to Claude Code takes the draft as it is; answers and Stop still work.
+  const switching = Boolean(session.claudeCodeSwitch)
+  const disabled = !hostConnected || closed || switching
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.
   const richInput = Boolean(services) && hostTakesInput(session)
@@ -495,6 +512,35 @@ export function ChatComposer({
     // Only a new refusal restores; the attachments it reads are this render's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendError])
+
+  const latestDraft = useRef<ChatDraft>({ text: '', images: [] })
+  latestDraft.current = { text: draft, images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])) }
+  useEffect(() => {
+    if (!registerDraft) return
+    registerDraft(() => latestDraft.current)
+    return () => registerDraft(null)
+  }, [registerDraft])
+
+  // Back from Claude Code: what the chat held comes back into the composer, once.
+  useEffect(() => {
+    if (!carried) return
+    if (!takenCarries.has(carried.id)) {
+      takenCarries.add(carried.id)
+      if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      const fit = fitAttachments(attachments.length, carried.images.length)
+      if (fit.error) setAttachError(fit.error)
+      const images = carried.images.slice(0, fit.accepted).map((ref) => ({
+        key: `carried-${carried.id}-${ref.id}`,
+        name: ref.name ?? 'image',
+        previewUrl: chatImageUrl(ref.id),
+        ref,
+      }))
+      if (images.length) setAttachments((current) => [...images, ...current])
+    }
+    onCarriedTaken?.(carried.id)
+    // Only a new carried draft is taken; the attachments it counts are this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carried?.id])
 
   const uploading = attachments.some((attachment) => !attachment.ref)
   const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
@@ -694,13 +740,15 @@ export function ChatComposer({
           onPaste={onPaste}
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
-            : closed
-              ? 'This session has ended'
-              : relayTarget
-                ? `Message @${relayTarget.label} through main Claude…`
-                : running
-                  ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
-                  : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
+            : switching
+              ? 'Switching to Claude Code…'
+                : closed
+                ? 'This session has ended'
+                : relayTarget
+                  ? `Message @${relayTarget.label} through main Claude…`
+                  : running
+                    ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
+                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
           aria-label="Message Claude"
           aria-controls={menuOpen ? menuId : undefined}
           aria-autocomplete="list"
