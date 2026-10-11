@@ -385,6 +385,7 @@ export class AgentSession {
     this.setStatus('idle')
     void this.consume(this.queryHandle)
     void this.loadModels(this.queryHandle)
+    void this.loadStartingModel(this.queryHandle)
     void this.loadCommands(this.queryHandle)
     void this.refreshContext()
     const held = this.heldSends ?? []
@@ -777,6 +778,25 @@ export class AgentSession {
     } catch (error) {
       // The pickers stay read-only without a list.
       this.spec.log?.(`Couldn't list Claude's models: ${errorText(error)}`)
+    }
+  }
+
+  /**
+   * The model a fresh chat will run, settings included, so the picker can name it before
+   * the first turn; Claude only reports the model in that turn's `system/init`.
+   */
+  private async loadStartingModel(handle: Query): Promise<void> {
+    // Not in the SDK's typings yet; without it the picker names the default row instead.
+    const { getSettings } = handle as { getSettings?: () => Promise<{ applied?: { model?: unknown } }> }
+    if (typeof getSettings !== 'function') return
+    try {
+      const model = (await getSettings.call(handle)).applied?.model
+      // A pick or the first turn may have named the model meanwhile.
+      if (this.info.model || !isModelValue(model)) return
+      this.info = { ...this.info, model }
+      this.emitSession()
+    } catch (error) {
+      this.spec.log?.(`Couldn't read the model Claude will run: ${errorText(error)}`)
     }
   }
 
