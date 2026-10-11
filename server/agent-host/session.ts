@@ -1,8 +1,10 @@
-import { getSessionInfo, getSessionMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
+  MAX_CHAT_IMAGES,
   chatImageType,
   isChatEffort,
+  isChatPermissionMode,
   isModelValue,
   type ChatAnswer,
   type ChatCommand,
@@ -12,11 +14,17 @@ import {
   type ChatImageRef,
   type ChatItem,
   type ChatModelOption,
+  type ChatQueueAction,
+  type ChatQueuedMessage,
+  type ChatSendOptions,
   type ChatSessionInfo,
+  type ChatSessionPermissionMode,
   type ChatSessionStatus,
   type ChatSettingsChange,
+  type ChatSubagentTranscript,
+  type ChatTaskAction,
 } from '../../shared/agent-chat.js'
-import { ClaudeItemMapper, attachmentNote, questionsFromInput, toolTitle, type ChatImageSink } from './claude-items.js'
+import { ClaudeItemMapper, attachmentNote, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
 
 export interface AgentSessionSpec {
@@ -50,10 +58,14 @@ export interface SessionImageStore extends ChatImageSink {
   read(id: string): Promise<Buffer>
 }
 
+type TranscriptMessage = { type: string; message: unknown; parent_tool_use_id: string | null }
+
 /** Reads saved transcripts and titles; swapped out in tests. */
 export interface SessionStore {
-  messages: (sessionId: string, cwd: string) => Promise<readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]>
+  messages: (sessionId: string, cwd: string) => Promise<readonly TranscriptMessage[]>
   title: (sessionId: string, cwd: string) => Promise<string | undefined>
+  /** One subagent's own transcript (it is saved apart from the conversation's). */
+  subagentMessages?: (sessionId: string, agentId: string, cwd: string) => Promise<readonly TranscriptMessage[]>
 }
 
 /** Enough recent messages to fill the item window; older turns stay in the transcript. */
@@ -66,7 +78,18 @@ const sdkSessionStore: SessionStore = {
     const info = await getSessionInfo(sessionId, { dir: cwd })
     return info?.customTitle || info?.summary || info?.firstPrompt
   },
+  subagentMessages: async (sessionId, agentId, cwd) => (await getSubagentMessages(sessionId, agentId, { dir: cwd })).slice(-HISTORY_MESSAGES),
 }
+
+/**
+ * What Claude is told when the chat captures its plan instead of approving
+ * ExitPlanMode (t3code's wording): the plan shows as a card, and the user
+ * implements or refines it in a later turn.
+ */
+export const PLAN_CAPTURED_MESSAGE = "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn."
+
+/** Turn results that only mean the turn was cut short (a steer or Stop), not that it failed. */
+const ABORTED_REASONS = new Set(['aborted_streaming', 'aborted_tools'])
 
 /** The picker's value for "no explicit model": Claude Code's own default. */
 const DEFAULT_MODEL = 'default'
@@ -146,6 +169,8 @@ export interface AgentSessionEvents {
   closed: () => void
 }
 
+type HeldSend = { text: string; images: ChatImageRef[]; options: ChatSendOptions }
+
 type PendingRequest = {
   requestKind: 'approval' | 'question'
   input: Record<string, unknown>
@@ -220,7 +245,14 @@ export class AgentSession {
    * Sends that arrive while a resumed transcript is still replaying wait here,
    * so they land after the earlier turns instead of inside them.
    */
-  private heldSends: { text: string; images: ChatImageRef[] }[] | null
+  private heldSends: HeldSend[] | null
+  /** Messages the user queued (Enter) while a turn ran; sent together when it ends. */
+  private queue: ChatQueuedMessage[] = []
+  private queueCounter = 0
+  /** True from a send until its turn's result: queued messages wait while it is. */
+  private turnOpen = false
+  /** A steer went in while a turn ran; that turn's cut-short result is not the end. */
+  private steerPending = false
   /** Sends with images read files first; later sends wait so turns keep their order. */
   private sendChain: Promise<void> = Promise.resolve()
   private queuedSends = 0
@@ -316,6 +348,8 @@ export class AgentSession {
         settingSources: ['user', 'project', 'local'],
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         includePartialMessages: true,
+        // Subagents' own text and thinking, so a subagent's transcript can be shown live.
+        forwardSubagentText: true,
         canUseTool,
       },
     })
@@ -327,7 +361,7 @@ export class AgentSession {
     const held = this.heldSends ?? []
     this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
-    for (const send of held) this.send(send.text, send.images)
+    for (const send of held) this.send(send.text, send.images, send.options)
   }
 
   /**
@@ -335,28 +369,94 @@ export class AgentSession {
    * (never `client_composed`), so it expands them as the TUI does. Images go
    * before the text, which also names their saved copies.
    */
-  send(text: string, images: ChatImageRef[] = []): void {
+  send(text: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): void {
     const trimmed = text.trim()
     if (!trimmed && !images.length) return
     if (this.heldSends) {
-      this.heldSends.push({ text: trimmed, images })
+      this.heldSends.push({ text: trimmed, images, options })
       return
     }
-    if (!images.length && this.queuedSends === 0) {
-      this.deliver(trimmed, [], [])
+    if (options.delivery === 'queue' && this.turnOpen) {
+      this.enqueue(trimmed, images)
+      return
+    }
+    // A steer only means something while a turn runs; otherwise it is a plain send.
+    const steer = options.delivery === 'steer' && this.turnOpen
+    if (!images.length && !options.permissionMode && this.queuedSends === 0) {
+      this.deliver(trimmed, [], [], { steer, ...(options.relayTo ? { relayTo: options.relayTo } : {}) })
       return
     }
     this.queuedSends += 1
     this.sendChain = this.sendChain.then(async () => {
+      const quoted = trimmed ? ` Your message was: "${trimmed.length > 500 ? `${trimmed.slice(0, 500)}…` : trimmed}"` : ''
       try {
-        this.deliver(trimmed, images, await this.imageBlocks(images))
-      } catch (error) {
-        const quoted = trimmed ? ` Your message was: "${trimmed.length > 500 ? `${trimmed.slice(0, 500)}…` : trimmed}"` : ''
-        this.emitItems(this.mapper.notice('error', `Couldn't attach the image${images.length > 1 ? 's' : ''}, so the message wasn't sent: ${errorText(error)}.${quoted}`))
+        if (options.permissionMode && !(await this.switchPermissionMode(options.permissionMode))) {
+          this.emitItems(this.mapper.notice('error', `Couldn't switch to ${options.permissionMode} mode, so the message wasn't sent.${quoted}`))
+          return
+        }
+        let blocks: unknown[]
+        try {
+          blocks = await this.imageBlocks(images)
+        } catch (error) {
+          this.emitItems(this.mapper.notice('error', `Couldn't attach the image${images.length > 1 ? 's' : ''}, so the message wasn't sent: ${errorText(error)}.${quoted}`))
+          return
+        }
+        this.deliver(trimmed, images, blocks, { steer, ...(options.relayTo ? { relayTo: options.relayTo } : {}) })
       } finally {
         this.queuedSends -= 1
       }
     })
+  }
+
+  /** Edits, removes or steers a queued message. */
+  updateQueue(change: ChatQueueAction): void {
+    const entry = this.queue.find((queued) => queued.id === change.id)
+    if (!entry) return
+    if (change.action === 'edit') {
+      this.setQueue(this.queue.map((queued) => (queued.id === change.id ? { ...queued, text: change.text.trim() || queued.text } : queued)))
+      return
+    }
+    this.setQueue(this.queue.filter((queued) => queued.id !== change.id))
+    if (change.action === 'steer') this.send(entry.text, entry.images ?? [], { delivery: 'steer' })
+  }
+
+  private enqueue(text: string, images: ChatImageRef[]): void {
+    this.queueCounter += 1
+    this.setQueue([...this.queue, { id: `queued-${Date.now().toString(36)}-${this.queueCounter}`, text, ...(images.length ? { images } : {}) }])
+  }
+
+  private setQueue(queue: ChatQueuedMessage[]): void {
+    this.queue = queue
+    const { queue: _previous, ...rest } = this.info
+    this.info = queue.length ? { ...rest, queue } : rest
+    this.emitSession()
+  }
+
+  /**
+   * Sends what was queued once the running turn ends, as one message: the
+   * user wrote them while watching the same turn, so Claude reads them
+   * together (as the Claude Code TUI joins its queued prompts). A message
+   * that would push the images over the limit waits for the next turn.
+   */
+  private flushQueue(): void {
+    if (!this.queue.length || this.turnOpen || this.info.status === 'closed' || this.info.status === 'error') return
+    const batch: ChatQueuedMessage[] = []
+    let imageCount = 0
+    for (const queued of this.queue) {
+      const count = queued.images?.length ?? 0
+      if (batch.length && imageCount + count > MAX_CHAT_IMAGES) break
+      batch.push(queued)
+      imageCount += count
+    }
+    this.setQueue(this.queue.slice(batch.length))
+    this.send(batch.map((queued) => queued.text).filter(Boolean).join('\n\n'), batch.flatMap((queued) => queued.images ?? []))
+  }
+
+  /** A turn is over: the queue can go. */
+  private closeTurn(): void {
+    this.turnOpen = false
+    this.steerPending = false
+    this.flushQueue()
   }
 
   private async imageBlocks(images: readonly ChatImageRef[]): Promise<unknown[]> {
@@ -369,12 +469,19 @@ export class AgentSession {
     })))
   }
 
-  private deliver(text: string, images: ChatImageRef[], imageBlocks: unknown[]): void {
+  private deliver(
+    text: string,
+    images: ChatImageRef[],
+    imageBlocks: unknown[],
+    { steer = false, relayTo }: { steer?: boolean; relayTo?: { agentId: string; label: string } } = {},
+  ): void {
     if (this.info.status === 'closed' || this.info.status === 'error') {
       this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
       return
     }
-    this.emitItems(this.mapper.startTurn(text, images))
+    this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }))
+    if (steer) this.steerPending = true
+    this.turnOpen = true
     if (!this.info.title && text) this.info = { ...this.info, title: shortTitle(text) }
     // Shown at once; Claude's own session state confirms it (or folds this into the running turn).
     this.setStatus('running')
@@ -382,14 +489,50 @@ export class AgentSession {
       const path = this.spec.images?.path(image.id)
       return path ? [attachmentNote(image.name ?? image.id, path)] : []
     })
-    const withNotes = [text, ...notes].filter(Boolean).join('\n\n')
+    const prompt = relayTo ? relayPrompt(text, relayTo) : text
+    const withNotes = [prompt, ...notes].filter(Boolean).join('\n\n')
     this.input.push({
       type: 'user',
       // Images first: a /command in a text block after them still expands.
-      message: { role: 'user', content: imageBlocks.length ? [...imageBlocks, { type: 'text', text: withNotes }] : text },
+      message: { role: 'user', content: imageBlocks.length ? [...imageBlocks, { type: 'text', text: withNotes }] : prompt },
       parent_tool_use_id: null,
+      // 'now' ends the running turn at its next safe point (at once while Claude
+      // writes, after a running tool returns) and runs this as its own turn.
+      ...(steer ? { priority: 'now' } : {}),
       origin: { kind: 'human' },
     } as SDKUserMessage)
+  }
+
+  /** Stops or backgrounds one running subagent. */
+  async controlTask(action: ChatTaskAction, agentId: string, toolUseId: string): Promise<void> {
+    const handle = this.queryHandle
+    if (!handle || this.info.status === 'closed' || this.info.status === 'error') {
+      this.emitItems(this.mapper.notice('error', "This session isn't running, so its subagents can't be changed."))
+      return
+    }
+    try {
+      if (action === 'stop') {
+        await handle.stopTask(agentId)
+      } else if (!(await handle.backgroundTasks(toolUseId))) {
+        this.emitItems(this.mapper.notice('info', 'That subagent already runs in the background or has finished.'))
+      }
+    } catch (error) {
+      this.emitItems(this.mapper.notice('error', `Couldn't ${action === 'stop' ? 'stop' : 'background'} the subagent: ${errorText(error)}`))
+    }
+  }
+
+  /** A subagent's own turns from its saved transcript (after a resume, or once it is done). */
+  async subagentTranscript(agentId: string): Promise<ChatSubagentTranscript> {
+    const sessionId = this.info.sessionId
+    if (!sessionId) return { items: [], error: 'This chat has no saved conversation yet' }
+    if (!this.store.subagentMessages) return { items: [], error: "This host can't read subagent transcripts" }
+    try {
+      const messages = await this.store.subagentMessages(sessionId, agentId, this.spec.cwd)
+      if (!messages.length) return { items: [], error: "Claude Code hasn't saved this subagent's transcript" }
+      return { items: new ClaudeItemMapper(Date.now, this.spec.images).replay(messages) }
+    } catch (error) {
+      return { items: [], error: `Couldn't read the subagent's transcript: ${errorText(error)}` }
+    }
   }
 
   /** Files and folders for an `@` mention, from the session's folder. */
@@ -402,7 +545,12 @@ export class AgentSession {
     }
   }
 
-  async interrupt(): Promise<void> {
+  /**
+   * Stops the running turn. `dropQueued` names queued messages the client
+   * took back into its draft (as the TUI does on Esc), so they aren't sent.
+   */
+  async interrupt(dropQueued: readonly string[] = []): Promise<void> {
+    if (dropQueued.length) this.setQueue(this.queue.filter((queued) => !dropQueued.includes(queued.id)))
     if (this.info.status === 'running' || this.info.status === 'waiting') this.interruptRequested = true
     for (const [requestId, request] of this.pending) {
       request.resolve({ behavior: 'deny', message: 'The user interrupted.', interrupt: true })
@@ -478,15 +626,37 @@ export class AgentSession {
       if (change.permissionMode === 'bypassPermissions' && !this.info.bypassAllowed) {
         this.emitItems(this.mapper.notice('error', 'Bypass permissions is only available in a chat started with it.'))
       } else {
-        try {
-          await handle.setPermissionMode(change.permissionMode)
-          this.info = { ...this.info, permissionMode: change.permissionMode }
-        } catch (error) {
-          this.emitItems(this.mapper.notice('error', `Couldn't change the permission mode: ${errorText(error)}`))
-        }
+        await this.switchPermissionMode(change.permissionMode)
       }
     }
     this.emitSession()
+  }
+
+  /** Switches the permission mode; false (with a notice) when Claude refuses. */
+  private async switchPermissionMode(mode: ChatSessionPermissionMode): Promise<boolean> {
+    const handle = this.queryHandle
+    if (!handle) return false
+    if (mode === 'bypassPermissions' && !this.info.bypassAllowed) {
+      this.emitItems(this.mapper.notice('error', 'Bypass permissions is only available in a chat started with it.'))
+      return false
+    }
+    try {
+      await handle.setPermissionMode(mode)
+      this.recordPermissionMode(mode)
+      this.emitSession()
+      return true
+    } catch (error) {
+      this.emitItems(this.mapper.notice('error', `Couldn't change the permission mode: ${errorText(error)}`))
+      return false
+    }
+  }
+
+  /** Notes a mode change, remembering the mode the chat left for plan mode. */
+  private recordPermissionMode(mode: string): void {
+    const previous = this.info.permissionMode
+    if (mode === previous) return
+    const leftForPlan = mode === 'plan' && isChatPermissionMode(previous) && previous !== 'plan'
+    this.info = { ...this.info, permissionMode: mode, ...(leftForPlan ? { prePlanPermissionMode: previous } : {}) }
   }
 
   /** Points the session's resume command at its current settings. */
@@ -571,6 +741,8 @@ export class AgentSession {
     if (state === 'idle') {
       this.setStatus('idle')
       this.refreshBetweenTurns()
+      // A backstop: the turn's result normally sent the queue already.
+      this.closeTurn()
     } else {
       this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
     }
@@ -582,6 +754,14 @@ export class AgentSession {
     options: Parameters<CanUseTool>[2],
   ): Promise<PermissionResult> {
     const requestId = options.requestId || options.toolUseID
+    if (toolName === 'ExitPlanMode' && !options.agentID) {
+      // The plan becomes a card with Implement and Refine; without a plan, the generic approval below.
+      const plan = planFromInput(input)
+      if (plan) {
+        this.emitItems(this.mapper.plan(options.toolUseID, plan))
+        return Promise.resolve({ behavior: 'deny', message: PLAN_CAPTURED_MESSAGE })
+      }
+    }
     const requestKind = toolName === 'AskUserQuestion' ? 'question' : 'approval'
     const title = requestKind === 'question'
       ? 'Claude is asking'
@@ -647,17 +827,23 @@ export class AgentSession {
       const model = message.subtype === 'init' ? message.model : this.info.model
       const permissionMode = message.permissionMode ?? this.info.permissionMode
       if (model !== this.info.model || permissionMode !== this.info.permissionMode) {
-        this.info = { ...this.info, ...(model ? { model } : {}), ...(permissionMode ? { permissionMode } : {}) }
+        if (model) this.info = { ...this.info, model }
+        if (permissionMode) this.recordPermissionMode(permissionMode)
         this.emitSession()
       }
     }
     if (message.type === 'result') {
       const interrupted = this.interruptRequested
       this.interruptRequested = false
-      this.emitItems(this.mapper.settleRunning(message.subtype === 'success' ? 'completed' : interrupted ? 'interrupted' : 'failed'))
+      // A steer or Stop cuts the turn short; what it was doing ends, it didn't fail.
+      const aborted = interrupted || ABORTED_REASONS.has(message.terminal_reason ?? '')
+      const steered = this.steerPending && aborted
+      this.emitItems(this.mapper.settleRunning(aborted ? 'interrupted' : message.subtype === 'success' ? 'completed' : 'failed', { keepBackground: true }))
       const errors = 'errors' in message && Array.isArray(message.errors) ? message.errors.join('\n') : ''
       if (interrupted) {
         this.emitItems(this.mapper.notice('info', 'Interrupted'))
+      } else if (aborted) {
+        // The steer that cut it short starts its own turn; its bubble says so.
       } else if (message.terminal_reason === 'image_error') {
         this.emitItems(this.mapper.notice('error', `Claude couldn't read an attached image${errors ? `: ${errors}` : ''}. Try a smaller PNG or JPEG.`))
       } else if (message.subtype !== 'success' && errors) {
@@ -668,8 +854,16 @@ export class AgentSession {
         this.setStatus('idle')
         this.refreshBetweenTurns()
       }
+      // The steered message now runs as its own turn; the queue waits for that one.
+      if (steered) this.steerPending = false
+      // Background subagents keep Claude from reporting idle, so the queue goes at the turn's end.
+      else this.closeTurn()
       void this.refreshTitle()
       return
+    }
+    if (message.type === 'assistant' && !message.parent_tool_use_id) {
+      // A turn Claude started itself (a background task finished) holds the queue too.
+      this.turnOpen = true
     }
     this.emitItems(this.mapper.handle(message))
   }

@@ -165,6 +165,8 @@ export function terminalLine(item: ChatItem): string | null {
       if (item.answer) return dim(`  ↳ ${item.answer.kind === 'approval' ? item.answer.decision : item.answer.kind === 'question' ? 'answered' : 'cancelled'}`)
       return `${color(33, '?')} ${item.title}${item.detail ? ` ${dim(item.detail.split('\n')[0] ?? '')}` : ''} ${dim('(answer in Commando)')}`
     case 'notice': return item.level === 'error' ? color(31, `! ${item.text}`) : dim(`  ${item.text}`)
+    case 'plan': return `${color(36, '▤')} ${bold('Plan ready')} ${dim('(Implement or Refine in Commando)')}\n${item.text}`
+    case 'subagent': return dim(`  ⑂ ${item.description}${item.subagentType ? ` (${item.subagentType})` : ''}: ${item.state}`)
   }
 }
 

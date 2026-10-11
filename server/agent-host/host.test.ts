@@ -45,6 +45,7 @@ describe('AgentHost input relays', () => {
     const port = (server.address() as { port: number }).port
     const received: { type: string; [key: string]: unknown }[] = []
     const sends: unknown[][] = []
+    const calls: unknown[][] = []
     server.on('connection', (socket) => {
       socket.on('message', (data) => {
         const message = JSON.parse(data.toString()) as { type: string }
@@ -52,6 +53,11 @@ describe('AgentHost input relays', () => {
         if (message.type === 'session_snapshot') {
           socket.send(JSON.stringify({ type: 'file_search', paneId: '%4', query: 'comp', requestId: 'q1' }))
           socket.send(JSON.stringify({ type: 'send', paneId: '%4', text: 'hi', images: [{ id: `${'a'.repeat(64)}.png` }], requestId: 's1' }))
+          socket.send(JSON.stringify({ type: 'send', paneId: '%4', text: 'later', delivery: 'queue', requestId: 's2' }))
+          socket.send(JSON.stringify({ type: 'queue', paneId: '%4', action: 'steer', id: 'queued-1', requestId: 'q2' }))
+          socket.send(JSON.stringify({ type: 'task', paneId: '%4', action: 'background', agentId: 'a1b2', toolUseId: 'toolu_1', requestId: 't1' }))
+          socket.send(JSON.stringify({ type: 'interrupt', paneId: '%4', dropQueued: ['queued-2'], requestId: 'i1' }))
+          socket.send(JSON.stringify({ type: 'subagent_transcript', paneId: '%4', agentId: 'a1b2', requestId: 'r1' }))
         }
       })
     })
@@ -62,6 +68,10 @@ describe('AgentHost input relays', () => {
       snapshot: () => ({ session: { paneId: '%4', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 3 }, items: [] }),
       searchFiles: async (query: string) => ({ entries: [{ path: `src/${query}.ts`, kind: 'file' }], truncated: false }),
       send: (...args: unknown[]) => { sends.push(args) },
+      updateQueue: (...args: unknown[]) => { calls.push(['queue', ...args]) },
+      controlTask: async (...args: unknown[]) => { calls.push(['task', ...args]) },
+      interrupt: async (...args: unknown[]) => { calls.push(['interrupt', ...args]) },
+      subagentTranscript: async (agentId: string) => ({ items: [], error: `no transcript for ${agentId}` }),
     }
     const host = new AgentHost(`ws://127.0.0.1:${port}`, async () => 'token', 'pane', { info: () => {} })
     host.add(fakeSession as never)
@@ -69,8 +79,14 @@ describe('AgentHost input relays', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     host.stop()
     server.close()
-    expect(received.map((message) => message.type)).toEqual(['hello', 'session_snapshot', 'commands', 'file_search_result'])
+    expect(received.map((message) => message.type)).toEqual(['hello', 'session_snapshot', 'commands', 'file_search_result', 'subagent_transcript_result'])
     expect(received[3]).toEqual({ type: 'file_search_result', paneId: '%4', requestId: 'q1', entries: [{ path: 'src/comp.ts', kind: 'file' }], truncated: false })
-    expect(sends).toEqual([['hi', [{ id: `${'a'.repeat(64)}.png` }]]])
+    expect(received[4]).toEqual({ type: 'subagent_transcript_result', paneId: '%4', requestId: 'r1', items: [], error: 'no transcript for a1b2' })
+    expect(sends).toEqual([['hi', [{ id: `${'a'.repeat(64)}.png` }], {}], ['later', undefined, { delivery: 'queue' }]])
+    expect(calls).toEqual([
+      ['queue', { action: 'steer', id: 'queued-1' }],
+      ['task', 'background', 'a1b2', 'toolu_1'],
+      ['interrupt', ['queued-2']],
+    ])
   })
 })

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
-import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
+import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 
@@ -58,7 +58,7 @@ describe('AgentHostHub', () => {
     socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'Hel')] })
     socket.host({ type: 'items', paneId: '%1', items: [item('a', 'Hello'), item('b', 'more')] })
     await settle()
-    expect(socket.sent).toEqual([{ type: 'welcome', version: 3 }])
+    expect(socket.sent).toEqual([{ type: 'welcome', version: AGENT_HOST_PROTOCOL_VERSION }])
     expect(hub.states()).toEqual([expect.objectContaining({ paneId: '%1', targetId: 'target-1', hostConnected: true })])
     expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && entry.text)).toEqual(['Hello', 'more'])
     expect(broadcasts.map((message) => message.type)).toEqual(['chat_state', 'chat_items'])
