@@ -272,10 +272,11 @@ export class AgentSession {
   /** Steers sent while a turn ran; each cut-short result they cause is not the end. */
   private steersPending = 0
   /**
-   * Something was sent since the last result. Claude's idle for that result can
-   * arrive after the send, and must not reopen the queue during the new turn.
+   * Something was sent that Claude hasn't yet shown it took up (no result or
+   * running since). An idle then is stale: the one for the previous turn (or
+   * from start-up), arriving after the send. It must not end the new turn.
    */
-  private deliveredSinceResult = false
+  private unseenDelivery = false
   /** Sends with images read files first; later sends wait so turns keep their order. */
   private sendChain: Promise<void> = Promise.resolve()
   private queuedSends = 0
@@ -581,7 +582,7 @@ export class AgentSession {
     this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }))
     if (steer) this.steersPending += 1
     this.turnOpen = true
-    this.deliveredSinceResult = true
+    this.unseenDelivery = true
     if (!this.info.title && text) this.info = { ...this.info, title: shortTitle(text) }
     // Shown at once; Claude's own session state confirms it (or folds this into the running turn).
     this.setStatus('running')
@@ -863,17 +864,19 @@ export class AgentSession {
     if (this.info.status === 'closed' || this.info.status === 'error') return
     if (state === 'idle') {
       this.refreshBetweenTurns()
-      if (this.deliveredSinceResult) {
-        // The idle that trails a result we already answered with a send (the
-        // flushed queue): that send's turn is running, so the chat stays running
-        // and Enter keeps queueing. Only one such idle trails each result.
-        this.deliveredSinceResult = false
+      if (this.unseenDelivery) {
+        // E.g. the idle for a result we already answered by sending the queue:
+        // that send's turn runs next, so the chat stays running and Enter keeps
+        // queueing. Ignored once, so the chat can't stick on running.
+        this.unseenDelivery = false
         return
       }
       this.setStatus('idle')
       // A backstop: the turn's result normally sent the queue already.
       this.closeTurn()
     } else {
+      // Claude took up what was sent; its next idle is real.
+      this.unseenDelivery = false
       this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
     }
   }
@@ -974,7 +977,7 @@ export class AgentSession {
       // A steer or Stop cuts the turn short; what it was doing ends, it didn't fail.
       const aborted = interrupted || ABORTED_REASONS.has(message.terminal_reason ?? '')
       const steered = this.steersPending > 0 && aborted
-      this.deliveredSinceResult = false
+      this.unseenDelivery = false
       this.emitItems(this.mapper.settleRunning(aborted ? 'interrupted' : message.subtype === 'success' ? 'completed' : 'failed', { keepBackground: true }))
       const errors = 'errors' in message && Array.isArray(message.errors) ? message.errors.join('\n') : ''
       if (interrupted) {

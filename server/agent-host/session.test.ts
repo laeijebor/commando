@@ -1014,6 +1014,31 @@ describe('AgentSession queue review fixes', () => {
     expect(session.busy).toBe(false)
   })
 
+  it("ends a turn Claude ran without a result once it reports idle (a local command's output)", async () => {
+    const { fake, session, sessions } = started()
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    session.send('/context')
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
+  })
+
+  it("keeps a send that beat Claude's start-up idle running", async () => {
+    const { fake, session, sessions } = started()
+    session.send('first')
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('running')
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+  })
+
   it('ignores only one stale idle, so a send that never gets a result cannot stick the chat running', async () => {
     const { fake, session, sessions } = started()
     session.send('first')
