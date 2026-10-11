@@ -73,6 +73,7 @@ function toInspectResult(message: TileSocketMessage): TileInspectResult {
  */
 export function ChromiumTileCard({
   webPane,
+  visible = true,
   wsToken,
   reloadKey,
   reviewMode,
@@ -81,6 +82,7 @@ export function ChromiumTileCard({
   keepStreamingWhenHidden = false,
 }: {
   webPane: WebPane
+  visible?: boolean
   wsToken: string
   reloadKey: number
   reviewMode: boolean
@@ -261,7 +263,7 @@ export function ChromiumTileCard({
     }
 
     const connect = () => {
-      if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
+      if (disposed || !visible || (!keepStreamingWhenHidden && document.hidden)) return
       setState('connecting')
       setDetail('')
       stalled = false
@@ -352,7 +354,7 @@ export function ChromiumTileCard({
         pendingSelectionId.current = ''
         cancelReviewRequests()
         disarmStallWatchdog()
-        if (disposed || (!keepStreamingWhenHidden && document.hidden)) return
+        if (disposed || !visible || (!keepStreamingWhenHidden && document.hidden)) return
         if (stalled || event.code === 4503) return
         setState('closed')
       })
@@ -360,7 +362,7 @@ export function ChromiumTileCard({
 
     const onVisibility = () => {
       if (keepStreamingWhenHidden) return
-      if (document.hidden) {
+      if (!visible || document.hidden) {
         disarmStallWatchdog()
         if (socketRef.current === socket) {
           socketRef.current = null
@@ -400,7 +402,7 @@ export function ChromiumTileCard({
         cancelReviewRequests()
       }
     }
-  }, [webPane.id, webPane.url, wsToken, connectEpoch, connected, keepStreamingWhenHidden])
+  }, [webPane.id, webPane.url, wsToken, connectEpoch, connected, keepStreamingWhenHidden, visible])
 
   const send = (payload: unknown) => {
     const socket = socketRef.current

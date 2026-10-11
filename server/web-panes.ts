@@ -11,7 +11,7 @@ import {
   type WebPaneEngine,
   type WebPanePlacement,
 } from '../shared/protocol.js'
-import { resolveAutoPlacement } from '../shared/web-pane-placement.js'
+import { neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -30,6 +30,7 @@ type StateFile = {
   version: 1
   allowedOrigins: string[]
   panes: PersistedWebPane[]
+  activeTabs: Record<string, string>
 }
 
 export type WebPaneUrlDecision =
@@ -117,7 +118,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   const {
     content, id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
     engine, openedBy, openerLabel,
-    status, createdAt, tmuxSocketHash,
+    status, createdAt, tmuxSocketHash, dock, order, unseen,
   } = value
   const parsedAnchorSize = parseAnchorSize(anchorSize)
   if (
@@ -126,6 +127,9 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     typeof sessionId !== 'string' || !SESSION_ID.test(sessionId) ||
     typeof windowId !== 'string' || !WINDOW_ID.test(windowId) ||
     typeof anchorPaneId !== 'string' || !PANE_ID.test(anchorPaneId) ||
+    (dock !== undefined && dock !== 'panel' && dock !== 'split') ||
+    (order !== undefined && (!Number.isSafeInteger(order) || (order as number) < 0)) ||
+    (unseen !== undefined && typeof unseen !== 'boolean') ||
     typeof placement !== 'string' || !PLACEMENTS.includes(placement as WebPanePlacement) ||
     (layoutState !== undefined && !LAYOUT_STATES.includes(layoutState as typeof LAYOUT_STATES[number])) ||
     parsedAnchorSize === null ||
@@ -150,6 +154,9 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     windowId,
     anchorPaneId,
     placement: placement as WebPanePlacement,
+    dock: dock === 'split' ? 'split' : 'panel',
+    order: typeof order === 'number' ? order : -1,
+    unseen: unseen === true,
     ...(layoutState !== undefined
       ? { layoutState: layoutState as typeof LAYOUT_STATES[number] }
       : {}),
@@ -190,7 +197,22 @@ function parseState(value: unknown): StateFile {
       }
     }
   }
-  return { version: 1, allowedOrigins, panes }
+  // Legacy tabs are appended in creation order, including files with mixed records.
+  for (const pane of [...panes].sort((a, b) => a.createdAt - b.createdAt)) {
+    if ((pane.order ?? -1) < 0) pane.order = nextWebPaneOrder(panes, pane.anchorPaneId)
+    if (pane.dock === 'panel') {
+      pane.layoutState = 'settled'
+      delete pane.anchorSize
+    }
+  }
+  const activeTabs: Record<string, string> = {}
+  for (const pane of panes) {
+    const tabs = panelTabs(panes, pane.anchorPaneId)
+    const saved = isRecord(value.activeTabs) ? value.activeTabs[pane.anchorPaneId] : undefined
+    const active = tabs.find((tab) => tab.id === saved) ?? tabs[0]
+    if (active) activeTabs[pane.anchorPaneId] = active.id
+  }
+  return { version: 1, allowedOrigins, panes, activeTabs }
 }
 
 type WebPaneEnvironment = Record<string, string | undefined>
@@ -246,6 +268,7 @@ export type OpenWebPaneInput = {
   sessionId: string
   windowId: string
   placement?: WebPanePlacement
+  dock?: 'panel' | 'split'
   /** The anchor pane's current cell size, used to resolve 'auto' placement. */
   anchorSize?: { cols: number; rows: number }
   engine?: WebPaneEngine
@@ -270,6 +293,7 @@ type PruneWindow = { id: string; sessionId: string; paneIds: readonly string[] }
 export class WebPaneService {
   readonly statePath: string
   private readonly panes = new Map<string, WebPane>()
+  private activeTabs: Record<string, string> = {}
   private readonly paneSocketHashes = new Map<string, string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
@@ -305,9 +329,14 @@ export class WebPaneService {
         throw migrationError
       }
     }
-    const state = parseState(JSON.parse(content) as unknown)
+    const raw: unknown = JSON.parse(content)
+    const state = parseState(raw)
+    const needsMigration = isRecord(raw) && (!isRecord(raw.activeTabs) ||
+      (Array.isArray(raw.panes) && raw.panes.some((pane) => isRecord(pane) &&
+        (pane.dock === undefined || pane.order === undefined || pane.unseen === undefined))))
     this.allowedOrigins.clear()
     for (const origin of state.allowedOrigins) this.allowedOrigins.add(origin)
+    this.activeTabs = state.activeTabs
     this.panes.clear()
     this.paneSocketHashes.clear()
     for (const persistedPane of state.panes) {
@@ -317,11 +346,13 @@ export class WebPaneService {
     }
     // Copy rather than move so an isolated daemon cannot take ownership of
     // legacy panes that actually belong to another tmux socket.
-    if (migrated) this.persist()
+    if (migrated || needsMigration) this.persist()
   }
 
   list(): WebPane[] {
-    return [...this.panes.values()]
+    return [...this.panes.values()].map((pane) => ({
+      ...pane, activeTab: this.activeTabs[pane.anchorPaneId] === pane.id,
+    }))
   }
 
   get(id: string): WebPane | undefined {
@@ -332,7 +363,7 @@ export class WebPaneService {
     const simulator = input.content
     if (simulator && (simulator.kind !== 'simulator' || !SIM_UDID.test(simulator.udid))) throw new WebPaneError(400, 'Invalid simulator udid')
     if (simulator) {
-      const existing = this.list().find((pane) => pane.content?.udid === simulator.udid.toUpperCase())
+      const existing = [...this.panes.values()].find((pane) => pane.content?.udid === simulator.udid.toUpperCase())
       if (existing) return existing
     }
     const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
@@ -341,6 +372,7 @@ export class WebPaneService {
     if (this.panes.size >= MAX_WEB_PANES) {
       throw new WebPaneError(409, `At most ${MAX_WEB_PANES} web panes can be open`)
     }
+    if (input.dock !== undefined && input.dock !== 'panel' && input.dock !== 'split') throw new WebPaneError(400, 'Invalid dock')
     const requested = input.placement ?? 'auto'
     if (!PLACEMENTS.includes(requested)) throw new WebPaneError(400, 'Invalid placement')
     // Resolve 'auto' once, from the anchor's unsplit geometry. A stored
@@ -362,7 +394,11 @@ export class WebPaneService {
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
       placement,
-      ...(input.anchorSize
+      dock: input.dock ?? 'panel',
+      order: nextWebPaneOrder(this.list(), input.anchorPaneId),
+      unseen: input.openedBy === 'agent',
+      ...(input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
+      ...(input.dock === 'split' && input.anchorSize
         ? { layoutState: 'pending' as const, anchorSize: input.anchorSize }
         : {}),
       engine,
@@ -372,6 +408,7 @@ export class WebPaneService {
       createdAt: this.now(),
     }
     this.panes.set(pane.id, pane)
+    if (pane.dock === 'panel' && !this.activeTabs[pane.anchorPaneId]) this.activeTabs[pane.anchorPaneId] = pane.id
     this.paneSocketHashes.set(pane.id, this.socketHash)
     this.persist()
     return pane
@@ -416,8 +453,46 @@ export class WebPaneService {
     return confirmed
   }
 
+  setActiveTab(id: string): void {
+    const pane = this.panes.get(id)
+    if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    if (pane.dock !== 'panel') throw new WebPaneError(409, 'Web pane is not panel-docked')
+    this.activeTabs[pane.anchorPaneId] = id
+    this.persist()
+  }
+
+  clearUnseen(id: string): void {
+    const pane = this.panes.get(id)
+    if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    this.panes.set(id, { ...pane, unseen: false })
+    this.persist()
+  }
+
+  private releaseActiveTab(pane: WebPane): void {
+    if (this.activeTabs[pane.anchorPaneId] !== pane.id) return
+    const next = neighbouringTab(panelTabs(this.list(), pane.anchorPaneId), pane.id)
+    if (next) this.activeTabs[pane.anchorPaneId] = next
+    else delete this.activeTabs[pane.anchorPaneId]
+  }
+
+  private reconcileActiveTabs(): void {
+    for (const anchor of Object.keys(this.activeTabs)) {
+      const tabs = panelTabs(this.list(), anchor)
+      if (!tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
+        if (tabs[0]) this.activeTabs[anchor] = tabs[0].id
+        else delete this.activeTabs[anchor]
+      }
+    }
+    for (const pane of this.panes.values()) {
+      if (pane.dock === 'panel' && !this.activeTabs[pane.anchorPaneId]) this.activeTabs[pane.anchorPaneId] = pane.id
+    }
+  }
+
   close(id: string): boolean {
-    if (!this.panes.delete(id)) return false
+    const pane = this.panes.get(id)
+    if (!pane) return false
+    this.releaseActiveTab(pane)
+    this.panes.delete(id)
     this.paneSocketHashes.delete(id)
     this.persist()
     return true
@@ -438,20 +513,25 @@ export class WebPaneService {
     if (target.windowId !== pane.windowId) {
       throw new WebPaneError(400, 'Web panes can only move within their window')
     }
+    const reanchoring = target.anchorPaneId !== pane.anchorPaneId
+    if (reanchoring) this.releaseActiveTab(pane)
     const moved: WebPane = {
       ...pane,
       anchorPaneId: target.anchorPaneId,
+      order: reanchoring ? nextWebPaneOrder(this.list(), target.anchorPaneId) : pane.order,
       placement: target.placement,
       sessionId: target.sessionId,
       windowId: target.windowId,
     }
     delete moved.layoutState
     delete moved.anchorSize
-    if (target.anchorSize) {
+    if (moved.dock === 'panel') moved.layoutState = 'settled'
+    if (moved.dock === 'split' && target.anchorSize) {
       moved.layoutState = 'pending'
       moved.anchorSize = target.anchorSize
     }
     this.panes.set(id, moved)
+    this.reconcileActiveTabs()
     this.persist()
     return moved
   }
@@ -497,6 +577,7 @@ export class WebPaneService {
   ): boolean {
     let changed = false
     for (const [id, pane] of this.panes) {
+      if (pane.dock === 'panel') continue
       const size = paneSizeFor(pane.anchorPaneId)
       if (!size) continue
       const placement = pane.placement === 'auto'
@@ -556,7 +637,7 @@ export class WebPaneService {
       windowsBySession.set(window.sessionId, windows)
     }
     let changed = false
-    for (const [id, pane] of this.panes) {
+    for (const [id, pane] of [...this.panes].sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))) {
       const paneSocketHash = this.paneSocketHashes.get(id)
       if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) continue
       const sessionWindows = windowsBySession.get(pane.sessionId)
@@ -579,14 +660,22 @@ export class WebPaneService {
       // the web pane's anchor disappeared.
       if (window.paneIds.length === 0) continue
       if (!window.paneIds.includes(pane.anchorPaneId)) {
-        const reanchored: WebPane = { ...pane, anchorPaneId: window.paneIds[0] }
+        this.releaseActiveTab(pane)
+        const reanchored: WebPane = {
+          ...pane, anchorPaneId: window.paneIds[0],
+          order: nextWebPaneOrder(this.list(), window.paneIds[0]),
+        }
         delete reanchored.layoutState
         delete reanchored.anchorSize
+        if (reanchored.dock === 'panel') reanchored.layoutState = 'settled'
         this.panes.set(id, reanchored)
         changed = true
       }
     }
-    if (changed) this.persist()
+    if (changed) {
+      this.reconcileActiveTabs()
+      this.persist()
+    }
     return changed
   }
 
@@ -594,7 +683,8 @@ export class WebPaneService {
     const state: StateFile = {
       version: 1,
       allowedOrigins: [...this.allowedOrigins],
-      panes: this.list().map((pane) => {
+      activeTabs: { ...this.activeTabs },
+      panes: [...this.panes.values()].map((pane) => {
         const socketHash = this.paneSocketHashes.get(pane.id)
         return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}) }
       }),

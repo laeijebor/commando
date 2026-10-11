@@ -4499,3 +4499,93 @@ body.is-resizing-hud-pinned-note {
 .pane-worklog-earlier-next small { color: var(--muted-dim); font: 700 7px/1 var(--mono); text-transform: uppercase; }
 .pane-worklog-earlier-screenshots { padding: 0; border: 0; color: var(--cyan); background: none; font: inherit; text-align: left; cursor: pointer; }
 .pane-worklog-earlier-screenshots:hover { text-decoration: underline; }
+
+.window-panel-layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 254px;
+}
+
+.window-terminal-grid {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 var(--side-panel-width, 50%);
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.window-panel-layout.is-collapsed .side-panel { flex-basis: 34px; }
+.side-panel-splitter {
+  position: relative;
+  flex: 0 0 1px;
+  background: var(--surface-hover);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.side-panel-splitter::after { content: ''; position: absolute; inset: 0 -3px; }
+.side-panel-splitter:focus-visible { outline: 1px solid var(--accent); }
+.window-panel-layout.is-collapsed .side-panel-splitter { cursor: default; }
+.side-panel-head {
+  display: flex;
+  align-items: center;
+  flex: 0 0 26px;
+  min-width: 0;
+  border-bottom: 1px solid var(--surface-hover);
+  background: var(--surface-raised);
+}
+.side-panel-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.side-panel-tab { display: flex; flex-shrink: 0; align-items: center; border-right: 1px solid var(--surface-hover); }
+.side-panel-tab button, .side-panel-expand {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 11px;
+}
+.side-panel-tab button:hover, .side-panel-expand:hover { background: var(--surface-hover); }
+.side-panel-tab svg, .side-panel-expand svg { width: 13px; height: 13px; }
+.side-panel-tab button span { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-panel-tab-label[dir="rtl"] { text-align: left; }
+.side-panel-tab.is-active { background: var(--surface); box-shadow: inset 0 -1px var(--accent); }
+.side-panel-tab.is-active button { color: var(--text); }
+.side-panel-tab .side-panel-tab-close { padding: 0 4px; }
+.side-panel-new { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+.side-panel-owner { flex-shrink: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; color: var(--muted); font-size: 10px; }
+.side-panel-expand { justify-content: center; width: 34px; }
+.side-panel-content { flex: 1; min-height: 0; position: relative; }
+.side-panel-tab-body { position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0; }
+.side-panel-tab-body[hidden] { display: none; }
+.side-panel-tab-body > .web-pane { flex: 1; min-width: 0; }
+.side-panel-empty { padding: 24px 16px; color: var(--text-soft); font-size: 12px; }
+.side-panel-empty div, .side-panel-empty form { display: flex; gap: 6px; margin-top: 8px; }
+.side-panel-empty button, .side-panel-empty input { border: 1px solid var(--border-mid); border-radius: 3px; padding: 5px 8px; background: var(--surface-raised); color: var(--text); font: inherit; }
+.side-panel-empty button { cursor: pointer; }
+.side-panel-empty input { min-width: 0; flex: 1; }
+.pane-tab-count { flex-shrink: 0; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.pane-tab-count.has-new { color: var(--accent); }
+
+@media (max-width: 840px) {
+  .window-panel-layout { flex-direction: column; }
+  .side-panel { flex: 0 0 340px; width: 100%; }
+  .window-panel-layout.is-collapsed .side-panel { flex-basis: 34px; }
+  .side-panel-splitter { display: none; }
+  .side-panel-expand { height: 34px; }
+}
+
+.window-terminal-grid[hidden], .side-panel-splitter[hidden], .side-panel[hidden] { display: none; }
+.window-panel-layout.is-panel-maximized .side-panel { flex: 1 1 auto; }

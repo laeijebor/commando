@@ -9,7 +9,7 @@ import { resetNativeWebViewBridge } from './nativeWebViewBridge'
 import { CHROMIUM_RENDERER_STORAGE_KEY, WebPaneCard } from './WebPaneCard'
 
 vi.mock('./SimLiveView', () => ({
-  SimLiveView: ({ udid, token, active }: { udid: string; token: string; active: boolean }) => <div data-testid="sim-live" data-udid={udid} data-token={token} data-active={String(active)} />,
+  SimLiveView: ({ udid, token, active, visible }: { udid: string; token: string; active: boolean; visible: boolean }) => <div data-testid="sim-live" data-udid={udid} data-token={token} data-active={String(active)} data-visible={String(visible)} />,
 }))
 
 vi.mock('./ChromiumTileCard', () => ({
@@ -471,5 +471,9 @@ describe('simulator tile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close simulator tile' })); expect(onClose).toHaveBeenCalledOnce()
     rerender(<WebPaneCard webPane={webPane} simulatorActive={false} onClose={onClose} onConfirm={vi.fn()} />)
     expect(screen.getByTestId('sim-live')).toHaveAttribute('data-active', 'false')
+    const live = screen.getByTestId('sim-live')
+    rerender(<WebPaneCard webPane={webPane} visible={false} simulatorActive onClose={onClose} onConfirm={vi.fn()} />)
+    expect(screen.getByTestId('sim-live')).toBe(live)
+    expect(live).toHaveAttribute('data-visible', 'false')
   })
 })

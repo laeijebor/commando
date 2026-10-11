@@ -473,6 +473,12 @@ export type WebPane = {
   windowId: string
   anchorPaneId: string
   placement: WebPanePlacement
+  /** Older daemon snapshots may omit panel metadata. */
+  dock?: 'panel' | 'split'
+  order?: number
+  unseen?: boolean
+  /** Per-anchor selection included in the existing web-panes broadcast. */
+  activeTab?: boolean
   /**
    * A newly inserted tile first shares the anchor's current branch footprint.
    * Once tmux has applied the anchor's measured half-size grid, the settled

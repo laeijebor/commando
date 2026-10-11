@@ -23,9 +23,9 @@ async function setup() {
     // Simulator routes never need a browser feedback queue or attachments.
     feedback: {} as Dependencies['feedback'], pending: {} as Dependencies['pending'], attachmentStore: {} as Dependencies['attachmentStore'], agentRequests: new WebPaneAgentRequests(),
   })
-  const request = async (body: unknown, method = 'POST', path = '/api/web-panes', authorized = true) => {
+  const request = async (body: unknown, method = 'POST', path = '/api/web-panes', authorized: boolean | 'agent' = true) => {
     const incoming = new PassThrough() as unknown as IncomingMessage
-    incoming.method = method; incoming.headers = { 'content-type': 'application/json', ...(authorized ? { authorization: 'Bearer owner' } : {}) }
+    incoming.method = method; incoming.headers = { 'content-type': 'application/json', ...(authorized ? { authorization: authorized === 'agent' ? `Bearer ${'a'.repeat(32)}` : 'Bearer owner' } : {}) }
     const response = new PassThrough() as unknown as ServerResponse
     const chunks: Buffer[] = []; response.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
     response.writeHead = vi.fn().mockReturnValue(response); response.setHeader = vi.fn().mockReturnValue(response)
@@ -55,5 +55,31 @@ describe('simulator tile API without a listener', () => {
     const { request } = await setup()
     for (const content of [{ kind: 'simulator', udid: 'bad' }, { kind: 'unknown', udid: U }, [], null, { kind: 'simulator', udid: 2 }]) expect((await request({ anchor: '%12', content })).status).toBe(400)
     expect((await request({ anchor: '%99', content: { kind: 'simulator', udid: U } })).status).toBe(404)
+  })
+})
+
+
+describe('panel tab actions without a listener', () => {
+  it('authenticates owner-only selection and seen actions and broadcasts the new state', async () => {
+    const { request, service, change } = await setup()
+    const anchor = { anchorPaneId: '%12', sessionId: '$1', windowId: '@3', openedBy: 'agent' as const }
+    const first = service.open({ ...anchor, url: 'http://localhost/first' })
+    const second = service.open({ ...anchor, url: 'http://localhost/second' })
+    for (const action of ['active-tab', 'seen']) {
+      const path = `/api/web-panes/${second.id}/${action}`
+      expect((await request({}, 'POST', path, false)).status).toBe(401)
+      expect((await request({}, 'POST', path, 'agent')).status).toBe(403)
+      expect((await request({}, 'GET', path)).status).toBe(405)
+      expect((await request({}, 'POST', `/api/web-panes/w-00000000/${action}`)).status).toBe(404)
+    }
+    expect(change).not.toHaveBeenCalled()
+    expect((await request({}, 'POST', `/api/web-panes/${second.id}/seen`)).status).toBe(200)
+    expect(service.get(second.id)?.unseen).toBe(false)
+    expect(service.list().find((pane) => pane.activeTab)?.id).toBe(first.id)
+    expect((await request({}, 'POST', `/api/web-panes/${second.id}/active-tab`)).status).toBe(200)
+    expect(service.list().find((pane) => pane.activeTab)?.id).toBe(second.id)
+    expect(change).toHaveBeenCalledTimes(2)
+    const split = service.open({ ...anchor, url: 'http://localhost/split', dock: 'split' })
+    expect((await request({}, 'POST', `/api/web-panes/${split.id}/active-tab`)).status).toBe(409)
   })
 })
