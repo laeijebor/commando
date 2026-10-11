@@ -230,6 +230,15 @@ export interface ChatSessionInfo {
   error?: string
 }
 
+/** The model the session runs, as a row of its list: the explicit pick, else the default row while it runs. */
+export function selectedModelOption(session: Pick<ChatSessionInfo, 'models' | 'selectedModel' | 'model'>): ChatModelOption | undefined {
+  const models = session.models ?? []
+  if (session.selectedModel) return models.find((model) => model.value === session.selectedModel)
+  const running = session.model
+  return models.find((model) => model.value === 'default' && model.resolvedModel === running)
+    ?? models.find((model) => model.value === running || model.resolvedModel === running)
+}
+
 /** A chat as the daemon relays it to clients: session plus its items in order. */
 export interface ChatState {
   paneId: string

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2 } from 'lucide-react'
-import { hostTakesSettings, type ChatContextUsage, type ChatEffort, type ChatModelOption, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
+import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatEffort, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
@@ -20,15 +20,6 @@ export const PERMISSION_MODES: Record<ChatSessionPermissionMode, { label: string
 
 export function permissionLabel(mode: string): string {
   return PERMISSION_MODES[mode as ChatSessionPermissionMode]?.label ?? mode
-}
-
-/** The row the model menu ticks: the explicit pick, else the default row while it runs. */
-export function selectedModelOption(session: ChatSessionInfo): ChatModelOption | undefined {
-  const models = session.models ?? []
-  if (session.selectedModel) return models.find((model) => model.value === session.selectedModel)
-  const running = session.model
-  return models.find((model) => model.value === DEFAULT_MODEL && model.resolvedModel === running)
-    ?? models.find((model) => model.value === running || model.resolvedModel === running)
 }
 
 /** Whether the model menu can open: the host takes settings and has listed its models. */

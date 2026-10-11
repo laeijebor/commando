@@ -371,6 +371,36 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)?.effort).toBe('high')
   })
 
+  it('stops claiming an effort on a model without effort levels', async () => {
+    const fake = fakeQuery()
+    fake.supportedModels.mockResolvedValueOnce([
+      { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default', description: '', supportsEffort: true, supportedEffortLevels: ['high'] },
+      { value: 'haiku', resolvedModel: 'claude-haiku-5-5', displayName: 'Haiku 5.5', description: '', supportsEffort: false, supportedEffortLevels: [] },
+    ])
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', effort: 'high', env: {}, log: () => {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    await session.configure({ model: 'haiku' })
+    expect(sessions.at(-1)).toMatchObject({ selectedModel: 'haiku' })
+    expect(sessions.at(-1)?.effort).toBeUndefined()
+  })
+
+  it('refuses an effort the current model does not offer', async () => {
+    const { fake, session, sessions, items } = started({ effort: 'high' })
+    await tick()
+    await session.configure({ model: 'sonnet' })
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', effort: 'high' })
+    expect([...items.values()].filter((item) => item.kind === 'notice').map((item) => item.kind === 'notice' && item.text))
+      .toEqual(["Sonnet 5.5 doesn't offer max effort."])
+    await session.configure({ model: 'default', effort: 'max' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
+    expect(sessions.at(-1)?.effort).toBe('max')
+  })
+
   it('retries a model list that failed to load once a turn ends', async () => {
     const { fake, sessions } = (() => {
       const fake = fakeQuery()

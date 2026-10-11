@@ -4,6 +4,7 @@ import {
   chatImageType,
   isChatEffort,
   isModelValue,
+  selectedModelOption,
   type ChatAnswer,
   type ChatCommand,
   type ChatContextUsage,
@@ -453,8 +454,8 @@ export class AgentSession {
           const explicit = change.model === DEFAULT_MODEL ? undefined : change.model
           await handle.setModel(explicit)
           const { selectedModel: _previous, effort, ...rest } = this.info
-          // An effort the new model lacks runs as something else, so stop claiming it.
-          const keepEffort = effort && (!option?.efforts || option.efforts.includes(effort))
+          // An effort the new model lacks runs as something else (or not at all), so stop claiming it.
+          const keepEffort = effort && (!option || option.efforts?.includes(effort))
           this.info = {
             ...rest,
             model: option?.resolvedModel ?? change.model,
@@ -466,7 +467,13 @@ export class AgentSession {
         }
       }
     }
-    if (change.effort !== undefined) {
+    // A stale picker can offer an effort the current model lacks, which would run as another.
+    const running = selectedModelOption(this.info)
+    if (change.effort !== undefined && running && !running.efforts?.includes(change.effort)) {
+      this.emitItems(this.mapper.notice('error', running.efforts?.length
+        ? `${running.displayName} doesn't offer ${change.effort} effort.`
+        : `${running.displayName} doesn't take an effort level.`))
+    } else if (change.effort !== undefined) {
       try {
         await handle.applyFlagSettings({ effortLevel: change.effort })
         this.info = { ...this.info, effort: change.effort }

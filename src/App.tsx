@@ -121,7 +121,7 @@ import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
-import type { ChatInputServices } from './chat/ChatComposer'
+import { CHAT_SEND_REFUSAL_MS, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { openPullRequestsForPane, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
@@ -316,14 +316,14 @@ type TerminalPaneProps = {
   chat?: ChatState
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
-  onChatSend?: (text: string, images?: ChatImageRef[]) => void
+  onChatSend?: (text: string, images?: ChatImageRef[]) => string | void
   onChatInterrupt?: () => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   chatServices?: ChatInputServices
-  /** Why the daemon refused this pane's last chat send. */
-  chatSendError?: string
+  /** Why the daemon refused one of this pane's chat sends. */
+  chatSendError?: ChatSendError
   onDismissChatSendError?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
@@ -987,7 +987,7 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
-  const [chatSendErrors, setChatSendErrors] = useState<Record<string, string>>({})
+  const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
   /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Recent chat sends by request id, so a refusal shows on the right pane. */
@@ -1410,7 +1410,11 @@ export function App() {
           const chatPane = chatSendPanes.current.get(message.requestId)
           if (chatPane) {
             chatSendPanes.current.delete(message.requestId)
-            setChatSendErrors((current) => ({ ...current, [chatPane]: message.message }))
+            const refused = { requestId: message.requestId, code: message.code }
+            setChatSendErrors((current) => ({
+              ...current,
+              [chatPane]: { message: message.message, refused: [...(current[chatPane]?.refused ?? []), refused] },
+            }))
           }
         }
         if (
@@ -2111,10 +2115,10 @@ export function App() {
   const retryAgentResume = (targetId?: string) => {
     send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
   }
-  const sendChat = (paneId: string, text: string, images?: ChatImageRef[]) => {
+  const sendChat = (paneId: string, text: string, images?: ChatImageRef[]): string => {
     const id = requestId('chat-send')
     chatSendPanes.current.set(id, paneId)
-    window.setTimeout(() => chatSendPanes.current.delete(id), 30_000)
+    window.setTimeout(() => chatSendPanes.current.delete(id), CHAT_SEND_REFUSAL_MS)
     setChatSendErrors((current) => {
       if (!(paneId in current)) return current
       const next = { ...current }
@@ -2123,8 +2127,9 @@ export function App() {
     })
     if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })) {
       chatSendPanes.current.delete(id)
-      setChatSendErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so the message wasn't sent" }))
+      setChatSendErrors((current) => ({ ...current, [paneId]: { message: "Not connected to Commando, so the message wasn't sent", refused: [{ requestId: id }] } }))
     }
+    return id
   }
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })

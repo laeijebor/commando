@@ -61,7 +61,13 @@ export function replaceRange(text: string, rangeStart: number, rangeEnd: number,
  * `/compact keep the API notes`.
  */
 export function moveCommandToStart(text: string, trigger: ComposerTrigger, name: string): { text: string; cursor: number } {
-  const rest = `${text.slice(0, trigger.rangeStart)}${text.slice(trigger.rangeEnd)}`.replace(/\s+/g, ' ').trim()
+  // Only the token and the spaces around it go; newlines and indentation elsewhere stay.
+  const before = text.slice(0, trigger.rangeStart).replace(/[ \t]+$/, '')
+  let after = text.slice(trigger.rangeEnd).replace(/^[ \t]+/, '')
+  // A token alone on its line takes the line with it.
+  if ((!before || before.endsWith('\n')) && after.startsWith('\n')) after = after.slice(1)
+  const joiner = before && after && !before.endsWith('\n') && !after.startsWith('\n') ? ' ' : ''
+  const rest = `${before}${joiner}${after}`.trim()
   const head = `/${name} `
   return { text: `${head}${rest}`, cursor: head.length + rest.length }
 }
