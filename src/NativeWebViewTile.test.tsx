@@ -480,3 +480,23 @@ describe('NativeWebViewTile review integration', () => {
     )
   })
 })
+
+
+describe('native panel tab visibility', () => {
+  it('publishes an invisible frame while retaining its native attachment', async () => {
+    class Observer {
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', Observer)
+    const { attachment, bridge } = nativeHarness()
+    const view = render(<NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible onFallback={() => undefined} />)
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalledTimes(1))
+    view.rerender(<NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible={false} onFallback={() => undefined} />)
+    expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false, visibleRegions: [], hitRegions: [] }))
+    expect(attachment.detach).not.toHaveBeenCalled()
+    view.rerender(<NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible onFallback={() => undefined} />)
+    expect(bridge.attach).toHaveBeenCalledTimes(1)
+    expect(attachment.detach).not.toHaveBeenCalled()
+  })
+})

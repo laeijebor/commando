@@ -180,6 +180,7 @@ export function insertWebPaneLeaves(
 ): WindowLayoutNode {
   let current = tree
   for (const webPane of webPanes) {
+    if (webPane.dock !== 'split') continue
     const attempt = insertOne(current, webPane)
     current = attempt.inserted ? attempt.node : appendAtRoot(current, webPane)
   }

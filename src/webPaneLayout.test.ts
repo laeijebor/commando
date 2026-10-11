@@ -18,6 +18,7 @@ function webPane(overrides: Partial<WebPane> = {}): WebPane {
     windowId: '@2',
     anchorPaneId: '%12',
     placement: 'auto',
+    dock: 'split',
     engine: 'webkit',
     openedBy: 'agent',
     status: 'open',

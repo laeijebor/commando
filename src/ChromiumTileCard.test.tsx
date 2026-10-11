@@ -150,6 +150,7 @@ function tileElement(
   keepStreamingWhenHidden = false,
   connected = true,
   reviewMode = false,
+  visible = true,
 ) {
   return (
     <ChromiumTileCard
@@ -171,6 +172,7 @@ function tileElement(
       }}
       connected={connected}
       keepStreamingWhenHidden={keepStreamingWhenHidden}
+      visible={visible}
     />
   )
 }
@@ -847,6 +849,20 @@ describe('ChromiumTileCard detached visibility', () => {
     act(() => document.dispatchEvent(new Event('visibilitychange')))
 
     expect(socket.closeCount).toBe(0)
+  })
+
+  it('closes inactive panel streams and reconnects them on activation without unmounting', () => {
+    const view = render(tileElement({}, false, true, false, true))
+    const socket = FakeWebSocket.instances[0]
+    act(() => socket.open())
+    const container = view.container.firstElementChild
+    view.rerender(tileElement({}, false, true, false, false))
+    expect(socket.closeCount).toBe(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(view.container.firstElementChild).toBe(container)
+    view.rerender(tileElement({}, false, true, false, true))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(view.container.firstElementChild).toBe(container)
   })
 
   it('still closes an ordinary workspace stream when hidden', () => {

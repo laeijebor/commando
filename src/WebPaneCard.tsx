@@ -85,6 +85,8 @@ function originLabel(url: string): string {
  */
 export function WebPaneCard({
   webPane,
+  visible = true,
+  onTitle,
   simulatorActive = false,
   onActivateSimulator,
   onClose,
@@ -110,6 +112,8 @@ export function WebPaneCard({
   reloadRevision = 0,
 }: {
   webPane: WebPane
+  visible?: boolean
+  onTitle?: (title: string) => void
   simulatorActive?: boolean
   onActivateSimulator?: () => void
   onClose: () => void
@@ -241,7 +245,7 @@ export function WebPaneCard({
           <button type="button" className="web-pane-button" onClick={onClose} aria-label="Close simulator tile"><X /></button>
         </span>
       </header>
-      <SimLiveView udid={webPane.content.udid} token={wsToken} active={simulatorActive} connected={connected} />
+      <SimLiveView udid={webPane.content.udid} token={wsToken} active={visible && simulatorActive} connected={connected} />
     </article>
   )
 
@@ -460,6 +464,7 @@ export function WebPaneCard({
                 <NativeWebViewTile
                   bridge={nativeBridge}
                   webPane={webPane}
+                  visible={visible}
                   reloadKey={reloadKey}
                   reviewMode={review}
                   wsToken={wsToken}
@@ -473,6 +478,7 @@ export function WebPaneCard({
               {!nativeChromium && (
                 <ChromiumTileCard
                   webPane={webPane}
+                  visible={visible}
                   wsToken={wsToken}
                   reloadKey={reloadKey}
                   reviewMode={review}
@@ -486,6 +492,7 @@ export function WebPaneCard({
             <NativeWebViewTile
               bridge={nativeBridge}
               webPane={webPane}
+              visible={visible}
               reloadKey={reloadKey}
               onFallback={() => setTier('iframe')}
             />
@@ -497,7 +504,10 @@ export function WebPaneCard({
               title={`Web pane: ${host}`}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
               referrerPolicy="no-referrer"
-              onLoad={() => setPhase('loaded')}
+              onLoad={(event) => {
+                setPhase('loaded')
+                try { onTitle?.(event.currentTarget.contentDocument?.title ?? '') } catch { /* Cross-origin pages expose no title. */ }
+              }}
             />
           ) : null}
           {!chromium && tier === 'iframe' && phase !== 'loaded' && (

@@ -108,6 +108,8 @@ import { createPaneManagementApi, type PaneManagementApiClient } from './paneMan
 import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
+import { SidePanel } from './SidePanel'
+import { activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
   insertWebPaneLeaves,
@@ -298,6 +300,7 @@ type TerminalPaneProps = {
   pane: TmuxPane
   status?: AgentStatus
   brief?: SessionBrief
+  panelTabs?: WebPane[]
   mark?: PaneMark
   resume?: AgentResume
   index: number
@@ -369,6 +372,7 @@ export function TerminalPaneCard({
   pane,
   status,
   brief: suppliedBrief,
+  panelTabs: paneTabs = [],
   mark,
   resume,
   index,
@@ -583,6 +587,9 @@ export function TerminalPaneCard({
           ) : <strong>{paneLabel}</strong>}
           <small>{pane.command || pane.path}</small>
         </span>
+        {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
+          {paneTabs.length} tabs{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}
+        </span>}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
         {mark ? (
@@ -1027,6 +1034,11 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
+  const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
+  const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
+  const previousTmuxActivePanes = useRef<Record<string, string | undefined>>({})
+  const knownPanelTabs = useRef(new Set<string>())
+  const pendingTabSelection = useRef(new Map<string, string>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
@@ -1628,6 +1640,33 @@ export function App() {
   const allVisiblePaneIds = activeGroup
     ? activeGroup.paneIds.filter((paneId) => paneMap.has(paneId))
     : []
+  const tmuxActivePaneId = allVisiblePaneIds.find((id) => paneMap.get(id)?.active)
+  const effectivePaneId = effectiveFocusedPane(
+    focusedPaneId, allVisiblePaneIds, tmuxActivePaneId,
+    activeGroup ? previousTmuxActivePanes.current[activeGroup.windowId] : undefined,
+  )
+  useEffect(() => {
+    if (!activeGroup) return
+    previousTmuxActivePanes.current[activeGroup.windowId] = tmuxActivePaneId
+    if (effectivePaneId && effectivePaneId !== focusedPaneId) setFocusedPaneId(effectivePaneId)
+  }, [activeGroup?.windowId, tmuxActivePaneId, effectivePaneId, focusedPaneId])
+
+  useEffect(() => {
+    const tabs = webPanes.filter((tab) => tab.dock !== 'split')
+    const previous = knownPanelTabs.current
+    knownPanelTabs.current = new Set(tabs.map((tab) => tab.id))
+    if (!effectivePaneId || !activeGroup || !connected) return
+    const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
+    const newTabs = focusedTabs.filter((tab) => !previous.has(tab.id))
+    const selected = newTabs.at(-1) ?? activePanelTab(focusedTabs)
+    if (!selected || (!newTabs.length && !selected.unseen)) return
+    if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
+    pendingTabSelection.current.set(effectivePaneId, selected.id)
+    void createWebPanesApi(token).setActiveTab(selected.id).catch(() => undefined).finally(() => {
+      if (pendingTabSelection.current.get(effectivePaneId) === selected.id) pendingTabSelection.current.delete(effectivePaneId)
+    })
+  }, [webPanes, effectivePaneId, activeGroup?.windowId, connected, token])
+
   const currentPrPane = (
     (maximizedTmuxPaneId ? paneMap.get(maximizedTmuxPaneId) : undefined) ??
     (focusedPaneId && allVisiblePaneIds.includes(focusedPaneId) ? paneMap.get(focusedPaneId) : undefined) ??
@@ -2282,6 +2321,15 @@ export function App() {
     }
     return flow
   }
+  const simulatorTabKey = webPanes.flatMap((pane) => pane.content ? [pane.content.udid] : []).join(',')
+  useEffect(() => {
+    if (!simulatorTabKey || !connected) return
+    let cancelled = false
+    void simsApi.list().then((listing) => {
+      if (!cancelled) setSimulatorNames(Object.fromEntries(listing.map((sim) => [sim.udid, sim.name])))
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [simulatorTabKey, connected, token])
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -2294,6 +2342,16 @@ export function App() {
       await sessionManagementApi.renameSession(selectedSession.id, name)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to rename session')
+    }
+  }
+
+  const selectPanelTab = async (tab: WebPane) => {
+    if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split')) setMaximizedPaneId(tab.id)
+    setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
+      ? { ...pane, activeTab: pane.id === tab.id, unseen: pane.id === tab.id ? false : pane.unseen }
+      : pane))
+    try { await webPanesApi.setActiveTab(tab.id) } catch (error) {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
   }
 
@@ -3127,12 +3185,15 @@ export function App() {
                 const pane = paneMap.get(paneId)
                 return pane ? [pane] : []
               })
-              const visibleGroupPanes = maximizedPaneId
-                ? groupPanes.filter((pane) => pane.id === maximizedPaneId)
+              const maximizedPanelTab = webPanes.find((webPane) =>
+                webPane.id === maximizedPaneId && webPane.windowId === group.windowId && webPane.dock !== 'split')
+              const maximizedGridPaneId = maximizedPanelTab ? null : maximizedPaneId
+              const visibleGroupPanes = maximizedGridPaneId
+                ? groupPanes.filter((pane) => pane.id === maximizedGridPaneId)
                 : groupPanes
               const maximizedWebPaneId =
-                maximizedPaneId && isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
-              if (maximizedPaneId && !maximizedWebPaneId && visibleGroupPanes.length === 0) return null
+                maximizedGridPaneId && isWebPaneLeafId(maximizedGridPaneId) ? maximizedGridPaneId : null
+              if (maximizedGridPaneId && !maximizedWebPaneId && visibleGroupPanes.length === 0) return null
 
               const window = windowMap.get(group.windowId)
               const windowTree = window ? parseWindowLayout(window.layout) : null
@@ -3142,17 +3203,114 @@ export function App() {
               // Web pane tiles join the rendered tree only: every tmux write
               // path re-derives its tree from tmux's layout string, so these
               // synthetic leaves can never reach a LayoutSpec.
-              const groupWebPanes = maximizedPaneId
+              const groupWebPanes = maximizedGridPaneId
                 ? webPanes.filter((webPane) =>
                     webPane.id === maximizedWebPaneId && webPane.windowId === group.windowId)
                 : webPanes.filter((webPane) => webPane.windowId === group.windowId)
-              const maximizedWebPane = groupWebPanes.find((webPane) => webPane.id === maximizedWebPaneId) ?? null
+              const maximizedWebPane = groupWebPanes.find((webPane) => webPane.dock === 'split' && webPane.id === maximizedWebPaneId) ?? null
               if (maximizedWebPaneId && !maximizedWebPane) return null
               const displayTree: WindowLayoutNode | null = maximizedWebPane
                 ? { kind: 'pane', paneId: maximizedWebPane.id, cols: 80, rows: 24, left: 0, top: 0 }
                 : visibleTree && groupWebPanes.length > 0
                   ? insertWebPaneLeaves(visibleTree, groupWebPanes)
                   : visibleTree
+              const panelWebPanes = webPanes.filter((webPane) => webPane.windowId === group.windowId && webPane.dock !== 'split')
+              const splitWebPanes = groupWebPanes.filter((webPane) => webPane.dock === 'split')
+              const panelPaneId = maximizedPanelTab?.anchorPaneId ?? effectivePaneId
+              const focusedPane = panelPaneId ? paneMap.get(panelPaneId) : undefined
+              const renderWebPane = (webPane: WebPane, visible: boolean) => (
+                <WebPaneCard
+                  key={webPane.id}
+                  webPane={webPane}
+                  visible={visible}
+                  onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
+                  simulatorActive={activeSimulatorTileId === webPane.id}
+                  onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
+                  onClose={() => void closeWebPane(webPane.id)}
+                  onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
+                  wsToken={token}
+                  connected={connected}
+                  onOpenDevtools={
+                    webPane.engine === 'chromium'
+                      ? () => void openWebPaneDevtools(webPane)
+                      : undefined
+                  }
+                  detached={detachedWebPaneIds.has(webPane.id)}
+                  onPopOut={
+                    nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
+                      ? () => nativeWindowBridge.open(webPane.id)
+                      : undefined
+                  }
+                  onFocusDetached={
+                    nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
+                  }
+                  onReattach={
+                    nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
+                  }
+                  feedback={webPaneFeedback[webPane.id]}
+                  pendingQueue={{
+                    list: () => webPanesApi.pendingNotes(webPane.id),
+                    add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+                    addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
+                      webPane.id,
+                      pageUrl,
+                      response,
+                    ),
+                    update: (noteId, revision, change) => webPanesApi.updatePendingNote(
+                      webPane.id,
+                      noteId,
+                      revision,
+                      change,
+                    ),
+                    upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
+                      webPane.id,
+                      noteId,
+                      revision,
+                      file,
+                    ),
+                    removeAttachment: (noteId, revision, attachmentId) => (
+                      webPanesApi.removePendingAttachment(
+                        webPane.id,
+                        noteId,
+                        revision,
+                        attachmentId,
+                      )
+                    ),
+                    attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
+                      webPane.id,
+                      attachmentId,
+                    ),
+                    remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
+                    send: (ids, options) => webPanesApi.sendPendingNotes(
+                      webPane.id,
+                      ids,
+                      options,
+                    ),
+                    dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
+                    setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
+                  }}
+                  onDragStart={(event) => {
+                    setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', webPane.id)
+                  }}
+                  onDragEnd={() => {
+                    setDraggedPane(null)
+                    setDropPreview(null)
+                  }}
+                  onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+                  navigateRequest={webPaneNavigateRequests[webPane.id]}
+                  onAnswerNavigateRequest={(requestId, accept) => (
+                    void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
+                  )}
+                  reloadRevision={webPaneReloads[webPane.id]}
+                  maximized={maximizedPaneId === webPane.id}
+                  onMaximize={() => {
+                    clearLayoutTimers()
+                    setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+                  }}
+                />
+              )
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -3183,14 +3341,25 @@ export function App() {
                       ))}
                     </div>
                   </header>
+                  <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
+                    focusedPaneId={panelPaneId}
+                    maximizedTabId={maximizedPanelTab?.id}
+                    gridMaximized={Boolean(maximizedGridPaneId)}
+                    paneLabel={focusedPane ? `${focusedPane.id} · ${focusedPane.title || focusedPane.command || `Pane ${focusedPane.index}`}` : 'pane'}
+                    simulatorNames={simulatorNames}
+                    titles={webPaneTitles}
+                    onSelect={(tab) => { void selectPanelTab(tab) }}
+                    onClose={(id) => { void closeWebPane(id) }}
+                    onOpen={(url, anchor, engine) => { void openWebPane(url, anchor, engine) }}
+                    renderTab={renderWebPane}>
                   {displayTree && (visibleGroupPanes.length || maximizedWebPane) ? (
                     <ResizablePaneLayout
-                      key={`${group.id}:${maximizedPaneId ?? 'grid'}`}
+                      key={`${group.id}:${maximizedGridPaneId ?? 'grid'}`}
                       layoutKey={webLayoutAuthoritative || activeResizePaneId !== null
                         // While the browser owns geometry, only a shape change may
                         // discard local weights; tmux cell rounding must not feed back.
                         ? `shape:${layoutShapeKey(displayTree)}`
-                        : `${window?.layout ?? ''}|web:${groupWebPanes.map((webPane) => webPane.id).join(',')}`}
+                        : `${window?.layout ?? ''}|web:${splitWebPanes.map((webPane) => webPane.id).join(',')}`}
                       tree={displayTree}
                       onCommit={() => commitWindowLayout(group.windowId)}
                       panes={new Map<string, ReactNode>(visibleGroupPanes.map((pane) => {
@@ -3206,6 +3375,7 @@ export function App() {
                             pane={pane}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
+                            panelTabs={panelTabs(panelWebPanes, pane.id)}
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}
@@ -3235,7 +3405,7 @@ export function App() {
                             count={leafPaneIds.length}
                             solo={displayLeafCount === 1}
                             maximized={maximizedPaneId === pane.id}
-                            focused={focusedPaneId === pane.id}
+                            focused={effectivePaneId === pane.id}
                             jumpHighlighted={jumpHighlightedPaneId === pane.id}
                             resizeOwner={
                               resizeAuthorityActive && (
@@ -3327,102 +3497,12 @@ export function App() {
                             registerFocusable={registerFocusable}
                           />,
                           ] as const
-                      }).concat(groupWebPanes.map((webPane) => [
-                        webPane.id,
-                        <WebPaneCard
-                          key={webPane.id}
-                          webPane={webPane}
-                          simulatorActive={activeSimulatorTileId === webPane.id}
-                          onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
-                          onClose={() => void closeWebPane(webPane.id)}
-                          onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
-                          wsToken={token}
-                          connected={connected}
-                          onOpenDevtools={
-                            webPane.engine === 'chromium'
-                              ? () => void openWebPaneDevtools(webPane)
-                              : undefined
-                          }
-                          detached={detachedWebPaneIds.has(webPane.id)}
-                          onPopOut={
-                            nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
-                              ? () => nativeWindowBridge.open(webPane.id)
-                              : undefined
-                          }
-                          onFocusDetached={
-                            nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
-                          }
-                          onReattach={
-                            nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
-                          }
-                          feedback={webPaneFeedback[webPane.id]}
-                          pendingQueue={{
-                            list: () => webPanesApi.pendingNotes(webPane.id),
-                            add: (note) => webPanesApi.addPendingNote(webPane.id, note),
-                            addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
-                              webPane.id,
-                              pageUrl,
-                              response,
-                            ),
-                            update: (noteId, revision, change) => webPanesApi.updatePendingNote(
-                              webPane.id,
-                              noteId,
-                              revision,
-                              change,
-                            ),
-                            upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
-                              webPane.id,
-                              noteId,
-                              revision,
-                              file,
-                            ),
-                            removeAttachment: (noteId, revision, attachmentId) => (
-                              webPanesApi.removePendingAttachment(
-                                webPane.id,
-                                noteId,
-                                revision,
-                                attachmentId,
-                              )
-                            ),
-                            attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
-                              webPane.id,
-                              attachmentId,
-                            ),
-                            remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
-                            send: (ids, options) => webPanesApi.sendPendingNotes(
-                              webPane.id,
-                              ids,
-                              options,
-                            ),
-                            dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
-                            setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
-                          }}
-                          onDragStart={(event) => {
-                            setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
-                            event.dataTransfer.effectAllowed = 'move'
-                            event.dataTransfer.setData('text/plain', webPane.id)
-                          }}
-                          onDragEnd={() => {
-                            setDraggedPane(null)
-                            setDropPreview(null)
-                          }}
-                          onNavigate={(url) => void navigateWebPane(webPane.id, url)}
-                          navigateRequest={webPaneNavigateRequests[webPane.id]}
-                          onAnswerNavigateRequest={(requestId, accept) => (
-                            void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
-                          )}
-                          reloadRevision={webPaneReloads[webPane.id]}
-                          maximized={maximizedPaneId === webPane.id}
-                          onMaximize={() => {
-                            clearLayoutTimers()
-                            setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
-                          }}
-                        />,
-                      ] as const)))}
+                      }).concat(splitWebPanes.map((webPane) => [webPane.id, renderWebPane(webPane, true)] as const)))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
                   )}
+                  </SidePanel>
                 </section>
               )
             })}

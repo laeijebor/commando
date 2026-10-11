@@ -767,11 +767,22 @@ describe('web pane tiles', () => {
 
     act(() => daemonMessage?.({
       type: 'web_panes',
-      webPanes: [{ ...openWebPane, placement: 'below' }],
+      webPanes: [{ ...openWebPane, dock: 'split', placement: 'below' }],
     }))
     await screen.findByTitle('Web pane: 127.0.0.1:41300')
 
     expect(terminal).not.toHaveClass('is-solo')
+  })
+
+  it('keeps a lone terminal solo when its companion is a panel tab', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...openWebPane, dock: 'panel' }] }))
+    await screen.findByTitle('Web pane: 127.0.0.1:41300')
+
+    // Solo height fills the one-leaf terminal grid; the panel is outside it.
+    expect(document.querySelector('[data-pane-id="%12"]')).toHaveClass('is-solo')
+    expect(screen.getByTestId('pane-layout').querySelector('[data-web-pane-id]')).toBeNull()
+    expect(document.querySelector('.side-panel [data-web-pane-id]')).toBeInTheDocument()
   })
 
   it('renders a tile from a web_panes broadcast beside the tmux panes', async () => {
@@ -888,7 +899,7 @@ describe('web pane tiles', () => {
   it('maximizes a web tile to fill the canvas and restores the grid', async () => {
     // Arrange: workspace with terminal panes %1, %2 and one web tile.
     await renderAppWithSnapshot()
-    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...openWebPane, dock: 'split' }] }))
     await screen.findByTitle('Web pane: 127.0.0.1:41300')
 
     // Act: click the tile's 'Maximize web pane' button.
@@ -910,15 +921,59 @@ describe('web pane tiles', () => {
     expect(screen.getByTestId('renderer-%13')).toBeInTheDocument()
   })
 
-  it('never leaks the web tile id into daemon protocol messages while maximized', async () => {
+  it('keeps the panel mounted but hidden when a split tile is maximized', async () => {
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [
+      { ...openWebPane, dock: 'split' },
+      { ...openWebPane, id: 'w-1234abcd', url: 'http://localhost/panel', dock: 'panel' },
+    ] }))
+    const panelFrame = await screen.findByTitle('Web pane: localhost')
+    const splitTile = document.querySelector(`[data-web-pane-id="${openWebPane.id}"]`) as HTMLElement
+    fireEvent.click(splitTile.querySelector('[aria-label="Maximize web pane"]') as HTMLElement)
+    expect(panelFrame).not.toBeVisible()
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBeVisible()
+    expect(document.querySelector('.side-panel')).toHaveAttribute('hidden')
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    expect(screen.getByTitle('Web pane: localhost')).toBe(panelFrame)
+    expect(panelFrame).toBeVisible()
+  })
+
+  it('maximizes a panel tab without remounting it and restores the panel width and terminal grid', async () => {
+    localStorage.setItem('commando.side-panel.width.@2', '62')
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...openWebPane, dock: 'panel' }] }))
+    const frame = await screen.findByTitle('Web pane: 127.0.0.1:41300')
+    const terminal = screen.getByTestId('renderer-%12')
+    const panel = document.querySelector('.window-panel-layout') as HTMLElement
+    expect(panel.style.getPropertyValue('--side-panel-width')).toBe('62%')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    expect(panel).toHaveClass('is-panel-maximized')
+    expect(document.querySelector('.workspace-canvas')).toHaveClass('maximized')
+    expect(terminal).not.toBeVisible()
+    expect(screen.getByTestId('renderer-%13')).not.toBeVisible()
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBe(frame)
+    expect(frame).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore web pane' }))
+    expect(panel).not.toHaveClass('is-panel-maximized')
+    expect(document.querySelector('.workspace-canvas')).not.toHaveClass('maximized')
+    expect(screen.getByTestId('renderer-%12')).toBe(terminal)
+    expect(terminal).toBeVisible()
+    expect(panel.style.getPropertyValue('--side-panel-width')).toBe('62%')
+    expect(screen.getByTitle('Web pane: 127.0.0.1:41300')).toBe(frame)
+  })
+
+  it.each(['split', 'panel'] as const)('never leaks a %s web tile id into daemon protocol messages while maximized', async (dock) => {
     // Arrange: workspace with terminal panes %12, %13 and one web tile.
     await renderAppWithSnapshot()
-    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [openWebPane] }))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...openWebPane, dock }] }))
     await screen.findByTitle('Web pane: 127.0.0.1:41300')
     appMocks.send.mockClear()
 
     const assertNoWebIdLeaked = () => {
       for (const call of appMocks.send.mock.calls) {
+        expect(JSON.stringify(call[0])).not.toContain(openWebPane.id)
         const message = call[0] as { type?: string; paneIds?: string[]; paneId?: string }
         if (message.type === 'subscribe') {
           expect(message.paneIds?.some((id) => id.startsWith('w-'))).toBe(false)
@@ -931,6 +986,7 @@ describe('web pane tiles', () => {
 
     // Act: maximize the web tile.
     fireEvent.click(screen.getByRole('button', { name: 'Maximize web pane' }))
+    if (dock === 'panel') fireEvent.click(screen.getByRole('button', { name: 'Simulate measured resize %12', hidden: true }))
     assertNoWebIdLeaked()
 
     // Act: restore the grid.

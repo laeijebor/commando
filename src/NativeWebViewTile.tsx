@@ -28,6 +28,7 @@ const FRAME_PUBLISH_FALLBACK_MS = 100
 export function NativeWebViewTile({
   bridge,
   webPane,
+  visible = true,
   reloadKey,
   reviewMode = false,
   wsToken = '',
@@ -39,6 +40,7 @@ export function NativeWebViewTile({
 }: {
   bridge: NativeWebViewBridge
   webPane: WebPane
+  visible?: boolean
   reloadKey: number
   reviewMode?: boolean
   wsToken?: string
@@ -277,7 +279,7 @@ export function NativeWebViewTile({
       const hitBlockers = [...document.querySelectorAll('[data-native-terminal-hit-blocker]')]
         .filter(isVisibleElement)
         .map((element) => element.getBoundingClientRect())
-      const slotVisible = isVisibleElement(slot)
+      const slotVisible = visible && isVisibleElement(slot)
       const visibleRegions = slotVisible
         ? computeNativeTerminalVisibleRegions(bounds, clip, occluders)
         : []
@@ -308,7 +310,7 @@ export function NativeWebViewTile({
       // off screen the rect cannot change in any way a person can see. Skip the
       // work and recompute once on the way back instead. This also stops the
       // fallback timer, so a hidden window runs no per-tile polling at all.
-      if (!isPresenting()) return
+      if (!visible || !isPresenting()) return
       if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
@@ -330,7 +332,7 @@ export function NativeWebViewTile({
     const unsubscribePresenting = subscribeToPresenting((presenting) => {
       if (presenting) schedule()
     })
-    schedule()
+    publish()
 
     return () => {
       resizeObserver.disconnect()
@@ -341,7 +343,7 @@ export function NativeWebViewTile({
       if (frame !== null) window.cancelAnimationFrame(frame)
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
     }
-  }, [bridge])
+  }, [bridge, visible, attachment])
 
   return (
     <div
