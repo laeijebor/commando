@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { createReadStream, existsSync, mkdirSync, renameSync, utimesSync, writeFileSync } from 'node:fs'
-import { mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises'
+import { constants, createReadStream, existsSync, mkdirSync, renameSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, utimes, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   CHAT_IMAGE_EXTENSIONS,
   MAX_CHAT_IMAGE_BYTES,
@@ -19,6 +19,11 @@ import {
  * the same image is stored once however often it is replayed, and Claude's
  * own config folders stay Claude's. Hosts read uploads from it and write the
  * images they find in tool results and resumed transcripts.
+ *
+ * Claude never sees this folder: it holds every chat's images. Each Claude
+ * session gets its own folder beside it (`chat-image-sessions/<session id>`)
+ * holding copies of the images attached in that session, and only that
+ * folder is opened to Claude's tools.
  */
 export function chatImagesDir(env: Record<string, string | undefined> = process.env): string {
   return env.COMMANDO_CHAT_IMAGES_DIR || join(homedir(), '.commando', 'chat-images')
@@ -28,6 +33,9 @@ export function chatImagesDir(env: Record<string, string | undefined> = process.
 const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
 /** Unused images are pruned; a resumed transcript stores them again. */
 export const CHAT_IMAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+/** Claude session ids name the session folders; the same rule the host checks `--resume` with. */
+const SESSION_ID = /^[A-Za-z0-9-]{8,80}$/
+const TEMPORARY = /^\.[0-9a-f]{64}\.\w+\.[0-9a-f]+\.tmp$/
 
 /** The image type from its first bytes; the declared type is never trusted. */
 export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
@@ -45,7 +53,11 @@ export class ChatImageStore {
   private loggedWriteFailure = false
 
   /** `log` hears about images that couldn't be stored (once per kind of failure). */
-  constructor(readonly dir: string = chatImagesDir(), private readonly log?: (message: string) => void) {}
+  constructor(
+    readonly dir: string = chatImagesDir(),
+    private readonly log?: (message: string) => void,
+    readonly sessionsDir: string = join(dirname(dir), 'chat-image-sessions'),
+  ) {}
 
   path(id: string): string | null {
     return isChatImageId(id) ? join(this.dir, id) : null
@@ -119,32 +131,61 @@ export class ChatImageStore {
     return readFile(path)
   }
 
-  /** Deletes images nobody has stored or replayed for `maxAgeMs`. */
+  /** Creates the one folder of images Claude may open in a session, and returns it. */
+  sessionDir(sessionId: string): string {
+    const folder = this.sessionFolder(sessionId)
+    mkdirSync(folder, { recursive: true, mode: 0o700 })
+    return folder
+  }
+
+  /**
+   * Copies a stored image into a session's folder and returns the copy's path.
+   * A copy rather than a link: through a hard link, Claude could edit the
+   * stored bytes every chat shares, and a symlink resolves to the store, which
+   * Claude can't open. On APFS the copy is a clone, so it costs no space.
+   */
+  async stage(id: string, sessionId: string): Promise<string> {
+    const source = this.path(id)
+    if (!source) throw new Error('Invalid image id')
+    const folder = this.sessionFolder(sessionId)
+    await mkdir(folder, { recursive: true, mode: 0o700 })
+    const path = join(folder, id)
+    // Copied every time, so the file matches its name even if Claude changed it.
+    const temporary = join(folder, `.${id}.${randomBytes(6).toString('hex')}.tmp`)
+    await copyFile(source, temporary, constants.COPYFILE_FICLONE)
+    // A clone keeps the stored file's time; the copy's age should count from now.
+    const now = new Date()
+    await utimes(temporary, now, now)
+    await rename(temporary, path)
+    return path
+  }
+
+  /**
+   * Deletes images nobody has stored or replayed for `maxAgeMs`, in the store
+   * and in session folders, and session folders left empty.
+   */
   async prune(maxAgeMs = CHAT_IMAGE_MAX_AGE_MS, now = Date.now()): Promise<number> {
-    let names: string[]
-    try {
-      names = await readdir(this.dir)
-    } catch (error) {
-      // No folder yet means nothing to prune.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
-      throw error
-    }
-    let removed = 0
-    for (const name of names) {
-      // Only our own files: content-hash names and abandoned temporaries.
-      if (!isChatImageId(name) && !/^\.[0-9a-f]{64}\.\w+\.[0-9a-f]+\.tmp$/.test(name)) continue
-      const path = join(this.dir, name)
+    let removed = await pruneFolder(this.dir, maxAgeMs, now)
+    for (const name of await listFolder(this.sessionsDir) ?? []) {
+      if (!SESSION_ID.test(name)) continue
+      const folder = join(this.sessionsDir, name)
+      // Read before pruning, which touches the folder. A new session's folder stays empty
+      // until its first image, so only an old folder is removed.
+      const stats = await stat(folder).catch(() => null)
+      if (!stats?.isDirectory()) continue
+      removed += await pruneFolder(folder, maxAgeMs, now)
       try {
-        const stats = await stat(path)
-        if (now - stats.mtimeMs > maxAgeMs) {
-          await unlink(path)
-          removed += 1
-        }
+        if (now - stats.mtimeMs > maxAgeMs) await rmdir(folder)
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        if (!['ENOENT', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
       }
     }
     return removed
+  }
+
+  private sessionFolder(sessionId: string): string {
+    if (!SESSION_ID.test(sessionId)) throw new Error(`Invalid session id: ${sessionId}`)
+    return join(this.sessionsDir, sessionId)
   }
 
   private check(bytes: Uint8Array, maxBytes: number): { id: string } | { error: ChatImageSaveError } {
@@ -154,6 +195,35 @@ export class ChatImageStore {
     if (!type) return { error: 'unsupported' }
     return { id: `${createHash('sha256').update(bytes).digest('hex')}.${CHAT_IMAGE_EXTENSIONS[type]}` }
   }
+}
+
+/** A folder's names, or null when it doesn't exist yet. */
+async function listFolder(folder: string): Promise<string[] | null> {
+  try {
+    return await readdir(folder)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function pruneFolder(folder: string, maxAgeMs: number, now: number): Promise<number> {
+  let removed = 0
+  for (const name of await listFolder(folder) ?? []) {
+    // Only our own files: content-hash names and abandoned temporaries.
+    if (!isChatImageId(name) && !TEMPORARY.test(name)) continue
+    const path = join(folder, name)
+    try {
+      const stats = await stat(path)
+      if (now - stats.mtimeMs > maxAgeMs) {
+        await unlink(path)
+        removed += 1
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  return removed
 }
 
 const UPLOAD_ERRORS: Record<ChatImageSaveError, [number, string]> = {
