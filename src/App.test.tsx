@@ -423,6 +423,80 @@ describe('session update briefs', () => {
     expect(screen.getByLabelText('Worklog for api')).not.toHaveTextContent('An old owner')
   })
 
+  it.each(['same pane', 'other pane', 'other session'] as const)('reveals an existing simulator in a collapsed panel on the %s before focusing it', async (location) => {
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Review', task: 'Review', sessionName: 'work', ports: [], idle: false }
+    const owner = location === 'other session' ? { ...remotePane, active: false } : location === 'other pane' ? { ...adjacentPane, active: false } : pane
+    const snapshot = location === 'other session' ? snapshotAcrossSessions() : snapshotWith([pane, { ...adjacentPane, active: false }])
+    if (location === 'other session') {
+      const other = { ...remotePane, id: '%22', active: true }
+      snapshot.panes = [pane, owner, other]
+      snapshot.windows[1] = { ...snapshot.windows[1]!, paneIds: [owner.id, other.id], layout: 'dbde,161x24,0,0{80x24,0,0,21,80x24,81,0,22}' }
+    }
+    await renderAppWithSnapshot(snapshot)
+    const browser = { ...openWebPane, dock: 'panel' as const, activeTab: true, unseen: false }
+    const ownerBrowser = { ...browser, id: 'w-owner', sessionId: owner.sessionId, windowId: owner.windowId, anchorPaneId: owner.id }
+    const tile = { ...ownerBrowser, id: 'w-sim', url: '', order: 1, activeTab: false, content: { kind: 'simulator' as const, udid: simulator.udid } }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: location === 'same pane' ? [browser, tile] : [browser, ownerBrowser, tile] }))
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
+      state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
+    } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for api' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+    const live = await screen.findByTestId(`sim-${simulator.udid}`)
+    await waitFor(() => expect(live).toBeVisible())
+    await waitFor(() => expect(live).toHaveFocus())
+    expect(live).toHaveAttribute('data-active', 'true')
+    expect(screen.getByRole('tab', { name: 'Simulator' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(`${owner.id} · ${owner.title}`)
+    expect(document.querySelector(`[data-pane-id="${owner.id}"] .pane-footer-focus`)).toHaveTextContent('Focused / keys go here')
+    expect(document.querySelector('.window-panel-layout')).not.toHaveClass('is-collapsed')
+    expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tile.id}/active-tab`, expect.objectContaining({ method: 'POST' }))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/web-panes')).toHaveLength(0)
+    act(() => live.blur())
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    if (location !== 'other session') {
+      fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+      await waitFor(() => expect(live).toBeVisible())
+      await waitFor(() => expect(live).toHaveFocus())
+    }
+  })
+
+  it.each(['before', 'after'] as const)('reveals a new simulator when its broadcast arrives %s the create response', async (timing) => {
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Review', task: 'Review', sessionName: 'work', ports: [], idle: false }
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
+    const browser = { ...openWebPane, dock: 'panel' as const, activeTab: true, unseen: false }
+    const tile = { ...browser, id: 'w-new-sim', anchorPaneId: adjacentPane.id, url: '', activeTab: false, content: { kind: 'simulator' as const, udid: simulator.udid } }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser] }))
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: adjacentPane.id, targetId: adjacentPane.targetId, sessionId: adjacentPane.sessionId, sessionName: 'work',
+      state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
+    } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for worker' }))
+    fireEvent.focus(screen.getByTestId(`renderer-${pane.id}`))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    let respond: (value: Response) => void = () => undefined
+    vi.mocked(fetch).mockImplementation(async (url) => url === '/api/web-panes'
+      ? new Promise<Response>((resolve) => { respond = resolve })
+      : new Response('{}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web-panes', expect.objectContaining({
+      body: JSON.stringify({ content: { kind: 'simulator', udid: simulator.udid }, anchor: adjacentPane.id }),
+    })))
+    if (timing === 'before') act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, tile] }))
+    await act(async () => respond(new Response(JSON.stringify({ webPaneId: tile.id }), { status: 200 })))
+    if (timing === 'after') act(() => daemonMessage?.({ type: 'web_panes', webPanes: [browser, tile] }))
+    const live = await screen.findByTestId(`sim-${simulator.udid}`)
+    await waitFor(() => expect(live).toBeVisible())
+    await waitFor(() => expect(live).toHaveFocus())
+    expect(screen.getByRole('tab', { name: 'Simulator' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(`${adjacentPane.id} · worker`)
+    expect(document.querySelector(`[data-pane-id="${adjacentPane.id}"] .pane-footer-focus`)).toHaveTextContent('Focused / keys go here')
+    expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tile.id}/active-tab`, expect.objectContaining({ method: 'POST' }))
+  })
+
   it('opens the claimed simulator beside its owning pane through the existing web tile API', async () => {
     await renderAppWithSnapshot()
     const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Work · Review', task: 'Review', sessionName: 'work', ports: [{ name: 'metro', port: 8101 }], idle: false }

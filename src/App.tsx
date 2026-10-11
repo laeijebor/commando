@@ -1034,6 +1034,8 @@ export function App() {
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
+  const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
+  const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void } | null>(null)
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
@@ -2389,23 +2391,41 @@ export function App() {
     try {
       const existing = webPanes.find((tile) => tile.content?.udid === udid.toUpperCase())
       const id = existing?.id ?? (await simsApi.show(udid, anchorPaneId)).webPaneId
-      if (existing) {
-        setArea('workspace')
-        setSelectedSessionId(existing.sessionId)
-        setActiveTabs((current) => ({ ...current, [existing.sessionId]: existing.windowId }))
-      }
+      setArea('workspace')
       setPendingPaneFocus(null)
       setMaximizedPaneId(null)
-      setActiveSimulatorTileId(id)
-      window.requestAnimationFrame(() => {
-        const tile = document.querySelector<HTMLElement>(`[data-web-pane-id="${id}"]`)
-        tile?.scrollIntoView?.({ block: 'nearest' })
-        tile?.querySelector<HTMLCanvasElement>('canvas:not([hidden])')?.focus()
-      })
+      setPendingSimulatorTileId(id)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to show simulator')
     }
   }
+
+  useEffect(() => {
+    if (!pendingSimulatorTileId) return
+    // Creation and its broadcast can arrive in either order; reveal only once the tile is mounted.
+    const tab = webPanes.find((tile) => tile.id === pendingSimulatorTileId)
+    if (!tab) return
+    if (selectedSessionId !== tab.sessionId || activeGroup?.windowId !== tab.windowId) {
+      setSelectedSessionId(tab.sessionId)
+      setActiveTabs((current) => ({ ...current, [tab.sessionId]: tab.windowId }))
+      return
+    }
+    setFocusedPaneId(tab.anchorPaneId)
+    void selectPanelTab(tab)
+    setActiveSimulatorTileId(tab.id)
+    setPanelRevealRequest({
+      tabId: tab.id,
+      onVisible: () => {
+        const tile = document.querySelector<HTMLElement>(`[data-web-pane-id="${tab.id}"]`)
+        if (tile && !tile.closest('[hidden]')) {
+          tile.scrollIntoView?.({ block: 'nearest' })
+          tile.querySelector<HTMLCanvasElement>('canvas:not([hidden])')?.focus()
+        }
+        setPanelRevealRequest(null)
+      },
+    })
+    setPendingSimulatorTileId(null)
+  }, [pendingSimulatorTileId, webPanes, selectedSessionId, activeGroup?.windowId])
 
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
@@ -3371,6 +3391,7 @@ export function App() {
                   <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
                     focusedPaneId={panelPaneId}
                     maximizedTabId={maximizedPanelTab?.id}
+                    revealRequest={panelRevealRequest && panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) ? panelRevealRequest : undefined}
                     gridMaximized={Boolean(maximizedGridPaneId)}
                     paneLabel={focusedPane ? `${focusedPane.id} · ${focusedPane.title || focusedPane.command || `Pane ${focusedPane.index}`}` : 'pane'}
                     simulatorNames={simulatorNames}

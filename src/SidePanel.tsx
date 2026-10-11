@@ -21,13 +21,14 @@ function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string 
 }
 
 export function SidePanel({
-  windowId, tabs, focusedPaneId, maximizedTabId, gridMaximized = false, paneLabel, simulatorNames, titles,
+  windowId, tabs, focusedPaneId, maximizedTabId, revealRequest, gridMaximized = false, paneLabel, simulatorNames, titles,
   onSelect, onSeen, onClose, onOpen, renderTab, children,
 }: {
   windowId: string
   tabs: WebPane[]
   focusedPaneId?: string
   maximizedTabId?: string
+  revealRequest?: { tabId: string; onVisible: () => void }
   gridMaximized?: boolean
   paneLabel: string
   simulatorNames: Record<string, string>
@@ -56,6 +57,12 @@ export function SidePanel({
   useEffect(() => {
     if (!gridMaximized && expanded && active?.unseen) onSeen?.(active)
   }, [active?.id, active?.unseen, gridMaximized, expanded, onSeen])
+  useEffect(() => { if (revealRequest) setCollapsed(false) }, [revealRequest])
+  useEffect(() => {
+    if (!revealRequest || !expanded || gridMaximized || active?.id !== revealRequest.tabId) return
+    const frame = window.requestAnimationFrame(revealRequest.onVisible)
+    return () => window.cancelAnimationFrame(frame)
+  }, [revealRequest, expanded, gridMaximized, active?.id])
   const open = () => {
     if (!focusedPaneId || !adding || !url.trim()) return
     const raw = url.trim()
