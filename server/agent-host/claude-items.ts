@@ -233,6 +233,9 @@ export function subagentReport(text: string): string {
     .trim()
 }
 
+/** What a stopped or interrupted Agent call leaves as its result. */
+const STOPPED_RESULT = /^\s*\[Request interrupted/
+
 /** An Agent result that only says the subagent went on in the background. */
 const BACKGROUND_RESULT = /^\s*(?:Async agent launched|.{0,200}running in the background)/i
 
@@ -586,8 +589,8 @@ export class ClaudeItemMapper {
       // The subagent goes on; its task events (or notification) finish it.
       return this.put({ ...item, ...(agentId ? { agentId } : {}), background: true, updatedAt: this.now() })
     }
-    // A task notification may already have said how it ended.
-    const state: ChatSubagentState = item.state !== 'running' ? item.state : isError ? 'failed' : 'completed'
+    // A task notification may already have said how it ended; a stopped one reads as interrupted.
+    const state: ChatSubagentState = item.state !== 'running' ? item.state : isError ? (STOPPED_RESULT.test(text) ? 'stopped' : 'failed') : 'completed'
     return this.put({ ...item, ...(agentId ? { agentId } : {}), state, status: itemStatus(state), output: truncate(subagentReport(text), MAX_OUTPUT), updatedAt: this.now() })
   }
 

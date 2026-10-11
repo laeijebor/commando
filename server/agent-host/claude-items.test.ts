@@ -299,6 +299,11 @@ describe('ClaudeItemMapper subagents', () => {
     ])
     expect(items.map((item) => item.kind)).toEqual(['user_message', 'subagent'])
     expect(items[1]).toMatchObject({ agentId: 'a8b6', state: 'completed', status: 'completed', summary: 'Agent "waiter" finished' })
+    const stopped = new ClaudeItemMapper(() => 1).replay([
+      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm2', content: [{ type: 'tool_use', id: 'tu2', name: 'Agent', input: { description: 'slow one' } }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu2', is_error: true, content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }] } },
+    ])
+    expect(stopped[0]).toMatchObject({ state: 'stopped', status: 'interrupted' })
   })
 
   it('shows a relayed message as the user typed it, with its target', () => {
