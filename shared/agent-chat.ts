@@ -74,6 +74,30 @@ export const MAX_CHAT_IMAGES = 10
  */
 export const CHAT_IMAGE_MAX_DIMENSION = 2000
 export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+/**
+ * Names the saved copy of an attached image in the text Claude gets, so its
+ * tools can open the file (after t3code's AttachmentPrompt). The host appends
+ * one per image after the typed text.
+ */
+export function attachmentNote(name: string, path: string): string {
+  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
+}
+
+/** Matches attachmentNote's notes; the first group is the saved path. */
+export const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
+/** A note that a summary's length limit cut off at the end. */
+const CUT_ATTACHMENT_NOTE = /\s*\[Attached image\b[^\]]*$/
+
+/** The text the person typed, without the notes the host added for Claude. */
+export function stripAttachmentNotes(text: string): string {
+  return text.replace(ATTACHMENT_NOTES, '').trim()
+}
+
+/** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
+export function stripAttachmentNotesFromSummary(text: string): string {
+  return stripAttachmentNotes(text).replace(CUT_ATTACHMENT_NOTE, '').trim()
+}
+
 /** Images are stored by content hash, so an id is also a safe file name. */
 const CHAT_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/
 

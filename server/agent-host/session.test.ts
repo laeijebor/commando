@@ -224,6 +224,14 @@ describe('AgentSession start-up', () => {
     expect(sessions.at(-1)?.title).toBe('Recent changes')
   })
 
+  it("titles a chat from its first prompt without that prompt's attachment notes", async () => {
+    const firstPrompt = 'Why is this pane blank?\n\n[Attached image "pane.png" is saved at: /sessions/abcd1234-0000/x.png]'
+    const { sessions } = started({ resume: 'abcd1234-0000' }, { messages: async () => [], title: async () => firstPrompt })
+    await tick()
+    await tick()
+    expect(sessions.at(-1)?.title).toBe('Why is this pane blank?')
+  })
+
   it('reports a history it cannot read and still starts', async () => {
     const { fake, items } = started({ resume: 'abcd1234-0000' }, { messages: async () => { throw new Error('no transcript') }, title: async () => undefined })
     await tick()

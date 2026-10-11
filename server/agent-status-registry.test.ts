@@ -143,6 +143,23 @@ describe('AgentStatusRegistry', () => {
     })
   })
 
+  it("shows a chat prompt's typed text, without the notes naming its attached images", () => {
+    const registry = new AgentStatusRegistry()
+    const note = '[Attached image "pane.png" is saved at: /Users/me/.commando/chat-image-sessions/0b9f2c1e-7d4a-4e1b-9a55-3f0c2d8e6b71/'
+    // The hook flattens newlines and cuts the prompt at 240 characters, mid-note.
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
+      prompt_id: 'prompt-1',
+      intent: `Why is this pane blank? ${note}${'a'.repeat(64)}.png] ${note}`.slice(0, 240),
+    }), 1)
+    expect(registry.get(paneId)?.details?.intent).toBe('Why is this pane blank?')
+    // An image-only message has no typed text to show.
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {
+      prompt_id: 'prompt-2',
+      intent: `${note}${'b'.repeat(64)}.png]`,
+    }), 2)
+    expect(registry.get(paneId)?.details).not.toHaveProperty('intent')
+  })
+
   it('starts a fresh Claude turn and clears all prior turn details', () => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', {

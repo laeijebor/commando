@@ -4,11 +4,13 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
   MAX_QUEUED_MESSAGES,
+  attachmentNote,
   chatImageType,
   isChatEffort,
   isChatPermissionMode,
   isModelValue,
   selectedModelOption,
+  stripAttachmentNotesFromSummary,
   type ChatAnswer,
   type ChatCommand,
   type ChatContextUsage,
@@ -27,7 +29,7 @@ import {
   type ChatSubagentTranscript,
   type ChatTaskAction,
 } from '../../shared/agent-chat.js'
-import { ClaudeItemMapper, attachmentNote, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
+import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
 
 export interface AgentSessionSpec {
@@ -1008,9 +1010,11 @@ export class AgentSession {
     const sessionId = this.info.sessionId
     if (!sessionId) return
     try {
-      const title = await this.store.title(sessionId, this.spec.cwd)
-      if (title && shortTitle(title) !== this.info.title) {
-        this.info = { ...this.info, title: shortTitle(title) }
+      // Until Claude summarises it, the title is the first prompt, which can carry attachment notes.
+      const stored = await this.store.title(sessionId, this.spec.cwd)
+      const title = stored && shortTitle(stripAttachmentNotesFromSummary(stored))
+      if (title && title !== this.info.title) {
+        this.info = { ...this.info, title }
         this.emitSession()
       }
     } catch {
