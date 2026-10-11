@@ -2,6 +2,8 @@ import type { ChatItem } from '../../shared/agent-chat'
 
 export type WorkItem = Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' | 'request' }>
 export type ReasoningItem = Extract<ChatItem, { kind: 'reasoning' }>
+export type SubagentItem = Extract<ChatItem, { kind: 'subagent' }>
+export type PlanItem = Extract<ChatItem, { kind: 'plan' }>
 
 export type TimelineRow =
   | { kind: 'user'; id: string; item: Extract<ChatItem, { kind: 'user_message' }> }
@@ -9,6 +11,9 @@ export type TimelineRow =
   | { kind: 'work'; id: string; items: WorkItem[]; live: boolean; summary: string }
   | { kind: 'thought'; id: string; item: ReasoningItem }
   | { kind: 'notice'; id: string; item: Extract<ChatItem, { kind: 'notice' }> }
+  | { kind: 'plan'; id: string; item: PlanItem }
+  /** Subagents started next to each other in a turn, as t3code groups them. */
+  | { kind: 'subagents'; id: string; items: SubagentItem[]; live: boolean }
 
 function isWork(item: ChatItem): item is WorkItem {
   return item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'request'
@@ -58,22 +63,40 @@ export function workSummary(items: readonly WorkItem[]): string {
  * user's messages and Claude's replies, as t3code's timeline does. Thinking
  * gets its own collapsed row. Pending requests and todo lists are shown in
  * the composer, not the timeline.
+ *
+ * `scope` picks one conversation: the main one (undefined), or a subagent's
+ * (its Agent call's tool_use id). A subagent's own items stay out of the
+ * main timeline; its row opens them.
  */
-export function deriveTimelineRows(items: readonly ChatItem[]): TimelineRow[] {
+export function deriveTimelineRows(items: readonly ChatItem[], scope?: string): TimelineRow[] {
   const rows: TimelineRow[] = []
   let group: WorkItem[] = []
+  let agents: SubagentItem[] = []
   const flush = () => {
-    if (!group.length) return
-    rows.push({
-      kind: 'work',
-      id: `work-${group[0]!.id}`,
-      items: group,
-      live: group.some((item) => item.status === 'running'),
-      summary: workSummary(group),
-    })
-    group = []
+    if (group.length) {
+      rows.push({
+        kind: 'work',
+        id: `work-${group[0]!.id}`,
+        items: group,
+        live: group.some((item) => item.status === 'running'),
+        summary: workSummary(group),
+      })
+      group = []
+    }
+    if (agents.length) {
+      rows.push({ kind: 'subagents', id: `subagents-${agents[0]!.id}`, items: agents, live: agents.some((item) => item.state === 'running') })
+      agents = []
+    }
   }
   for (const item of items) {
+    if (item.parentToolUseId !== scope) continue
+    if (item.kind === 'subagent') {
+      // Work and subagents rarely interleave; each run gets its own row.
+      if (group.length) flush()
+      agents.push(item)
+      continue
+    }
+    if (agents.length && isWork(item) && !(item.kind === 'request' && !item.answer)) flush()
     // Open requests live in the composer; answered ones join the work group.
     if (item.kind === 'request' && !item.answer) continue
     if (isWork(item)) {
@@ -89,6 +112,7 @@ export function deriveTimelineRows(items: readonly ChatItem[]): TimelineRow[] {
       if (item.text || item.status === 'running') rows.push({ kind: 'assistant', id: item.id, item })
     } else if (item.kind === 'reasoning') rows.push({ kind: 'thought', id: item.id, item })
     else if (item.kind === 'notice') rows.push({ kind: 'notice', id: item.id, item })
+    else if (item.kind === 'plan') rows.push({ kind: 'plan', id: item.id, item })
   }
   flush()
   return rows
@@ -101,7 +125,8 @@ export function pendingRequests(items: readonly ChatItem[]): Extract<ChatItem, {
 export function latestTodos(items: readonly ChatItem[]): Extract<ChatItem, { kind: 'todo_list' }> | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!
-    if (item.kind === 'todo_list') return item
+    // A subagent's own todo list belongs to its transcript.
+    if (item.kind === 'todo_list' && !item.parentToolUseId) return item
   }
   return undefined
 }

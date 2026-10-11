@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X } from 'lucide-react'
+import { ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
+  MAX_CHAT_IMAGES,
+  chatImageUrl,
+  chatPlanTitle,
   hostTakesInput,
   hostTakesSettings,
+  hostTakesTurnFlow,
   type ChatAnswer,
   type ChatCommand,
   type ChatFileSearchResult,
   type ChatImageRef,
   type ChatItem,
+  type ChatQueueAction,
+  type ChatSendOptions,
   type ChatSessionInfo,
+  type ChatSessionPermissionMode,
   type ChatSettingsChange,
 } from '../../shared/agent-chat'
 import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
@@ -17,6 +24,7 @@ import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
 import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable } from './ComposerControls'
+import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
   filterCommands,
@@ -29,7 +37,7 @@ import {
   type ComposerTrigger,
   type PullRequestOption,
 } from './composerTriggers'
-import { shortPath } from './timelineRows'
+import { shortPath, type PlanItem } from './timelineRows'
 import { Button } from './ui/button'
 
 /** What the composer asks of the app for `@`, `#` and images. */
@@ -274,6 +282,12 @@ export function ChatComposer({
   onAnswer,
   onConfigure,
   autoFocus,
+  plan,
+  onImplement,
+  onImplementInNewPane,
+  onQueue,
+  relayTarget,
+  onClearRelay,
 }: {
   session: ChatSessionInfo
   hostConnected: boolean
@@ -284,11 +298,20 @@ export function ChatComposer({
   services?: ChatInputServices
   sendError?: string
   onDismissSendError?: () => void
-  onSend: (text: string, images?: ChatImageRef[]) => void
-  onInterrupt: () => void
+  onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => void
+  /** `dropQueued`: queued messages Stop took back into the draft. */
+  onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   onConfigure: (change: ChatSettingsChange) => void
   autoFocus?: boolean
+  /** Claude's latest plan, while it waits to be implemented or refined. */
+  plan?: { item: PlanItem; implementMode: ChatSessionPermissionMode }
+  onImplement?: () => void
+  onImplementInNewPane?: () => void
+  onQueue?: (change: ChatQueueAction) => void
+  /** Messages go to this subagent, relayed through main Claude. */
+  relayTarget?: { agentId: string; label: string }
+  onClearRelay?: () => void
 }) {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -301,6 +324,9 @@ export function ChatComposer({
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.
   const richInput = Boolean(services) && hostTakesInput(session)
+  // Hosts started before 1b·3 can't hold a queue or steer.
+  const turnFlow = hostTakesTurnFlow(session)
+  const queue = turnFlow ? session.queue ?? [] : []
   const { trigger, update: updateTrigger, dismiss } = useTriggerState()
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
@@ -437,11 +463,21 @@ export function ChatComposer({
 
   const uploading = attachments.some((attachment) => !attachment.ref)
   const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
-  const submit = () => {
+  const planFollowUp = plan && !running && !relayTarget ? plan : undefined
+  const refining = Boolean(draft.trim() || attachments.length)
+  /**
+   * Enter queues while Claude works (the host holds it until the turn ends);
+   * ⌘Enter steers. A relay always goes now: main Claude forwards it.
+   */
+  const submit = (steer = false) => {
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+    const options: ChatSendOptions = relayTarget
+      ? { relayTo: relayTarget }
+      : running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
     lastSent.current = draft.trim()
-    if (images.length) onSend(draft.trim(), images)
+    if (Object.keys(options).length) onSend(draft.trim(), images, options)
+    else if (images.length) onSend(draft.trim(), images)
     else onSend(draft.trim())
     for (const attachment of attachments) release(attachment)
     setAttachments([])
@@ -475,11 +511,31 @@ export function ChatComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      submit()
+      submit(event.metaKey || event.ctrlKey)
     } else if (event.key === 'Escape' && running) {
       event.preventDefault()
-      onInterrupt()
+      interrupt()
+    } else if (event.key === 'Escape' && relayTarget) {
+      event.preventDefault()
+      onClearRelay?.()
     }
+  }
+
+  /** Stop. As in the Claude Code TUI, queued messages come back into the composer to edit. */
+  const interrupt = () => {
+    if (!queue.length) {
+      onInterrupt()
+      return
+    }
+    setDraft((current) => [...queue.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
+    const restored: Attachment[] = queue.flatMap((queued) => queued.images ?? []).map((image, index) => ({
+      key: `queued-${index}-${image.id}`,
+      name: image.name ?? image.id,
+      previewUrl: chatImageUrl(image.id),
+      ref: image,
+    }))
+    if (restored.length) setAttachments((current) => [...restored, ...current].slice(0, MAX_CHAT_IMAGES))
+    onInterrupt(queue.map((queued) => queued.id))
   }
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -521,6 +577,9 @@ export function ChatComposer({
         onDrop={onDrop}
         data-testid="chat-composer"
       >
+        {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} /> : null}
+        {planFollowUp ? <PlanReadyBanner title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
+        {queue.length && onQueue ? <QueuedMessages queue={queue} disabled={!hostConnected} onChange={onQueue} /> : null}
         {request ? (
           request.requestKind === 'question'
             ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
@@ -576,7 +635,15 @@ export function ChatComposer({
           onBlur={() => updateTrigger(null)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          placeholder={!hostConnected ? 'Reconnecting to the agent host…' : closed ? 'This session has ended' : running ? 'Queue a follow-up…' : 'Ask Claude… / for commands, @ for files'}
+          placeholder={!hostConnected
+            ? 'Reconnecting to the agent host…'
+            : closed
+              ? 'This session has ended'
+              : relayTarget
+                ? `Message @${relayTarget.label} through main Claude…`
+                : running
+                  ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
+                  : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
           aria-label="Message Claude"
           aria-controls={menuOpen ? menuId : undefined}
           aria-autocomplete="list"
@@ -614,13 +681,30 @@ export function ChatComposer({
             <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}
           {running ? (
-            <Button size="icon-sm" variant="outline" aria-label="Stop" title="Stop (Esc)" onClick={onInterrupt} disabled={!hostConnected}>
+            <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>
               <span className="size-2.5 rounded-[2px] bg-destructive" aria-hidden="true" />
             </Button>
           ) : null}
-          <Button size="icon-sm" aria-label="Send" title={uploading ? 'Waiting for images to upload' : 'Send (Enter)'} onClick={submit} disabled={!canSend}>
-            <ArrowUp aria-hidden="true" />
-          </Button>
+          {running && turnFlow && !relayTarget ? (
+            <Button size="icon-sm" variant="outline" aria-label="Steer now" title="Steer now (⌘Enter): ends Claude's turn at its next safe point and sends this" onClick={() => submit(true)} disabled={!canSend}>
+              <Zap aria-hidden="true" />
+            </Button>
+          ) : null}
+          {planFollowUp && onImplement && !refining ? (
+            <ImplementButton disabled={disabled} onImplement={onImplement} {...(onImplementInNewPane ? { onImplementInNewPane } : {})} />
+          ) : planFollowUp && refining ? (
+            <Button size="sm" onClick={() => submit()} disabled={!canSend} title="Send your notes; Claude stays in plan mode">Refine</Button>
+          ) : (
+            <Button
+              size="icon-sm"
+              aria-label={running && turnFlow && !relayTarget ? 'Queue' : 'Send'}
+              title={uploading ? 'Waiting for images to upload' : running && turnFlow && !relayTarget ? 'Queue (Enter): sent when Claude finishes this turn' : 'Send (Enter)'}
+              onClick={() => submit()}
+              disabled={!canSend}
+            >
+              <ArrowUp aria-hidden="true" />
+            </Button>
+          )}
         </div>
       </div>
       <ImageViewer image={viewing} onClose={() => setViewing(null)} />

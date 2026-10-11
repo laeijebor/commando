@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import { chatPlansDir } from './chat-plans-dir.js'
 import type { NoteVaultManager } from './note-vaults.js'
+import { chatPlanTitle } from '../shared/agent-chat.js'
 import { MAX_NOTE_BODY_LENGTH, MAX_NOTE_TITLE_LENGTH } from './notes.js'
 
 /** Saved plans go in this folder of the default vault. */
@@ -12,21 +13,13 @@ const MAX_PLAN_BYTES = 256 * 1024
 /** Plan files a new chat pane read on start are pruned like chat images. */
 const CHAT_PLAN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
-/** The plan's first heading (as t3code's proposedPlanTitle reads it), else its first line. */
-export function planTitle(markdown: string): string {
-  const heading = /^\s{0,3}#{1,6}\s+(.+)$/m.exec(markdown)?.[1]?.trim()
-  const firstLine = markdown.split('\n').find((line) => line.trim())?.trim()
-  const title = (heading || firstLine || 'Claude plan').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
-  return title.length > MAX_NOTE_TITLE_LENGTH ? `${title.slice(0, MAX_NOTE_TITLE_LENGTH - 1)}…` : title
-}
-
 export class ChatPlanStore {
   constructor(private readonly vaults: NoteVaultManager, readonly dir: string = chatPlansDir()) {}
 
   /** Files the plan as a note in the default vault's Plans folder. */
   async saveToVault(markdown: string): Promise<{ path: string; title: string; noteId: string }> {
     const { store } = await this.vaults.defaultStore()
-    const title = planTitle(markdown)
+    const title = chatPlanTitle(markdown, MAX_NOTE_TITLE_LENGTH)
     const note = await store.create({ title, body: markdown.trim().slice(0, MAX_NOTE_BODY_LENGTH), folder: CHAT_PLANS_FOLDER })
     return { path: store.pathFor(note), title, noteId: note.id }
   }

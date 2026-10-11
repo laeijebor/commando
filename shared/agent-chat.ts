@@ -348,6 +348,14 @@ export function planImplementationPrompt(plan: string): string {
   return `${PLAN_IMPLEMENTATION_PREFIX}${plan.trim()}`
 }
 
+/** A plan's first heading (as t3code's proposedPlanTitle reads it), else its first line. */
+export function chatPlanTitle(markdown: string, max = 200): string {
+  const heading = /^\s{0,3}#{1,6}\s+(.+)$/m.exec(markdown)?.[1]?.trim()
+  const firstLine = markdown.split('\n').find((line) => line.trim())?.trim()
+  const title = (heading || firstLine || 'Claude plan').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  return title.length > max ? `${title.slice(0, max - 1)}…` : title
+}
+
 export type ChatAnswer =
   | { kind: 'approval'; decision: 'allow' | 'allow_always' | 'deny'; message?: string }
   | { kind: 'question'; answers: Record<string, string> }

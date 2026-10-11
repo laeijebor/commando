@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, readdir, realpath, rm, utimes, writeFile } fr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CHAT_PLANS_FOLDER, ChatPlanStore, handleChatPlans, planTitle } from './chat-plans.js'
+import { chatPlanTitle as planTitle } from '../shared/agent-chat.js'
+import { CHAT_PLANS_FOLDER, ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { NoteVaultManager } from './note-vaults.js'
 
 const cleanup: string[] = []
