@@ -5,7 +5,7 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 2
+export const AGENT_HOST_PROTOCOL_VERSION = 3
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -15,6 +15,12 @@ export const CHAT_SETTINGS_HOST_VERSION = 2
 
 export function hostTakesSettings(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_SETTINGS_HOST_VERSION
+}
+/** Hosts from this version list commands, search files and accept images. */
+export const CHAT_INPUT_HOST_VERSION = 3
+
+export function hostTakesInput(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_INPUT_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -47,6 +53,64 @@ export type ChatRequestAnswer =
   | { kind: 'question'; answers: Record<string, string> }
   | { kind: 'cancelled'; reason: string }
 
+/** Image types Claude reads; anything else is refused before upload. */
+export const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+export type ChatImageType = typeof CHAT_IMAGE_TYPES[number]
+export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
+export const MAX_CHAT_IMAGES = 10
+/** Longest edge the browser keeps when it resizes an image before upload. */
+export const CHAT_IMAGE_MAX_DIMENSION = 2048
+export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+/** Images are stored by content hash, so an id is also a safe file name. */
+const CHAT_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/
+
+export function isChatImageId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_IMAGE_ID.test(value)
+}
+
+export function chatImageType(id: string): ChatImageType {
+  const extension = id.slice(id.lastIndexOf('.') + 1)
+  return (Object.entries(CHAT_IMAGE_EXTENSIONS).find(([, value]) => value === extension)?.[0] ?? 'image/png') as ChatImageType
+}
+
+/** Where the browser loads a stored chat image from. */
+export function chatImageUrl(id: string): string {
+  return `/chat-images/${id}`
+}
+
+/** An image in a message or tool result, stored by the daemon or host. */
+export interface ChatImageRef {
+  id: string
+  /** The file name it was pasted or dropped with. */
+  name?: string
+}
+
+/** A `/` menu entry: one of Claude Code's commands or skills. */
+export interface ChatCommand {
+  name: string
+  description: string
+  argumentHint?: string
+  aliases?: string[]
+  /**
+   * Skills are also listed to Claude, which can run them through its Skill
+   * tool when they appear mid-message; commands only run at the start.
+   */
+  kind: 'skill' | 'command'
+}
+
+/** One `@` mention candidate, relative to the session's folder. */
+export interface ChatFileEntry {
+  path: string
+  kind: 'file' | 'directory'
+}
+
+export interface ChatFileSearchResult {
+  entries: ChatFileEntry[]
+  /** More files matched (or the index was capped) than were returned. */
+  truncated: boolean
+  error?: string
+}
+
 interface ChatItemBase {
   id: string
   /** Groups items into turns; a turn starts with the user's message. */
@@ -59,7 +123,7 @@ interface ChatItemBase {
 }
 
 export type ChatItem = ChatItemBase & (
-  | { kind: 'user_message'; text: string }
+  | { kind: 'user_message'; text: string; images?: ChatImageRef[] }
   | { kind: 'assistant_message'; text: string }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
@@ -75,7 +139,7 @@ export type ChatItem = ChatItemBase & (
       isError?: boolean
       output?: string
     }
-  | { kind: 'tool'; toolUseId: string; toolName: string; title: string; detail?: string; output?: string; isError?: boolean }
+  | { kind: 'tool'; toolUseId: string; toolName: string; title: string; detail?: string; output?: string; isError?: boolean; images?: ChatImageRef[] }
   | { kind: 'todo_list'; todos: ChatTodo[] }
   | {
       kind: 'request'
@@ -172,6 +236,8 @@ export interface ChatState {
   hostConnected: boolean
   /** The host runs older code than the daemon's checkout; restarting it picks up the update. */
   updateAvailable?: boolean
+  /** Claude Code's commands and skills, for the `/` menu. */
+  commands?: ChatCommand[]
 }
 
 // ---- host ⇄ daemon ----
@@ -184,6 +250,9 @@ export type HostToDaemonMessage =
   /** Upserts by item id, in order. */
   | { type: 'items'; paneId: string; items: ChatItem[] }
   | { type: 'session_closed'; paneId: string }
+  /** The full command list; replaces the previous one. */
+  | { type: 'commands'; paneId: string; commands: ChatCommand[] }
+  | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
 
 export type ChatAnswer =
   | { kind: 'approval'; decision: 'allow' | 'allow_always' | 'deny'; message?: string }
@@ -191,7 +260,9 @@ export type ChatAnswer =
 
 export type DaemonToHostMessage =
   | { type: 'welcome'; version: number }
-  | { type: 'send'; paneId: string; text: string; requestId: string }
+  | { type: 'send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string }
+  /** Finds files and folders in the session's folder for an `@` mention. */
+  | { type: 'file_search'; paneId: string; query: string; requestId: string }
   | { type: 'interrupt'; paneId: string; requestId: string }
   | { type: 'answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Restart the host on the same conversation once the current turn ends. */
@@ -203,6 +274,7 @@ export type DaemonToHostMessage =
 
 const PANE_ID = /^%\d+$/
 const MAX_TEXT = 256 * 1024
+export const MAX_FILE_QUERY = 512
 const MAX_ID = 200
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -334,6 +406,54 @@ function parseQuestions(value: unknown): ChatQuestion[] | undefined {
   })
 }
 
+/** Image refs on a message or tool result; ids are content hashes, so nothing else is trusted. */
+export function parseChatImageRefs(value: unknown, max = MAX_CHAT_IMAGES): ChatImageRef[] | null {
+  if (!Array.isArray(value) || value.length > max) return null
+  const refs: ChatImageRef[] = []
+  for (const ref of value) {
+    if (!isRecord(ref) || !isChatImageId(ref.id) || !optionalString(ref.name, 1000)) return null
+    refs.push(withOptional({ id: ref.id } as ChatImageRef, { name: typeof ref.name === 'string' ? ref.name.slice(0, 200) : undefined }))
+  }
+  return refs
+}
+
+/** Tool results can carry more images than a message the user sends. */
+const MAX_ITEM_IMAGES = 20
+
+function optionalImages(value: unknown): ChatImageRef[] | undefined {
+  if (value === undefined) return undefined
+  const refs = parseChatImageRefs(value, MAX_ITEM_IMAGES)
+  return refs?.length ? refs : undefined
+}
+
+const COMMAND_NAME = /^[\w][\w:.@-]{0,127}$/
+
+function parseChatCommands(value: unknown): ChatCommand[] | null {
+  if (!Array.isArray(value)) return null
+  return value.slice(0, 1000).flatMap((command) => {
+    if (!isRecord(command) || typeof command.name !== 'string' || !COMMAND_NAME.test(command.name)) return []
+    if (command.kind !== 'skill' && command.kind !== 'command') return []
+    const aliases = Array.isArray(command.aliases)
+      ? command.aliases.filter((alias): alias is string => typeof alias === 'string' && COMMAND_NAME.test(alias)).slice(0, 8)
+      : []
+    return [withOptional({ name: command.name, description: optionalText(command.description, 500) ?? '', kind: command.kind } as ChatCommand, {
+      argumentHint: optionalText(command.argumentHint, 200) || undefined,
+      aliases: aliases.length ? aliases : undefined,
+    })]
+  })
+}
+
+const MAX_FILE_ENTRIES = 200
+
+function parseFileEntries(value: unknown): ChatFileEntry[] | null {
+  if (!Array.isArray(value) || value.length > MAX_FILE_ENTRIES) return null
+  return value.flatMap((entry) => (
+    isRecord(entry) && shortString(entry.path, 4096) && !entry.path.includes('\0') && (entry.kind === 'file' || entry.kind === 'directory')
+      ? [{ path: entry.path, kind: entry.kind }]
+      : []
+  ))
+}
+
 function parseRequestAnswer(value: unknown): ChatRequestAnswer | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'cancelled') return { kind: 'cancelled', reason: optionalText(value.reason, 500) ?? 'Cancelled' }
@@ -358,6 +478,9 @@ export function parseChatItem(value: unknown): ChatItem | null {
   const isError = value.isError === true ? true : undefined
   switch (value.kind) {
     case 'user_message':
+      return typeof value.text === 'string'
+        ? withOptional({ ...base, kind: 'user_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: optionalImages(value.images) })
+        : null
     case 'assistant_message':
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
@@ -376,7 +499,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
     case 'tool':
       if (!shortString(value.toolUseId) || typeof value.toolName !== 'string' || typeof value.title !== 'string') return null
       return withOptional({ ...base, kind: 'tool' as const, toolUseId: value.toolUseId, toolName: value.toolName.slice(0, 200), title: value.title.slice(0, 4096) }, {
-        detail: optionalText(value.detail), output: optionalText(value.output), isError,
+        detail: optionalText(value.detail), output: optionalText(value.output), isError, images: optionalImages(value.images),
       })
     case 'todo_list': {
       const todos = parseTodos(value.todos)
@@ -460,6 +583,17 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
     }
     case 'session_closed':
       return isPaneId(value.paneId) ? { type: 'session_closed', paneId: value.paneId } : null
+    case 'commands': {
+      const commands = parseChatCommands(value.commands)
+      return isPaneId(value.paneId) && commands ? { type: 'commands', paneId: value.paneId, commands } : null
+    }
+    case 'file_search_result': {
+      const entries = parseFileEntries(value.entries)
+      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !entries) return null
+      return withOptional({ type: 'file_search_result' as const, paneId: value.paneId, requestId: value.requestId, entries, truncated: value.truncated === true }, {
+        error: optionalText(value.error, 1000),
+      })
+    }
     default:
       return null
   }
@@ -470,9 +604,15 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
   switch (value.type) {
     case 'welcome':
       return typeof value.version === 'number' ? { type: 'welcome', version: value.version } : null
-    case 'send':
-      return isPaneId(value.paneId) && typeof value.text === 'string' && value.text.length <= MAX_TEXT && shortString(value.requestId)
-        ? { type: 'send', paneId: value.paneId, text: value.text, requestId: value.requestId }
+    case 'send': {
+      if (!isPaneId(value.paneId) || typeof value.text !== 'string' || value.text.length > MAX_TEXT || !shortString(value.requestId)) return null
+      const images = value.images === undefined ? [] : parseChatImageRefs(value.images)
+      if (!images) return null
+      return withOptional({ type: 'send' as const, paneId: value.paneId, text: value.text, requestId: value.requestId }, { images: images.length ? images : undefined })
+    }
+    case 'file_search':
+      return isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
+        ? { type: 'file_search', paneId: value.paneId, query: value.query, requestId: value.requestId }
         : null
     case 'interrupt':
     case 'restart':

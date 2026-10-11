@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage } from './agent-chat.js'
+import { chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -76,5 +76,63 @@ describe('chat settings', () => {
     expect(parseChatSessionInfo({ ...session, effort: 'huge' })).toBeNull()
     expect(parseChatSessionInfo({ ...session, selectedModel: 'a b' })).toBeNull()
     expect(parseChatSessionInfo({ ...session, contextUsage: { usedTokens: 5, maxTokens: 0 } })).toEqual(session)
+  })
+})
+
+describe('richer input', () => {
+  const imageId = `${'a'.repeat(64)}.png`
+
+  it('keeps image refs on user messages and tool results, and drops malformed ones', () => {
+    expect(parseChatItem({ ...base, kind: 'user_message', text: 'look', images: [{ id: imageId, name: 'pane.png', extra: 1 }] }))
+      .toEqual({ ...base, kind: 'user_message', text: 'look', images: [{ id: imageId, name: 'pane.png' }] })
+    expect(parseChatItem({ ...base, kind: 'tool', toolUseId: 'u', toolName: 'Read', title: 'Read a.png', images: [{ id: '../../etc/passwd' }] }))
+      .toEqual({ ...base, kind: 'tool', toolUseId: 'u', toolName: 'Read', title: 'Read a.png' })
+    expect(parseChatImageRefs([{ id: imageId }], 1)).toEqual([{ id: imageId }])
+    expect(parseChatImageRefs([{ id: imageId }, { id: imageId }], 1)).toBeNull()
+    expect(parseChatImageRefs([{ id: `${'a'.repeat(64)}.svg` }])).toBeNull()
+  })
+
+  it('maps image ids to their type and URL', () => {
+    expect(isChatImageId(imageId)).toBe(true)
+    expect(isChatImageId(`${'A'.repeat(64)}.png`)).toBe(false)
+    expect(chatImageType(`${'b'.repeat(64)}.jpg`)).toBe('image/jpeg')
+    expect(chatImageUrl(imageId)).toBe(`/chat-images/${imageId}`)
+  })
+
+  it('parses the command list, dropping unusable entries', () => {
+    expect(parseHostMessage({
+      type: 'commands', paneId: '%1', commands: [
+        { name: 'redline', description: 'Review', argumentHint: '<what>', kind: 'skill' },
+        { name: 'compact', description: 'Free context', aliases: ['c', 'bad alias'], kind: 'command' },
+        { name: 'has space', description: 'x', kind: 'command' },
+        { name: 'nokind', description: 'x' },
+      ],
+    })).toEqual({
+      type: 'commands', paneId: '%1', commands: [
+        { name: 'redline', description: 'Review', argumentHint: '<what>', kind: 'skill' },
+        { name: 'compact', description: 'Free context', aliases: ['c'], kind: 'command' },
+      ],
+    })
+  })
+
+  it('routes file searches and their results', () => {
+    expect(parseDaemonMessage({ type: 'file_search', paneId: '%1', query: 'src/ch', requestId: 'r' }))
+      .toEqual({ type: 'file_search', paneId: '%1', query: 'src/ch', requestId: 'r' })
+    expect(parseDaemonMessage({ type: 'file_search', paneId: '%1', query: 'x'.repeat(600), requestId: 'r' })).toBeNull()
+    expect(parseHostMessage({ type: 'file_search_result', paneId: '%1', requestId: 'r', entries: [{ path: 'src/a.ts', kind: 'file' }, { path: '', kind: 'file' }, { path: 'src/', kind: 'directory' }], truncated: true }))
+      .toEqual({ type: 'file_search_result', paneId: '%1', requestId: 'r', entries: [{ path: 'src/a.ts', kind: 'file' }, { path: 'src/', kind: 'directory' }], truncated: true })
+  })
+
+  it('carries image refs on a send and refuses bad ones', () => {
+    expect(parseDaemonMessage({ type: 'send', paneId: '%1', text: '', images: [{ id: imageId }], requestId: 'r' }))
+      .toEqual({ type: 'send', paneId: '%1', text: '', images: [{ id: imageId }], requestId: 'r' })
+    expect(parseDaemonMessage({ type: 'send', paneId: '%1', text: 'hi', requestId: 'r' })).toEqual({ type: 'send', paneId: '%1', text: 'hi', requestId: 'r' })
+    expect(parseDaemonMessage({ type: 'send', paneId: '%1', text: 'hi', images: [{ id: 'x.png' }], requestId: 'r' })).toBeNull()
+    expect(parseDaemonMessage({ type: 'send', paneId: '%1', text: 'hi', images: Array.from({ length: 11 }, () => ({ id: imageId })), requestId: 'r' })).toBeNull()
+  })
+
+  it('tells hosts that take richer input from older ones', () => {
+    expect(hostTakesInput({ hostVersion: 2 })).toBe(false)
+    expect(hostTakesInput({ hostVersion: 3 })).toBe(true)
   })
 })
