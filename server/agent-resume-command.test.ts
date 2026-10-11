@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   shellQuote,
   buildChatResumeCommand,
+  buildChatReturnCommand as chatReturnCommand,
   findChatHost,
   buildResumeCommand,
   findAgentProcess,
@@ -179,5 +180,13 @@ describe('chat resume hardening', () => {
     expect(shellQuote('~root/x')).toBe("'~root/x'")
     expect(shellQuote('=ls')).toBe("'=ls'")
     expect(shellQuote('/plain/path')).toBe('/plain/path')
+  })
+})
+
+describe('buildChatReturnCommand', () => {
+  it("resumes the chat with only a chat host's own flags", () => {
+    expect(chatReturnCommand('abcd1234-0000', '/c/scripts/commando-agent', ['--config-dir', '/Users/me/.claudep', '--model', 'sonnet', '--permission-mode', 'plan', '--pre-plan-permission-mode', 'acceptEdits', '--evil', '--prompt', 'x'], { COMMANDO_PORT: '4422' }))
+      .toBe("env COMMANDO_PORT=4422 /c/scripts/commando-agent claude --config-dir /Users/me/.claudep --model sonnet --permission-mode plan --pre-plan-permission-mode acceptEdits --resume abcd1234-0000 --from-claude-code")
+    expect(chatReturnCommand('bad id!', '/c/scripts/commando-agent', [])).toBeNull()
   })
 })

@@ -334,3 +334,20 @@ export function buildChatResumeCommand(
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   return [...(env.length ? ['env', ...env] : []), launcher, 'claude', ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }
+
+/**
+ * Brings back the chat a conversation was switched from, once Claude Code has
+ * exited: this checkout's launcher with the chat's own flags (only those a chat
+ * host takes), resuming the conversation.
+ */
+export function buildChatReturnCommand(
+  sessionId: string,
+  launcher: string,
+  returnFlags: readonly string[],
+  daemonEnv: Readonly<Record<string, string>> = {},
+): string | null {
+  if (!isValidAgentSessionId(sessionId)) return null
+  const flags = carriedFlags(CHAT_FLAGS, returnFlags)
+  const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
+  return [...(env.length ? ['env', ...env] : []), launcher, 'claude', ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
+}

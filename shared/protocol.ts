@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatTaskAction } from './agent-chat.js'
+import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -728,6 +728,8 @@ export type ServerMessage =
   | { type: 'chat_removed'; paneId: string }
   /** A chat's `/` menu list changed. */
   | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }
+  /** Conversations running in Claude Code that started as a chat, so their panes offer the way back. */
+  | { type: 'chat_handoffs'; sessionIds: string[] }
   /** Answers one client's `chat_file_search`. */
   | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   /** Answers one client's `chat_subagent_transcript`. */
@@ -831,3 +833,12 @@ export type ClientMessage =
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Switches a chat's model, effort or permission mode while it runs. */
   | { type: 'chat_configure'; paneId: string; settings: ChatSettingsChange; requestId: string }
+  /**
+   * Hands a chat's conversation to Claude Code in its pane (or cancels a switch
+   * that waits for the turn). `draft` is the unsent draft the chat gets back.
+   */
+  | { type: 'chat_switch'; paneId: string; action: ChatSwitchAction; draft?: { text: string; images: ChatImageRef[] }; requestId: string }
+  /** Claude Code, running a conversation that started as a chat, exits so the chat comes back. */
+  | { type: 'chat_return'; paneId: string; requestId: string }
+  /** The composer took what the chat carried across Claude Code. */
+  | { type: 'chat_carry_taken'; paneId: string; carryId: string; requestId: string }

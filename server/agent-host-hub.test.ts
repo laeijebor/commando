@@ -31,7 +31,7 @@ const item = (id: string, text: string, overrides: Partial<ChatItem> = {}): Chat
   id, turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text, ...overrides,
 } as ChatItem)
 
-function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined> } = {}) {
+function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs'] } = {}) {
   const panes = options.panes ?? new Set(['%1', '%2'])
   const broadcasts: ServerMessage[] = []
   const hub = new AgentHostHub({
@@ -41,6 +41,7 @@ function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hos
     ...(options.verifyHost ? { verifyHost: options.verifyHost } : {}),
     ...(options.now ? { now: options.now } : {}),
     ...(options.currentHostBuild ? { currentHostBuild: options.currentHostBuild } : {}),
+    ...(options.handoffs ? { handoffs: options.handoffs } : {}),
   })
   const connect = () => {
     const socket = new FakeSocket()
@@ -368,5 +369,73 @@ describe('AgentHostHub richer input', () => {
     const dropped = hub.subagentTranscript('%1', 'a711')
     socket.close()
     expect((await dropped).error).toMatch(/disconnected/)
+  })
+})
+
+describe('AgentHostHub switch to Claude Code', () => {
+  const image = { id: `${'a'.repeat(64)}.png`, name: 'shot.png' }
+
+  function switchable(save: (entry: unknown) => Promise<void> = async () => undefined) {
+    const saved: unknown[] = []
+    const taken: string[] = []
+    let carried: { id: string; text: string; images: typeof image[] } | undefined
+    const handoffs = {
+      save: async (entry: unknown) => { saved.push(entry); await save(entry) },
+      returned: () => carried,
+      take: (_sessionId: string, carryId: string) => { taken.push(carryId); return true },
+    }
+    const run = setup({ handoffs })
+    return { ...run, saved, taken, setCarried: (value: typeof carried) => { carried = value } }
+  }
+
+  it("relays a switch, keeps the client's draft, and saves it with the host's queue before the host goes", async () => {
+    const { hub, connect, saved } = switchable()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000' }), items: [] })
+    await settle()
+    expect(hub.switchToClaudeCode('%1', 'after_turn', { text: 'draft', images: [image] }, 'r1')).toBeNull()
+    expect(socket.sent.at(-1)).toEqual({ type: 'switch', paneId: '%1', action: 'after_turn', requestId: 'r1' })
+    socket.host({ type: 'handoff', paneId: '%1', sessionId: 'abcd1234-0000', cwd: '/work', queue: [{ id: 'q1', text: 'queued' }], returnFlags: ['--permission-mode', 'default'] })
+    await settle()
+    expect(saved).toEqual([{ sessionId: 'abcd1234-0000', cwd: '/work', returnFlags: ['--permission-mode', 'default'], draft: { text: 'draft', images: [image] }, queue: [{ id: 'q1', text: 'queued' }] }])
+    expect(socket.sent.at(-1)).toEqual({ type: 'handoff_saved', paneId: '%1', ok: true })
+  })
+
+  it('refuses a switch for a host that predates it, and a handoff for another conversation', async () => {
+    const { hub, connect, saved } = switchable()
+    const old = connect()
+    old.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 4, sessionId: 'abcd1234-0000' }), items: [] })
+    await settle()
+    expect(hub.switchToClaudeCode('%1', 'now', undefined, 'r1')).toMatch(/restart it to switch/)
+    expect(hub.switchToClaudeCode('%2', 'now', undefined, 'r2')).toMatch(/No agent host/)
+    const current = connect()
+    current.host({ type: 'session_snapshot', session: session('%2', { hostVersion: 5, sessionId: 'abcd1234-0000' }), items: [] })
+    current.host({ type: 'handoff', paneId: '%2', sessionId: 'ffff1234-0000', cwd: '/work', queue: [], returnFlags: [] })
+    await settle()
+    expect(saved).toEqual([])
+    expect(current.sent.at(-1)).toMatchObject({ type: 'handoff_saved', ok: false })
+  })
+
+  it('tells the host when the draft and queue could not be kept', async () => {
+    const { connect } = switchable(async () => { throw new Error('disk full') })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000' }), items: [] })
+    socket.host({ type: 'handoff', paneId: '%1', sessionId: 'abcd1234-0000', cwd: '/work', queue: [], returnFlags: [] })
+    await settle()
+    expect(socket.sent.at(-1)).toEqual({ type: 'handoff_saved', paneId: '%1', ok: false, error: "Commando couldn't save the chat's draft and queue: disk full" })
+  })
+
+  it('offers a returned chat what it carried until a composer takes it', async () => {
+    const { hub, connect, broadcasts, taken, setCarried } = switchable()
+    setCarried({ id: 'carry-1', text: 'queued\n\ndraft', images: [image] })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000' }), items: [] })
+    await settle()
+    expect(hub.states()[0]?.carried).toEqual({ id: 'carry-1', text: 'queued\n\ndraft', images: [image] })
+    expect(hub.takeCarried('%1', 'other')).toBe(false)
+    expect(hub.takeCarried('%1', 'carry-1')).toBe(true)
+    expect(taken).toEqual(['carry-1'])
+    expect(hub.states()[0]?.carried).toBeUndefined()
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_state', chat: { paneId: '%1' } })
   })
 })

@@ -49,15 +49,19 @@ const RESUMED_RETENTION_MS = 5 * 60 * 1_000
 /** How long to wait before reading the process table again for a pane whose agent was not found. */
 const CAPTURE_RETRY_MS = 30_000
 
-export function defaultAgentResumePath(): string {
-  if (process.env.COMMANDO_AGENT_RESUME_PATH) return process.env.COMMANDO_AGENT_RESUME_PATH
-  // A verification daemon on another tmux server must never resume the user's agents.
+/** Keeps a verification daemon's state for another tmux server apart from the user's. */
+export function tmuxServerStateSuffix(): string {
   const socket = process.env.COMMANDO_TMUX_SOCKET_PATH
     ? `path:${process.env.COMMANDO_TMUX_SOCKET_PATH}`
     : process.env.COMMANDO_TMUX_SOCKET_NAME && process.env.COMMANDO_TMUX_SOCKET_NAME !== 'default'
       ? `name:${process.env.COMMANDO_TMUX_SOCKET_NAME}` : undefined
-  const suffix = socket ? `-${createHash('sha256').update(socket).digest('hex').slice(0, 16)}` : ''
-  return join(homedir(), '.commando', `agent-resume${suffix}.json`)
+  return socket ? `-${createHash('sha256').update(socket).digest('hex').slice(0, 16)}` : ''
+}
+
+export function defaultAgentResumePath(): string {
+  if (process.env.COMMANDO_AGENT_RESUME_PATH) return process.env.COMMANDO_AGENT_RESUME_PATH
+  // A verification daemon on another tmux server must never resume the user's agents.
+  return join(homedir(), '.commando', `agent-resume${tmuxServerStateSuffix()}.json`)
 }
 
 function runPs(args: string[]): Promise<string> {
@@ -92,6 +96,11 @@ export function validArchivedAgent(value: unknown): value is ArchivedAgent {
   return validRecord({ ...(value as object), targetId: '00000000-0000-4000-8000-000000000000', serverId: ARCHIVED_SERVER_ID, updatedAt: 0 })
 }
 
+/** Claude Code first; when it exits, however it exits, the chat it was switched from. */
+function withChatReturn(command: string | null, chatReturn: string | undefined): string | null {
+  return command && chatReturn ? `${command}; ${chatReturn}` : command
+}
+
 export type AgentResumeDeps = {
   statePath?: string
   readProcessTable?: () => Promise<string>
@@ -102,6 +111,11 @@ export type AgentResumeDeps = {
   chatEnv?: Readonly<Record<string, string>>
   /** A chat pane's current model, effort and mode, which its resume carries. */
   chatSettings?: (paneId: string) => ChatResumeSettings | undefined
+  /**
+   * For a conversation switched from a chat to Claude Code: the command that
+   * brings the chat back. Its resume runs Claude Code, then this when it exits.
+   */
+  chatReturnCommand?: (sessionId: string) => string | undefined
   /** The pane with this target in the latest snapshot. */
   currentPane: (targetId: string) => ResumePane | undefined
   /** Types the command and presses Enter. */
@@ -180,7 +194,9 @@ export class AgentResumeService {
       this.setResume({ ...resume, state: 'resumed', error: undefined })
     }
     const chatSettings = status.provider === 'claude' ? this.deps.chatSettings?.(pane.id) : undefined
-    const chatKey = chatSettings ? JSON.stringify(chatSettings) : undefined
+    // A chat's settings, or the way back for Claude Code running a chat's conversation.
+    const chatReturn = status.provider === 'claude' && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
+    const chatKey = chatSettings ? JSON.stringify(chatSettings) : chatReturn ? `return:${chatReturn}` : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path
       // Unknown settings (the hub has no chat for the pane yet) keep the record as it is.
@@ -201,8 +217,8 @@ export class AgentResumeService {
         ? this.deps.chatLauncher
           ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
           : null
-        : agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
-          status.provider, agent.args, await readEnvironment(agent.pid)))
+        : agent && withChatReturn(buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
+          status.provider, agent.args, await readEnvironment(agent.pid))), chatReturn)
       const record: AgentResumeRecord | null = command ? {
         targetId: pane.targetId,
         provider: status.provider,

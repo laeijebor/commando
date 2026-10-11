@@ -1,0 +1,159 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { isChatImageId, type ChatCarriedDraft, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
+import { tmuxServerStateSuffix } from './agent-resume.js'
+import { isValidAgentSessionId } from './agent-resume-command.js'
+
+/**
+ * A chat conversation running in Claude Code since a switch: what the chat
+ * held (its unsent draft and queue) and the flags that bring the chat back.
+ */
+export type ChatHandoff = {
+  sessionId: string
+  /** The chat's folder: Claude resumes a conversation from the folder it was saved in. */
+  cwd: string
+  /** The chat host's session flags (profile, model, effort, modes). */
+  returnFlags: string[]
+  draft: { text: string; images: ChatImageRef[] }
+  queue: ChatQueuedMessage[]
+  /** Names what the chat offers back, so a composer takes it once. */
+  carryId: string
+  createdAt: number
+  /** The chat is back; the entry only holds what no composer has taken yet. */
+  returnedAt?: number
+}
+
+const ENTRY_TTL_MS = 30 * 24 * 60 * 60 * 1_000
+const MAX_ENTRIES = 256
+
+export function defaultChatHandoffPath(): string {
+  return process.env.COMMANDO_CHAT_HANDOFFS_PATH ?? join(homedir(), '.commando', `chat-handoffs${tmuxServerStateSuffix()}.json`)
+}
+
+function validImages(value: unknown): value is ChatImageRef[] {
+  return Array.isArray(value) && value.every((image) => image && typeof image === 'object' && isChatImageId((image as ChatImageRef).id)
+    && ((image as ChatImageRef).name === undefined || typeof (image as ChatImageRef).name === 'string'))
+}
+
+function validEntry(value: unknown): value is ChatHandoff {
+  if (!value || typeof value !== 'object') return false
+  const entry = value as ChatHandoff
+  return typeof entry.sessionId === 'string' && isValidAgentSessionId(entry.sessionId)
+    && typeof entry.cwd === 'string' && entry.cwd.startsWith('/')
+    && Array.isArray(entry.returnFlags) && entry.returnFlags.every((flag) => typeof flag === 'string')
+    && !!entry.draft && typeof entry.draft.text === 'string' && validImages(entry.draft.images)
+    && Array.isArray(entry.queue) && entry.queue.every((queued) => queued && typeof queued.id === 'string' && typeof queued.text === 'string'
+      && (queued.images === undefined || validImages(queued.images)))
+    && typeof entry.carryId === 'string' && Number.isFinite(entry.createdAt)
+    && (entry.returnedAt === undefined || Number.isFinite(entry.returnedAt))
+}
+
+/** The queue first (it was written earlier), then the draft, as Stop brings them back. */
+export function carriedDraft(entry: ChatHandoff): ChatCarriedDraft | undefined {
+  const text = [...entry.queue.map((queued) => queued.text), entry.draft.text].map((part) => part.trim()).filter(Boolean).join('\n\n')
+  const images = [...entry.queue.flatMap((queued) => queued.images ?? []), ...entry.draft.images]
+  return text || images.length ? { id: entry.carryId, text, images } : undefined
+}
+
+/**
+ * Chats switched to Claude Code, by conversation. Kept on disk so a daemon or
+ * tmux restart mid-switch keeps both the way back and what the chat held.
+ */
+export class ChatHandoffStore {
+  private entries = new Map<string, ChatHandoff>()
+  private writes: Promise<void> = Promise.resolve()
+
+  constructor(
+    readonly path = defaultChatHandoffPath(),
+    private readonly now: () => number = Date.now,
+    private readonly onError: (error: unknown) => void = () => {},
+  ) {}
+
+  async load(): Promise<void> {
+    try {
+      const state = JSON.parse(await readFile(this.path, 'utf8'))
+      if (state?.version !== 1 || !Array.isArray(state.entries)) throw new Error('Invalid chat handoff state')
+      const cutoff = this.now() - ENTRY_TTL_MS
+      for (const entry of state.entries) {
+        if (validEntry(entry) && entry.createdAt >= cutoff) this.entries.set(entry.sessionId, entry)
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.onError(error)
+    }
+  }
+
+  get(sessionId: string): ChatHandoff | undefined {
+    return this.entries.get(sessionId)
+  }
+
+  /** Conversations running in Claude Code that started as a chat. */
+  inClaudeCode(): string[] {
+    return [...this.entries.values()].filter((entry) => entry.returnedAt === undefined).map((entry) => entry.sessionId)
+  }
+
+  /** Records a switch; resolves once it is on disk. */
+  save(entry: Omit<ChatHandoff, 'carryId' | 'createdAt' | 'returnedAt'>): Promise<void> {
+    this.entries.set(entry.sessionId, { ...entry, carryId: randomUUID(), createdAt: this.now() })
+    return this.persist()
+  }
+
+  /**
+   * The chat is back on this conversation: what it held, until a composer
+   * takes it. Nothing to give back ends the entry.
+   */
+  returned(sessionId: string): ChatCarriedDraft | undefined {
+    const entry = this.entries.get(sessionId)
+    if (!entry) return undefined
+    const carried = carriedDraft(entry)
+    if (!carried) {
+      this.entries.delete(sessionId)
+      void this.persist()
+      return undefined
+    }
+    if (entry.returnedAt === undefined) {
+      this.entries.set(sessionId, { ...entry, returnedAt: this.now() })
+      void this.persist()
+    }
+    return carried
+  }
+
+  /** A composer took what the chat carried back. */
+  take(sessionId: string, carryId: string): boolean {
+    const entry = this.entries.get(sessionId)
+    if (!entry || entry.carryId !== carryId || entry.returnedAt === undefined) return false
+    this.entries.delete(sessionId)
+    void this.persist()
+    return true
+  }
+
+  /** Resolves once queued writes have reached disk. */
+  flush(): Promise<void> {
+    return this.writes
+  }
+
+  private persist(): Promise<void> {
+    const entries = [...this.entries.values()].sort((left, right) => right.createdAt - left.createdAt).slice(0, MAX_ENTRIES)
+    if (entries.length < this.entries.size) this.entries = new Map(entries.map((entry) => [entry.sessionId, entry]))
+    const write = this.writes.then(() => this.write(entries))
+    this.writes = write.catch(this.onError)
+    return write
+  }
+
+  private async write(entries: ChatHandoff[]): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
+    const temporary = `${this.path}.${randomUUID()}.tmp`
+    const handle = await open(temporary, 'wx', 0o600)
+    try {
+      await handle.writeFile(`${JSON.stringify({ version: 1, entries }, null, 2)}\n`)
+      await handle.sync()
+      await handle.close()
+      await rename(temporary, this.path)
+    } catch (error) {
+      await handle.close().catch(() => undefined)
+      await rm(temporary, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+}

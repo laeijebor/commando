@@ -5,6 +5,7 @@ import {
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
   hostTakesSettings,
+  hostTakesSwitch,
   hostTakesTurnFlow,
   isChatPermissionMode,
   mergeChatItems,
@@ -17,6 +18,7 @@ import {
   type ChatSendOptions,
   type ChatSettingsChange,
   type ChatSubagentTranscript,
+  type ChatSwitchAction,
   type ChatTaskAction,
   type ChatState,
   type DaemonToHostMessage,
@@ -24,6 +26,7 @@ import {
 } from '../shared/agent-chat.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import type { ChatResumeSettings } from './agent-resume-command.js'
+import type { ChatHandoffStore } from './chat-handoffs.js'
 
 const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
 /** How long a session may wait for its pane to appear in the tmux snapshot. */
@@ -48,7 +51,14 @@ type HubDependencies = {
   currentHostBuild?: () => Promise<string | undefined>
   log?: (message: string) => void
   now?: () => number
+  /** Keeps what a chat holds while its conversation runs in Claude Code. */
+  handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take'>
+  /** A chat switched to Claude Code, or came back. */
+  onHandoffsChange?: () => void
 }
+
+/** A chat's unsent draft, sent with its switch to Claude Code. */
+export type ChatSwitchDraft = { text: string; images: ChatImageRef[] }
 
 type ChatEntry = {
   state: ChatState
@@ -80,6 +90,8 @@ export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
   private readonly fileSearches = new Map<string, PendingHostRequest<ChatFileSearchResult>>()
   private readonly transcripts = new Map<string, PendingHostRequest<ChatSubagentTranscript>>()
+  /** Drafts of chats waiting to switch to Claude Code, by pane, until the host hands over. */
+  private readonly switchDrafts = new Map<string, ChatSwitchDraft>()
 
   constructor(private readonly dependencies: HubDependencies) {}
 
@@ -153,6 +165,9 @@ export class AgentHostHub {
         // The socket may have closed while we waited; never register a dead host.
         if (socket.readyState !== socket.OPEN) return
         const targetId = this.dependencies.targetIdFor(paneId)
+        // A chat back from Claude Code offers its draft and queue to the composer again.
+        const carried = message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
+        if (message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
@@ -162,6 +177,7 @@ export class AgentHostHub {
           ...(updateAvailable ? { updateAvailable } : {}),
           // The host resends its list straight after; keep the menu meanwhile.
           ...(previous?.state.commands ? { commands: previous.state.commands } : {}),
+          ...(carried ? { carried } : {}),
         }
         this.chats.set(paneId, { state, socket, visible: known, receivedAt: this.now() })
         if (known) this.dependencies.broadcast({ type: 'chat_state', chat: state })
@@ -203,6 +219,23 @@ export class AgentHostHub {
         const read = this.transcripts.get(message.requestId)
         if (!read || read.socket !== socket || read.paneId !== message.paneId) return
         this.finish(this.transcripts, message.requestId, message.error ? { items: message.items, error: message.error } : { items: message.items })
+        return
+      }
+      case 'handoff': {
+        const entry = this.owned(socket, message.paneId)
+        const handoffs = this.dependencies.handoffs
+        const refuse = (error: string) => this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: false, error })
+        if (!entry || !handoffs) return void refuse("Commando can't keep this chat's draft and queue")
+        if (entry.state.session.sessionId !== message.sessionId) return void refuse('The chat moved to another conversation')
+        const draft = this.switchDrafts.get(message.paneId) ?? { text: '', images: [] }
+        try {
+          await handoffs.save({ sessionId: message.sessionId, cwd: message.cwd, returnFlags: message.returnFlags, draft, queue: message.queue })
+        } catch (error) {
+          return void refuse(`Commando couldn't save the chat's draft and queue: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        this.switchDrafts.delete(message.paneId)
+        this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: true })
+        this.dependencies.onHandoffsChange?.()
       }
     }
   }
@@ -318,6 +351,33 @@ export class AgentHostHub {
     }
   }
 
+  /**
+   * Asks the pane's host to hand its conversation to Claude Code (now, or once
+   * the turn ends), keeping the client's draft for when the chat comes back.
+   * Returns why it can't, or null.
+   */
+  switchToClaudeCode(paneId: string, action: ChatSwitchAction, draft: ChatSwitchDraft | undefined, requestId: string): string | null {
+    const entry = this.chats.get(paneId)
+    if (!entry?.socket) return 'No agent host is connected for this pane'
+    if (!hostTakesSwitch(entry.state.session)) return 'This chat started before switching to Claude Code; restart it to switch'
+    if (!this.dependencies.handoffs) return "Commando can't keep this chat's draft and queue"
+    if (action === 'cancel') this.switchDrafts.delete(paneId)
+    else if (draft) this.switchDrafts.set(paneId, draft)
+    return this.toHost(paneId, { type: 'switch', paneId, action, requestId }) ? null : 'No agent host is connected for this pane'
+  }
+
+  /** A composer took back what the chat carried across Claude Code. */
+  takeCarried(paneId: string, carryId: string): boolean {
+    const entry = this.chats.get(paneId)
+    const sessionId = entry?.state.session.sessionId
+    if (!entry || entry.state.carried?.id !== carryId || !sessionId) return false
+    this.dependencies.handoffs?.take(sessionId, carryId)
+    const { carried: _taken, ...rest } = entry.state
+    entry.state = rest
+    if (entry.visible) this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
+    return true
+  }
+
   /** Asks the pane's host to restart on the same conversation, to run the current code. */
   restart(paneId: string, requestId: string): boolean {
     return this.toHost(paneId, { type: 'restart', paneId, requestId })
@@ -405,6 +465,7 @@ export class AgentHostHub {
     const entry = this.chats.get(paneId)
     if (!entry) return
     this.chats.delete(paneId)
+    this.switchDrafts.delete(paneId)
     if (entry.visible) this.dependencies.broadcast({ type: 'chat_removed', paneId })
   }
 

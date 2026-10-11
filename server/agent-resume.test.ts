@@ -150,6 +150,28 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toContain('--model sonnet --effort high --permission-mode plan')
   })
 
+  it("resumes Claude Code running a chat's conversation as Claude Code, with the way back to the chat", async () => {
+    const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --config-dir /Users/me/.claudep --permission-mode default'
+    let settings: { permissionMode: string } | undefined = { permissionMode: 'default' }
+    let chatReturn: string | undefined
+    let table = `  500     1 ${host}`
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => settings,
+      chatReturnCommand: () => chatReturn,
+      readProcessTable: vi.fn(async () => table),
+      readProcessEnvironment: vi.fn(async (pid: number) => pid === 500 ? `${host}\n` : `${CLAUDE} --resume ${SESSION} CLAUDE_CONFIG_DIR=/Users/me/.claudep\n`),
+    })
+    await recordOn(OLD_SERVER, resume, pane({ processId: 500 }))
+    expect(resume.get(TARGET)?.command).toContain('/c/scripts/commando-agent claude')
+    // The chat switched: the same conversation now runs in Claude Code, under the switch's shell.
+    settings = undefined
+    chatReturn = `/c/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode default --resume ${SESSION} --from-claude-code`
+    table = [`  500     1 /bin/zsh -c ${CLAUDE} --resume ${SESSION}; exec /c/scripts/commando-agent claude`, `  700   500 ${CLAUDE} --resume ${SESSION}`].join('\n')
+    await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`env CLAUDE_CONFIG_DIR=/Users/me/.claudep ${CLAUDE} --resume ${SESSION}; ${chatReturn}`)
+  })
+
   it('reads the process table once per conversation, not per hook event', async () => {
     const resume = await recordOn(OLD_SERVER)
     await resume.observeHookStatus(hookStatus(), pane(), OLD_SERVER)
