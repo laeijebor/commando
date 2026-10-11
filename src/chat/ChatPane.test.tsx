@@ -119,6 +119,13 @@ describe('ChatPane', () => {
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeDisabled()
   })
 
+  it('offers a restart when Commando has updated since the chat started', () => {
+    const onRestart = vi.fn()
+    render(<ChatPane chat={chat({ updateAvailable: true })} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onRestart={onRestart} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Restart to update' }))
+    expect(onRestart).toHaveBeenCalled()
+  })
+
   it('says when the host is away and disables the composer', () => {
     renderPane(chat({ hostConnected: false }))
     expect(screen.getByRole('status')).toHaveTextContent('disconnected')

@@ -1,8 +1,9 @@
 import { Component, useMemo, type ReactNode } from 'react'
-import { PlugZap } from 'lucide-react'
+import { PlugZap, RefreshCw } from 'lucide-react'
 import type { ChatAnswer, ChatState } from '../../shared/agent-chat'
 import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
+import { Button } from './ui/button'
 import { latestTodos, pendingRequests } from './timelineRows'
 import './chat.css'
 
@@ -37,6 +38,7 @@ function ChatColumn({
   onSend,
   onInterrupt,
   onAnswer,
+  onRestart,
 }: {
   chat: ChatState
   /** Whether this browser is connected to the Commando daemon. */
@@ -46,6 +48,8 @@ function ChatColumn({
   onSend: (text: string) => void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
+  /** Restarts the host on the same conversation, to run the current code. */
+  onRestart?: () => void
 }) {
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
@@ -61,6 +65,15 @@ function ChatColumn({
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
           The agent host is disconnected. It keeps working in its pane and will reconnect.
+        </div>
+      ) : null}
+      {connected && chat.hostConnected && chat.updateAvailable && onRestart ? (
+        <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground" role="status">
+          <RefreshCw className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          <span className="min-w-0 flex-1">Commando has updated since this chat started.</span>
+          <Button size="xs" variant="outline" onClick={onRestart}>
+            {working ? 'Restart after this turn' : 'Restart to update'}
+          </Button>
         </div>
       ) : null}
       {chat.session.status === 'error' && chat.session.error ? (

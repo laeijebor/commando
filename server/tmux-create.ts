@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, readdir, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
+  CHAT_PERMISSION_MODES,
   defaultWorktreePath,
   SESSION_AGENT_EXECUTABLES,
   sessionAgentArgv,
@@ -10,6 +13,7 @@ import {
   type CreateTmuxPaneRequest,
   type CreateTmuxSessionRequest,
   type CreateTmuxWindowRequest,
+  type ClaudeProfile,
   type GitRepoInfo,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
@@ -37,6 +41,84 @@ const CREATE_FORMAT = [
   '#{pane_start_path}',
 ].join(FIELD_SEPARATOR)
 
+/** Chat panes run this checkout's agent host, so it always matches the daemon. */
+export const COMMANDO_AGENT_LAUNCHER = fileURLToPath(new URL('../scripts/commando-agent', import.meta.url))
+
+const CLAUDE_CONFIG_DIR_NAME = /^\.claude[A-Za-z0-9_-]*$/
+
+/** Claude config dirs live directly in the home folder and are named `.claude…`. */
+export function validClaudeConfigDir(value: string, home = homedir()): boolean {
+  return isAbsolute(value) && !CONTROL_CHARACTER.test(value) && resolve(value) === value
+    && dirname(value) === home && CLAUDE_CONFIG_DIR_NAME.test(basename(value))
+}
+
+const ACTIVITY_STAT_BATCH = 64
+const ACTIVITY_TRANSCRIPT_LIMIT = 2_000
+
+/** Modification times in parallel batches; unreadable paths come back undefined. */
+async function modifiedTimes(paths: readonly string[]): Promise<Array<number | undefined>> {
+  const times: Array<number | undefined> = []
+  for (let start = 0; start < paths.length; start += ACTIVITY_STAT_BATCH) {
+    times.push(...await Promise.all(paths.slice(start, start + ACTIVITY_STAT_BATCH)
+      .map((path) => stat(path).then((info) => info.mtimeMs, () => undefined))))
+  }
+  return times
+}
+
+/** Transcripts directly inside each folder, listed in parallel batches until the limit. */
+async function transcriptsIn(folders: readonly string[], limit: number): Promise<string[]> {
+  const transcripts: string[] = []
+  for (let start = 0; start < folders.length && transcripts.length < limit; start += ACTIVITY_STAT_BATCH) {
+    const listings = await Promise.all(folders.slice(start, start + ACTIVITY_STAT_BATCH).map((folder) =>
+      readdir(folder, { withFileTypes: true }).then((entries) => entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+        .map((entry) => join(folder, entry.name)), () => [])))
+    transcripts.push(...listings.flat())
+  }
+  return transcripts.slice(0, limit)
+}
+
+/**
+ * Newest session activity under a profile's projects/ folder. Appending to a transcript
+ * changes only that file, so this checks the project folders and the transcripts directly
+ * inside them. Recently changed folders are read first, and the transcript count is
+ * capped so a profile with thousands of sessions stays cheap to list.
+ */
+async function lastClaudeActivity(projectsDir: string): Promise<number | undefined> {
+  const entries = await readdir(projectsDir, { withFileTypes: true }).catch(() => [])
+  const folders = entries.filter((entry) => entry.isDirectory()).map((entry) => join(projectsDir, entry.name))
+  const [projectsTime, ...folderTimes] = await modifiedTimes([projectsDir, ...folders])
+  const recentFirst = folders
+    .map((folder, index) => ({ folder, time: folderTimes[index] ?? 0 }))
+    .sort((a, b) => b.time - a.time)
+    .map(({ folder }) => folder)
+  const transcriptTimes = await modifiedTimes(await transcriptsIn(recentFirst, ACTIVITY_TRANSCRIPT_LIMIT))
+  let latest: number | undefined
+  for (const time of [projectsTime, ...folderTimes, ...transcriptTimes]) {
+    if (time !== undefined && (latest === undefined || time > latest)) latest = time
+  }
+  return latest
+}
+
+/** Claude config dirs in the home folder that have been used (they hold settings or sessions). */
+export async function listClaudeProfiles(home = homedir()): Promise<ClaudeProfile[]> {
+  const entries = await readdir(home, { withFileTypes: true }).catch(() => [])
+  const profiles: ClaudeProfile[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !CLAUDE_CONFIG_DIR_NAME.test(entry.name)) continue
+    const configDir = join(home, entry.name)
+    const used = await Promise.any([
+      access(join(configDir, 'settings.json')),
+      access(join(configDir, 'projects')),
+    ].map((check) => check.then(() => true))).catch(() => false)
+    if (!used) continue
+    // Sessions write to projects/, so its newest transcript says which login is in use.
+    const lastUsedAt = await lastClaudeActivity(join(configDir, 'projects'))
+    profiles.push({ name: entry.name.slice(1), configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) })
+  }
+  return profiles.sort((a, b) => a.name.localeCompare(b.name))
+}
+
 type LaunchEnvironment = Readonly<Record<string, string | undefined>>
 export const AGENT_LAUNCH_ENV_KEYS = [
   'HOME', 'SHELL', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR', 'XDG_CONFIG_HOME',
@@ -60,14 +142,28 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt } = value as { provider?: unknown; prompt?: unknown }
+  const { provider, prompt, configDir, permissionMode } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  return { provider: provider as SessionAgentLaunch['provider'], ...(typeof prompt === 'string' ? { prompt } : {}) }
+  if (provider !== 'claude-chat' && (configDir !== undefined || permissionMode !== undefined)) {
+    throw new Error('Only Claude chat accepts a profile and permission mode')
+  }
+  if (configDir !== undefined && (typeof configDir !== 'string' || !validClaudeConfigDir(configDir))) {
+    throw new Error('Claude profile must be a ~/.claude… folder')
+  }
+  if (permissionMode !== undefined && !CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) {
+    throw new Error('Unsupported permission mode')
+  }
+  return {
+    provider: provider as SessionAgentLaunch['provider'],
+    ...(typeof prompt === 'string' ? { prompt } : {}),
+    ...(typeof configDir === 'string' ? { configDir } : {}),
+    ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
+  }
 }
 
 /** Arguments/environment are quoted data; preparation is the user-authored shell code. */
@@ -298,8 +394,7 @@ export class TmuxCreator {
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
-    const agentArgv = agent ? sessionAgentArgv(agent) : undefined
-    if (agentArgv) agentArgv[0] = await this.resolveExecutable(agentArgv[0], this.launchEnv)
+    const agentArgv = agent ? await this.agentArgv(agent) : undefined
     const acknowledgment = (created: TmuxCreatedTarget): Pick<TmuxCreateResponse, 'agentLaunch'> => agent
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
@@ -358,6 +453,24 @@ export class TmuxCreator {
     }
   }
 
+  private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
+    const argv = sessionAgentArgv(agent)
+    argv[0] = agent.provider === 'claude-chat'
+      ? COMMANDO_AGENT_LAUNCHER
+      : await this.resolveExecutable(argv[0]!, this.launchEnv)
+    return argv
+  }
+
+  /** tmux -e flags that scope the daemon's context to a pane that starts an agent. */
+  private agentEnvironmentArgs(): string[] {
+    const args: string[] = []
+    for (const key of AGENT_LAUNCH_ENV_KEYS) {
+      const value = this.launchEnv[key]
+      if (value !== undefined) args.push('-e', `${key}=${value}`)
+    }
+    return args
+  }
+
   private async newSession(
     name: string,
     windowName: string | undefined,
@@ -380,10 +493,7 @@ export class TmuxCreator {
     if (agentArgv) {
       // An existing tmux server can have older global environment values. Scope
       // the daemon context to this session; TMUX_PANE remains assigned by tmux.
-      for (const key of AGENT_LAUNCH_ENV_KEYS) {
-        const value = this.launchEnv[key]
-        if (value !== undefined) args.push('-e', `${key}=${value}`)
-      }
+      args.push(...this.agentEnvironmentArgs())
       args.push(agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
     } else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     return parseCreatedTarget(await this.run(args), 'session')
@@ -427,6 +537,8 @@ export class TmuxCreator {
       throw new Error('Invalid tmux split placement')
     }
     const cwd = validatedPath(input.cwd)
+    const agent = validatedAgent(input.agent)
+    const agentArgv = agent ? await this.agentArgv(agent) : undefined
     const args = [
       ...this.socketArgs,
       'split-window',
@@ -440,6 +552,7 @@ export class TmuxCreator {
       input.targetId,
     ]
     if (cwd) args.push('-c', cwd)
+    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv))
     await beforeCreate?.()
     return parseCreatedTarget(await this.run(args), 'pane')
   }

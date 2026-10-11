@@ -2,6 +2,8 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
+/** Transcript user entries that Claude Code wrote itself, not the person. */
+const REPLAY_NOISE = /^\s*(?:<(?:local-command-|command-|system-reminder|task-notification|bash-|user-memory-input)|\[Request interrupted|This session is being continued from a previous conversation|Caveat: The messages below)/
 /** The host keeps the latest items only; the daemon keeps the same window. */
 export const MAX_HOST_ITEMS = 2000
 const MAX_PATCH_LINES = 400
@@ -250,6 +252,35 @@ export class ClaudeItemMapper {
       }
     }
     return changed
+  }
+
+  /**
+   * Rebuilds items from a saved transcript (getSessionMessages) so a resumed
+   * conversation shows its earlier turns. Everything replayed is finished.
+   */
+  replay(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): ChatItem[] {
+    for (const entry of messages) {
+      const message = record(entry.message)
+      if (entry.type === 'assistant' && typeof message.id === 'string' && Array.isArray(message.content)) {
+        this.handleAssistant(message as unknown as { id: string; content: Block[] }, entry.parent_tool_use_id)
+      } else if (entry.type === 'user' && !entry.parent_tool_use_id) {
+        const text = typeof message.content === 'string'
+          ? message.content
+          : Array.isArray(message.content)
+            ? message.content.map((part) => record(part).type === 'text' ? str(record(part).text) ?? '' : '').join('\n')
+            : ''
+        if (Array.isArray(message.content) && message.content.some((part) => record(part).type === 'tool_result')) {
+          this.handleToolResults(message as { content: unknown })
+        } else if (text.trim() && !REPLAY_NOISE.test(text)) {
+          this.startTurn(text.trim())
+        }
+      } else if (entry.type === 'user') {
+        this.handleToolResults(message as { content: unknown })
+      }
+    }
+    // A tool call that never got a result was cut off when the session ended.
+    this.settleRunning('interrupted')
+    return this.list()
   }
 
   handle(message: SDKMessage): ChatItem[] {

@@ -121,6 +121,8 @@ import { AgentHudCard } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
+import { loadChatLaunch } from './chatLaunchPreferences'
+import type { SessionAgentLaunch } from '../shared/tmux-create'
 import { mergeChatItems, type ChatAnswer, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
@@ -315,6 +317,7 @@ type TerminalPaneProps = {
   onChatSend?: (text: string) => void
   onChatInterrupt?: () => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
+  onChatRestart?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -375,6 +378,7 @@ export function TerminalPaneCard({
   onChatSend,
   onChatInterrupt,
   onChatAnswer,
+  onChatRestart,
   onRename,
   onRenameFinished,
   onMove,
@@ -644,6 +648,7 @@ export function TerminalPaneCard({
             onSend={(text) => onChatSend?.(text)}
             onInterrupt={() => onChatInterrupt?.()}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
+            {...(onChatRestart ? { onRestart: onChatRestart } : {})}
           />
         ) : <TerminalPaneRenderer
           paneId={pane.id}
@@ -2070,6 +2075,9 @@ export function App() {
   const sendChat = (paneId: string, text: string) => {
     send({ type: 'chat_send', paneId, text, requestId: requestId('chat-send') })
   }
+  const restartChat = (paneId: string) => {
+    send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })
+  }
   const interruptChat = (paneId: string) => {
     send({ type: 'chat_interrupt', paneId, requestId: requestId('chat-interrupt') })
   }
@@ -2250,7 +2258,7 @@ export function App() {
     }
   }
 
-  const splitPane = async (paneId: string, direction: PaneSplitDirection) => {
+  const splitPane = async (paneId: string, direction: PaneSplitDirection, chat = false) => {
     const pane = paneMap.get(paneId)
     if (!pane || paneActionPending) return
     setPaneActionPending(true)
@@ -2258,11 +2266,19 @@ export function App() {
     clearLayoutTimers()
     try {
       const before = direction === 'left' || direction === 'up'
+      let agent: SessionAgentLaunch | undefined
+      if (chat) {
+        // The profile is remembered per repository, as in the new-session dialog.
+        const repoRoot = await gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined)
+        const preference = loadChatLaunch(repoRoot ?? pane.path)
+        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(preference.configDir ? { configDir: preference.configDir } : {}) }
+      }
       const created = await tmuxCreateApi.createPane({
         targetId: paneId,
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
         placement: before ? 'before' : 'after',
         cwd: pane.path,
+        ...(agent ? { agent } : {}),
       })
       setMaximizedPaneId(null)
       setPendingPaneFocus({ paneId: created.paneId })
@@ -2800,6 +2816,7 @@ export function App() {
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
                 probeRepo: (directory) => gitDiffApi.repo(directory),
+                loadClaudeProfiles: tmuxCreateApi.claudeProfiles,
                 onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
               }}
             />
@@ -2998,6 +3015,7 @@ export function App() {
                             onChatSend={(text) => sendChat(pane.id, text)}
                             onChatInterrupt={() => interruptChat(pane.id)}
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
+                            onChatRestart={() => restartChat(pane.id)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             solo={displayLeafCount === 1}
@@ -3433,6 +3451,7 @@ export function App() {
           onClose={closePaneMenu}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
+          onSplitChat={(direction) => { void splitPane(paneMenu.paneId, direction, true) }}
           onUseXtermFallbackChange={(useXtermFallback) => {
             if (!contextPaneIdentity) return
             updatePaneRendererControl(paneMenu.paneId, contextPaneIdentity, (current) => ({

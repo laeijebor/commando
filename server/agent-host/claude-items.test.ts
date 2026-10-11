@@ -128,6 +128,22 @@ describe('ClaudeItemMapper ordering', () => {
   })
 })
 
+describe('ClaudeItemMapper replay', () => {
+  it('skips transcript entries Claude Code wrote itself and marks unfinished tools interrupted', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    const items = mapper.replay([
+      { type: 'user', message: { content: 'Fix it' }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'sleep 100' } }] }, parent_tool_use_id: null },
+      { type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }, parent_tool_use_id: null },
+      { type: 'user', message: { content: 'This session is being continued from a previous conversation that ran out of context.' }, parent_tool_use_id: null },
+      { type: 'user', message: { content: 'Next step' }, parent_tool_use_id: null },
+    ])
+    expect(items.map((item) => [item.kind, item.status])).toEqual([
+      ['user_message', 'completed'], ['command', 'interrupted'], ['user_message', 'completed'],
+    ])
+  })
+})
+
 describe('tool helpers', () => {
   it('titles common tools and MCP tools', () => {
     expect(toolTitle('Grep', { pattern: 'drain', path: 'server' })).toBe('Search "drain" in server')

@@ -6,8 +6,10 @@ import { dirname, join } from 'node:path'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import type { AgentResume, AgentStatus, TmuxPane } from '../shared/protocol.js'
 import {
+  buildChatResumeCommand,
   buildResumeCommand,
   findAgentProcess,
+  findChatHost,
   isResumableProvider,
   isShellCommand,
   isValidAgentSessionId,
@@ -93,6 +95,10 @@ export type AgentResumeDeps = {
   statePath?: string
   readProcessTable?: () => Promise<string>
   readProcessEnvironment?: (pid: number) => Promise<string>
+  /** The chat-pane launcher that resumes chat hosts (this checkout's scripts/commando-agent). */
+  chatLauncher?: string
+  /** Variables a resumed chat host needs to reach this daemon (e.g. a non-default COMMANDO_PORT). */
+  chatEnv?: Readonly<Record<string, string>>
   /** The pane with this target in the latest snapshot. */
   currentPane: (targetId: string) => ResumePane | undefined
   /** Types the command and presses Enter. */
@@ -178,9 +184,16 @@ export class AgentResumeService {
     let recorded = false
     try {
       const rows = parseProcessTable(await (this.deps.readProcessTable ?? readProcessTable)())
-      const agent = findAgentProcess(rows, pane.processId, status.provider)
-      const command = agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
-        status.provider, agent.args, await (this.deps.readProcessEnvironment ?? readProcessEnvironment)(agent.pid)))
+      const readEnvironment = this.deps.readProcessEnvironment ?? readProcessEnvironment
+      // A chat host runs Claude as its child: resume the chat, never that child as a TUI.
+      const chatHost = status.provider === 'claude' ? findChatHost(rows, pane.processId) : null
+      const agent = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
+      const command = chatHost
+        ? this.deps.chatLauncher
+          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv)
+          : null
+        : agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
+          status.provider, agent.args, await readEnvironment(agent.pid)))
       const record: AgentResumeRecord | null = command ? {
         targetId: pane.targetId,
         provider: status.provider,

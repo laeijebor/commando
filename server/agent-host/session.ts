@@ -1,4 +1,4 @@
-import { query, type CanUseTool, type PermissionMode, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { getSessionInfo, getSessionMessages, query, type CanUseTool, type PermissionMode, type PermissionResult, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { AGENT_HOST_PROTOCOL_VERSION, type ChatAnswer, type ChatItem, type ChatSessionInfo, type ChatSessionStatus } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, questionsFromInput, toolTitle } from './claude-items.js'
 
@@ -12,6 +12,34 @@ export interface AgentSessionSpec {
   permissionMode: PermissionMode
   claudePath?: string
   env: Record<string, string | undefined>
+  /** Sent as the first turn once the session starts. */
+  initialPrompt?: string
+  /** Resumes this conversation as a chat pane, without the session id (hooks append it). */
+  resumeCommand?: string
+  hostBuild?: string
+}
+
+/** Reads saved transcripts and titles; swapped out in tests. */
+export interface SessionStore {
+  messages: (sessionId: string, cwd: string) => Promise<readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]>
+  title: (sessionId: string, cwd: string) => Promise<string | undefined>
+}
+
+/** Enough recent messages to fill the item window; older turns stay in the transcript. */
+const HISTORY_MESSAGES = 1500
+
+const sdkSessionStore: SessionStore = {
+  // `limit` counts from the start, so read everything and keep the newest part.
+  messages: async (sessionId, cwd) => (await getSessionMessages(sessionId, { dir: cwd })).slice(-HISTORY_MESSAGES),
+  title: async (sessionId, cwd) => {
+    const info = await getSessionInfo(sessionId, { dir: cwd })
+    return info?.customTitle || info?.summary || info?.firstPrompt
+  },
+}
+
+function shortTitle(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line
 }
 
 export interface AgentSessionEvents {
@@ -93,6 +121,7 @@ export class AgentSession {
     private readonly spec: AgentSessionSpec,
     private readonly runQuery: typeof query = query,
     now: () => number = Date.now,
+    private readonly store: SessionStore = sdkSessionStore,
   ) {
     this.mapper = new ClaudeItemMapper(now)
     this.info = {
@@ -106,6 +135,8 @@ export class AgentSession {
       ...(spec.resume ? { sessionId: spec.resume } : {}),
       ...(spec.model ? { model: spec.model } : {}),
       ...(spec.configDir ? { configDir: spec.configDir } : {}),
+      ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
+      ...(spec.resumeCommand ? { resumeCommand: spec.resumeCommand } : {}),
     }
   }
 
@@ -121,7 +152,23 @@ export class AgentSession {
     return { session: { ...this.info }, items: this.mapper.list() }
   }
 
-  start(): void {
+  /** True while a turn runs or waits for an answer. */
+  get busy(): boolean {
+    return this.info.status === 'running' || this.info.status === 'waiting' || this.turnsInFlight > 0
+  }
+
+  async start(): Promise<void> {
+    if (this.spec.resume) {
+      // Show the conversation so far before Claude continues it.
+      try {
+        const history = await this.store.messages(this.spec.resume, this.spec.cwd)
+        const items = this.mapper.replay(history)
+        if (items.length) this.emitItems(items)
+      } catch (error) {
+        this.emitItems(this.mapper.notice('error', `Couldn't load earlier turns: ${error instanceof Error ? error.message : String(error)}`))
+      }
+      void this.refreshTitle()
+    }
     const canUseTool: CanUseTool = (toolName, input, options) => this.requestPermission(toolName, input, options)
     this.queryHandle = this.runQuery({
       prompt: this.input,
@@ -130,6 +177,8 @@ export class AgentSession {
         env: {
           ...this.spec.env,
           ...(this.spec.configDir ? { CLAUDE_CONFIG_DIR: this.spec.configDir } : {}),
+          // Commando's SessionStart hook pins this as the pane's resume command.
+          ...(this.spec.resumeCommand ? { COMMANDO_CHAT_RESUME: this.spec.resumeCommand } : {}),
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : {}),
@@ -145,6 +194,7 @@ export class AgentSession {
     })
     this.setStatus('idle')
     void this.consume(this.queryHandle)
+    if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
   }
 
   send(text: string): void {
@@ -155,6 +205,7 @@ export class AgentSession {
       return
     }
     this.emitItems(this.mapper.startTurn(trimmed))
+    if (!this.info.title) this.info = { ...this.info, title: shortTitle(trimmed) }
     this.turnsInFlight += 1
     this.setStatus('running')
     this.input.push({
@@ -269,9 +320,25 @@ export class AgentSession {
         this.emitItems(this.mapper.notice('error', message.errors.join('\n')))
       }
       this.setStatus(this.turnsInFlight > 0 ? 'running' : 'idle')
+      void this.refreshTitle()
       return
     }
     this.emitItems(this.mapper.handle(message))
+  }
+
+  /** Claude names conversations after a turn or two; pick that up for the pane title. */
+  private async refreshTitle(): Promise<void> {
+    const sessionId = this.info.sessionId
+    if (!sessionId) return
+    try {
+      const title = await this.store.title(sessionId, this.spec.cwd)
+      if (title && shortTitle(title) !== this.info.title) {
+        this.info = { ...this.info, title: shortTitle(title) }
+        this.emitSession()
+      }
+    } catch {
+      // Titles are cosmetic; keep the current one.
+    }
   }
 
   private setStatus(status: ChatSessionStatus): void {

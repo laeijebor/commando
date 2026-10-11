@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TmuxCreateResponse } from '../shared/tmux-create.js'
 import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
-import { TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
+import { listClaudeProfiles, TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
 
 const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
   'bad-branch': 400,
@@ -59,6 +59,10 @@ export async function handleTmuxCreateApi(
   onCreated: () => Promise<void>,
 ): Promise<boolean> {
   if (!url.pathname.startsWith(`${ROOT}/`)) return false
+  if (url.pathname === `${ROOT}/claude-profiles` && request.method === 'GET') {
+    json(response, 200, { profiles: await listClaudeProfiles() })
+    return true
+  }
   if (request.method !== 'POST') {
     response.setHeader('Allow', 'POST')
     json(response, 405, { error: 'Method not allowed' })

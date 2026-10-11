@@ -289,6 +289,20 @@ describe('agent hook installer', () => {
     expect(await run('UserPromptSubmit')).not.toContain('Resume command')
   })
 
+  it('gives a chat pane its own resume command instead of the TUI launcher', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const settings = JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8'))
+    const command = settings.hooks.SessionStart[0].hooks[0]
+    const env: NodeJS.ProcessEnv = { ...process.env, COMMANDO_PORT: '1', TMUX_PANE: '%42', CLAUDE_CONFIG_DIR: '/Users/leo/.claudep', COMMANDO_CHAT_RESUME: '/c/scripts/commando-agent claude --config-dir /Users/leo/.claudep' }
+    const child = spawn(command.command, command.args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'd227943a-841a-4dfa-94c7-afe2e0774487' }))
+    await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('Resume command for this conversation: /c/scripts/commando-agent claude --config-dir /Users/leo/.claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487')
+  })
+
   it('emits Claude context through the installed startup/prompt command without changing permission output', async () => {
     const home = await temporaryHome()
     const paths = await new AgentHookInstaller({ home }).install()

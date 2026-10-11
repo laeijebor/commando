@@ -562,3 +562,60 @@ describe('TmuxCreateControls worktrees', () => {
     expect(screen.getByLabelText('Session name')).toBeInTheDocument()
   })
 })
+
+describe('Claude chat launches', () => {
+  const profiles = [
+    { name: 'claude', configDir: '/Users/dev/.claude', lastUsedAt: 1 },
+    { name: 'claudep', configDir: '/Users/dev/.claudep', lastUsedAt: 30 },
+    { name: 'claudew', configDir: '/Users/dev/.claudew', lastUsedAt: 20 },
+  ]
+  const chatResponse = (input: CreateTmuxSessionRequest): TmuxCreateResponse => ({
+    created,
+    agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+  })
+
+  it('offers chat before the terminal, sends the chosen profile and permissions, and remembers them per repository', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest) => chatResponse(input))
+    const probe = probeFor({ [MAIN]: repo })
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
+    const startWith = screen.getByLabelText('Start with') as HTMLSelectElement
+    const labels = [...startWith.options].map((option) => option.textContent)
+    expect(labels.indexOf('Claude chat')).toBeLessThan(labels.indexOf('Claude (terminal)'))
+
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    fireEvent.change(startWith, { target: { value: 'claude-chat' } })
+    const profile = await screen.findByLabelText('Profile')
+    await waitFor(() => expect(profile).toHaveValue('/Users/dev/.claudep'))
+    fireEvent.change(profile, { target: { value: '/Users/dev/.claudew' } })
+    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'acceptEdits' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'acceptEdits' })
+
+    view.unmount()
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
+    await waitFor(() => expect(screen.getByLabelText('Profile')).toHaveValue('/Users/dev/.claudew'))
+    expect(screen.getByLabelText('Permissions')).toHaveValue('acceptEdits')
+  })
+})
+
+describe('Claude chat profile loading', () => {
+  it('keeps the remembered profile when the profile list cannot be loaded', async () => {
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudew', permissionMode: 'plan' } }))
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({
+      created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+    }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={async () => { throw new Error('offline') }} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
+    const submit = screen.getByRole('button', { name: 'Create session' })
+    await waitFor(() => expect(submit).not.toBeDisabled())
+    fireEvent.click(submit)
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
+    expect(JSON.parse(window.localStorage.getItem('commando.chat-launch.by-repo')!)['*']).toEqual({ configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
+  })
+})

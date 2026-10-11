@@ -807,4 +807,5 @@ export type ClientMessage =
   | { type: 'refresh_usage'; requestId: string }
   | { type: 'chat_send'; paneId: string; text: string; requestId: string }
   | { type: 'chat_interrupt'; paneId: string; requestId: string }
+  | { type: 'chat_restart'; paneId: string; requestId: string }
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }

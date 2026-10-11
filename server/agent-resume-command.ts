@@ -139,7 +139,8 @@ export function isShellCommand(command: string): boolean {
 }
 
 export function shellQuote(word: string): string {
-  return SAFE_WORD.test(word) ? word : `'${word.replaceAll("'", `'"'"'`)}'`
+  // A leading ~ or = is expanded by zsh, so such words are always quoted.
+  return SAFE_WORD.test(word) && !/^[~=]/.test(word) ? word : `'${word.replaceAll("'", `'"'"'`)}'`
 }
 
 function executableOf(spec: ProviderSpec, args: readonly string[]): { executable: string[]; rest: readonly string[] } | null {
@@ -252,4 +253,45 @@ export function launchFromProcess(
     if (match) env[name] = match[1]!
   }
   return { args: args.split(/\s+/).filter(Boolean), env }
+}
+
+const CHAT_HOST_ENTRY = '/server/agent-host/main.ts'
+const CHAT_FLAGS: FlagSpec = {
+  bare: ['--dangerously-skip-permissions'],
+  single: ['--config-dir', '--model', '--permission-mode', '--claude-path'],
+  dropped: ['--resume'],
+}
+
+/**
+ * A Commando chat host in the pane: the pane's own process, or a child of the
+ * launcher or shell. Its `claude` child must not be mistaken for a TUI.
+ */
+export function findChatHost(rows: readonly ProcessRow[], panePid: number): ProcessRow | null {
+  const isHost = (row: ProcessRow) => row.args.split(/\s+/).some((word) => word.endsWith(CHAT_HOST_ENTRY))
+  return rows.find((row) => row.pid === panePid && isHost(row))
+    ?? rows.find((row) => row.ppid === panePid && isHost(row))
+    ?? null
+}
+
+/**
+ * Resumes a chat pane with this checkout's launcher and the host's own session
+ * flags. The profile comes from `--config-dir`, or the host's CLAUDE_CONFIG_DIR.
+ */
+export function buildChatResumeCommand(
+  sessionId: string,
+  launcher: string,
+  launch: AgentLaunch,
+  daemonEnv: Readonly<Record<string, string>> = {},
+): string | null {
+  if (!isValidAgentSessionId(sessionId)) return null
+  const entry = launch.args.findIndex((word) => word.endsWith(CHAT_HOST_ENTRY))
+  if (entry < 0 || launch.args[entry + 1] !== 'claude') return null
+  // Commando puts --prompt last; everything after it is prompt text, never flags.
+  const rest = launch.args.slice(entry + 2)
+  const promptAt = rest.indexOf('--prompt')
+  const flags = carriedFlags(CHAT_FLAGS, promptAt < 0 ? rest : rest.slice(0, promptAt))
+  if (!flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
+  // A shell restored by tmux may not know which daemon to report to.
+  const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
+  return [...(env.length ? ['env', ...env] : []), launcher, 'claude', ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }

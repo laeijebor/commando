@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, Pencil, Terminal, Trash2, X } from 'lucide-react'
+import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, MessageSquare, Pencil, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PaneMark, PaneMarkTone } from '../shared/protocol'
 import { PANE_MARK_PRESETS } from './paneMarks'
@@ -16,6 +16,8 @@ type PaneContextMenuProps = {
   onClose: () => void
   onRename: () => void
   onSplit: (direction: PaneSplitDirection) => void
+  /** Adds a pane that starts a Claude chat, with this folder's remembered profile. */
+  onSplitChat?: (direction: PaneSplitDirection) => void
   onUseXtermFallbackChange?: (useXtermFallback: boolean) => void
   onSetMark?: (label: string, tone: PaneMarkTone) => void
   onAcknowledgeMark?: () => void
@@ -34,6 +36,7 @@ export function PaneContextMenu({
   onClose,
   onRename,
   onSplit,
+  onSplitChat,
   onUseXtermFallbackChange,
   onSetMark = () => {},
   onAcknowledgeMark = () => {},
@@ -173,6 +176,19 @@ export function PaneContextMenu({
             <ArrowRight aria-hidden="true" /> Right
           </button>
         </div>
+        {onSplitChat ? (
+          <>
+            <div className="pane-context-menu__label">Add Claude chat</div>
+            <div className="pane-context-menu__directions" role="group" aria-label="Add Claude chat direction">
+              <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplitChat('right'))}>
+                <MessageSquare aria-hidden="true" /> Right
+              </button>
+              <button type="button" role="menuitem" disabled={busy} onClick={() => choose(() => onSplitChat('down'))}>
+                <MessageSquare aria-hidden="true" /> Down
+              </button>
+            </div>
+          </>
+        ) : null}
         {(nativeTerminalAvailable || useXtermFallback) && onUseXtermFallbackChange ? (
           <button
             type="button"

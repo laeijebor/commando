@@ -9,9 +9,11 @@ class FakeSocket extends EventEmitter {
   readonly OPEN = 1
   readyState = 1
   sent: unknown[] = []
+  closeCode: number | undefined
   send(data: string) { this.sent.push(JSON.parse(data)) }
-  close() {
+  close(code?: number) {
     if (this.readyState !== 1) return
+    this.closeCode = code
     this.readyState = 3
     this.emit('close')
   }
@@ -29,7 +31,7 @@ const item = (id: string, text: string, overrides: Partial<ChatItem> = {}): Chat
   id, turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text, ...overrides,
 } as ChatItem)
 
-function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number } = {}) {
+function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined> } = {}) {
   const panes = options.panes ?? new Set(['%1', '%2'])
   const broadcasts: ServerMessage[] = []
   const hub = new AgentHostHub({
@@ -38,6 +40,7 @@ function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hos
     broadcast: (message) => broadcasts.push(message),
     ...(options.verifyHost ? { verifyHost: options.verifyHost } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.currentHostBuild ? { currentHostBuild: options.currentHostBuild } : {}),
   })
   const connect = () => {
     const socket = new FakeSocket()
@@ -96,6 +99,7 @@ describe('AgentHostHub', () => {
     impostor.host({ type: 'session_snapshot', session: session('%2', { hostPid: 99 }), items: [] })
     await settle()
     expect(impostor.readyState).toBe(3)
+    expect(impostor.closeCode).toBe(4003)
     expect(hub.states()).toEqual([])
     const real = connect()
     real.host({ type: 'session_snapshot', session: session('%1'), items: [] })
@@ -189,6 +193,39 @@ describe('AgentHostHub', () => {
     socket.host({ type: 'session_snapshot', session: session('%1'), items: [] })
     socket.host({ type: 'session_closed', paneId: '%1' })
     await settle()
+    expect(hub.states()).toEqual([])
+  })
+})
+
+describe('host updates', () => {
+  it('flags a host whose build differs from the checkout, and routes a restart to it', async () => {
+    let current = 'build-a'
+    const { hub, broadcasts, connect } = setup({ currentHostBuild: async () => current })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostBuild: 'build-a' }), items: [] })
+    await settle()
+    expect(hub.states()[0]?.updateAvailable).toBeUndefined()
+    current = 'build-b'
+    await hub.reconcile()
+    expect(hub.states()[0]?.updateAvailable).toBe(true)
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_state', chat: { updateAvailable: true } })
+    socket.sent = []
+    expect(hub.restart('%1', 'r1')).toBe(true)
+    expect(socket.sent).toEqual([{ type: 'restart', paneId: '%1', requestId: 'r1' }])
+  })
+})
+
+describe('host registration races', () => {
+  it('does not register a host whose socket closed while its snapshot was being checked', async () => {
+    let release!: (build: string) => void
+    const { hub, connect } = setup({ currentHostBuild: () => new Promise((resolve) => { release = resolve }) })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostBuild: 'a' }), items: [] })
+    await settle()
+    socket.close()
+    release('a')
+    await settle()
+    expect(hub.owns('%1')).toBe(false)
     expect(hub.states()).toEqual([])
   })
 })

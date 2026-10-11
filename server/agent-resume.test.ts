@@ -112,6 +112,21 @@ describe('AgentResumeService', () => {
     expect(saved).not.toContain('SECRET')
   })
 
+  it('records a chat pane as a chat resume, never its claude child as a TUI', async () => {
+    const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --prompt fix it please'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      readProcessTable: vi.fn(async () => [
+        `  500     1 bash /c/scripts/commando-agent claude --config-dir /Users/me/.claudew`,
+        `  600   500 ${host}`,
+        `  700   600 /Users/me/.local/bin/claude --output-format stream-json --verbose --permission-mode acceptEdits`,
+      ].join('\n')),
+      readProcessEnvironment: vi.fn(async () => `${host} SECRET=x\n`),
+    })
+    await recordOn(OLD_SERVER, resume)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
+  })
+
   it('reads the process table once per conversation, not per hook event', async () => {
     const resume = await recordOn(OLD_SERVER)
     await resume.observeHookStatus(hookStatus(), pane(), OLD_SERVER)

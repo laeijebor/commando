@@ -606,6 +606,8 @@ describe('chat pane messages', () => {
       .toEqual({ ok: true, message: { type: 'chat_send', paneId: '%4', text: 'hello', requestId: 'r1' } })
     expect(parseClientMessage({ type: 'chat_interrupt', paneId: '%4', requestId: 'r2' }))
       .toEqual({ ok: true, message: { type: 'chat_interrupt', paneId: '%4', requestId: 'r2' } })
+    expect(parseClientMessage({ type: 'chat_restart', paneId: '%4', requestId: 'r4' }))
+      .toEqual({ ok: true, message: { type: 'chat_restart', paneId: '%4', requestId: 'r4' } })
     expect(parseClientMessage({ type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'deny', message: 'no' }, requestId: 'r3' }))
       .toEqual({ ok: true, message: { type: 'chat_answer', paneId: '%4', chatRequestId: 'abc', answer: { kind: 'approval', decision: 'deny', message: 'no' }, requestId: 'r3' } })
   })

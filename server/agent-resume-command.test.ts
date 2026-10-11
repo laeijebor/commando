@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  shellQuote,
+  buildChatResumeCommand,
+  findChatHost,
   buildResumeCommand,
   findAgentProcess,
   isShellCommand,
@@ -111,5 +114,43 @@ describe('process helpers', () => {
     expect(isShellCommand('bash')).toBe(true)
     expect(isShellCommand('2.1.295')).toBe(false)
     expect(isShellCommand('opencode')).toBe(false)
+  })
+})
+
+describe('chat hosts', () => {
+  const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --permission-mode default --resume 11111111-2222 --prompt hello world --model opus'
+
+  it('finds the host as the pane process or a child of the launcher', () => {
+    expect(findChatHost(parseProcessTable(`  9   1 ${host}`), 9)?.pid).toBe(9)
+    expect(findChatHost(parseProcessTable(`  9   1 bash /c/scripts/commando-agent claude\n 10   9 ${host}`), 9)?.pid).toBe(10)
+    expect(findChatHost(parseProcessTable('  9   1 /bin/zsh\n 10   9 claude --resume x'), 9)).toBeNull()
+  })
+
+  it('carries session flags, drops the old resume target and prompt, and reads the profile from the environment', () => {
+    const command = buildChatResumeCommand('abcdef12-3456', '/c/scripts/commando-agent', { args: host.split(' '), env: { CLAUDE_CONFIG_DIR: '/Users/me/.claudep' } })
+    // Flags after the prompt are lost because ps cannot tell prompt words from arguments.
+    expect(command).toBe('/c/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: ['node', 'other.js'], env: {} })).toBeNull()
+    expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
+  })
+})
+
+describe('chat resume hardening', () => {
+  it('never carries flag-looking words from the prompt', () => {
+    const args = 'node --import /c/l.mjs /c/server/agent-host/main.ts claude --config-dir /u/.claudep --permission-mode default --prompt Use --dangerously-skip-permissions --model x'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/scripts/commando-agent', { args, env: {} }))
+      .toBe('/c/scripts/commando-agent claude --config-dir /u/.claudep --permission-mode default --resume abcdef12-3456')
+  })
+
+  it('prefixes the daemon environment a restored shell may lack', () => {
+    const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, { COMMANDO_PORT: '4410' }))
+      .toBe('env COMMANDO_PORT=4410 /c/launcher claude --permission-mode plan --resume abcdef12-3456')
+  })
+
+  it('quotes words zsh would expand', () => {
+    expect(shellQuote('~root/x')).toBe("'~root/x'")
+    expect(shellQuote('=ls')).toBe("'=ls'")
+    expect(shellQuote('/plain/path')).toBe('/plain/path')
   })
 })

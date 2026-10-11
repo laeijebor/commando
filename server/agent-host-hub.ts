@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
+  HOST_REFUSED_CLOSE_CODE,
   mergeChatItems,
   parseHostMessage,
   type ChatAnswer,
@@ -26,6 +27,8 @@ type HubDependencies = {
    * that merely holds the hook token cannot take over another pane's chat.
    */
   verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>
+  /** Fingerprint of the agent host code in the daemon's checkout. */
+  currentHostBuild?: () => Promise<string | undefined>
   log?: (message: string) => void
   now?: () => number
 }
@@ -100,13 +103,19 @@ export class AgentHostHub {
         const { paneId } = message.session
         const known = this.dependencies.paneExists(paneId)
         if (known && !(await this.verified(paneId, message.session.hostPid))) {
-          socket.close()
+          socket.close(HOST_REFUSED_CLOSE_CODE, `host is not running in pane ${paneId}`)
           return
         }
         if (socket.readyState !== socket.OPEN) return
         const previous = this.chats.get(paneId)
         // A newer host for the same pane replaces the old link.
-        if (previous?.socket && previous.socket !== socket) previous.socket.close()
+        if (previous?.socket && previous.socket !== socket) {
+          this.dependencies.log?.(`[agent-host] a new host for ${paneId} replaces the previous one`)
+          previous.socket.close()
+        }
+        const updateAvailable = await this.updateAvailable(message.session.hostBuild)
+        // The socket may have closed while we waited; never register a dead host.
+        if (socket.readyState !== socket.OPEN) return
         const targetId = this.dependencies.targetIdFor(paneId)
         const state: ChatState = {
           paneId,
@@ -114,6 +123,7 @@ export class AgentHostHub {
           session: message.session,
           items: mergeChatItems([], message.items),
           hostConnected: true,
+          ...(updateAvailable ? { updateAvailable } : {}),
         }
         this.chats.set(paneId, { state, socket, visible: known, receivedAt: this.now() })
         if (known) this.dependencies.broadcast({ type: 'chat_state', chat: state })
@@ -163,6 +173,11 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'interrupt', paneId, requestId })
   }
 
+  /** Asks the pane's host to restart on the same conversation, to run the current code. */
+  restart(paneId: string, requestId: string): boolean {
+    return this.toHost(paneId, { type: 'restart', paneId, requestId })
+  }
+
   answer(paneId: string, chatRequestId: string, answer: ChatAnswer, requestId: string): boolean {
     const request = this.chats.get(paneId)?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
     if (!request || request.kind !== 'request' || request.answer) return false
@@ -178,6 +193,7 @@ export class AgentHostHub {
     for (const [paneId, entry] of [...this.chats]) {
       if (!this.dependencies.paneExists(paneId)) {
         if (!entry.visible && now - entry.receivedAt < PENDING_PANE_MS) continue
+        if (entry.socket) this.dependencies.log?.(`[agent-host] closing the host for ${paneId}: the pane is gone`)
         entry.socket?.close()
         this.remove(paneId)
         continue
@@ -186,10 +202,18 @@ export class AgentHostHub {
         this.remove(paneId)
         continue
       }
+      if (entry.visible && entry.socket) {
+        const updateAvailable = await this.updateAvailable(entry.state.session.hostBuild)
+        if (updateAvailable !== Boolean(entry.state.updateAvailable) && this.chats.get(paneId) === entry) {
+          const { updateAvailable: _previous, ...rest } = entry.state
+          entry.state = updateAvailable ? { ...rest, updateAvailable } : rest
+          this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
+        }
+      }
       if (!entry.visible) {
         if (!entry.socket) continue
         if (!(await this.verified(paneId, entry.state.session.hostPid))) {
-          entry.socket.close()
+          entry.socket.close(HOST_REFUSED_CLOSE_CODE, `host is not running in pane ${paneId}`)
           this.chats.delete(paneId)
           continue
         }
@@ -203,6 +227,12 @@ export class AgentHostHub {
       entry.state = { ...entry.state, ...(targetId ? { targetId } : {}) }
       this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
     }
+  }
+
+  private async updateAvailable(hostBuild: string | undefined): Promise<boolean> {
+    if (!hostBuild || !this.dependencies.currentHostBuild) return false
+    const current = await this.dependencies.currentHostBuild().catch(() => undefined)
+    return current !== undefined && current !== hostBuild
   }
 
   private async verified(paneId: string, hostPid: number): Promise<boolean> {
