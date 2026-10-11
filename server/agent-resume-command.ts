@@ -257,9 +257,41 @@ export function launchFromProcess(
 
 const CHAT_HOST_ENTRY = '/server/agent-host/main.ts'
 const CHAT_FLAGS: FlagSpec = {
-  bare: ['--dangerously-skip-permissions'],
-  single: ['--config-dir', '--model', '--permission-mode', '--claude-path'],
+  bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions'],
+  single: ['--config-dir', '--model', '--effort', '--permission-mode', '--claude-path'],
   dropped: ['--resume'],
+}
+/** Flags a chat's pickers can change while it runs; its current settings replace them. */
+const CHAT_SETTING_FLAGS = new Set(['--model', '--effort', '--permission-mode'])
+const CHAT_BYPASS_FLAGS = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions'])
+
+/** A running chat's model, effort and mode, which its resume carries instead of the launch flags. */
+export type ChatResumeSettings = {
+  model?: string
+  effort?: string
+  permissionMode: string
+  bypassAllowed?: boolean
+}
+
+function withChatSettings(flags: readonly string[], settings: ChatResumeSettings): string[] {
+  const kept: string[] = []
+  for (let index = 0; index < flags.length; index += 1) {
+    const flag = flags[index]!
+    const name = flag.includes('=') ? flag.slice(0, flag.indexOf('=')) : flag
+    if (CHAT_BYPASS_FLAGS.has(name)) continue
+    if (CHAT_SETTING_FLAGS.has(name)) {
+      if (!flag.includes('=')) index += 1
+      continue
+    }
+    kept.push(flag)
+  }
+  return [
+    ...kept,
+    ...(settings.model ? ['--model', settings.model] : []),
+    ...(settings.effort ? ['--effort', settings.effort] : []),
+    '--permission-mode', settings.permissionMode,
+    ...(settings.bypassAllowed && settings.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
+  ]
 }
 
 /**
@@ -276,12 +308,15 @@ export function findChatHost(rows: readonly ProcessRow[], panePid: number): Proc
 /**
  * Resumes a chat pane with this checkout's launcher and the host's own session
  * flags. The profile comes from `--config-dir`, or the host's CLAUDE_CONFIG_DIR.
+ * When the chat's current settings are known they replace the launch's model,
+ * effort and permission flags, so a resume keeps what the pickers changed.
  */
 export function buildChatResumeCommand(
   sessionId: string,
   launcher: string,
   launch: AgentLaunch,
   daemonEnv: Readonly<Record<string, string>> = {},
+  settings?: ChatResumeSettings,
 ): string | null {
   if (!isValidAgentSessionId(sessionId)) return null
   const entry = launch.args.findIndex((word) => word.endsWith(CHAT_HOST_ENTRY))
@@ -289,7 +324,8 @@ export function buildChatResumeCommand(
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
-  const flags = carriedFlags(CHAT_FLAGS, promptAt < 0 ? rest : rest.slice(0, promptAt))
+  const launched = carriedFlags(CHAT_FLAGS, promptAt < 0 ? rest : rest.slice(0, promptAt))
+  const flags = settings ? withChatSettings(launched, settings) : launched
   if (!flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)

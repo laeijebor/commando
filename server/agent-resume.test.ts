@@ -127,6 +127,26 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('rebuilds a chat record when the chat\'s pickers change, so a resume keeps them', async () => {
+    const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --config-dir /Users/me/.claudew --model haiku --permission-mode default'
+    let settings: { model?: string; effort?: string; permissionMode: string } | undefined
+    const table = vi.fn(async () => `  500     1 ${host}`)
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => settings,
+      readProcessTable: table,
+      readProcessEnvironment: vi.fn(async () => `${host}\n`),
+    })
+    await recordOn(OLD_SERVER, resume, pane({ processId: 500 }))
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --model haiku --permission-mode default --resume ${SESSION}`)
+    settings = { model: 'sonnet', effort: 'high', permissionMode: 'plan' }
+    await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --model sonnet --effort high --permission-mode plan --resume ${SESSION}`)
+    // Unchanged settings do not read the process table again.
+    await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
+    expect(table).toHaveBeenCalledTimes(2)
+  })
+
   it('reads the process table once per conversation, not per hook event', async () => {
     const resume = await recordOn(OLD_SERVER)
     await resume.observeHookStatus(hookStatus(), pane(), OLD_SERVER)

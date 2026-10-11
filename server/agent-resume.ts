@@ -7,6 +7,7 @@ import { isCommandoTargetId } from '../shared/pane-target.js'
 import type { AgentResume, AgentStatus, TmuxPane } from '../shared/protocol.js'
 import {
   buildChatResumeCommand,
+  type ChatResumeSettings,
   buildResumeCommand,
   findAgentProcess,
   findChatHost,
@@ -99,6 +100,8 @@ export type AgentResumeDeps = {
   chatLauncher?: string
   /** Variables a resumed chat host needs to reach this daemon (e.g. a non-default COMMANDO_PORT). */
   chatEnv?: Readonly<Record<string, string>>
+  /** A chat pane's current model, effort and mode, which its resume carries. */
+  chatSettings?: (paneId: string) => ChatResumeSettings | undefined
   /** The pane with this target in the latest snapshot. */
   currentPane: (targetId: string) => ResumePane | undefined
   /** Types the command and presses Enter. */
@@ -127,6 +130,8 @@ export class AgentResumeService {
   private readonly resumes = new Map<string, AgentResume>()
   private readonly capturing = new Set<string>()
   private readonly captureMisses = new Map<string, { key: string; at: number }>()
+  /** The chat settings each chat record was built with; a change in the chat rebuilds the record. */
+  private readonly chatSettingsKeys = new Map<string, string>()
   /** Records whose resume failed; only Retry brings them back, so a later restart never retypes them. */
   private readonly failedRecords = new Map<string, AgentResumeRecord>()
   private queue: Job[] = []
@@ -174,10 +179,13 @@ export class AgentResumeService {
     if (resume && resume.state !== 'resumed' && existing?.sessionId === status.agentSessionId) {
       this.setResume({ ...resume, state: 'resumed', error: undefined })
     }
+    const chatSettings = status.provider === 'claude' ? this.deps.chatSettings?.(pane.id) : undefined
+    const chatKey = chatSettings ? JSON.stringify(chatSettings) : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
-      && existing.serverId === serverId && existing.path === pane.path) return
+      && existing.serverId === serverId && existing.path === pane.path
+      && this.chatSettingsKeys.get(pane.targetId) === chatKey) return
     if (this.capturing.has(pane.targetId)) return
-    const key = `${status.provider}:${status.agentSessionId}@${serverId}:${pane.processId}`
+    const key = `${status.provider}:${status.agentSessionId}@${serverId}:${pane.processId}:${chatKey ?? ''}`
     const miss = this.captureMisses.get(pane.targetId)
     if (miss?.key === key && this.now() - miss.at < CAPTURE_RETRY_MS) return
     this.capturing.add(pane.targetId)
@@ -190,7 +198,7 @@ export class AgentResumeService {
       const agent = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
       const command = chatHost
         ? this.deps.chatLauncher
-          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv)
+          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
           : null
         : agent && buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
           status.provider, agent.args, await readEnvironment(agent.pid)))
@@ -205,6 +213,8 @@ export class AgentResumeService {
       } : null
       if (!record || !validRecord(record)) return
       this.records.set(pane.targetId, record)
+      if (chatKey) this.chatSettingsKeys.set(pane.targetId, chatKey)
+      else this.chatSettingsKeys.delete(pane.targetId)
       this.failedRecords.delete(pane.targetId)
       this.persist()
       recorded = true

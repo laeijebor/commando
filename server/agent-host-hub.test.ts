@@ -175,6 +175,21 @@ describe('AgentHostHub', () => {
     expect(socket.sent.map((message) => (message as { type: string }).type)).toEqual(['send', 'interrupt', 'answer'])
   })
 
+  it('routes picker changes to the host and reports the settings a resume should carry', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { permissionMode: 'default', selectedModel: 'haiku' }), items: [] })
+    await settle()
+    socket.sent = []
+    expect(hub.configure('%1', { model: 'sonnet', effort: 'high' }, 'q1')).toBe(true)
+    expect(hub.configure('%2', { effort: 'low' }, 'q2')).toBe(false)
+    expect(socket.sent).toEqual([{ type: 'configure', paneId: '%1', settings: { model: 'sonnet', effort: 'high' }, requestId: 'q1' }])
+    socket.host({ type: 'session_update', session: session('%1', { permissionMode: 'plan', selectedModel: 'sonnet', effort: 'high', bypassAllowed: true }) })
+    await settle()
+    expect(hub.resumeSettings('%1')).toEqual({ model: 'sonnet', effort: 'high', permissionMode: 'plan', bypassAllowed: true })
+    expect(hub.resumeSettings('%2')).toBeUndefined()
+  })
+
   it('drops chats whose pane disappeared and closes their host link', async () => {
     const { hub, broadcasts, connect, panes } = setup()
     const socket = connect()
