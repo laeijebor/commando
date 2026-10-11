@@ -8,7 +8,10 @@ const DEFAULT_TIMEOUT_MS = 590_000
 type PendingInteraction = {
   request: AgentInteractionRequest
   resolve: (answer: AgentInteractionAnswer | null) => void
-  timer: NodeJS.Timeout
+  /** Held hooks give up after a while; offered requests wait for their owner. */
+  timer?: NodeJS.Timeout
+  /** Offered by a chat pane's host rather than held by a hook. */
+  offered?: boolean
 }
 
 function validAnswer(
@@ -87,6 +90,26 @@ export class AgentInteractionBroker {
     })
   }
 
+  /**
+   * Lists a request no hook holds: a chat pane's host asks it and shows it
+   * itself, so it stays pending whoever watches, until an answer goes to
+   * `deliver` or the host withdraws it with `cancel`.
+   */
+  offer(
+    paneId: string,
+    request: AgentInteractionRequest,
+    deliver: (answer: AgentInteractionAnswer) => void,
+  ): void {
+    const key = this.key(paneId, request.id)
+    this.cancelKey(key)
+    this.pending.set(key, {
+      request,
+      resolve: (answer) => { if (answer) deliver(answer) },
+      offered: true,
+    })
+    this.onPendingChange()
+  }
+
   answer(
     paneId: string,
     requestId: string,
@@ -106,8 +129,11 @@ export class AgentInteractionBroker {
     return this.cancelKey(this.key(paneId, requestId))
   }
 
+  /** Releases every held hook; offered requests stay, since their host still waits. */
   cancelAll(): void {
-    for (const key of [...this.pending.keys()]) this.cancelKey(key)
+    for (const [key, pending] of [...this.pending]) {
+      if (!pending.offered) this.cancelKey(key)
+    }
   }
 
   private cancelKey(key: string): boolean {
