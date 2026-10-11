@@ -84,6 +84,8 @@ describe('SidePanel', () => {
   it('renders only the grid when the window has no panel tabs', () => {
     const view = render(panel('%12', vi.fn(), []))
     expect(screen.getByText('Terminal grid')).toBeInTheDocument()
-    expect(view.container.querySelector('.window-panel-layout')).toBeNull()
+    expect(view.container.querySelector('.window-panel-layout')).not.toBeNull()
+    expect(screen.queryByRole('complementary')).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
   })
 })

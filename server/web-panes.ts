@@ -458,7 +458,6 @@ export class WebPaneService {
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
     if (pane.dock !== 'panel') throw new WebPaneError(409, 'Web pane is not panel-docked')
     this.activeTabs[pane.anchorPaneId] = id
-    this.panes.set(id, { ...pane, unseen: false })
     this.persist()
   }
 

@@ -56,7 +56,6 @@ export function SidePanel({
   useEffect(() => {
     if (!gridMaximized && expanded && active?.unseen) onSeen?.(active)
   }, [active?.id, active?.unseen, gridMaximized, expanded, onSeen])
-  if (!tabs.length) return <>{children}</>
   const open = () => {
     if (!focusedPaneId || !adding || !url.trim()) return
     const raw = url.trim()
@@ -68,7 +67,7 @@ export function SidePanel({
     <div ref={bodyRef} className={`window-panel-layout${!expanded ? ' is-collapsed' : ''}${maximizedTab ? ' is-panel-maximized' : ''}`}
       style={{ '--side-panel-width': `${width}%` } as CSSProperties}>
       <div className="window-terminal-grid" hidden={Boolean(maximizedTab)}>{children}</div>
-      <div className="side-panel-splitter" hidden={Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
+      <div className="side-panel-splitter" hidden={!tabs.length || Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
         aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(width)} tabIndex={collapsed ? -1 : 0}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -90,7 +89,7 @@ export function SidePanel({
         onPointerUp={() => { dragRef.current = null }}
         onPointerCancel={() => { dragRef.current = null }}
         onLostPointerCapture={() => { dragRef.current = null }} />
-      <aside className="side-panel" hidden={gridMaximized} aria-label="Pane tabs">
+      <aside className="side-panel" hidden={!tabs.length || gridMaximized} aria-label="Pane tabs">
         {!expanded ? <button className="side-panel-expand" type="button" aria-label="Expand side panel" onClick={() => setCollapsed(false)}><PanelRightOpen /></button> : (
           <header className="side-panel-head">
             <div className="side-panel-tabs" role="tablist" aria-label={`Tabs for ${paneLabel}`}>

@@ -109,7 +109,8 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
   insertWebPaneLeaves,
@@ -1036,7 +1037,7 @@ export function App() {
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
-  const knownPanelTabs = useRef(new Set<string>())
+  const knownPanelTabs = useRef<Set<string> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
   const seenPanelTabs = useRef(new Set<string>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
@@ -1444,6 +1445,9 @@ export function App() {
         }
         break
       case 'web_panes':
+        if (knownPanelTabs.current === null) {
+          knownPanelTabs.current = new Set(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => tab.id))
+        }
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1658,6 +1662,7 @@ export function App() {
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
     const previous = knownPanelTabs.current
+    if (previous === null) return
     knownPanelTabs.current = new Set(tabs.map((tab) => tab.id))
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
@@ -2363,7 +2368,7 @@ export function App() {
   const selectPanelTab = async (tab: WebPane) => {
     if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split')) setMaximizedPaneId(tab.id)
     setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
-      ? { ...pane, activeTab: pane.id === tab.id, unseen: pane.id === tab.id ? false : pane.unseen }
+      ? { ...pane, activeTab: pane.id === tab.id }
       : pane))
     try { await webPanesApi.setActiveTab(tab.id) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
@@ -2406,7 +2411,14 @@ export function App() {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
     // Drop the tile locally right away; the daemon broadcast confirms it.
-    setWebPanes((current) => current.filter((webPane) => webPane.id !== webPaneId))
+    setWebPanes((current) => {
+      const closing = current.find((pane) => pane.id === webPaneId)
+      const tabs = closing && closing.dock !== 'split' ? panelTabs(current, closing.anchorPaneId) : []
+      const next = activePanelTab(tabs)?.id === webPaneId ? neighbouringTab(tabs, webPaneId) : undefined
+      return current.filter((pane) => pane.id !== webPaneId).map((pane) => next && pane.anchorPaneId === closing?.anchorPaneId && pane.dock !== 'split'
+        ? { ...pane, activeTab: pane.id === next }
+        : pane)
+    })
     try {
       await webPanesApi.close(webPaneId)
     } catch (cause) {

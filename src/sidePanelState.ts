@@ -1,16 +1,12 @@
 import type { WebPane } from '../shared/protocol'
 export { panelTabs } from '../shared/web-pane-placement'
 
-/** A tmux active-pane transition overrides stale client focus once. */
+/** Prefer client focus, then fall back to the current tmux pane. */
 export function effectiveFocusedPane(
   focusedPaneId: string | null,
   paneIds: readonly string[],
   tmuxActivePaneId: string | undefined,
-  previousTmuxActivePaneId?: string,
 ): string | undefined {
-  if (tmuxActivePaneId && previousTmuxActivePaneId && tmuxActivePaneId !== previousTmuxActivePaneId) {
-    return tmuxActivePaneId
-  }
   return (focusedPaneId && paneIds.includes(focusedPaneId) ? focusedPaneId : undefined)
     ?? tmuxActivePaneId ?? paneIds[0]
 }

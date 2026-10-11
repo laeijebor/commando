@@ -30,14 +30,15 @@ describe('panel tab sets', () => {
 
 describe('effective pane focus', () => {
   const panes = ['%12', '%13', '%14']
-  it('keeps click focus until tmux active-pane changes', () => {
-    expect(effectiveFocusedPane('%14', panes, '%12', '%12')).toBe('%14')
-    expect(effectiveFocusedPane('%14', panes, '%13', '%12')).toBe('%13')
-    expect(effectiveFocusedPane('%13', panes, '%13', '%13')).toBe('%13')
+  it('derives focus without consuming tmux snapshot transitions', () => {
+    expect(effectiveFocusedPane).toHaveLength(3)
+    expect(effectiveFocusedPane('%14', panes, '%12')).toBe('%14')
+    expect(effectiveFocusedPane('%14', panes, '%13')).toBe('%14')
+    expect(effectiveFocusedPane('%13', panes, '%13')).toBe('%13')
   })
   it('falls back to tmux, then the first surviving pane', () => {
-    expect(effectiveFocusedPane(null, panes, '%13', undefined)).toBe('%13')
-    expect(effectiveFocusedPane('%99', panes, undefined, '%99')).toBe('%12')
-    expect(effectiveFocusedPane(null, [], undefined, undefined)).toBeUndefined()
+    expect(effectiveFocusedPane(null, panes, '%13')).toBe('%13')
+    expect(effectiveFocusedPane('%99', panes, undefined)).toBe('%12')
+    expect(effectiveFocusedPane(null, [], undefined)).toBeUndefined()
   })
 })

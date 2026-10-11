@@ -767,6 +767,71 @@ describe('panel focus and attention', () => {
   const owner = () => document.querySelector('.side-panel-owner')
   const footer = (id: string) => document.querySelector(`[data-pane-id="${id}"] .pane-footer-focus`)
 
+  it('keeps the terminal renderer mounted when the first panel tab arrives and the last closes', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    const terminal = screen.getByTestId(`renderer-${paneA.id}`)
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA] }))
+    expect(screen.getByTestId(`renderer-${paneA.id}`)).toBe(terminal)
+    fireEvent.click(screen.getByRole('button', { name: 'Close 127.0.0.1:41300/plan' }))
+    expect(screen.getByTestId(`renderer-${paneA.id}`)).toBe(terminal)
+    expect(screen.queryByRole('complementary', { name: 'Pane tabs' })).toBeNull()
+    expect(screen.queryByRole('separator', { name: 'Resize side panel' })).toBeNull()
+  })
+
+  it('preserves the saved active tab on the first web-panes broadcast after the snapshot', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    const later = { ...tabA, id: 'w-22222222', order: 1, activeTab: false, unseen: true, url: 'http://localhost/later' }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, later] }))
+    expect(screen.getByRole('tab', { name: '127.0.0.1:41300/plan' })).toHaveAttribute('aria-selected', 'true')
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => /\/(active-tab|seen)$/.test(String(url)))).toHaveLength(0)
+    expect(document.querySelector(`[data-pane-id="${paneA.id}"] .pane-tab-count`)).toHaveTextContent('2 tabs · 1 new')
+  })
+
+  it('selects the first genuinely new tab after an initially empty web-panes broadcast', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [] }))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA] }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tabA.id}/active-tab`, expect.objectContaining({ method: 'POST' })))
+  })
+
+  it.each(['collapsed', 'grid maximized'] as const)('auto-selects later DevTools tabs while %s without marking them seen', async (hidden) => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA] }))
+    if (hidden === 'collapsed') fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    else fireEvent.click(document.querySelector(`[data-pane-id="${paneA.id}"] [aria-label="Maximize pane"]`) as HTMLElement)
+    const devtools = { ...tabA, id: 'w-22222222', order: 1, activeTab: false, unseen: true, url: 'http://localhost/devtools/inspector.html' }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, devtools] }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${devtools.id}/active-tab`, expect.objectContaining({ method: 'POST' })))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...tabA, activeTab: false }, { ...devtools, activeTab: true }] }))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/seen'))).toHaveLength(0)
+    expect(document.querySelector(`[data-pane-id="${paneA.id}"] .pane-tab-count`)).toHaveTextContent('2 tabs · 1 new')
+  })
+
+  it('marks an explicitly selected unseen tab seen through the seen endpoint', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    const later = { ...tabA, id: 'w-22222222', order: 1, activeTab: false, unseen: true, url: 'http://localhost/later' }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, later] }))
+    fireEvent.click(screen.getByRole('tab', { name: /localhost\/later/ }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${later.id}/seen`, expect.objectContaining({ method: 'POST' })))
+    await waitFor(() => expect(document.querySelector(`[data-pane-id="${paneA.id}"] .pane-tab-count`)).not.toHaveTextContent('new'))
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/seen'))).toHaveLength(1)
+  })
+
+  it.each([1, 2] as const)('optimistically closes active tab %i to the same neighbour as the server', async (index) => {
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    const tabs = [0, 1, 2].map((order) => ({ ...tabA, id: `w-0000000${order}`, order, activeTab: order === index, url: `http://localhost/${order}` }))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: tabs }))
+    fireEvent.click(screen.getByRole('button', { name: `Close localhost/${index}` }))
+    expect(screen.getByRole('tab', { name: `localhost/${index === 1 ? 2 : 1}` })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'localhost/0' })).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('lets a newer terminal click win after tmux active-pane transitions and unchanged snapshots', async () => {
     await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
     act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, tabB] }))

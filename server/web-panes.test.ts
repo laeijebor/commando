@@ -744,16 +744,19 @@ describe('panel tab state', () => {
     expect(stored.panes[0].dock).toBe('panel')
   })
 
-  it('persists selection, clears unseen, and falls to neighbouring tabs after deletion', async () => {
+  it('persists selection without clearing unseen and falls to neighbouring tabs after deletion', async () => {
     const statePath = await temporaryStatePath()
     const service = track(new WebPaneService(statePath))
     const tabs = [1, 2, 3].map((n) => service.open({ ...anchor, url: `http://localhost/${n}` }))
     service.setActiveTab(tabs[1].id)
-    expect(service.get(tabs[1].id)?.unseen).toBe(false)
+    expect(service.get(tabs[1].id)?.unseen).toBe(true)
     await service.flush()
     const restored = track(new WebPaneService(statePath))
     await restored.load()
     expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[1].id)
+    expect(restored.get(tabs[1].id)?.unseen).toBe(true)
+    restored.clearUnseen(tabs[1].id)
+    expect(restored.get(tabs[1].id)?.unseen).toBe(false)
     restored.close(tabs[1].id)
     expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[2].id)
     restored.close(tabs[2].id)

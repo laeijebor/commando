@@ -245,7 +245,7 @@ export function WebPaneCard({
           <button type="button" className="web-pane-button" onClick={onClose} aria-label="Close simulator tile"><X /></button>
         </span>
       </header>
-      <SimLiveView udid={webPane.content.udid} token={wsToken} active={visible && simulatorActive} connected={connected} />
+      <SimLiveView udid={webPane.content.udid} token={wsToken} active={visible && simulatorActive} visible={visible} connected={connected} />
     </article>
   )
 

@@ -25,8 +25,8 @@ const WHEEL_IDLE_MS = 120
  * Exactly one tile is active in App; the wall mounts its focused overlay and at most one hover preview.
  * A preview accepts pointer input without taking keyboard focus and waits for decoded video.
  */
-export function SimLiveView({ udid, token, active = true, connected = true, preview = false, onStreaming, api: providedApi }: {
-  udid: string; token: string; active?: boolean; connected?: boolean; preview?: boolean; onStreaming?: (streaming: boolean) => void; api?: SimsApiClient
+export function SimLiveView({ udid, token, active = true, visible = true, connected = true, preview = false, onStreaming, api: providedApi }: {
+  udid: string; token: string; active?: boolean; visible?: boolean; connected?: boolean; preview?: boolean; onStreaming?: (streaming: boolean) => void; api?: SimsApiClient
 }) {
   const api = useMemo(() => providedApi ?? createSimsApi(token), [providedApi, token])
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -46,7 +46,8 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
   const [snapshot, setSnapshot] = useState(!active || typeof VideoDecoder === 'undefined')
   const [image, setImage] = useState<string>()
   const [reason, setReason] = useState('')
-  const [visible, setVisible] = useState(document.visibilityState === 'visible')
+  const [pageVisible, setPageVisible] = useState(document.visibilityState === 'visible')
+  const viewVisible = visible && pageVisible
   const [revision, setRevision] = useState(0)
   const [focused, setFocused] = useState(false)
   const [ready, setReady] = useState(false)
@@ -146,23 +147,24 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     let timer: number | undefined
     const change = () => {
       const isVisible = document.visibilityState === 'visible'
-      setVisible(isVisible)
+      setPageVisible(isVisible)
       window.clearTimeout(timer)
       if (!isVisible) {
         releasePointer()
         canvas.current?.blur()
         timer = window.setTimeout(() => { socket.current?.close(); socket.current = null; setReady(false) }, 30_000)
-      } else if (!socket.current && active) setRevision((value) => value + 1)
+      } else if (!socket.current && active && visible) setRevision((value) => value + 1)
     }
     document.addEventListener('visibilitychange', change)
     return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', change) }
     // The listener reads the current socket and pointer refs.
-  }, [active])
+  }, [active, visible])
 
   useEffect(() => {
     setReady(false)
     setPainted(false)
     dimensions.current = { width: 0, height: 0 }
+    if (!visible) return
     if (!active || !connected || typeof VideoDecoder === 'undefined') {
       setSnapshot(true)
       setReason(!active ? '' : !connected ? 'Daemon disconnected' : 'Live video is unavailable in this browser')
@@ -271,15 +273,15 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       for (const seed of seeds) { seed.onload = null; seed.onerror = null; seed.removeAttribute('src') }
       for (const seedUrl of urls) URL.revokeObjectURL(seedUrl)
     }
-  }, [active, connected, udid, token, revision, preview])
+  }, [active, visible, connected, udid, token, revision, preview])
 
   useEffect(() => {
-    if (active && !snapshot && !preview) canvas.current?.focus()
-  }, [active, snapshot, preview])
+    if (visible && active && !snapshot && !preview) canvas.current?.focus()
+  }, [active, visible, snapshot, preview])
 
-  const streaming = ready && !snapshot && (!preview || painted)
+  const streaming = visible && ready && !snapshot && (!preview || painted)
   const inspector = useSimInspector(api, udid, active && streaming && !preview)
-  useEffect(() => { if (!active || !connected || preview) setPanel(null) }, [active, connected, preview, udid])
+  useEffect(() => { if (!visible || !active || !connected || preview) setPanel(null) }, [visible, active, connected, preview, udid])
   const recording = useSimRecording(canvas, active && streaming && !preview, udid, setReason)
   useEffect(() => {
     const target = canvas.current
@@ -327,7 +329,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
 
   useEffect(() => () => { if (image) URL.revokeObjectURL(image) }, [image])
   useEffect(() => {
-    if (!snapshot || !visible || preview) return
+    if (!snapshot || !viewVisible || preview) return
     const controller = new AbortController()
     let busy = false
     const refresh = async () => {
@@ -342,7 +344,7 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
     void refresh()
     const timer = window.setInterval(() => void refresh(), 2_000)
     return () => { controller.abort(); window.clearInterval(timer) }
-  }, [snapshot, visible, api, udid, preview])
+  }, [snapshot, viewVisible, api, udid, preview])
 
   const clamp = ({ x, y }: Point): Point => ({ x: Math.max(0, Math.min(dimensions.current.width, x)), y: Math.max(0, Math.min(dimensions.current.height, y)) })
   const screenRect = (target: HTMLCanvasElement) => {
@@ -557,8 +559,8 @@ export function SimLiveView({ udid, token, active = true, connected = true, prev
       {inspector.enabled && inspector.element ? <SimInspectorBox element={inspector.element} size={nativeSize} canvasSize={canvasSize} orientation={orientation} /> : null}
     </div>
     {inspector.enabled && inspector.selected ? <SimInspectorPanel element={inspector.selected} source={inspector.source} onClose={inspector.close} /> : null}
-    {panel === 'logs' && active && connected && !preview ? <SimLogsPanel key={udid} api={api} udid={udid} token={token} onClose={() => setPanel(null)} /> : null}
-    {panel === 'permissions' && active && connected && !preview ? <SimPermissionsPanel key={udid} api={api} udid={udid} onClose={() => setPanel(null)} /> : null}
+    {panel === 'logs' && visible && active && connected && !preview ? <SimLogsPanel key={udid} api={api} udid={udid} token={token} onClose={() => setPanel(null)} /> : null}
+    {panel === 'permissions' && visible && active && connected && !preview ? <SimPermissionsPanel key={udid} api={api} udid={udid} onClose={() => setPanel(null)} /> : null}
     </div>
     {inputEnabled ? <p className="sim-live-hint">⌥ drag to pinch or rotate · ⌥⇧ drag for a two-finger pan · ⌘V pastes</p> : null}
     {reason ? <p className="sims-error" role="status">{reason}{snapshot && active && connected ? <> <button type="button" onClick={() => { setReason(''); setRevision((value) => value + 1) }}>Retry live</button></> : null}</p> : null}
