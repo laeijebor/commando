@@ -158,6 +158,17 @@ describe('chat resume hardening', () => {
       .toBe('/c/launcher claude --permission-mode acceptEdits --resume abcdef12-3456')
   })
 
+  it("carries the mode a plan-mode chat returns to on Implement, and drops a stale one", () => {
+    const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan --pre-plan-permission-mode default'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }))
+      .toBe('/c/launcher claude --permission-mode plan --pre-plan-permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' }))
+      .toBe('/c/launcher claude --permission-mode plan --pre-plan-permission-mode acceptEdits --resume abcdef12-3456')
+    // Out of plan mode there is nothing to return to.
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { permissionMode: 'acceptEdits', prePlanPermissionMode: 'acceptEdits' }))
+      .toBe('/c/launcher claude --permission-mode acceptEdits --resume abcdef12-3456')
+  })
+
   it('prefixes the daemon environment a restored shell may lack', () => {
     const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan'.split(' ')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, { COMMANDO_PORT: '4410' }))

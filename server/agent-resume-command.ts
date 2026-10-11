@@ -258,18 +258,20 @@ export function launchFromProcess(
 const CHAT_HOST_ENTRY = '/server/agent-host/main.ts'
 const CHAT_FLAGS: FlagSpec = {
   bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions'],
-  single: ['--config-dir', '--model', '--effort', '--permission-mode', '--claude-path', '--readable-dir'],
+  single: ['--config-dir', '--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--claude-path', '--readable-dir'],
   dropped: ['--resume'],
 }
 /** Flags a chat's pickers can change while it runs; its current settings replace them. */
-const CHAT_SETTING_FLAGS = new Set(['--model', '--effort', '--permission-mode'])
+const CHAT_SETTING_FLAGS = new Set(['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode'])
 const CHAT_BYPASS_FLAGS = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions'])
 
-/** A running chat's model, effort and mode, which its resume carries instead of the launch flags. */
+/** A running chat's model, effort and modes, which its resume carries instead of the launch flags. */
 export type ChatResumeSettings = {
   model?: string
   effort?: string
   permissionMode: string
+  /** In plan mode, the mode Implement returns to. */
+  prePlanPermissionMode?: string
   bypassAllowed?: boolean
 }
 
@@ -290,6 +292,7 @@ function withChatSettings(flags: readonly string[], settings: ChatResumeSettings
     ...(settings.model ? ['--model', settings.model] : []),
     ...(settings.effort ? ['--effort', settings.effort] : []),
     '--permission-mode', settings.permissionMode,
+    ...(settings.permissionMode === 'plan' && settings.prePlanPermissionMode ? ['--pre-plan-permission-mode', settings.prePlanPermissionMode] : []),
     ...(settings.bypassAllowed && settings.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
   ]
 }

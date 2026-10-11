@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption } from './agent-chat.js'
+import { attachmentNote, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -164,5 +164,31 @@ describe('selectedModelOption', () => {
   it('takes the default row before Claude reports a model', () => {
     expect(selectedModelOption({ models })?.value).toBe('default')
     expect(selectedModelOption({ models: [] })).toBeUndefined()
+  })
+})
+
+describe('attachment notes', () => {
+  const note = attachmentNote('shot "1".png', '/state/chat-image-sessions/s1/abc.png')
+
+  it('strips the notes the host appends, leaving what the person typed', () => {
+    expect(note).toBe('[Attached image "shot _1_.png" is saved at: /state/chat-image-sessions/s1/abc.png]')
+    expect(stripAttachmentNotes(`fix this layout\n\n${note}\n\n${note}`)).toBe('fix this layout')
+    expect(stripAttachmentNotes(note)).toBe('')
+    expect(stripAttachmentNotes('keep [Attached image] as typed')).toBe('keep [Attached image] as typed')
+  })
+
+  it('strips a note a summary cut off at the end too', () => {
+    // Hook summaries flatten newlines and stop at a length limit.
+    const summary = `fix this layout ${note} ${note}`.slice(0, 140)
+    expect(stripAttachmentNotesFromSummary(summary)).toBe('fix this layout')
+    expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, 20)}`)).toBe('fix this')
+    for (const length of [1, 5, 14, 17]) expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, length)}`)).toBe('fix this')
+    expect(stripAttachmentNotesFromSummary(note.slice(0, 60))).toBe('')
+    const bracketed = attachmentNote('my [draft].png', '/state/chat-image-sessions/s1/abc.png')
+    expect(stripAttachmentNotesFromSummary(`fix this ${bracketed.slice(0, 30)}`)).toBe('fix this')
+    // Brackets the person typed stay.
+    expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
+    expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')
+    expect(stripAttachmentNotesFromSummary('no notes here')).toBe('no notes here')
   })
 })

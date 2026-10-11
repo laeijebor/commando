@@ -1,6 +1,7 @@
 import { cursorProducerIdentity, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { isCursorInvocation, normalizeCursorHook } from './cursor-hooks.js'
 import { inferAgentProvider } from './agent-status.js'
+import { stripAttachmentNotesFromSummary } from '../shared/agent-chat.js'
 import type {
   AgentActivity,
   AgentActivityKind,
@@ -1014,7 +1015,9 @@ export class AgentStatusRegistry {
     else if (eventName === 'StopFailure') status = 'failed'
 
     if (!status) return null
-    const intent = boundedText(payload.intent, MAX_INTENT_LENGTH)
+    // A chat pane's prompt carries a note per attached image naming its saved
+    // copy; the summary is what the person typed (the hook may have cut a note short).
+    const intent = boundedText(typeof payload.intent === 'string' ? stripAttachmentNotesFromSummary(payload.intent) : payload.intent, MAX_INTENT_LENGTH)
     const promptId = boundedText(payload.prompt_id, 200)
     const nextTurnId = eventName === 'UserPromptSubmit'
       ? JSON.stringify([promptId, intent])

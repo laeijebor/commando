@@ -224,6 +224,14 @@ describe('AgentSession start-up', () => {
     expect(sessions.at(-1)?.title).toBe('Recent changes')
   })
 
+  it("titles a chat from its first prompt without that prompt's attachment notes", async () => {
+    const firstPrompt = 'Why is this pane blank?\n\n[Attached image "pane.png" is saved at: /sessions/abcd1234-0000/x.png]'
+    const { sessions } = started({ resume: 'abcd1234-0000' }, { messages: async () => [], title: async () => firstPrompt })
+    await tick()
+    await tick()
+    expect(sessions.at(-1)?.title).toBe('Why is this pane blank?')
+  })
+
   it('reports a history it cannot read and still starts', async () => {
     const { fake, items } = started({ resume: 'abcd1234-0000' }, { messages: async () => { throw new Error('no transcript') }, title: async () => undefined })
     await tick()
@@ -577,6 +585,28 @@ describe('commando-agent settings flags', () => {
     // Picking the default model drops the explicit one; an unknown mode keeps the launch mode.
     const { selectedModel: _picked, ...defaults } = info
     expect(sessionFlags(withSessionSettings(args, { ...defaults, permissionMode: 'weird' }))).toEqual(['--config-dir', '/x/.claudew', '--effort', 'high', '--permission-mode', 'bypassPermissions'])
+  })
+
+  it('keeps the mode a plan-mode chat returns to on Implement across a restart or resume', async () => {
+    const args = parseHostArgs(['claude', '--permission-mode', 'default'], {})
+    if (typeof args === 'string') throw new Error(args)
+    const info: ChatSessionInfo = { paneId: '%3', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1, permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' }
+    const flags = sessionFlags(withSessionSettings(args, info))
+    expect(flags).toEqual(['--permission-mode', 'plan', '--pre-plan-permission-mode', 'acceptEdits'])
+    // The respawned host parses them back and starts in plan mode, remembering acceptEdits.
+    const restarted = parseHostArgs(['claude', ...flags, '--resume', 'abcd1234-0000'], {})
+    if (typeof restarted === 'string') throw new Error(restarted)
+    expect(restarted).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' })
+    const { fake, sessions } = started({ resume: 'abcd1234-0000', permissionMode: restarted.permissionMode, prePlanPermissionMode: restarted.prePlanPermissionMode })
+    await tick()
+    // Claude's init repeats plan mode; that isn't a fresh entry into it.
+    fake.push(system('init', { model: 'claude-haiku-4-5', permissionMode: 'plan' }))
+    await tick()
+    expect(sessions.at(-1)).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' })
+    // Out of plan mode the remembered mode is stale, so it isn't carried.
+    expect(sessionFlags(withSessionSettings(args, { ...info, permissionMode: 'acceptEdits' }))).toEqual(['--permission-mode', 'acceptEdits'])
+    expect(parseHostArgs(['claude', '--pre-plan-permission-mode', 'plan'], {})).toMatch(/Unknown pre-plan permission mode/)
+    expect(parseHostArgs(['claude', '--pre-plan-permission-mode', 'weird'], {})).toMatch(/Unknown pre-plan permission mode/)
   })
 })
 
@@ -957,6 +987,70 @@ describe('AgentSession queue review fixes', () => {
     fake.push(resultMessage())
     await tick()
     expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued', 'wait for the flushed turn'])
+  })
+
+  it("stays running through the stale idle after a flush, so the composer keeps queueing", async () => {
+    const { fake, session, sessions } = started()
+    fake.push(system('session_state_changed', { state: 'running' }))
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    await tick()
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued'])
+    const seen = sessions.length
+    // The idle for the first turn's result arrives after the queue went out.
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.slice(seen).map((info) => info.status)).not.toContain('idle')
+    expect(sessions.at(-1)?.status).toBe('running')
+    expect(session.busy).toBe(true)
+    // The flushed turn's own result and idle end it.
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
+  })
+
+  it("ends a turn Claude ran without a result once it reports idle (a local command's output)", async () => {
+    const { fake, session, sessions } = started()
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    session.send('/context')
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
+  })
+
+  it("keeps a send that beat Claude's start-up idle running", async () => {
+    const { fake, session, sessions } = started()
+    session.send('first')
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('running')
+    fake.push(system('session_state_changed', { state: 'running' }))
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+  })
+
+  it('ignores only one stale idle, so a send that never gets a result cannot stick the chat running', async () => {
+    const { fake, session, sessions } = started()
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('running')
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.status).toBe('idle')
+    expect(session.busy).toBe(false)
   })
 
   it('waits for every steer when two cut the turn short', async () => {
