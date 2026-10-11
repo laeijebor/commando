@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import type { WebSocket } from 'ws'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
+  hostTakesInput,
   hostTakesSettings,
   isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
   type ChatAnswer,
+  type ChatFileSearchResult,
+  type ChatImageRef,
   type ChatItem,
   type ChatSettingsChange,
   type ChatState,
@@ -21,6 +25,8 @@ const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
 const PENDING_PANE_MS = 60_000
 /** How long a chat stays after its host disconnects (a host restart or daemon blip). */
 const DISCONNECTED_GRACE_MS = 60_000
+/** A file search the host hasn't answered by then reports an error instead. */
+const FILE_SEARCH_TIMEOUT_MS = 10_000
 
 type HubDependencies = {
   paneExists: (paneId: string) => boolean
@@ -56,8 +62,16 @@ type ChatEntry = {
  * late (or after a daemon restart, once the host reconnects) gets the whole
  * conversation, and routes the browser's sends, interrupts and answers back.
  */
+type PendingFileSearch = {
+  paneId: string
+  socket: WebSocket
+  timer: ReturnType<typeof setTimeout>
+  resolve: (result: ChatFileSearchResult) => void
+}
+
 export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
+  private readonly fileSearches = new Map<string, PendingFileSearch>()
 
   constructor(private readonly dependencies: HubDependencies) {}
 
@@ -85,6 +99,9 @@ export class AgentHostHub {
       })
     })
     socket.on('close', () => {
+      for (const [requestId, search] of this.fileSearches) {
+        if (search.socket === socket) this.finishFileSearch(requestId, { entries: [], truncated: false, error: 'The agent host disconnected' })
+      }
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
         entry.socket = null
@@ -132,6 +149,8 @@ export class AgentHostHub {
           items: mergeChatItems([], message.items),
           hostConnected: true,
           ...(updateAvailable ? { updateAvailable } : {}),
+          // The host resends its list straight after; keep the menu meanwhile.
+          ...(previous?.state.commands ? { commands: previous.state.commands } : {}),
         }
         this.chats.set(paneId, { state, socket, visible: known, receivedAt: this.now() })
         if (known) this.dependencies.broadcast({ type: 'chat_state', chat: state })
@@ -154,6 +173,20 @@ export class AgentHostHub {
       case 'session_closed':
         if (!this.owned(socket, message.paneId)) return
         this.remove(message.paneId)
+        return
+      case 'commands': {
+        const entry = this.owned(socket, message.paneId)
+        if (!entry) return
+        entry.state = { ...entry.state, commands: message.commands }
+        if (entry.visible) this.dependencies.broadcast({ type: 'chat_commands', paneId: message.paneId, commands: message.commands })
+        return
+      }
+      case 'file_search_result': {
+        const search = this.fileSearches.get(message.requestId)
+        if (!search || search.socket !== socket || search.paneId !== message.paneId) return
+        const { type: _type, paneId: _paneId, requestId, ...result } = message
+        this.finishFileSearch(requestId, result)
+      }
     }
   }
 
@@ -173,8 +206,38 @@ export class AgentHostHub {
     return this.chats.get(paneId)?.state.items ?? []
   }
 
-  send(paneId: string, text: string, requestId: string): boolean {
-    return this.toHost(paneId, { type: 'send', paneId, text, requestId })
+  send(paneId: string, text: string, requestId: string, images: ChatImageRef[] = []): boolean {
+    return this.toHost(paneId, { type: 'send', paneId, text, ...(images.length ? { images } : {}), requestId })
+  }
+
+  /** Hosts started before images existed would drop them, so the daemon refuses instead. */
+  takesInput(paneId: string): boolean {
+    const session = this.chats.get(paneId)?.state.session
+    return session ? hostTakesInput(session) : false
+  }
+
+  /** Asks the pane's host for `@` mention candidates in its session folder. */
+  searchFiles(paneId: string, query: string): Promise<ChatFileSearchResult> {
+    const entry = this.chats.get(paneId)
+    if (!entry?.socket) return Promise.resolve({ entries: [], truncated: false, error: 'No agent host is connected for this pane' })
+    if (!hostTakesInput(entry.state.session)) return Promise.resolve({ entries: [], truncated: false, error: 'Restart this chat to mention files' })
+    const socket = entry.socket
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.finishFileSearch(requestId, { entries: [], truncated: false, error: 'The file search timed out' }), FILE_SEARCH_TIMEOUT_MS)
+      this.fileSearches.set(requestId, { paneId, socket, timer, resolve })
+      if (!this.sendTo(socket, { type: 'file_search', paneId, query, requestId })) {
+        this.finishFileSearch(requestId, { entries: [], truncated: false, error: 'No agent host is connected for this pane' })
+      }
+    })
+  }
+
+  private finishFileSearch(requestId: string, result: ChatFileSearchResult): void {
+    const search = this.fileSearches.get(requestId)
+    if (!search) return
+    this.fileSearches.delete(requestId)
+    clearTimeout(search.timer)
+    search.resolve(result)
   }
 
   interrupt(paneId: string, requestId: string): boolean {

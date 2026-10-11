@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   AgentStatus,
+  ClientMessage,
   CommandoSnapshot,
   PaneMark,
   SavedWorkspace,
@@ -84,6 +85,7 @@ import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
+import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
 import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -614,7 +616,7 @@ async function main(): Promise<void> {
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
     chatSettings: (paneId) => chatResumeSettings(paneId),
-    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH'] as const)
+    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR'] as const)
       .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
@@ -823,6 +825,29 @@ async function main(): Promise<void> {
     log: (message) => console.log(message),
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
+  const chatImages = new ChatImageStore()
+  const chatSends = new Map<string, Promise<void>>()
+  const deliverChatSend = async (client: ClientState, message: Extract<ClientMessage, { type: 'chat_send' }>): Promise<void> => {
+    const images = message.images ?? []
+    if (images.length) {
+      if (!agentHosts.takesInput(message.paneId)) {
+        sendError(client, 'chat_unavailable', 'This chat started before images were supported; restart it to send images', message.requestId)
+        return
+      }
+      const stored = await Promise.all(images.map((image) => chatImages.exists(image.id)))
+      if (stored.includes(false)) {
+        sendError(client, 'chat_image_missing', 'An attached image is no longer stored; attach it again', message.requestId)
+        return
+      }
+    }
+    if (!agentHosts.send(message.paneId, message.text, message.requestId, images)) {
+      sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
+    }
+  }
+  void chatImages.prune().then(
+    (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat images`) },
+    (error: unknown) => console.error('[commando] chat image prune failed', error),
+  )
 
   const processStatusForPane = (pane: CommandoSnapshot['panes'][number]): AgentStatus => (
     inferAgentProcessStatus({
@@ -2011,14 +2036,27 @@ async function main(): Promise<void> {
         })
         return
       }
-      case 'chat_send':
+      case 'chat_file_search': {
+        void agentHosts.searchFiles(message.paneId, message.query).then((result) => {
+          send(client, { type: 'chat_file_search_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })
+        return
+      }
+      case 'chat_send': {
+        // Image sends check their files first; later sends to the pane wait so turns keep their order.
+        const paneId = message.paneId
+        const next = (chatSends.get(paneId) ?? Promise.resolve())
+          .then(() => deliverChatSend(client, message))
+          .catch((error: unknown) => sendError(client, 'chat_send_failed', error instanceof Error ? error.message : 'Send failed', message.requestId))
+        chatSends.set(paneId, next)
+        void next.finally(() => { if (chatSends.get(paneId) === next) chatSends.delete(paneId) })
+        return
+      }
       case 'chat_interrupt':
       case 'chat_restart':
       case 'chat_configure':
       case 'chat_answer': {
-        const delivered = message.type === 'chat_send'
-          ? agentHosts.send(message.paneId, message.text, message.requestId)
-          : message.type === 'chat_interrupt'
+        const delivered = message.type === 'chat_interrupt'
             ? agentHosts.interrupt(message.paneId, message.requestId)
             : message.type === 'chat_restart'
               ? agentHosts.restart(message.paneId, message.requestId)
@@ -2209,6 +2247,7 @@ async function main(): Promise<void> {
       if (await webPanesApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
+      if (await handleChatImage(request, response, url, chatImages)) return
 
       if (url.pathname === '/api/health' || url.pathname === '/api/snapshot') {
         if (request.method !== 'GET') {
@@ -2253,6 +2292,7 @@ async function main(): Promise<void> {
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
+        if (await handleChatImageUpload(request, response, url, chatImages)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
