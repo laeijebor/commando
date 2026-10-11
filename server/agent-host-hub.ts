@@ -42,10 +42,14 @@ const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
  * broker (island, phone, push, the web HUD) and the status registry.
  */
 export type ChatInteractions = {
-  /** The host's session status; null once the chat is gone. */
-  status: (paneId: string, report: ChatHostReport | null) => void
+  /**
+   * The host's session status; null once the host is gone. `restored` marks
+   * what a (re)connecting host already had, e.g. after a daemon restart: not
+   * news, so nobody is notified about it.
+   */
+  status: (paneId: string, report: ChatHostReport | null, restored?: boolean) => void
   /** A request the host waits on, to list where it can be answered. */
-  open: (paneId: string, item: ChatRequestItem) => void
+  open: (paneId: string, item: ChatRequestItem, restored?: boolean) => void
   /** Takes a request off those lists: answered, cancelled, or its host is gone. */
   close: (paneId: string, requestId: string) => void
 }
@@ -139,6 +143,8 @@ export class AgentHostHub {
         if (entry.socket !== socket) continue
         entry.socket = null
         this.closeRequests(paneId, entry)
+        // Hooks take the pane back meanwhile (it may run Claude Code itself now).
+        if (entry.visible) this.dependencies.interactions?.status(paneId, null)
         if (!entry.visible) {
           this.chats.delete(paneId)
           continue
@@ -193,7 +199,8 @@ export class AgentHostHub {
           receivedAt: this.now(),
           // The requests stay listed across a host change; the sync below drops the ones it no longer has.
           openRequests: previous?.openRequests ?? new Set(),
-          answered: previous?.answered ?? new Set(),
+          // A request still open in a new host's snapshot never got its answer.
+          answered: new Set(),
           hadTurn: state.items.some((item) => item.kind === 'user_message'),
         }
         this.chats.set(paneId, entry)
@@ -377,9 +384,10 @@ export class AgentHostHub {
     const entry = this.chats.get(paneId)
     const request = entry?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
     if (!entry || !request || request.kind !== 'request' || request.answer || entry.answered.has(chatRequestId)) return false
+    if (!this.toHost(paneId, { type: 'answer', paneId, chatRequestId, answer, requestId })) return false
     entry.answered.add(chatRequestId)
     if (entry.openRequests.delete(chatRequestId)) this.dependencies.interactions?.close(paneId, chatRequestId)
-    return this.toHost(paneId, { type: 'answer', paneId, chatRequestId, answer, requestId })
+    return true
   }
 
   /** An answer from the island, phone or HUD, in their shape. */
@@ -491,7 +499,7 @@ export class AgentHostHub {
     const interactions = this.dependencies.interactions
     if (!interactions || !entry.socket) return
     if (all) {
-      this.reportStatus(paneId, entry)
+      this.reportStatus(paneId, entry, true)
       const open = new Set(items.flatMap((item) => item.kind === 'request' && chatRequestOpen(item) ? [item.requestId] : []))
       for (const requestId of entry.openRequests) {
         if (open.has(requestId)) continue
@@ -504,7 +512,7 @@ export class AgentHostHub {
       if (chatRequestOpen(item)) {
         if (entry.openRequests.has(item.requestId) || entry.answered.has(item.requestId)) continue
         entry.openRequests.add(item.requestId)
-        interactions.open(paneId, item)
+        interactions.open(paneId, item, all)
       } else {
         entry.answered.delete(item.requestId)
         if (entry.openRequests.delete(item.requestId)) interactions.close(paneId, item.requestId)
@@ -517,8 +525,8 @@ export class AgentHostHub {
     entry.openRequests.clear()
   }
 
-  private reportStatus(paneId: string, entry: ChatEntry): void {
-    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn))
+  private reportStatus(paneId: string, entry: ChatEntry, restored = false): void {
+    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn), restored)
   }
 
   private toHost(paneId: string, message: DaemonToHostMessage): boolean {

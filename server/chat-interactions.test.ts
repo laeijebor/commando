@@ -51,10 +51,11 @@ function setup() {
   const broker = new AgentInteractionBroker()
   const changes: AgentStatusChange[] = []
   const restored: string[] = []
+  const news: string[] = []
   const publish = (change: AgentStatusChange, quiet?: boolean) => {
-    if (!change) return
+    if (change?.type !== 'upsert') return
     changes.push(change)
-    if (quiet && change.type === 'upsert') restored.push(change.status.status)
+    ;(quiet ? restored : news).push(change.status.status)
   }
   const hub: AgentHostHub = new AgentHostHub({
     paneExists: (paneId) => paneId === '%1',
@@ -76,7 +77,7 @@ function setup() {
     { action },
   )
   const answersToHost = () => socket.sent.filter((message) => message.type === 'answer')
-  return { registry, broker, hub, socket, changes, restored, answerFromPhone, answersToHost }
+  return { registry, broker, hub, socket, changes, restored, news, answerFromPhone, answersToHost }
 }
 
 const companionRequests = (registry: AgentStatusRegistry, broker: AgentInteractionBroker) => buildCompanionSnapshot(
@@ -179,8 +180,8 @@ describe('chat requests in the approvals broker', () => {
     expect(answersToHost()).toEqual([expect.objectContaining({ answer: { kind: 'approval', decision: 'deny' } })])
   })
 
-  it('withdraws requests the host cancels, and every request when the host disconnects', async () => {
-    const { broker, socket } = setup()
+  it('withdraws requests the host cancels, and every request and its status when the host disconnects', async () => {
+    const { broker, socket, registry } = setup()
     socket.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [approval('r1'), approval('r2')] })
     await settle()
     socket.host({ type: 'items', paneId: '%1', items: [approval('r1', { status: 'interrupted', answer: { kind: 'cancelled', reason: 'Interrupted' } })] })
@@ -189,6 +190,38 @@ describe('chat requests in the approvals broker', () => {
     expect(broker.hasPending('%1', 'r2')).toBe(true)
     socket.close()
     expect(broker.hasPending('%1', 'r2')).toBe(false)
+    // Hooks have the pane meanwhile; it may run Claude Code itself now.
+    expect(registry.get('%1')).toBeUndefined()
+  })
+
+  it('relists a request whose answer was lost with its host, and keeps a failed send answerable', async () => {
+    const { hub, broker, socket, answerFromPhone } = setup()
+    socket.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [approval('r1')] })
+    await settle()
+    expect(answerFromPhone('r1')).toMatchObject({ ok: true })
+    socket.close()
+    const next = new FakeSocket()
+    hub.connect(next as unknown as WebSocket)
+    next.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [approval('r1')] })
+    await settle()
+    expect(broker.hasPending('%1', 'r1')).toBe(true)
+    expect(hub.answered('%1', 'r1')).toBe(false)
+
+    next.readyState = 3
+    expect(hub.answer('%1', 'r1', { kind: 'approval', decision: 'allow' }, 'chat-1')).toBe(false)
+    expect(hub.answered('%1', 'r1')).toBe(false)
+    expect(broker.hasPending('%1', 'r1')).toBe(true)
+  })
+
+  it('tells nobody about what a reconnecting host already had, only about what comes after', async () => {
+    const { socket, restored, news } = setup()
+    socket.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [userMessage, approval('r1')] })
+    await settle()
+    expect(restored).toEqual(['needs_input', 'needs_input'])
+    expect(news).toEqual([])
+    socket.host({ type: 'items', paneId: '%1', items: [approval('r2')] })
+    await settle()
+    expect(news).toEqual(['needs_input'])
   })
 
   it('relists what a reconnecting host still waits on, and drops what it no longer has', async () => {
@@ -265,6 +298,10 @@ describe('chat request mapping', () => {
     expect(chatAnswerFor(question('q'), { action: 'allow_once' })).toBeNull()
     expect(chatAnswerFor(question('q'), { action: 'answer', answers: [['Mint'], ['extra']] })).toBeNull()
     expect(chatAnswerFor(question('q'), { action: 'answer', answers: [['Lavender', 'typed']] })).toEqual({ kind: 'question', answers: { 'Which colour?': 'Lavender, typed' } })
+    // The listed label was cut at 80 characters; Claude gets the whole option.
+    const long = `${'A very long option '.repeat(6)}end`
+    const cut = question('q', { questions: [{ question: 'Which?', multiSelect: false, options: [{ label: long }] }] })
+    expect(chatAnswerFor(cut, { action: 'answer', answers: [[long.slice(0, 80).trim()]] })).toEqual({ kind: 'question', answers: { 'Which?': long } })
   })
 
   it('shows an approval by its command and title', () => {

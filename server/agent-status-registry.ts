@@ -82,7 +82,7 @@ const MAX_QUESTIONS = 8
 const MAX_QUESTION_OPTIONS = 12
 const MAX_QUESTION_HEADER_LENGTH = 30
 const MAX_QUESTION_TEXT_LENGTH = 300
-const MAX_OPTION_LABEL_LENGTH = 80
+export const MAX_OPTION_LABEL_LENGTH = 80
 const MAX_OPTION_DESCRIPTION_LENGTH = 200
 const MAX_FILE_PATH_LENGTH = 240
 const MAX_CHANGED_FILES = 20
@@ -791,8 +791,8 @@ function withChatHost(record: RegistryRecord, chat: ChatHostState): RegistryReco
   for (const [key, pending] of chat.requests) pendingRequests.set(key, pending)
   const details = cloneDetails(record.status.details ?? emptyDetails())
   syncAttention(details, pendingRequests)
-  const sessionId = record.status.agentSessionId ?? chat.sessionId ?? ''
-  const name = record.status.agentSessionName ?? chat.title ?? null
+  const sessionId = chat.sessionId || record.status.agentSessionId || ''
+  const name = chat.title ?? record.status.agentSessionName ?? null
   const base = hookStatus(record.status.paneId, 'claude', sessionId, name, chat.status, record.status.updatedAt)
   if (chat.status === 'unknown') base.summary = 'Claude is ready'
   const status = attachDetails({
@@ -928,14 +928,12 @@ export class AgentStatusRegistry {
     if (
       previous?.status === report.status &&
       previous.sessionId === report.sessionId &&
-      previous.title === report.title
+      previous.title === report.title &&
+      // A hook (SessionEnd, say) can drop the record; the next report brings it back.
+      this.records.has(paneId)
     ) return null
     this.chatHosts.set(paneId, { ...report, requests: previous?.requests ?? new Map() })
     return this.upsertChat(paneId, updatedAt)
-  }
-
-  hasChatHost(paneId: string): boolean {
-    return this.chatHosts.has(paneId)
   }
 
   /**

@@ -2289,7 +2289,13 @@ export function App() {
   const answerFromHud = (paneId: string, request: AgentInteractionRequest, answer: AgentInteractionAnswer) => {
     const id = requestId('hud-answer')
     hudAnswerPanes.current.set(id, paneId)
-    window.setTimeout(() => hudAnswerPanes.current.delete(id), 30_000)
+    window.setTimeout(() => {
+      if (!hudAnswerPanes.current.delete(id)) return
+      // No reply: let the card try again.
+      setHudAnswers((current) => current[paneId]?.requestId === request.id && current[paneId].pending
+        ? { ...current, [paneId]: { ...current[paneId], pending: false } }
+        : current)
+    }, 30_000)
     const sent = send({ type: 'answer_agent_request', paneId, interactionId: request.id, answer, requestId: id })
     if (!sent) hudAnswerPanes.current.delete(id)
     setHudAnswers((current) => ({

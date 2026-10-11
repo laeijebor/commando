@@ -2,7 +2,7 @@ import type { ChatAnswer, ChatItem, ChatSessionInfo } from '../shared/agent-chat
 import type { AgentInteractionAnswer } from '../shared/protocol.js'
 import type { ChatInteractions } from './agent-host-hub.js'
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
-import type { AgentStatusChange, AgentStatusRegistry, ChatHostReport } from './agent-status-registry.js'
+import { MAX_OPTION_LABEL_LENGTH, type AgentStatusChange, type AgentStatusRegistry, type ChatHostReport } from './agent-status-registry.js'
 
 /**
  * Chat panes in the places that answer terminal agents' requests (island,
@@ -56,8 +56,19 @@ export function chatAnswerFor(item: ChatRequestItem, answer: AgentInteractionAns
   if (answer.action !== 'answer' || answer.answers?.length !== questions.length) return null
   return {
     kind: 'question',
-    answers: Object.fromEntries(questions.map((question, index) => [question.question, answer.answers![index].join(', ')])),
+    answers: Object.fromEntries(questions.map((question, index) => [
+      question.question,
+      answer.answers![index].map((value) => optionLabel(question.options, value)).join(', '),
+    ])),
   }
+}
+
+/** The island and HUD send an option's label as listed, which may be cut short; Claude gets it whole. */
+function optionLabel(options: readonly { label: string }[], value: string): string {
+  const listed = (label: string) => label.replace(/\s+/g, ' ').trim().slice(0, MAX_OPTION_LABEL_LENGTH)
+  return options.find((option) => option.label === value)?.label ??
+    options.find((option) => listed(option.label) === value)?.label ??
+    value
 }
 
 /**
@@ -83,9 +94,9 @@ export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean): Chat
 }
 
 type BrokerChatInteractionsDependencies = {
-  registry: Pick<AgentStatusRegistry, 'applyChatHost' | 'hasChatHost' | 'openChatRequest' | 'closeChatRequest'>
+  registry: Pick<AgentStatusRegistry, 'applyChatHost' | 'openChatRequest' | 'closeChatRequest'>
   broker: Pick<AgentInteractionBroker, 'offer' | 'cancel'>
-  /** `restored` marks a pane's first report, which is what the host already had, not news. */
+  /** `restored`: what the host already had when it (re)connected, not news to push. */
   publish: (change: AgentStatusChange, restored?: boolean) => void
   /** Hands an island, phone or HUD answer to the chat's host (`AgentHostHub.answerInteraction`). */
   answer: (paneId: string, chatRequestId: string, answer: AgentInteractionAnswer) => boolean
@@ -100,12 +111,8 @@ type BrokerChatInteractionsDependencies = {
 export function brokerChatInteractions(dependencies: BrokerChatInteractionsDependencies): ChatInteractions {
   const { registry, broker, publish } = dependencies
   return {
-    status: (paneId, report) => {
-      // E.g. after a daemon restart: the chat finished long ago, so nobody is told it just did.
-      const restored = !registry.hasChatHost(paneId)
-      publish(registry.applyChatHost(paneId, report), restored)
-    },
-    open: (paneId, item) => {
+    status: (paneId, report, restored) => publish(registry.applyChatHost(paneId, report), restored),
+    open: (paneId, item, restored) => {
       const { request, attention } = chatInteraction(item)
       const opened = registry.openChatRequest(paneId, request, attention)
       if (!opened) return
@@ -114,7 +121,7 @@ export function brokerChatInteractions(dependencies: BrokerChatInteractionsDepen
           dependencies.log?.(`[agent-host] ${paneId} could not take an answer to ${item.requestId}`)
         }
       })
-      publish(opened.change)
+      publish(opened.change, restored)
     },
     close: (paneId, requestId) => {
       broker.cancel(paneId, requestId)
