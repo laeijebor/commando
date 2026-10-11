@@ -182,6 +182,11 @@ describe('attachment notes', () => {
     const summary = `fix this layout ${note} ${note}`.slice(0, 140)
     expect(stripAttachmentNotesFromSummary(summary)).toBe('fix this layout')
     expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, 20)}`)).toBe('fix this')
+    for (const length of [1, 5, 14, 17]) expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, length)}`)).toBe('fix this')
+    expect(stripAttachmentNotesFromSummary(note.slice(0, 60))).toBe('')
+    // Brackets the person typed stay.
+    expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
+    expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')
     expect(stripAttachmentNotesFromSummary('no notes here')).toBe('no notes here')
   })
 })

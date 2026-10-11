@@ -85,8 +85,7 @@ export function attachmentNote(name: string, path: string): string {
 
 /** Matches attachmentNote's notes; the first group is the saved path. */
 export const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
-/** A note that a summary's length limit cut off at the end. */
-const CUT_ATTACHMENT_NOTE = /\s*\[Attached image\b[^\]]*$/
+const ATTACHMENT_NOTE_START = '[Attached image "'
 
 /** The text the person typed, without the notes the host added for Claude. */
 export function stripAttachmentNotes(text: string): string {
@@ -95,7 +94,13 @@ export function stripAttachmentNotes(text: string): string {
 
 /** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
 export function stripAttachmentNotesFromSummary(text: string): string {
-  return stripAttachmentNotes(text).replace(CUT_ATTACHMENT_NOTE, '').trim()
+  const stripped = stripAttachmentNotes(text)
+  // A length limit can cut a note anywhere, even inside its opening words.
+  const open = stripped.lastIndexOf('[')
+  const tail = stripped.slice(open)
+  const cutNote = open >= 0 && (open === 0 || /\s/.test(stripped[open - 1]!)) && !tail.includes(']')
+    && (tail.startsWith(ATTACHMENT_NOTE_START) || ATTACHMENT_NOTE_START.startsWith(tail))
+  return cutNote ? stripped.slice(0, open).trim() : stripped
 }
 
 /** Images are stored by content hash, so an id is also a safe file name. */

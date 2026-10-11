@@ -134,12 +134,13 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
     '--permission-mode', args.permissionMode,
-    // Only plan mode returns to it; out of plan mode it is stale.
-    ...(args.permissionMode === 'plan' && args.prePlanPermissionMode ? ['--pre-plan-permission-mode', args.prePlanPermissionMode] : []),
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
     // The plan it started from stays readable after a restart or resume.
     ...(args.readableDir ? ['--readable-dir', args.readableDir] : []),
+    // Only plan mode returns to it; out of plan mode it is stale. Last, so a
+    // daemon that doesn't know it still reads every flag before it.
+    ...(args.permissionMode === 'plan' && args.prePlanPermissionMode ? ['--pre-plan-permission-mode', args.prePlanPermissionMode] : []),
   ]
 }
 
