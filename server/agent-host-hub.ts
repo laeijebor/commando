@@ -22,8 +22,10 @@ import {
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../shared/agent-chat.js'
-import type { ServerMessage } from '../shared/protocol.js'
+import type { AgentInteractionAnswer, ServerMessage } from '../shared/protocol.js'
 import type { ChatResumeSettings } from './agent-resume-command.js'
+import type { ChatHostReport } from './agent-status-registry.js'
+import { chatAnswerFor, chatHostReport, chatRequestOpen, type ChatRequestItem } from './chat-interactions.js'
 
 const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
 /** How long a session may wait for its pane to appear in the tmux snapshot. */
@@ -34,6 +36,19 @@ const DISCONNECTED_GRACE_MS = 60_000
 const FILE_SEARCH_TIMEOUT_MS = 10_000
 /** Reading a long subagent transcript can take a moment. */
 const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
+
+/**
+ * Where a chat's requests and status show beyond its pane: the approvals
+ * broker (island, phone, push, the web HUD) and the status registry.
+ */
+export type ChatInteractions = {
+  /** The host's session status; null once the chat is gone. */
+  status: (paneId: string, report: ChatHostReport | null) => void
+  /** A request the host waits on, to list where it can be answered. */
+  open: (paneId: string, item: ChatRequestItem) => void
+  /** Takes a request off those lists: answered, cancelled, or its host is gone. */
+  close: (paneId: string, requestId: string) => void
+}
 
 type HubDependencies = {
   paneExists: (paneId: string) => boolean
@@ -46,6 +61,7 @@ type HubDependencies = {
   verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>
   /** Fingerprint of the agent host code in the daemon's checkout. */
   currentHostBuild?: () => Promise<string | undefined>
+  interactions?: ChatInteractions
   log?: (message: string) => void
   now?: () => number
 }
@@ -61,6 +77,12 @@ type ChatEntry = {
   visible: boolean
   receivedAt: number
   disconnectedAt?: number
+  /** Requests listed through `ChatInteractions.open` and not closed yet. */
+  openRequests: Set<string>
+  /** Requests an answer went to, so a second one is refused until the host confirms. */
+  answered: Set<string>
+  /** Whether the chat has had a turn, so idle reads as done. */
+  hadTurn: boolean
 }
 
 /**
@@ -116,6 +138,7 @@ export class AgentHostHub {
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
         entry.socket = null
+        this.closeRequests(paneId, entry)
         if (!entry.visible) {
           this.chats.delete(paneId)
           continue
@@ -163,22 +186,44 @@ export class AgentHostHub {
           // The host resends its list straight after; keep the menu meanwhile.
           ...(previous?.state.commands ? { commands: previous.state.commands } : {}),
         }
-        this.chats.set(paneId, { state, socket, visible: known, receivedAt: this.now() })
-        if (known) this.dependencies.broadcast({ type: 'chat_state', chat: state })
+        const entry: ChatEntry = {
+          state,
+          socket,
+          visible: known,
+          receivedAt: this.now(),
+          // The requests stay listed across a host change; the sync below drops the ones it no longer has.
+          openRequests: previous?.openRequests ?? new Set(),
+          answered: previous?.answered ?? new Set(),
+          hadTurn: state.items.some((item) => item.kind === 'user_message'),
+        }
+        this.chats.set(paneId, entry)
+        if (known) {
+          this.dependencies.broadcast({ type: 'chat_state', chat: state })
+          this.syncInteractions(paneId, entry, state.items, true)
+        }
         return
       }
       case 'session_update': {
         const entry = this.owned(socket, message.session.paneId)
         if (!entry || message.session.hostPid !== entry.state.session.hostPid) return
         entry.state = { ...entry.state, session: message.session }
-        if (entry.visible) this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
+        if (entry.visible) {
+          this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
+          this.reportStatus(message.session.paneId, entry)
+        }
         return
       }
       case 'items': {
         const entry = this.owned(socket, message.paneId)
         if (!entry || message.items.length === 0) return
         entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, message.items) }
-        if (entry.visible) this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
+        const startsTurn = !entry.hadTurn && message.items.some((item) => item.kind === 'user_message')
+        if (startsTurn) entry.hadTurn = true
+        if (entry.visible) {
+          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
+          this.syncInteractions(message.paneId, entry, message.items)
+          if (startsTurn) this.reportStatus(message.paneId, entry)
+        }
         return
       }
       case 'session_closed':
@@ -323,10 +368,33 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'restart', paneId, requestId })
   }
 
+  /**
+   * Sends an answer to the host. Only the first answer to a request goes,
+   * whether it came from the chat or (through the broker) the island, phone
+   * or HUD; the request then leaves every list.
+   */
   answer(paneId: string, chatRequestId: string, answer: ChatAnswer, requestId: string): boolean {
-    const request = this.chats.get(paneId)?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
-    if (!request || request.kind !== 'request' || request.answer) return false
+    const entry = this.chats.get(paneId)
+    const request = entry?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
+    if (!entry || !request || request.kind !== 'request' || request.answer || entry.answered.has(chatRequestId)) return false
+    entry.answered.add(chatRequestId)
+    if (entry.openRequests.delete(chatRequestId)) this.dependencies.interactions?.close(paneId, chatRequestId)
     return this.toHost(paneId, { type: 'answer', paneId, chatRequestId, answer, requestId })
+  }
+
+  /** An answer from the island, phone or HUD, in their shape. */
+  answerInteraction(paneId: string, chatRequestId: string, answer: AgentInteractionAnswer): boolean {
+    const request = this.chats.get(paneId)?.state.items.find((item) => item.kind === 'request' && item.requestId === chatRequestId)
+    const chatAnswer = request?.kind === 'request' && chatRequestOpen(request) ? chatAnswerFor(request, answer) : null
+    return chatAnswer !== null && this.answer(paneId, chatRequestId, chatAnswer, randomUUID())
+  }
+
+  /** True once the request has had an answer, from anywhere. */
+  answered(paneId: string, chatRequestId: string): boolean {
+    const entry = this.chats.get(paneId)
+    return Boolean(entry?.answered.has(chatRequestId) || entry?.state.items.some((item) => (
+      item.kind === 'request' && item.requestId === chatRequestId && item.answer && item.answer.kind !== 'cancelled'
+    )))
   }
 
   /**
@@ -364,6 +432,7 @@ export class AgentHostHub {
         }
         if (this.chats.get(paneId) !== entry) continue
         entry.visible = true
+        this.syncInteractions(paneId, entry, entry.state.items, true)
       } else {
         const targetId = this.dependencies.targetIdFor(paneId)
         if (!targetId || targetId === entry.state.targetId) continue
@@ -405,7 +474,51 @@ export class AgentHostHub {
     const entry = this.chats.get(paneId)
     if (!entry) return
     this.chats.delete(paneId)
-    if (entry.visible) this.dependencies.broadcast({ type: 'chat_removed', paneId })
+    this.closeRequests(paneId, entry)
+    if (entry.visible) {
+      this.dependencies.broadcast({ type: 'chat_removed', paneId })
+      this.dependencies.interactions?.status(paneId, null)
+    }
+  }
+
+  /**
+   * Lists the host's open requests among `items` where the island, phone and
+   * HUD can answer them, and takes off the ones that were answered or
+   * cancelled. With all the chat's items (a snapshot), it also drops listed
+   * requests they no longer hold and reports the host's status.
+   */
+  private syncInteractions(paneId: string, entry: ChatEntry, items: readonly ChatItem[], all = false): void {
+    const interactions = this.dependencies.interactions
+    if (!interactions || !entry.socket) return
+    if (all) {
+      this.reportStatus(paneId, entry)
+      const open = new Set(items.flatMap((item) => item.kind === 'request' && chatRequestOpen(item) ? [item.requestId] : []))
+      for (const requestId of entry.openRequests) {
+        if (open.has(requestId)) continue
+        entry.openRequests.delete(requestId)
+        interactions.close(paneId, requestId)
+      }
+    }
+    for (const item of items) {
+      if (item.kind !== 'request') continue
+      if (chatRequestOpen(item)) {
+        if (entry.openRequests.has(item.requestId) || entry.answered.has(item.requestId)) continue
+        entry.openRequests.add(item.requestId)
+        interactions.open(paneId, item)
+      } else {
+        entry.answered.delete(item.requestId)
+        if (entry.openRequests.delete(item.requestId)) interactions.close(paneId, item.requestId)
+      }
+    }
+  }
+
+  private closeRequests(paneId: string, entry: ChatEntry): void {
+    for (const requestId of entry.openRequests) this.dependencies.interactions?.close(paneId, requestId)
+    entry.openRequests.clear()
+  }
+
+  private reportStatus(paneId: string, entry: ChatEntry): void {
+    this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn))
   }
 
   private toHost(paneId: string, message: DaemonToHostMessage): boolean {

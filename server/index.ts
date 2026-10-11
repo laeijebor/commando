@@ -101,6 +101,7 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { brokerChatInteractions } from './chat-interactions.js'
 import { AgentRequestApi } from './agent-request-api.js'
 import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answers.js'
 import { CompanionHub } from './companion.js'
@@ -810,7 +811,8 @@ async function main(): Promise<void> {
     }
     return hostBuildCache.build
   }
-  const agentHosts = new AgentHostHub({
+  const interactions = new AgentInteractionBroker()
+  const agentHosts: AgentHostHub = new AgentHostHub({
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
@@ -823,6 +825,14 @@ async function main(): Promise<void> {
       const current = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
       return Number.isInteger(current) && current > 0 && current !== known && hostRunsInPane(rows, hostPid, current)
     },
+    // A chat's requests and status show where a terminal agent's do: island, phone, push and the HUD.
+    interactions: brokerChatInteractions({
+      registry: agentStatuses,
+      broker: interactions,
+      publish: publishAgentStatusChange,
+      answer: (paneId, chatRequestId, answer) => agentHosts.answerInteraction(paneId, chatRequestId, answer),
+      log: (message) => console.warn(message),
+    }),
     log: (message) => console.log(message),
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
@@ -1534,7 +1544,6 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
-  const interactions = new AgentInteractionBroker()
   const providerUsage = new ProviderUsageService()
   const pushDevices = new PushDeviceRegistry()
   await pushDevices.load().catch((error: unknown) => {
@@ -2082,9 +2091,11 @@ async function main(): Promise<void> {
                 ? agentHosts.configure(message.paneId, message.settings, message.requestId)
                 : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
         if (!delivered) {
-          sendError(client, 'chat_unavailable', message.type === 'chat_answer'
-            ? 'That request is no longer waiting for an answer'
-            : 'No agent host is connected for this pane', message.requestId)
+          sendError(client, 'chat_unavailable', message.type !== 'chat_answer'
+            ? 'No agent host is connected for this pane'
+            : agentHosts.answered(message.paneId, message.chatRequestId)
+              ? 'Already answered on another device'
+              : 'That request is no longer waiting for an answer', message.requestId)
         }
         return
       }
