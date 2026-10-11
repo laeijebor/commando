@@ -34,8 +34,8 @@ function metrics(agent: SubagentItem, items: readonly ChatItem[], now: number): 
   const activity = subagentActivity(agent, items, now)
   const parts = [
     agent.background && agent.state === 'running' ? 'background' : STATE_LABELS[agent.state],
-    `${activity.toolUses} ${activity.toolUses === 1 ? 'tool' : 'tools'}`,
-    elapsedLabel(activity.elapsedMs),
+    ...(activity.toolUses !== null ? [`${activity.toolUses} ${activity.toolUses === 1 ? 'tool' : 'tools'}`] : []),
+    ...(activity.elapsedMs !== null ? [elapsedLabel(activity.elapsedMs)] : []),
   ]
   return { line: parts.join(' · '), lastAction: activity.lastAction }
 }
@@ -72,10 +72,12 @@ export function SubagentGroup({ row, items, now, onOpen }: {
                 <span className="min-w-0 flex-1">
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span className="truncate text-sm text-foreground">{subagentLabel(agent)}</span>
-                    {agent.subagentType ? <span className="shrink-0 truncate text-2xs text-muted-foreground">{agent.subagentType}</span> : null}
-                    <span className="ml-auto shrink-0 text-2xs tabular-nums text-muted-foreground">{line}</span>
+                    {agent.subagentType ? <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">{agent.subagentType}</span> : null}
                   </span>
-                  {lastAction ? <span className="block truncate text-xs text-muted-foreground">{lastAction}</span> : null}
+                  <span className="block truncate text-xs text-muted-foreground">
+                    <span className="tabular-nums">{line}</span>
+                    {lastAction ? ` · ${lastAction}` : ''}
+                  </span>
                 </span>
               </button>
             </li>

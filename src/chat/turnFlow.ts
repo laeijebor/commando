@@ -84,8 +84,12 @@ export function elapsedLabel(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
 }
 
-/** Tool count, elapsed time and the latest thing a subagent did, from its task events or its own items. */
-export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[], now: number): { toolUses: number; elapsedMs: number; lastAction: string | null } {
+/**
+ * Tool count, elapsed time and the latest thing a subagent did, from its task
+ * events or its own items. Counts are null when nothing reported them (a
+ * resumed background subagent), rather than a misleading zero.
+ */
+export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[], now: number): { toolUses: number | null; elapsedMs: number | null; lastAction: string | null } {
   const own = items.filter((item) => item.parentToolUseId === agent.id)
   const work = own.filter((item) => item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'subagent')
   const last = work.at(-1)
@@ -93,11 +97,12 @@ export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[]
     ? last.kind === 'command' ? `$ ${last.command}` : last.kind === 'file_change' ? `Edited ${last.path}` : last.kind === 'subagent' ? `Subagent: ${last.description}` : last.title
     : null
   const running = agent.state === 'running'
+  const spanMs = agent.updatedAt - agent.createdAt
   return {
-    toolUses: Math.max(agent.toolUses ?? 0, work.length),
+    toolUses: agent.toolUses !== undefined || work.length ? Math.max(agent.toolUses ?? 0, work.length) : null,
     // Live elapsed time ticks from when Claude started it. Afterwards, Claude's own
     // total; a stopped subagent's last progress report undercounts, so never less than it ran.
-    elapsedMs: running ? now - agent.createdAt : Math.max(agent.durationMs ?? 0, agent.updatedAt - agent.createdAt),
+    elapsedMs: running ? now - agent.createdAt : agent.durationMs !== undefined || spanMs > 0 ? Math.max(agent.durationMs ?? 0, spanMs) : null,
     lastAction: running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
   }
 }
