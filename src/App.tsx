@@ -1410,8 +1410,11 @@ export function App() {
           const chatPane = chatSendPanes.current.get(message.requestId)
           if (chatPane) {
             chatSendPanes.current.delete(message.requestId)
-            const refused = { requestId: message.requestId, message: message.message, code: message.code }
-            setChatSendErrors((current) => ({ ...current, [chatPane]: refused }))
+            const refused = { requestId: message.requestId, code: message.code }
+            setChatSendErrors((current) => ({
+              ...current,
+              [chatPane]: { message: message.message, refused: [...(current[chatPane]?.refused ?? []), refused] },
+            }))
           }
         }
         if (
@@ -2124,7 +2127,7 @@ export function App() {
     })
     if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), requestId: id })) {
       chatSendPanes.current.delete(id)
-      setChatSendErrors((current) => ({ ...current, [paneId]: { requestId: id, message: "Not connected to Commando, so the message wasn't sent" } }))
+      setChatSendErrors((current) => ({ ...current, [paneId]: { message: "Not connected to Commando, so the message wasn't sent", refused: [{ requestId: id }] } }))
     }
     return id
   }

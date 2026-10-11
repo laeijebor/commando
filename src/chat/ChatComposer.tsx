@@ -41,12 +41,12 @@ export interface ChatInputServices {
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
 }
 
-/** A send the daemon refused, named by the request id `onSend` returned. */
+/** Sends the daemon refused, named by the request ids `onSend` returned. */
 export interface ChatSendError {
-  requestId: string
+  /** The latest refusal's reason. */
   message: string
-  /** The daemon's error code, e.g. `chat_image_missing`. */
-  code?: string
+  /** Every refusal since the error was last cleared, so two that land together each restore. */
+  refused: { requestId: string; code?: string }[]
 }
 
 /** How long the app matches a refusal to its send; the composer keeps a sent draft as long. */
@@ -443,21 +443,27 @@ export function ChatComposer({
   // even after later follow-ups were sent.
   const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[] }>())
   useEffect(() => {
-    const sent = sendError && sentDrafts.current.get(sendError.requestId)
-    if (!sendError || !sent) return
-    sentDrafts.current.delete(sendError.requestId)
-    if (sent.text) setDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
-    // A missing image has to be attached again, as the error says.
-    if (!sent.images.length || sendError.code === 'chat_image_missing') return
-    setAttachments((current) => [
-      ...current,
-      ...sent.images.slice(0, fitAttachments(current.length, sent.images.length).accepted).map((ref) => ({
+    let restored = attachments.length
+    for (const { requestId, code } of sendError?.refused ?? []) {
+      const sent = sentDrafts.current.get(requestId)
+      if (!sent) continue
+      sentDrafts.current.delete(requestId)
+      if (sent.text) setDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
+      // A missing image has to be attached again, as the error says.
+      if (!sent.images.length || code === 'chat_image_missing') continue
+      const fit = fitAttachments(restored, sent.images.length)
+      if (fit.error) setAttachError(fit.error)
+      restored += fit.accepted
+      const images = sent.images.slice(0, fit.accepted).map((ref) => ({
         key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         name: ref.name ?? 'image',
         previewUrl: chatImageUrl(ref.id),
         ref,
-      })),
-    ])
+      }))
+      setAttachments((current) => [...current, ...images])
+    }
+    // Only a new refusal restores; the attachments it reads are this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendError])
 
   const uploading = attachments.some((attachment) => !attachment.ref)
