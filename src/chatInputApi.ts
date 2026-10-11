@@ -19,7 +19,8 @@ export async function uploadChatImage(token: string, image: PreparedImage, fetch
 /** The open pull requests of the repository a chat pane works in, from Commando's PR tracking. */
 export async function openPullRequestsForPane(prs: Pick<PrsApiClient, 'repoForPane' | 'list'>, paneId: string): Promise<PullRequestOption[]> {
   const repo = await prs.repoForPane(paneId)
-  if (!repo) throw new Error("This chat's folder isn't a GitHub repository")
+  // Commando knows a pane's repository from its branch's upstream remote.
+  if (!repo) throw new Error("Commando can't tell this chat's GitHub repository (its branch has no upstream on GitHub)")
   const list = await prs.list(repo, 'open', { scope: 'everyone' })
   return list.pullRequests.map((pr) => ({ number: pr.number, title: pr.title, url: pr.url, isDraft: pr.isDraft, author: pr.author }))
 }
