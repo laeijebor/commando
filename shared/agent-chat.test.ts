@@ -184,6 +184,8 @@ describe('attachment notes', () => {
     expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, 20)}`)).toBe('fix this')
     for (const length of [1, 5, 14, 17]) expect(stripAttachmentNotesFromSummary(`fix this ${note.slice(0, length)}`)).toBe('fix this')
     expect(stripAttachmentNotesFromSummary(note.slice(0, 60))).toBe('')
+    const bracketed = attachmentNote('my [draft].png', '/state/chat-image-sessions/s1/abc.png')
+    expect(stripAttachmentNotesFromSummary(`fix this ${bracketed.slice(0, 30)}`)).toBe('fix this')
     // Brackets the person typed stay.
     expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
     expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')

@@ -95,8 +95,10 @@ export function stripAttachmentNotes(text: string): string {
 /** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
 export function stripAttachmentNotesFromSummary(text: string): string {
   const stripped = stripAttachmentNotes(text)
-  // A length limit can cut a note anywhere, even inside its opening words.
-  const open = stripped.lastIndexOf('[')
+  // A length limit can cut a note anywhere: after its opening (the image name
+  // may hold a "["), or inside its opening words.
+  const marker = stripped.lastIndexOf(ATTACHMENT_NOTE_START)
+  const open = marker >= 0 && !stripped.slice(marker).includes(']') ? marker : stripped.lastIndexOf('[')
   const tail = stripped.slice(open)
   const cutNote = open >= 0 && (open === 0 || /\s/.test(stripped[open - 1]!)) && !tail.includes(']')
     && (tail.startsWith(ATTACHMENT_NOTE_START) || ATTACHMENT_NOTE_START.startsWith(tail))
