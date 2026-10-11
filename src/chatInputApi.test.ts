@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { openPullRequestsForPane, uploadChatImage } from './chatInputApi'
+import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 
 const id = `${'b'.repeat(64)}.jpg`
 
@@ -24,5 +24,15 @@ describe('chat input API', () => {
     expect(await openPullRequestsForPane(prs as never, '%3')).toEqual([{ number: 32, title: 'Controls', url: 'u', isDraft: false, author: 'leo' }])
     expect(prs.list).toHaveBeenCalledWith('laeijebor/commando', 'open', { scope: 'everyone' })
     await expect(openPullRequestsForPane({ repoForPane: async () => null, list: vi.fn() } as never, '%3')).rejects.toThrow("can't tell this chat's GitHub repository")
+  })
+
+  it('saves a plan to the vault or stashes it for a new pane, and reports refusals', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ path: '/v/Plans/p.md', title: 'P' }), { status: 201 }))
+    expect(await saveChatPlan('tok', '# P', fetcher as unknown as typeof fetch)).toEqual({ path: '/v/Plans/p.md' })
+    expect(fetcher).toHaveBeenCalledWith('/api/chat/plans/vault', expect.objectContaining({ method: 'POST', body: JSON.stringify({ markdown: '# P' }), headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } }))
+    await stashChatPlan('tok', '# P', fetcher as unknown as typeof fetch)
+    expect(fetcher).toHaveBeenLastCalledWith('/api/chat/plans/file', expect.anything())
+    const refusing = vi.fn(async () => new Response(JSON.stringify({ error: 'The plan is too long' }), { status: 413 }))
+    await expect(saveChatPlan('', 'x', refusing as unknown as typeof fetch)).rejects.toThrow('The plan is too long')
   })
 })
