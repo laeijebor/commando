@@ -1,7 +1,7 @@
 import { Component, useMemo, type ReactNode } from 'react'
 import { PlugZap, RefreshCw } from 'lucide-react'
-import type { ChatAnswer, ChatSettingsChange, ChatState } from '../../shared/agent-chat'
-import { ChatComposer } from './ChatComposer'
+import type { ChatAnswer, ChatImageRef, ChatSettingsChange, ChatState } from '../../shared/agent-chat'
+import { ChatComposer, type ChatInputServices } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
 import { Button } from './ui/button'
 import { latestTodos, pendingRequests } from './timelineRows'
@@ -40,19 +40,27 @@ function ChatColumn({
   onAnswer,
   onConfigure,
   onRestart,
+  services,
+  sendError,
+  onDismissSendError,
 }: {
   chat: ChatState
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
   focused: boolean
   onFocus: () => void
-  onSend: (text: string) => void
+  onSend: (text: string, images?: ChatImageRef[]) => void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   /** Switches the model, effort or permission mode while the chat runs. */
   onConfigure: (change: ChatSettingsChange) => void
   /** Restarts the host on the same conversation, to run the current code. */
   onRestart?: () => void
+  /** File search, pull requests and image uploads for the composer's menus. */
+  services?: ChatInputServices
+  /** Why the daemon refused the last send (e.g. an image it no longer has). */
+  sendError?: string
+  onDismissSendError?: () => void
 }) {
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
@@ -88,6 +96,10 @@ function ChatColumn({
         hostConnected={connected && chat.hostConnected}
         requests={requests}
         {...(todos ? { todos } : {})}
+        {...(chat.commands ? { commands: chat.commands } : {})}
+        {...(services ? { services } : {})}
+        {...(sendError ? { sendError } : {})}
+        {...(onDismissSendError ? { onDismissSendError } : {})}
         onSend={onSend}
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}

@@ -31,6 +31,11 @@ export function selectedModelOption(session: ChatSessionInfo): ChatModelOption |
     ?? models.find((model) => model.value === running || model.resolvedModel === running)
 }
 
+/** Whether the model menu can open: the host takes settings and has listed its models. */
+export function modelMenuAvailable(session: ChatSessionInfo): boolean {
+  return Boolean(session.models?.length && hostTakesSettings(session))
+}
+
 /** "Opus 5.5": the named row for the running model, never the "Default" alias. */
 export function modelLabel(session: ChatSessionInfo): string | undefined {
   const models = session.models ?? []
@@ -81,12 +86,21 @@ function MenuOption({ checked, label, description, onSelect }: { checked: boolea
 }
 
 /** Model and effort, after t3code's ProviderModelPicker and TraitsPicker. */
-export function ModelPicker({ session, disabled, onConfigure }: { session: ChatSessionInfo; disabled: boolean; onConfigure: (change: ChatSettingsChange) => void }) {
-  const [open, setOpen] = useState(false)
+export function ModelPicker({ session, disabled, onConfigure, open: controlledOpen, onOpenChange }: {
+  session: ChatSessionInfo
+  disabled: boolean
+  onConfigure: (change: ChatSettingsChange) => void
+  /** Lets the composer's `/model` open the menu. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
+  const [ownOpen, setOwnOpen] = useState(false)
+  const open = controlledOpen ?? ownOpen
+  const setOpen = onOpenChange ?? setOwnOpen
   const label = modelLabel(session)
   if (!label) return null
   const pill = session.effort ? `${label} · ${EFFORT_LABELS[session.effort]}` : label
-  if (!session.models?.length || !hostTakesSettings(session)) return <Pill title={session.model}>{pill}</Pill>
+  if (!session.models?.length || !modelMenuAvailable(session)) return <Pill title={session.model}>{pill}</Pill>
   const selected = selectedModelOption(session)
   const efforts = selected?.efforts ?? []
   const pick = (change: ChatSettingsChange) => {

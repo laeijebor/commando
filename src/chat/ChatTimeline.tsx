@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, LoaderCircle, MessageCircleQuestion, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench } from 'lucide-react'
 import type { ChatItem } from '../../shared/agent-chat'
+import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from './timelineRows'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
@@ -63,7 +64,7 @@ function hasDetails(item: WorkItem): boolean {
   switch (item.kind) {
     case 'command': return Boolean(item.output)
     case 'file_change': return Boolean(item.patch || item.output)
-    case 'tool': return Boolean(item.detail || item.output)
+    case 'tool': return Boolean(item.detail || item.output || item.images?.length)
     default: return false
   }
 }
@@ -99,7 +100,13 @@ function WorkDetails({ item }: { item: WorkItem }) {
     case 'file_change':
       return <WorkLogDetails>{item.patch ? <PatchView patch={item.patch} /> : null}{item.isError && item.output ? <Output text={item.output} /> : null}</WorkLogDetails>
     case 'tool':
-      return <WorkLogDetails>{item.detail ? <Output text={item.detail} /> : null}{item.output ? <Output text={item.output} /> : null}</WorkLogDetails>
+      return (
+        <WorkLogDetails>
+          {item.detail ? <Output text={item.detail} /> : null}
+          {item.images?.length ? <ImageStrip images={item.images} /> : null}
+          {item.output ? <Output text={item.output} /> : null}
+        </WorkLogDetails>
+      )
     default:
       return null
   }
@@ -191,10 +198,13 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   switch (row.kind) {
     case 'user':
       return (
-        <div className="flex justify-end pb-3 pt-1">
-          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground">
-            {row.item.text}
-          </div>
+        <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+          {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
+          {row.item.text ? (
+            <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground">
+              {row.item.text}
+            </div>
+          ) : null}
         </div>
       )
     case 'assistant':
