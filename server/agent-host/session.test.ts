@@ -26,6 +26,7 @@ function fakeQuery() {
     { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Fast', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
     { value: 'bad model', displayName: 'Bad', description: '' },
   ])
+  const getSettings = vi.fn(async (): Promise<{ applied?: { model?: unknown } }> => ({ applied: { model: 'claude-opus-5-5' } }))
   const supportedCommands = vi.fn(async () => [
     { name: 'compact', description: 'Free up context', argumentHint: '<instructions>', builtin: true },
     { name: 'mcp', description: 'Manage MCP servers', argumentHint: '', builtin: true },
@@ -54,7 +55,7 @@ function fakeQuery() {
       }
     }
     const handle = stream() as unknown as Query
-    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
+    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getSettings, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
     return handle
   }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query
   return {
@@ -68,6 +69,7 @@ function fakeQuery() {
     backgroundTasks,
     supportedModels,
     supportedCommands,
+    getSettings,
     contextUsage,
     get options() { return options! },
     push(message: SDKMessage) { outbox.push(message); wake?.(); wake = null },
@@ -407,6 +409,79 @@ describe('AgentSession settings', () => {
     await session.configure({ model: 'default', effort: 'max' })
     expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
     expect(sessions.at(-1)?.effort).toBe('max')
+  })
+
+  it('names the model a fresh chat will run before its first turn, and checks effort against it', async () => {
+    const fake = fakeQuery()
+    fake.getSettings.mockResolvedValueOnce({ applied: { model: 'claude-sonnet-5-5' } })
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    const items: ChatItem[] = []
+    session.on('session', (info) => sessions.push(info))
+    session.on('items', (changed) => items.push(...changed))
+    void session.start()
+    await tick()
+    expect(sessions.at(-1)).toMatchObject({ model: 'claude-sonnet-5-5' })
+    expect(sessions.at(-1)?.selectedModel).toBeUndefined()
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    expect(items.flatMap((item) => item.kind === 'notice' ? [item.text] : [])).toEqual(["Sonnet 5.5 doesn't offer max effort."])
+  })
+
+  it('checks a fresh chat’s effort against the default row when Claude cannot say its model', async () => {
+    const log = vi.fn()
+    const fake = fakeQuery()
+    fake.getSettings.mockRejectedValueOnce(new Error('unsupported'))
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, log }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    expect(log).toHaveBeenCalledWith("Couldn't read the model Claude will run: unsupported")
+    expect(sessions.at(-1)?.model).toBeUndefined()
+    await session.configure({ effort: 'xhigh' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
+  })
+
+  it('checks effort against the model behind a context-window variant', async () => {
+    const fake = fakeQuery()
+    fake.getSettings.mockResolvedValueOnce({ applied: { model: 'claude-sonnet-5-5[1m]' } })
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    void session.start()
+    await tick()
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    await session.configure({ effort: 'high' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'high' })
+  })
+
+  it('leaves the model unset when Claude has no settings to read', async () => {
+    const fake = fakeQuery()
+    fake.getSettings.mockResolvedValueOnce({})
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    expect(sessions.at(-1)?.models).toHaveLength(2)
+    expect(sessions.at(-1)?.model).toBeUndefined()
+  })
+
+  it('keeps a model picked before Claude says which one it would have run', async () => {
+    const fake = fakeQuery()
+    let answer!: (value: { applied: { model: string } }) => void
+    fake.getSettings.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    await session.configure({ model: 'sonnet' })
+    answer({ applied: { model: 'claude-opus-5-5' } })
+    await tick()
+    expect(sessions.at(-1)).toMatchObject({ model: 'claude-sonnet-5-5', selectedModel: 'sonnet' })
   })
 
   it('checks effort against the alias row of a model started by its full id', async () => {

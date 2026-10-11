@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2 } from 'lucide-react'
-import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatEffort, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
+import { baseModelId, hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatEffort, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
@@ -30,10 +30,13 @@ export function modelMenuAvailable(session: ChatSessionInfo): boolean {
 /** "Opus 5.5": the named row for the running model, never the "Default" alias. */
 export function modelLabel(session: ChatSessionInfo): string | undefined {
   const models = session.models ?? []
-  const picked = session.selectedModel ?? session.model
+  const fallback = models.find((model) => model.value === DEFAULT_MODEL)
+  // Claude reports the running model with its first turn; until then a fresh chat runs the default.
+  const running = session.model ? baseModelId(session.model) : fallback?.resolvedModel
+  const picked = session.selectedModel ?? running
   const named = models.find((model) => model.value !== DEFAULT_MODEL && model.value === picked)
-    ?? models.find((model) => model.value !== DEFAULT_MODEL && model.resolvedModel === session.model)
-  return named?.displayName ?? session.model
+    ?? models.find((model) => model.value !== DEFAULT_MODEL && model.resolvedModel === running)
+  return named?.displayName ?? session.model ?? fallback?.displayName
 }
 
 function Pill({ children, title }: { children: ReactNode; title?: string }) {

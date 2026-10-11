@@ -290,15 +290,24 @@ export interface ChatSessionInfo {
   prePlanPermissionMode?: ChatSessionPermissionMode
 }
 
-/** The model the session runs, as a row of its list: the explicit pick, else the default row while it runs. */
+/** `claude-opus-5-5` for `claude-opus-5-5[1m]`: no row lists the context-window variant a setting can pick. */
+export function baseModelId(id: string): string {
+  return id.replace(/\[[^\]]*\]$/, '')
+}
+
+/**
+ * The model the session runs, as a row of its list: the explicit pick, else the default row
+ * while it runs, or before Claude reports a model at all (a fresh chat runs the default).
+ */
 export function selectedModelOption(session: Pick<ChatSessionInfo, 'models' | 'selectedModel' | 'model'>): ChatModelOption | undefined {
   const models = session.models ?? []
   // A persisted full id (`--model claude-sonnet-5-5`) may only match an alias row by `resolvedModel`.
   const named = (id: string) => models.find((model) => model.value === id)
     ?? models.find((model) => model.value !== 'default' && model.resolvedModel === id)
     ?? models.find((model) => model.resolvedModel === id)
-  if (session.selectedModel) return named(session.selectedModel) ?? (session.model ? named(session.model) : undefined)
-  const running = session.model
+  const running = session.model && baseModelId(session.model)
+  if (session.selectedModel) return named(session.selectedModel) ?? (running ? named(running) : undefined)
+  if (!running) return models.find((model) => model.value === 'default')
   return models.find((model) => model.value === 'default' && model.resolvedModel === running)
     ?? models.find((model) => model.value === running || model.resolvedModel === running)
 }
