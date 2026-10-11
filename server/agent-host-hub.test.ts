@@ -378,14 +378,16 @@ describe('AgentHostHub switch to Claude Code', () => {
   function switchable(save: (entry: unknown) => Promise<void> = async () => undefined) {
     const saved: unknown[] = []
     const taken: string[] = []
+    const discarded: string[] = []
     let carried: { id: string; text: string; images: typeof image[] } | undefined
     const handoffs = {
       save: async (entry: unknown) => { saved.push(entry); await save(entry) },
       returned: () => carried,
       take: (_sessionId: string, carryId: string) => { taken.push(carryId); return true },
+      discard: (sessionId: string) => { discarded.push(sessionId); return true },
     }
     const run = setup({ handoffs })
-    return { ...run, saved, taken, setCarried: (value: typeof carried) => { carried = value } }
+    return { ...run, saved, taken, discarded, setCarried: (value: typeof carried) => { carried = value } }
   }
 
   it("relays a switch, keeps the client's draft, and saves it with the host's queue before the host goes", async () => {
@@ -437,5 +439,39 @@ describe('AgentHostHub switch to Claude Code', () => {
     expect(taken).toEqual(['carry-1'])
     expect(hub.states()[0]?.carried).toBeUndefined()
     expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_state', chat: { paneId: '%1' } })
+  })
+
+  it('ends the chat as soon as a host that handed over goes, and forgets a switch the host gave up on', async () => {
+    const { hub, connect, broadcasts, discarded } = switchable()
+    const socket = connect()
+    const switching = session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000', claudeCodeSwitch: 'switching' })
+    socket.host({ type: 'session_snapshot', session: switching, items: [] })
+    socket.host({ type: 'handoff', paneId: '%1', sessionId: 'abcd1234-0000', cwd: '/work', queue: [], returnFlags: [] })
+    await settle()
+    socket.close()
+    expect(hub.states()).toEqual([])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_removed', paneId: '%1' })
+
+    const other = connect()
+    other.host({ type: 'session_snapshot', session: switching, items: [] })
+    other.host({ type: 'handoff', paneId: '%1', sessionId: 'abcd1234-0000', cwd: '/work', queue: [], returnFlags: [] })
+    other.host({ type: 'session_update', session: { ...switching, claudeCodeSwitch: undefined } })
+    await settle()
+    expect(discarded).toEqual(['abcd1234-0000'])
+    other.close()
+    expect(hub.states()[0]).toMatchObject({ hostConnected: false })
+  })
+
+  it('carries an untaken draft across again, and keeps the draft when Cancel comes too late', async () => {
+    const { hub, connect, saved, setCarried } = switchable()
+    setCarried({ id: 'carry-1', text: 'from last time', images: [image] })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000', claudeCodeSwitch: 'switching' }), items: [] })
+    await settle()
+    hub.switchToClaudeCode('%1', 'after_turn', { text: 'typed now', images: [] }, 'r1')
+    hub.switchToClaudeCode('%1', 'cancel', undefined, 'r2')
+    socket.host({ type: 'handoff', paneId: '%1', sessionId: 'abcd1234-0000', cwd: '/work', queue: [], returnFlags: [] })
+    await settle()
+    expect(saved).toEqual([expect.objectContaining({ draft: { text: 'from last time\n\ntyped now', images: [image] } })])
   })
 })

@@ -4,6 +4,7 @@
  */
 export function PaneAgentSwitch({
   mode,
+  hostLogShown = false,
   chatDisabled,
   claudeCodeDisabled,
   claudeCodeTitle,
@@ -11,6 +12,8 @@ export function PaneAgentSwitch({
   onClaudeCode,
 }: {
   mode: 'chat' | 'claude-code'
+  /** The chat's pane shows its host's log (from the pane menu); Chat goes back to the chat. */
+  hostLogShown?: boolean
   chatDisabled?: boolean
   claudeCodeDisabled?: boolean
   /** Why Claude Code can't be picked now, or what picking it does. */
@@ -22,9 +25,9 @@ export function PaneAgentSwitch({
     <span className="pane-agent-switch" role="group" aria-label="Show this conversation as">
       <button
         type="button"
-        aria-pressed={mode === 'chat'}
+        aria-pressed={mode === 'chat' && !hostLogShown}
         disabled={chatDisabled}
-        title={mode === 'chat' ? 'Showing the chat' : 'Exit Claude Code and return to the chat (when Claude Code is idle)'}
+        title={mode === 'chat' ? hostLogShown ? 'Show the chat' : 'Showing the chat' : 'Exit Claude Code and return to the chat (when Claude Code is idle)'}
         onClick={onChat}
       >
         Chat

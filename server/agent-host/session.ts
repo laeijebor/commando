@@ -290,6 +290,8 @@ export class AgentSession {
   private skillNames: Set<string> | null = null
   private commandList: ChatCommand[] | null = null
   private files: WorkspaceFileIndex | null = null
+  /** The queue went to the daemon with a switch to Claude Code. */
+  private handedOver = false
   /**
    * Names the session's image folder. A new conversation is given this id up
    * front, so a resume (which keeps the id) finds the folder its notes name.
@@ -405,6 +407,8 @@ export class AgentSession {
     this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
     for (const send of held) this.send(send.text, send.images, send.options)
+    // A switch asked for while the earlier turns replayed can go now.
+    this.checkSwitch()
   }
 
   /**
@@ -564,6 +568,12 @@ export class AgentSession {
   /** The messages a switch carries across. */
   get queued(): ChatQueuedMessage[] {
     return [...this.queue]
+  }
+
+  /** The daemon kept the queue for the switch: end the session, without saying the queue was lost. */
+  handOver(): void {
+    this.handedOver = true
+    this.close()
   }
 
   /** Starts a requested switch once nothing is running or waiting on Claude. */
@@ -999,7 +1009,7 @@ export class AgentSession {
     } finally {
       // Queued messages can't go any more; say what they were rather than drop them unseen.
       // A switch to Claude Code has handed them over already.
-      if (this.queue.length && this.info.claudeCodeSwitch === 'switching') {
+      if (this.queue.length && this.handedOver) {
         this.setQueue([])
       } else if (this.queue.length) {
         const texts = this.queue.map((queued) => `"${quote(queued.text)}"`).join(', ')

@@ -76,6 +76,9 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
   }
   const command = deps.returnCommand(handoff)
   if (!command) return "Claude Code exited, but Commando couldn't build the command that resumes the chat"
+  // The chat may have started just now; typed into it, the command would go to Claude as a message.
+  const current = await deps.paneCommand(paneId)
+  if (deps.chatOwnsPane(paneId) || (current && !isShellCommand(current))) return null
   try {
     await deps.sendCommand(paneId, command)
   } catch (error) {

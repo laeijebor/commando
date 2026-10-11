@@ -850,6 +850,8 @@ async function main(): Promise<void> {
     publishedHandoffs = key
     broadcast(message)
   }
+  /** Panes whose Claude Code is being asked to exit, so a second click doesn't ask again. */
+  const chatReturns = new Set<string>()
   const panePidFromTmux = async (paneId: string): Promise<number | undefined> => {
     const pid = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
     return Number.isInteger(pid) && pid > 0 ? pid : undefined
@@ -2139,6 +2141,8 @@ async function main(): Promise<void> {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
         }
+        if (chatReturns.has(message.paneId)) return
+        chatReturns.add(message.paneId)
         void returnToChat({
           panePid: panePidFromTmux,
           paneCommand: async (paneId) => (await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_current_command}']).catch(() => '')).trim() || undefined,
@@ -2157,7 +2161,7 @@ async function main(): Promise<void> {
         }, message.paneId).then(
           (error) => { if (error) sendError(client, 'chat_unavailable', error, message.requestId) },
           (error: unknown) => sendError(client, 'chat_unavailable', `Couldn't return to the chat: ${error instanceof Error ? error.message : String(error)}`, message.requestId),
-        )
+        ).finally(() => chatReturns.delete(message.paneId))
         return
       }
       case 'chat_queue':

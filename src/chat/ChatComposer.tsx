@@ -528,9 +528,10 @@ export function ChatComposer({
       takenCarries.add(carried.id)
       if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
       const fit = fitAttachments(attachments.length, carried.images.length)
-      if (fit.error) setAttachError(fit.error)
-      const images = carried.images.slice(0, fit.accepted).map((ref) => ({
-        key: `carried-${carried.id}-${ref.id}`,
+      const dropped = carried.images.length - fit.accepted
+      if (dropped) setAttachError(`${dropped} image${dropped === 1 ? '' : 's'} from before Claude Code didn't fit in one message: ${carried.images.slice(fit.accepted).map((ref) => ref.name ?? ref.id).join(', ')}`)
+      const images = carried.images.slice(0, fit.accepted).map((ref, index) => ({
+        key: `carried-${carried.id}-${index}`,
         name: ref.name ?? 'image',
         previewUrl: chatImageUrl(ref.id),
         ref,

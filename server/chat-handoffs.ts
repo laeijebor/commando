@@ -80,7 +80,10 @@ export class ChatHandoffStore {
         if (validEntry(entry) && entry.createdAt >= cutoff) this.entries.set(entry.sessionId, entry)
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.onError(error)
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      this.onError(error)
+      // Keep what can't be read for a person to look at, rather than write over it.
+      await rename(this.path, `${this.path}.corrupt-${this.now()}`).catch(this.onError)
     }
   }
 
@@ -93,10 +96,27 @@ export class ChatHandoffStore {
     return [...this.entries.values()].filter((entry) => entry.returnedAt === undefined).map((entry) => entry.sessionId)
   }
 
-  /** Records a switch; resolves once it is on disk. */
-  save(entry: Omit<ChatHandoff, 'carryId' | 'createdAt' | 'returnedAt'>): Promise<void> {
+  /** Records a switch; resolves once it is on disk. A switch that can't be kept isn't recorded. */
+  async save(entry: Omit<ChatHandoff, 'carryId' | 'createdAt' | 'returnedAt'>): Promise<void> {
+    const previous = this.entries.get(entry.sessionId)
     this.entries.set(entry.sessionId, { ...entry, carryId: randomUUID(), createdAt: this.now() })
-    return this.persist()
+    try {
+      await this.persist()
+    } catch (error) {
+      if (previous) this.entries.set(entry.sessionId, previous)
+      else this.entries.delete(entry.sessionId)
+      this.persistQuietly()
+      throw error
+    }
+  }
+
+  /** A switch the chat gave up on after it was saved (the host timed out waiting): the chat kept its queue. */
+  discard(sessionId: string): boolean {
+    const entry = this.entries.get(sessionId)
+    if (!entry || entry.returnedAt !== undefined) return false
+    this.entries.delete(sessionId)
+    this.persistQuietly()
+    return true
   }
 
   /**
@@ -109,12 +129,12 @@ export class ChatHandoffStore {
     const carried = carriedDraft(entry)
     if (!carried) {
       this.entries.delete(sessionId)
-      void this.persist()
+      this.persistQuietly()
       return undefined
     }
     if (entry.returnedAt === undefined) {
       this.entries.set(sessionId, { ...entry, returnedAt: this.now() })
-      void this.persist()
+      this.persistQuietly()
     }
     return carried
   }
@@ -124,13 +144,18 @@ export class ChatHandoffStore {
     const entry = this.entries.get(sessionId)
     if (!entry || entry.carryId !== carryId || entry.returnedAt === undefined) return false
     this.entries.delete(sessionId)
-    void this.persist()
+    this.persistQuietly()
     return true
   }
 
   /** Resolves once queued writes have reached disk. */
   flush(): Promise<void> {
     return this.writes
+  }
+
+  /** For writes nobody waits on; a failure is reported through onError. */
+  private persistQuietly(): void {
+    this.persist().catch(() => undefined)
   }
 
   private persist(): Promise<void> {

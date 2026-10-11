@@ -52,7 +52,7 @@ type HubDependencies = {
   log?: (message: string) => void
   now?: () => number
   /** Keeps what a chat holds while its conversation runs in Claude Code. */
-  handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take'>
+  handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take' | 'discard'>
   /** A chat switched to Claude Code, or came back. */
   onHandoffsChange?: () => void
 }
@@ -71,6 +71,8 @@ type ChatEntry = {
   visible: boolean
   receivedAt: number
   disconnectedAt?: number
+  /** The host handed the conversation to Claude Code; its going away ends the chat at once. */
+  handedOff?: boolean
 }
 
 /**
@@ -128,6 +130,11 @@ export class AgentHostHub {
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
         entry.socket = null
+        // A host that handed its conversation to Claude Code isn't coming back as this chat.
+        if (entry.handedOff) {
+          this.remove(paneId)
+          continue
+        }
         if (!entry.visible) {
           this.chats.delete(paneId)
           continue
@@ -186,6 +193,13 @@ export class AgentHostHub {
       case 'session_update': {
         const entry = this.owned(socket, message.session.paneId)
         if (!entry || message.session.hostPid !== entry.state.session.hostPid) return
+        // The host gave up on a switch it had handed over (it timed out waiting): it still holds its queue.
+        const abandoned = entry.state.session.claudeCodeSwitch === 'switching' && !message.session.claudeCodeSwitch
+          && message.session.status !== 'closed' && message.session.status !== 'error'
+        if (abandoned && message.session.sessionId) {
+          entry.handedOff = false
+          if (this.dependencies.handoffs?.discard(message.session.sessionId)) this.dependencies.onHandoffsChange?.()
+        }
         entry.state = { ...entry.state, session: message.session }
         if (entry.visible) this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
         return
@@ -224,16 +238,25 @@ export class AgentHostHub {
       case 'handoff': {
         const entry = this.owned(socket, message.paneId)
         const handoffs = this.dependencies.handoffs
-        const refuse = (error: string) => this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: false, error })
+        const refuse = (error: string) => {
+          this.switchDrafts.delete(message.paneId)
+          this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: false, error })
+        }
         if (!entry || !handoffs) return void refuse("Commando can't keep this chat's draft and queue")
         if (entry.state.session.sessionId !== message.sessionId) return void refuse('The chat moved to another conversation')
-        const draft = this.switchDrafts.get(message.paneId) ?? { text: '', images: [] }
+        const typed = this.switchDrafts.get(message.paneId) ?? { text: '', images: [] }
+        // What the chat carried back last time and no composer took yet goes across again, first.
+        const untaken = entry.state.carried
+        const draft = untaken
+          ? { text: [untaken.text, typed.text].filter((part) => part.trim()).join('\n\n'), images: [...untaken.images, ...typed.images] }
+          : typed
         try {
           await handoffs.save({ sessionId: message.sessionId, cwd: message.cwd, returnFlags: message.returnFlags, draft, queue: message.queue })
         } catch (error) {
           return void refuse(`Commando couldn't save the chat's draft and queue: ${error instanceof Error ? error.message : String(error)}`)
         }
         this.switchDrafts.delete(message.paneId)
+        entry.handedOff = true
         this.sendTo(socket, { type: 'handoff_saved', paneId: message.paneId, ok: true })
         this.dependencies.onHandoffsChange?.()
       }
@@ -361,8 +384,14 @@ export class AgentHostHub {
     if (!entry?.socket) return 'No agent host is connected for this pane'
     if (!hostTakesSwitch(entry.state.session)) return 'This chat started before switching to Claude Code; restart it to switch'
     if (!this.dependencies.handoffs) return "Commando can't keep this chat's draft and queue"
-    if (action === 'cancel') this.switchDrafts.delete(paneId)
-    else if (draft) this.switchDrafts.set(paneId, draft)
+    // A cancel that comes too late (the host is handing over) leaves the draft to go across.
+    if (action === 'cancel') {
+      if (entry.state.session.claudeCodeSwitch !== 'switching') this.switchDrafts.delete(paneId)
+    } else if (draft) {
+      this.switchDrafts.set(paneId, draft)
+    } else {
+      this.switchDrafts.delete(paneId)
+    }
     return this.toHost(paneId, { type: 'switch', paneId, action, requestId }) ? null : 'No agent host is connected for this pane'
   }
 

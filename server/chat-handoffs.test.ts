@@ -59,4 +59,14 @@ describe('ChatHandoffStore', () => {
     expect(later.inClaudeCode()).toEqual([])
     expect(carriedDraft({ ...switched, carryId: 'c', createdAt: 0, draft: { text: '', images: [] }, queue: [] })).toBeUndefined()
   })
+
+  it("doesn't keep a switch it couldn't write, and forgets one the chat gave up on", async () => {
+    const handoffs = new ChatHandoffStore('/dev/null/handoffs.json', () => 1_000, () => undefined)
+    await expect(handoffs.save(switched)).rejects.toThrow()
+    expect(handoffs.get('abcd1234-0000')).toBeUndefined()
+    const kept = await store()
+    await kept.save(switched)
+    expect(kept.discard('abcd1234-0000')).toBe(true)
+    expect(kept.inClaudeCode()).toEqual([])
+  })
 })

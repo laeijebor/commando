@@ -348,35 +348,42 @@ async function main(): Promise<void> {
    * writing the transcript, and tmux replaces this host with the TUI. When the
    * TUI exits, the pane command brings this chat back on the same conversation.
    */
-  session.on('switchReady', () => void (async () => {
+  const switchToClaudeCode = async (): Promise<void> => {
     const sessionId = session.snapshot().session.sessionId
-    const fail = (reason: string) => {
-      write(color(31, reason))
-      session.endSwitch(reason)
-    }
     if (!launcher || !claudePath || !sessionId) {
-      return fail(!sessionId
-        ? "Couldn't switch to Claude Code: this chat has no conversation yet."
-        : "Couldn't switch to Claude Code: this host was started without the commando-agent launcher or can't find claude.")
+      throw new Error(!sessionId
+        ? 'this chat has no conversation yet'
+        : "this host was started without the commando-agent launcher or can't find claude")
     }
     const saved = await host.handoff({ type: 'handoff', paneId, sessionId, cwd: process.cwd(), queue: session.queued, returnFlags: sessionFlags(settings) })
-    if (!saved.ok) return fail(`Couldn't switch to Claude Code: ${saved.error ?? "Commando couldn't keep the chat's queue and draft"}.`)
+    if (!saved.ok) throw new Error(saved.error ?? "Commando couldn't keep the chat's queue and draft")
     switching = true
     write(dim('Switching to Claude Code…'))
-    const ended = new Promise<void>((resolve) => session.on('closed', resolve))
-    session.close()
+    const ended = new Promise<boolean>((resolve) => session.on('closed', () => resolve(true)))
+    session.handOver()
     // The SDK's Claude process exits before the TUI starts on the same transcript.
-    await Promise.race([ended, new Promise((resolve) => setTimeout(resolve, 10_000))])
+    if (!await Promise.race([ended, new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))])) {
+      write(color(31, "Claude didn't stop within 10 s; starting Claude Code anyway."))
+    }
     const env = [
       ...DAEMON_ENV_KEYS.flatMap((key) => process.env[key] ? ['-e', `${key}=${process.env[key]}`] : []),
       ...(settings.configDir ? ['-e', `CLAUDE_CONFIG_DIR=${settings.configDir}`] : []),
     ]
-    execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), claudeCodeSwitchCommand(settings, claudePath, launcher, sessionId)], (error) => {
-      if (!error) return
-      // This session has ended; the chat's queue and draft are kept, and come back with the chat.
-      write(color(31, `Couldn't start Claude Code: ${error.message}. Quit and start commando-agent again with --resume ${sessionId}.`))
+    await new Promise<void>((resolve, reject) => {
+      execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), claudeCodeSwitchCommand(settings, claudePath, launcher, sessionId)], (error) => (error ? reject(error) : resolve()))
     })
-  })())
+  }
+  session.on('switchReady', () => {
+    switchToClaudeCode().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      // Once the session has ended, its queue and draft are kept and come back with the chat.
+      const reason = switching
+        ? `Couldn't start Claude Code: ${message}. Quit (Ctrl-C twice) and start commando-agent again with --resume ${session.snapshot().session.sessionId}.`
+        : `Couldn't switch to Claude Code: ${message}.`
+      write(color(31, reason))
+      session.endSwitch(reason)
+    })
+  })
 
   const requestRestart = () => {
     if (restarting) return

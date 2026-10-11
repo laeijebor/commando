@@ -1152,7 +1152,7 @@ describe('AgentSession switch to Claude Code', () => {
     expect(ready).toHaveBeenCalledTimes(1)
     expect(session.queued.map((queued) => queued.text)).toEqual(['later'])
     // The session ends for the switch: the queue went across, so no "not sent" notice.
-    session.close()
+    session.handOver()
     await tick()
     expect([...items.values()].some((item) => item.kind === 'notice')).toBe(false)
   })
@@ -1226,6 +1226,20 @@ describe('AgentSession switch to Claude Code', () => {
     expect(other.fake.prompts).toEqual([])
     expect([...other.items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('switching to Claude Code') })
     expect(fake.prompts).toEqual([])
+  })
+
+  it('switches once a resumed chat has replayed, when asked while it started', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const ready = vi.fn()
+    const { session } = started({ resume: 'abcd1234-0000' }, { messages: async () => { await gate; return [] }, title: async () => undefined })
+    session.on('switchReady', ready)
+    await session.requestSwitch('after_turn')
+    expect(ready).not.toHaveBeenCalled()
+    release()
+    await tick()
+    await tick()
+    expect(ready).toHaveBeenCalledTimes(1)
   })
 
   it('says it is back from Claude Code after the earlier turns', async () => {

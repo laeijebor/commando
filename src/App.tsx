@@ -626,6 +626,7 @@ export function TerminalPaneCard({
         {chat || claudeCodeFromChat ? (
           <PaneAgentSwitch
             mode={chat ? 'chat' : 'claude-code'}
+            hostLogShown={Boolean(chat) && !showChat}
             chatDisabled={!chat && !connected}
             claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch)}
             {...(chat ? { claudeCodeTitle: claudeCodeSwitchTitle(chat) } : {})}
