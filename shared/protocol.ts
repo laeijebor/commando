@@ -469,6 +469,8 @@ export type WebPane = {
   content?: { kind: 'simulator'; udid: string }
   id: string
   url: string
+  /** Daemon page title, available even when a Chromium tile is hidden. */
+  title?: string
   sessionId: string
   windowId: string
   anchorPaneId: string
@@ -497,6 +499,7 @@ export type WebPane = {
 
 export const MAX_WEB_PANES = 64
 export const MAX_WEB_PANE_URL_LENGTH = 2_048
+export const MAX_WEB_PANE_TITLE_LENGTH = 1_024
 /** Cap on notes per POST /feedback body — client and server must agree on this. */
 export const MAX_FEEDBACK_NOTES_PER_POST = 20
 
@@ -706,6 +709,8 @@ export type ServerMessage =
   | {
       type: 'web_panes'
       webPanes: WebPane[]
+      /** Per-pane panel selection, including built-in keys. */
+      activeTabs?: Record<string, string>
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
       /** Per-tile reload counter: a change asks viewers to reload what they render. */

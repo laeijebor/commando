@@ -551,6 +551,9 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageTitle: (webPaneId, title) => {
+      if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+    },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
     onPageResponse: (webPaneId, response, pageUrl) => {
@@ -577,6 +580,7 @@ async function main(): Promise<void> {
   const webPanesMessage = (): ServerMessage => ({
     type: 'web_panes',
     webPanes: webPanes.list(),
+    activeTabs: webPanes.panelActiveTabs(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
     reloads: webPaneAgentRequests.reloads(),

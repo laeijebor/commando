@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_WEB_PANES, type WebPane } from '../shared/protocol.js'
+import { MAX_WEB_PANES, MAX_WEB_PANE_TITLE_LENGTH, type WebPane } from '../shared/protocol.js'
 import {
   WebPaneError,
   WebPaneService,
@@ -89,6 +89,28 @@ describe('WebPaneService', () => {
     expect(new Set([legacy, first, second, byPath]).size).toBe(4)
     expect(defaultWebPaneStatePath({ COMMANDO_WEB_PANES_PATH: '/tmp/custom.json' }, homeDirectory))
       .toBe('/tmp/custom.json')
+  })
+
+  it('caps, persists and clears Chromium titles only when they change', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    expect(service.setTitle(pane.id, 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH + 20))).toBe(true)
+    expect(service.get(pane.id)?.title).toHaveLength(MAX_WEB_PANE_TITLE_LENGTH)
+    const titled = service.get(pane.id)
+    expect(service.setTitle(pane.id, 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH + 30))).toBe(false)
+    expect(service.get(pane.id)).toBe(titled)
+    await service.flush()
+    const restored = track(new WebPaneService(statePath))
+    await restored.load()
+    expect(restored.list()[0].title).toBe(titled?.title)
+    expect(service.setTitle(pane.id, '')).toBe(true)
+    expect(service.get(pane.id)).not.toHaveProperty('title')
+    expect(service.setTitle(pane.id, '')).toBe(false)
+    const webkit = service.open({ ...anchor, url: 'http://localhost:5173/webkit' })
+    expect(service.setTitle(webkit.id, 'Ignored')).toBe(false)
+    service.close(pane.id)
+    expect(service.setTitle(pane.id, 'Closed tile')).toBe(false)
   })
 
   it('opens localhost tiles immediately and external tiles as pending', async () => {
@@ -763,7 +785,7 @@ describe('panel tab state', () => {
     expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[0].id)
     restored.close(tabs[0].id)
     await restored.flush()
-    expect(JSON.parse(await readFile(statePath, 'utf8')).activeTabs).toEqual({})
+    expect(JSON.parse(await readFile(statePath, 'utf8')).activeTabs).toEqual({ [anchor.anchorPaneId]: 'session' })
   })
 
   it('appends moved and orphaned tabs without losing either anchor selection', async () => {
@@ -779,5 +801,27 @@ describe('panel tab state', () => {
     expect(service.list().filter((pane) => pane.activeTab).map((pane) => pane.id)).toEqual([destination.id])
     service.move(source[1].id, { ...anchor, anchorPaneId: '%13', placement: 'below' })
     expect(service.get(source[1].id)?.order).toBe(2)
+  })
+})
+
+describe('built-in panel selection', () => {
+  it('validates keys against live panes and persists anchors without web tabs', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    for (const key of ['session', 'changes', 'pr']) {
+      expect(() => service.setActiveTab(key, '%999', (id) => id === '%12')).toThrow('Anchor pane does not exist')
+      service.setActiveTab(key, '%12', (id) => id === '%12')
+      expect(service.panelActiveTabs()).toEqual({ '%12': key })
+    }
+    expect(() => service.setActiveTab('unknown', '%12', () => true)).toThrow('Web pane does not exist')
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()).toEqual({ '%12': 'pr' })
+    const tile = restored.open({ ...anchor, url: 'http://localhost/plan' })
+    expect(() => restored.setActiveTab(tile.id, '%13', () => true)).toThrow('Web pane is not a panel tab of this pane')
+    restored.setActiveTab('session', '%12', () => true)
+    expect(restored.get(tile.id)?.unseen).toBe(true)
+    expect(restored.list()[0].activeTab).toBe(false)
   })
 })

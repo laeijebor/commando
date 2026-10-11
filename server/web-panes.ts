@@ -5,13 +5,14 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import {
   MAX_WEB_PANES,
   MAX_WEB_PANE_URL_LENGTH,
+  MAX_WEB_PANE_TITLE_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
   type WebPane,
   type WebPaneEngine,
   type WebPanePlacement,
 } from '../shared/protocol.js'
-import { neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
+import { isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -116,7 +117,7 @@ function layoutSplitApplied(
 function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): PersistedWebPane | null {
   if (!isRecord(value)) return null
   const {
-    content, id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
+    content, id, url, title, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
     engine, openedBy, openerLabel,
     status, createdAt, tmuxSocketHash, dock, order, unseen,
   } = value
@@ -149,6 +150,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   return {
     id,
     url: decision.url,
+    ...(typeof title === 'string' && title ? { title: title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) } : {}),
     ...(simulator ? { content: { kind: 'simulator' as const, udid: (content as { udid: string }).udid.toUpperCase() } } : {}),
     sessionId,
     windowId,
@@ -206,9 +208,15 @@ function parseState(value: unknown): StateFile {
     }
   }
   const activeTabs: Record<string, string> = {}
+  if (isRecord(value.activeTabs)) {
+    for (const [anchor, key] of Object.entries(value.activeTabs)) {
+      if (/^%\d+$/.test(anchor) && typeof key === 'string' && isBuiltinPanelKey(key)) activeTabs[anchor] = key
+    }
+  }
   for (const pane of panes) {
     const tabs = panelTabs(panes, pane.anchorPaneId)
     const saved = isRecord(value.activeTabs) ? value.activeTabs[pane.anchorPaneId] : undefined
+    if (activeTabs[pane.anchorPaneId]) continue
     const active = tabs.find((tab) => tab.id === saved) ?? tabs[0]
     if (active) activeTabs[pane.anchorPaneId] = active.id
   }
@@ -359,6 +367,19 @@ export class WebPaneService {
     return this.panes.get(id)
   }
 
+  /** Returns true only when a Chromium page title changes. */
+  setTitle(id: string, title: string): boolean {
+    const pane = this.panes.get(id)
+    if (!pane || pane.engine !== 'chromium' || pane.content) return false
+    const next = title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) || undefined
+    if (pane.title === next) return false
+    const updated = { ...pane, title: next }
+    if (!next) delete updated.title
+    this.panes.set(id, updated)
+    this.persist()
+    return true
+  }
+
   open(input: OpenWebPaneInput): WebPane {
     const simulator = input.content
     if (simulator && (simulator.kind !== 'simulator' || !SIM_UDID.test(simulator.udid))) throw new WebPaneError(400, 'Invalid simulator udid')
@@ -453,10 +474,20 @@ export class WebPaneService {
     return confirmed
   }
 
-  setActiveTab(id: string): void {
+  panelActiveTabs(): Record<string, string> {
+    return { ...this.activeTabs }
+  }
+
+  setActiveTab(id: string, anchorPaneId?: string, paneExists: (id: string) => boolean = () => false): void {
+    if (isBuiltinPanelKey(id)) {
+      if (!anchorPaneId || !paneExists(anchorPaneId)) throw new WebPaneError(404, 'Anchor pane does not exist')
+      this.activeTabs[anchorPaneId] = id
+      this.persist()
+      return
+    }
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
-    if (pane.dock !== 'panel') throw new WebPaneError(409, 'Web pane is not panel-docked')
+    if (pane.dock !== 'panel' || (anchorPaneId && pane.anchorPaneId !== anchorPaneId)) throw new WebPaneError(409, 'Web pane is not a panel tab of this pane')
     this.activeTabs[pane.anchorPaneId] = id
     this.persist()
   }
@@ -472,13 +503,13 @@ export class WebPaneService {
     if (this.activeTabs[pane.anchorPaneId] !== pane.id) return
     const next = neighbouringTab(panelTabs(this.list(), pane.anchorPaneId), pane.id)
     if (next) this.activeTabs[pane.anchorPaneId] = next
-    else delete this.activeTabs[pane.anchorPaneId]
+    else this.activeTabs[pane.anchorPaneId] = 'session'
   }
 
   private reconcileActiveTabs(): void {
     for (const anchor of Object.keys(this.activeTabs)) {
       const tabs = panelTabs(this.list(), anchor)
-      if (!tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
+      if (!isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
         if (tabs[0]) this.activeTabs[anchor] = tabs[0].id
         else delete this.activeTabs[anchor]
       }

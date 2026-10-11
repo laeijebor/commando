@@ -16,7 +16,7 @@ export interface WebPanesApiClient {
     placement?: WebPanePlacement,
     engine?: WebPaneEngine,
   ): Promise<{ webPaneId: string; status: 'open' | 'pending' }>
-  setActiveTab(webPaneId: string): Promise<void>
+  setActiveTab(webPaneId: string, anchorPaneId?: string): Promise<void>
   clearUnseen(webPaneId: string): Promise<void>
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   close(webPaneId: string): Promise<void>
@@ -138,7 +138,7 @@ export function createWebPanesApi(
       }) as { webPaneId: string; status: 'open' | 'pending' }
       return body
     },
-    setActiveTab: async (id) => { await request(`/${encodeURIComponent(id)}/active-tab`, { method: 'POST' }) },
+    setActiveTab: async (id, anchorPaneId) => { await request(`/${encodeURIComponent(id)}/active-tab`, { method: 'POST', ...(anchorPaneId ? { body: JSON.stringify({ anchorPaneId }) } : {}) }) },
     clearUnseen: async (id) => { await request(`/${encodeURIComponent(id)}/seen`, { method: 'POST' }) },
     confirm: async (webPaneId, allowOrigin) => {
       await request(`/${encodeURIComponent(webPaneId)}/confirm`, {

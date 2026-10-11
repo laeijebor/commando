@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol.js'
+import { MAX_WEB_PANE_TITLE_LENGTH, type WebPanePendingNote, type WebPanePendingSnapshot } from '../shared/protocol.js'
+import { WebPaneService } from './web-panes.js'
 import { MAX_PENDING_SNAPSHOT_BYTES, MAX_QUESTION_SNAPSHOT_BYTES, REDLINE_BINDING_NAME } from '../shared/redline-response.js'
 import {
   ChromiumEngine,
@@ -894,6 +895,72 @@ describe('ChromiumEngine', () => {
 
     unsubscribe()
     await until(() => stub.calls.some((call) => call.method === 'Page.stopScreencast'), 'stopScreencast')
+  })
+
+  it.each(['binding', 'load'] as const)('propagates a hidden tile title from %s into service state without streaming', async (source) => {
+    const directory = mkdtempSync(join(tmpdir(), 'commando-hidden-title-'))
+    const service = new WebPaneService(join(directory, 'web-panes.json'))
+    const pane = service.open({ url: 'http://localhost:5173/', engine: 'chromium', anchorPaneId: '%12', sessionId: '$1', windowId: '@1', openedBy: 'agent' })
+    const broadcast = vi.fn()
+    const onPageTitle = vi.fn((id: string, title: string) => {
+      if (service.setTitle(id, title)) broadcast(service.list())
+    })
+    cleanups.push(async () => { await service.flush(); rmSync(directory, { recursive: true, force: true }) })
+    const { stub, engine } = await createHarness({ onPageTitle })
+    await engine.cdpInfo(pane.id, pane.url)
+    if (source === 'binding') {
+      stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: pane.url } })
+      stub.emit('T1', 'Runtime.executionContextCreated', { context: { id: 1, auxData: { frameId: 'F1', isDefault: true } } })
+      stub.emit('T1', 'Runtime.executionContextCreated', { context: { id: 2, auxData: { frameId: 'F2', isDefault: true } } })
+      stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 2, payload: 'Iframe title' })
+      stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload: 'Shared side panel' })
+    } else {
+      // The initial binding precedes context admission; load must recover it.
+      stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload: 'Shared side panel' })
+      stub.evaluateValue = 'Shared side panel'
+      stub.emit('T1', 'Page.loadEventFired', {})
+    }
+    await until(() => service.get(pane.id)?.title === 'Shared side panel', 'hidden title propagation')
+    expect(onPageTitle).toHaveBeenCalledExactlyOnceWith(pane.id, 'Shared side panel')
+    expect(broadcast).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ id: pane.id, title: 'Shared side panel', unseen: true })])
+    expect(stub.calls.some((call) => call.method === 'Page.startScreencast' || call.method === 'Page.captureScreenshot')).toBe(false)
+  })
+
+  it('coalesces title changes and caps the latest title independently of frames', async () => {
+    const onPageTitle = vi.fn()
+    const { stub, engine } = await createHarness({ onPageTitle })
+    await engine.cdpInfo('w-11111111', 'http://localhost:5173/')
+    const nativeSetTimeout = globalThis.setTimeout
+    const titleTimers: (() => void)[] = []
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+      if (delay === 250) {
+        titleTimers.push(callback)
+        return nativeSetTimeout(() => undefined, 0)
+      }
+      return nativeSetTimeout(callback, delay, ...args)
+    }) as typeof setTimeout)
+    cleanups.push(() => { timerSpy.mockRestore() })
+    stub.emit('T1', 'Page.frameNavigated', { frame: { id: 'F1', url: 'http://localhost:5173/' } })
+    stub.emit('T1', 'Runtime.executionContextCreated', { context: { id: 1, auxData: { frameId: 'F1', isDefault: true } } })
+    for (const payload of ['First', 'Second', 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH + 20)]) {
+      stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload })
+    }
+    // The load read is a CDP barrier after all binding calls in this burst.
+    stub.emit('T1', 'Page.loadEventFired', {})
+    await until(() => stub.calls.some((call) => call.method === 'Runtime.evaluate' && call.params?.expression === 'document.title'), 'title burst barrier')
+    expect(titleTimers).toHaveLength(1)
+    expect(onPageTitle).not.toHaveBeenCalled()
+    titleTimers[0]()
+    expect(onPageTitle).toHaveBeenCalledExactlyOnceWith('w-11111111', 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH))
+    for (const payload of ['Intermediate', '']) {
+      stub.emit('T1', 'Runtime.bindingCalled', { name: '__commandoPageTitle', executionContextId: 1, payload })
+    }
+    stub.emit('T1', 'Page.loadEventFired', {})
+    await until(() => stub.calls.filter((call) => call.method === 'Runtime.evaluate' && call.params?.expression === 'document.title').length === 2, 'second title burst barrier')
+    expect(titleTimers).toHaveLength(2)
+    titleTimers[1]()
+    expect(onPageTitle).toHaveBeenCalledTimes(2)
+    expect(onPageTitle).toHaveBeenLastCalledWith('w-11111111', '')
   })
 
   it('falls back to screenshot polling when the screencast never produces a frame', async () => {
