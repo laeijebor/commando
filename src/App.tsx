@@ -56,6 +56,8 @@ import {
 } from 'react'
 
 import type {
+  AgentInteractionAnswer,
+  AgentInteractionRequest,
   AgentStatus,
   CommandoSnapshot,
   LayoutSpec,
@@ -121,7 +123,7 @@ import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
-import { AgentHudCard } from './AgentHudCard'
+import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
@@ -1024,6 +1026,9 @@ export function App() {
   const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
   /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
   const chatActionPanes = useRef(new Map<string, string>())
+  /** The last answer each HUD card sent, by pane, and the panes of those still in flight. */
+  const [hudAnswers, setHudAnswers] = useState<Record<string, AgentHudAnswerState>>({})
+  const hudAnswerPanes = useRef(new Map<string, string>())
   /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
@@ -1392,6 +1397,17 @@ export function App() {
           return next
         })
         break
+      case 'agent_request_answered': {
+        const paneId = hudAnswerPanes.current.get(message.requestId)
+        if (!paneId) break
+        hudAnswerPanes.current.delete(message.requestId)
+        setHudAnswers((current) => {
+          const next = { ...current }
+          delete next[paneId]
+          return next
+        })
+        break
+      }
       case 'chat_snapshot':
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
         break
@@ -1483,6 +1499,16 @@ export function App() {
           if (actionPane) {
             chatActionPanes.current.delete(message.requestId)
             setChatActionErrors((current) => ({ ...current, [actionPane]: message.message }))
+          }
+          const hudPane = hudAnswerPanes.current.get(message.requestId)
+          if (hudPane) {
+            hudAnswerPanes.current.delete(message.requestId)
+            const error = message.code === 'request_unavailable'
+              ? "It isn't waiting here any more; answer it in the pane"
+              : message.message
+            setHudAnswers((current) => current[hudPane]
+              ? { ...current, [hudPane]: { ...current[hudPane], pending: false, error } }
+              : current)
           }
         }
         if (
@@ -1717,6 +1743,12 @@ export function App() {
       requestId: requestId('load'),
     })
   }, [connected, selectedSessionId, send])
+
+  // The HUD answers requests too, so hooks hold them while this window is open.
+  useEffect(() => {
+    if (!connected) return
+    send({ type: 'watch_interactions', enabled: true, requestId: requestId('watch-interactions') })
+  }, [connected, send])
 
   useEffect(() => {
     if (!connected) return
@@ -2251,7 +2283,19 @@ export function App() {
     send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
   }
   const answerChat = (paneId: string, chatRequestId: string, answer: ChatAnswer) => {
-    send({ type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
+    sendChatAction(paneId, { type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
+  }
+  /** Answers from a HUD card the way the island and phone do, so the first answer anywhere wins. */
+  const answerFromHud = (paneId: string, request: AgentInteractionRequest, answer: AgentInteractionAnswer) => {
+    const id = requestId('hud-answer')
+    hudAnswerPanes.current.set(id, paneId)
+    window.setTimeout(() => hudAnswerPanes.current.delete(id), 30_000)
+    const sent = send({ type: 'answer_agent_request', paneId, interactionId: request.id, answer, requestId: id })
+    if (!sent) hudAnswerPanes.current.delete(id)
+    setHudAnswers((current) => ({
+      ...current,
+      [paneId]: sent ? { requestId: request.id, pending: true } : { requestId: request.id, pending: false, error: 'Not connected to Commando' },
+    }))
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
@@ -3713,6 +3757,8 @@ export function App() {
                       windowName={window?.name ?? pane?.windowId}
                       paneIndex={pane?.index}
                       onSelect={() => jumpToPane(status.paneId)}
+                      onAnswer={(request, answer) => answerFromHud(status.paneId, request, answer)}
+                      {...(hudAnswers[status.paneId] ? { answerState: hudAnswers[status.paneId] } : {})}
                       onDismiss={() => setAgentHudDismissals((current) => {
                         const next = { ...current, [status.paneId]: status.updatedAt }
                         storeAgentHudDismissals(next)
