@@ -405,6 +405,15 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)?.effort).toBe('max')
   })
 
+  it('checks effort against the alias row of a model started by its full id', async () => {
+    const { fake, session, items } = started({ model: 'claude-sonnet-5-5' })
+    await tick()
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    expect([...items.values()].filter((item) => item.kind === 'notice').map((item) => item.kind === 'notice' && item.text))
+      .toEqual(["Sonnet 5.5 doesn't offer max effort."])
+  })
+
   it('retries a model list that failed to load once a turn ends', async () => {
     const { fake, sessions } = (() => {
       const fake = fakeQuery()

@@ -233,7 +233,11 @@ export interface ChatSessionInfo {
 /** The model the session runs, as a row of its list: the explicit pick, else the default row while it runs. */
 export function selectedModelOption(session: Pick<ChatSessionInfo, 'models' | 'selectedModel' | 'model'>): ChatModelOption | undefined {
   const models = session.models ?? []
-  if (session.selectedModel) return models.find((model) => model.value === session.selectedModel)
+  // A persisted full id (`--model claude-sonnet-5-5`) may only match an alias row by `resolvedModel`.
+  const named = (id: string) => models.find((model) => model.value === id)
+    ?? models.find((model) => model.value !== 'default' && model.resolvedModel === id)
+    ?? models.find((model) => model.resolvedModel === id)
+  if (session.selectedModel) return named(session.selectedModel) ?? (session.model ? named(session.model) : undefined)
   const running = session.model
   return models.find((model) => model.value === 'default' && model.resolvedModel === running)
     ?? models.find((model) => model.value === running || model.resolvedModel === running)
