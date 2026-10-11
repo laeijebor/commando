@@ -5,6 +5,13 @@
 # exec keeps the host as the pane's own process, so tmux reports it (not a
 # shell) and auto-resume treats the pane as a running agent.
 set -euo pipefail
-root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# Follow symlinks by hand: stock macOS readlink has no -f.
+script="${BASH_SOURCE[0]}"
+while [ -L "$script" ]; do
+  link_dir="$(cd -P "$(dirname "$script")" && pwd)"
+  script="$(readlink "$script")"
+  case "$script" in /*) ;; *) script="$link_dir/$script" ;; esac
+done
+root="$(cd -P "$(dirname "$script")/.." && pwd)"
 export COMMANDO_AGENT_LAUNCHER="$root/scripts/commando-agent"
 exec node --import "$root/node_modules/tsx/dist/loader.mjs" "$root/server/agent-host/main.ts" "$@"
