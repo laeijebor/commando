@@ -218,18 +218,23 @@ function menuGroups(
     const matched = filterCommands(commands ?? [], trigger.query)
     const skills = matched.filter((command) => command.kind === 'skill')
     const rest = matched.filter((command) => command.kind === 'command')
-    return {
-      groups: [
-        { label: 'Skills', ...(trigger.atStart ? {} : { note: 'Claude can run these mid-message' }), items: skills.map((command) => ({ key: `skill:${command.name}`, type: 'command' as const, command, runsHere: true })) },
-        {
-          label: 'Commands',
-          ...(trigger.atStart ? {} : { note: 'only run at the start of a message' }),
-          items: [
-            ...natives.map((native) => ({ key: `native:${native.name}`, type: 'native' as const, ...native })),
-            ...rest.map((command) => ({ key: `command:${command.name}`, type: 'command' as const, command, runsHere: trigger.atStart })),
-          ],
-        },
+    const skillGroup: ComposerMenuGroup = {
+      label: 'Skills',
+      ...(trigger.atStart ? {} : { note: 'Claude can run these mid-message' }),
+      items: skills.map((command) => ({ key: `skill:${command.name}`, type: 'command' as const, command, runsHere: true })),
+    }
+    const commandGroup: ComposerMenuGroup = {
+      label: 'Commands',
+      ...(trigger.atStart ? {} : { note: 'only run at the start of a message' }),
+      items: [
+        ...natives.map((native) => ({ key: `native:${native.name}`, type: 'native' as const, ...native })),
+        ...rest.map((command) => ({ key: `command:${command.name}`, type: 'command' as const, command, runsHere: trigger.atStart })),
       ],
+    }
+    // Whichever group holds the best match comes first (`/re` → recap and rename before skills).
+    const commandsFirst = Boolean(query) && (natives.some((native) => native.name.startsWith(query)) || matched[0]?.kind === 'command')
+    return {
+      groups: commandsFirst ? [commandGroup, skillGroup] : [skillGroup, commandGroup],
       status: commands ? null : "Claude's commands appear once the session has started",
     }
   }
