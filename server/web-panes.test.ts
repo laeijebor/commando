@@ -138,6 +138,10 @@ describe('WebPaneService', () => {
       ...anchor,
       url: 'http://localhost:5173/',
       placement: 'right',
+      dock: 'panel',
+      order: 0,
+      unseen: false,
+      layoutState: 'settled',
       engine: 'chromium',
       status: 'open',
       createdAt: 42,
@@ -374,6 +378,7 @@ describe('WebPaneService', () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
     const wide = service.open({
       ...anchor,
+      dock: 'split',
       url: 'http://localhost:5173/',
       anchorSize: { cols: 200, rows: 50 },
     })
@@ -385,6 +390,7 @@ describe('WebPaneService', () => {
 
     const tall = service.open({
       ...anchor,
+      dock: 'split',
       url: 'http://localhost:5174/',
       anchorSize: { cols: 100, rows: 60 },
     })
@@ -401,6 +407,7 @@ describe('WebPaneService', () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
     const pane = service.open({
       ...anchor,
+      dock: 'split',
       url: 'http://localhost:5173/',
       placement: 'below',
       anchorSize: { cols: 200, rows: 50 },
@@ -420,6 +427,7 @@ describe('WebPaneService', () => {
         windowId: '@3',
         anchorPaneId: '%12',
         placement: 'auto',
+        dock: 'split',
         openedBy: 'agent',
         status: 'open',
         createdAt: 42,
@@ -461,6 +469,7 @@ describe('WebPaneService', () => {
         windowId: '@3',
         anchorPaneId: '%12',
         placement: 'auto',
+        dock: 'split',
         openedBy: 'agent',
         status: 'open',
         createdAt: 42,
@@ -478,6 +487,7 @@ describe('WebPaneService', () => {
     const service = track(new WebPaneService(statePath))
     const pane = service.open({
       ...anchor,
+      dock: 'split',
       url: 'http://localhost:5173/',
       anchorSize: { cols: 104, rows: 50 },
     })
@@ -525,7 +535,7 @@ describe('WebPaneService', () => {
   it('move re-anchors a tile with a new concrete placement and persists it', async () => {
     const statePath = await temporaryStatePath()
     const service = track(new WebPaneService(statePath))
-    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const pane = service.open({ ...anchor, dock: 'split', url: 'http://localhost:5173/' })
 
     const moved = service.move(pane.id, {
       anchorPaneId: '%40',
@@ -677,13 +687,13 @@ describe('persisted simulator tiles', () => {
     const path = await temporaryStatePath()
     const service = track(new WebPaneService(path))
     const tile = service.open({ ...anchor, url: '', content: { kind: 'simulator', udid: udid.toLowerCase() }, anchorSize: { cols: 180, rows: 50 } })
-    expect(tile).toMatchObject({ content: { kind: 'simulator', udid }, url: '', status: 'open', placement: 'right', layoutState: 'pending' })
+    expect(tile).toMatchObject({ content: { kind: 'simulator', udid }, url: '', status: 'open', placement: 'right', layoutState: 'settled' })
     expect(service.open({ ...anchor, anchorPaneId: '%13', url: '', content: { kind: 'simulator', udid } })).toEqual(tile)
     expect(service.list()).toHaveLength(1)
     await service.flush()
     const stored = await readFile(path, 'utf8'); expect(stored).not.toContain('token'); expect(stored).not.toContain('/view')
     const restarted = track(new WebPaneService(path)); await restarted.load()
-    expect(restarted.list()).toEqual([tile])
+    expect(restarted.list()).toEqual([{ ...tile, activeTab: true }])
     expect(restarted.move(tile.id, { ...anchor, anchorPaneId: '%13', placement: 'below' })).toMatchObject({ anchorPaneId: '%13', placement: 'below' })
     expect(() => restarted.navigate(tile.id, 'http://localhost/')).toThrow('Simulator tiles cannot navigate')
     expect(restarted.close(tile.id)).toBe(true); await restarted.flush()
@@ -695,6 +705,76 @@ describe('persisted simulator tiles', () => {
     const browser = service.open({ ...anchor, url: 'http://localhost/plan' })
     const simulator = service.open({ ...anchor, url: '', content: { kind: 'simulator', udid } })
     await service.flush(); const restarted = track(new WebPaneService(path)); await restarted.load()
-    expect(restarted.list()).toEqual([browser, simulator])
+    expect(restarted.list()).toEqual([{ ...browser, activeTab: true }, { ...simulator, activeTab: false }])
+  })
+})
+
+describe('panel tab state', () => {
+  it('defaults new tiles to settled panel tabs with per-anchor order and agent unseen state', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const first = service.open({ ...anchor, url: 'http://localhost/1', anchorSize: { cols: 100, rows: 30 } })
+    const other = service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/other', openedBy: 'user' })
+    const second = service.open({ ...anchor, url: 'http://localhost/2' })
+    expect(first).toMatchObject({ dock: 'panel', order: 0, unseen: true, layoutState: 'settled' })
+    expect(first.anchorSize).toBeUndefined()
+    expect(other).toMatchObject({ order: 0, unseen: false })
+    expect(second.order).toBe(1)
+    expect(service.resolveLayoutMetadata(() => ({ cols: 50, rows: 15 }))).toBe(false)
+  })
+
+  it('migrates legacy records in creation order and persists the result', async () => {
+    const statePath = await temporaryStatePath()
+    const legacy = (id: string, createdAt: number, anchorPaneId = '%12') => ({
+      ...anchor, id, createdAt, anchorPaneId, url: 'http://localhost/', placement: 'below',
+      engine: 'webkit', status: 'open', layoutState: 'pending', anchorSize: { cols: 100, rows: 30 },
+    })
+    await writeFile(statePath, JSON.stringify({ version: 1, allowedOrigins: [], panes: [
+      legacy('w-00000003', 30), legacy('w-00000001', 10), legacy('w-00000002', 20), legacy('w-00000004', 40, '%13'),
+    ] }))
+    const service = track(new WebPaneService(statePath))
+    await service.load()
+    expect(service.list().map((pane) => [pane.id, pane.order])).toEqual([
+      ['w-00000003', 2], ['w-00000001', 0], ['w-00000002', 1], ['w-00000004', 0],
+    ])
+    expect(service.list().every((pane) => pane.dock === 'panel' && pane.layoutState === 'settled' && !pane.anchorSize && !pane.unseen)).toBe(true)
+    expect(service.list().find((pane) => pane.activeTab)?.id).toBe('w-00000001')
+    await service.flush()
+    const stored = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(stored.activeTabs).toEqual({ '%12': 'w-00000001', '%13': 'w-00000004' })
+    expect(stored.panes[0].dock).toBe('panel')
+  })
+
+  it('persists selection, clears unseen, and falls to neighbouring tabs after deletion', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const tabs = [1, 2, 3].map((n) => service.open({ ...anchor, url: `http://localhost/${n}` }))
+    service.setActiveTab(tabs[1].id)
+    expect(service.get(tabs[1].id)?.unseen).toBe(false)
+    await service.flush()
+    const restored = track(new WebPaneService(statePath))
+    await restored.load()
+    expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[1].id)
+    restored.close(tabs[1].id)
+    expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[2].id)
+    restored.close(tabs[2].id)
+    expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[0].id)
+    restored.close(tabs[0].id)
+    await restored.flush()
+    expect(JSON.parse(await readFile(statePath, 'utf8')).activeTabs).toEqual({})
+  })
+
+  it('appends moved and orphaned tabs without losing either anchor selection', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const source = [1, 2].map((n) => service.open({ ...anchor, url: `http://localhost/${n}` }))
+    const destination = service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/dest' })
+    service.setActiveTab(source[0].id)
+    const moved = service.move(source[0].id, { ...anchor, anchorPaneId: '%13', placement: 'right', anchorSize: { cols: 100, rows: 30 } })
+    expect(moved).toMatchObject({ dock: 'panel', order: 1, layoutState: 'settled' })
+    expect(service.list().filter((pane) => pane.activeTab).map((pane) => pane.id)).toEqual([source[1].id, destination.id])
+    expect(service.prune([{ id: '@3', sessionId: '$1', paneIds: ['%13'] }])).toBe(true)
+    expect(service.get(source[1].id)).toMatchObject({ anchorPaneId: '%13', order: 2, layoutState: 'settled' })
+    expect(service.list().filter((pane) => pane.activeTab).map((pane) => pane.id)).toEqual([destination.id])
+    service.move(source[1].id, { ...anchor, anchorPaneId: '%13', placement: 'below' })
+    expect(service.get(source[1].id)?.order).toBe(2)
   })
 })

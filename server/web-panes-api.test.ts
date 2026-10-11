@@ -172,9 +172,12 @@ describe('web panes API', () => {
       openedBy: 'agent',
       openerLabel: 'claude · gizmo',
       placement: 'right',
-      layoutState: 'pending',
-      anchorSize: { cols: 190, rows: 55 },
+      dock: 'panel',
+      order: 0,
+      unseen: true,
+      layoutState: 'settled',
     })
+    expect(service.get(body.webPaneId)?.anchorSize).toBeUndefined()
   })
 
   it('resolves an omitted placement from the anchor pane geometry', async () => {

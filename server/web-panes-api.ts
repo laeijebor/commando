@@ -394,6 +394,16 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'active-tab' || route.action === 'seen') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can select or mark tabs seen')
+        if (route.action === 'active-tab') this.dependencies.service.setActiveTab(route.id)
+        else this.dependencies.service.clearUnseen(route.id)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true })
+        return true
+      }
+
       if (route.action === 'attachment') {
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
         const referenced = caller === 'owner'
@@ -864,7 +874,7 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
-    | { kind: 'pane'; id: string; action: 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'reload' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
@@ -892,7 +902,7 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(confirm|cdp|feedback|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(active-tab|seen|confirm|cdp|feedback|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
@@ -904,7 +914,9 @@ export class WebPanesApi {
       return { kind: 'pane', id: match[1], action: 'pending' }
     }
     if (match[3] !== undefined) throw new HttpError(404, 'Not found')
-    const action = match[2] === 'confirm'
+    const action = match[2] === 'active-tab' || match[2] === 'seen'
+      ? match[2]
+      : match[2] === 'confirm'
       ? 'confirm'
       : match[2] === 'cdp'
         ? 'cdp'
