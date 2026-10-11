@@ -160,6 +160,8 @@ type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatIma
 
 const FILE_SEARCH_DEBOUNCE_MS = 80
 const PR_CACHE_MS = 60_000
+/** A failed load is retried sooner (e.g. once the branch is pushed). */
+const PR_ERROR_CACHE_MS = 5_000
 
 /** `@` results for the trigger's query; stale answers are dropped. */
 function useFileSearch(trigger: ComposerTrigger | null, services: ChatInputServices | undefined, enabled: boolean) {
@@ -188,7 +190,7 @@ function usePullRequests(open: boolean, services: ChatInputServices | undefined)
   const [state, setState] = useState<{ at: number; prs: PullRequestOption[]; error?: string } | null>(null)
   const [loading, setLoading] = useState(false)
   useEffect(() => {
-    if (!open || !services || loading || (state && Date.now() - state.at < PR_CACHE_MS)) return
+    if (!open || !services || loading || (state && Date.now() - state.at < (state.error ? PR_ERROR_CACHE_MS : PR_CACHE_MS))) return
     setLoading(true)
     services.pullRequests().then(
       (prs) => setState({ at: Date.now(), prs }),

@@ -23,6 +23,6 @@ describe('chat input API', () => {
     }
     expect(await openPullRequestsForPane(prs as never, '%3')).toEqual([{ number: 32, title: 'Controls', url: 'u', isDraft: false, author: 'leo' }])
     expect(prs.list).toHaveBeenCalledWith('laeijebor/commando', 'open', { scope: 'everyone' })
-    await expect(openPullRequestsForPane({ repoForPane: async () => null, list: vi.fn() } as never, '%3')).rejects.toThrow("isn't a GitHub repository")
+    await expect(openPullRequestsForPane({ repoForPane: async () => null, list: vi.fn() } as never, '%3')).rejects.toThrow("can't tell this chat's GitHub repository")
   })
 })
