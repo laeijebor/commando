@@ -321,3 +321,19 @@ describe('review fixes', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("can't use the clipboard")
   })
 })
+
+describe('refused queued and steered sends', () => {
+  it('puts a queued or steered send back in the draft when the daemon refuses it', () => {
+    const handlers = { onSend: vi.fn().mockReturnValueOnce('req-queue').mockReturnValueOnce('req-steer'), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
+    const state: ChatState = { paneId: '%5', session: session({ status: 'running' }), items: [], hostConnected: true }
+    const view = render(<ChatPane chat={state} connected focused={false} {...handlers} flow={flowServices()} />)
+    fireEvent.change(textbox(), { target: { value: 'queued one' } })
+    fireEvent.keyDown(textbox(), { key: 'Enter' })
+    fireEvent.change(textbox(), { target: { value: 'steered one' } })
+    fireEvent.keyDown(textbox(), { key: 'Enter', metaKey: true })
+    expect(handlers.onSend.mock.calls.map((call) => call[2])).toEqual([{ delivery: 'queue' }, { delivery: 'steer' }])
+    view.rerender(<ChatPane chat={state} connected focused={false} {...handlers} flow={flowServices()} sendError={{ message: 'This chat started before queueing and steering', refused: [{ requestId: 'req-queue' }, { requestId: 'req-steer' }] }} />)
+    expect(textbox()).toHaveValue('queued one\n\nsteered one')
+    expect(screen.getByRole('alert')).toHaveTextContent('This chat started before queueing')
+  })
+})
