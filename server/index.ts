@@ -617,7 +617,7 @@ async function main(): Promise<void> {
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
     chatSettings: (paneId) => chatResumeSettings(paneId),
-    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR'] as const)
+    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
       .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {

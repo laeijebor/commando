@@ -123,7 +123,7 @@ type LaunchEnvironment = Readonly<Record<string, string | undefined>>
 export const AGENT_LAUNCH_ENV_KEYS = [
   'HOME', 'SHELL', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR', 'XDG_CONFIG_HOME',
   'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_PORT', 'COMMANDO_TOKEN',
-  'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR',
+  'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR',
 ] as const
 export type AgentExecutableResolver = (command: string, env: LaunchEnvironment) => Promise<string>
 
