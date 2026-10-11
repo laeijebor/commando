@@ -123,7 +123,7 @@ import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
-import type { ChatInputServices } from './chat/ChatComposer'
+import { CHAT_SEND_REFUSAL_MS, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
@@ -329,15 +329,15 @@ type TerminalPaneProps = {
   chat?: ChatState
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
-  onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => void
+  onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
   onChatInterrupt?: (dropQueued?: string[]) => void
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
-  /** Why the daemon refused this pane's last chat send. */
-  chatSendError?: string
+  /** Why the daemon refused one of this pane's chat sends. */
+  chatSendError?: ChatSendError
   onDismissChatSendError?: () => void
   /** Why the daemon refused a queue, subagent or interrupt action in this pane. */
   chatActionError?: string
@@ -1010,7 +1010,7 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
-  const [chatSendErrors, setChatSendErrors] = useState<Record<string, string>>({})
+  const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
   const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
   /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
   const chatActionPanes = useRef(new Map<string, string>())
@@ -1444,7 +1444,11 @@ export function App() {
           const chatPane = chatSendPanes.current.get(message.requestId)
           if (chatPane) {
             chatSendPanes.current.delete(message.requestId)
-            setChatSendErrors((current) => ({ ...current, [chatPane]: message.message }))
+            const refused = { requestId: message.requestId, code: message.code }
+            setChatSendErrors((current) => ({
+              ...current,
+              [chatPane]: { message: message.message, refused: [...(current[chatPane]?.refused ?? []), refused] },
+            }))
           }
           const actionPane = chatActionPanes.current.get(message.requestId)
           if (actionPane) {
@@ -2150,10 +2154,10 @@ export function App() {
   const retryAgentResume = (targetId?: string) => {
     send({ type: 'retry_agent_resume', ...(targetId ? { targetId } : {}), requestId: requestId('retry-resume') })
   }
-  const sendChat = (paneId: string, text: string, images?: ChatImageRef[], options: ChatSendOptions = {}) => {
+  const sendChat = (paneId: string, text: string, images?: ChatImageRef[], options: ChatSendOptions = {}): string => {
     const id = requestId('chat-send')
     chatSendPanes.current.set(id, paneId)
-    window.setTimeout(() => chatSendPanes.current.delete(id), 30_000)
+    window.setTimeout(() => chatSendPanes.current.delete(id), CHAT_SEND_REFUSAL_MS)
     setChatSendErrors((current) => {
       if (!(paneId in current)) return current
       const next = { ...current }
@@ -2162,8 +2166,9 @@ export function App() {
     })
     if (!send({ type: 'chat_send', paneId, text, ...(images?.length ? { images } : {}), ...options, requestId: id })) {
       chatSendPanes.current.delete(id)
-      setChatSendErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so the message wasn't sent" }))
+      setChatSendErrors((current) => ({ ...current, [paneId]: { message: "Not connected to Commando, so the message wasn't sent", refused: [{ requestId: id }] } }))
     }
+    return id
   }
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })

@@ -48,6 +48,17 @@ export interface ChatInputServices {
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
 }
 
+/** Sends the daemon refused, named by the request ids `onSend` returned. */
+export interface ChatSendError {
+  /** The latest refusal's reason. */
+  message: string
+  /** Every refusal since the error was last cleared, so two that land together each restore. */
+  refused: { requestId: string; code?: string }[]
+}
+
+/** How long the app matches a refusal to its send; the composer keeps a sent draft as long. */
+export const CHAT_SEND_REFUSAL_MS = 30_000
+
 type RequestItem = Extract<ChatItem, { kind: 'request' }>
 type TodoItem = Extract<ChatItem, { kind: 'todo_list' }>
 
@@ -298,12 +309,13 @@ export function ChatComposer({
   /** Claude Code's commands and skills, for the `/` menu. */
   commands?: ChatCommand[]
   services?: ChatInputServices
-  sendError?: string
+  sendError?: ChatSendError
   onDismissSendError?: () => void
   /** A queue, subagent or plan action that failed; unlike a refused send, nothing goes back into the draft. */
   actionError?: string
   onDismissActionError?: () => void
-  onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => void
+  /** Returns the send's request id, which a refusal names. */
+  onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
   /** `dropQueued`: queued messages Stop took back into the draft. */
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
@@ -457,13 +469,31 @@ export function ChatComposer({
     }))
   }
 
-  // A refused send puts its text back (when nothing new was typed), so it isn't lost.
-  const lastSent = useRef<string | null>(null)
+  // Each send's draft is kept by its request id, so a refusal puts back what it refused
+  // even after later follow-ups were sent.
+  const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[] }>())
   useEffect(() => {
-    if (!sendError || lastSent.current === null) return
-    const text = lastSent.current
-    lastSent.current = null
-    setDraft((current) => current || text)
+    let restored = attachments.length
+    for (const { requestId, code } of sendError?.refused ?? []) {
+      const sent = sentDrafts.current.get(requestId)
+      if (!sent) continue
+      sentDrafts.current.delete(requestId)
+      if (sent.text) setDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
+      // A missing image has to be attached again, as the error says.
+      if (!sent.images.length || code === 'chat_image_missing') continue
+      const fit = fitAttachments(restored, sent.images.length)
+      if (fit.error) setAttachError(fit.error)
+      restored += fit.accepted
+      const images = sent.images.slice(0, fit.accepted).map((ref) => ({
+        key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: ref.name ?? 'image',
+        previewUrl: chatImageUrl(ref.id),
+        ref,
+      }))
+      setAttachments((current) => [...current, ...images])
+    }
+    // Only a new refusal restores; the attachments it reads are this render's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendError])
 
   const uploading = attachments.some((attachment) => !attachment.ref)
@@ -480,13 +510,12 @@ export function ChatComposer({
     const options: ChatSendOptions = relayTarget
       ? { relayTo: relayTarget }
       : running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
-    const sent = draft.trim()
-    lastSent.current = sent
-    // A refusal comes back within moments; later errors are about something else.
-    window.setTimeout(() => { if (lastSent.current === sent) lastSent.current = null }, 30_000)
-    if (Object.keys(options).length) onSend(draft.trim(), images, options)
-    else if (images.length) onSend(draft.trim(), images)
-    else onSend(draft.trim())
+    const text = draft.trim()
+    const requestId = Object.keys(options).length ? onSend(text, images, options) : images.length ? onSend(text, images) : onSend(text)
+    if (requestId) {
+      sentDrafts.current.set(requestId, { text, images })
+      window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
+    }
     for (const attachment of attachments) release(attachment)
     setAttachments([])
     setAttachError(null)
@@ -576,7 +605,7 @@ export function ChatComposer({
     addImages([...event.dataTransfer.files])
   }
 
-  const shownError = attachError ?? sendError ?? actionError ?? null
+  const shownError = attachError ?? sendError?.message ?? actionError ?? null
   const dismissError = () => {
     if (attachError) setAttachError(null)
     else if (sendError) onDismissSendError?.()

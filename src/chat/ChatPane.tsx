@@ -14,7 +14,7 @@ import {
   type ChatSubagentTranscript,
   type ChatTaskAction,
 } from '../../shared/agent-chat'
-import { ChatComposer, type ChatInputServices } from './ChatComposer'
+import { ChatComposer, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
@@ -80,7 +80,7 @@ function ChatColumn({
   connected: boolean
   focused: boolean
   onFocus: () => void
-  onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => void
+  onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   /** Switches the model, effort or permission mode while the chat runs. */
@@ -89,8 +89,8 @@ function ChatColumn({
   onRestart?: () => void
   /** File search, pull requests and image uploads for the composer's menus. */
   services?: ChatInputServices
-  /** Why the daemon refused the last send (e.g. an image it no longer has). */
-  sendError?: string
+  /** Why the daemon refused a send (e.g. an image it no longer has). */
+  sendError?: ChatSendError
   onDismissSendError?: () => void
   /** Why the daemon refused a queue, subagent or interrupt action. */
   actionError?: string

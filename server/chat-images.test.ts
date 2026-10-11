@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -63,6 +63,54 @@ describe('chat image store', () => {
     await utimes(join(store.dir, 'notes.txt'), old, old)
     expect(await store.prune()).toBe(1)
     expect((await readdir(store.dir)).sort()).toEqual(['id' in fresh ? fresh.id : '', 'notes.txt'].sort())
+  })
+
+  it('copies an image into one session folder, outside the store', async () => {
+    const saved = await store.save(PNG)
+    const id = 'id' in saved ? saved.id : ''
+    const sessionDir = store.sessionDir('abcd1234-0000')
+    expect(sessionDir).toBe(join(dir, 'chat-image-sessions', 'abcd1234-0000'))
+    expect(await readdir(sessionDir)).toEqual([])
+    const path = await store.stage(id, 'abcd1234-0000')
+    expect(path).toBe(join(sessionDir, id))
+    expect(await readFile(path)).toEqual(PNG)
+    expect(await readdir(store.sessionDir('ffff0000-1111'))).toEqual([])
+    // A copy, not a link: what Claude does to it can't reach the store.
+    await writeFile(path, 'changed')
+    expect(await readFile(join(store.dir, id))).toEqual(PNG)
+    expect(await readFile(await store.stage(id, 'abcd1234-0000'))).toEqual(PNG)
+    expect(await readdir(sessionDir)).toEqual([id])
+  })
+
+  it('recognises only staged copies by their path', () => {
+    const id = `${'a'.repeat(64)}.png`
+    expect(store.stagedImage(join(store.sessionsDir, 'abcd1234-0000', id))).toEqual({ id, sessionId: 'abcd1234-0000' })
+    expect(store.stagedImage(join(store.dir, id))).toBeNull()
+    expect(store.stagedImage(join(store.sessionsDir, '..', 'abcd1234-0000', id))).toBeNull()
+    expect(store.stagedImage(join(store.sessionsDir, 'abcd1234-0000', 'notes.txt'))).toBeNull()
+  })
+
+  it('refuses session ids that could name another folder', async () => {
+    const saved = await store.save(PNG)
+    const id = 'id' in saved ? saved.id : ''
+    expect(() => store.sessionDir('../images')).toThrow(/Invalid session id/)
+    await expect(store.stage(id, '../../x')).rejects.toThrow(/Invalid session id/)
+    await expect(store.stage('../secret', 'abcd1234-0000')).rejects.toThrow(/Invalid image id/)
+  })
+
+  it('prunes old copies in session folders, and folders left old and empty', async () => {
+    const saved = await store.save(PNG)
+    const id = 'id' in saved ? saved.id : ''
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+    const stale = await store.stage(id, 'stale000-0000')
+    await utimes(stale, old, old)
+    await utimes(join(stale, '..'), old, old)
+    const kept = await store.stage(id, 'fresh000-0000')
+    store.sessionDir('empty000-0000')
+    await mkdir(join(store.sessionsDir, 'not a session'))
+    expect(await store.prune()).toBe(1)
+    expect((await readdir(store.sessionsDir)).sort()).toEqual(['empty000-0000', 'fresh000-0000', 'not a session'])
+    expect((await stat(kept)).isFile()).toBe(true)
   })
 
   it('logs once when images cannot be written, and keeps going', async () => {

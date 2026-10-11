@@ -47,6 +47,16 @@ describe('replacing and moving tokens', () => {
     expect(moveCommandToStart(text, trigger, 'compact')).toEqual({ text: '/compact keep the API notes', cursor: 27 })
   })
 
+  it('keeps the message’s lines and spacing when it moves a command', () => {
+    const move = (text: string, cursor: number) => moveCommandToStart(text, detectTrigger(text, cursor)!, 'compact').text
+    const list = 'Keep:\n\n- the API notes\n  - and   their  examples /comp'
+    expect(move(list, list.length)).toBe('/compact Keep:\n\n- the API notes\n  - and   their  examples')
+    const middle = 'Keep:\n/comp\n\n```ts\nconst a  = 1\n```'
+    expect(move(middle, 'Keep:\n/comp'.length)).toBe('/compact Keep:\n\n```ts\nconst a  = 1\n```')
+    const inline = 'keep /comp  the notes\nand more'
+    expect(move(inline, 'keep /comp'.length)).toBe('/compact keep the notes\nand more')
+  })
+
   it('quotes mentions with spaces and links pull requests', () => {
     expect(mentionText({ path: 'src/chat/', kind: 'directory' })).toBe('@src/chat/ ')
     expect(mentionText({ path: 'my notes.txt', kind: 'file' })).toBe('@"my notes.txt" ')
