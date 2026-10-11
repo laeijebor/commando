@@ -58,7 +58,7 @@ describe('AgentHostHub', () => {
     socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'Hel')] })
     socket.host({ type: 'items', paneId: '%1', items: [item('a', 'Hello'), item('b', 'more')] })
     await settle()
-    expect(socket.sent).toEqual([{ type: 'welcome', version: 2 }])
+    expect(socket.sent).toEqual([{ type: 'welcome', version: 3 }])
     expect(hub.states()).toEqual([expect.objectContaining({ paneId: '%1', targetId: 'target-1', hostConnected: true })])
     expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && entry.text)).toEqual(['Hello', 'more'])
     expect(broadcasts.map((message) => message.type)).toEqual(['chat_state', 'chat_items'])
@@ -265,5 +265,67 @@ describe('hostRunsInPane', () => {
     expect(hostRunsInPane(rows, 100, 100)).toBe(true)
     expect(hostRunsInPane(rows, 400, 100)).toBe(false)
     expect(hostRunsInPane(rows, 999, 100)).toBe(false)
+  })
+})
+
+describe('AgentHostHub richer input', () => {
+  const imageId = `${'a'.repeat(64)}.png`
+
+  it('keeps the command list on the chat and relays changes', async () => {
+    const { hub, broadcasts, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    socket.host({ type: 'commands', paneId: '%1', commands: [{ name: 'compact', description: 'Free context', kind: 'command' }] })
+    await settle()
+    expect(hub.states()[0]?.commands).toEqual([{ name: 'compact', description: 'Free context', kind: 'command' }])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_commands', paneId: '%1', commands: [{ name: 'compact', description: 'Free context', kind: 'command' }] })
+    // A reconnecting host keeps the menu until it resends the list.
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    expect(hub.states()[0]?.commands).toHaveLength(1)
+  })
+
+  it('asks the host for files and resolves with its answer only', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    const other = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    const pending = hub.searchFiles('%1', 'comp')
+    const request = socket.sent.at(-1) as { type: string; requestId: string; query: string }
+    expect(request).toMatchObject({ type: 'file_search', paneId: '%1', query: 'comp' })
+    // Another host can't answer this pane's search.
+    other.host({ type: 'file_search_result', paneId: '%1', requestId: request.requestId, entries: [{ path: 'evil', kind: 'file' }], truncated: false })
+    socket.host({ type: 'file_search_result', paneId: '%1', requestId: request.requestId, entries: [{ path: 'src/Composer.tsx', kind: 'file' }], truncated: true })
+    expect(await pending).toEqual({ entries: [{ path: 'src/Composer.tsx', kind: 'file' }], truncated: true })
+  })
+
+  it('answers a search with an error when the host is old, gone or disconnects', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 2 }), items: [] })
+    await settle()
+    expect((await hub.searchFiles('%1', 'x')).error).toMatch(/Restart this chat/)
+    expect((await hub.searchFiles('%2', 'x')).error).toMatch(/No agent host/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    const pending = hub.searchFiles('%1', 'x')
+    socket.close()
+    expect((await pending).error).toMatch(/disconnected/)
+  })
+
+  it('forwards image refs only to hosts that take them', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 2 }), items: [] })
+    await settle()
+    expect(hub.takesInput('%1')).toBe(false)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 3 }), items: [] })
+    await settle()
+    expect(hub.takesInput('%1')).toBe(true)
+    expect(hub.send('%1', 'look', 'r1', [{ id: imageId, name: 'a.png' }])).toBe(true)
+    expect(socket.sent.at(-1)).toEqual({ type: 'send', paneId: '%1', text: 'look', images: [{ id: imageId, name: 'a.png' }], requestId: 'r1' })
+    hub.send('%1', 'plain', 'r2')
+    expect(socket.sent.at(-1)).toEqual({ type: 'send', paneId: '%1', text: 'plain', requestId: 'r2' })
   })
 })

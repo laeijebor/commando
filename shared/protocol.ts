@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatItem, ChatSessionInfo, ChatSettingsChange, ChatState } from './agent-chat.js'
+import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatSessionInfo, ChatSettingsChange, ChatState } from './agent-chat.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -720,6 +720,10 @@ export type ServerMessage =
   /** Upserts by item id. */
   | { type: 'chat_items'; paneId: string; items: ChatItem[] }
   | { type: 'chat_removed'; paneId: string }
+  /** A chat's `/` menu list changed. */
+  | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }
+  /** Answers one client's `chat_file_search`. */
+  | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -805,7 +809,10 @@ export type ClientMessage =
   /** Retries one failed agent resume, or every failed one when `targetId` is omitted. */
   | { type: 'retry_agent_resume'; targetId?: string; requestId: string }
   | { type: 'refresh_usage'; requestId: string }
-  | { type: 'chat_send'; paneId: string; text: string; requestId: string }
+  /** Images were uploaded to `/api/chat/images` first; the message names them by id. */
+  | { type: 'chat_send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string }
+  /** Files and folders for an `@` mention, searched in the chat's folder by its host. */
+  | { type: 'chat_file_search'; paneId: string; query: string; requestId: string }
   | { type: 'chat_interrupt'; paneId: string; requestId: string }
   | { type: 'chat_restart'; paneId: string; requestId: string }
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
