@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
-import { AGENT_HOST_WS_PATH, isPaneId, type ChatItem } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatEffort, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
@@ -19,8 +19,11 @@ Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
   --resume ID                      Resume an existing Claude session
   --model MODEL                    Model to use
+  --effort LEVEL                   low | medium | high | xhigh | max
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
   --dangerously-skip-permissions   Same as --permission-mode bypassPermissions
+  --allow-dangerously-skip-permissions
+                                   Allow switching to bypassPermissions later in the chat
   --claude-path PATH               Claude Code executable (default: claude on PATH)
   --prompt TEXT                    Send TEXT as the first message
 `
@@ -36,7 +39,10 @@ export interface HostArgs {
   configDir?: string
   resume?: string
   model?: string
+  effort?: ChatEffort
   permissionMode: PermissionMode
+  /** The chat may switch to bypassPermissions (it was started with it). */
+  bypassAllowed?: boolean
   claudePath?: string
   prompt?: string
 }
@@ -62,11 +68,19 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         case '--model': args.model = needValue(); break
         case '--claude-path': args.claudePath = expandHome(needValue()); break
         case '--prompt': args.prompt = needValue(true); break
-        case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; break
+        case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
+        case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
+        case '--effort': {
+          const effort = needValue()
+          if (!isChatEffort(effort)) return `Unknown effort: ${effort}\n\n${USAGE}`
+          args.effort = effort
+          break
+        }
         case '--permission-mode': {
           const mode = needValue()
           if (!PERMISSION_MODES.has(mode)) return `Unknown permission mode: ${mode}\n\n${USAGE}`
           args.permissionMode = mode as PermissionMode
+          if (mode === 'bypassPermissions') args.bypassAllowed = true
           break
         }
         case '-h':
@@ -91,9 +105,25 @@ export function sessionFlags(args: HostArgs): string[] {
   return [
     ...(args.configDir ? ['--config-dir', args.configDir] : []),
     ...(args.model ? ['--model', args.model] : []),
+    ...(args.effort ? ['--effort', args.effort] : []),
     '--permission-mode', args.permissionMode,
+    ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
   ]
+}
+
+/**
+ * The launch arguments updated with what the chat's pickers changed, so a
+ * restart or resume keeps this chat's model, effort and mode.
+ */
+export function withSessionSettings(args: HostArgs, info: ChatSessionInfo): HostArgs {
+  const { model: _model, effort: _effort, ...rest } = args
+  return {
+    ...rest,
+    ...(info.selectedModel ? { model: info.selectedModel } : {}),
+    ...(info.effort ? { effort: info.effort } : {}),
+    permissionMode: info.permissionMode && PERMISSION_MODES.has(info.permissionMode) ? info.permissionMode as PermissionMode : args.permissionMode,
+  }
 }
 
 /** The command that resumes a conversation as a chat pane; hooks append `--resume <id>`. */
@@ -148,6 +178,8 @@ async function main(): Promise<void> {
   if (parsed.configDir) process.env.CLAUDE_CONFIG_DIR = parsed.configDir
   const launcher = process.env.COMMANDO_AGENT_LAUNCHER
   const resumeCommand = launcher ? chatResumeCommand(launcher, parsed) : undefined
+  // Picker changes update these, so restarts and resumes carry them.
+  let settings = parsed
   const hostBuild = await agentHostBuild().catch(() => undefined)
 
   const write = (line: string) => process.stdout.write(`${line}\n`)
@@ -166,10 +198,13 @@ async function main(): Promise<void> {
     ...(parsed.configDir ? { configDir: parsed.configDir } : {}),
     ...(parsed.resume ? { resume: parsed.resume } : {}),
     ...(parsed.model ? { model: parsed.model } : {}),
+    ...(parsed.effort ? { effort: parsed.effort } : {}),
+    ...(parsed.bypassAllowed ? { bypassAllowed: true } : {}),
     ...(claudePath ? { claudePath } : {}),
     ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
+    log: (message) => write(dim(message)),
   })
 
   const printed = new Map<string, string>()
@@ -188,6 +223,8 @@ async function main(): Promise<void> {
       title = next
       process.stdout.write(terminalTitle(next))
     }
+    settings = withSessionSettings(parsed, info)
+    if (launcher) session.setResumeCommand(chatResumeCommand(launcher, settings))
   })
   session.on('closed', () => {
     const { session: info } = session.snapshot()
@@ -211,7 +248,7 @@ async function main(): Promise<void> {
     // tmux replaces this process with a fresh host in the same pane (same pane id
     // and Commando target), continuing the same conversation. Nothing is closed
     // first: on success -k ends this process, on failure this host keeps going.
-    const command = ['exec', launcher, 'claude', ...sessionFlags(parsed), ...(sessionId ? ['--resume', sessionId] : [])]
+    const command = ['exec', launcher, 'claude', ...sessionFlags(settings), ...(sessionId ? ['--resume', sessionId] : [])]
       .map((word, index) => index === 0 ? word : shellQuote(word)).join(' ')
     // The tmux server's environment can differ from this host's (a dev daemon on
     // another port), so carry the variables that find the daemon.

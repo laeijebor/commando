@@ -1,7 +1,7 @@
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
-import { chatResumeCommand, parseHostArgs, terminalLine } from './main.js'
+import { chatResumeCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, type SessionStore } from './session.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
@@ -172,7 +172,7 @@ describe('AgentSession endings', () => {
 describe('commando-agent arguments', () => {
   it('reads the config dir from the environment and flags, and maps permissions', () => {
     expect(parseHostArgs(['claude', '--dangerously-skip-permissions'], { CLAUDE_CONFIG_DIR: '/x/.claudep' }))
-      .toEqual({ provider: 'claude', permissionMode: 'bypassPermissions', configDir: '/x/.claudep' })
+      .toEqual({ provider: 'claude', permissionMode: 'bypassPermissions', bypassAllowed: true, configDir: '/x/.claudep' })
     expect(parseHostArgs(['claude', '--config-dir', '/y/.claudew', '--resume', 'abcdef12-34', '--model', 'opus'], {}))
       .toMatchObject({ configDir: '/y/.claudew', resume: 'abcdef12-34', model: 'opus', permissionMode: 'default' })
     expect(parseHostArgs(['claude', '--permission-mode', 'yolo'], {})).toMatch(/Unknown permission mode/)
@@ -382,5 +382,26 @@ describe('AgentSession settings', () => {
     await session.configure({ permissionMode: 'bypassPermissions' })
     expect(fake.setPermissionMode).toHaveBeenCalledWith('bypassPermissions')
     expect(sessions.at(-1)).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true })
+  })
+})
+
+describe('commando-agent settings flags', () => {
+  it('reads effort and the bypass allowance', () => {
+    expect(parseHostArgs(['claude', '--effort', 'xhigh', '--allow-dangerously-skip-permissions'], {}))
+      .toEqual({ provider: 'claude', permissionMode: 'default', effort: 'xhigh', bypassAllowed: true })
+    expect(parseHostArgs(['claude', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
+    expect(parseHostArgs(['claude', '--permission-mode', 'bypassPermissions'], {})).toMatchObject({ bypassAllowed: true })
+  })
+
+  it('carries what the pickers changed into the restart and resume flags', () => {
+    const args = parseHostArgs(['claude', '--config-dir', '/x/.claudew', '--model', 'haiku', '--dangerously-skip-permissions', '--prompt', 'hi'], {})
+    if (typeof args === 'string') throw new Error(args)
+    const info: ChatSessionInfo = { paneId: '%3', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1, model: 'claude-sonnet-5-5', selectedModel: 'sonnet', effort: 'high', permissionMode: 'plan' }
+    const next = withSessionSettings(args, info)
+    expect(sessionFlags(next)).toEqual(['--config-dir', '/x/.claudew', '--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '--allow-dangerously-skip-permissions'])
+    expect(chatResumeCommand('/c/commando-agent', next)).toBe('/c/commando-agent claude --config-dir /x/.claudew --model sonnet --effort high --permission-mode plan --allow-dangerously-skip-permissions')
+    // Picking the default model drops the explicit one; an unknown mode keeps the launch mode.
+    const { selectedModel: _picked, ...defaults } = info
+    expect(sessionFlags(withSessionSettings(args, { ...defaults, permissionMode: 'weird' }))).toEqual(['--config-dir', '/x/.claudew', '--effort', 'high', '--permission-mode', 'bypassPermissions'])
   })
 })
