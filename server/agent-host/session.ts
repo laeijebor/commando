@@ -39,6 +39,8 @@ export interface AgentSessionSpec {
   model?: string
   effort?: ChatEffort
   permissionMode: PermissionMode
+  /** In plan mode, the mode it had before (carried across a restart or resume). */
+  prePlanPermissionMode?: ChatSessionPermissionMode
   /** Lets the session switch to bypassPermissions later (the SDK needs this at launch). */
   bypassAllowed?: boolean
   claudePath?: string
@@ -302,6 +304,7 @@ export class AgentSession {
       hostPid: process.pid,
       hostVersion: AGENT_HOST_PROTOCOL_VERSION,
       permissionMode: spec.permissionMode,
+      ...(spec.permissionMode === 'plan' && spec.prePlanPermissionMode ? { prePlanPermissionMode: spec.prePlanPermissionMode } : {}),
       ...(spec.resume ? { sessionId: spec.resume } : {}),
       ...(spec.model ? { model: spec.model, selectedModel: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),

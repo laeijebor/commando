@@ -313,6 +313,7 @@ export class AgentHostHub {
       permissionMode: session.permissionMode,
       ...(session.selectedModel ? { model: session.selectedModel } : {}),
       ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.prePlanPermissionMode ? { prePlanPermissionMode: session.prePlanPermissionMode } : {}),
       ...(session.bypassAllowed ? { bypassAllowed: true } : {}),
     }
   }

@@ -578,6 +578,28 @@ describe('commando-agent settings flags', () => {
     const { selectedModel: _picked, ...defaults } = info
     expect(sessionFlags(withSessionSettings(args, { ...defaults, permissionMode: 'weird' }))).toEqual(['--config-dir', '/x/.claudew', '--effort', 'high', '--permission-mode', 'bypassPermissions'])
   })
+
+  it('keeps the mode a plan-mode chat returns to on Implement across a restart or resume', async () => {
+    const args = parseHostArgs(['claude', '--permission-mode', 'default'], {})
+    if (typeof args === 'string') throw new Error(args)
+    const info: ChatSessionInfo = { paneId: '%3', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1, permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' }
+    const flags = sessionFlags(withSessionSettings(args, info))
+    expect(flags).toEqual(['--permission-mode', 'plan', '--pre-plan-permission-mode', 'acceptEdits'])
+    // The respawned host parses them back and starts in plan mode, remembering acceptEdits.
+    const restarted = parseHostArgs(['claude', ...flags, '--resume', 'abcd1234-0000'], {})
+    if (typeof restarted === 'string') throw new Error(restarted)
+    expect(restarted).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' })
+    const { fake, sessions } = started({ resume: 'abcd1234-0000', permissionMode: restarted.permissionMode, prePlanPermissionMode: restarted.prePlanPermissionMode })
+    await tick()
+    // Claude's init repeats plan mode; that isn't a fresh entry into it.
+    fake.push(system('init', { model: 'claude-haiku-4-5', permissionMode: 'plan' }))
+    await tick()
+    expect(sessions.at(-1)).toMatchObject({ permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' })
+    // Out of plan mode the remembered mode is stale, so it isn't carried.
+    expect(sessionFlags(withSessionSettings(args, { ...info, permissionMode: 'acceptEdits' }))).toEqual(['--permission-mode', 'acceptEdits'])
+    expect(parseHostArgs(['claude', '--pre-plan-permission-mode', 'plan'], {})).toMatch(/Unknown pre-plan permission mode/)
+    expect(parseHostArgs(['claude', '--pre-plan-permission-mode', 'weird'], {})).toMatch(/Unknown pre-plan permission mode/)
+  })
 })
 
 describe('AgentSession richer input', () => {

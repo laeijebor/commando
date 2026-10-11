@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
-import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
 import { isChatPlanDir } from '../chat-plans-dir.js'
@@ -24,6 +24,7 @@ Options:
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
+  --pre-plan-permission-mode MODE  In plan mode: the mode Implement returns to
   --dangerously-skip-permissions   Same as --permission-mode bypassPermissions
   --allow-dangerously-skip-permissions
                                    Allow switching to bypassPermissions later in the chat
@@ -45,6 +46,8 @@ export interface HostArgs {
   model?: string
   effort?: ChatEffort
   permissionMode: PermissionMode
+  /** In plan mode, the mode the chat had before it; Implement returns to it. */
+  prePlanPermissionMode?: ChatSessionPermissionMode
   /** The chat may switch to bypassPermissions (it was started with it). */
   bypassAllowed?: boolean
   claudePath?: string
@@ -101,6 +104,12 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           if (mode === 'bypassPermissions') args.bypassAllowed = true
           break
         }
+        case '--pre-plan-permission-mode': {
+          const mode = needValue()
+          if (!isChatPermissionMode(mode) || mode === 'plan') return `Unknown pre-plan permission mode: ${mode}\n\n${USAGE}`
+          args.prePlanPermissionMode = mode
+          break
+        }
         case '-h':
         case '--help':
           return USAGE
@@ -125,6 +134,8 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
     '--permission-mode', args.permissionMode,
+    // Only plan mode returns to it; out of plan mode it is stale.
+    ...(args.permissionMode === 'plan' && args.prePlanPermissionMode ? ['--pre-plan-permission-mode', args.prePlanPermissionMode] : []),
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
     // The plan it started from stays readable after a restart or resume.
@@ -137,11 +148,12 @@ export function sessionFlags(args: HostArgs): string[] {
  * restart or resume keeps this chat's model, effort and mode.
  */
 export function withSessionSettings(args: HostArgs, info: ChatSessionInfo): HostArgs {
-  const { model: _model, effort: _effort, ...rest } = args
+  const { model: _model, effort: _effort, prePlanPermissionMode: _prePlan, ...rest } = args
   return {
     ...rest,
     ...(info.selectedModel ? { model: info.selectedModel } : {}),
     ...(info.effort ? { effort: info.effort } : {}),
+    ...(info.prePlanPermissionMode ? { prePlanPermissionMode: info.prePlanPermissionMode } : {}),
     permissionMode: info.permissionMode && PERMISSION_MODES.has(info.permissionMode) ? info.permissionMode as PermissionMode : args.permissionMode,
   }
 }
@@ -225,6 +237,7 @@ async function main(): Promise<void> {
     paneId,
     cwd: process.cwd(),
     permissionMode: parsed.permissionMode,
+    ...(parsed.prePlanPermissionMode ? { prePlanPermissionMode: parsed.prePlanPermissionMode } : {}),
     env: process.env,
     ...(parsed.configDir ? { configDir: parsed.configDir } : {}),
     ...(parsed.resume ? { resume: parsed.resume } : {}),
