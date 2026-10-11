@@ -69,6 +69,7 @@ function MenuOption({ checked, label, description, onSelect }: { checked: boolea
       type="button"
       role="menuitemradio"
       aria-checked={checked}
+      title={description}
       onClick={onSelect}
       className={cn('flex w-full min-w-0 items-baseline gap-2 rounded-[5px] px-2 py-1 text-left', checked ? 'bg-accent text-foreground' : 'text-secondary-label hover:bg-accent')}
     >
@@ -209,7 +210,7 @@ export function ContextMeter({ usage, canCompact, onCompact }: { usage: ChatCont
           <circle cx="12" cy="12" r={radius} fill="none" stroke={color} strokeWidth="4" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - used / 100)} />
         </svg>
       </PopoverTrigger>
-      <PopoverPopup className="grid w-[280px] gap-2 px-3 py-2.5" side="top" align="end" aria-label="Context window">
+      <PopoverPopup className="grid w-[300px] gap-2 px-3 py-2.5" side="top" align="end" aria-label="Context window">
         <div className="flex items-baseline justify-between gap-3 text-sm">
           <b className="font-semibold text-foreground">Context</b>
           <span className={cn('tabular-nums', overloaded ? 'text-destructive' : 'text-muted-foreground')}>
@@ -233,7 +234,7 @@ export function ContextMeter({ usage, canCompact, onCompact }: { usage: ChatCont
           </div>
         ) : null}
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1">
+          <span className="min-w-0 flex-1 truncate">
             {usage.autoCompact && usage.autoCompactThreshold
               ? `Auto-compacts at ${formatPercent(percent(usage.autoCompactThreshold, usage.maxTokens))}`
               : usage.autoCompact ? 'Compacts automatically' : 'Auto-compact is off'}
