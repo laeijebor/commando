@@ -317,6 +317,12 @@ describe('ClaudeItemMapper subagents', () => {
     expect(agentIdFromResult('done\nagentId: a04229816544e4527 (use SendMessage…)')).toBe('a04229816544e4527')
     expect(agentIdFromResult('no id here')).toBeUndefined()
     expect(subagentReport('plain text')).toBe('plain text')
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.replay([
+      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm', content: [{ type: 'tool_use', id: 'tu', name: 'Agent', input: { description: 'd' } }] } },
+      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu', content: [{ type: 'text', text: 'done\nagentId: a1 (x)\n<usage>subagent_tokens: 9\ntool_uses: 3\nduration_ms: 5373</usage>' }] }] } },
+    ])
+    expect(mapper.list()[0]).toMatchObject({ toolUses: 3, durationMs: 5373, output: 'done\nagentId: a1 (x)\n<usage>subagent_tokens: 9\ntool_uses: 3\nduration_ms: 5373</usage>' })
     expect(taskNotificationFromText('hello')).toBeNull()
   })
 })

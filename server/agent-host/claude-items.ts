@@ -591,7 +591,19 @@ export class ClaudeItemMapper {
     }
     // A task notification may already have said how it ended; a stopped one reads as interrupted.
     const state: ChatSubagentState = item.state !== 'running' ? item.state : isError ? (STOPPED_RESULT.test(text) ? 'stopped' : 'failed') : 'completed'
-    return this.put({ ...item, ...(agentId ? { agentId } : {}), state, status: itemStatus(state), output: truncate(subagentReport(text), MAX_OUTPUT), updatedAt: this.now() })
+    // A resumed transcript has no task events; the report's usage trailer stands in for them.
+    const toolUses = item.toolUses ?? usageField(text, 'tool_uses')
+    const durationMs = item.durationMs ?? usageField(text, 'duration_ms')
+    return this.put({
+      ...item,
+      ...(agentId ? { agentId } : {}),
+      ...(toolUses !== undefined ? { toolUses } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      state,
+      status: itemStatus(state),
+      output: truncate(subagentReport(text), MAX_OUTPUT),
+      updatedAt: this.now(),
+    })
   }
 
   private handleTask(message: Extract<SDKMessage, { type: 'system'; subtype: 'task_started' | 'task_progress' | 'task_updated' | 'task_notification' }>): ChatItem[] {
@@ -672,6 +684,12 @@ export class ClaudeItemMapper {
     }
     return [this.put(next)]
   }
+}
+
+/** A number from the `<usage>` trailer of a subagent's report. */
+function usageField(text: string, name: 'tool_uses' | 'duration_ms'): number | undefined {
+  const value = new RegExp(`<usage>[\\s\\S]*?\\b${name}: (\\d+)`).exec(text)?.[1]
+  return value === undefined ? undefined : Number(value)
 }
 
 function itemStatus(state: ChatSubagentState): ChatItemStatus {
