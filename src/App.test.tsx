@@ -841,6 +841,35 @@ describe('panel focus and attention', () => {
   const owner = () => document.querySelector('.side-panel-owner')
   const footer = (id: string) => document.querySelector(`[data-pane-id="${id}"] .pane-footer-focus`)
 
+  it.each([
+    ['pointer', '.pane-head'],
+    ['pointer', '.pane-heading strong'],
+    ['pointer', '.pane-index'],
+    ['pointer', '.pane-tab-count'],
+    ['keyboard', '.pane-head'],
+    ['keyboard', '[aria-label="Maximize pane"]'],
+  ] as const)('focuses a pane from %s interaction on %s until the next tmux active-pane change', async (input, selector) => {
+    await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tabA, tabB] }))
+    const target = document.querySelector(`[data-pane-id="${paneB.id}"] ${selector}`) as HTMLElement
+    expect(owner()).toHaveTextContent(`${paneA.id} · Agent A`)
+    if (input === 'pointer') {
+      expect(fireEvent.pointerDown(target)).toBe(true)
+      fireEvent.click(target)
+    } else act(() => target.focus())
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+    expect(footer(paneB.id)).toHaveTextContent('Focused / keys go here')
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...paneA, active: false }, { ...paneB, active: true }]) }))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    expect(owner()).toHaveTextContent(`${paneA.id} · Agent A`)
+    fireEvent.pointerDown(target)
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([paneA, paneB]) }))
+    expect(owner()).toHaveTextContent(`${paneB.id} · Agent B`)
+  })
+
   it('keeps the terminal renderer mounted when the first panel tab arrives and the last closes', async () => {
     vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
     await renderAppWithSnapshot(snapshotWith([paneA, paneB]))
@@ -1758,6 +1787,33 @@ const paneProps = {
 }
 
 describe('terminal pane actions', () => {
+  it('focuses on header pointerdown while preserving dragging, the keyboard menu and header buttons', () => {
+    const onFocus = vi.fn(), onDragStart = vi.fn(), onDragEnd = vi.fn(), onOpenMenu = vi.fn()
+    const onMove = vi.fn(), onMaximize = vi.fn(), onClose = vi.fn()
+    const view = render(<TerminalPaneCard {...paneProps} index={1} count={2}
+      onFocus={onFocus} onDragStart={onDragStart} onDragEnd={onDragEnd} onOpenMenu={onOpenMenu}
+      onMove={onMove} onMaximize={onMaximize} onClose={onClose} />)
+    const header = view.container.querySelector('.pane-head') as HTMLElement
+    expect(header).toHaveAttribute('draggable', 'true')
+    expect(fireEvent.pointerDown(header)).toBe(true)
+    expect(onFocus).toHaveBeenCalled()
+    fireEvent.dragStart(header, { dataTransfer: stubDataTransfer() })
+    fireEvent.dragEnd(header)
+    expect(onDragStart).toHaveBeenCalledOnce()
+    expect(onDragEnd).toHaveBeenCalledOnce()
+    act(() => header.focus())
+    fireEvent.keyDown(header, { key: 'F10', shiftKey: true })
+    expect(onOpenMenu).toHaveBeenCalledWith(24, 0)
+    for (const name of ['Move api left', 'Maximize pane', 'Close api']) {
+      const button = screen.getByRole('button', { name })
+      expect(fireEvent.pointerDown(button)).toBe(true)
+      fireEvent.click(button)
+    }
+    expect(onMove).toHaveBeenCalledWith(-1)
+    expect(onMaximize).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('renders a semantic pane rail and acknowledges post-mark activity without clearing the label', () => {
     const onAcknowledgeMark = vi.fn()
     const view = render(

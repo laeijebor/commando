@@ -528,6 +528,8 @@ export function TerminalPaneCard({
   return (
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${jumpHighlighted ? ' is-jump-highlighted' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
+      onPointerDownCapture={onFocus}
+      onFocusCapture={onFocus}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -677,7 +679,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className="terminal-pane-body has-worklog" onPointerDownCapture={onFocus}>
+      <div className="terminal-pane-body has-worklog">
         {showChat && chat ? (
           <ChatPane
             chat={chat}
