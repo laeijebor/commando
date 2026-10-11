@@ -3,7 +3,7 @@ import { constants, createReadStream, existsSync, mkdirSync, renameSync, utimesS
 import { copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, utimes, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import {
   CHAT_IMAGE_EXTENSIONS,
   MAX_CHAT_IMAGE_BYTES,
@@ -136,6 +136,13 @@ export class ChatImageStore {
     const folder = this.sessionFolder(sessionId)
     mkdirSync(folder, { recursive: true, mode: 0o700 })
     return folder
+  }
+
+  /** The image and session a staged copy's path names, or null for any other path. */
+  stagedImage(path: string): { id: string; sessionId: string } | null {
+    const id = basename(path)
+    const sessionId = basename(dirname(path))
+    return dirname(dirname(path)) === this.sessionsDir && SESSION_ID.test(sessionId) && isChatImageId(id) ? { id, sessionId } : null
   }
 
   /**

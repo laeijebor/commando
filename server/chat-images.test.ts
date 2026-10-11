@@ -82,6 +82,14 @@ describe('chat image store', () => {
     expect(await readdir(sessionDir)).toEqual([id])
   })
 
+  it('recognises only staged copies by their path', () => {
+    const id = `${'a'.repeat(64)}.png`
+    expect(store.stagedImage(join(store.sessionsDir, 'abcd1234-0000', id))).toEqual({ id, sessionId: 'abcd1234-0000' })
+    expect(store.stagedImage(join(store.dir, id))).toBeNull()
+    expect(store.stagedImage(join(store.sessionsDir, '..', 'abcd1234-0000', id))).toBeNull()
+    expect(store.stagedImage(join(store.sessionsDir, 'abcd1234-0000', 'notes.txt'))).toBeNull()
+  })
+
   it('refuses session ids that could name another folder', async () => {
     const saved = await store.save(PNG)
     const id = 'id' in saved ? saved.id : ''

@@ -67,6 +67,18 @@ export function stripAttachmentNotes(text: string): string {
   return text.replace(ATTACHMENT_NOTES, '').trim()
 }
 
+/** The saved-copy paths that a transcript's own attachment notes name. */
+export function notedAttachmentPaths(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): string[] {
+  return messages.flatMap((entry) => {
+    const content = record(entry.message).content
+    if (entry.type !== 'user' || entry.parent_tool_use_id || !Array.isArray(content)) return []
+    return content.flatMap((part) => {
+      const text = record(part).type === 'text' ? str(record(part).text) ?? '' : ''
+      return [...text.matchAll(/\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g)].map((match) => match[1]!)
+    })
+  })
+}
+
 function toolResultContent(content: unknown, images: ChatImageSink | undefined): { text: string; images: ChatImageRef[] } {
   if (typeof content === 'string') return { text: content, images: [] }
   const refs: ChatImageRef[] = []

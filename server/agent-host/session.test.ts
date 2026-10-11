@@ -464,6 +464,10 @@ describe('AgentSession richer input', () => {
       if (id !== imageId) throw new Error('ENOENT: no such file')
       return `/sessions/${sessionId}/${id}`
     }),
+    stagedImage: (path: string) => {
+      const match = /^\/sessions\/([^/]+)\/([^/]+)$/.exec(path)
+      return match ? { sessionId: match[1]!, id: match[2]! } : null
+    },
   }
 
   it('lists commands and skills, hiding TUI-only built-ins but not same-named user entries', async () => {
@@ -520,19 +524,34 @@ describe('AgentSession richer input', () => {
     expect(resumed.fake.options.sessionId).toBeUndefined()
   })
 
-  it('copies a resumed conversation\'s attached images back into its folder', async () => {
-    const store = { ...images, saveBase64: vi.fn(() => ({ id: imageId })), stage: vi.fn(images.stage) }
+  it('copies a resumed conversation\'s attached images back to the folders its notes name', async () => {
+    const store = { ...images, saveBase64: vi.fn(() => ({ id: imageId })), stage: vi.fn(async (id: string, sessionId: string) => `/sessions/${sessionId}/${id}`) }
+    const attached = (path: string) => ({ type: 'user', message: { role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cG5n' } },
+      { type: 'text', text: `look\n\n[Attached image "pane.png" is saved at: ${path}]` },
+    ] }, parent_tool_use_id: null })
     const history = [
-      { type: 'user', message: { role: 'user', content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cG5n' } },
-        { type: 'text', text: `look\n\n[Attached image "pane.png" is saved at: /sessions/abcd1234-0000/${imageId}]` },
-      ] }, parent_tool_use_id: null },
+      // Saved before a /clear gave the conversation its current id.
+      attached(`/sessions/beforeclear-0000/${imageId}`),
+      attached(`/sessions/abcd1234-0000/${imageId}`),
+      // From before session folders: the shared store stays closed.
+      attached(`/images/${imageId}`),
       { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'A pane.' }] }, parent_tool_use_id: null },
     ]
     const { fake } = started({ images: store, resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => undefined })
     await tick()
-    expect(store.stage).toHaveBeenCalledWith(imageId, 'abcd1234-0000')
-    expect(fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000'])
+    expect(store.stage.mock.calls).toEqual([[imageId, 'beforeclear-0000'], [imageId, 'abcd1234-0000']])
+    expect(fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', '/sessions/beforeclear-0000'])
+  })
+
+  it('still sends an image it could not copy for Claude, without a note', async () => {
+    const log = vi.fn()
+    const { fake, session } = started({ images: { ...images, stage: vi.fn(async () => { throw new Error('ENOSPC') }) }, log })
+    session.send('look', [{ id: imageId }])
+    await tick()
+    await tick()
+    expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: 'look' }])
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/ENOSPC/))
   })
 
   it('opens each chat to its own attachments only, on disk', async () => {

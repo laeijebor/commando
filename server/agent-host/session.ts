@@ -17,7 +17,7 @@ import {
   type ChatSessionStatus,
   type ChatSettingsChange,
 } from '../../shared/agent-chat.js'
-import { ClaudeItemMapper, attachmentNote, questionsFromInput, toolTitle, type ChatImageSink } from './claude-items.js'
+import { ClaudeItemMapper, attachmentNote, notedAttachmentPaths, questionsFromInput, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
 
 export interface AgentSessionSpec {
@@ -51,6 +51,8 @@ export interface SessionImageStore extends ChatImageSink {
   sessionDir(sessionId: string): string
   /** Copies a stored image into the session's folder; returns the copy's path. */
   stage(id: string, sessionId: string): Promise<string>
+  /** The image and session a staged copy's path names, or null for any other path. */
+  stagedImage(path: string): { id: string; sessionId: string } | null
 }
 
 /** Reads saved transcripts and titles; swapped out in tests. */
@@ -287,20 +289,21 @@ export class AgentSession {
   }
 
   async start(): Promise<void> {
+    let notedSessions: string[] = []
     if (this.spec.resume) {
       // Show the conversation so far before Claude continues it.
       try {
         const history = await this.store.messages(this.spec.resume, this.spec.cwd)
         const items = this.mapper.replay(history)
         if (items.length) this.emitItems(items)
-        void this.restageImages(items)
+        notedSessions = await this.restageNotedImages(history)
       } catch (error) {
         this.emitItems(this.mapper.notice('error', `Couldn't load earlier turns: ${error instanceof Error ? error.message : String(error)}`))
       }
       void this.refreshTitle()
     }
     const canUseTool: CanUseTool = (toolName, input, options) => this.requestPermission(toolName, input, options)
-    const imageDir = this.openImageDir()
+    const imageDirs = this.openImageDirs(notedSessions)
     this.queryHandle = this.runQuery({
       prompt: this.input,
       options: {
@@ -316,7 +319,7 @@ export class AgentSession {
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
         ...(this.spec.resume ? { resume: this.spec.resume } : this.spec.images ? { sessionId: this.imageSessionId } : {}),
         // Claude's tools can open this chat's attached images without asking, and no other chat's.
-        ...(imageDir ? { additionalDirectories: [imageDir] } : {}),
+        ...(imageDirs.length ? { additionalDirectories: imageDirs } : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
@@ -376,37 +379,57 @@ export class AgentSession {
     const store = this.spec.images
     if (!store) throw new Error('this host has no image folder')
     const attached = await Promise.all(images.map(async (image) => {
-      const [bytes, path] = await Promise.all([store.read(image.id), store.stage(image.id, this.imageSessionId)])
+      const [bytes, path] = await Promise.all([
+        store.read(image.id),
+        // Without a copy Claude still sees the image; it just has no file to open.
+        store.stage(image.id, this.imageSessionId).catch((error: unknown) => {
+          this.spec.log?.(`Couldn't save a copy of an attached image for Claude: ${errorText(error)}`)
+          return null
+        }),
+      ])
       return {
         block: { type: 'image', source: { type: 'base64', media_type: chatImageType(image.id), data: bytes.toString('base64') } },
-        note: attachmentNote(image.name ?? image.id, path),
+        note: path ? attachmentNote(image.name ?? image.id, path) : null,
       }
     }))
-    return { blocks: attached.map((image) => image.block), notes: attached.map((image) => image.note) }
+    return { blocks: attached.map((image) => image.block), notes: attached.flatMap((image) => image.note ? [image.note] : []) }
   }
 
-  private openImageDir(): string | null {
-    if (!this.spec.images) return null
-    try {
-      return this.spec.images.sessionDir(this.imageSessionId)
-    } catch (error) {
-      this.spec.log?.(`Claude can't open attached images without asking: ${errorText(error)}`)
-      return null
-    }
+  /** The image folders Claude may open: this session's, and any its resumed notes name. */
+  private openImageDirs(notedSessions: readonly string[]): string[] {
+    const store = this.spec.images
+    if (!store) return []
+    return [...new Set([this.imageSessionId, ...notedSessions])].flatMap((sessionId) => {
+      try {
+        return [store.sessionDir(sessionId)]
+      } catch (error) {
+        this.spec.log?.(`Claude can't open attached images without asking: ${errorText(error)}`)
+        return []
+      }
+    })
   }
 
   /**
-   * Copies a resumed conversation's attached images back into its folder, as
-   * its notes promise, in case they were pruned there but are still in the
-   * transcript.
+   * Copies a resumed conversation's attached images back to where its notes
+   * say they are saved, in case they were pruned there, and returns the
+   * sessions whose folders those are. After a /clear the conversation has a
+   * new id, so its notes can name the folder of the id it had before. Notes
+   * from before session folders name the shared store and are left alone.
    */
-  private async restageImages(items: readonly ChatItem[]): Promise<void> {
+  private async restageNotedImages(history: Parameters<ClaudeItemMapper['replay']>[0]): Promise<string[]> {
     const store = this.spec.images
-    if (!store) return
-    const ids = new Set(items.flatMap((item) => item.kind === 'user_message' ? (item.images ?? []).map((image) => image.id) : []))
-    const results = await Promise.allSettled([...ids].map((id) => store.stage(id, this.imageSessionId)))
+    if (!store) return []
+    const noted = new Map(notedAttachmentPaths(history).flatMap((path) => {
+      const staged = store.stagedImage(path)
+      return staged ? [[path, staged] as const] : []
+    }))
+    const results = await Promise.allSettled([...noted.values()].map(async ({ id, sessionId }) => {
+      await store.stage(id, sessionId)
+      return sessionId
+    }))
     const failed = results.find((result) => result.status === 'rejected')
     if (failed) this.spec.log?.(`Couldn't restore earlier attached images for Claude: ${errorText(failed.reason)}`)
+    return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
   }
 
   private deliver(text: string, images: ChatImageRef[], { blocks, notes }: { blocks: unknown[]; notes: string[] } = { blocks: [], notes: [] }): void {
