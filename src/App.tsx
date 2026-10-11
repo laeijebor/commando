@@ -122,7 +122,7 @@ import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane } from './chat/ChatPane'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import type { SessionAgentLaunch } from '../shared/tmux-create'
+import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { mergeChatItems, type ChatAnswer, type ChatState } from '../shared/agent-chat'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
@@ -2269,9 +2269,15 @@ export function App() {
       let agent: SessionAgentLaunch | undefined
       if (chat) {
         // The profile is remembered per repository, as in the new-session dialog.
-        const repoRoot = await gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined)
+        const [repoRoot, profiles] = await Promise.all([
+          gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined),
+          tmuxCreateApi.claudeProfiles().catch(() => null),
+        ])
         const preference = loadChatLaunch(repoRoot ?? pane.path)
-        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(preference.configDir ? { configDir: preference.configDir } : {}) }
+        // Check the remembered profile against the current ones, as the dialog does, so a
+        // stale or missing preference never falls back to the daemon's own login.
+        const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
+        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
       }
       const created = await tmuxCreateApi.createPane({
         targetId: paneId,

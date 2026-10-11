@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
+import { chatProfileConfigDir, defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 
@@ -673,5 +673,19 @@ describe('Claude chat launches', () => {
       await chmod(`${dir}/.claudep/projects/-locked`, 0o755).catch(() => undefined)
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('chatProfileConfigDir', () => {
+  const profiles = [
+    { name: 'claudew', configDir: '/h/.claudew', lastUsedAt: 1 },
+    { name: 'claudep', configDir: '/h/.claudep', lastUsedAt: 2 },
+  ]
+
+  it('keeps a remembered profile that still exists and otherwise picks the most recent', () => {
+    expect(chatProfileConfigDir('/h/.claudew', profiles)).toBe('/h/.claudew')
+    expect(chatProfileConfigDir('/h/.gone', profiles)).toBe('/h/.claudep')
+    expect(chatProfileConfigDir(undefined, profiles)).toBe('/h/.claudep')
+    expect(chatProfileConfigDir('/h/.claudew', [])).toBeUndefined()
   })
 })
