@@ -445,7 +445,7 @@ export class AgentSession {
     this.input.push({
       type: 'user',
       // Images first: a /command in a text block after them still expands.
-      message: { role: 'user', content: blocks.length ? [...blocks, { type: 'text', text: withNotes }] : text },
+      message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : text },
       parent_tool_use_id: null,
       origin: { kind: 'human' },
     } as SDKUserMessage)

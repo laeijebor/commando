@@ -60,7 +60,7 @@ export function attachmentNote(name: string, path: string): string {
   return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
 }
 
-const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: [^\]\n]+\]/g
+const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
 
 /** The text the person typed, without the notes the host added for Claude. */
 export function stripAttachmentNotes(text: string): string {
@@ -71,10 +71,11 @@ export function stripAttachmentNotes(text: string): string {
 export function notedAttachmentPaths(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): string[] {
   return messages.flatMap((entry) => {
     const content = record(entry.message).content
-    if (entry.type !== 'user' || entry.parent_tool_use_id || !Array.isArray(content)) return []
+    // The host only writes notes beside the images they describe.
+    if (entry.type !== 'user' || entry.parent_tool_use_id || !Array.isArray(content) || !content.some((part) => record(part).type === 'image')) return []
     return content.flatMap((part) => {
       const text = record(part).type === 'text' ? str(record(part).text) ?? '' : ''
-      return [...text.matchAll(/\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g)].map((match) => match[1]!)
+      return [...text.matchAll(ATTACHMENT_NOTES)].map((match) => match[1]!)
     })
   })
 }

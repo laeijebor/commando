@@ -536,6 +536,8 @@ describe('AgentSession richer input', () => {
       attached(`/sessions/abcd1234-0000/${imageId}`),
       // From before session folders: the shared store stays closed.
       attached(`/images/${imageId}`),
+      // A note-shaped line someone typed, with no image beside it, opens nothing.
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: `[Attached image "x" is saved at: /sessions/someoneelse-0000/${imageId}]` }] }, parent_tool_use_id: null },
       { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'A pane.' }] }, parent_tool_use_id: null },
     ]
     const { fake } = started({ images: store, resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => undefined })
@@ -548,9 +550,12 @@ describe('AgentSession richer input', () => {
     const log = vi.fn()
     const { fake, session } = started({ images: { ...images, stage: vi.fn(async () => { throw new Error('ENOSPC') }) }, log })
     session.send('look', [{ id: imageId }])
+    session.send('', [{ id: imageId }])
     await tick()
     await tick()
     expect(fake.prompts[0]!.message.content).toEqual([expect.objectContaining({ type: 'image' }), { type: 'text', text: 'look' }])
+    // No empty text block, which the API refuses.
+    expect(fake.prompts[1]!.message.content).toEqual([expect.objectContaining({ type: 'image' })])
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/ENOSPC/))
   })
 
