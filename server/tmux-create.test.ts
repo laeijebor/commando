@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { GitRepoInfo } from '../shared/tmux-create.js'
+import { defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 
@@ -636,6 +636,41 @@ describe('Claude chat launches', () => {
         { name: 'claudew', configDir: `${dir}/.claudew` },
       ])
     } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('dates a profile by its newest transcript, even when only a nested transcript changed', async () => {
+    const { mkdtemp, mkdir, writeFile, rm, utimes, chmod } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const dir = await mkdtemp(`${tmpdir()}/profiles-`)
+    const at = (path: string, seconds: number) => utimes(path, seconds, seconds)
+    try {
+      // .claudew's projects/ folder was touched last, but a .claudep session was appended to since.
+      await mkdir(`${dir}/.claudep/projects/-repo`, { recursive: true })
+      await writeFile(`${dir}/.claudep/projects/-repo/session.jsonl`, '{}\n')
+      await writeFile(`${dir}/.claudep/projects/-repo/notes.txt`, '')
+      await mkdir(`${dir}/.claudep/projects/-locked`)
+      await at(`${dir}/.claudep/projects/-repo/session.jsonl`, 3_000)
+      await at(`${dir}/.claudep/projects/-repo/notes.txt`, 9_000)
+      await at(`${dir}/.claudep/projects/-repo`, 1_000)
+      await at(`${dir}/.claudep/projects/-locked`, 1_000)
+      await at(`${dir}/.claudep/projects`, 1_000)
+      await chmod(`${dir}/.claudep/projects/-locked`, 0o000)
+      await mkdir(`${dir}/.claudew/projects/-repo`, { recursive: true })
+      await writeFile(`${dir}/.claudew/projects/-repo/session.jsonl`, '{}\n')
+      await at(`${dir}/.claudew/projects/-repo/session.jsonl`, 1_500)
+      await at(`${dir}/.claudew/projects/-repo`, 1_500)
+      await at(`${dir}/.claudew/projects`, 2_000)
+
+      const profiles = await listClaudeProfiles(dir)
+      expect(profiles).toEqual([
+        { name: 'claudep', configDir: `${dir}/.claudep`, lastUsedAt: 3_000_000 },
+        { name: 'claudew', configDir: `${dir}/.claudew`, lastUsedAt: 2_000_000 },
+      ])
+      expect(defaultClaudeProfile(profiles)?.name).toBe('claudep')
+    } finally {
+      await chmod(`${dir}/.claudep/projects/-locked`, 0o755).catch(() => undefined)
       await rm(dir, { recursive: true, force: true })
     }
   })

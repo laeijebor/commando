@@ -52,6 +52,54 @@ export function validClaudeConfigDir(value: string, home = homedir()): boolean {
     && dirname(value) === home && CLAUDE_CONFIG_DIR_NAME.test(basename(value))
 }
 
+const ACTIVITY_STAT_BATCH = 64
+const ACTIVITY_TRANSCRIPT_LIMIT = 2_000
+
+/** Modification times in parallel batches; unreadable paths come back undefined. */
+async function modifiedTimes(paths: readonly string[]): Promise<Array<number | undefined>> {
+  const times: Array<number | undefined> = []
+  for (let start = 0; start < paths.length; start += ACTIVITY_STAT_BATCH) {
+    times.push(...await Promise.all(paths.slice(start, start + ACTIVITY_STAT_BATCH)
+      .map((path) => stat(path).then((info) => info.mtimeMs, () => undefined))))
+  }
+  return times
+}
+
+/** Transcripts directly inside each folder, listed in parallel batches until the limit. */
+async function transcriptsIn(folders: readonly string[], limit: number): Promise<string[]> {
+  const transcripts: string[] = []
+  for (let start = 0; start < folders.length && transcripts.length < limit; start += ACTIVITY_STAT_BATCH) {
+    const listings = await Promise.all(folders.slice(start, start + ACTIVITY_STAT_BATCH).map((folder) =>
+      readdir(folder, { withFileTypes: true }).then((entries) => entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+        .map((entry) => join(folder, entry.name)), () => [])))
+    transcripts.push(...listings.flat())
+  }
+  return transcripts.slice(0, limit)
+}
+
+/**
+ * Newest session activity under a profile's projects/ folder. Appending to a transcript
+ * changes only that file, so this checks the project folders and the transcripts directly
+ * inside them. Recently changed folders are read first, and the transcript count is
+ * capped so a profile with thousands of sessions stays cheap to list.
+ */
+async function lastClaudeActivity(projectsDir: string): Promise<number | undefined> {
+  const entries = await readdir(projectsDir, { withFileTypes: true }).catch(() => [])
+  const folders = entries.filter((entry) => entry.isDirectory()).map((entry) => join(projectsDir, entry.name))
+  const [projectsTime, ...folderTimes] = await modifiedTimes([projectsDir, ...folders])
+  const recentFirst = folders
+    .map((folder, index) => ({ folder, time: folderTimes[index] ?? 0 }))
+    .sort((a, b) => b.time - a.time)
+    .map(({ folder }) => folder)
+  const transcriptTimes = await modifiedTimes(await transcriptsIn(recentFirst, ACTIVITY_TRANSCRIPT_LIMIT))
+  let latest: number | undefined
+  for (const time of [projectsTime, ...folderTimes, ...transcriptTimes]) {
+    if (time !== undefined && (latest === undefined || time > latest)) latest = time
+  }
+  return latest
+}
+
 /** Claude config dirs in the home folder that have been used (they hold settings or sessions). */
 export async function listClaudeProfiles(home = homedir()): Promise<ClaudeProfile[]> {
   const entries = await readdir(home, { withFileTypes: true }).catch(() => [])
@@ -64,8 +112,8 @@ export async function listClaudeProfiles(home = homedir()): Promise<ClaudeProfil
       access(join(configDir, 'projects')),
     ].map((check) => check.then(() => true))).catch(() => false)
     if (!used) continue
-    // Sessions write to projects/, so its modification time says which login is in use.
-    const lastUsedAt = await stat(join(configDir, 'projects')).then((info) => info.mtimeMs, () => undefined)
+    // Sessions write to projects/, so its newest transcript says which login is in use.
+    const lastUsedAt = await lastClaudeActivity(join(configDir, 'projects'))
     profiles.push({ name: entry.name.slice(1), configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) })
   }
   return profiles.sort((a, b) => a.name.localeCompare(b.name))
