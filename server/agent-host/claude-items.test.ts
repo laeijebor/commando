@@ -185,3 +185,11 @@ describe('ClaudeItemMapper images', () => {
       .toEqual([expect.objectContaining({ kind: 'notice', level: 'info' })])
   })
 })
+
+describe('ClaudeItemMapper replay of unstorable images', () => {
+  it('keeps an image-only turn whose image could not be stored', () => {
+    const mapper = new ClaudeItemMapper(() => 1, { saveBase64: () => undefined })
+    const items = mapper.replay([{ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'eA==' } }] } }])
+    expect(items).toEqual([expect.objectContaining({ kind: 'user_message', text: '[image]' })])
+  })
+})

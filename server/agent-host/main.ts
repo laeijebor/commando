@@ -217,7 +217,7 @@ async function main(): Promise<void> {
     ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
     ...(resumeCommand ? { resumeCommand } : {}),
     ...(hostBuild ? { hostBuild } : {}),
-    images: new ChatImageStore(),
+    images: new ChatImageStore(undefined, (message) => write(dim(message))),
     log: (message) => write(dim(message)),
   })
 

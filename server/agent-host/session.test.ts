@@ -532,6 +532,21 @@ describe('AgentSession richer input', () => {
 
   it('answers @ searches from the session folder', async () => {
     const { session } = started({ cwd: '/definitely/missing/folder' })
-    expect(await session.searchFiles('x')).toEqual({ entries: [], truncated: false })
+    expect(await session.searchFiles('x')).toEqual({ entries: [], truncated: false, error: expect.stringMatching(/^Couldn't list files: .*ENOENT/) })
+  })
+})
+
+describe('AgentSession command list failures', () => {
+  it('says when Claude cannot list its commands and stops the menu waiting for them', async () => {
+    const fake = fakeQuery()
+    fake.supportedCommands.mockRejectedValue(new Error('control request timed out'))
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const notices: string[] = []
+    session.on('items', (changed) => { for (const item of changed) if (item.kind === 'notice') notices.push(item.text) })
+    void session.start()
+    await tick()
+    await tick()
+    expect(session.commands).toEqual([])
+    expect(notices).toEqual(["Couldn't list Claude's commands for the / menu: control request timed out"])
   })
 })

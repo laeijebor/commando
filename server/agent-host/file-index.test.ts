@@ -88,3 +88,17 @@ describe('workspace file index', () => {
     ])
   })
 })
+
+describe('workspace file index failures', () => {
+  it('walks a folder that is not a repo, but reports other git failures instead of ignoring .gitignore', async () => {
+    const { listGitFiles } = await import('./file-index.js')
+    expect(await listGitFiles(dir)).toBeNull()
+    const broken = new WorkspaceFileIndex(dir, { listGitFiles: async () => { throw new Error('git ls-files failed: dubious ownership') } })
+    await expect(broken.search('a')).rejects.toThrow('dubious ownership')
+  })
+
+  it('reports an unreadable session folder instead of an empty one', async () => {
+    const missing = new WorkspaceFileIndex(join(dir, 'gone'), { listGitFiles: async () => null })
+    await expect(missing.search('a')).rejects.toThrow(/ENOENT/)
+  })
+})

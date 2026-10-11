@@ -25,15 +25,20 @@ export interface FileIndexOptions {
   listGitFiles?: (cwd: string) => Promise<string[] | null>
 }
 
-/** `git ls-files` with untracked files that .gitignore keeps; null when cwd is not in a repo. */
+/** Under the daemon's 10 s wait for an answer, so a slow repo reports an error instead of timing out. */
+const GIT_TIMEOUT_MS = 8_000
+
+/**
+ * `git ls-files` with untracked files that .gitignore keeps; null when cwd is
+ * not in a repo. Other git failures throw: walking a repo instead would offer
+ * the files .gitignore hides.
+ */
 export function listGitFiles(cwd: string): Promise<string[] | null> {
-  return new Promise((resolve) => {
-    execFile('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 15_000 }, (error, stdout) => {
-      if (error) {
-        resolve(null)
-        return
-      }
-      resolve([...new Set(stdout.split('\0').filter(Boolean))])
+  return new Promise((resolve, reject) => {
+    execFile('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd, maxBuffer: 64 * 1024 * 1024, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
+      if (!error) resolve([...new Set(stdout.split('\0').filter(Boolean))])
+      else if (/not a git repository/i.test(String(stderr))) resolve(null)
+      else reject(new Error(`git ls-files failed: ${String(stderr).trim().split('\n')[0] || error.message}`))
     })
   })
 }
@@ -47,7 +52,9 @@ async function walk(cwd: string, maxFiles: number): Promise<{ files: string[]; t
       let entries
       try {
         entries = await readdir(join(cwd, directory.path), { withFileTypes: true })
-      } catch {
+      } catch (error) {
+        // An unreadable session folder is an error; an unreadable subfolder is skipped.
+        if (!directory.path) throw error
         continue
       }
       entries.sort((a, b) => a.name.localeCompare(b.name))

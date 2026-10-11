@@ -237,7 +237,7 @@ function menuGroups(
     const commandsFirst = Boolean(query) && (natives.some((native) => native.name.startsWith(query)) || matched[0]?.kind === 'command')
     return {
       groups: commandsFirst ? [commandGroup, skillGroup] : [skillGroup, commandGroup],
-      status: commands ? null : "Claude's commands appear once the session has started",
+      status: commands ? null : hostTakesInput(session) ? "Claude's commands appear once the session has started" : "Restart this chat to list Claude's commands",
     }
   }
   if (trigger.kind === 'mention') {
@@ -426,11 +426,21 @@ export function ChatComposer({
     }))
   }
 
+  // A refused send puts its text back (when nothing new was typed), so it isn't lost.
+  const lastSent = useRef<string | null>(null)
+  useEffect(() => {
+    if (!sendError || lastSent.current === null) return
+    const text = lastSent.current
+    lastSent.current = null
+    setDraft((current) => current || text)
+  }, [sendError])
+
   const uploading = attachments.some((attachment) => !attachment.ref)
   const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
   const submit = () => {
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+    lastSent.current = draft.trim()
     if (images.length) onSend(draft.trim(), images)
     else onSend(draft.trim())
     for (const attachment of attachments) release(attachment)
