@@ -842,8 +842,8 @@ async function main(): Promise<void> {
       }
     }
     const { type: _type, paneId: _paneId, text: _text, images: _images, requestId: _requestId, ...options } = message
-    // An older host would send a queued or relayed message straight away, so it isn't offered one.
-    if ((options.delivery || options.relayTo) && !agentHosts.takesTurnFlow(message.paneId)) {
+    // An older host would send a queued, relayed or Implement message straight away (in plan mode), so it isn't offered one.
+    if ((options.delivery || options.relayTo || options.permissionMode) && !agentHosts.takesTurnFlow(message.paneId)) {
       sendError(client, 'chat_unavailable', 'This chat started before queueing and steering; restart it to use them', message.requestId)
       return
     }

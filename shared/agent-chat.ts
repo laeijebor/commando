@@ -585,7 +585,9 @@ export function parseChatSendOptions(value: Record<string, unknown>): ChatSendOp
   return withOptional({} as ChatSendOptions, { delivery: value.delivery, permissionMode: value.permissionMode, relayTo })
 }
 
-const MAX_QUEUED = 20
+/** The most messages the host holds in a chat's queue. */
+export const MAX_QUEUED_MESSAGES = 20
+const MAX_QUEUED = MAX_QUEUED_MESSAGES
 
 export function parseChatQueueAction(value: Record<string, unknown>): ChatQueueAction | null {
   if (!shortString(value.id)) return null

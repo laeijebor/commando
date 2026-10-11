@@ -60,8 +60,8 @@ describe('ClaudeItemMapper', () => {
   it('keeps requests on the timeline and cancels unanswered ones when the turn ends', () => {
     const mapper = new ClaudeItemMapper(() => 5)
     mapper.startTurn('go')
-    mapper.request('r1', { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'git push' })
-    mapper.request('r2', { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'rm -rf build' })
+    mapper.request('r1', undefined, { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'git push' })
+    mapper.request('r2', undefined, { requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'rm -rf build' })
     mapper.resolveRequest('r1', { kind: 'approval', decision: 'allow' })
     mapper.settleRunning('interrupted')
     const [first, second] = mapper.list().filter((item) => item.kind === 'request')

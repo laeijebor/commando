@@ -724,3 +724,89 @@ describe('AgentSession subagents', () => {
     expect((await session.subagentTranscript('a711')).error).toMatch(/hasn't saved/)
   })
 })
+
+describe('AgentSession queue review fixes', () => {
+  it("keeps queueing when Claude's idle for the flushed turn's predecessor arrives late", async () => {
+    const { fake, session } = started()
+    fake.push(system('session_state_changed', { state: 'running' }))
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(resultMessage())
+    // Claude reports idle for that result after the host already sent the queue.
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    session.send('wait for the flushed turn', [], { delivery: 'queue' })
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued'])
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'queued', 'wait for the flushed turn'])
+  })
+
+  it('waits for every steer when two cut the turn short', async () => {
+    const { fake, session } = started()
+    session.send('long job')
+    session.send('steer one', [], { delivery: 'steer' })
+    session.send('steer two', [], { delivery: 'steer' })
+    session.send('later', [], { delivery: 'queue' })
+    fake.push(resultMessage({ terminal_reason: 'aborted_tools' }))
+    fake.push(resultMessage({ terminal_reason: 'aborted_streaming' }))
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['long job', 'steer one', 'steer two'])
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.at(-1)?.message.content).toBe('later')
+  })
+
+  it('stays busy (so a restart waits) while messages are queued or a turn is open', async () => {
+    const { fake, session } = started()
+    session.send('first')
+    session.send('queued', [], { delivery: 'queue' })
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(session.busy).toBe(true)
+    fake.push(resultMessage())
+    fake.push(resultMessage())
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(session.busy).toBe(false)
+  })
+
+  it('says when an edit or removal reaches a message that was already sent', async () => {
+    const { session, items } = started()
+    session.updateQueue({ action: 'edit', id: 'gone', text: 'my edit' })
+    session.updateQueue({ action: 'remove', id: 'gone' })
+    expect([...items.values()].flatMap((item) => (item.kind === 'notice' ? [item.text] : []))).toEqual([
+      `That queued message was already sent, so your edit wasn't applied: "my edit"`,
+      'That queued message was already sent.',
+    ])
+  })
+
+  it('caps the queue and reports queued messages a session ended with', async () => {
+    const { fake, session, items, sessions } = started()
+    session.send('first')
+    for (let index = 0; index < 21; index += 1) session.send(`q${index}`, [], { delivery: 'queue' })
+    expect(sessions.at(-1)?.queue).toHaveLength(20)
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('"q20"') })
+    session.close()
+    await tick()
+    expect(sessions.at(-1)?.queue).toBeUndefined()
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('"q0", "q1"') })
+    expect(fake.prompts).toHaveLength(1)
+  })
+
+  it("keeps a background subagent's approval open past the main turn's end", async () => {
+    const { fake, session, items } = started()
+    session.send('go')
+    fake.push({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'bg', run_in_background: true } }] }, parent_tool_use_id: null } as unknown as SDKMessage)
+    fake.push(system('task_started', { task_id: 'a711', tool_use_id: 'tu-agent', description: 'bg', subagent_type: 'general-purpose', is_backgrounded: true }))
+    await tick()
+    const pending = fake.canUseTool('Bash', { command: 'make' }, { ...signalOptions('r9'), agentID: 'a711' })
+    fake.push(resultMessage())
+    await tick()
+    expect(items.get('request-r9')).toMatchObject({ status: 'running', parentToolUseId: 'tu-agent' })
+    expect(items.get('request-r9')).not.toHaveProperty('answer')
+    session.answer('r9', { kind: 'approval', decision: 'allow' })
+    expect(await pending).toMatchObject({ behavior: 'allow' })
+  })
+})

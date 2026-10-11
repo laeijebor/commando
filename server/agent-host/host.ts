@@ -146,7 +146,9 @@ export class AgentHost {
   ) {
     this.link = new DaemonLink(url, token, {
       open: () => this.onOpen(),
-      message: (message) => void this.onMessage(message),
+      message: (message) => {
+        this.onMessage(message).catch((error: unknown) => this.log.info(`Couldn't handle a ${message.type} message from Commando: ${error instanceof Error ? error.message : String(error)}`))
+      },
       close: (code, reason) => this.log.info(code === HOST_REFUSED_CLOSE_CODE
         ? `The Commando daemon refused this host (${reason}). Is COMMANDO_PORT pointing at the daemon for this tmux server? Retrying every 30 s.`
         : `Lost the Commando daemon (${code}${reason ? `: ${reason}` : ''}); reconnecting…`),

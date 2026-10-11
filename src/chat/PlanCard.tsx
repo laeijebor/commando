@@ -26,15 +26,22 @@ export function PlanCard({ item, markdown: Markdown, onSave }: {
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const [save, setSave] = useState<SaveState>({ kind: 'idle' })
+  const [copyError, setCopyError] = useState<string | null>(null)
   const collapsible = canCollapsePlan(item.text)
   const collapsed = collapsible && !expanded
   const copy = () => {
-    void navigator.clipboard?.writeText(`${item.text.trimEnd()}\n`).then(
+    setCopyError(null)
+    // The clipboard API needs a secure page; Commando over a LAN address isn't one.
+    if (!navigator.clipboard) {
+      setCopyError("This page can't use the clipboard; select the plan text to copy it")
+      return
+    }
+    navigator.clipboard.writeText(`${item.text.trimEnd()}\n`).then(
       () => {
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1500)
       },
-      () => setSave({ kind: 'failed', error: "Couldn't copy the plan to the clipboard" }),
+      () => setCopyError("Couldn't copy the plan to the clipboard"),
     )
   }
   const saveToVault = () => {
@@ -79,6 +86,7 @@ export function PlanCard({ item, markdown: Markdown, onSave }: {
       ) : save.kind === 'failed' ? (
         <p className="mt-2 text-xs text-destructive" role="alert">{save.error}</p>
       ) : null}
+      {copyError ? <p className="mt-2 text-xs text-destructive" role="alert">{copyError}</p> : null}
     </section>
   )
 }

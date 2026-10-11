@@ -71,6 +71,8 @@ function ChatColumn({
   services,
   sendError,
   onDismissSendError,
+  actionError,
+  onDismissActionError,
   flow,
 }: {
   chat: ChatState
@@ -90,6 +92,9 @@ function ChatColumn({
   /** Why the daemon refused the last send (e.g. an image it no longer has). */
   sendError?: string
   onDismissSendError?: () => void
+  /** Why the daemon refused a queue, subagent or interrupt action. */
+  actionError?: string
+  onDismissActionError?: () => void
   flow?: ChatFlowServices
 }) {
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
@@ -104,7 +109,15 @@ function ChatColumn({
   const agent = viewing ? findSubagent(chat.items, viewing) : undefined
   const agents = useMemo(() => (turnFlow ? switcherSubagents(chat.items, viewing) : []), [turnFlow, chat.items, viewing])
   const now = useNow(agents.some((entry) => entry.state === 'running'))
-  const plan = turnFlow && !viewing ? planAwaitingFollowUp(chat.items, chat.session) : null
+  // Implement goes once per plan; the banner stays until Claude's turn starts.
+  const [implemented, setImplemented] = useState<{ planId: string; itemCount: number } | null>(null)
+  const awaiting = turnFlow && !viewing ? planAwaitingFollowUp(chat.items, chat.session) : null
+  const plan = awaiting && awaiting.id !== implemented?.planId ? awaiting : null
+  // An Implement that didn't go (refused, or the mode switch failed) offers the plan again.
+  const implementFailed = Boolean(sendError) || Boolean(implemented && chat.items.slice(implemented.itemCount).some((item) => item.kind === 'notice' && item.level === 'error'))
+  useEffect(() => {
+    if (implemented && implementFailed) setImplemented(null)
+  }, [implemented, implementFailed])
   const ownItems = useMemo(() => (agent ? chat.items.filter((item) => item.parentToolUseId === agent.id) : []), [agent, chat.items])
   const transcript = agent?.agentId ? transcripts[agent.agentId] : undefined
 
@@ -145,6 +158,7 @@ function ChatColumn({
   }
   const implement = () => {
     if (!plan) return
+    setImplemented({ planId: plan.id, itemCount: chat.items.length })
     onSend(planImplementationPrompt(plan.text), undefined, { permissionMode: implementPermissionMode(chat.session) })
   }
   const implementInNewPane = flow?.implementInNewPane && plan
@@ -162,11 +176,16 @@ function ChatColumn({
     setViewing(undefined)
     setRelay(undefined)
   }
-  const shownSendError = sendError ?? flowError ?? undefined
-  const dismissSendError = () => {
-    if (sendError) onDismissSendError?.()
-    else setFlowError(null)
+  const shownActionError = flowError ?? actionError
+  const dismissActionError = () => {
+    if (flowError) setFlowError(null)
+    else onDismissActionError?.()
   }
+  const retryTranscript = (id: string) => setTranscripts((current) => {
+    const next = { ...current }
+    delete next[id]
+    return next
+  })
   return (
     <section className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
@@ -203,7 +222,7 @@ function ChatColumn({
             onTask={task}
             onMessage={() => agent.agentId && setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
           />
-          <SubagentTimeline agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} />
+          <SubagentTimeline agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
         </>
       ) : (
         <ChatTimeline
@@ -226,7 +245,9 @@ function ChatColumn({
         {...(todos ? { todos } : {})}
         {...(chat.commands ? { commands: chat.commands } : {})}
         {...(services ? { services } : {})}
-        {...(shownSendError ? { sendError: shownSendError, onDismissSendError: dismissSendError } : {})}
+        {...(sendError ? { sendError } : {})}
+        {...(onDismissSendError ? { onDismissSendError } : {})}
+        {...(shownActionError ? { actionError: shownActionError, onDismissActionError: dismissActionError } : {})}
         onSend={onSend}
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}
@@ -245,19 +266,20 @@ function ChatColumn({
  * One subagent's own turns: live from items tagged with its Agent call, or
  * from its saved transcript when none are in the pane (after a resume).
  */
-function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubagent }: {
+function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubagent, onRetry }: {
   agent: SubagentItem
   items: readonly ChatItem[]
   ownItems: readonly ChatItem[]
   transcript: TranscriptState | undefined
   cwd: string
   onOpenSubagent: (toolUseId: string) => void
+  onRetry: () => void
 }) {
   const live = ownItems.length > 0
   const shown = live ? items : transcript && !transcript.loading ? transcript.items : []
   const saidSomething = (live ? ownItems : shown).some((item) => item.kind === 'assistant_message')
   const report = agent.state !== 'running' && !saidSomething ? agent.output || agent.summary : undefined
-  const header = live || !transcript || transcript.loading || transcript.error
+  const header = live || !transcript || transcript.loading || transcript.error || !transcript.items.length
     ? agent.prompt ? (
         <div className="mb-3 rounded-lg border border-border bg-card px-3 py-2 text-sm text-secondary-label">
           <span className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="size-3" aria-hidden="true" />Task from main Claude</span>
@@ -265,9 +287,8 @@ function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubag
         </div>
       ) : null
     : null
-  const status = !live && transcript?.loading
-    ? "Loading the subagent's transcript…"
-    : !live && transcript && !transcript.loading && transcript.error ? transcript.error : null
+  const loading = !live && transcript?.loading === true
+  const error = !live && transcript && !transcript.loading ? transcript.error : undefined
   return (
     <ChatTimeline
       items={shown}
@@ -275,10 +296,16 @@ function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubag
       working={agent.state === 'running'}
       {...(live ? { scope: agent.id } : {})}
       header={header}
-      emptyText={agent.state === 'running' ? 'The subagent is starting…' : 'This subagent left no transcript.'}
+      emptyText={error ? '' : loading ? "Loading the subagent's transcript…" : agent.state === 'running' ? 'The subagent is starting…' : 'This subagent left no transcript.'}
       footer={(
         <>
-          {status ? <p className="pb-3 text-xs text-muted-foreground" role="status">{status}</p> : null}
+          {loading && header ? <p className="pb-3 text-xs text-muted-foreground" role="status">Loading the subagent's transcript…</p> : null}
+          {error ? (
+            <p className="flex items-center gap-2 pb-3 text-xs text-destructive" role="alert">
+              <span className="min-w-0 flex-1">{error}</span>
+              <Button size="xs" variant="outline" onClick={onRetry}>Retry</Button>
+            </p>
+          ) : null}
           {report ? <div className="pb-3"><Markdown text={report} /></div> : null}
         </>
       )}

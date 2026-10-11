@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Zap } from 'lucide-react'
 import type { ChatQueueAction, ChatQueuedMessage, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { permissionLabel } from './ComposerControls'
@@ -10,8 +10,27 @@ import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
  * Messages the host holds until Claude's turn ends (after t3code's
  * QueuedRunsControl): edit, remove, or steer one in now.
  */
-export function QueuedMessages({ queue, disabled, onChange }: { queue: ChatQueuedMessage[]; disabled: boolean; onChange: (change: ChatQueueAction) => void }) {
+export function QueuedMessages({ queue, disabled, onChange, onEditOrphaned }: {
+  queue: ChatQueuedMessage[]
+  disabled: boolean
+  onChange: (change: ChatQueueAction) => void
+  /** The message being edited was sent meanwhile; the edit goes to the composer instead of being lost. */
+  onEditOrphaned?: (text: string) => void
+}) {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const latest = useRef({ editing, onEditOrphaned })
+  latest.current = { editing, onEditOrphaned }
+  useEffect(() => {
+    const current = latest.current.editing
+    if (!current || queue.some((queued) => queued.id === current.id)) return
+    setEditing(null)
+    if (current.text.trim()) latest.current.onEditOrphaned?.(current.text)
+  }, [queue])
+  // The panel unmounts once the queue empties, which also orphans an edit in progress.
+  useEffect(() => () => {
+    const current = latest.current.editing
+    if (current?.text.trim()) latest.current.onEditOrphaned?.(current.text)
+  }, [])
   return (
     <div className="flex flex-col gap-1 border-b border-border px-3 py-2" aria-label="Queued messages" data-testid="chat-queue">
       <span className="text-2xs text-muted-foreground">Queued · sent together when Claude's turn ends</span>

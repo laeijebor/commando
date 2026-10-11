@@ -277,6 +277,8 @@ export function ChatComposer({
   services,
   sendError,
   onDismissSendError,
+  actionError,
+  onDismissActionError,
   onSend,
   onInterrupt,
   onAnswer,
@@ -298,6 +300,9 @@ export function ChatComposer({
   services?: ChatInputServices
   sendError?: string
   onDismissSendError?: () => void
+  /** A queue, subagent or plan action that failed; unlike a refused send, nothing goes back into the draft. */
+  actionError?: string
+  onDismissActionError?: () => void
   onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => void
   /** `dropQueued`: queued messages Stop took back into the draft. */
   onInterrupt: (dropQueued?: string[]) => void
@@ -475,7 +480,10 @@ export function ChatComposer({
     const options: ChatSendOptions = relayTarget
       ? { relayTo: relayTarget }
       : running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
-    lastSent.current = draft.trim()
+    const sent = draft.trim()
+    lastSent.current = sent
+    // A refusal comes back within moments; later errors are about something else.
+    window.setTimeout(() => { if (lastSent.current === sent) lastSent.current = null }, 30_000)
     if (Object.keys(options).length) onSend(draft.trim(), images, options)
     else if (images.length) onSend(draft.trim(), images)
     else onSend(draft.trim())
@@ -527,15 +535,24 @@ export function ChatComposer({
       onInterrupt()
       return
     }
-    setDraft((current) => [...queue.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
-    const restored: Attachment[] = queue.flatMap((queued) => queued.images ?? []).map((image, index) => ({
+    // Only what fits beside the attachments already here comes back; the rest stays queued.
+    let room = MAX_CHAT_IMAGES - attachments.length
+    const taken = queue.filter((queued) => {
+      const count = queued.images?.length ?? 0
+      if (count > room) return false
+      room -= count
+      return true
+    })
+    setDraft((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
+    const restored: Attachment[] = taken.flatMap((queued) => queued.images ?? []).map((image, index) => ({
       key: `queued-${index}-${image.id}`,
       name: image.name ?? image.id,
       previewUrl: chatImageUrl(image.id),
       ref: image,
     }))
-    if (restored.length) setAttachments((current) => [...restored, ...current].slice(0, MAX_CHAT_IMAGES))
-    onInterrupt(queue.map((queued) => queued.id))
+    if (restored.length) setAttachments((current) => [...restored, ...current])
+    if (taken.length < queue.length) setAttachError(`${queue.length - taken.length} queued message${queue.length - taken.length === 1 ? ' has' : 's have'} too many images to bring back here, so ${queue.length - taken.length === 1 ? 'it stays' : 'they stay'} queued`)
+    onInterrupt(taken.map((queued) => queued.id))
   }
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -559,10 +576,11 @@ export function ChatComposer({
     addImages([...event.dataTransfer.files])
   }
 
-  const shownError = attachError ?? sendError ?? null
+  const shownError = attachError ?? sendError ?? actionError ?? null
   const dismissError = () => {
     if (attachError) setAttachError(null)
-    else onDismissSendError?.()
+    else if (sendError) onDismissSendError?.()
+    else onDismissActionError?.()
   }
   const profile = profileLabel(session.configDir)
   return (
@@ -579,7 +597,17 @@ export function ChatComposer({
       >
         {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} /> : null}
         {planFollowUp ? <PlanReadyBanner title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
-        {queue.length && onQueue ? <QueuedMessages queue={queue} disabled={!hostConnected} onChange={onQueue} /> : null}
+        {queue.length && onQueue ? (
+          <QueuedMessages
+            queue={queue}
+            disabled={!hostConnected}
+            onChange={onQueue}
+            onEditOrphaned={(text) => {
+              setDraft((current) => [current.trim(), text].filter(Boolean).join('\n\n'))
+              setAttachError("That message was sent before your edit was saved; your edit is in the composer")
+            }}
+          />
+        ) : null}
         {request ? (
           request.requestKind === 'question'
             ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />

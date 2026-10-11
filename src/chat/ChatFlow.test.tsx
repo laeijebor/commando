@@ -260,3 +260,64 @@ describe('subagents', () => {
     expect(screen.queryByTestId('agent-switcher')).not.toBeInTheDocument()
   })
 })
+
+describe('review fixes', () => {
+  it('moves an edit into the composer when its queued message is sent meanwhile', () => {
+    const { rerender } = renderPane([], { status: 'running', queue: [{ id: 'q1', text: 'run lint' }, { id: 'q2', text: 'keep' }] })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit queued message' })[0]!)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit queued message' }), { target: { value: 'run lint --fix' } })
+    rerender([], { status: 'running', queue: [{ id: 'q2', text: 'keep' }] })
+    expect(textbox()).toHaveValue('run lint --fix')
+    expect(screen.getByRole('alert')).toHaveTextContent('your edit is in the composer')
+  })
+
+  it('keeps queued messages whose images would not fit when Stop brings the queue back', () => {
+    const images = (prefix: string) => Array.from({ length: 6 }, (_, index) => ({ id: `${prefix.repeat(63)}${index}.png` }))
+    const { onInterrupt } = renderPane([], { status: 'running', queue: [{ id: 'q1', text: 'first', images: images('a') }, { id: 'q2', text: 'second', images: images('b') }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(onInterrupt).toHaveBeenCalledWith(['q1'])
+    expect(textbox()).toHaveValue('first')
+    expect(screen.getByRole('alert')).toHaveTextContent('stays queued')
+  })
+
+  it('implements once, and offers the plan again if Implement failed', () => {
+    const { onSend, rerender } = renderPane(planItems, { prePlanPermissionMode: 'acceptEdits' })
+    fireEvent.click(screen.getByTestId('plan-implement'))
+    expect(screen.queryByTestId('plan-implement')).not.toBeInTheDocument()
+    expect(onSend).toHaveBeenCalledTimes(1)
+    rerender([...planItems, { ...base, id: 'n1', kind: 'notice', level: 'error', text: "Couldn't change the permission mode" }], { prePlanPermissionMode: 'acceptEdits' })
+    expect(screen.getByTestId('plan-implement')).toBeInTheDocument()
+  })
+
+  it('shows a refused action without putting an old message back in the draft', () => {
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn(), onDismissActionError: vi.fn() }
+    const state: ChatState = { paneId: '%5', session: session(), items: [], hostConnected: true }
+    const view = render(<ChatPane chat={state} connected focused={false} {...handlers} flow={flowServices()} />)
+    fireEvent.change(textbox(), { target: { value: 'sent earlier' } })
+    fireEvent.keyDown(textbox(), { key: 'Enter' })
+    view.rerender(<ChatPane chat={state} connected focused={false} {...handlers} flow={flowServices()} actionError="This chat started before queueing" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('This chat started before queueing')
+    expect(textbox()).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(handlers.onDismissActionError).toHaveBeenCalled()
+  })
+
+  it('offers Retry when a subagent transcript fails to load', async () => {
+    const subagentTranscript = vi.fn()
+      .mockResolvedValueOnce({ items: [], error: 'Reading the transcript timed out' })
+      .mockResolvedValueOnce({ items: [{ ...base, id: 'x2', kind: 'assistant_message' as const, text: 'Loaded now' }] })
+    renderPane([agentItem('t2')], {}, flowServices({ subagentTranscript }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open subagent job t2' }))
+    expect(await screen.findByText('Reading the transcript timed out')).toBeInTheDocument()
+    expect(screen.queryByText('This subagent left no transcript.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Loaded now')).toBeInTheDocument()
+  })
+
+  it('says so when the page cannot use the clipboard', () => {
+    Object.assign(navigator, { clipboard: undefined })
+    renderPane(planItems)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy plan' }))
+    expect(screen.getByRole('alert')).toHaveTextContent("can't use the clipboard")
+  })
+})

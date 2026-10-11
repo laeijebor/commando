@@ -284,7 +284,8 @@ async function main(): Promise<void> {
     if (!session.busy) return void restartNow()
     write(dim('Will restart to update when this turn finishes.'))
     session.on('session', (info) => {
-      if (restarting && info.status === 'idle') void restartNow()
+      // Queued messages go out when a turn ends; wait until they have been answered too.
+      if (restarting && info.status === 'idle' && !session.busy) void restartNow()
     })
   }
 

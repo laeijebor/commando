@@ -50,8 +50,12 @@ export class ChatPlanStore {
       const path = join(this.dir, name)
       const info = await stat(path).catch(() => null)
       if (info && now - info.mtimeMs > CHAT_PLAN_MAX_AGE_MS) {
-        await unlink(path).catch(() => undefined)
-        removed += 1
+        try {
+          await unlink(path)
+          removed += 1
+        } catch (error) {
+          console.warn(`[commando] couldn't prune the chat plan ${path}`, error)
+        }
       }
     }
     return removed

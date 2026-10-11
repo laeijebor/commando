@@ -2,6 +2,7 @@ import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type Ca
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
+  MAX_QUEUED_MESSAGES,
   chatImageType,
   isChatEffort,
   isChatPermissionMode,
@@ -158,6 +159,11 @@ export function toChatCommands(commands: readonly SlashCommand[], skillNames: Re
   })
 }
 
+/** A message as notices quote it back. */
+function quote(text: string): string {
+  return text.length > 2000 ? `${text.slice(0, 2000)}…` : text
+}
+
 function shortTitle(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
@@ -253,8 +259,13 @@ export class AgentSession {
   private queueCounter = 0
   /** True from a send until its turn's result: queued messages wait while it is. */
   private turnOpen = false
-  /** A steer went in while a turn ran; that turn's cut-short result is not the end. */
-  private steerPending = false
+  /** Steers sent while a turn ran; each cut-short result they cause is not the end. */
+  private steersPending = 0
+  /**
+   * Something was sent since the last result. Claude's idle for that result can
+   * arrive after the send, and must not reopen the queue during the new turn.
+   */
+  private deliveredSinceResult = false
   /** Sends with images read files first; later sends wait so turns keep their order. */
   private sendChain: Promise<void> = Promise.resolve()
   private queuedSends = 0
@@ -306,9 +317,9 @@ export class AgentSession {
     return this.commandList
   }
 
-  /** True while a turn runs or waits for an answer. */
+  /** True while a turn runs or waits for an answer, or sends are still on their way. */
   get busy(): boolean {
-    return this.info.status === 'running' || this.info.status === 'waiting'
+    return this.info.status === 'running' || this.info.status === 'waiting' || this.turnOpen || this.queue.length > 0 || this.queuedSends > 0
   }
 
   async start(): Promise<void> {
@@ -406,8 +417,13 @@ export class AgentSession {
           return
         }
         this.deliver(trimmed, images, blocks, { steer, ...(options.relayTo ? { relayTo: options.relayTo } : {}) })
+      } catch (error) {
+        // Keep the chain usable for later sends, and say what was lost.
+        this.emitItems(this.mapper.notice('error', `The message wasn't sent: ${errorText(error)}.${quoted}`))
       } finally {
         this.queuedSends -= 1
+        // Whatever stayed queued behind a send that failed goes now, not after the next message.
+        if (!this.turnOpen) this.flushQueue()
       }
     })
   }
@@ -415,7 +431,13 @@ export class AgentSession {
   /** Edits, removes or steers a queued message. */
   updateQueue(change: ChatQueueAction): void {
     const entry = this.queue.find((queued) => queued.id === change.id)
-    if (!entry) return
+    if (!entry) {
+      // It went to Claude with the rest of the queue before this change arrived.
+      this.emitItems(this.mapper.notice('info', change.action === 'edit'
+        ? `That queued message was already sent, so your edit wasn't applied: "${quote(change.text)}"`
+        : 'That queued message was already sent.'))
+      return
+    }
     if (change.action === 'edit') {
       this.setQueue(this.queue.map((queued) => (queued.id === change.id ? { ...queued, text: change.text.trim() || queued.text } : queued)))
       return
@@ -425,6 +447,10 @@ export class AgentSession {
   }
 
   private enqueue(text: string, images: ChatImageRef[]): void {
+    if (this.queue.length >= MAX_QUEUED_MESSAGES) {
+      this.emitItems(this.mapper.notice('error', `The queue holds ${MAX_QUEUED_MESSAGES} messages, so this one wasn't queued: "${quote(text)}"`))
+      return
+    }
     this.queueCounter += 1
     this.setQueue([...this.queue, { id: `queued-${Date.now().toString(36)}-${this.queueCounter}`, text, ...(images.length ? { images } : {}) }])
   }
@@ -459,7 +485,7 @@ export class AgentSession {
   /** A turn is over: the queue can go. */
   private closeTurn(): void {
     this.turnOpen = false
-    this.steerPending = false
+    this.steersPending = 0
     this.flushQueue()
   }
 
@@ -480,12 +506,13 @@ export class AgentSession {
     { steer = false, relayTo }: { steer?: boolean; relayTo?: { agentId: string; label: string } } = {},
   ): void {
     if (this.info.status === 'closed' || this.info.status === 'error') {
-      this.emitItems(this.mapper.notice('error', 'This session has ended. Start commando-agent again in this pane to continue it.'))
+      this.emitItems(this.mapper.notice('error', `This session has ended, so your message wasn't sent. Start commando-agent again in this pane to continue it.${text ? ` Your message was: "${quote(text)}"` : ''}`))
       return
     }
     this.emitItems(this.mapper.startTurn(text, images, { ...(steer ? { steered: true } : {}), ...(relayTo ? { relayTo } : {}) }))
-    if (steer) this.steerPending = true
+    if (steer) this.steersPending += 1
     this.turnOpen = true
+    this.deliveredSinceResult = true
     if (!this.info.title && text) this.info = { ...this.info, title: shortTitle(text) }
     // Shown at once; Claude's own session state confirms it (or folds this into the running turn).
     this.setStatus('running')
@@ -746,8 +773,9 @@ export class AgentSession {
     if (state === 'idle') {
       this.setStatus('idle')
       this.refreshBetweenTurns()
-      // A backstop: the turn's result normally sent the queue already.
-      this.closeTurn()
+      // A backstop: the turn's result normally sent the queue already. An idle
+      // that trails a result we already answered with a send is not the end of that send.
+      if (!this.deliveredSinceResult) this.closeTurn()
     } else {
       this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
     }
@@ -775,7 +803,7 @@ export class AgentSession {
     if (options.signal.aborted) return Promise.resolve({ behavior: 'deny', message: 'Cancelled.' })
     return new Promise<PermissionResult>((resolve) => {
       this.pending.set(requestId, { requestKind, input, suggestions: options.suggestions, resolve })
-      this.emitItems(this.mapper.request(requestId, {
+      this.emitItems(this.mapper.request(requestId, options.agentID, {
         requestKind,
         toolName,
         title,
@@ -802,6 +830,12 @@ export class AgentSession {
       this.info = { ...this.info, error: text }
       this.setStatus('error')
     } finally {
+      // Queued messages can't go any more; say what they were rather than drop them unseen.
+      if (this.queue.length) {
+        const texts = this.queue.map((queued) => `"${quote(queued.text)}"`).join(', ')
+        this.setQueue([])
+        this.emitItems(this.mapper.notice('error', `The session ended with messages still queued, so they weren't sent: ${texts}`))
+      }
       for (const listener of this.listeners.closed) listener()
     }
   }
@@ -842,7 +876,8 @@ export class AgentSession {
       this.interruptRequested = false
       // A steer or Stop cuts the turn short; what it was doing ends, it didn't fail.
       const aborted = interrupted || ABORTED_REASONS.has(message.terminal_reason ?? '')
-      const steered = this.steerPending && aborted
+      const steered = this.steersPending > 0 && aborted
+      this.deliveredSinceResult = false
       this.emitItems(this.mapper.settleRunning(aborted ? 'interrupted' : message.subtype === 'success' ? 'completed' : 'failed', { keepBackground: true }))
       const errors = 'errors' in message && Array.isArray(message.errors) ? message.errors.join('\n') : ''
       if (interrupted) {
@@ -860,7 +895,7 @@ export class AgentSession {
         this.refreshBetweenTurns()
       }
       // The steered message now runs as its own turn; the queue waits for that one.
-      if (steered) this.steerPending = false
+      if (steered) this.steersPending -= 1
       // Background subagents keep Claude from reporting idle, so the queue goes at the turn's end.
       else this.closeTurn()
       void this.refreshTitle()

@@ -73,6 +73,7 @@ import type {
   WebPaneEngine,
   WebPaneFeedbackInfo,
   WebPaneNavigateRequest,
+  ClientMessage,
 } from '../shared/protocol'
 import {
   filterLayoutTree,
@@ -338,6 +339,9 @@ type TerminalPaneProps = {
   /** Why the daemon refused this pane's last chat send. */
   chatSendError?: string
   onDismissChatSendError?: () => void
+  /** Why the daemon refused a queue, subagent or interrupt action in this pane. */
+  chatActionError?: string
+  onDismissChatActionError?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -404,6 +408,8 @@ export function TerminalPaneCard({
   chatFlow,
   chatSendError,
   onDismissChatSendError,
+  chatActionError,
+  onDismissChatActionError,
   onRename,
   onRenameFinished,
   onMove,
@@ -679,6 +685,8 @@ export function TerminalPaneCard({
             {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
             {...(onDismissChatSendError ? { onDismissSendError: onDismissChatSendError } : {})}
+            {...(chatActionError ? { actionError: chatActionError } : {})}
+            {...(onDismissChatActionError ? { onDismissActionError: onDismissChatActionError } : {})}
           />
         ) : <TerminalPaneRenderer
           paneId={pane.id}
@@ -1003,6 +1011,9 @@ export function App() {
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   const [chatSendErrors, setChatSendErrors] = useState<Record<string, string>>({})
+  const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
+  /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
+  const chatActionPanes = useRef(new Map<string, string>())
   /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
@@ -1434,6 +1445,11 @@ export function App() {
           if (chatPane) {
             chatSendPanes.current.delete(message.requestId)
             setChatSendErrors((current) => ({ ...current, [chatPane]: message.message }))
+          }
+          const actionPane = chatActionPanes.current.get(message.requestId)
+          if (actionPane) {
+            chatActionPanes.current.delete(message.requestId)
+            setChatActionErrors((current) => ({ ...current, [actionPane]: message.message }))
           }
         }
         if (
@@ -2152,8 +2168,17 @@ export function App() {
   const restartChat = (paneId: string) => {
     send({ type: 'chat_restart', paneId, requestId: requestId('chat-restart') })
   }
+  /** Sends a queue, subagent or interrupt action; a refusal or a dropped connection shows in the pane. */
+  const sendChatAction = (paneId: string, message: ClientMessage & { requestId: string }) => {
+    chatActionPanes.current.set(message.requestId, paneId)
+    window.setTimeout(() => chatActionPanes.current.delete(message.requestId), 30_000)
+    if (!latestChatDeps.current.send(message)) {
+      chatActionPanes.current.delete(message.requestId)
+      setChatActionErrors((current) => ({ ...current, [paneId]: "Not connected to Commando, so that didn't reach the chat" }))
+    }
+  }
   const interruptChat = (paneId: string, dropQueued?: string[]) => {
-    send({ type: 'chat_interrupt', paneId, ...(dropQueued?.length ? { dropQueued } : {}), requestId: requestId('chat-interrupt') })
+    sendChatAction(paneId, { type: 'chat_interrupt', paneId, ...(dropQueued?.length ? { dropQueued } : {}), requestId: requestId('chat-interrupt') })
   }
   const configureChat = (paneId: string, settings: ChatSettingsChange) => {
     send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
@@ -2193,8 +2218,8 @@ export function App() {
   }
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
-  const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane })
-  latestChatDeps.current = { send, token, prsApi, implementPlanInNewPane }
+  const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction })
+  latestChatDeps.current = { send, token, prsApi, implementPlanInNewPane, sendChatAction }
   const chatServicesFor = (paneId: string): ChatInputServices => {
     let services = chatServiceCache.current.get(paneId)
     if (!services) {
@@ -2224,8 +2249,8 @@ export function App() {
     let flow = chatFlowCache.current.get(paneId)
     if (!flow) {
       flow = {
-        queue: (change) => { latestChatDeps.current.send({ type: 'chat_queue', paneId, ...change, requestId: requestId('chat-queue') }) },
-        task: (action, agentId, toolUseId) => { latestChatDeps.current.send({ type: 'chat_task', paneId, action, agentId, toolUseId, requestId: requestId('chat-task') }) },
+        queue: (change) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_queue', paneId, ...change, requestId: requestId('chat-queue') }),
+        task: (action, agentId, toolUseId) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_task', paneId, action, agentId, toolUseId, requestId: requestId('chat-task') }),
         subagentTranscript: (agentId) => new Promise<ChatSubagentTranscript>((resolve) => {
           const id = requestId('chat-transcript')
           const finish = (result: ChatSubagentTranscript) => {
@@ -3181,6 +3206,12 @@ export function App() {
                             chatFlow={chatFlowFor(pane.id)}
                             {...(chatSendErrors[pane.id] ? { chatSendError: chatSendErrors[pane.id] } : {})}
                             onDismissChatSendError={() => setChatSendErrors((current) => {
+                              const next = { ...current }
+                              delete next[pane.id]
+                              return next
+                            })}
+                            {...(chatActionErrors[pane.id] ? { chatActionError: chatActionErrors[pane.id] } : {})}
+                            onDismissChatActionError={() => setChatActionErrors((current) => {
                               const next = { ...current }
                               delete next[pane.id]
                               return next
