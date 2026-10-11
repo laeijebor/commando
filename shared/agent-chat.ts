@@ -5,7 +5,17 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 1
+export const AGENT_HOST_PROTOCOL_VERSION = 2
+/**
+ * Hosts from this version accept `configure` and report their picker state.
+ * Older hosts keep running after a merge until restarted, so check before
+ * offering pickers or trusting their (missing) settings.
+ */
+export const CHAT_SETTINGS_HOST_VERSION = 2
+
+export function hostTakesSettings(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_SETTINGS_HOST_VERSION
+}
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'

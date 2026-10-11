@@ -351,6 +351,34 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', model: 'claude-sonnet-5-5', effort: 'high', permissionMode: 'acceptEdits' })
   })
 
+  it('stops claiming an effort the new model does not offer', async () => {
+    const { session, sessions } = started({ effort: 'max' })
+    await tick()
+    await session.configure({ model: 'sonnet' })
+    expect(sessions.at(-1)?.effort).toBeUndefined()
+    await session.configure({ effort: 'high' })
+    await session.configure({ model: 'default' })
+    expect(sessions.at(-1)?.effort).toBe('high')
+  })
+
+  it('retries a model list that failed to load once a turn ends', async () => {
+    const { fake, sessions } = (() => {
+      const fake = fakeQuery()
+      fake.supportedModels.mockRejectedValueOnce(new Error('offline'))
+      const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, log: () => {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+      const sessions: ChatSessionInfo[] = []
+      session.on('session', (info) => sessions.push(info))
+      void session.start()
+      return { fake, sessions }
+    })()
+    await tick()
+    expect(sessions.at(-1)?.models).toBeUndefined()
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.supportedModels).toHaveBeenCalledTimes(2)
+    expect(sessions.at(-1)?.models?.length).toBe(2)
+  })
+
   it('treats the default model as no explicit pick', async () => {
     const { fake, session, sessions } = started({ model: 'sonnet' })
     await tick()
@@ -390,6 +418,9 @@ describe('commando-agent settings flags', () => {
     expect(parseHostArgs(['claude', '--effort', 'xhigh', '--allow-dangerously-skip-permissions'], {}))
       .toEqual({ provider: 'claude', permissionMode: 'default', effort: 'xhigh', bypassAllowed: true })
     expect(parseHostArgs(['claude', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
+    // The daemon only accepts model ids, so a host never starts with one it would reject.
+    expect(parseHostArgs(['claude', '--model', 'opus plus'], {})).toMatch(/Invalid model/)
+    expect(parseHostArgs(['claude', '--model', 'opus[1m]'], {})).toMatchObject({ model: 'opus[1m]' })
     expect(parseHostArgs(['claude', '--permission-mode', 'bypassPermissions'], {})).toMatchObject({ bypassAllowed: true })
   })
 

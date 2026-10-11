@@ -142,9 +142,12 @@ describe('AgentResumeService', () => {
     settings = { model: 'sonnet', effort: 'high', permissionMode: 'plan' }
     await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --model sonnet --effort high --permission-mode plan --resume ${SESSION}`)
-    // Unchanged settings do not read the process table again.
+    // Unchanged settings do not read the process table again, and unknown ones keep the record.
+    await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
+    settings = undefined
     await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
     expect(table).toHaveBeenCalledTimes(2)
+    expect(resume.get(TARGET)?.command).toContain('--model sonnet --effort high --permission-mode plan')
   })
 
   it('reads the process table once per conversation, not per hook event', async () => {

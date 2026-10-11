@@ -142,7 +142,7 @@ const models = [
 
 function pickerChat(session: Partial<ChatState['session']> = {}): ChatState {
   const state = chat()
-  return { ...state, session: { ...state.session, models, effort: 'high', ...session } }
+  return { ...state, session: { ...state.session, hostVersion: 2, models, effort: 'high', ...session } }
 }
 
 /** Each option's label, ticked ones marked with `*`. */
@@ -189,6 +189,18 @@ describe('composer pickers', () => {
     cleanup()
     renderPane({ ...pickerChat(), hostConnected: false })
     expect(screen.getByRole('button', { name: 'Opus 5.5 · High' })).toBeDisabled()
+    cleanup()
+    // A resumed chat replays its history before Claude can switch anything.
+    renderPane(pickerChat({ status: 'starting' }))
+    expect(screen.getByRole('button', { name: 'Ask before edits' })).toBeDisabled()
+  })
+
+  it('keeps the pills read-only for a host that predates the pickers', () => {
+    renderPane(pickerChat({ hostVersion: 1 }))
+    expect(screen.getByText('Opus 5.5 · High')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Opus 5.5 · High' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ask before edits' })).toBeNull()
+    expect(screen.getByTitle('Restart this chat to change its settings')).toHaveTextContent('Ask before edits')
   })
 })
 

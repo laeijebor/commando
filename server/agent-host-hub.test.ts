@@ -58,7 +58,7 @@ describe('AgentHostHub', () => {
     socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'Hel')] })
     socket.host({ type: 'items', paneId: '%1', items: [item('a', 'Hello'), item('b', 'more')] })
     await settle()
-    expect(socket.sent).toEqual([{ type: 'welcome', version: 1 }])
+    expect(socket.sent).toEqual([{ type: 'welcome', version: 2 }])
     expect(hub.states()).toEqual([expect.objectContaining({ paneId: '%1', targetId: 'target-1', hostConnected: true })])
     expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && entry.text)).toEqual(['Hello', 'more'])
     expect(broadcasts.map((message) => message.type)).toEqual(['chat_state', 'chat_items'])
@@ -178,16 +178,29 @@ describe('AgentHostHub', () => {
   it('routes picker changes to the host and reports the settings a resume should carry', async () => {
     const { hub, connect } = setup()
     const socket = connect()
-    socket.host({ type: 'session_snapshot', session: session('%1', { permissionMode: 'default', selectedModel: 'haiku' }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 2, permissionMode: 'default', selectedModel: 'haiku' }), items: [] })
     await settle()
     socket.sent = []
     expect(hub.configure('%1', { model: 'sonnet', effort: 'high' }, 'q1')).toBe(true)
     expect(hub.configure('%2', { effort: 'low' }, 'q2')).toBe(false)
     expect(socket.sent).toEqual([{ type: 'configure', paneId: '%1', settings: { model: 'sonnet', effort: 'high' }, requestId: 'q1' }])
-    socket.host({ type: 'session_update', session: session('%1', { permissionMode: 'plan', selectedModel: 'sonnet', effort: 'high', bypassAllowed: true }) })
+    socket.host({ type: 'session_update', session: session('%1', { hostVersion: 2, permissionMode: 'plan', selectedModel: 'sonnet', effort: 'high', bypassAllowed: true }) })
     await settle()
     expect(hub.resumeSettings('%1')).toEqual({ model: 'sonnet', effort: 'high', permissionMode: 'plan', bypassAllowed: true })
     expect(hub.resumeSettings('%2')).toBeUndefined()
+  })
+
+  it('trusts no settings from a host older than the pickers, and logs messages it drops', async () => {
+    const logs: string[] = []
+    const hub = new AgentHostHub({ paneExists: () => true, targetIdFor: () => undefined, broadcast: () => {}, log: (line) => logs.push(line) })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    // A host from before this protocol: it was launched with --model, which its settings omit.
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 1, permissionMode: 'default', model: 'claude-opus-5-5' }), items: [] })
+    socket.host({ type: 'session_update', session: { paneId: '%1' } })
+    await settle()
+    expect(hub.resumeSettings('%1')).toBeUndefined()
+    expect(logs).toEqual(['[agent-host] dropped an invalid session_update message from a host'])
   })
 
   it('drops chats whose pane disappeared and closes their host link', async () => {

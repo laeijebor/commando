@@ -2277,12 +2277,16 @@ export function App() {
         // The profile is remembered per repository, as in the new-session dialog.
         const [repoRoot, profiles] = await Promise.all([
           gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined),
-          tmuxCreateApi.claudeProfiles().catch(() => null),
+          tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
+            console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
+            return null
+          }),
         ])
         const preference = loadChatLaunch(repoRoot ?? pane.path)
         // Check the remembered profile against the current ones, as the dialog does, so a
         // stale or missing preference never falls back to the daemon's own login.
         const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
+        if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
         agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
       }
       const created = await tmuxCreateApi.createPane({

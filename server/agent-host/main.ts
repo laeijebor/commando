@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
-import { AGENT_HOST_WS_PATH, isChatEffort, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatEffort, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
@@ -65,7 +65,13 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
       switch (flag) {
         case '--config-dir': args.configDir = expandHome(needValue()); break
         case '--resume': args.resume = needValue(); break
-        case '--model': args.model = needValue(); break
+        case '--model': {
+          // The chat reports it to the daemon, which only accepts model ids.
+          const model = needValue()
+          if (!isModelValue(model)) return `Invalid model: ${model}\n\n${USAGE}`
+          args.model = model
+          break
+        }
         case '--claude-path': args.claudePath = expandHome(needValue()); break
         case '--prompt': args.prompt = needValue(true); break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
@@ -180,9 +186,12 @@ async function main(): Promise<void> {
   const resumeCommand = launcher ? chatResumeCommand(launcher, parsed) : undefined
   // Picker changes update these, so restarts and resumes carry them.
   let settings = parsed
-  const hostBuild = await agentHostBuild().catch(() => undefined)
-
   const write = (line: string) => process.stdout.write(`${line}\n`)
+  const hostBuild = await agentHostBuild().catch((error: unknown) => {
+    write(dim(`Couldn't fingerprint this host (${error instanceof Error ? error.message : String(error)}); Commando won't offer to restart it after an update.`))
+    return undefined
+  })
+
   const host = new AgentHost(
     `ws://127.0.0.1:${port}${AGENT_HOST_WS_PATH}`,
     async () => (await readFile(tokenPath, 'utf8')).trim(),

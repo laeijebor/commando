@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2 } from 'lucide-react'
-import type { ChatContextUsage, ChatEffort, ChatModelOption, ChatSessionInfo, ChatSettingsChange, ChatSessionPermissionMode } from '../../shared/agent-chat'
+import { hostTakesSettings, type ChatContextUsage, type ChatEffort, type ChatModelOption, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
@@ -86,7 +86,7 @@ export function ModelPicker({ session, disabled, onConfigure }: { session: ChatS
   const label = modelLabel(session)
   if (!label) return null
   const pill = session.effort ? `${label} · ${EFFORT_LABELS[session.effort]}` : label
-  if (!session.models?.length) return <Pill title={session.model}>{pill}</Pill>
+  if (!session.models?.length || !hostTakesSettings(session)) return <Pill title={session.model}>{pill}</Pill>
   const selected = selectedModelOption(session)
   const efforts = selected?.efforts ?? []
   const pick = (change: ChatSettingsChange) => {
@@ -138,6 +138,7 @@ export function PermissionPicker({ session, disabled, onConfigure }: { session: 
   const [open, setOpen] = useState(false)
   const current = session.permissionMode
   if (!current) return null
+  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{permissionLabel(current)}</Pill>
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
   const modes = (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current

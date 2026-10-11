@@ -183,7 +183,8 @@ export class AgentResumeService {
     const chatKey = chatSettings ? JSON.stringify(chatSettings) : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path
-      && this.chatSettingsKeys.get(pane.targetId) === chatKey) return
+      // Unknown settings (the hub has no chat for the pane yet) keep the record as it is.
+      && (chatKey === undefined || this.chatSettingsKeys.get(pane.targetId) === chatKey)) return
     if (this.capturing.has(pane.targetId)) return
     const key = `${status.provider}:${status.agentSessionId}@${serverId}:${pane.processId}:${chatKey ?? ''}`
     const miss = this.captureMisses.get(pane.targetId)

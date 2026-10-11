@@ -2,6 +2,8 @@ import type { WebSocket } from 'ws'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
+  hostTakesSettings,
+  isChatPermissionMode,
   mergeChatItems,
   parseHostMessage,
   type ChatAnswer,
@@ -73,7 +75,11 @@ export class AgentHostHub {
         return
       }
       const message = parseHostMessage(parsed)
-      if (!message) return
+      if (!message) {
+        const type = typeof parsed === 'object' && parsed !== null && 'type' in parsed ? String((parsed as { type: unknown }).type).slice(0, 40) : 'unknown'
+        this.dependencies.log?.(`[agent-host] dropped an invalid ${type} message from a host`)
+        return
+      }
       queue = queue.then(() => this.handle(socket, message)).catch((error: unknown) => {
         this.dependencies.log?.(`[agent-host] message failed: ${error instanceof Error ? error.message : String(error)}`)
       })
@@ -186,7 +192,8 @@ export class AgentHostHub {
    */
   resumeSettings(paneId: string): ChatResumeSettings | undefined {
     const session = this.chats.get(paneId)?.state.session
-    if (!session?.permissionMode) return undefined
+    // An older host reports no picks; its launch flags are still right.
+    if (!session || !hostTakesSettings(session) || !isChatPermissionMode(session.permissionMode)) return undefined
     return {
       permissionMode: session.permissionMode,
       ...(session.selectedModel ? { model: session.selectedModel } : {}),

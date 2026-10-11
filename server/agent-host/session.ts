@@ -342,8 +342,15 @@ export class AgentSession {
           // "default" means no explicit model, so a resume follows Claude Code's default too.
           const explicit = change.model === DEFAULT_MODEL ? undefined : change.model
           await handle.setModel(explicit)
-          const { selectedModel: _previous, ...rest } = this.info
-          this.info = { ...rest, model: option?.resolvedModel ?? change.model, ...(explicit ? { selectedModel: explicit } : {}) }
+          const { selectedModel: _previous, effort, ...rest } = this.info
+          // An effort the new model lacks runs as something else, so stop claiming it.
+          const keepEffort = effort && (!option?.efforts || option.efforts.includes(effort))
+          this.info = {
+            ...rest,
+            model: option?.resolvedModel ?? change.model,
+            ...(explicit ? { selectedModel: explicit } : {}),
+            ...(keepEffort ? { effort } : {}),
+          }
         } catch (error) {
           this.emitItems(this.mapper.notice('error', `Couldn't switch the model: ${errorText(error)}`))
         }
@@ -411,11 +418,17 @@ export class AgentSession {
     }
   }
 
+  /** After a turn: the meter changed, and a model list that failed to load gets another try. */
+  private refreshBetweenTurns(): void {
+    void this.refreshContext()
+    if (!this.info.models && this.queryHandle) void this.loadModels(this.queryHandle)
+  }
+
   private applySessionState(state: 'idle' | 'running' | 'requires_action'): void {
     if (this.info.status === 'closed' || this.info.status === 'error') return
     if (state === 'idle') {
       this.setStatus('idle')
-      void this.refreshContext()
+      this.refreshBetweenTurns()
     } else {
       this.setStatus(state === 'requires_action' || this.pending.size ? 'waiting' : 'running')
     }
@@ -497,7 +510,7 @@ export class AgentSession {
       // Claude reports idle itself once queued work is done; older CLIs only send results.
       if (!this.stateEvents) {
         this.setStatus('idle')
-        void this.refreshContext()
+        this.refreshBetweenTurns()
       }
       void this.refreshTitle()
       return

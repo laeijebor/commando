@@ -204,8 +204,9 @@ export function ChatComposer({
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-            <ModelPicker session={session} disabled={disabled} onConfigure={onConfigure} />
-            <PermissionPicker session={session} disabled={disabled} onConfigure={onConfigure} />
+            {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
+            <ModelPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
+            <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
           </span>
