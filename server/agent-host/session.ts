@@ -11,6 +11,7 @@ import {
   isModelValue,
   selectedModelOption,
   stripAttachmentNotesFromSummary,
+  RETURNED_FROM_CLAUDE_CODE,
   type ChatAnswer,
   type ChatCommand,
   type ChatContextUsage,
@@ -27,6 +28,7 @@ import {
   type ChatSessionStatus,
   type ChatSettingsChange,
   type ChatSubagentTranscript,
+  type ChatSwitchAction,
   type ChatTaskAction,
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
@@ -58,6 +60,8 @@ export interface AgentSessionSpec {
   readableDirectories?: string[]
   /** Problems worth a line in the pane's terminal but not a chat notice. */
   log?: (message: string) => void
+  /** Claude Code just exited and handed the conversation back; the chat says so. */
+  returnedFromClaudeCode?: boolean
 }
 
 /** The chat image store as a session uses it (see server/chat-images.ts). */
@@ -185,6 +189,8 @@ export interface AgentSessionEvents {
   /** The `/` menu's list changed. */
   commands: (commands: ChatCommand[]) => void
   closed: () => void
+  /** A switch to Claude Code may go now: the turn is over and nothing waits on Claude. */
+  switchReady: () => void
 }
 
 type HeldSend = { text: string; images: ChatImageRef[]; options: ChatSendOptions }
@@ -251,7 +257,7 @@ export class AgentSession {
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
+  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
@@ -354,6 +360,7 @@ export class AgentSession {
       }
       void this.refreshTitle()
     }
+    if (this.spec.returnedFromClaudeCode) this.emitItems(this.mapper.notice('info', RETURNED_FROM_CLAUDE_CODE))
     const canUseTool: CanUseTool = (toolName, input, options) => this.requestPermission(toolName, input, options)
     const readableDirs = [...this.openImageDirs(notedSessions), ...(this.spec.readableDirectories ?? [])]
     this.queryHandle = this.runQuery({
@@ -412,6 +419,10 @@ export class AgentSession {
       this.heldSends.push({ text: trimmed, images, options })
       return
     }
+    if (this.info.claudeCodeSwitch === 'switching') {
+      this.emitItems(this.mapper.notice('error', `The chat is switching to Claude Code, so your message wasn't sent.${trimmed ? ` It was: "${quote(trimmed)}"` : ''}`))
+      return
+    }
     if (options.delivery === 'queue' && this.turnOpen) {
       this.enqueue(trimmed, images)
       return
@@ -445,6 +456,7 @@ export class AgentSession {
         this.queuedSends -= 1
         // Whatever stayed queued behind a send that failed goes now, not after the next message.
         if (!this.turnOpen) this.flushQueue()
+        this.checkSwitch()
       }
     })
   }
@@ -490,7 +502,8 @@ export class AgentSession {
    * that would push the images over the limit waits for the next turn.
    */
   private flushQueue(): void {
-    if (!this.queue.length || this.turnOpen || this.info.status === 'closed' || this.info.status === 'error') return
+    // A switch to Claude Code carries the queue across instead.
+    if (!this.queue.length || this.turnOpen || this.info.claudeCodeSwitch || this.info.status === 'closed' || this.info.status === 'error') return
     const batch: ChatQueuedMessage[] = []
     let imageCount = 0
     for (const queued of this.queue) {
@@ -508,6 +521,60 @@ export class AgentSession {
     this.turnOpen = false
     this.steersPending = 0
     this.flushQueue()
+    this.checkSwitch()
+  }
+
+  /**
+   * Asks to hand the conversation to Claude Code: once the turn ends
+   * (`after_turn`), or by interrupting it (`now`). The queue is held, not sent,
+   * and goes across with the switch. `cancel` withdraws a switch still waiting.
+   */
+  async requestSwitch(action: ChatSwitchAction): Promise<void> {
+    const current = this.info.claudeCodeSwitch
+    if (current === 'switching') return
+    if (action === 'cancel') {
+      if (current) this.endSwitch()
+      return
+    }
+    if (this.info.status === 'closed' || this.info.status === 'error') {
+      this.emitItems(this.mapper.notice('error', "This session isn't running, so it can't switch to Claude Code."))
+      return
+    }
+    if (!this.info.sessionId) {
+      this.emitItems(this.mapper.notice('error', 'Send a message first: Claude Code resumes a conversation, and this chat has none yet.'))
+      return
+    }
+    if (current === action || (current === 'now' && action === 'after_turn')) return
+    this.info = { ...this.info, claudeCodeSwitch: action }
+    this.emitSession()
+    if (action === 'now' && (this.turnOpen || this.info.status === 'running' || this.info.status === 'waiting')) await this.interrupt()
+    this.checkSwitch()
+  }
+
+  /** The switch is off (cancelled, or it failed): the chat carries on, and what was queued goes. */
+  endSwitch(notice?: string): void {
+    if (!this.info.claudeCodeSwitch) return
+    const { claudeCodeSwitch: _switch, ...rest } = this.info
+    this.info = rest
+    if (notice) this.emitItems(this.mapper.notice('error', notice))
+    this.emitSession()
+    if (!this.turnOpen) this.flushQueue()
+  }
+
+  /** The messages a switch carries across. */
+  get queued(): ChatQueuedMessage[] {
+    return [...this.queue]
+  }
+
+  /** Starts a requested switch once nothing is running or waiting on Claude. */
+  private checkSwitch(): void {
+    const requested = this.info.claudeCodeSwitch
+    if (requested !== 'after_turn' && requested !== 'now') return
+    if (this.turnOpen || this.queuedSends > 0 || this.pending.size > 0 || this.heldSends) return
+    if (this.info.status !== 'idle') return
+    this.info = { ...this.info, claudeCodeSwitch: 'switching' }
+    this.emitSession()
+    for (const listener of this.listeners.switchReady) listener()
   }
 
   /** The image blocks for a send, and notes naming each image's copy in the session's folder. */
@@ -931,7 +998,10 @@ export class AgentSession {
       this.setStatus('error')
     } finally {
       // Queued messages can't go any more; say what they were rather than drop them unseen.
-      if (this.queue.length) {
+      // A switch to Claude Code has handed them over already.
+      if (this.queue.length && this.info.claudeCodeSwitch === 'switching') {
+        this.setQueue([])
+      } else if (this.queue.length) {
         const texts = this.queue.map((queued) => `"${quote(queued.text)}"`).join(', ')
         this.setQueue([])
         this.emitItems(this.mapper.notice('error', `The session ended with messages still queued, so they weren't sent: ${texts}`))
@@ -1029,6 +1099,7 @@ export class AgentSession {
     if (this.info.status === status) return
     this.info = { ...this.info, status }
     this.emitSession()
+    if (status === 'idle') this.checkSwitch()
   }
 
   private emitSession(): void {

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
-import { chatResumeCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
+import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
@@ -1118,5 +1118,138 @@ describe('AgentSession queue review fixes', () => {
     expect(items.get('request-r9')).not.toHaveProperty('answer')
     session.answer('r9', { kind: 'approval', decision: 'allow' })
     expect(await pending).toMatchObject({ behavior: 'allow' })
+  })
+})
+
+describe('AgentSession switch to Claude Code', () => {
+  const resumed = () => {
+    const ready = vi.fn()
+    const run = started({ resume: 'abcd1234-0000' })
+    run.session.on('switchReady', ready)
+    return { ...run, ready }
+  }
+
+  it('switches at once when idle', async () => {
+    const { session, sessions, ready } = resumed()
+    await tick()
+    await session.requestSwitch('after_turn')
+    expect(ready).toHaveBeenCalledTimes(1)
+    expect(sessions.at(-1)?.claudeCodeSwitch).toBe('switching')
+  })
+
+  it('waits for the turn, holds the queue instead of sending it, and hands it over', async () => {
+    const { fake, session, sessions, items, ready } = resumed()
+    await tick()
+    session.send('first')
+    session.send('later', [], { delivery: 'queue' })
+    await tick()
+    await session.requestSwitch('after_turn')
+    expect(ready).not.toHaveBeenCalled()
+    expect(sessions.at(-1)?.claudeCodeSwitch).toBe('after_turn')
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first'])
+    expect(ready).toHaveBeenCalledTimes(1)
+    expect(session.queued.map((queued) => queued.text)).toEqual(['later'])
+    // The session ends for the switch: the queue went across, so no "not sent" notice.
+    session.close()
+    await tick()
+    expect([...items.values()].some((item) => item.kind === 'notice')).toBe(false)
+  })
+
+  it('interrupts the turn for Switch now, keeping the queue', async () => {
+    const { fake, session, ready } = resumed()
+    await tick()
+    session.send('first')
+    session.send('later', [], { delivery: 'queue' })
+    await session.requestSwitch('now')
+    expect(fake.interrupt).toHaveBeenCalled()
+    fake.push(resultMessage({ terminal_reason: 'aborted_streaming' }))
+    await tick()
+    expect(ready).toHaveBeenCalledTimes(1)
+    expect(fake.prompts).toHaveLength(1)
+    expect(session.queued.map((queued) => queued.text)).toEqual(['later'])
+  })
+
+  it('waits for a pending approval to be answered', async () => {
+    const { fake, session, ready } = resumed()
+    await tick()
+    session.send('run it')
+    const pending = fake.canUseTool('Bash', { command: 'ls' }, signalOptions('r1'))
+    await session.requestSwitch('after_turn')
+    fake.push(resultMessage())
+    await tick()
+    expect(ready).not.toHaveBeenCalled()
+    session.answer('r1', { kind: 'approval', decision: 'allow' })
+    await pending
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(ready).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the held queue when the switch is cancelled, or fails', async () => {
+    const { fake, session, sessions, items, ready } = resumed()
+    await tick()
+    session.send('first')
+    session.send('later', [], { delivery: 'queue' })
+    await session.requestSwitch('after_turn')
+    await session.requestSwitch('cancel')
+    expect(sessions.at(-1)?.claudeCodeSwitch).toBeUndefined()
+    fake.push(resultMessage())
+    await tick()
+    expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'later'])
+    fake.push(resultMessage())
+    await tick()
+    await session.requestSwitch('after_turn')
+    expect(ready).toHaveBeenCalledTimes(1)
+    session.endSwitch("Couldn't switch to Claude Code: no daemon.")
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: "Couldn't switch to Claude Code: no daemon." })
+    expect(sessions.at(-1)?.claudeCodeSwitch).toBeUndefined()
+  })
+
+  it('refuses a switch before there is a conversation, and sends while switching', async () => {
+    const { session, items, ready, fake } = (() => {
+      const run = started()
+      const ready = vi.fn()
+      run.session.on('switchReady', ready)
+      return { ...run, ready }
+    })()
+    await tick()
+    await session.requestSwitch('after_turn')
+    expect(ready).not.toHaveBeenCalled()
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('Send a message first') })
+    const other = resumed()
+    await tick()
+    await other.session.requestSwitch('after_turn')
+    other.session.send('too late')
+    await tick()
+    expect(other.fake.prompts).toEqual([])
+    expect([...other.items.values()].at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('switching to Claude Code') })
+    expect(fake.prompts).toEqual([])
+  })
+
+  it('says it is back from Claude Code after the earlier turns', async () => {
+    const history = [{ type: 'user', message: { role: 'user', content: 'Asked in the TUI' }, parent_tool_use_id: null }]
+    const { items } = started({ resume: 'abcd1234-0000', returnedFromClaudeCode: true }, { messages: async () => history, title: async () => undefined })
+    await tick()
+    await tick()
+    expect([...items.values()].map((item) => item.kind === 'notice' ? item.text : item.kind)).toEqual(['user_message', 'Returned from Claude Code'])
+  })
+})
+
+describe('commando-agent switch command', () => {
+  it('runs Claude Code with the chat settings, then the chat again on the same conversation', () => {
+    const args = parseHostArgs(['claude', '--config-dir', '/x/.claudep', '--model', 'sonnet', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allow-dangerously-skip-permissions', '--resume', 'abcd1234-0000'], {})
+    if (typeof args === 'string') throw new Error(args)
+    expect(claudeCodeSwitchCommand(args, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toBe(
+      '/bin/claude --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000; '
+      + 'exec /c/commando-agent claude --config-dir /x/.claudep --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000 --from-claude-code',
+    )
+    const bypass = parseHostArgs(['claude', '--dangerously-skip-permissions'], {})
+    if (typeof bypass === 'string') throw new Error(bypass)
+    expect(claudeCodeSwitchCommand(bypass, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toMatch(/^\/bin\/claude --dangerously-skip-permissions --resume/)
+    expect(parseHostArgs(['claude', '--from-claude-code', '--resume', 'abcd1234-0000'], {})).toMatchObject({ fromClaudeCode: true })
+    // A restart or resume of the returned chat doesn't claim to be back from Claude Code again.
+    expect(sessionFlags({ ...args, fromClaudeCode: true })).not.toContain('--from-claude-code')
   })
 })
