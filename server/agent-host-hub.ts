@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
+  HOST_REFUSED_CLOSE_CODE,
   mergeChatItems,
   parseHostMessage,
   type ChatAnswer,
@@ -102,13 +103,16 @@ export class AgentHostHub {
         const { paneId } = message.session
         const known = this.dependencies.paneExists(paneId)
         if (known && !(await this.verified(paneId, message.session.hostPid))) {
-          socket.close()
+          socket.close(HOST_REFUSED_CLOSE_CODE, `host is not running in pane ${paneId}`)
           return
         }
         if (socket.readyState !== socket.OPEN) return
         const previous = this.chats.get(paneId)
         // A newer host for the same pane replaces the old link.
-        if (previous?.socket && previous.socket !== socket) previous.socket.close()
+        if (previous?.socket && previous.socket !== socket) {
+          this.dependencies.log?.(`[agent-host] a new host for ${paneId} replaces the previous one`)
+          previous.socket.close()
+        }
         const targetId = this.dependencies.targetIdFor(paneId)
         const updateAvailable = await this.updateAvailable(message.session.hostBuild)
         const state: ChatState = {
@@ -187,6 +191,7 @@ export class AgentHostHub {
     for (const [paneId, entry] of [...this.chats]) {
       if (!this.dependencies.paneExists(paneId)) {
         if (!entry.visible && now - entry.receivedAt < PENDING_PANE_MS) continue
+        if (entry.socket) this.dependencies.log?.(`[agent-host] closing the host for ${paneId}: the pane is gone`)
         entry.socket?.close()
         this.remove(paneId)
         continue
@@ -206,7 +211,7 @@ export class AgentHostHub {
       if (!entry.visible) {
         if (!entry.socket) continue
         if (!(await this.verified(paneId, entry.state.session.hostPid))) {
-          entry.socket.close()
+          entry.socket.close(HOST_REFUSED_CLOSE_CODE, `host is not running in pane ${paneId}`)
           this.chats.delete(paneId)
           continue
         }

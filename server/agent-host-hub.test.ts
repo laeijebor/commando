@@ -9,9 +9,11 @@ class FakeSocket extends EventEmitter {
   readonly OPEN = 1
   readyState = 1
   sent: unknown[] = []
+  closeCode: number | undefined
   send(data: string) { this.sent.push(JSON.parse(data)) }
-  close() {
+  close(code?: number) {
     if (this.readyState !== 1) return
+    this.closeCode = code
     this.readyState = 3
     this.emit('close')
   }
@@ -97,6 +99,7 @@ describe('AgentHostHub', () => {
     impostor.host({ type: 'session_snapshot', session: session('%2', { hostPid: 99 }), items: [] })
     await settle()
     expect(impostor.readyState).toBe(3)
+    expect(impostor.closeCode).toBe(4003)
     expect(hub.states()).toEqual([])
     const real = connect()
     real.host({ type: 'session_snapshot', session: session('%1'), items: [] })

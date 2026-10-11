@@ -6,6 +6,8 @@
  */
 
 export const AGENT_HOST_PROTOCOL_VERSION = 1
+/** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
+export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
 export type ChatProvider = 'claude'
