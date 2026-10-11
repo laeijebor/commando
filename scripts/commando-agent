@@ -5,7 +5,9 @@
 # exec keeps the host as the pane's own process, so tmux reports it (not a
 # shell) and auto-resume treats the pane as a running agent.
 set -euo pipefail
-# Follow symlinks by hand: stock macOS readlink has no -f.
+# Follow symlinks by hand: stock macOS readlink has no -f. CDPATH would make cd
+# print the directory it found, so clear it before resolving relative paths.
+unset CDPATH
 script="${BASH_SOURCE[0]}"
 while [ -L "$script" ]; do
   link_dir="$(cd -P "$(dirname "$script")" && pwd)"
