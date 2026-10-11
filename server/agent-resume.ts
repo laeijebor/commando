@@ -212,7 +212,9 @@ export class AgentResumeService {
       const readEnvironment = this.deps.readProcessEnvironment ?? readProcessEnvironment
       // A chat host runs Claude as its child: resume the chat, never that child as a TUI.
       const chatHost = status.provider === 'claude' ? findChatHost(rows, pane.processId) : null
-      const agent = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
+      const found = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
+      // Claude Code running a chat's conversation must be resuming that very conversation.
+      const agent = found && chatReturn && !found.args.split(/\s+/).includes(status.agentSessionId) ? null : found
       const command = chatHost
         ? this.deps.chatLauncher
           ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)

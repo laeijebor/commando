@@ -1367,7 +1367,16 @@ async function main(): Promise<void> {
         await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
-          return pane && agentStatuses.liveHookStatus(paneId, pane.command)
+          if (!pane) return undefined
+          // A switch hands the same conversation from the chat host to Claude Code, so the
+          // registry still scopes its status to the host's process; the resume checks that
+          // Claude Code in the pane really resumes that conversation.
+          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          if (live) return live
+          const status = agentStatuses.get(paneId)
+          const switched = status?.source === 'hook' && status.provider === 'claude' && status.agentSessionId !== undefined
+            && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
+          return switched ? status : undefined
         })
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
