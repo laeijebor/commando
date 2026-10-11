@@ -23,11 +23,11 @@ describe('prepareImage', () => {
     expect(fake.encode).not.toHaveBeenCalled()
   })
 
-  it('resizes the longest edge to 2048px in the same format', async () => {
+  it('resizes the longest edge to 2000px in the same format', async () => {
     const fake = codec(4096, 1024)
     const result = await prepareImage(file('wide.webp', 'image/webp', 3000), fake)
     expect(result.ok && result.image.type).toBe('image/webp')
-    expect(fake.encode).toHaveBeenCalledWith(expect.anything(), 2048, 512, 'image/webp', 0.92)
+    expect(fake.encode).toHaveBeenCalledWith(expect.anything(), 2000, 500, 'image/webp', 0.92)
   })
 
   it('falls back to JPEG when a resized PNG is still too big, and says when nothing fits', async () => {

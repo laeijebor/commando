@@ -70,7 +70,7 @@ function renamed(name: string, type: ChatImageType): string {
 }
 
 /**
- * Checks an image and shrinks it to at most 2048px on its longest edge.
+ * Checks an image and shrinks it to at most 2000px on its longest edge.
  * Images already within both limits keep their exact bytes; GIFs are never
  * re-encoded, which would drop their animation.
  */

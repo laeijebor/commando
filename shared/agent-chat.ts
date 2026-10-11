@@ -58,8 +58,12 @@ export const CHAT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/
 export type ChatImageType = typeof CHAT_IMAGE_TYPES[number]
 export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
 export const MAX_CHAT_IMAGES = 10
-/** Longest edge the browser keeps when it resizes an image before upload. */
-export const CHAT_IMAGE_MAX_DIMENSION = 2048
+/**
+ * Longest edge the browser keeps when it resizes an image before upload.
+ * Claude Code downsizes anything larger to 2000px itself, so matching it
+ * avoids resizing twice.
+ */
+export const CHAT_IMAGE_MAX_DIMENSION = 2000
 export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 /** Images are stored by content hash, so an id is also a safe file name. */
 const CHAT_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/
