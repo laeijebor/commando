@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage } from './agent-chat.js'
+import { chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -134,5 +134,25 @@ describe('richer input', () => {
   it('tells hosts that take richer input from older ones', () => {
     expect(hostTakesInput({ hostVersion: 2 })).toBe(false)
     expect(hostTakesInput({ hostVersion: 3 })).toBe(true)
+  })
+})
+
+describe('selectedModelOption', () => {
+  const models = [
+    { value: 'default', displayName: 'Default', resolvedModel: 'claude-opus-5-5' },
+    { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5' },
+    { value: 'sonnet', displayName: 'Sonnet 5.5', resolvedModel: 'claude-sonnet-5-5' },
+  ]
+
+  it('matches a persisted full id to its alias row', () => {
+    expect(selectedModelOption({ models, selectedModel: 'claude-sonnet-5-5' })?.value).toBe('sonnet')
+    expect(selectedModelOption({ models, selectedModel: 'claude-opus-5-5' })?.value).toBe('opus')
+    expect(selectedModelOption({ models, selectedModel: 'sonnet' })?.value).toBe('sonnet')
+  })
+
+  it('falls back to the running model when the pick has no row, and to the default row without a pick', () => {
+    expect(selectedModelOption({ models, selectedModel: 'claude-sonnet-5', model: 'claude-sonnet-5-5' })?.value).toBe('sonnet')
+    expect(selectedModelOption({ models, selectedModel: 'claude-sonnet-5' })).toBeUndefined()
+    expect(selectedModelOption({ models, model: 'claude-opus-5-5' })?.value).toBe('default')
   })
 })
