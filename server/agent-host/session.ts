@@ -533,7 +533,8 @@ export class AgentSession {
     try {
       const messages = await this.store.subagentMessages(sessionId, agentId, this.spec.cwd)
       if (!messages.length) return { items: [], error: "Claude Code hasn't saved this subagent's transcript" }
-      return { items: new ClaudeItemMapper(Date.now, this.spec.images).replay(messages) }
+      // Claude Code tags the subagent's own messages with its Agent call; here they are the whole conversation.
+      return { items: new ClaudeItemMapper(Date.now, this.spec.images).replay(messages.map((message) => ({ ...message, parent_tool_use_id: null }))) }
     } catch (error) {
       return { items: [], error: `Couldn't read the subagent's transcript: ${errorText(error)}` }
     }

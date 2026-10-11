@@ -707,8 +707,9 @@ describe('AgentSession subagents', () => {
 
   it('reads a subagent transcript from the saved session', async () => {
     const subagentMessages = vi.fn(async () => [
-      { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'Run date' } },
-      { type: 'assistant', parent_tool_use_id: null, message: { id: 'm1', content: [{ type: 'text', text: 'It is Sunday.' }] } },
+      // As saved: every message carries the Agent call that started the subagent.
+      { type: 'user', parent_tool_use_id: 'toolu_agent', message: { role: 'user', content: 'Run date' } },
+      { type: 'assistant', parent_tool_use_id: 'toolu_agent', message: { id: 'm1', content: [{ type: 'text', text: 'It is Sunday.' }] } },
     ])
     const { fake, session } = started({}, { messages: async () => [], title: async () => undefined, subagentMessages })
     expect(await session.subagentTranscript('a711')).toEqual({ items: [], error: 'This chat has no saved conversation yet' })
@@ -716,7 +717,7 @@ describe('AgentSession subagents', () => {
     await tick()
     const transcript = await session.subagentTranscript('a711')
     expect(subagentMessages).toHaveBeenCalledWith('sess-9', 'a711', '/work')
-    expect(transcript.items.map((item) => item.kind)).toEqual(['user_message', 'assistant_message'])
+    expect(transcript.items.map((item) => [item.kind, item.parentToolUseId])).toEqual([['user_message', undefined], ['assistant_message', undefined]])
     subagentMessages.mockRejectedValueOnce(new Error('gone'))
     expect(await session.subagentTranscript('a711')).toEqual({ items: [], error: "Couldn't read the subagent's transcript: gone" })
     subagentMessages.mockResolvedValueOnce([])
