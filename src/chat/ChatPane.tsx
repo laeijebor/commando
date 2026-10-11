@@ -1,7 +1,7 @@
 import { Component, useMemo, type ReactNode } from 'react'
 import { PlugZap, RefreshCw } from 'lucide-react'
 import type { ChatAnswer, ChatImageRef, ChatSettingsChange, ChatState } from '../../shared/agent-chat'
-import { ChatComposer, type ChatInputServices } from './ChatComposer'
+import { ChatComposer, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
 import { Button } from './ui/button'
 import { latestTodos, pendingRequests } from './timelineRows'
@@ -49,7 +49,7 @@ function ChatColumn({
   connected: boolean
   focused: boolean
   onFocus: () => void
-  onSend: (text: string, images?: ChatImageRef[]) => void
+  onSend: (text: string, images?: ChatImageRef[]) => string | void
   onInterrupt: () => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   /** Switches the model, effort or permission mode while the chat runs. */
@@ -58,8 +58,8 @@ function ChatColumn({
   onRestart?: () => void
   /** File search, pull requests and image uploads for the composer's menus. */
   services?: ChatInputServices
-  /** Why the daemon refused the last send (e.g. an image it no longer has). */
-  sendError?: string
+  /** Why the daemon refused a send (e.g. an image it no longer has). */
+  sendError?: ChatSendError
   onDismissSendError?: () => void
 }) {
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])

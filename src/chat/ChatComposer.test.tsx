@@ -218,16 +218,49 @@ describe('image attachments', () => {
 
   it('shows why the daemon refused a send and puts the text back', () => {
     const onDismissSendError = vi.fn()
-    const { input, type, view, onSend } = renderComposer({ onDismissSendError })
+    const onSend = vi.fn(() => 'send-1')
+    const { input, type, view } = renderComposer({ onSend, onDismissSendError })
     type('look at this')
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSend).toHaveBeenCalledWith('look at this')
     expect(input.value).toBe('')
-    view.rerender(<ChatComposer session={session} hostConnected requests={[]} commands={commands} services={services()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} sendError="Not connected to Commando, so the message wasn't sent" onDismissSendError={onDismissSendError} />)
+    view.rerender(<ChatComposer session={session} hostConnected requests={[]} commands={commands} services={services()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} sendError={{ requestId: 'send-1', message: "Not connected to Commando, so the message wasn't sent" }} onDismissSendError={onDismissSendError} />)
     expect(screen.getByRole('alert')).toHaveTextContent('Not connected to Commando')
     expect(input.value).toBe('look at this')
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(onDismissSendError).toHaveBeenCalled()
+  })
+
+  it('puts back the refused send, not a later follow-up, with its images', async () => {
+    let sends = 0
+    const onSend = vi.fn(() => `send-${++sends}`)
+    const { input, type, view } = renderComposer({ onSend })
+    paste(input, [png('first.png')])
+    await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
+    type('first, with an image')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    type('second')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    type('third, still typing')
+    const refuse = (sendError: { requestId: string; message: string; code?: string }) => view.rerender(
+      <ChatComposer session={session} hostConnected requests={[]} commands={commands} services={services()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} sendError={sendError} />,
+    )
+    refuse({ requestId: 'send-1', message: 'No agent host is connected for this pane', code: 'chat_unavailable' })
+    expect(input.value).toBe('third, still typing\n\nfirst, with an image')
+    expect(screen.getByRole('button', { name: 'Open first.png' })).toBeInTheDocument()
+    refuse({ requestId: 'send-9', message: 'Send failed' })
+    expect(input.value).toBe('third, still typing\n\nfirst, with an image')
+  })
+
+  it('leaves out an image the daemon no longer has', async () => {
+    const onSend = vi.fn(() => 'send-1')
+    const { input, view } = renderComposer({ onSend })
+    paste(input, [png('gone.png')])
+    await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    view.rerender(<ChatComposer session={session} hostConnected requests={[]} commands={commands} services={services()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} sendError={{ requestId: 'send-1', message: 'An attached image is no longer stored; attach it again', code: 'chat_image_missing' }} />)
+    expect(screen.getByRole('alert')).toHaveTextContent('attach it again')
+    expect(screen.queryByRole('button', { name: 'Open gone.png' })).toBeNull()
   })
 })
 
