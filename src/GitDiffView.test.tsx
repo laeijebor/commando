@@ -110,6 +110,136 @@ it('refreshes silently and only re-fetches a selected diff when its stats change
   expect(output.querySelector('pre')).toBe(pre)
 })
 
+it('refreshes immediately and silently when a visited Changes view is revealed', async () => {
+  vi.useFakeTimers()
+  const api = fakeApi()
+  const props = { paneId: '%1', panePath: '/repo', api, initialSummary: summary }
+  let view!: ReturnType<typeof render>
+  await act(async () => { view = render(<GitDiffView {...props} />) })
+  const output = document.querySelector('.git-diff-output') as HTMLElement
+  const tree = screen.getByRole('tree', { name: 'Changed file tree' })
+  const pre = output.querySelector('pre')!
+  output.scrollTop = 120
+  tree.scrollTop = 40
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'DIFF' } })
+  const fileRequests = vi.mocked(api.fileDiff).mock.calls.length
+
+  await act(async () => { view.rerender(<GitDiffView {...props} visible={false} />) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+  expect(api.summary).toHaveBeenCalledTimes(1)
+  let finishSummary!: (value: GitDiffSummary) => void
+  vi.mocked(api.summary).mockImplementation(() => new Promise((resolve) => { finishSummary = resolve }))
+  await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+  expect(api.summary).toHaveBeenCalledTimes(2)
+  expect(screen.queryByText('Loading changes')).not.toBeInTheDocument()
+  expect(output.querySelector('pre')).toBe(pre)
+  await act(async () => { finishSummary({ ...summary }) })
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests)
+
+  await act(async () => { view.rerender(<GitDiffView {...props} visible={false} />) })
+  let finishDiff!: (value: { file: string; diff: string }) => void
+  vi.mocked(api.fileDiff).mockImplementation(() => new Promise((resolve) => { finishDiff = resolve }))
+  await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+  expect(api.summary).toHaveBeenCalledTimes(3)
+  await act(async () => { finishSummary({ ...summary, files: [{ ...summary.files![0], additions: 4 }] }) })
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests + 1)
+  expect(screen.queryByText('Loading changes')).not.toBeInTheDocument()
+  expect(screen.queryByText('Running difftastic')).not.toBeInTheDocument()
+  await act(async () => { finishDiff({ file: 'a.ts', diff: 'DIFF' }) })
+  expect(output.querySelector('pre')).toBe(pre)
+  expect(screen.getByRole('tree', { name: 'Changed file tree' })).toBe(tree)
+  expect(output.scrollTop).toBe(120)
+  expect(tree.scrollTop).toBe(40)
+  expect(screen.getByRole('searchbox', { name: 'Search diff contents' })).toHaveValue('DIFF')
+})
+
+it('adopts newer matching footer summaries without resetting selection or re-fetching unchanged file stats', async () => {
+  vi.useFakeTimers()
+  const initialSummary = { ...summary, files: [summary.files![0], { ...summary.files![0], path: 'b.ts' }] }
+  const api = fakeApi(initialSummary)
+  const props = { paneId: '%1', panePath: '/repo', api }
+  let view!: ReturnType<typeof render>
+  await act(async () => { view = render(<GitDiffView {...props} initialSummary={initialSummary} />) })
+  await act(async () => { fireEvent.click(screen.getByText('b.ts').closest('button')!) })
+  const fileRequests = vi.mocked(api.fileDiff).mock.calls.length
+  const output = document.querySelector('.git-diff-output') as HTMLElement
+  const tree = screen.getByRole('tree', { name: 'Changed file tree' })
+  const pre = output.querySelector('pre')!
+  output.scrollTop = 120
+  tree.scrollTop = 40
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'DIFF' } })
+
+  let finishSummary!: (value: GitDiffSummary) => void
+  vi.mocked(api.summary).mockImplementation(() => new Promise((resolve) => { finishSummary = resolve }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+  const newer = { ...initialSummary, files: [{ ...initialSummary.files[0], additions: 4 }, initialSummary.files[1]] }
+  await act(async () => { view.rerender(<GitDiffView {...props} initialSummary={newer} visible={false} />) })
+  expect(screen.getByText('a.ts').closest('button')).toHaveTextContent('+4')
+  expect(screen.getByText('b.ts').closest('button')).toHaveClass('selected')
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests)
+  // The earlier view poll cannot replace the newer footer stats when it finishes.
+  await act(async () => { finishSummary(initialSummary) })
+  expect(screen.getByText('a.ts').closest('button')).toHaveTextContent('+4')
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests)
+
+  let finishDiff!: (value: { file: string; diff: string }) => void
+  vi.mocked(api.fileDiff).mockImplementation(() => new Promise((resolve) => { finishDiff = resolve }))
+  const changed = { ...newer, files: [newer.files[0], { ...newer.files[1], additions: 5 }] }
+  await act(async () => { view.rerender(<GitDiffView {...props} initialSummary={changed} visible={false} />) })
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests + 1)
+  expect(vi.mocked(api.fileDiff).mock.lastCall?.[1]).toBe('b.ts')
+  expect(screen.getByText('b.ts').closest('button')).toHaveTextContent('+5')
+  expect(screen.queryByText('Loading changes')).not.toBeInTheDocument()
+  expect(screen.queryByText('Running difftastic')).not.toBeInTheDocument()
+  expect(output.querySelector('pre')).toBe(pre)
+  await act(async () => { finishDiff({ file: 'b.ts', diff: 'DIFF' }) })
+  expect(screen.getByText('b.ts').closest('button')).toHaveClass('selected')
+  expect(screen.getByRole('tree', { name: 'Changed file tree' })).toBe(tree)
+  expect(output.querySelector('pre')).toBe(pre)
+  expect(output.scrollTop).toBe(120)
+  expect(tree.scrollTop).toBe(40)
+  expect(screen.getByRole('searchbox', { name: 'Search diff contents' })).toHaveValue('DIFF')
+})
+
+it.each(['pane', 'target'] as const)('does not adopt footer stats for a different %s', async (changed) => {
+  const api = fakeApi()
+  const props = { paneId: '%1', panePath: '/repo', api, initialSummary: summary }
+  const view = render(<GitDiffView {...props} />)
+  await waitFor(() => expect(document.querySelector('.git-diff-output pre')).toHaveTextContent('DIFF'))
+  vi.mocked(api.summary).mockImplementation(() => new Promise(() => undefined))
+  await act(async () => { view.rerender(
+    <GitDiffView
+      {...props}
+      paneId={changed === 'pane' ? '%2' : '%1'}
+      initialSummary={{ ...summary, branch: 'other-context', target: changed === 'target' ? 'release' : 'main', files: [{ ...summary.files![0], additions: 99 }] }}
+    />,
+  ) })
+  expect(screen.getByTitle('Current branch')).toHaveTextContent('feature')
+  expect(screen.queryByText('+99')).not.toBeInTheDocument()
+})
+
+it('keeps an explicit branch comparison when footer stats use the same label for an automatic branch point', async () => {
+  const initialSummary: GitDiffSummary = { ...summary, targetMode: 'auto' }
+  const api = fakeApi(initialSummary)
+  vi.mocked(api.summary).mockImplementation(async (_paneId, target) => ({
+    ...initialSummary,
+    target: target ?? 'main',
+    targetMode: target ? 'ref' : 'auto',
+  }))
+  const props = { paneId: '%1', panePath: '/repo', api }
+  const view = render(<GitDiffView {...props} initialSummary={initialSummary} />)
+  await waitFor(() => expect(document.querySelector('.git-diff-output pre')).toHaveTextContent('DIFF'))
+  fireEvent.focus(screen.getByRole('combobox', { name: 'Diff target branch' }))
+  await act(async () => { fireEvent.mouseDown(screen.getByRole('button', { name: 'main' })) })
+  expect(api.summary).toHaveBeenLastCalledWith('%1', 'main')
+  const fileRequests = vi.mocked(api.fileDiff).mock.calls.length
+  await act(async () => { view.rerender(
+    <GitDiffView {...props} initialSummary={{ ...initialSummary, files: [{ ...summary.files![0], additions: 99 }] }} />,
+  ) })
+  expect(screen.getByText('a.ts').closest('button')).toHaveTextContent('+3')
+  expect(api.fileDiff).toHaveBeenCalledTimes(fileRequests)
+})
+
 describe('GitDiffView engine and layout toggles', () => {
   it('re-requests the diff with the chosen engine and layout, and persists them', async () => {
     const { api } = renderView()

@@ -191,9 +191,15 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const searchGeneration = useRef(0)
   const summaryRequestKey = useRef<string | null>(null)
   const diffRequestKey = useRef<string | null>(null)
+  const previousSummaryProp = useRef({ paneId, summary: initialSummary })
+  const summaryRevision = useRef(0)
+  const wasVisible = useRef(visible)
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
+    const revealed = visible && !wasVisible.current
+    wasVisible.current = visible
     if (!visible || comparison) return
+    if (revealed) setRefresh((value) => value + 1)
     const timer = window.setInterval(() => setRefresh((value) => value + 1), 15_000)
     return () => window.clearInterval(timer)
   }, [visible, comparison?.base, comparison?.head])
@@ -287,7 +293,21 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   }, [comparison, paneId])
 
   useEffect(() => {
+    const previous = previousSummaryProp.current
+    previousSummaryProp.current = { paneId, summary: initialSummary }
+    if (previous.paneId !== paneId || previous.summary === initialSummary || !initialSummary || comparison) return
+    if (selectedTarget !== undefined && initialSummary.targetMode === 'auto') return
+    const target = selectedTarget ?? summary?.target
+    if (target != null && initialSummary.target !== target) return
+    // A request already in flight must not overwrite a newer footer summary.
+    summaryRevision.current++
+    setSummaryError('')
+    setSummary(initialSummary)
+  }, [paneId, initialSummary, selectedTarget, comparison?.head, summary?.target])
+
+  useEffect(() => {
     const request = ++generation.current
+    const revision = summaryRevision.current
     const key = JSON.stringify([paneId, selectedTarget, comparison?.head])
     const background = summaryRequestKey.current === key
     summaryRequestKey.current = key
@@ -300,12 +320,12 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       : apiRef.current.summary(paneId, selectedTarget)
     summaryRequest
       .then((next) => {
-        if (request !== generation.current) return
+        if (request !== generation.current || revision !== summaryRevision.current) return
         setSummaryError('')
         setSummary(next)
       })
       .catch((cause: unknown) => {
-        if (request !== generation.current) return
+        if (request !== generation.current || revision !== summaryRevision.current) return
         if (!background) setSummaryError(cause instanceof Error ? cause.message : 'Unable to load git summary')
       })
       .finally(() => {
