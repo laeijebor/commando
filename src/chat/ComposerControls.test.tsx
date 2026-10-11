@@ -28,6 +28,11 @@ describe('ModelPicker', () => {
     expect(onConfigure).toHaveBeenCalledWith({ model: 'sonnet' })
   })
 
+  it('names the model behind a context-window variant a setting picked', () => {
+    render(<ModelPicker session={{ ...fresh, model: 'claude-opus-5-5[1m]' }} disabled={false} onConfigure={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Opus 5.5' })).toBeInTheDocument()
+  })
+
   it('names the default row when it does not say which model it runs', () => {
     render(<ModelPicker session={{ ...fresh, models: [{ value: 'default', displayName: 'Default' }] }} disabled={false} onConfigure={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Default' })).toBeInTheDocument()

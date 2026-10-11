@@ -445,6 +445,30 @@ describe('AgentSession settings', () => {
     expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'max' })
   })
 
+  it('checks effort against the model behind a context-window variant', async () => {
+    const fake = fakeQuery()
+    fake.getSettings.mockResolvedValueOnce({ applied: { model: 'claude-sonnet-5-5[1m]' } })
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    void session.start()
+    await tick()
+    await session.configure({ effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    await session.configure({ effort: 'high' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'high' })
+  })
+
+  it('leaves the model unset when Claude has no settings to read', async () => {
+    const fake = fakeQuery()
+    fake.getSettings.mockResolvedValueOnce({})
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 1, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    expect(sessions.at(-1)?.models).toHaveLength(2)
+    expect(sessions.at(-1)?.model).toBeUndefined()
+  })
+
   it('keeps a model picked before Claude says which one it would have run', async () => {
     const fake = fakeQuery()
     let answer!: (value: { applied: { model: string } }) => void

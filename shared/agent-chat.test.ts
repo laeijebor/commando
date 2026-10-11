@@ -156,6 +156,11 @@ describe('selectedModelOption', () => {
     expect(selectedModelOption({ models, model: 'claude-opus-5-5' })?.value).toBe('default')
   })
 
+  it('matches a context-window variant to its model’s row', () => {
+    expect(selectedModelOption({ models, model: 'claude-opus-5-5[1m]' })?.value).toBe('default')
+    expect(selectedModelOption({ models, model: 'claude-sonnet-5-5[1m]' })?.value).toBe('sonnet')
+  })
+
   it('takes the default row before Claude reports a model', () => {
     expect(selectedModelOption({ models })?.value).toBe('default')
     expect(selectedModelOption({ models: [] })).toBeUndefined()
