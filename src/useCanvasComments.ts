@@ -43,7 +43,7 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
     if (!webPaneId || lock.current) return
     const generation = lifetime.current
     lock.current = true; setBusy(true); setError('')
-    try { await work() } catch (reason) {
+    try { await work(); return true } catch (reason) {
       if (generation === lifetime.current) {
         setError(String((reason as Error).message))
         // A stale send must be reviewed against a fresh queue, never retried automatically.
@@ -88,6 +88,16 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
     openDraft: (next: CanvasDraft) => { setDraft(next); setActive('draft'); setError('') },
     updateDraftComment: (comment: string) => setDraft((current) => current ? { ...current, comment } : current),
     open: setActive, close: () => { setActive(null); setDraft(null) }, queueDraft,
+    reply: (threadId: string, text: string) => mutate(async () => {
+      if (!webPaneId) return
+      await api.replyThread(webPaneId, threadId, text)
+      await refreshThreads()
+    }),
+    status: (threadId: string, status: 'open' | 'resolved') => mutate(async () => {
+      if (!webPaneId) return
+      await api.setThreadStatus(webPaneId, threadId, status)
+      await refreshThreads()
+    }),
     sendAll: () => mutate(() => send(queued, snapshot)),
     sendThis: (note: WebPanePendingNote) => mutate(() => send([note], snapshot)) }
 }

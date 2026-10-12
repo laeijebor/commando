@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanvasThread, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import { MAX_RESPONSE_PAYLOAD_BYTES } from '../shared/redline-response'
 import { CanvasPane } from './CanvasPane'
-import { publishCanvasPendingChanged, publishCanvasThreadsChanged, publishCanvasRefresh } from './webPanesApi'
+import { publishCanvasSpotlights, publishCanvasPendingChanged, publishCanvasThreadsChanged, publishCanvasRefresh } from './webPanesApi'
 
 const id = 'w-12345678', artifactId = '0123456789abcdef'
 const manifest = { title: 'Board', frames: [{ id: 'settings', title: 'Settings', src: 'Settings.html', x: 100, y: 50, w: 390, h: 844, focus: 1, interactive: true },
@@ -17,6 +17,7 @@ let snapshot: WebPanePendingSnapshot, threads: CanvasThread[], calls: Array<{ ur
 const queuedNote = (noteId = 1): WebPanePendingNote => ({ id: noteId, revision: 1, selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 }, comment: 'Fix row', canvas: context, pageUrl: `http://localhost/redline/artifacts/${artifactId}/Settings.html?canvas-frame=settings` })
 const thread = (): CanvasThread => ({ id: 'ct-one', webPaneId: id, frameId: 'settings', point: context.point, label: 'Row', labelId: 'row', selector: '#row', status: 'open', createdAt: 10, messages: [{ author: 'user', text: 'Fix row\nMore detail', at: 10 }] })
 beforeEach(() => {
+  publishCanvasSpotlights({})
   snapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }; threads = []; calls = []; failSend = false
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('matchMedia', () => ({ matches: true }))
@@ -29,7 +30,12 @@ beforeEach(() => {
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
     calls.push({ url, body, init })
     if (url.endsWith('/threads')) return { ok: true, json: async () => ({ threads }) }
-    if (url.endsWith('/pending/send')) {
+    if (url.endsWith('/replies')) {
+      const target = threads.find((thread) => url.includes(thread.id))!
+      target.messages.push({ author: 'user', text: body!.text as string, at: 20 }); target.status = 'open'
+    } else if (url.endsWith('/status')) {
+      threads.find((thread) => url.includes(thread.id))!.status = body!.status as 'open' | 'resolved'
+    } else if (url.endsWith('/pending/send')) {
       if (failSend) return { ok: false, status: 409, json: async () => ({ error: 'Pending queue revision is stale' }) }
       const items = body!.items as Array<{ id: number; revision: number }>
       const wanted = snapshot.notes.filter((note) => items.some((item) => item.id === note.id))
@@ -127,7 +133,7 @@ describe('canvas comments', () => {
     await waitFor(() => expect(snapshot.notes).toEqual([]))
     expect(calls.filter((call) => call.url.endsWith('/pending/send')).at(-1)!.body).toEqual({ items: [{ id: 1, revision: 1 }], expectedQueueRevision: 3 })
   })
-  it('renders thread rows and label badges; selecting a thread flies to and opens a read-only pin', async () => {
+  it('renders thread rows and label badges; selecting a thread flies to and opens the conversation', async () => {
     threads = [thread()]; snapshot = { ...snapshot, revision: 1, knownUpTo: 1, notes: [queuedNote()] }
     const { container } = mount(), iframe = await screen.findByTitle('Settings') as HTMLIFrameElement
     message(iframe, 'labels', { labels: [{ name: 'Renamed row', id: 'row', rect }] })
@@ -139,8 +145,56 @@ describe('canvas comments', () => {
     fireEvent.click(row)
     expect((container.querySelector('.canvas-world') as HTMLElement).style.transform).not.toBe(previous)
     expect(screen.getByRole('dialog')).toHaveTextContent('More detail')
-    expect(screen.getByText('Agent replies arrive in a later update')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Reply' })).toBeInTheDocument()
     expect(screen.queryByRole('textbox', { name: 'Comment' })).not.toBeInTheDocument()
+  })
+  it('shows agent messages and replied/resolved rows; replies, resolves and reopens from the popover', async () => {
+    threads = [{ ...thread(), messages: [...thread().messages, { author: 'agent', text: 'Updated it', at: 12 }] }]
+    const { container } = mount()
+    await screen.findByTitle('Settings')
+    fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Row replied Fix row' }))
+    expect(screen.getByText('Updated it').closest('.cmd-msg')).toHaveClass('agent')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Reply' }), { target: { value: 'Another detail' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+    await screen.findByText('Another detail')
+    expect(screen.getByRole('textbox', { name: 'Reply' })).toHaveValue('')
+    expect(calls.find((call) => call.url.endsWith('/replies'))!.body).toEqual({ text: 'Another detail', author: 'user' })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    await screen.findByRole('button', { name: 'Reopen' })
+    expect(container.querySelector('.canvas-pin.is-resolved')).toHaveTextContent('✓')
+    expect(screen.getByRole('button', { name: 'Row resolved Fix row' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+    await screen.findByRole('button', { name: 'Resolve' })
+    expect(container.querySelector('.canvas-pin.is-sent')).toBeInTheDocument()
+    expect(calls.filter((call) => call.url.endsWith('/status')).map((call) => call.body)).toEqual([{ status: 'resolved' }, { status: 'open' }])
+  })
+  it('accepts spotlight, flies to the stable label id and highlights it; supports frame targets', async () => {
+    const { container } = mount(), iframe = await screen.findByTitle('Settings') as HTMLIFrameElement
+    message(iframe, 'labels', { labels: [{ name: 'Renamed row', id: 'row', rect }] })
+    act(() => publishCanvasSpotlights({ [id]: { id: 'sr-12345678', requestedAt: 1, requestedBy: 'claude', label: 'Row', labelId: 'row', frame: 'settings', message: 'Updated it' } }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('claude wants to show you Row — Updated it')
+    const previous = (container.querySelector('.canvas-world') as HTMLElement).style.transform
+    fireEvent.click(screen.getByRole('button', { name: 'Show me' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+      expect(container.querySelector('.canvas-highlight:not(.is-hover)')).toBeInTheDocument()
+      expect((container.querySelector('.canvas-world') as HTMLElement).style.transform).not.toBe(previous)
+    })
+    expect(screen.getByRole('button', { name: 'Renamed row' })).toHaveAttribute('aria-pressed', 'true')
+    act(() => publishCanvasSpotlights({ [id]: { id: 'sr-87654321', requestedAt: 2, frame: 'accounts' } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show me' }))
+    await waitFor(() => expect(container.querySelector('.canvas-frame.is-spotlight iframe')).toHaveAttribute('title', 'Accounts'))
+    expect(calls.filter((call) => call.url.includes('/spotlight-requests/')).map((call) => call.body)).toEqual([{ decision: 'accept' }, { decision: 'accept' }])
+  })
+  it('spotlight shows the frame until its label report arrives, then selects the label', async () => {
+    const { container } = mount(), iframe = await screen.findByTitle('Settings') as HTMLIFrameElement
+    act(() => publishCanvasSpotlights({ [id]: { id: 'sr-12345678', requestedAt: 1, frame: 'settings', label: 'Row' } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show me' }))
+    await waitFor(() => expect(container.querySelector('.canvas-frame.is-spotlight iframe')).toHaveAttribute('title', 'Settings'))
+    message(iframe, 'labels', { labels: [{ name: 'Row', id: 'row', rect }] })
+    await waitFor(() => expect(container.querySelector('.canvas-highlight')).toHaveTextContent('Row'))
+    expect(container.querySelector('.canvas-frame.is-spotlight')).not.toBeInTheDocument()
   })
   it('refreshes pending/threads on daemon pushes and rejects stale sends without auto-retry', async () => {
     mount(); await screen.findByTitle('Settings')

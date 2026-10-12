@@ -130,10 +130,13 @@ scripts/commando-feedback <webPaneId>
 scripts/commando-feedback <webPaneId> --wait 30
 ```
 
-The script tracks its acknowledgement cursor automatically. Poll while awaiting feedback, then keep the tab open for the next review.
+Comments can arrive as a pushed prompt in your anchor pane, or through
+`commando-feedback` polling. Always drain with `commando-feedback` to collect
+and acknowledge the journal, even after a pushed prompt. The script tracks its
+acknowledgement cursor automatically. Keep the tab open for the next review.
 Use the 💬 tool to drop a pin on a frame (Esc exits), Queue to batch notes,
 and Send or Send this to deliver them through the shared feedback journal.
-Notes carry `canvas` context: frameId, frameTitle, frame-local CSS pixel point,
+Notes carry `canvas` context: threadId, frameId, frameTitle, frame-local CSS pixel point,
 label/labelId, section/ticket/status, focus and interactive. Prefer label +
 frame over selector when finding the source to edit. The first matching
 manifest section supplies section context. Queued pins survive reload; sent
@@ -142,5 +145,21 @@ pins appear in Threads and remain after journal acknowledgement.
 Redline SDK controls work inside frames through the canvas queue bridge,
 with pending snapshots scoped to the frame page URL. SDK question snapshots
 are validated but ignored in M2b. Frames remain inert until Play is available;
-programmatic SDK queue calls work now. Threads are read-only in this milestone;
-agent replies and resolution arrive in M3.
+programmatic SDK queue calls work now. The review loop is two-way: reply in each thread, and resolve when done.
+User follow-ups arrive through the same journal and reopen resolved threads.
+
+```bash
+scripts/commando-canvas threads <webPaneId> # JSON conversation and status
+scripts/commando-canvas reply <webPaneId> <threadId> "Updated the Outlook row" --resolve
+scripts/commando-canvas resolve <webPaneId> <threadId>
+scripts/commando-canvas spotlight <webPaneId> "Outlook row" --frame accounts --message "Here is the updated state" --wait 30
+```
+
+Use spotlight to point the user at something you changed. The user chooses
+Show me or Dismiss; the CLI returns a requestId and a decision (`pending`,
+`accepted`, `dismissed`, `superseded`, or `closed`). `--wait` is 0–60 seconds;
+a pending result can be polled with
+`GET /api/web-panes/<webPaneId>/spotlight-requests/<requestId>?wait=30`.
+Chat hosts queue pushed feedback during a turn. Terminal agents receive pushes
+only in `done` status; busy or unknown panes are owed delivery until a later
+completion. The journal remains the source of truth across daemon restarts.

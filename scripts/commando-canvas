@@ -2,8 +2,44 @@
 # commando-canvas — register and open an agent canvas beside this tmux pane.
 set -euo pipefail
 
+command="open"
+case "${1:-}" in
+  reply|resolve|spotlight|threads) command="$1"; shift ;;
+esac
+if [ "$command" != open ]; then
+  [ $# -ge 1 ] || { echo "usage: commando-canvas $command <webPaneId> …" >&2; exit 2; }
+  web_pane_id="$1"; shift
+  [[ "$web_pane_id" =~ ^w-[0-9a-f]{8}$ ]] || { echo "commando-canvas: invalid webPaneId" >&2; exit 2; }
+  thread_id=""; text=""; label=""; frame=""; message=""; wait_seconds="0"; resolve="false"
+  case "$command" in
+    reply|resolve)
+      [ $# -ge 1 ] || { echo "commando-canvas: threadId required" >&2; exit 2; }
+      thread_id="$1"; shift
+      [[ "$thread_id" =~ ^ct-[0-9a-f]{24}$ ]] || { echo "commando-canvas: invalid threadId" >&2; exit 2; }
+      if [ "$command" = reply ]; then
+        [ $# -ge 1 ] || { echo "commando-canvas: text required" >&2; exit 2; }
+        text="$1"; shift
+      fi ;;
+    spotlight)
+      [ $# -ge 1 ] || { echo "commando-canvas: label required" >&2; exit 2; }
+      label="$1"; shift ;;
+  esac
+  while [ $# -gt 0 ]; do
+    case "$command:$1" in
+      reply:--resolve) resolve="true"; shift ;;
+      spotlight:--frame|spotlight:--message|spotlight:--wait)
+        [ $# -ge 2 ] || { echo "commando-canvas: $1 needs a value" >&2; exit 2; }
+        case "$1" in --frame) frame="$2" ;; --message) message="$2" ;; --wait) wait_seconds="$2" ;; esac
+        shift 2 ;;
+      *) echo "commando-canvas: unexpected argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  node -e 'const n=Number(process.argv[1]); if(!Number.isFinite(n)||n<0||n>60) process.exit(2)' "$wait_seconds" || { echo "commando-canvas: --wait must be between 0 and 60" >&2; exit 2; }
+fi
+
 dir=""
 manifest="canvas.json"
+if [ "$command" = open ]; then
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest)
@@ -19,13 +55,16 @@ done
 [ -n "$dir" ] || { echo "usage: commando-canvas <dir> [--manifest canvas.json]" >&2; exit 2; }
 pane="${TMUX_PANE:-}"
 [ -n "$pane" ] || { echo "commando-canvas: not inside a tmux pane (TMUX_PANE is unset)" >&2; exit 1; }
+fi
 token_file="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
 if [ ! -r "$token_file" ]; then
   echo "commando-canvas: agent hook token not readable at $token_file" >&2
   echo "commando-canvas: run 'npm run hooks:install' in the commando repo first" >&2
   exit 1
 fi
-dir="$(cd "$dir" 2>/dev/null && pwd)" || { echo "commando-canvas: $dir is not a directory" >&2; exit 1; }
+if [ "$command" = open ]; then
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || { echo "commando-canvas: $dir is not a directory" >&2; exit 1; }
+fi
 base="http://127.0.0.1:${COMMANDO_PORT:-4310}"
 token="$(cat "$token_file")"
 body_file=$(mktemp "${TMPDIR:-/tmp}/commando-canvas-body.XXXXXX")
@@ -36,10 +75,25 @@ request() {
     echo "commando-canvas: daemon unavailable at $base" >&2; exit 1;
   }
   case "$status" in
-    200|201) ;;
+    200|201|202) ;;
     *) cat "$body_file" >&2; echo "commando-canvas: daemon responded ${status}" >&2; exit 1 ;;
   esac
 }
+if [ "$command" != open ]; then
+  endpoint="$base/api/web-panes/$web_pane_id"
+  case "$command" in
+    threads) request "$endpoint/threads" ;;
+    reply)
+      body=$(node -e 'console.log(JSON.stringify({text:process.argv[1],resolve:process.argv[2]==="true"}))' "$text" "$resolve")
+      request -X POST -H 'Content-Type: application/json' --data "$body" "$endpoint/threads/$thread_id/replies" ;;
+    resolve) request -X POST -H 'Content-Type: application/json' --data '{"status":"resolved"}' "$endpoint/threads/$thread_id/status" ;;
+    spotlight)
+      body=$(node -e 'console.log(JSON.stringify({label:process.argv[1],frame:process.argv[2]||undefined,message:process.argv[3]||undefined}))' "$label" "$frame" "$message")
+      request -X POST -H 'Content-Type: application/json' --data "$body" "$endpoint/spotlight?wait=$wait_seconds" ;;
+  esac
+  cat "$body_file"; echo
+  exit 0
+fi
 body=$(node -e 'console.log(JSON.stringify({dir:process.argv[1]}))' "$dir")
 request -X POST -H 'Content-Type: application/json' --data "$body" "$base/api/redline/artifacts"
 artifact_id=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).id)' "$body_file")

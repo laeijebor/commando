@@ -85,3 +85,13 @@
 .canvas-o-thread { display: grid; grid-template-columns: 1fr auto; gap: 4px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; color: var(--text); padding: 8px; cursor: pointer; }
 .canvas-o-thread span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
 .canvas-o-thread em { font-size: 10px; color: var(--muted); }
+
+.canvas-pin.is-resolved { background: var(--surface-raised); color: var(--text-soft); border-color: var(--border); opacity: .65; }
+.canvas-conversation { display: grid; gap: 8px; padding: 8px; max-height: 280px; overflow: auto; }
+.canvas-conversation .cmd-msg { padding: 8px; border-radius: 6px; background: var(--surface); font-size: 12px; }
+.canvas-conversation .cmd-msg.agent { border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.canvas-conversation .cmd-msg b { font-size: 10px; color: var(--text-soft); }
+.canvas-conversation .cmd-msg p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-thread-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 8px; }
+.canvas-spotlight { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 6; width: max-content; }
+.canvas-frame.is-spotlight { outline: 3px solid var(--accent); outline-offset: 4px; }

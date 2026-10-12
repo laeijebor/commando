@@ -3,10 +3,10 @@ import type { CanvasNoteContext, CanvasThread, WebPanePendingNote } from '../sha
 import type { CanvasCamera } from './canvasCamera'
 import type { CanvasDraft } from './canvasComments'
 
-export type CanvasPin = { id: string; state: 'draft' | 'queued' | 'sent'; canvas: Pick<CanvasNoteContext, 'frameId' | 'point' | 'label' | 'labelId'> }
+export type CanvasPin = { id: string; state: 'draft' | 'queued' | 'sent' | 'resolved'; canvas: Pick<CanvasNoteContext, 'frameId' | 'point' | 'label' | 'labelId'> }
 export function canvasPins(draft: CanvasDraft | null, queued: WebPanePendingNote[], threads: CanvasThread[]): CanvasPin[] {
-  return [...threads.map((thread): CanvasPin => ({ id: thread.id, state: 'sent', canvas: thread })),
-    ...queued.filter((note) => note.canvas).map((note): CanvasPin => ({ id: `pending:${note.id}`, state: 'queued', canvas: note.canvas! })),
+  return [...threads.map((thread): CanvasPin => ({ id: thread.id, state: thread.status === 'resolved' ? 'resolved' : 'sent', canvas: thread })),
+    ...queued.filter((note) => note.canvas && !threads.some((thread) => thread.id === note.canvas?.threadId)).map((note): CanvasPin => ({ id: `pending:${note.id}`, state: 'queued', canvas: note.canvas! })),
     ...(draft ? [{ id: 'draft', state: 'draft' as const, canvas: draft.canvas }] : [])]
 }
 export function canvasPinPoint(pin: CanvasPin, frames: CanvasFrame[], camera: CanvasCamera) {
@@ -20,6 +20,6 @@ export function CanvasPins({ pins, frames, camera, active, onOpen }: {
     const point = canvasPinPoint(pin, frames, camera)
     return point && <button key={pin.id} type="button" className={`canvas-pin is-${pin.state}`} style={{ left: point.x, top: point.y }}
       aria-label={`${pin.state} comment ${index + 1}${pin.canvas.label ? ` on ${pin.canvas.label}` : ''}`} aria-pressed={active === pin.id}
-      onClick={() => onOpen(pin.id)}>{index + 1}</button>
+      onClick={() => onOpen(pin.id)}>{pin.state === 'resolved' ? '✓' : index + 1}</button>
   })}</div>
 }

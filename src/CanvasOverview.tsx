@@ -3,6 +3,8 @@ import { useId, useMemo, useRef, useState } from 'react'
 import type { CanvasAnnotation, CanvasFrame } from '../shared/canvas-manifest'
 import { buildCanvasLabelTree, sameLabel, type CanvasLabelInstance, type CanvasLabelRef, type CanvasLabelReports } from './canvasLabels'
 
+const threadState = (thread: CanvasThread) => thread.status === 'resolved' ? 'resolved' : thread.messages.at(-1)?.author === 'agent' ? 'replied' : 'open'
+
 export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], onThread }: {
   frames: CanvasFrame[]; annotations: CanvasAnnotation[]; reports: CanvasLabelReports; selected: CanvasLabelRef | null
   onHover: (label: CanvasLabelRef | null) => void; onSelect: (label: CanvasLabelInstance) => void
@@ -26,8 +28,8 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
     </div>
     {tab === 'components' && <input className="canvas-overview-filter" aria-label="Filter labels" placeholder="Filter labels…" value={filter} onChange={(event) => { setFilter(event.target.value); onHover(null) }} />}
     <div className="canvas-overview-body" role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${tab}`}>
-      {tab === 'threads' ? threads.length ? threads.map((thread) => <button type="button" key={thread.id} className="canvas-o-thread" aria-label={`${thread.label || 'Unlabelled'} ${thread.status} ${thread.messages[0]?.text.split('\n')[0] || ''}`} onClick={() => onThread?.(thread)}>
-        <b>{thread.label || 'Unlabelled'}</b><em>{thread.status}</em><span>{thread.messages[0]?.text.split('\n')[0]}</span>
+      {tab === 'threads' ? threads.length ? threads.map((thread) => <button type="button" key={thread.id} className="canvas-o-thread" aria-label={`${thread.label || 'Unlabelled'} ${threadState(thread)} ${thread.messages[0]?.text.split('\n')[0] || ''}`} onClick={() => onThread?.(thread)}>
+        <b>{thread.label || 'Unlabelled'}</b><em>{threadState(thread)}</em><span>{thread.messages[0]?.text.split('\n')[0]}</span>
       </button>) : <p className="canvas-overview-empty">No comments yet</p> : <>
         {!filter.trim() && <>
           <div className="canvas-o-head">Start here</div>

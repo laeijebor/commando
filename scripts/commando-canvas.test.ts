@@ -20,6 +20,8 @@ fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
 let body, status;
 if (url.endsWith('/api/redline/artifacts')) { body = {id:'0123456789abcdef',url:'http://127.0.0.1:4410/redline/artifacts/0123456789abcdef/'}; status='201'; }
 else if (url.endsWith('/canvas')) {body = {manifest:{title:'Board',frames:[]},errors:${JSON.stringify(errors)}};status=${JSON.stringify(status)};}
+else if (url.includes('/spotlight?')) {body={requestId:'sr-12345678',decision:'pending'};status='202';}
+else if (url.endsWith('/threads')) {body={threads:[{id:'ct-one',status:'open'}]};status='200';}
 else {body={webPaneId:'w-12345678'};status='201';}
 fs.writeFileSync(args[args.indexOf('-o') + 1], JSON.stringify(body));
 process.stdout.write(status);
@@ -61,6 +63,42 @@ describe('commando-canvas CLI', () => {
     expect(result.stdout).toBe('')
     expect(result.stderr).toContain(error.replace(/^canvas\.json:/, manifest + ':'))
     expect((await readFile(f.calls, 'utf8')).trim().split('\n')).toHaveLength(2)
+  })
+  it('runs thread subcommands without requiring a tmux pane and escapes reply text', async () => {
+    const f = await fixture(), threadId = 'ct-' + 'a'.repeat(24), id = 'w-12345678'
+    delete f.env.TMUX_PANE
+    const text = 'A "quoted" reply\nwith $literal `syntax`'
+    expect((await run(['reply', id, threadId, text, '--resolve'], f.env)).code).toBe(0)
+    expect((await run(['resolve', id, threadId], f.env)).code).toBe(0)
+    const result = await run(['threads', id], f.env)
+    expect(result.code).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ threads: [{ id: 'ct-one', status: 'open' }] })
+    const calls = (await readFile(f.calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as string[])
+    expect(calls.map((call) => call.find((arg) => arg.startsWith('http:')))).toEqual([
+      `http://127.0.0.1:4410/api/web-panes/${id}/threads/${threadId}/replies`,
+      `http://127.0.0.1:4410/api/web-panes/${id}/threads/${threadId}/status`,
+      `http://127.0.0.1:4410/api/web-panes/${id}/threads`,
+    ])
+    expect(JSON.parse(calls[0][calls[0].indexOf('--data') + 1])).toEqual({ text, resolve: true })
+    expect(JSON.parse(calls[1][calls[1].indexOf('--data') + 1])).toEqual({ status: 'resolved' })
+  })
+  it('requests spotlight with frame/message/wait and prints a pending 202 result', async () => {
+    const f = await fixture()
+    const result = await run(['spotlight', 'w-12345678', 'Outlook row', '--frame', 'accounts', '--message', 'Updated "state"', '--wait', '30'], f.env)
+    expect(result.code, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ requestId: 'sr-12345678', decision: 'pending' })
+    const call = JSON.parse((await readFile(f.calls, 'utf8')).trim()) as string[]
+    expect(call).toContain('http://127.0.0.1:4410/api/web-panes/w-12345678/spotlight?wait=30')
+    expect(JSON.parse(call[call.indexOf('--data') + 1])).toEqual({ label: 'Outlook row', frame: 'accounts', message: 'Updated "state"' })
+  })
+  it.each([
+    ['reply', 'w-12345678'], ['reply', 'w-12345678', 'ct-bad', 'Text'], ['threads', '../bad'],
+    ['threads', 'w-12345678', '--resolve'], ['spotlight', 'w-12345678'],
+    ['spotlight', 'w-12345678', 'Row', '--frame'], ['spotlight', 'w-12345678', 'Row', '--wait', '61'],
+    ['spotlight', 'w-12345678', 'Row', '--wait', 'NaN'],
+  ])('rejects invalid subcommand arguments %j', async (...args) => {
+    const f = await fixture()
+    expect((await run(args, f.env)).code).toBe(2)
   })
   it('reports missing token and daemon-down errors', async () => {
     const f = await fixture()

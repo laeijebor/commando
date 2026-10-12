@@ -322,3 +322,19 @@ it('sends canvas context and queue revisions without requesting a build, and fet
   expect(JSON.parse(String(calls[2][1].body))).toEqual({ items: [{ id: 1, revision: 2 }], expectedQueueRevision: 9 })
   expect(calls[3][0]).toBe('/api/web-panes/w-12345678/threads')
 })
+
+describe('canvas thread and spotlight actions', () => {
+  it('sends owner replies, status changes and spotlight decisions', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+    const api = createWebPanesApi('owner', fetcher as unknown as typeof fetch)
+    await api.replyThread('w-12345678', 'ct-one', 'More')
+    await api.setThreadStatus('w-12345678', 'ct-one', 'resolved')
+    await api.answerSpotlight('w-12345678', 'sr-12345678', 'accept')
+    const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+    expect(calls.map(([url, init]) => [url, init.method, JSON.parse(String(init.body))])).toEqual([
+      ['/api/web-panes/w-12345678/threads/ct-one/replies', 'POST', { text: 'More', author: 'user' }],
+      ['/api/web-panes/w-12345678/threads/ct-one/status', 'POST', { status: 'resolved' }],
+      ['/api/web-panes/w-12345678/spotlight-requests/sr-12345678', 'POST', { decision: 'accept' }],
+    ])
+  })
+})

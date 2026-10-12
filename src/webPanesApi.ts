@@ -1,4 +1,4 @@
-import type { CanvasNoteContext, CanvasThread, WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
+import type { CanvasSpotlightRequest, CanvasNoteContext, CanvasThread, WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
 import { parsePendingSent, type RedlinePageResponse } from '../shared/redline-response'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
@@ -23,6 +23,9 @@ export interface WebPanesApiClient {
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
   threads(webPaneId: string): Promise<CanvasThread[]>
+  replyThread(webPaneId: string, threadId: string, text: string): Promise<void>
+  setThreadStatus(webPaneId: string, threadId: string, status: 'open' | 'resolved'): Promise<void>
+  answerSpotlight(webPaneId: string, requestId: string, decision: 'accept' | 'dismiss'): Promise<void>
   pendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
   addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingSnapshot>
   addPendingResponse(
@@ -167,6 +170,15 @@ export function createWebPanesApi(
       const body = await request(`/${encodeURIComponent(webPaneId)}/threads`, { method: 'GET' }) as { threads?: CanvasThread[] }
       return body.threads ?? []
     },
+    replyThread: async (id, threadId, text) => {
+      await request(`/${encodeURIComponent(id)}/threads/${encodeURIComponent(threadId)}/replies`, { method: 'POST', body: JSON.stringify({ text, author: 'user' }) })
+    },
+    setThreadStatus: async (id, threadId, status) => {
+      await request(`/${encodeURIComponent(id)}/threads/${encodeURIComponent(threadId)}/status`, { method: 'POST', body: JSON.stringify({ status }) })
+    },
+    answerSpotlight: async (id, requestId, decision) => {
+      await request(`/${encodeURIComponent(id)}/spotlight-requests/${encodeURIComponent(requestId)}`, { method: 'POST', body: JSON.stringify({ decision }) })
+    },
     pendingNotes: async (webPaneId) => {
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }))
     },
@@ -301,4 +313,16 @@ export function publishCanvasRefresh(): void {
 export function subscribeCanvasRefresh(listener: () => void): () => void {
   canvasRefreshListeners.add(listener)
   return () => { canvasRefreshListeners.delete(listener) }
+}
+
+let canvasSpotlights: Record<string, CanvasSpotlightRequest> = {}
+const spotlightListeners = new Set<(requests: Record<string, CanvasSpotlightRequest>) => void>()
+export function publishCanvasSpotlights(requests: Record<string, CanvasSpotlightRequest>): void {
+  canvasSpotlights = requests
+  for (const listener of spotlightListeners) listener(requests)
+}
+export function subscribeCanvasSpotlights(listener: (requests: Record<string, CanvasSpotlightRequest>) => void): () => void {
+  spotlightListeners.add(listener)
+  listener(canvasSpotlights)
+  return () => { spotlightListeners.delete(listener) }
 }
