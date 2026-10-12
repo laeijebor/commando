@@ -55,6 +55,23 @@
   }
   var timer
   var lastPendingSnapshot
+  var live = false
+  window.addEventListener('click', function (event) {
+    if (!live) return
+    var go = event.target instanceof Element && event.target.closest('[data-canvas-goto]')
+    if (!go) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    post('goto', { target: go.getAttribute('data-canvas-goto') })
+  }, true)
+  window.addEventListener('keydown', function (event) {
+    if (live && event.key === 'Escape') { event.preventDefault(); post('escape', {}) }
+  }, true)
+  window.addEventListener('wheel', function (event) {
+    if (!live || !(event.ctrlKey || event.metaKey)) return
+    event.preventDefault()
+    post('zoom', { deltaY: event.deltaY, deltaMode: event.deltaMode, x: event.clientX, y: event.clientY })
+  }, { passive: false, capture: true })
   function schedule() {
     clearTimeout(timer)
     timer = setTimeout(report, 100)
@@ -62,6 +79,7 @@
   window.addEventListener('message', function (event) {
     var data = event.data
     if (event.source !== window.parent || !data || data.source !== 'commando-canvas' || typeof data.type !== 'string') return
+    if (data.type === 'interaction') { live = data.live === true; return }
     if (data.type === 'redline-pending') {
       // SDK hydration mutates DOM and triggers a label report. Do not echo that back forever.
       var serialized = JSON.stringify(data.snapshot)

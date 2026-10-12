@@ -1,6 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import type { WebPane } from '../shared/protocol.js'
 import type { RedlineArtifactRegistry } from './redline-artifacts.js'
+import { CANVAS_WRITE_TEMP_PREFIX } from './canvas-write.js'
 
 type WatchedCanvas = { watcher: FSWatcher; changed: Set<string>; timer?: ReturnType<typeof setTimeout> }
 
@@ -26,6 +27,7 @@ export class CanvasWatch {
         const watcher = this.watchDirectory(dir, { recursive: true }, (_event, filename) => {
           const entry = this.watched.get(id)
           if (!entry) return
+          if (filename?.toString().replaceAll('\\', '/').split('/').at(-1)?.startsWith(CANVAS_WRITE_TEMP_PREFIX)) return
           entry.changed.add(filename ? filename.toString().replaceAll('\\', '/') : '*')
           clearTimeout(entry.timer)
           entry.timer = setTimeout(() => {

@@ -6,6 +6,7 @@ import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canvasRelativePath, parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { RedlineArtifactError, type RedlineArtifactRegistry } from './redline-artifacts.js'
+import { canvasContentHash, writeCanvas } from './canvas-write.js'
 
 const require_ = createRequire(import.meta.url)
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), 'static')
@@ -106,7 +107,7 @@ export class RedlineApi {
       if (error instanceof HttpError || error instanceof RedlineArtifactError) {
         if (error.status === 401) response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname.startsWith('/api/redline') ? 'GET, POST, DELETE' : 'GET')
+          response.setHeader('Allow', /\/canvas\/(frames|sections)$/.test(url.pathname) ? 'PATCH' : url.pathname.startsWith('/api/redline') ? 'GET, POST, DELETE' : 'GET')
         }
         this.writeJson(response, error.status, { error: error.message })
         return true
@@ -200,11 +201,20 @@ export class RedlineApi {
       'Content-Length': body.length,
       'Content-Type': CONTENT_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
       'X-Content-Type-Options': 'nosniff',
+      ...(options.cache === 'no-store' && extname(filePath).toLowerCase() === '.json' ? { ETag: `"${canvasContentHash(body)}"`, 'Access-Control-Expose-Headers': 'ETag' } : {}),
     })
     response.end(body)
   }
 
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const write = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/(frames|sections)$/.exec(url.pathname)
+    if (write) {
+      // Owner only: the agent token is deliberately not accepted for user layout edits.
+      if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
+      if (request.method !== 'PATCH') throw new HttpError(405, 'Method not allowed')
+      this.writeJson(response, 200, writeCanvas(this.dependencies.artifacts, write[1], await this.readJson(request), write[2] as 'frames' | 'sections'))
+      return
+    }
     await this.authenticate(request, url)
     if (url.pathname === '/api/redline/artifacts') {
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -228,7 +238,8 @@ export class RedlineApi {
         this.writeJson(response, 404, { ...parseCanvasManifest({ title: '', frames: [] }), errors: [`${manifestPath}: not found`] })
         return
       }
-      this.writeJson(response, 200, parseCanvasManifest(readFileSync(file, 'utf8')))
+      const text = readFileSync(file, 'utf8')
+      this.writeJson(response, 200, { ...parseCanvasManifest(text), contentHash: canvasContentHash(text) })
       return
     }
     const single = /^\/api\/redline\/artifacts\/([0-9a-f]{16})$/.exec(url.pathname)

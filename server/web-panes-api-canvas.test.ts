@@ -12,6 +12,8 @@ import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { CanvasThreadsStore } from './canvas-threads.js'
+import { CanvasPush } from './canvas-push.js'
+import { canvasSectionStatusNote } from '../src/canvasComments.js'
 
 const token = 'agent-hook-token-at-least-32-characters'
 const canvas = { frameId: 'settings', point: { x: 5, y: 7 }, label: 'Row', labelId: 'row', frameTitle: 'Settings', section: 'Accounts', ticket: 'APP-1', status: 'ready-for-dev', focus: 1, interactive: true }
@@ -38,6 +40,25 @@ async function request(action: string, body?: unknown, auth: 'owner' | 'agent' |
   return { status: writeHead.mock.calls[0][0], body: JSON.parse(end.mock.calls[0][0]), setHeader }
 }
 describe('canvas pending/feedback/thread routes without sockets', () => {
+  it('journals and pushes the section-status note produced by the canvas client through pending→send', async () => {
+    const statusNote = canvasSectionStatusNote({ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0, w: 390, h: 844, interactive: true, focus: 1 },
+      { id: 'section', title: 'Accounts', ticket: 'APP-1', status: 'idea', frames: ['settings'] }, 'ready-for-review', note.pageUrl)
+    const sendChat = vi.fn(() => true)
+    const push = new CanvasPush({ pane: () => service.get(id), title: () => 'Board', owns: () => true, sendChat, sendTerminal: vi.fn(), status: () => undefined })
+    onCanvasSent.mockImplementation((paneId, notes) => { void push.deliver(paneId, notes) })
+    const queued = await request('pending', { note: statusNote })
+    expect(queued.status).toBe(200)
+    const item = queued.body.notes[0]
+    expect((await request('pending/send', { items: [{ id: item.id, revision: item.revision }], expectedQueueRevision: queued.body.revision })).status).toBe(200)
+    const journal = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
+    const delivered = await journal.drain(id, 0)
+    expect(delivered.notes).toHaveLength(1)
+    expect(delivered.notes[0]).toMatchObject({ comment: 'Section "Accounts" status changed from idea to ready-for-review', canvas: { section: 'Accounts', ticket: 'APP-1', status: 'ready-for-review', frameId: 'settings' } })
+    expect(sendChat).toHaveBeenCalledOnce()
+    expect(sendChat.mock.calls[0]).toContainEqual(expect.stringContaining(statusNote.comment))
+    expect(threads.list(id)[0].messages[0].text).toBe(statusNote.comment)
+    expect(pending.list(id)).toEqual([])
+  })
   it('queues context, sends only selected revisions, delivers context and exposes threads to both callers', async () => {
     const queued = await request('pending', { note })
     expect(queued.status).toBe(200)

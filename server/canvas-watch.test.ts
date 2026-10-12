@@ -20,6 +20,7 @@ describe('canvas watch', () => {
     watcher.sync([pane('one'), pane('one')]); watcher.sync([pane('one')])
     expect(factory).toHaveBeenCalledTimes(1)
     callbacks[0]('change', 'Settings.html'); vi.advanceTimersByTime(100)
+    callbacks[0]('rename', '.commando-canvas-self-write.tmp'); callbacks[0]('change', 'nested/.commando-canvas-self-write.tmp')
     callbacks[0]('rename', 'assets/icon.svg'); callbacks[0]('change', 'Settings.html')
     vi.advanceTimersByTime(149); expect(notify).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)

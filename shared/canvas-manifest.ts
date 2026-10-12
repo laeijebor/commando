@@ -14,6 +14,9 @@ export type CanvasAnnotation = {
 }
 export type CanvasManifest = { title: string; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
 export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[] }
+export type CanvasMove = { id: string; x: number; y: number }
+export type CanvasStatusChange = { id: string; status: CanvasSection['status'] }
+export type CanvasWriteResult = CanvasManifestResult & { contentHash: string }
 
 export function canvasRelativePath(value: unknown): string | null {
   if (typeof value !== 'string' || !value || /[\\\0?#%]/.test(value) || value.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(value)) return null
