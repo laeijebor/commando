@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createPrsApi, type PanePrList, type PrList, type PrsApiClient, type PrScope, type PrSummary } from './prsApi'
@@ -86,6 +86,24 @@ describe('PR store', () => {
     await act(async () => { finish(paneList(pr, 10)) })
     expect(screen.getByTestId('sidebar').textContent).toBe('conflict')
     expect(screen.getByTestId('hud').textContent).toBe('conflict')
+  })
+
+  it('retains pane PRs on refresh errors and while disconnected', async () => {
+    vi.useFakeTimers()
+    const api = { pane: vi.fn().mockResolvedValue(paneList()) }
+    const view = renderHook(({ enabled }) => usePanePrs('%12', api, { background: false, enabled }), { initialProps: { enabled: true } })
+    await act(async () => { await Promise.resolve() })
+    const lastGood = view.result.current
+    expect(lastGood?.pullRequests).toHaveLength(1)
+    api.pane.mockRejectedValue(new Error('Offline'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(view.result.current).toBe(lastGood)
+    view.rerender({ enabled: false })
+    expect(view.result.current).toBe(lastGood)
+    api.pane.mockResolvedValue(emptyList)
+    view.rerender({ enabled: true })
+    await act(async () => { await Promise.resolve() })
+    expect(view.result.current?.pullRequests).toEqual([])
   })
 
   it('deduplicates requests from subscribers to the same pane key', async () => {

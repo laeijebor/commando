@@ -1,3 +1,7 @@
+import { CanvasSpotlightStore } from './canvas-spotlight.js'
+import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
+import type { CanvasThreadsStore } from './canvas-threads.js'
+import { isBuiltinPanelKey } from '../shared/web-pane-placement.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
@@ -17,7 +21,7 @@ import { MAX_NAVIGATE_WAIT_MS, type WebPaneAgentRequests } from './web-pane-agen
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
 import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from './web-pane-pending.js'
-import { classifyWebPaneUrl, WebPaneError, type WebPaneService } from './web-panes.js'
+import { classifyWebPaneUrl, parseWebPaneContent, WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
 const MAX_REQUEST_BYTES = (MAX_RESPONSE_PAYLOAD_BYTES * 4) + 4_096
@@ -57,6 +61,9 @@ type WebPanesApiDependencies = {
   feedback: WebPaneFeedbackStore
   /** Queued-but-unsent review notes, owned by the daemon. */
   pending: WebPanePendingStore
+  canvasThreads?: CanvasThreadsStore
+  spotlight?: CanvasSpotlightStore
+  onCanvasSent?: (webPaneId: string, notes: WebPaneFeedbackNote[]) => void
   /** Private bytes referenced by pending and sent review notes. */
   attachmentStore: WebPaneAttachmentStore
   /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
@@ -208,6 +215,13 @@ function parseExpectedQueueRevision(body: Record<string, unknown>, intent?: WebP
   return body.expectedQueueRevision as number
 }
 
+function canvasContext(value: unknown) {
+  if (value === undefined) return undefined
+  const context = parseCanvasNoteContext(value)
+  if (!context) throw new HttpError(400, 'canvas context is malformed')
+  return context
+}
+
 const MAX_FEEDBACK_COMMENT = 4_096
 
 function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[] {
@@ -239,6 +253,7 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
       ...(note.text !== undefined ? { text: note.text } : {}),
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       comment: note.comment,
+      ...(note.canvas !== undefined ? { canvas: canvasContext(note.canvas) } : {}),
       pageUrl: note.pageUrl,
       capturedAt: note.capturedAt,
       ...(response !== undefined ? { response } : {}),
@@ -316,6 +331,7 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
     ...(note.text !== undefined ? { text: note.text } : {}),
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     comment: note.comment,
+    ...(note.canvas !== undefined ? { canvas: canvasContext(note.canvas) } : {}),
     ...(pageUrl !== undefined ? { pageUrl } : {}),
     ...(note.queueKey !== undefined ? { queueKey: note.queueKey } : {}),
     ...(response !== undefined ? { response } : {}),
@@ -325,13 +341,14 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
 function parsePendingResponseInput(body: Record<string, unknown>): {
   pageUrl: string
   response: RedlinePageResponse
+  canvas?: import('../shared/protocol.js').CanvasNoteContext
 } {
   if (typeof body.pageUrl !== 'string') throw new HttpError(400, 'pageUrl must be an http or https URL')
   const decision = classifyWebPaneUrl(body.pageUrl, new Set())
   if (decision.kind === 'invalid') throw new HttpError(400, `pageUrl ${decision.reason}`)
   const response = parseRedlinePageResponse(body.response)
   if (!response) throw new HttpError(400, 'response is malformed')
-  return { pageUrl: decision.url, response }
+  return { pageUrl: decision.url, response, canvas: canvasContext(body.canvas) }
 }
 
 function digest(value: string): Buffer {
@@ -357,11 +374,13 @@ export function isWebPanesApiPath(pathname: string): boolean {
 export class WebPanesApi {
   private readonly agentTokenDigest: Buffer
   private readonly openLimiter: TokenBucketRateLimiter
+  private readonly spotlight: CanvasSpotlightStore
 
   constructor(private readonly dependencies: WebPanesApiDependencies) {
     if (dependencies.agentToken.length < 32) {
       throw new Error('Agent hook token must contain at least 32 characters')
     }
+    this.spotlight = dependencies.spotlight ?? new CanvasSpotlightStore()
     this.agentTokenDigest = digest(dependencies.agentToken)
     // Opening tiles is a human-scale action: 10 quick opens, refilling 1/s.
     this.openLimiter = dependencies.openLimiter ?? new TokenBucketRateLimiter(10, 1)
@@ -376,7 +395,7 @@ export class WebPanesApi {
 
       if (route.kind === 'collection') {
         if (request.method === 'GET') {
-          writeJson(response, 200, { webPanes: this.dependencies.service.list() })
+          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs() })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -397,8 +416,12 @@ export class WebPanesApi {
       if (route.action === 'active-tab' || route.action === 'seen') {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (caller !== 'owner') throw new HttpError(403, 'Only the owner can select or mark tabs seen')
-        if (route.action === 'active-tab') this.dependencies.service.setActiveTab(route.id)
-        else this.dependencies.service.clearUnseen(route.id)
+        if (route.action === 'active-tab') {
+          const hasBody = Number(request.headers['content-length'] ?? 0) > 0 || Boolean(request.headers['transfer-encoding'])
+          const body = isBuiltinPanelKey(route.id) || hasBody ? await readJson(request) : {}
+          const anchor = typeof body.anchorPaneId === 'string' ? body.anchorPaneId : undefined
+          this.dependencies.service.setActiveTab(route.id, anchor, (id) => Boolean(this.dependencies.paneForId(id)))
+        } else this.dependencies.service.clearUnseen(route.id)
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true })
         return true
@@ -441,6 +464,92 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'thread-replies' || route.action === 'thread-status') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const pane = this.dependencies.service.get(route.id)
+        if (!pane) throw new HttpError(404, 'Web pane does not exist')
+        const store = this.dependencies.canvasThreads
+        if (!store) throw new HttpError(404, 'Thread does not exist')
+        const thread = store.get(route.id, route.threadId)
+        const body = await readJson(request)
+        if (route.action === 'thread-status') {
+          if (body.status !== 'open' && body.status !== 'resolved') throw new HttpError(400, 'status must be open or resolved')
+          writeJson(response, 200, { thread: store.status(route.id, route.threadId, body.status) })
+          return true
+        }
+        if (typeof body.text !== 'string' || !body.text.trim() || body.text.length > 4_096 ||
+          (body.resolve !== undefined && typeof body.resolve !== 'boolean') ||
+          (body.author !== undefined && body.author !== 'user' && body.author !== 'agent')) {
+          throw new HttpError(400, 'Reply must contain bounded text, optional boolean resolve and valid author')
+        }
+        if (body.author === 'user') {
+          if (caller !== 'owner') throw new HttpError(403, 'Only the owner can reply as user')
+          // Use the same pending -> journal -> thread path as sent pins.
+          const context = thread.canvas ?? { frameId: thread.frameId, point: thread.point, label: thread.label, labelId: thread.labelId }
+          const source = thread.source ?? { selector: thread.selector ?? 'body', tag: 'div', rect: { x: thread.point.x, y: thread.point.y, width: 0, height: 0 }, pageUrl: pane.url }
+          const note = { ...source, comment: body.text, canvas: { ...context, threadId: thread.id } }
+          store.prepare(route.id, [{ ...note, capturedAt: Date.now() }])
+          const snapshot = this.dependencies.pending.addNote(route.id, pane.url, note)
+          this.dependencies.onPendingChanged?.(route.id, snapshot)
+          const added = snapshot.notes[snapshot.notes.length - 1]
+          const next = this.dependencies.pending.send(route.id, pane.url, Date.now(),
+            (notes) => this.enqueueCanvasNotes(route.id, notes), [{ id: added.id, revision: added.revision ?? 1 }])
+          this.dependencies.onPendingChanged?.(route.id, next)
+          if (body.resolve) store.status(route.id, thread.id, 'resolved')
+          this.dependencies.onChange()
+          writeJson(response, 200, { thread: store.get(route.id, thread.id) })
+        } else {
+          writeJson(response, 200, { thread: store.reply(route.id, thread.id, body.text, body.resolve === true) })
+        }
+        return true
+      }
+
+      if (route.action === 'spotlight') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'agent') throw new HttpError(403, 'Only agents request spotlight')
+        const pane = this.dependencies.service.get(route.id)
+        if (!pane) throw new HttpError(404, 'Web pane does not exist')
+        if (pane.content?.kind !== 'canvas') throw new HttpError(409, 'Spotlight requires a canvas tab')
+        const body = await readJson(request)
+        for (const key of ['label', 'labelId', 'frame', 'message'] as const) {
+          if (body[key] !== undefined && (typeof body[key] !== 'string' || !(body[key] as string).trim() || (body[key] as string).length > (key === 'message' ? 1_024 : 256))) throw new HttpError(400, `Invalid ${key}`)
+        }
+        if (!body.label && !body.labelId && !body.frame) throw new HttpError(400, 'A label, labelId or frame is required')
+        if (body.frame !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(body.frame as string)) throw new HttpError(400, 'Invalid frame')
+        const wait = parseWait(url)
+        const target = { label: body.label as string | undefined, labelId: body.labelId as string | undefined, frame: body.frame as string | undefined, message: body.message as string | undefined }
+        const spotlight = this.spotlight.requestSpotlight(route.id, target, this.dependencies.agentLabel?.(pane.anchorPaneId))
+        this.dependencies.onChange()
+        await this.writeSpotlightDecision(request, response, route.id, spotlight.id, wait)
+        return true
+      }
+
+      if (route.action === 'spotlight-request') {
+        const found = this.spotlight.lookup(route.requestId)
+        if (!found || found.webPaneId !== route.id) throw new HttpError(404, 'Spotlight request does not exist')
+        if (request.method === 'GET') {
+          await this.writeSpotlightDecision(request, response, route.id, route.requestId, parseWait(url))
+          return true
+        }
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can answer a spotlight request')
+        const { decision } = await readJson(request)
+        if (decision !== 'accept' && decision !== 'dismiss') throw new HttpError(400, 'decision must be accept or dismiss')
+        if (!this.dependencies.service.get(route.id)) throw new HttpError(404, 'Web pane does not exist')
+        if (!this.spotlight.settle(route.requestId, decision === 'accept' ? 'accepted' : 'dismissed')) throw new HttpError(409, 'Spotlight request already settled')
+        if (decision === 'accept') this.dependencies.service.setActiveTab(route.id)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true, requestId: route.requestId, decision: decision === 'accept' ? 'accepted' : 'dismissed' })
+        return true
+      }
+
+      if (route.action === 'threads') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        if (!this.dependencies.service.get(route.id)) throw new HttpError(404, 'Web pane does not exist')
+        writeJson(response, 200, { ok: true, webPaneId: route.id, threads: this.dependencies.canvasThreads?.list(route.id) ?? [] })
+        return true
+      }
+
       if (route.action === 'feedback') {
         const paneExists = Boolean(this.dependencies.service.get(route.id))
         if (request.method === 'POST') {
@@ -449,7 +558,7 @@ export class WebPanesApi {
             throw new HttpError(403, 'Only the owner can submit feedback')
           }
           const notes = parseFeedbackNotes(await readJson(request))
-          this.dependencies.feedback.enqueue(route.id, notes)
+          this.enqueueCanvasNotes(route.id, notes)
           this.dependencies.onChange()
           const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
           writeJson(response, 200, { ok: true, webPaneId: route.id, queued })
@@ -507,7 +616,7 @@ export class WebPanesApi {
         if (route.response === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
           const input = parsePendingResponseInput(await readJson(request))
-          const snapshot = pending.addResponse(route.id, input.pageUrl, input.response)
+          const snapshot = pending.addResponse(route.id, input.pageUrl, input.response, input.canvas)
           this.dependencies.onPendingChanged?.(route.id, snapshot)
           writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
           return true
@@ -529,7 +638,9 @@ export class WebPanesApi {
             route.id,
             pane.url,
             Date.now(),
-            (feedbackNotes) => this.dependencies.feedback.enqueue(route.id, feedbackNotes),
+            (feedbackNotes) => {
+              this.enqueueCanvasNotes(route.id, feedbackNotes)
+            },
             targets,
             intent,
             expectedQueueRevision,
@@ -784,6 +895,7 @@ export class WebPanesApi {
       if (!this.dependencies.service.close(route.id)) {
         throw new HttpError(404, 'Web pane does not exist')
       }
+      this.spotlight.retain(new Set(this.dependencies.service.list().map((pane) => pane.id)))
       this.dependencies.onClosed?.(route.id)
       this.dependencies.onChange()
       writeJson(response, 200, { ok: true, webPaneId: route.id })
@@ -798,8 +910,10 @@ export class WebPanesApi {
             'Allow',
             url.pathname === API_ROOT
               ? 'GET, POST'
-              : url.pathname.endsWith('/cdp') ? 'GET'
+              : url.pathname.endsWith('/cdp') || url.pathname.endsWith('/threads') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
+              : /\/threads\/[^/]+\/(replies|status)$/.test(url.pathname) || url.pathname.endsWith('/spotlight') ? 'POST'
+              : url.pathname.includes('/spotlight-requests/') ? 'GET, POST'
               : url.pathname.includes('/navigate-requests/') ? 'GET, POST'
               : url.pathname.endsWith('/navigate') || url.pathname.endsWith('/reload') ? 'POST'
               : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
@@ -820,6 +934,23 @@ export class WebPanesApi {
       writeJson(response, 500, { error: 'Web pane action failed' })
       return true
     }
+  }
+
+  private enqueueCanvasNotes(id: string, notes: WebPaneFeedbackNote[]): void {
+    const prepared = this.dependencies.canvasThreads?.prepare(id, notes) ?? notes
+    this.dependencies.feedback.enqueue(id, prepared)
+    this.dependencies.canvasThreads?.record(id, prepared)
+    this.dependencies.onCanvasSent?.(id, prepared)
+  }
+
+  private async writeSpotlightDecision(request: IncomingMessage, response: ServerResponse, id: string, requestId: string, wait: number): Promise<void> {
+    const controller = new AbortController()
+    const onClose = () => controller.abort()
+    request.on('close', onClose)
+    try {
+      const decision = await this.spotlight.wait(requestId, wait, controller.signal)
+      writeJson(response, decision === 'pending' ? 202 : 200, { ok: true, webPaneId: id, requestId, decision, request: this.spotlight.lookup(requestId)?.request })
+    } finally { request.off('close', onClose) }
   }
 
   /**
@@ -874,11 +1005,16 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
-    | { kind: 'pane'; id: string; action: 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'reload' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
-    | { kind: 'pane'; id: string; action: 'navigate-request'; requestId: string }
+    | { kind: 'pane'; id: string; action: 'navigate-request' | 'spotlight-request'; requestId: string }
+    | { kind: 'pane'; id: string; action: 'thread-replies' | 'thread-status'; threadId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
     if (pathname === API_ROOT) return { kind: 'collection' }
+    const thread = /^\/api\/web-panes\/([^/]+)\/threads\/(ct-[0-9a-f]{24})\/(replies|status)$/.exec(pathname)
+    if (thread && WEB_PANE_ID.test(thread[1])) return { kind: 'pane', id: thread[1], threadId: thread[2], action: thread[3] === 'replies' ? 'thread-replies' : 'thread-status' }
+    const spotlight = /^\/api\/web-panes\/([^/]+)\/spotlight-requests\/(sr-[0-9a-f]{8})$/.exec(pathname)
+    if (spotlight && WEB_PANE_ID.test(spotlight[1])) return { kind: 'pane', id: spotlight[1], requestId: spotlight[2], action: 'spotlight-request' }
     const attachment = /^\/api\/web-panes\/([^/]+)\/attachments\/([^/]+)$/.exec(pathname)
     if (attachment) {
       if (!WEB_PANE_ID.test(attachment[1])) throw new HttpError(404, 'Not found')
@@ -902,8 +1038,8 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(active-tab|seen|confirm|cdp|feedback|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
-    if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(spotlight|active-tab|seen|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    if (!match || (!WEB_PANE_ID.test(match[1]) && !(match[2] === 'active-tab' && isBuiltinPanelKey(match[1])))) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
       if (match[3] === 'send-build') return { kind: 'pane', id: match[1], action: 'pending', sendBuild: true }
@@ -914,12 +1050,13 @@ export class WebPanesApi {
       return { kind: 'pane', id: match[1], action: 'pending' }
     }
     if (match[3] !== undefined) throw new HttpError(404, 'Not found')
-    const action = match[2] === 'active-tab' || match[2] === 'seen'
+    const action = match[2] === 'spotlight' ? 'spotlight' : match[2] === 'active-tab' || match[2] === 'seen'
       ? match[2]
       : match[2] === 'confirm'
       ? 'confirm'
       : match[2] === 'cdp'
         ? 'cdp'
+        : match[2] === 'threads' ? 'threads'
         : match[2] === 'feedback'
           ? 'feedback'
           : match[2] === 'move'
@@ -932,11 +1069,9 @@ export class WebPanesApi {
 
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
     const { url, anchor, placement, engine, content } = body
-    let simulator: { kind: 'simulator'; udid: string } | undefined
-    if (content !== undefined) {
-      if (!content || typeof content !== 'object' || Array.isArray(content) || (content as { kind?: unknown }).kind !== 'simulator' || typeof (content as { udid?: unknown }).udid !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test((content as { udid: string }).udid)) throw new HttpError(400, 'Invalid simulator content')
-      simulator = { kind: 'simulator', udid: (content as { udid: string }).udid.toUpperCase() }
-    }
+    const parsedContent = parseWebPaneContent(content)
+    if (parsedContent === null) throw new HttpError(400, (content as { kind?: unknown } | null)?.kind === 'canvas' ? 'Invalid canvas content' : 'Invalid simulator content')
+    const simulator = parsedContent?.kind === 'simulator'
     if (!simulator && typeof url !== 'string') throw new HttpError(400, 'url must be a string')
     if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {
       throw new HttpError(400, 'anchor must be a tmux pane id (use $TMUX_PANE)')
@@ -958,13 +1093,13 @@ export class WebPanesApi {
 
     return this.dependencies.service.open({
       url: simulator ? '' : url as string,
-      ...(simulator ? { content: simulator } : {}),
+      ...(parsedContent ? { content: parsedContent } : {}),
       anchorPaneId: anchorPane.id,
       sessionId: anchorPane.sessionId,
       windowId: anchorPane.windowId,
       placement: placement as WebPanePlacement | undefined,
       anchorSize: { cols: anchorPane.width, rows: anchorPane.height },
-      engine: simulator ? 'webkit' : engine as WebPaneEngine | undefined,
+      engine: parsedContent ? 'webkit' : engine as WebPaneEngine | undefined,
       openedBy: caller === 'owner' ? 'user' : 'agent',
       openerLabel: caller === 'agent'
         ? this.dependencies.agentLabel?.(anchorPane.id)

@@ -1,3 +1,5 @@
+import { createChannel } from './webPanesApi'
+import { canvasRequest } from './canvasWrite'
 import { describe, expect, it, vi } from 'vitest'
 import { createWebPanesApi } from './webPanesApi'
 
@@ -305,4 +307,53 @@ describe('webPanesApi.answerNavigateRequest', () => {
     expect(init.method).toBe('POST')
     expect(init.body).toBe(JSON.stringify({ decision: 'dismiss' }))
   })
+})
+
+it('sends canvas context and queue revisions without requesting a build, and fetches threads', async () => {
+  const fetcher = vi.fn(async () => jsonResponse(200, { ok: true, notes: [], knownUpTo: 0, dropped: 0, threads: [{ id: 'ct-one' }] }))
+  const api = createWebPanesApi('owner', fetcher as unknown as typeof fetch)
+  const canvas = { frameId: 'settings', point: { x: 5, y: 7 }, label: 'Row' }
+  await api.addPendingNote('w-12345678', { selector: '#row', tag: 'button', rect: { x: 0, y: 0, width: 10, height: 20 }, comment: 'Fix', canvas })
+  await api.addPendingResponse('w-12345678', 'http://localhost/Settings.html', { question: 'Ship?', answer: 'Yes' }, canvas)
+  await api.sendPendingNotes('w-12345678', [{ id: 1, revision: 2 }], { expectedQueueRevision: 9 })
+  expect(await api.threads('w-12345678')).toEqual([{ id: 'ct-one' }])
+  const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+  expect(JSON.parse(String(calls[0][1].body)).note.canvas).toEqual(canvas)
+  expect(JSON.parse(String(calls[1][1].body))).toMatchObject({ canvas, pageUrl: 'http://localhost/Settings.html' })
+  expect(calls[2][0]).toBe('/api/web-panes/w-12345678/pending/send')
+  expect(JSON.parse(String(calls[2][1].body))).toEqual({ items: [{ id: 1, revision: 2 }], expectedQueueRevision: 9 })
+  expect(calls[3][0]).toBe('/api/web-panes/w-12345678/threads')
+})
+
+describe('canvas thread and spotlight actions', () => {
+  it('sends owner replies, status changes and spotlight decisions', async () => {
+    const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+    const api = createWebPanesApi('owner', fetcher as unknown as typeof fetch)
+    await api.replyThread('w-12345678', 'ct-one', 'More')
+    await api.setThreadStatus('w-12345678', 'ct-one', 'resolved')
+    await api.answerSpotlight('w-12345678', 'sr-12345678', 'accept')
+    const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+    expect(calls.map(([url, init]) => [url, init.method, JSON.parse(String(init.body))])).toEqual([
+      ['/api/web-panes/w-12345678/threads/ct-one/replies', 'POST', { text: 'More', author: 'user' }],
+      ['/api/web-panes/w-12345678/threads/ct-one/status', 'POST', { status: 'resolved' }],
+      ['/api/web-panes/w-12345678/spotlight-requests/sr-12345678', 'POST', { decision: 'accept' }],
+    ])
+  })
+})
+
+it('uses independent typed channels with ordered delivery and unsubscribe', () => {
+  const a = createChannel<string>(), b = createChannel<string>(), calls: string[] = []
+  const unsubscribe = a.subscribe((value) => calls.push('first:' + value))
+  a.subscribe((value) => calls.push('second:' + value)); b.subscribe((value) => calls.push('other:' + value))
+  a.publish('one'); unsubscribe(); a.publish('two'); b.publish('three')
+  expect(calls).toEqual(['first:one', 'second:one', 'second:two', 'other:three'])
+})
+it('shares canvas owner headers and parses both JSON and non-JSON errors', async () => {
+  const fetcher = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({ error: 'Missing browser' }) }))
+  vi.stubGlobal('fetch', fetcher)
+  await expect(canvasRequest('/api/canvas', 'owner')).rejects.toMatchObject({ message: 'Missing browser', status: 503 })
+  expect(fetcher).toHaveBeenCalledWith('/api/canvas', expect.objectContaining({ credentials: 'same-origin', headers: { Authorization: 'Bearer owner' } }))
+  fetcher.mockResolvedValueOnce({ ok: false, status: 502, json: async () => { throw new Error('HTML response') } })
+  await expect(canvasRequest('/api/canvas', '', {}, 'PNG export failed')).rejects.toThrow('PNG export failed (502)')
+  vi.unstubAllGlobals()
 })

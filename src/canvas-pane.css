@@ -1,0 +1,132 @@
+.web-pane > .canvas-pane { grid-row: 1 / -1; }
+.canvas-pane { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; font-size: 11px; }
+.canvas-toolbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 3px 5px; white-space: nowrap; border-bottom: 1px solid var(--surface-hover); }
+.canvas-toolbar button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 0 3px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-dim); font: inherit; cursor: pointer; }
+.canvas-toolbar button:hover { color: var(--text); background: var(--surface-hover); }
+.canvas-toolbar button[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.canvas-toolbar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-soft); padding: 0 2px; }
+.canvas-toolbar-separator { flex: none; width: 1px; height: 14px; background: var(--border-mid); margin: 0 2px; }
+.canvas-zoom { flex: none; font-family: var(--mono); font-size: 10px; color: var(--text-soft); min-width: 32px; text-align: center; }
+.canvas-viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 20px 20px; cursor: grab; touch-action: none; }
+.canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
+.canvas-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.canvas-frame { position: absolute; }
+.canvas-frame iframe { display: block; width: 100%; height: 100%; border: 0; border-radius: 28px; background: #fff; pointer-events: none; box-shadow: 0 0 0 1px #2c2542; }
+.canvas-frame.is-live iframe { pointer-events: auto; }
+.canvas-viewport.is-commenting .canvas-frame iframe { pointer-events: none; }
+.canvas-badge.entered { color: var(--accent); border: 1px solid var(--accent); background: var(--surface); }
+.canvas-frame-label { cursor: grab; user-select: none; touch-action: none; }
+.canvas-status-control { position: relative; }
+button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
+.canvas-status-menu { position: absolute; top: 100%; left: 0; z-index: 10; min-width: 180px; padding: 4px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); }
+.canvas-status-menu button { display: block; width: 100%; border: 0; background: transparent; color: var(--text); padding: 6px; text-align: left; cursor: pointer; }
+.canvas-status-menu button:hover, .canvas-status-menu button[aria-checked="true"] { background: var(--surface-hover); }
+.canvas-frame.is-focus iframe { box-shadow: 0 0 0 3px var(--accent), 0 0 0 12px color-mix(in srgb, var(--accent) 14%, transparent); }
+.canvas-frame-label { position: absolute; left: 0; right: 0; top: -30px; display: flex; align-items: center; gap: 8px; font-size: 18px; color: var(--muted); white-space: nowrap; }
+.canvas-frame-label b { font-weight: 500; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; }
+.canvas-frame-label i { font-style: normal; color: var(--muted-dim); }
+.canvas-badge { flex: none; font-size: 13px; padding: 2px 8px; border-radius: 5px; white-space: nowrap; }
+.canvas-frame-label .canvas-badge:first-of-type { margin-left: auto; }
+.canvas-badge.focus { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.canvas-badge.live { border: 1px solid color-mix(in srgb, var(--cyan) 60%, transparent); color: var(--cyan); }
+.canvas-badge.static { border: 1px solid var(--border-strong); color: var(--muted); }
+.canvas-section { position: absolute; border: 1.5px solid var(--border-strong); border-radius: 14px; background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.canvas-section-head { position: absolute; left: 0; top: -50px; display: flex; gap: 8px; align-items: center; }
+.canvas-chip { font-size: 18px; padding: 5px 12px; border-radius: 7px; background: var(--surface-hover); color: var(--text); white-space: nowrap; }
+.canvas-status { background: color-mix(in srgb, var(--status-color) 16%, transparent); color: var(--status-color); }
+.canvas-status.status-idea { --status-color: var(--muted); }
+.canvas-status.status-in-progress { --status-color: var(--amber); }
+.canvas-status.status-ready-for-review { --status-color: var(--accent); }
+.canvas-status.status-ready-for-dev { --status-color: var(--green); }
+.canvas-status.status-shipped { --status-color: var(--cyan); }
+.canvas-variant { position: absolute; box-sizing: border-box; width: 330px; min-height: 165px; padding: 0 0 36px 16px; border-left: 2px dashed var(--border-strong); color: var(--muted); font-size: 15px; }
+.canvas-variant b { display: block; color: var(--text); font-size: 20px; font-weight: 600; }
+.canvas-note { position: absolute; box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #f6f5fb; color: #17141f; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.canvas-note ul { margin: 6px 0 0; padding-left: 18px; }
+.canvas-note-title { display: block; margin-bottom: 6px; }
+.canvas-kind { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 5px; font-size: 13px; font-weight: 700; color: #fff; }
+.canvas-connectors { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.canvas-world.hide-notes .canvas-note, .canvas-world.hide-notes .canvas-connectors, .canvas-world.hide-notes .canvas-variant { visibility: hidden; }
+.canvas-hint { position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 5px; background: color-mix(in srgb, var(--surface-raised) 90%, transparent); color: var(--muted); font-size: 10px; pointer-events: none; }
+.canvas-errors { flex: none; max-height: 120px; overflow: auto; padding: 6px 10px; background: color-mix(in srgb, var(--amber) 12%, var(--surface)); color: var(--amber); }
+.canvas-errors ul { margin: 4px 0 0; padding-left: 18px; }
+.canvas-body { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.canvas-viewport { min-width: 0; }
+.canvas-overview { flex: 0 0 168px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--surface-hover); background: var(--surface); }
+.canvas-overview-tabs { display: flex; border-bottom: 1px solid var(--surface-hover); }
+.canvas-overview-tabs button { flex: 1; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.canvas-overview-tabs button[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -1px var(--accent); }
+.canvas-overview-filter { margin: 6px; height: 20px; min-width: 0; padding: 0 7px; border: 1px solid var(--border-mid); border-radius: 4px; background: var(--surface-raised); color: var(--text); font: inherit; font-size: 10px; }
+.canvas-overview-filter:focus { outline: 1px solid var(--accent); }
+.canvas-overview-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 8px; scrollbar-width: thin; }
+.canvas-o-head { padding: 8px 8px 3px; color: var(--muted-dim); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
+.canvas-o-frame, .canvas-o-item, .canvas-o-group { display: flex; align-items: center; gap: 5px; width: 100%; box-sizing: border-box; border: 0; background: transparent; color: var(--text-soft); font: inherit; text-align: left; white-space: nowrap; }
+.canvas-o-frame, .canvas-o-item { cursor: pointer; }
+.canvas-o-frame { padding: 4px 8px; color: var(--text); font-weight: 600; margin-top: 4px; }
+.canvas-o-group { padding: 2px 8px 2px 18px; color: var(--muted); font-size: 10px; }
+.canvas-o-item { padding: 3px 8px 3px 18px; }
+.canvas-o-item.in-group { padding-left: 28px; }
+.canvas-o-item span, .canvas-o-frame span { overflow: hidden; text-overflow: ellipsis; }
+.canvas-o-item:hover, .canvas-o-frame:hover { background: var(--surface-hover); color: var(--text); }
+.canvas-o-item.is-selected { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.canvas-o-item i { flex: none; width: 6px; height: 6px; border-radius: 2px; border: 1px solid currentColor; opacity: .7; }
+.canvas-o-count { margin-left: auto; flex: none; font-family: var(--mono); font-style: normal; font-size: 9.5px; color: var(--muted); }
+.canvas-overview-empty { padding: 8px; color: var(--muted); }
+.canvas-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.canvas-highlight { position: absolute; box-sizing: border-box; border: 1.5px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.canvas-highlight.is-hover { border-style: dashed; background: transparent; }
+.canvas-highlight b { position: absolute; left: -1.5px; bottom: 100%; margin-bottom: 3px; padding: 1px 6px; border-radius: 3px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 600; white-space: nowrap; }
+
+.canvas-viewport.is-commenting { cursor: crosshair; }
+.canvas-pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.canvas-pin { position: absolute; width: 22px; height: 22px; margin-top: -22px; border: 1px solid var(--accent); border-radius: 11px 11px 11px 2px; background: var(--accent); color: var(--accent-ink, white); font-size: 11px; cursor: pointer; pointer-events: auto; }
+.canvas-pin.is-draft { background: #d97706; border-color: #d97706; }
+.canvas-pin.is-sent { background: var(--surface-hover); color: var(--text-soft); border-color: var(--border-strong); }
+.canvas-composer { position: absolute; z-index: 5; width: 270px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); overflow: auto; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 24px 70px rgba(0,0,0,.4); cursor: default; }
+.canvas-composer header { padding: 8px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border-strong); }
+.canvas-composer textarea { display: block; box-sizing: border-box; width: 100%; height: 90px; padding: 8px; resize: vertical; background: var(--surface); color: var(--text); border: 0; font: inherit; }
+.canvas-composer footer { display: flex; justify-content: flex-end; gap: 6px; padding: 8px; }
+.canvas-composer button { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer; }
+.canvas-comment-text { margin: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-reply-later { margin: 8px; font-size: 11px; color: var(--muted); }
+.canvas-queue { flex: none; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding-left: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); white-space: nowrap; }
+.canvas-queue button { color: var(--accent); }
+.canvas-o-thread { display: grid; grid-template-columns: 1fr auto; gap: 4px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; color: var(--text); padding: 8px; cursor: pointer; }
+.canvas-o-thread span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
+.canvas-o-thread em { font-size: 10px; color: var(--muted); }
+
+.canvas-pin.is-resolved { background: var(--surface-raised); color: var(--text-soft); border-color: var(--border); opacity: .65; }
+.canvas-conversation { display: grid; gap: 8px; padding: 8px; max-height: 280px; overflow: auto; }
+.canvas-conversation .cmd-msg { padding: 8px; border-radius: 6px; background: var(--surface); font-size: 12px; }
+.canvas-conversation .cmd-msg.agent { border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.canvas-conversation .cmd-msg b { font-size: 10px; color: var(--text-soft); }
+.canvas-conversation .cmd-msg p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-thread-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 8px; }
+.canvas-spotlight { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 6; width: max-content; }
+.canvas-frame.is-spotlight { outline: 3px solid var(--accent); outline-offset: 4px; }
+
+.canvas-menu { position: relative; flex: none; }
+.canvas-menu > summary { cursor: pointer; list-style: none; padding: 3px 7px; border-radius: 4px; white-space: nowrap; }
+.canvas-menu > summary::-webkit-details-marker { display: none; }
+.canvas-menu > summary:hover { background: var(--surface-hover); }
+.canvas-menu[open] { z-index: 8; }
+.canvas-menu-items { position: absolute; top: 100%; right: 0; display: grid; gap: 2px; min-width: 180px; max-height: 300px; overflow: auto; padding: 5px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: var(--text); font-size: 12px; }
+.canvas-menu-items button, .canvas-menu-items a { display: block; padding: 7px; border: 0; text-align: left; text-decoration: none; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.canvas-menu-items button:hover, .canvas-menu-items a:hover { background: var(--surface-hover); }
+.canvas-menu-items button:disabled { opacity: .5; cursor: default; }
+.canvas-menu-items [aria-checked="true"] { color: var(--accent); }
+.canvas-menu-items span { padding: 7px; white-space: normal; }
+.canvas-frame-export { flex: none; margin-left: auto; padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-size: 16px; cursor: pointer; }
+
+.canvas-snapshot-banner { flex: none; padding: 7px 10px; color: var(--text); background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
+.canvas-snapshot-banner button { border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.canvas-pane.is-snapshot .canvas-frame-label { cursor: default; }
+
+.canvas-export-overlay { z-index: 20; }
+.canvas-export-popover { pointer-events: auto; right: auto; box-sizing: border-box; width: 190px; min-width: 0; max-width: calc(100% - 16px); max-height: calc(100% - 16px); cursor: default; }
+.canvas-o-frame-row { display: flex; align-items: center; min-width: 0; }
+.canvas-o-frame-row .canvas-o-frame { flex: 1; min-width: 0; }
+.canvas-o-export { flex: none; padding: 4px; margin-right: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
+
+.canvas-toolbar .canvas-history > summary { padding: 3px 5px; }

@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { WebPane } from '../shared/protocol'
+import type { TmuxPane, WebPane } from '../shared/protocol'
+import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
+import type { PrsApiClient } from './prsApi'
 import { SidePanel } from './SidePanel'
 
 const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
   id: `w-0000000${index}`, anchorPaneId, dock: 'panel', order: 0, activeTab: true,
   unseen: index === 1, sessionId: '$1', windowId: '@1', url: `http://localhost/${index}`,
-  placement: 'right', engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: index,
+  placement: 'right', engine: 'chromium', openedBy: 'agent', status: 'open', createdAt: index,
 }))
 
 function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs, titles: Record<string, string> = {}) {
@@ -17,7 +19,7 @@ function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs, titles: Re
     renderTab={(tab) => <iframe title={tab.id} src={tab.url} />}><div>Terminal grid</div></SidePanel>
 }
 
-afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('SidePanel', () => {
   it('keeps tab content mounted across focus swaps and empty states at the same width', () => {
@@ -34,9 +36,56 @@ describe('SidePanel', () => {
     expect(firstFrame.closest('[role="tabpanel"]')).toHaveAttribute('hidden')
     expect(secondFrame.closest('[role="tabpanel"]')).not.toHaveAttribute('hidden')
     view.rerender(panel('%14'))
-    expect(screen.getByText('No tabs for %14 · claude')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add web tab' })).toBeInTheDocument()
+    expect(screen.queryByText(/Add a web tab for/)).not.toBeInTheDocument()
     expect(layout.style.getPropertyValue('--side-panel-width')).toBe('50%')
     expect(screen.getByTitle(tabs[1].id)).toBe(secondFrame)
+  })
+
+  it('keeps web-tab DOM order stable when panes reorder', () => {
+    const paneList = ['%12', '%13'].map((id) => ({ id, targetId: id } as TmuxPane))
+    const element = (panes: TmuxPane[]) => <SidePanel windowId="@1" tabs={tabs} panes={panes} focusedPaneId="%12" paneLabel="pane" titles={{}} simulatorNames={{}} onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} renderTab={(tab) => <iframe title={tab.id} />}>{null}</SidePanel>
+    const view = render(element(paneList))
+    const frame = screen.getByTitle(tabs[0].id)
+    const moves: MutationRecord[] = []
+    const observer = new MutationObserver((records) => moves.push(...records))
+    const content = view.container.querySelector('.side-panel-content')!
+    observer.observe(content, { childList: true })
+    view.rerender(element([...paneList].reverse()))
+    moves.push(...observer.takeRecords())
+    observer.disconnect()
+    expect(screen.getByTitle(tabs[0].id)).toBe(frame)
+    const webBodies = [...content.querySelectorAll('[role="tabpanel"]')].filter((node) => node.id.includes('w-'))
+    expect(webBodies.map((node) => node.id)).toEqual(tabs.map((tab) => `panel-tab-${tab.id}`))
+    expect(moves.flatMap((record) => [...record.removedNodes])).not.toContain(frame.parentElement)
+  })
+
+  it('falls back locally when Changes disappears and restores the stored selection when it returns', async () => {
+    vi.useFakeTimers()
+    const changed: GitDiffSummary = { isRepo: true, target: 'main', files: [{ path: 'a.ts', status: 'M', additions: 1, deletions: 0, binary: false }] }
+    let summary = changed
+    const gitApi = { summary: vi.fn(async () => summary) } as unknown as GitDiffApiClient
+    const prsApi = { pane: vi.fn(async () => ({ targetId: 'target', pullRequests: [] })) } as unknown as PrsApiClient
+    const onSelect = vi.fn()
+    localStorage.setItem('commando.side-panel.collapsed.@1', 'false')
+    await act(async () => { render(<SidePanel windowId="@1" tabs={[]} panes={[{ id: '%12', targetId: 'target', path: '/repo' } as TmuxPane]} connected gitApi={gitApi} prsApi={prsApi} focusedPaneId="%12" activeTabs={{ '%12': 'changes' }} paneLabel="pane" titles={{}} simulatorNames={{}} onSelect={onSelect} onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>) })
+    expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+    summary = { isRepo: true, target: 'main', files: [] }
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(onSelect).not.toHaveBeenCalled()
+    summary = changed
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('shows failed resume attention in the collapsed rail and expanded Session tab', () => {
+    const view = render(<SidePanel windowId="@1" tabs={[]} focusedPaneId="%12" paneLabel="pane" titles={{}} simulatorNames={{}} sessionAttention={{ '%12': true }} sessionWarnings={{ '%12': true }} onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>)
+    expect(screen.getByLabelText('Session resume failed')).toHaveClass('is-warning')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
+    expect(screen.getByRole('tab', { name: /Session/ }).querySelector('.is-warning')).toBeInTheDocument()
+    expect(view.container.querySelector('.side-panel-add-menu')).not.toBeInTheDocument()
   })
 
   it('collapses to a rail and restores the remembered per-window width', () => {
@@ -55,9 +104,32 @@ describe('SidePanel', () => {
     expect(screen.getByTitle(tabs[0].id)).toBe(frame)
   })
 
+  it('latches expansion after the first web tab and keeps Session after the last closes', () => {
+    const view = render(panel('%12', vi.fn(), []))
+    const layout = view.container.querySelector('.window-panel-layout')!
+    expect(layout).toHaveClass('is-collapsed')
+    view.rerender(panel())
+    expect(layout).not.toHaveClass('is-collapsed')
+    view.rerender(panel('%12', vi.fn(), []))
+    expect(layout).not.toHaveClass('is-collapsed')
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBeNull()
+  })
+
+  it.each(['true', 'false'])('honours remembered collapse %s through tab arrival, focus and removal', (choice) => {
+    localStorage.setItem('commando.side-panel.collapsed.@1', choice)
+    const view = render(panel('%12', vi.fn(), []))
+    const layout = view.container.querySelector('.window-panel-layout')!
+    view.rerender(panel('%13'))
+    expect(layout.classList.contains('is-collapsed')).toBe(choice === 'true')
+    view.rerender(panel('%12', vi.fn(), []))
+    expect(layout.classList.contains('is-collapsed')).toBe(choice === 'true')
+  })
+
   it('adds a browser tab through the supplied creation path anchored to the empty pane', () => {
     const onOpen = vi.fn()
     render(panel('%14', onOpen))
+    fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
     fireEvent.click(screen.getByRole('button', { name: 'Chromium' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Tab URL' }), { target: { value: 'localhost:5173' } })
     fireEvent.click(screen.getByRole('button', { name: 'Open' }))
@@ -76,16 +148,31 @@ describe('SidePanel', () => {
     }
   })
 
+  it('prefers WebPane.title over the webkit title map, then falls back to the URL', () => {
+    const titled = tabs.map((tab) => ({ ...tab, title: 'Daemon title' }))
+    const view = render(panel('%12', vi.fn(), titled, { [tabs[0].id]: 'Webkit title' }))
+    const tab = screen.getByRole('tab', { name: 'Daemon title' })
+    expect(tab.querySelector('.side-panel-tab-label')).not.toHaveAttribute('dir', 'rtl')
+    view.rerender(panel('%12', vi.fn(), tabs, { [tabs[0].id]: 'Webkit title' }))
+    expect(screen.getByRole('tab', { name: 'Webkit title' })).toBeInTheDocument()
+    view.rerender(panel())
+    expect(screen.getByRole('tab', { name: 'localhost/0' })).toBeInTheDocument()
+  })
+
   it('prefers a known page title and still puts the full URL in the tooltip', () => {
     render(panel('%12', vi.fn(), tabs, { [tabs[0].id]: 'Deployment plan' }))
     expect(screen.getByRole('tab', { name: 'Deployment plan' })).toHaveAttribute('title', tabs[0].url)
   })
 
-  it('renders only the grid when the window has no panel tabs', () => {
+  it('starts at the rail with built-in icons when the window has no web tabs', () => {
     const view = render(panel('%12', vi.fn(), []))
     expect(screen.getByText('Terminal grid')).toBeInTheDocument()
     expect(view.container.querySelector('.window-panel-layout')).not.toBeNull()
-    expect(screen.queryByRole('complementary')).toBeNull()
-    expect(screen.queryByRole('separator')).toBeNull()
+    expect(screen.getByRole('complementary')).toBeInTheDocument()
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBe('false')
+    expect(screen.queryByRole('separator')).toBeInTheDocument()
   })
 })

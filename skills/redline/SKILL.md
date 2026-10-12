@@ -6,7 +6,7 @@ argument-hint: <what to build or show for review>
 
 # Redline: reviewable artifact in a Commando tile
 
-Show the user something visual in a chromium tile beside your pane, let them
+Show the user something visual in a chromium side-panel tab anchored to your pane, let them
 annotate elements in the tile's review mode, and apply their notes in a loop —
 the Lavish flow, native to Commando.
 
@@ -362,8 +362,11 @@ plan and mockup playbooks; a mockup comparison also requires comparison.
 
 ## 2. Open for review
 
-Open the URL as a tile per show-in-commando with `"engine":"chromium"` —
+Open the URL as a tab per show-in-commando with `"engine":"chromium"` —
 review mode is chromium-only. Save the `webPaneId`.
+
+The tab activates if its anchor pane is focused; otherwise it is badged "new".
+`placement` only matters for split-out tiles. Reuse one tile across revisions.
 
 ### Actual-tile quality gate
 

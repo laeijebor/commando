@@ -1,40 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
-import { GitDiffModal } from './GitDiffModal'
-import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
+import { usePaneGitSummary } from './paneGitStore'
+import { hasPaneChanges } from './sidePanelState'
+import type { GitDiffApiClient } from './gitApi'
 import './git-diff.css'
-
-const POLL_INTERVAL_MS = 15_000
 
 type Props = {
   paneId: string
   panePath: string
   api: GitDiffApiClient
   connected: boolean
+  onOpenChanges?: () => void
 }
 
-export function PaneGitStats({ paneId, panePath, api, connected }: Props) {
-  const [summary, setSummary] = useState<GitDiffSummary | null>(null)
-  const [open, setOpen] = useState(false)
-  const apiRef = useRef(api)
-  apiRef.current = api
-
-  useEffect(() => {
-    setSummary(null)
-    if (!connected) return
-    let cancelled = false
-    const refresh = () => {
-      apiRef.current
-        .summary(paneId)
-        .then((next) => { if (!cancelled) setSummary(next) })
-        .catch(() => { if (!cancelled) setSummary(null) })
-    }
-    refresh()
-    const timer = window.setInterval(refresh, POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [paneId, panePath, connected])
+export function PaneGitStats({ paneId, panePath, api, connected, onOpenChanges }: Props) {
+  const summary = usePaneGitSummary(paneId, panePath, api, connected)
 
   if (!summary?.isRepo) return null
 
@@ -50,7 +28,8 @@ export function PaneGitStats({ paneId, panePath, api, connected }: Props) {
         <button
           type="button"
           className="pane-git-stats"
-          onClick={() => setOpen(true)}
+          disabled={!hasPaneChanges(summary)}
+          onClick={onOpenChanges}
           title={`Diff vs ${target} - click to view changed files`}
           aria-label={`Git changes vs ${target}: ${files.length} files, +${summary.additions ?? 0} -${summary.deletions ?? 0}`}
         >
@@ -77,15 +56,7 @@ export function PaneGitStats({ paneId, panePath, api, connected }: Props) {
           PR #{pullRequest.number}
         </a>
       ) : null}
-      {open && target != null ? (
-        <GitDiffModal
-          paneId={paneId}
-          panePath={panePath}
-          api={api}
-          initialSummary={summary}
-          onClose={() => setOpen(false)}
-        />
-      ) : null}
+
     </>
   )
 }

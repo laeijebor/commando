@@ -1,6 +1,12 @@
+import { CanvasPush } from './canvas-push.js'
+import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
+import { CanvasSpotlightStore } from './canvas-spotlight.js'
+import { parseCanvasManifest } from '../shared/canvas-manifest.js'
+import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
+import { CanvasWatch } from './canvas-watch.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
   createServer,
@@ -123,7 +129,12 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
-const MAX_WS_BUFFERED_BYTES = 1024 * 1024
+/**
+ * Output a browser may leave unread before the daemon drops it as stalled. A
+ * connect burst carries every chat's items (hosts cap each at 2 MB), so this
+ * sits well above any one burst.
+ */
+const MAX_WS_BUFFERED_BYTES = 32 * 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -253,15 +264,13 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 function send(client: ClientState, message: ServerMessage): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
-  const serialized = JSON.stringify(message)
-  if (
-    client.socket.bufferedAmount + Buffer.byteLength(serialized, 'utf8') >
-    MAX_WS_BUFFERED_BYTES
-  ) {
+  // Judge the backlog already queued, not the message itself: one large frame
+  // (a chat snapshot) must not drop a client that is keeping up.
+  if (client.socket.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
     client.socket.close(1013, 'Client is not consuming output')
     return false
   }
-  client.socket.send(serialized)
+  client.socket.send(JSON.stringify(message))
   return true
 }
 
@@ -517,6 +526,8 @@ async function main(): Promise<void> {
   })
   const webPaneAttachments = new WebPaneAttachmentStore()
   const webPaneAgentRequests = new WebPaneAgentRequests()
+  const canvasSpotlight = new CanvasSpotlightStore()
+  let canvasPush: CanvasPush | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
@@ -539,6 +550,7 @@ async function main(): Promise<void> {
     () => publishWebPanes(),
     Date.now,
     releaseAttachment,
+    (id, keys) => canvasPush?.acknowledge(id, keys),
   )
   webPanePending = new WebPanePendingStore(
     pendingJournal,
@@ -552,6 +564,9 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageTitle: (webPaneId, title) => {
+      if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+    },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
     onPageResponse: (webPaneId, response, pageUrl) => {
@@ -578,8 +593,10 @@ async function main(): Promise<void> {
   const webPanesMessage = (): ServerMessage => ({
     type: 'web_panes',
     webPanes: webPanes.list(),
+    activeTabs: webPanes.panelActiveTabs(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
+    spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
   /**
@@ -599,7 +616,11 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
+    canvasThreads.retain(liveIds)
     webPaneAgentRequests.retain(liveIds)
+    canvasSpotlight.retain(liveIds)
+    canvasPush?.retain(liveIds)
+    canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -742,6 +763,7 @@ async function main(): Promise<void> {
   }
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
+    if (change?.type === 'upsert') void canvasPush?.statusChanged(change.status.paneId)
     for (const client of clients) sendAgentStatusChange(client, change)
     if (change && companionClientCount > 0) {
       if (change.type === 'remove') {
@@ -1658,13 +1680,47 @@ async function main(): Promise<void> {
       return pane ? { targetId: pane.targetId } : null
     },
   })
+  const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
+  canvasPush = new CanvasPush({
+    repoRoot: fileURLToPath(new URL('../', import.meta.url)),
+    pane: (id) => webPanes.get(id),
+    title: (pane) => {
+      if (pane.content?.kind === 'canvas') {
+        const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
+        try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || 'Canvas' } catch { /* The journal still works without a manifest. */ }
+      }
+      return 'Canvas'
+    },
+    owns: (paneId) => agentHosts.owns(paneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    status: (paneId) => agentStatuses.get(paneId),
+    sendTerminal: async (paneId, text) => {
+      const pane = paneForId(paneId)
+      const status = agentStatuses.get(paneId)
+      if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+      // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
+      await tmux.pasteText(paneId, text)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await tmux.sendKey(pane.sessionId, paneId, 'Enter')
+    },
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
     pending: webPanePending,
+    canvasThreads,
+    spotlight: canvasSpotlight,
+    onCanvasSent: (id, notes) => {
+      try { canvasSnapshots.captureSent(webPanes.get(id), notes) }
+      catch (error) { console.warn('[commando] canvas snapshot failed', error) }
+      void canvasPush?.deliver(id, notes)
+    },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
-    onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
+    onPendingChanged: (webPaneId, notes) => {
+      webTileRelay.broadcastPending(webPaneId, notes)
+      if (webPanes.get(webPaneId)?.content?.kind === 'canvas') broadcast({ type: 'canvas_pending_changed', webPaneId })
+    },
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     paneForId: (paneId) => {
@@ -1715,10 +1771,17 @@ async function main(): Promise<void> {
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
+  canvasSnapshots.prune()
+  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
+  canvasWatch.sync(webPanes.list())
+  canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     artifacts: redlineArtifacts,
+    snapshots: canvasSnapshots,
+    screenshot: (url, width, height) => chromiumEngine.screenshot(url, width, height),
     baseUrl: `http://127.0.0.1:${port}`,
   })
 
@@ -2481,6 +2544,7 @@ async function main(): Promise<void> {
   })))
 
   const snapshotTimer = setInterval(() => {
+    canvasSnapshots.prune()
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
@@ -2510,6 +2574,7 @@ async function main(): Promise<void> {
     pushNotifier?.close()
     simLive.close()
     simLogs.close()
+    canvasWatch.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void sessionIdes.close().catch((error: unknown) => console.error('[commando] IDE cleanup failed', error))

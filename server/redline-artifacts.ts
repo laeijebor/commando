@@ -90,6 +90,11 @@ export class RedlineArtifactRegistry {
     return true
   }
 
+  directory(id: string): string | null {
+    const entry = this.entries.get(id)
+    return entry && entry.registeredAt >= this.now() - REDLINE_ARTIFACT_TTL_MS ? entry.dir : null
+  }
+
   /** Maps an artifact request path to an absolute file path, or null. */
   resolve(id: string, requestPath: string): string | null {
     const entry = this.entries.get(id)

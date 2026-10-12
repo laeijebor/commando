@@ -99,7 +99,7 @@ import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
-import { GitDiffModal, type GitDiffComparison } from './GitDiffModal'
+import { GitDiffView, type GitDiffComparison } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { SessionIdeView } from './SessionIdeView'
@@ -111,7 +111,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -120,6 +120,7 @@ import {
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
+import { PanePullRequests } from './PanePullRequests'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -328,6 +329,7 @@ type TerminalPaneProps = {
   onOpenPath: () => Promise<void>
   onOpenScreenshot?: (request: Omit<PaneScreenshotLightboxRequest, 'paneId'>) => void
   onFocus: () => void
+  onOpenChanges?: () => void
   onOpenMenu: (x: number, y: number) => void
   onAcknowledgeMark?: () => void
   onRetryResume?: () => void
@@ -377,7 +379,6 @@ export function TerminalPaneCard({
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
   mark,
-  resume,
   index,
   count,
   solo,
@@ -391,18 +392,11 @@ export function TerminalPaneCard({
   nativeRetryKey,
   useXtermFallback,
   gitApi,
-  prsApi,
-  screenshotsApi,
-  simsApi,
-  onShowSimulator,
-  paneManagementApi,
-  revealInFinder = true,
   onOpenPath,
-  onOpenScreenshot,
   onFocus,
+  onOpenChanges,
   onOpenMenu,
   onAcknowledgeMark,
-  onRetryResume,
   chat,
   chatView = 'chat',
   onChatView,
@@ -442,10 +436,6 @@ export function TerminalPaneCard({
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
   const showChat = Boolean(chat) && chatView === 'chat'
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
-  const worklogBrief = useMemo<SessionBrief>(() => brief ? { ...brief, targetId: pane.targetId } : ({
-    paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-    state: status?.status ?? 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0,
-  }), [brief, pane.id, pane.targetId, pane.sessionId, status?.status])
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
@@ -590,10 +580,10 @@ export function TerminalPaneCard({
               />
             </form>
           ) : <strong>{paneLabel}</strong>}
-          <small>{pane.command || pane.path}</small>
+          <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
         </span>
         {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
-          {paneTabs.length} {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}
+          {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
         </span>}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
@@ -681,7 +671,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className="terminal-pane-body has-worklog">
+      <div className="terminal-pane-body">
         {showChat && chat ? (
           <ChatPane
             chat={chat}
@@ -707,7 +697,7 @@ export function TerminalPaneCard({
           terminalState={pane}
           connected={connected}
           resizeOwner={resizeOwner}
-          measurementKey={`${measurementKey}:worklog`}
+          measurementKey={measurementKey}
           ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
           order={index}
           nativeRetryKey={nativeRetryKey}
@@ -728,30 +718,13 @@ export function TerminalPaneCard({
           registerSink={registerSink}
           registerFocusable={registerFocusable}
         />}
-        <PaneWorklog
-          key={pane.targetId}
-          brief={worklogBrief}
-          simsApi={simsApi}
-          onShowSimulator={onShowSimulator}
-          empty={!brief || brief.updatedAt === 0}
-          hookConnected={status?.source === 'hook'}
-          paneLabel={paneLabel}
-          prsApi={prsApi}
-          connected={connected}
-          screenshotsApi={screenshotsApi}
-          paneManagementApi={paneManagementApi}
-          revealInFinder={revealInFinder}
-          onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
-          onTypeCommand={onInput}
-          resume={resume}
-          onRetryResume={onRetryResume}
-        />
+
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
         <span className="pane-footer-dimensions">{pane.width}x{pane.height}</span>
-        <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
+        <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} onOpenChanges={() => { onFocus(); onOpenChanges?.() }} />
         <button
           type="button"
           className="pane-path"
@@ -1043,9 +1016,22 @@ export function App() {
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void } | null>(null)
+  const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
+  const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
+  const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
+  const [maximizedBuiltinTab, setMaximizedBuiltinTab] = useState<BuiltinPanelTab | null>(null)
+  const reportSessionAttention = useCallback((id: string, unseen: boolean, warning = false) => {
+    setSessionWarnings((current) => current[id] === warning ? current : { ...current, [id]: warning })
+    setSessionAttention((current) => current[id] === unseen ? current : { ...current, [id]: unseen })
+  }, [])
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
+  const panelTabSets = useRef(new Map<string, PanelTab[]>())
+  const rememberPanelTabs = useCallback((tabs: PanelTab[]) => {
+    setMaximizedBuiltinTab((current) => current && !tabs.some((tab) => tab.id === current.id) ? null : current)
+    for (const anchor of new Set(tabs.map((tab) => tab.anchorPaneId))) panelTabSets.current.set(anchor, tabs.filter((tab) => tab.anchorPaneId === anchor))
+  }, [])
   const knownPanelTabs = useRef<Set<string> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
   const seenPanelTabs = useRef(new Set<string>())
@@ -1082,6 +1068,7 @@ export function App() {
   const [prDiff, setPrDiff] = useState<{
     targetId: string
     comparison: GitDiffComparison
+    pr: import('./prsApi').PanePrSummary
   } | null>(null)
   const switchHudTab = useCallback((tab: HudTab) => {
     setHudTab(tab)
@@ -1468,6 +1455,7 @@ export function App() {
         if (knownPanelTabs.current === null) {
           knownPanelTabs.current = new Set(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => tab.id))
         }
+        setPanelActiveTabs(message.activeTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1689,15 +1677,20 @@ export function App() {
     setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
   }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
-  const selectPanelTab = useCallback(async (tab: WebPane) => {
-    if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)) setMaximizedPaneId(tab.id)
+  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+    const maximized = maximizedBuiltinTab?.anchorPaneId === tab.anchorPaneId || webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)
+    if (maximized) {
+      setMaximizedBuiltinTab(isBuiltinTab(tab) ? tab : null)
+      setMaximizedPaneId(isBuiltinTab(tab) ? null : tab.id)
+    }
+    setPanelActiveTabs((current) => ({ ...current, [tab.anchorPaneId]: panelTabKey(tab) }))
     setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
       ? { ...pane, activeTab: pane.id === tab.id }
       : pane))
-    try { await createWebPanesApi(token).setActiveTab(tab.id) } catch (error) {
+    try { await createWebPanesApi(token).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
-  }, [webPanes, maximizedPaneId, token])
+  }, [webPanes, maximizedPaneId, maximizedBuiltinTab, token])
 
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
@@ -1939,6 +1932,7 @@ export function App() {
     const pane = paneMap.get(paneId)
     if (!pane) return
     setArea('workspace')
+    setMaximizedBuiltinTab(null)
     setMaximizedPaneId(null)
     setSelectedSessionId(pane.sessionId)
     setPendingPaneFocus({ paneId, expectedTargetId, highlight })
@@ -1953,13 +1947,24 @@ export function App() {
     jumpToPane(matches[0].id, targetId, true)
   }
 
+  const revealBuiltinTab = (paneId: string, key: 'session' | 'changes' | 'pr') => {
+    const tab = builtinPanelTab(paneId, key)
+    setMaximizedPaneId((current) => webPanes.some((pane) => pane.id === current && pane.dock !== 'split' && pane.anchorPaneId === paneId) ? current : null)
+    setMaximizedBuiltinTab((current) => current?.anchorPaneId === paneId ? current : null)
+    setFocusedPaneId(paneId)
+    void selectPanelTab(tab)
+    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null) })
+  }
+
   const openPrDiff = (pr: PrSummary) => {
     const targetId = pr.commandoMarker?.targetId
-    if (!targetId) return
-    const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
-    if (matches.length !== 1) return
+    const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
+    if (matches.length !== 1) { window.open(pr.url, '_blank', 'noopener,noreferrer'); return }
+    const pane = matches[0]
+    if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
     setPrDiff({
-      targetId,
+      targetId: pane.targetId,
+      pr: { ...pr, repo: new URL(pr.url).pathname.split('/').slice(1, 3).join('/'), preview: pr },
       comparison: {
         base: pr.baseRefOid,
         head: pr.headRefOid,
@@ -1967,6 +1972,7 @@ export function App() {
         headLabel: pr.headRefName || pr.headRefOid.slice(0, 7),
       },
     })
+    revealBuiltinTab(pane.id, 'pr')
   }
 
   const openPaneMaximized = (paneId: string) => {
@@ -2308,7 +2314,7 @@ export function App() {
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
-  const gitDiffApi = createGitDiffApi(token)
+  const gitDiffApi = useMemo(() => createGitDiffApi(token), [token])
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
   /**
@@ -2394,7 +2400,7 @@ export function App() {
     }
     return flow
   }
-  const simulatorTabKey = webPanes.flatMap((pane) => pane.content ? [pane.content.udid] : []).join(',')
+  const simulatorTabKey = webPanes.flatMap((pane) => pane.content?.kind === 'simulator' ? [pane.content.udid] : []).join(',')
   useEffect(() => {
     if (!simulatorTabKey || !connected) return
     let cancelled = false
@@ -2441,7 +2447,7 @@ export function App() {
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
-      const existing = webPanes.find((tile) => tile.content?.udid === udid.toUpperCase())
+      const existing = webPanes.find((tile) => tile.content?.kind === 'simulator' && tile.content.udid === udid.toUpperCase())
       const id = existing?.id ?? (await simsApi.show(udid, anchorPaneId)).webPaneId
       setArea('workspace')
       setPendingPaneFocus(null)
@@ -2482,7 +2488,15 @@ export function App() {
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
-    // Drop the tile locally right away; the daemon broadcast confirms it.
+    const closing = webPanes.find((pane) => pane.id === webPaneId)
+    const combined = closing ? panelTabSets.current.get(closing.anchorPaneId) ?? [] : []
+    const selected = closing ? panelActiveTabs[closing.anchorPaneId] ?? activePanelTab(panelTabs(webPanes, closing.anchorPaneId))?.id : undefined
+    let selection: Promise<void> | undefined
+    if (selected === webPaneId) {
+      const next = resolveActivePanelTab(combined.filter((tab) => tab.id !== webPaneId), selected, combined)
+      if (next) selection = selectPanelTab(next)
+    }
+    // Drop the tile locally; the daemon broadcast confirms it.
     setWebPanes((current) => {
       const closing = current.find((pane) => pane.id === webPaneId)
       const tabs = closing && closing.dock !== 'split' ? panelTabs(current, closing.anchorPaneId) : []
@@ -2492,6 +2506,7 @@ export function App() {
         : pane)
     })
     try {
+      await selection
       await webPanesApi.close(webPaneId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
@@ -2667,7 +2682,7 @@ export function App() {
 
   useEffect(() => {
     const runPaneShortcut = (key: string) => {
-      if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || prDiff || screenshotLightbox) return
+      if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || screenshotLightbox) return
       if (!currentPrPane || currentPrPane.sessionId !== selectedSessionId) return
       if (key === 'w') void killPane(currentPrPane.id)
       if (key === 't') void splitPane(currentPrPane.id, 'right')
@@ -3286,7 +3301,8 @@ export function App() {
               })
               const maximizedPanelTab = webPanes.find((webPane) =>
                 webPane.id === maximizedPaneId && webPane.windowId === group.windowId && webPane.dock !== 'split')
-              const maximizedGridPaneId = maximizedPanelTab ? null : maximizedPaneId
+              const builtinMaximized = maximizedBuiltinTab && groupPanes.some((pane) => pane.id === maximizedBuiltinTab.anchorPaneId) && panelTabSets.current.get(maximizedBuiltinTab.anchorPaneId)?.some((tab) => tab.id === maximizedBuiltinTab.id) ? maximizedBuiltinTab : null
+              const maximizedGridPaneId = maximizedPanelTab || builtinMaximized ? null : maximizedPaneId
               const visibleGroupPanes = maximizedGridPaneId
                 ? groupPanes.filter((pane) => pane.id === maximizedGridPaneId)
                 : groupPanes
@@ -3315,7 +3331,7 @@ export function App() {
                   : visibleTree
               const panelWebPanes = webPanes.filter((webPane) => webPane.windowId === group.windowId && webPane.dock !== 'split')
               const splitWebPanes = groupWebPanes.filter((webPane) => webPane.dock === 'split')
-              const panelPaneId = maximizedPanelTab?.anchorPaneId ?? effectivePaneId
+              const panelPaneId = builtinMaximized?.anchorPaneId ?? maximizedPanelTab?.anchorPaneId ?? effectivePaneId
               const focusedPane = panelPaneId ? paneMap.get(panelPaneId) : undefined
               const renderWebPane = (webPane: WebPane, visible: boolean) => (
                 <WebPaneCard
@@ -3442,12 +3458,51 @@ export function App() {
                   </header>
                   <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
                     focusedPaneId={panelPaneId}
-                    maximizedTabId={maximizedPanelTab?.id}
-                    revealRequest={panelRevealRequest && panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) ? panelRevealRequest : undefined}
+                    maximizedTabId={builtinMaximized?.id ?? maximizedPanelTab?.id}
+                    revealRequest={panelRevealRequest && (panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) || groupPanes.some((pane) => panelRevealRequest.tabId.startsWith(`panel:${pane.id}:`))) ? panelRevealRequest : undefined}
                     gridMaximized={Boolean(maximizedGridPaneId)}
                     paneLabel={focusedPane ? `${focusedPane.id} · ${focusedPane.title || focusedPane.command || `Pane ${focusedPane.index}`}` : 'pane'}
                     simulatorNames={simulatorNames}
                     titles={webPaneTitles}
+                    onTabSets={rememberPanelTabs}
+                    panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
+                    comparisonPr={prDiff && prDiffPane ? { paneId: prDiffPane.id, pr: prDiff.pr } : undefined}
+                    activeTabs={panelActiveTabs} sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
+                    onMaximize={(tab) => {
+                      clearLayoutTimers()
+                      if (isBuiltinTab(tab)) {
+                        setMaximizedPaneId(null)
+                        setMaximizedBuiltinTab((current) => current?.id === tab.id ? null : tab)
+                      } else {
+                        setMaximizedBuiltinTab(null)
+                        setMaximizedPaneId((current) => current === tab.id ? null : tab.id)
+                      }
+                    }}
+                    renderBuiltin={(tab, visible, data) => {
+                      const pane = paneMap.get(tab.anchorPaneId)
+                      if (!pane) return null
+                      if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
+                      if (tab.key === 'pr') return prDiff && prDiffPane?.id === pane.id
+                        ? <div className="panel-pr-comparison"><button type="button" onClick={() => setPrDiff(null)}>Back to PR summary</button>
+                            <GitDiffView key={`${prDiff.comparison.base}:${prDiff.comparison.head}`} paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={null} comparison={prDiff.comparison} visible={visible} />
+                          </div>
+                        : <div className="panel-pr-summary"><PanePullRequests paneId={pane.id} api={prsApi} connected={connected} list={data.prs} />
+                            {data.prs?.pullRequests.map((pr) => pr.preview && <button type="button" key={pr.url} onClick={() => openPrDiff(pr.preview!)}>View diff for PR #{pr.number}</button>)}
+                          </div>
+                      const supplied = paneBriefs[pane.id]
+                      const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
+                      const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
+                        paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
+                        state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+                      }
+                      return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+                        fullWidth visible={visible} onAttentionChange={reportSessionAttention}
+                        empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
+                        simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
+                        screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
+                        onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
+                        onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+                    }}
                     onSelect={(tab) => { void selectPanelTab(tab) }}
                     onSeen={connected ? markPanelTabSeen : undefined}
                     onClose={(id) => { void closeWebPane(id) }}
@@ -3528,6 +3583,7 @@ export function App() {
                             revealInFinder={revealInFinder}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                             onOpenScreenshot={(request) => setScreenshotLightbox({ paneId: pane.id, ...request })}
+                            onOpenChanges={() => revealBuiltinTab(pane.id, 'changes')}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                             onAcknowledgeMark={() => { void acknowledgePaneMark(pane.id) }}
@@ -3813,18 +3869,6 @@ export function App() {
 
       {paneActionError ? (
         <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
-      ) : null}
-
-      {prDiff && prDiffPane ? (
-        <GitDiffModal
-          key={`${prDiffPane.id}:${prDiff.comparison.base}:${prDiff.comparison.head}`}
-          paneId={prDiffPane.id}
-          panePath={prDiffPane.path}
-          api={gitDiffApi}
-          initialSummary={null}
-          comparison={prDiff.comparison}
-          onClose={() => setPrDiff(null)}
-        />
       ) : null}
 
       {screenshotLightbox ? (
