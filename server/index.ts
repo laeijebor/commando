@@ -128,7 +128,12 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
-const MAX_WS_BUFFERED_BYTES = 1024 * 1024
+/**
+ * Output a browser may leave unread before the daemon drops it as stalled. A
+ * connect burst carries every chat's items (hosts cap each at 2 MB), so this
+ * sits well above any one burst.
+ */
+const MAX_WS_BUFFERED_BYTES = 32 * 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -258,15 +263,13 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 function send(client: ClientState, message: ServerMessage): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
-  const serialized = JSON.stringify(message)
-  if (
-    client.socket.bufferedAmount + Buffer.byteLength(serialized, 'utf8') >
-    MAX_WS_BUFFERED_BYTES
-  ) {
+  // Judge the backlog already queued, not the message itself: one large frame
+  // (a chat snapshot) must not drop a client that is keeping up.
+  if (client.socket.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
     client.socket.close(1013, 'Client is not consuming output')
     return false
   }
-  client.socket.send(serialized)
+  client.socket.send(JSON.stringify(message))
   return true
 }
 
@@ -560,6 +563,9 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageTitle: (webPaneId, title) => {
+      if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+    },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
     onPageResponse: (webPaneId, response, pageUrl) => {
@@ -586,6 +592,7 @@ async function main(): Promise<void> {
   const webPanesMessage = (): ServerMessage => ({
     type: 'web_panes',
     webPanes: webPanes.list(),
+    activeTabs: webPanes.panelActiveTabs(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
     spotlightRequests: canvasSpotlight.pending(),

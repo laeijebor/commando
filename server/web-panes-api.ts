@@ -1,6 +1,7 @@
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
 import type { CanvasThreadsStore } from './canvas-threads.js'
+import { isBuiltinPanelKey } from '../shared/web-pane-placement.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
@@ -394,7 +395,7 @@ export class WebPanesApi {
 
       if (route.kind === 'collection') {
         if (request.method === 'GET') {
-          writeJson(response, 200, { webPanes: this.dependencies.service.list() })
+          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs() })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -415,8 +416,12 @@ export class WebPanesApi {
       if (route.action === 'active-tab' || route.action === 'seen') {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (caller !== 'owner') throw new HttpError(403, 'Only the owner can select or mark tabs seen')
-        if (route.action === 'active-tab') this.dependencies.service.setActiveTab(route.id)
-        else this.dependencies.service.clearUnseen(route.id)
+        if (route.action === 'active-tab') {
+          const hasBody = Number(request.headers['content-length'] ?? 0) > 0 || Boolean(request.headers['transfer-encoding'])
+          const body = isBuiltinPanelKey(route.id) || hasBody ? await readJson(request) : {}
+          const anchor = typeof body.anchorPaneId === 'string' ? body.anchorPaneId : undefined
+          this.dependencies.service.setActiveTab(route.id, anchor, (id) => Boolean(this.dependencies.paneForId(id)))
+        } else this.dependencies.service.clearUnseen(route.id)
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true })
         return true
@@ -1034,7 +1039,7 @@ export class WebPanesApi {
       }
     }
     const match = /^\/api\/web-panes\/([^/]+)(?:\/(spotlight|active-tab|seen|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
-    if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
+    if (!match || (!WEB_PANE_ID.test(match[1]) && !(match[2] === 'active-tab' && isBuiltinPanelKey(match[1])))) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
       if (match[3] === 'send-build') return { kind: 'pane', id: match[1], action: 'pending', sendBuild: true }

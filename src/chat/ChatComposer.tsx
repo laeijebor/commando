@@ -705,7 +705,7 @@ export function ChatComposer({
           aria-controls={menuOpen ? menuId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={menuOpen && active ? `${menuId}-${active.key}` : undefined}
-          className="block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          className="chat-composer-input block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">

@@ -32,3 +32,10 @@ export function neighbouringTab(tabs: readonly WebPane[], removedId: string): st
   const index = tabs.findIndex((tab) => tab.id === removedId)
   return index < 0 ? tabs[0]?.id : (tabs[index + 1] ?? tabs[index - 1])?.id
 }
+
+export const BUILTIN_PANEL_KEYS = ['session', 'changes', 'pr'] as const
+export type BuiltinPanelKey = typeof BUILTIN_PANEL_KEYS[number]
+
+export function isBuiltinPanelKey(value: string): value is BuiltinPanelKey {
+  return (BUILTIN_PANEL_KEYS as readonly string[]).includes(value)
+}

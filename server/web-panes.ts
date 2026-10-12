@@ -5,6 +5,7 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import {
   MAX_WEB_PANES,
   MAX_WEB_PANE_URL_LENGTH,
+  MAX_WEB_PANE_TITLE_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
   type WebPane,
@@ -12,7 +13,7 @@ import {
   type WebPanePlacement,
 } from '../shared/protocol.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
-import { neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
+import { isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -130,7 +131,7 @@ export function parseWebPaneContent(value: unknown): WebPane['content'] | null {
 function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): PersistedWebPane | null {
   if (!isRecord(value)) return null
   const {
-    content, id, url, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
+    content, id, url, title, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
     engine, openedBy, openerLabel,
     status, createdAt, tmuxSocketHash, dock, order, unseen,
   } = value
@@ -165,6 +166,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   return {
     id,
     url: decision.url,
+    ...(typeof title === 'string' && title ? { title: title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) } : {}),
     ...(parsedContent ? { content: parsedContent } : {}),
     sessionId,
     windowId,
@@ -222,9 +224,15 @@ function parseState(value: unknown): StateFile {
     }
   }
   const activeTabs: Record<string, string> = {}
+  if (isRecord(value.activeTabs)) {
+    for (const [anchor, key] of Object.entries(value.activeTabs)) {
+      if (/^%\d+$/.test(anchor) && typeof key === 'string' && isBuiltinPanelKey(key)) activeTabs[anchor] = key
+    }
+  }
   for (const pane of panes) {
     const tabs = panelTabs(panes, pane.anchorPaneId)
     const saved = isRecord(value.activeTabs) ? value.activeTabs[pane.anchorPaneId] : undefined
+    if (activeTabs[pane.anchorPaneId]) continue
     const active = tabs.find((tab) => tab.id === saved) ?? tabs[0]
     if (active) activeTabs[pane.anchorPaneId] = active.id
   }
@@ -313,6 +321,7 @@ export class WebPaneService {
   private readonly paneSocketHashes = new Map<string, string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
+  private titleWriteTimer: ReturnType<typeof setTimeout> | null = null
   private readonly now: () => number
   private readonly migrationStatePath: string | undefined
   private readonly socketHash: string
@@ -373,6 +382,25 @@ export class WebPaneService {
 
   get(id: string): WebPane | undefined {
     return this.panes.get(id)
+  }
+
+  /** Returns true only when a Chromium page title changes. */
+  setTitle(id: string, title: string): boolean {
+    const pane = this.panes.get(id)
+    if (!pane || pane.engine !== 'chromium' || pane.content) return false
+    const next = title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) || undefined
+    if (pane.title === next) return false
+    const updated = { ...pane, title: next }
+    if (!next) delete updated.title
+    this.panes.set(id, updated)
+    if (this.titleWriteTimer === null) {
+      this.titleWriteTimer = setTimeout(() => {
+        this.titleWriteTimer = null
+        this.persist()
+      }, 2_000)
+      this.titleWriteTimer.unref()
+    }
+    return true
   }
 
   open(input: OpenWebPaneInput): WebPane {
@@ -454,6 +482,7 @@ export class WebPaneService {
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
     const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
+    if (pended.url !== pane.url) delete pended.title
     this.panes.set(id, pended)
     this.persist()
     return pended
@@ -475,10 +504,20 @@ export class WebPaneService {
     return confirmed
   }
 
-  setActiveTab(id: string): void {
+  panelActiveTabs(): Record<string, string> {
+    return { ...this.activeTabs }
+  }
+
+  setActiveTab(id: string, anchorPaneId?: string, paneExists: (id: string) => boolean = () => false): void {
+    if (isBuiltinPanelKey(id)) {
+      if (!anchorPaneId || !paneExists(anchorPaneId)) throw new WebPaneError(404, 'Anchor pane does not exist')
+      this.activeTabs[anchorPaneId] = id
+      this.persist()
+      return
+    }
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
-    if (pane.dock !== 'panel') throw new WebPaneError(409, 'Web pane is not panel-docked')
+    if (pane.dock !== 'panel' || (anchorPaneId && pane.anchorPaneId !== anchorPaneId)) throw new WebPaneError(409, 'Web pane is not a panel tab of this pane')
     this.activeTabs[pane.anchorPaneId] = id
     this.persist()
   }
@@ -494,13 +533,13 @@ export class WebPaneService {
     if (this.activeTabs[pane.anchorPaneId] !== pane.id) return
     const next = neighbouringTab(panelTabs(this.list(), pane.anchorPaneId), pane.id)
     if (next) this.activeTabs[pane.anchorPaneId] = next
-    else delete this.activeTabs[pane.anchorPaneId]
+    else this.activeTabs[pane.anchorPaneId] = 'session'
   }
 
   private reconcileActiveTabs(): void {
     for (const anchor of Object.keys(this.activeTabs)) {
       const tabs = panelTabs(this.list(), anchor)
-      if (!tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
+      if (!isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
         if (tabs[0]) this.activeTabs[anchor] = tabs[0].id
         else delete this.activeTabs[anchor]
       }
@@ -587,6 +626,7 @@ export class WebPaneService {
           }
         : {}),
     }
+    if (navigated.url !== pane.url) delete navigated.title
     if (attribution && attribution.openerLabel === undefined) delete navigated.openerLabel
     this.panes.set(id, navigated)
     this.persist()
@@ -641,7 +681,7 @@ export class WebPaneService {
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0) return false
+    if (this.panes.size === 0 && Object.keys(this.activeTabs).length === 0) return false
     const totalPaneCount = currentWindows.reduce(
       (count, window) => count + window.paneIds.length,
       0,
@@ -659,12 +699,21 @@ export class WebPaneService {
       windowsBySession.set(window.sessionId, windows)
     }
     let changed = false
+    // Built-in selections have no window or socket metadata. Only a complete,
+    // matching snapshot can prove their anchors disappeared.
+    let canPruneActiveTabs = currentWindows.every((window) => window.paneIds.length > 0)
     for (const [id, pane] of [...this.panes].sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))) {
       const paneSocketHash = this.paneSocketHashes.get(id)
-      if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) continue
+      if (paneSocketHash !== undefined && paneSocketHash !== this.socketHash) {
+        canPruneActiveTabs = false
+        continue
+      }
       const sessionWindows = windowsBySession.get(pane.sessionId)
       if (!sessionWindows) {
-        if (paneSocketHash === undefined) continue
+        if (paneSocketHash === undefined) {
+          canPruneActiveTabs = false
+          continue
+        }
         this.panes.delete(id)
         this.paneSocketHashes.delete(id)
         changed = true
@@ -694,14 +743,24 @@ export class WebPaneService {
         changed = true
       }
     }
-    if (changed) {
-      this.reconcileActiveTabs()
-      this.persist()
+    if (changed) this.reconcileActiveTabs()
+    if (canPruneActiveTabs) {
+      const livePaneIds = new Set(currentWindows.flatMap((window) => window.paneIds))
+      for (const anchor of Object.keys(this.activeTabs)) {
+        if (livePaneIds.has(anchor)) continue
+        delete this.activeTabs[anchor]
+        changed = true
+      }
     }
+    if (changed) this.persist()
     return changed
   }
 
   private persist(): void {
+    if (this.titleWriteTimer !== null) {
+      clearTimeout(this.titleWriteTimer)
+      this.titleWriteTimer = null
+    }
     const state: StateFile = {
       version: 1,
       allowedOrigins: [...this.allowedOrigins],
@@ -718,8 +777,9 @@ export class WebPaneService {
       })
   }
 
-  /** Resolves once every persist() queued so far has hit disk. */
+  /** Flushes pending titles and resolves once queued state has hit disk. */
   async flush(): Promise<void> {
+    if (this.titleWriteTimer !== null) this.persist()
     await this.writes
   }
 

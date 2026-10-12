@@ -111,6 +111,10 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* The composer's frame shows its focus; the clipped outline drew stray lines across its contents. */
+.commando-chat .chat-composer-input:focus-visible {
+  outline: none;
+}
 
 /* Markdown inside assistant messages (no typography plugin). */
 .chat-markdown {

@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_WEB_PANES, type WebPane } from '../shared/protocol.js'
+import { MAX_WEB_PANES, MAX_WEB_PANE_TITLE_LENGTH, type WebPane } from '../shared/protocol.js'
 import {
   WebPaneError,
   WebPaneService,
@@ -26,6 +26,7 @@ function track(service: WebPaneService): WebPaneService {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
   // Persistence is queued asynchronously; settle it before deleting the
   // directories or an in-flight temp file races the rm.
   await Promise.all(services.splice(0).map((service) => service.flush()))
@@ -89,6 +90,100 @@ describe('WebPaneService', () => {
     expect(new Set([legacy, first, second, byPath]).size).toBe(4)
     expect(defaultWebPaneStatePath({ COMMANDO_WEB_PANES_PATH: '/tmp/custom.json' }, homeDirectory))
       .toBe('/tmp/custom.json')
+  })
+
+  it('caps, persists and clears Chromium titles only when they change', async () => {
+    const statePath = await temporaryStatePath()
+    const service = track(new WebPaneService(statePath))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    expect(service.setTitle(pane.id, 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH + 20))).toBe(true)
+    expect(service.get(pane.id)?.title).toHaveLength(MAX_WEB_PANE_TITLE_LENGTH)
+    const titled = service.get(pane.id)
+    expect(service.setTitle(pane.id, 'x'.repeat(MAX_WEB_PANE_TITLE_LENGTH + 30))).toBe(false)
+    expect(service.get(pane.id)).toBe(titled)
+    await service.flush()
+    const restored = track(new WebPaneService(statePath))
+    await restored.load()
+    expect(restored.list()[0].title).toBe(titled?.title)
+    expect(service.setTitle(pane.id, '')).toBe(true)
+    expect(service.get(pane.id)).not.toHaveProperty('title')
+    expect(service.setTitle(pane.id, '')).toBe(false)
+    const webkit = service.open({ ...anchor, url: 'http://localhost:5173/webkit' })
+    expect(service.setTitle(webkit.id, 'Ignored')).toBe(false)
+    service.close(pane.id)
+    expect(service.setTitle(pane.id, 'Closed tile')).toBe(false)
+  })
+
+  it.each([
+    ['navigate', 'http://localhost:5173/other', 'open'],
+    ['navigate', 'https://untrusted.example/page', 'pending'],
+    ['repend', 'https://untrusted.example/page', 'pending'],
+  ] as const)('%s clears the title when the URL changes to %s', async (method, url, status) => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    service.setTitle(pane.id, 'Original page')
+    expect(service[method](pane.id, pane.url)?.title).toBe('Original page')
+    const navigated = service[method](pane.id, url)
+    expect(navigated).toMatchObject({ url, status })
+    expect(navigated).not.toHaveProperty('title')
+    await service.flush()
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+    expect(persisted.panes[0]).not.toHaveProperty('title')
+  })
+
+  it('coalesces title-only disk writes every two seconds while publishing state immediately', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const first = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    const second = service.open({ ...anchor, url: 'http://localhost:5173/second', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    for (let index = 0; index < 8; index++) {
+      service.setTitle(first.id, `First ${index}`)
+      service.setTitle(second.id, `Second ${index}`)
+      expect(service.get(first.id)?.title).toBe(`First ${index}`)
+      expect(service.list()[1].title).toBe(`Second ${index}`)
+      const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+      expect(persisted.panes.every((pane) => pane.title === undefined)).toBe(true)
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    await service.flush()
+    const persisted = JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }
+    expect(persisted.panes.map((pane) => pane.title)).toEqual(['First 7', 'Second 7'])
+    service.setTitle(first.id, 'Next batch')
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('First 7')
+    await vi.advanceTimersByTimeAsync(1)
+    await service.flush()
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Next batch')
+  })
+
+  it('flushes a pending title write and cancels its timer', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    service.setTitle(pane.id, 'Pending title')
+    expect(vi.getTimerCount()).toBe(1)
+    await service.flush()
+    expect(vi.getTimerCount()).toBe(0)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Pending title')
+  })
+
+  it('includes pending titles in a normal write without delaying other pane changes', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/', engine: 'chromium' })
+    await service.flush()
+    vi.useFakeTimers()
+    service.setTitle(pane.id, 'Current title')
+    service.open({ ...anchor, url: 'http://localhost:5173/new' })
+    expect(vi.getTimerCount()).toBe(0)
+    await service.flush()
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes).toHaveLength(2)
+    expect((JSON.parse(await readFile(path, 'utf8')) as { panes: WebPane[] }).panes[0].title).toBe('Current title')
   })
 
   it('opens localhost tiles immediately and external tiles as pending', async () => {
@@ -245,6 +340,7 @@ describe('WebPaneService', () => {
     }))
 
     expect(service.prune(windows)).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%12': pane.id })
     expect(service.get(pane.id)).toEqual(pane)
     expect(warn).toHaveBeenCalledWith(
       'web panes: skipped prune for degraded tmux snapshot (windows=23, panes=0)',
@@ -259,6 +355,7 @@ describe('WebPaneService', () => {
       { id: '@3', sessionId: '$1', paneIds: [] },
       { id: '@4', sessionId: '$1', paneIds: ['%40'] },
     ])).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%12': pane.id })
     expect(service.get(pane.id)).toEqual(pane)
   })
 
@@ -323,6 +420,7 @@ describe('WebPaneService', () => {
     const foreign = track(new WebPaneService(statePath, Date.now, undefined, 'name:second'))
     await foreign.load()
     expect(foreign.prune([{ id: '@1', sessionId: '$18', paneIds: ['%1'] }])).toBe(false)
+    expect(foreign.panelActiveTabs()).toEqual({ '%12': pane.id })
     expect(foreign.get(pane.id)).toEqual(pane)
   })
 
@@ -347,6 +445,7 @@ describe('WebPaneService', () => {
     await service.load()
 
     expect(service.prune([{ id: '@1', sessionId: '$2', paneIds: ['%1'] }])).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%12': 'w-0badcafe' })
     expect(service.get('w-0badcafe')).toBeDefined()
   })
 
@@ -504,11 +603,19 @@ describe('WebPaneService', () => {
     expect(restored.get(pane.id)?.anchorSize).toBeUndefined()
   })
 
-  it('does not prune anything from an empty snapshot', async () => {
+  it('does not warn for an empty snapshot without web panes or selections', async () => {
     const service = track(new WebPaneService(await temporaryStatePath()))
-    service.open({ ...anchor, url: 'http://localhost:5173/' })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     expect(service.prune([])).toBe(false)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('does not prune anything from an empty snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const pane = service.open({ ...anchor, url: 'http://localhost:5173/' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(service.prune([])).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%12': pane.id })
     expect(service.list()).toHaveLength(1)
     expect(warn).toHaveBeenCalledWith(
       'web panes: skipped prune for degraded tmux snapshot (windows=0, panes=0)',
@@ -763,7 +870,7 @@ describe('panel tab state', () => {
     expect(restored.list().find((pane) => pane.activeTab)?.id).toBe(tabs[0].id)
     restored.close(tabs[0].id)
     await restored.flush()
-    expect(JSON.parse(await readFile(statePath, 'utf8')).activeTabs).toEqual({})
+    expect(JSON.parse(await readFile(statePath, 'utf8')).activeTabs).toEqual({ [anchor.anchorPaneId]: 'session' })
   })
 
   it('appends moved and orphaned tabs without losing either anchor selection', async () => {
@@ -826,4 +933,91 @@ it('opens two manifests in the same canvas folder as separate tabs', async () =>
   const second = service.open({ ...anchor, url: first.url, content: { ...content, manifest: 'second.json' } })
   expect(second.id).not.toBe(first.id)
   expect(service.open({ ...anchor, url: first.url, content }).id).toBe(first.id)
+})
+
+describe('built-in panel selection', () => {
+  it.each(['session', 'changes', 'pr'])('prunes a disappeared pane with built-in %s selected and no web panes', async (key) => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.setActiveTab(key, '%12', () => true)
+    service.setActiveTab('session', '%13', () => true)
+    await service.flush()
+    const before = await stat(path)
+    expect(service.list()).toEqual([])
+    expect(service.prune([{ id: '@3', sessionId: '$1', paneIds: ['%12', '%13'] }])).toBe(false)
+    await service.flush()
+    expect((await stat(path)).ino).toBe(before.ino)
+
+    const windows = [{ id: '@3', sessionId: '$1', paneIds: ['%13'] }]
+    expect(service.prune(windows)).toBe(true)
+    expect(service.panelActiveTabs()).toEqual({ '%13': 'session' })
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()).toEqual({ '%13': 'session' })
+    const after = await stat(path)
+    expect(service.prune(windows)).toBe(false)
+    // Reusing the pane id must not restore its previous conversation's tab.
+    expect(service.prune([{ id: '@3', sessionId: '$1', paneIds: ['%12', '%13'] }])).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%13': 'session' })
+    await service.flush()
+    expect((await stat(path)).ino).toBe(after.ino)
+  })
+
+  it.each([
+    { name: 'empty', windows: [] },
+    { name: 'all-empty windows', windows: [{ id: '@3', sessionId: '$1', paneIds: [] }] },
+    { name: 'partially discovered', windows: [
+      { id: '@3', sessionId: '$1', paneIds: [] },
+      { id: '@4', sessionId: '$1', paneIds: ['%40'] },
+    ] },
+  ])('preserves built-in selections without web panes in a $name snapshot', async ({ windows }) => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.setActiveTab('pr', '%12', () => true)
+    await service.flush()
+    const before = await stat(path)
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expect(service.prune(windows)).toBe(false)
+    expect(service.panelActiveTabs()).toEqual({ '%12': 'pr' })
+    await service.flush()
+    expect((await stat(path)).ino).toBe(before.ino)
+  })
+
+  it.each(['session', 'changes', 'pr'])('preserves built-in %s selections from another tmux socket', async (key) => {
+    const path = await temporaryStatePath()
+    const owner = track(new WebPaneService(path, Date.now, undefined, 'name:first'))
+    owner.open({ ...anchor, url: 'http://localhost:5173/' })
+    owner.setActiveTab(key, '%12', () => true)
+    owner.setActiveTab('session', '%13', () => true)
+    await owner.flush()
+    const before = await stat(path)
+
+    const foreign = track(new WebPaneService(path, Date.now, undefined, 'name:second'))
+    await foreign.load()
+    expect(foreign.prune([{ id: '@3', sessionId: '$1', paneIds: ['%40'] }])).toBe(false)
+    expect(foreign.panelActiveTabs()).toEqual({ '%12': key, '%13': 'session' })
+    await foreign.flush()
+    expect((await stat(path)).ino).toBe(before.ino)
+  })
+
+  it('validates keys against live panes and persists anchors without web tabs', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    for (const key of ['session', 'changes', 'pr']) {
+      expect(() => service.setActiveTab(key, '%999', (id) => id === '%12')).toThrow('Anchor pane does not exist')
+      service.setActiveTab(key, '%12', (id) => id === '%12')
+      expect(service.panelActiveTabs()).toEqual({ '%12': key })
+    }
+    expect(() => service.setActiveTab('unknown', '%12', () => true)).toThrow('Web pane does not exist')
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()).toEqual({ '%12': 'pr' })
+    const tile = restored.open({ ...anchor, url: 'http://localhost/plan' })
+    expect(() => restored.setActiveTab(tile.id, '%13', () => true)).toThrow('Web pane is not a panel tab of this pane')
+    restored.setActiveTab('session', '%12', () => true)
+    expect(restored.get(tile.id)?.unseen).toBe(true)
+    expect(restored.list()[0].activeTab).toBe(false)
+  })
 })
