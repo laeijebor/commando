@@ -83,4 +83,24 @@ describe('AgentInteractionBroker', () => {
     expect(broker.answer('%1', permission.id, { action: 'deny' })).toBe(true)
     await expect(waiting).resolves.toEqual({ action: 'deny' })
   })
+
+  it('keeps an offered request without consumers until it is answered once or withdrawn', async () => {
+    const broker = new AgentInteractionBroker()
+    const delivered: unknown[] = []
+    broker.offer('%1', permission, (answer) => delivered.push(answer))
+    const release = broker.registerConsumer()
+    const held = broker.wait('%1', { ...permission, id: 'held' })
+    release()
+    await expect(held).resolves.toBeNull()
+    expect(broker.hasPending('%1', permission.id)).toBe(true)
+
+    expect(broker.answer('%1', permission.id, { action: 'answer', answers: [] })).toBe(false)
+    expect(broker.answer('%1', permission.id, { action: 'deny' })).toBe(true)
+    expect(broker.answer('%1', permission.id, { action: 'allow_once' })).toBe(false)
+    expect(delivered).toEqual([{ action: 'deny' }])
+
+    broker.offer('%1', permission, (answer) => delivered.push(answer))
+    expect(broker.cancel('%1', permission.id)).toBe(true)
+    expect(delivered).toHaveLength(1)
+  })
 })

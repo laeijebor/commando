@@ -42,6 +42,18 @@ type RegistryRecord = {
   cursor?: { candidate: string | null; finished: boolean; ended: boolean; promptSubmitted: boolean; association?: CursorHookAssociation; turnStarted?: string }
 }
 
+/** What a chat pane's host reports; see `AgentStatusRegistry.applyChatHost`. */
+export type ChatHostReport = {
+  status: AgentStatusKind
+  sessionId?: string
+  title?: string
+}
+
+type ChatHostState = ChatHostReport & {
+  /** Keyed `chat:<id>`, so they stay apart from any a hook raised. */
+  requests: Map<string, PendingRequest>
+}
+
 type InferenceSuppression = {
   provider: AgentProvider
   processCommand: string | null
@@ -70,7 +82,7 @@ const MAX_QUESTIONS = 8
 const MAX_QUESTION_OPTIONS = 12
 const MAX_QUESTION_HEADER_LENGTH = 30
 const MAX_QUESTION_TEXT_LENGTH = 300
-const MAX_OPTION_LABEL_LENGTH = 80
+export const MAX_OPTION_LABEL_LENGTH = 80
 const MAX_OPTION_DESCRIPTION_LENGTH = 200
 const MAX_FILE_PATH_LENGTH = 240
 const MAX_CHANGED_FILES = 20
@@ -759,6 +771,38 @@ function hasRetainableRecap(record: RegistryRecord): boolean {
   ))
 }
 
+const CHAT_REQUEST_KEY = 'chat:'
+
+const CHAT_REASONS: Partial<Record<AgentStatusKind, string>> = {
+  working: 'Chat host reports a running turn',
+  needs_input: 'Chat host is waiting for an answer',
+  done: 'Chat host reports the turn finished',
+  failed: 'Chat host reports an error',
+  unknown: 'Chat host is ready for its first message',
+}
+
+/**
+ * A chat pane's record as its host has it: the host's status, held with high
+ * confidence, and the host's open requests. What hooks reported (activity,
+ * recap, progress) stays.
+ */
+function withChatHost(record: RegistryRecord, chat: ChatHostState): RegistryRecord {
+  const pendingRequests = new Map([...record.pendingRequests].filter(([key]) => !key.startsWith(CHAT_REQUEST_KEY)))
+  for (const [key, pending] of chat.requests) pendingRequests.set(key, pending)
+  const details = cloneDetails(record.status.details ?? emptyDetails())
+  syncAttention(details, pendingRequests)
+  const sessionId = chat.sessionId || record.status.agentSessionId || ''
+  const name = chat.title ?? record.status.agentSessionName ?? null
+  const base = hookStatus(record.status.paneId, 'claude', sessionId, name, chat.status, record.status.updatedAt)
+  if (chat.status === 'unknown') base.summary = 'Claude is ready'
+  const status = attachDetails({
+    ...base,
+    confidence: 'high',
+    reason: CHAT_REASONS[chat.status] ?? base.reason,
+  }, details)
+  return { ...record, status, pendingRequests }
+}
+
 export const PANE_EVICTION_GRACE_MS = 30_000
 
 export class AgentStatusRegistry {
@@ -771,6 +815,7 @@ export class AgentStatusRegistry {
   // after its pane has been absent for PANE_EVICTION_GRACE_MS: hook-sourced
   // statuses cannot be re-derived, and degraded tmux listings must not drop them.
   private readonly missingSince = new Map<string, number>()
+  private readonly chatHosts = new Map<string, ChatHostState>()
 
   get(paneId: string): AgentStatus | undefined {
     const status = this.records.get(paneId)?.status
@@ -823,6 +868,7 @@ export class AgentStatusRegistry {
 
   remove(paneId: string): AgentStatusChange {
     this.missingSince.delete(paneId)
+    this.chatHosts.delete(paneId)
     this.retiredCursorTurns.delete(paneId)
     this.cursorProducers.delete(paneId)
     if (!this.records.delete(paneId)) return null
@@ -861,7 +907,83 @@ export class AgentStatusRegistry {
     for (const paneId of this.inferenceSuppressions.keys()) {
       if (!retained.has(paneId) && !this.records.has(paneId)) this.inferenceSuppressions.delete(paneId)
     }
+    for (const paneId of this.chatHosts.keys()) {
+      if (!retained.has(paneId) && !this.records.has(paneId)) this.chatHosts.delete(paneId)
+    }
     return changes
+  }
+
+  /**
+   * A chat pane's status from its host, which knows it exactly where hooks and
+   * pane output only suggest it, and resends it when it reconnects (after a
+   * daemon restart, say). It holds until the host reports again; hooks still
+   * add the details. `null` once the chat is gone.
+   */
+  applyChatHost(paneId: string, report: ChatHostReport | null, updatedAt = Date.now()): AgentStatusChange {
+    const previous = this.chatHosts.get(paneId)
+    if (!report) {
+      if (!previous) return null
+      return this.remove(paneId)
+    }
+    if (
+      previous?.status === report.status &&
+      previous.sessionId === report.sessionId &&
+      previous.title === report.title &&
+      // A hook (SessionEnd, say) can drop the record; the next report brings it back.
+      this.records.has(paneId)
+    ) return null
+    this.chatHosts.set(paneId, { ...report, requests: previous?.requests ?? new Map() })
+    return this.upsertChat(paneId, updatedAt)
+  }
+
+  /**
+   * Lists a chat pane's open request, as hooks list a terminal agent's.
+   * Returns the request as it is stored, bounded like a hook's.
+   */
+  openChatRequest(
+    paneId: string,
+    value: unknown,
+    attention: string,
+    updatedAt = Date.now(),
+  ): { request: AgentInteractionRequest; change: AgentStatusChange } | null {
+    const chat = this.chatHosts.get(paneId)
+    const request = parseInteractionRequest(value, updatedAt)
+    if (!chat || !request) return null
+    const key = `${CHAT_REQUEST_KEY}${request.id}`
+    if (!chat.requests.has(key) && chat.requests.size >= MAX_PENDING_REQUESTS) {
+      const oldest = chat.requests.keys().next().value
+      if (oldest !== undefined) chat.requests.delete(oldest)
+    }
+    chat.requests.set(key, {
+      attention: boundedText(attention, MAX_ATTENTION_LENGTH) ?? attentionFallback('claude'),
+      request,
+    })
+    return { request, change: this.upsertChat(paneId, updatedAt) }
+  }
+
+  closeChatRequest(paneId: string, requestId: string, updatedAt = Date.now()): AgentStatusChange {
+    const chat = this.chatHosts.get(paneId)
+    if (!chat?.requests.delete(`${CHAT_REQUEST_KEY}${requestId}`)) return null
+    return this.upsertChat(paneId, updatedAt)
+  }
+
+  private upsertChat(paneId: string, updatedAt: number): AgentStatusChange {
+    const previous = this.records.get(paneId)
+    const chat = this.chatHosts.get(paneId)
+    return this.upsert(previous?.status.provider === 'claude'
+      ? { ...previous, status: { ...previous.status, updatedAt } }
+      : {
+          status: hookStatus(paneId, 'claude', chat?.sessionId ?? '', chat?.title ?? null, 'unknown', updatedAt),
+          providerSessionId: chat?.sessionId ?? null,
+          processCommand: null,
+          pendingRequests: new Map(),
+          runningActivities: new Map(),
+          runningChecks: new Map(),
+          changedFiles: new Set(),
+          tasks: new Map(),
+          turnId: null,
+          retainedCompletion: false,
+        })
   }
 
   applyInferred(status: AgentStatus): AgentStatusChange {
@@ -1674,7 +1796,9 @@ export class AgentStatusRegistry {
     return true
   }
 
-  private upsert(record: RegistryRecord): AgentStatusChange {
+  private upsert(next: RegistryRecord): AgentStatusChange {
+    const chat = this.chatHosts.get(next.status.paneId)
+    const record = chat && next.status.provider === 'claude' ? withChatHost(next, chat) : next
     const previous = this.records.get(record.status.paneId)
     if (previous && sameStatus(previous.status, record.status)) {
       this.records.set(record.status.paneId, { ...record, status: previous.status })

@@ -6,7 +6,21 @@ import {
   X,
 } from 'lucide-react'
 
-import type { AgentActivity, AgentProvider, AgentRecap, AgentStatus } from '../shared/protocol'
+import type {
+  AgentActivity,
+  AgentInteractionAnswer,
+  AgentInteractionRequest,
+  AgentProvider,
+  AgentRecap,
+  AgentStatus,
+} from '../shared/protocol'
+
+/** An answer the card sent, until the daemon confirms or refuses it. */
+export type AgentHudAnswerState = {
+  requestId: string
+  pending: boolean
+  error?: string
+}
 
 type AgentHudCardProps = {
   status: AgentStatus
@@ -16,6 +30,9 @@ type AgentHudCardProps = {
   now?: number
   onSelect: () => void
   onDismiss: () => void
+  /** Answers the pane's oldest request from the card; without it the card only points at the pane. */
+  onAnswer?: (request: AgentInteractionRequest, answer: AgentInteractionAnswer) => void
+  answerState?: AgentHudAnswerState
 }
 
 const RECAP_LABELS: Record<AgentRecap['outcome'], string> = {
@@ -61,6 +78,55 @@ function CheckIcon({ status }: { status: 'running' | 'passed' | 'failed' }) {
   return <CircleDotDashed className="spin" aria-hidden="true" />
 }
 
+/**
+ * Approvals and single-choice questions answer inline; anything else
+ * (several questions, multi-select, a typed answer) is answered in the pane.
+ */
+function RequestActions({
+  request,
+  answerState,
+  onAnswer,
+  onSelect,
+}: {
+  request: AgentInteractionRequest
+  answerState?: AgentHudAnswerState
+  onAnswer: (answer: AgentInteractionAnswer) => void
+  onSelect: () => void
+}) {
+  const state = answerState?.requestId === request.id ? answerState : undefined
+  const busy = Boolean(state?.pending)
+  const question = request.questions?.length === 1 ? request.questions[0] : undefined
+  const inline = question && !question.multiple && question.options.length > 0 ? question : undefined
+  return (
+    <span className="agent-request-actions">
+      {request.kind === 'permission' ? (
+        <>
+          <button type="button" className="agent-request-button deny" disabled={busy} onClick={() => onAnswer({ action: 'deny' })}>Deny</button>
+          <button type="button" className="agent-request-button" disabled={busy} onClick={() => onAnswer({ action: 'allow_always' })}>Always allow</button>
+          <button type="button" className="agent-request-button primary" disabled={busy} onClick={() => onAnswer({ action: 'allow_once' })}>Allow once</button>
+        </>
+      ) : (
+        <>
+          {inline?.options.map((option) => (
+            <button
+              type="button"
+              className="agent-request-button"
+              disabled={busy}
+              title={option.description}
+              key={option.label}
+              onClick={() => onAnswer({ action: 'answer', answers: [[option.label]] })}
+            >
+              {option.label}
+            </button>
+          ))}
+          <button type="button" className="agent-request-button" onClick={onSelect}>Answer in pane…</button>
+        </>
+      )}
+      {state?.error ? <span className="agent-request-error" role="alert">{state.error}</span> : null}
+    </span>
+  )
+}
+
 export function AgentHudCard({
   status,
   sessionName,
@@ -69,8 +135,11 @@ export function AgentHudCard({
   now = Date.now(),
   onSelect,
   onDismiss,
+  onAnswer,
+  answerState,
 }: AgentHudCardProps) {
   const details = status.details
+  const request = onAnswer ? details?.requests?.[0] : undefined
   const intent = visibleAgentTask(details?.intent)
   const summary = visibleAgentTask(status.summary)
   const recap = status.status === 'working' ? undefined : details?.recap
@@ -100,7 +169,8 @@ export function AgentHudCard({
     `Window: ${windowName ?? 'unknown window'}`,
     `Status: ${status.status.replace('_', ' ')}`,
     summary ? `Summary: ${summary}` : undefined,
-    details?.attention ? `Attention: ${details.attention}` : undefined,
+    request ? `${request.kind === 'permission' ? 'Permission' : 'Question'}: ${request.prompt}` : undefined,
+    !request && details?.attention ? `Attention: ${details.attention}` : undefined,
     intent ? `Task: ${intent}` : undefined,
     recap ? `${RECAP_LABELS[recap.outcome]}: ${recap.summary}` : undefined,
     primaryActivity ? `${currentActivity ? 'Current' : 'Latest'} ${primaryActivity.kind}: ${primaryActivity.label}` : undefined,
@@ -121,12 +191,9 @@ export function AgentHudCard({
 
   return (
     <div className="agent-card-wrap">
-      <button
-        type="button"
-        className={`agent-card status-${status.status}`}
-        onClick={onSelect}
-        aria-label={accessibleLabel}
-      >
+      {/* The whole card opens the pane; the button covers it so answer buttons can sit inside. */}
+      <div className={`agent-card status-${status.status}`}>
+      <button type="button" className="agent-card-open" onClick={onSelect} aria-label={accessibleLabel} />
       <span className={`agent-avatar provider-${status.provider}`} aria-hidden="true">
         {providerInitials(status.provider)}
       </span>
@@ -136,7 +203,18 @@ export function AgentHudCard({
           <span className={`agent-state ${status.status}`}>{status.status.replace('_', ' ')}</span>
         </span>
 
-        {details?.attention ? (
+        {request && onAnswer ? (
+          <span className="agent-attention agent-request">
+            <AlertTriangle aria-hidden="true" />
+            <span>
+              <small>{request.kind === 'permission' ? request.toolName ?? 'Permission' : 'Question'}</small>
+              <strong className={request.kind === 'permission' ? 'agent-request-prompt' : undefined}>
+                {request.kind === 'question' ? request.questions?.[0]?.question ?? request.prompt : request.prompt}
+              </strong>
+              <RequestActions request={request} answerState={answerState} onAnswer={(answer) => onAnswer(request, answer)} onSelect={onSelect} />
+            </span>
+          </span>
+        ) : details?.attention ? (
           <span className="agent-attention">
             <AlertTriangle aria-hidden="true" />
             <span>
@@ -220,7 +298,7 @@ export function AgentHudCard({
         </span>
       </span>
       <ChevronRight className="jump-chevron" aria-hidden="true" />
-      </button>
+      </div>
       <button
         type="button"
         className="agent-dismiss"

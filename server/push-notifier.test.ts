@@ -261,6 +261,21 @@ describe('push notifier', () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
 
+  it('notifies nobody about a restored status, then compares later changes with it', async () => {
+    const { notifier, send, messages } = harness()
+    notifiers.push(notifier)
+
+    notifier.observe({ type: 'upsert', status: status('done') })
+    notifier.observe({ type: 'upsert', status: status('needs_input', {}, [question('req-1')]) })
+    notifier.handleStatusChange({ type: 'upsert', status: status('needs_input', { updatedAt: 6_000 }, [question('req-1')]) })
+    await notifier.flush()
+    expect(send).not.toHaveBeenCalled()
+
+    notifier.handleStatusChange({ type: 'upsert', status: status('needs_input', { updatedAt: 7_000 }, [question('req-2', 7_000)]) })
+    await notifier.flush()
+    expect(messages().map((message) => message.data.requestId)).toEqual(['req-2'])
+  })
+
   it('coalesces a burst on the same pane to the latest status after the debounce window', async () => {
     vi.useFakeTimers()
     const { notifier, send, messages } = harness()
