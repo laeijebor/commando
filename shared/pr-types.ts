@@ -4,8 +4,18 @@ import type { PrStackMembership } from './pr-stacks.js'
 export type PrStateFilter = 'open' | 'closed' | 'all'
 export type PrScope = 'mine' | 'everyone'
 export type PrCheckState = 'pass' | 'fail' | 'pending'
-export type PrCheckRun = { name: string; state: PrCheckState }
-export type PrChecks = { state: PrCheckState; runs: PrCheckRun[]; failed: number; pending: number; total: number; truncated: boolean } | null
+export type PrCheckRun = { name: string; state: PrCheckState; skipped?: boolean }
+export type PrChecks = { state: PrCheckState; runs: PrCheckRun[]; failed: number; pending: number; skipped?: number; total: number; truncated: boolean } | null
+export type PrAutofixStatus = {
+  repo: string
+  number: number
+  targetId: string
+  enabled: boolean
+  status: 'watching' | 'fix-requested' | 'capped' | 'stopped'
+  rounds: number
+  reason?: string
+  lastEventAt: number | null
+}
 export type PrReview = { login: string; state: 'approved' | 'changes_requested' }
 export type PrSummary = {
   number: number
@@ -60,6 +70,7 @@ export type PanePrSummary = PrStatus & Pick<PrSummary, 'number' | 'title' | 'url
 }
 export type PanePrList = {
   targetId: string
+  viewer?: string
   totalCount: number
   pullRequests: PanePrSummary[]
   truncated: boolean

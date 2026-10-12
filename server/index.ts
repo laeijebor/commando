@@ -50,6 +50,7 @@ import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
 import { PrService } from './prs.js'
+import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
@@ -824,6 +825,17 @@ async function main(): Promise<void> {
       return Number.isInteger(current) && current > 0 && current !== known && hostRunsInPane(rows, hostPid, current)
     },
     log: (message) => console.log(message),
+  })
+  const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
+    snapshot: (repo, number, targetId) => prs.autofixSnapshot(repo, number, targetId),
+    target: (targetId) => {
+      const pane = snapshot.panes.find((pane) => pane.targetId === targetId)
+      const chat = pane && agentHosts.states().find((chat) => chat.paneId === pane.id)
+      if (!pane || !chat || chat.session.status === 'closed') return undefined
+      return { paneId: pane.id, connected: chat.hostConnected, busy: chat.session.status !== 'idle' }
+    },
+    send: (paneId, prompt) => agentHosts.send(paneId, prompt, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
+    log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
   const chatImages = new ChatImageStore()
@@ -2324,6 +2336,7 @@ async function main(): Promise<void> {
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
         if (await handlePrsApi(request, response, url, prs, {
+          autofix: prAutofix,
           panePath: (paneId) => paneForId(paneId)?.path,
           paneTargetId: (paneId) => paneForId(paneId)?.targetId,
         })) return
@@ -2468,6 +2481,7 @@ async function main(): Promise<void> {
     })
   })))
 
+  prAutofix.start()
   const snapshotTimer = setInterval(() => {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
@@ -2489,6 +2503,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     clearInterval(snapshotTimer)
+    prAutofix.stop()
     resurrectSaver.stop()
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()

@@ -1,4 +1,10 @@
-import { createServer, type Server } from 'node:http'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
+import { createPrsApi } from '../src/prsApi.js'
+import { Readable } from 'node:stream'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { handlePrsApi } from './prs-api.js'
@@ -192,5 +198,89 @@ describe('PR pane repository API', () => {
     const base = await startApi(() => '/workspace')
     expect((await fetch(`${base}/api/prs/pane?paneId=bad`)).status).toBe(400)
     expect((await fetch(`${base}/api/prs/pane?paneId=%251`)).status).toBe(404)
+  })
+})
+
+
+/** Exercise the same HTTP handler and frontend client without binding a socket. */
+function autofixFetch(service: PrService, watcher: PrAutofixWatcher): typeof fetch {
+  return (async (input, init) => {
+    const url = new URL(String(input), 'http://localhost')
+    const request = Readable.from(init?.body ? [String(init.body)] : []) as IncomingMessage
+    request.method = init?.method ?? 'GET'
+    request.headers = Object.fromEntries(new Headers(init?.headers).entries())
+    let status = 200
+    let body = ''
+    const headers = new Headers()
+    const response = {
+      setHeader: (name: string, value: string) => { headers.set(name, value) },
+      writeHead: (code: number, values: Record<string, string | number>) => { status = code; for (const [key, value] of Object.entries(values)) headers.set(key, String(value)) },
+      end: (value: string) => { body = value },
+    } as unknown as ServerResponse
+    await handlePrsApi(request, response, url, service, {
+      panePath: () => '/work', paneTargetId: (pane) => pane === '%1' ? TARGET_ID : undefined, autofix: watcher,
+    })
+    return new Response(body, { status, headers })
+  }) as typeof fetch
+}
+
+describe('PR auto-fix API', () => {
+  it('connects the client toggle to persisted state and prompt delivery, with disable and reset', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-autofix-api-'))
+    try {
+      const service = new PrService({ runner: vi.fn() })
+      vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({ targetId: TARGET_ID, totalCount: 1, truncated: false, fetchedAt: 0,
+        pullRequests: [{ repo: 'acme/widgets', number: 12, state: 'open' }] } as Awaited<ReturnType<PrService['listPanePullRequests']>>)
+      const send = vi.fn(() => true)
+      const watcher = new PrAutofixWatcher(new PrAutofixStore(directory), {
+        target: (id) => id === TARGET_ID ? { paneId: '%1', busy: false, connected: true } : undefined,
+        snapshot: async () => ({ state: 'open', url: 'https://github.com/acme/widgets/pull/12', headSha: 'abc', failingChecks: ['lint'], viewer: 'leo', comments: [] }), send,
+      })
+      const api = createPrsApi('', autofixFetch(service, watcher))
+      expect(await api.autofixStatus('acme/widgets', 12)).toBeNull()
+      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ status: 'watching', enabled: true, targetId: TARGET_ID, rounds: 0 })
+      await watcher.tick()
+      expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('acme/widgets#12'))
+      expect(await api.autofixStatus('acme/widgets', 12)).toMatchObject({ status: 'fix-requested', rounds: 1, lastEventAt: expect.any(Number) })
+      expect(await api.setAutofix('acme/widgets', 12, false, '%999')).toMatchObject({ enabled: false, status: 'stopped' })
+      await watcher.tick()
+      expect(send).toHaveBeenCalledOnce()
+      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ enabled: true, rounds: 0, lastEventAt: null })
+      await watcher.tick()
+      expect(send).toHaveBeenCalledTimes(2)
+      const status = await api.autofixStatus('acme/widgets', 12)
+      expect(status).not.toHaveProperty('handledFailures')
+      expect(status).not.toHaveProperty('handledComments')
+    } finally { await rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('rejects malformed requests, missing panes/agents, unlinked and non-open PRs', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-autofix-api-'))
+    try {
+      const service = new PrService({ runner: vi.fn() })
+      const list = vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({ pullRequests: [] } as unknown as Awaited<ReturnType<PrService['listPanePullRequests']>>)
+      let agentExists = true
+      const watcher = new PrAutofixWatcher(new PrAutofixStore(directory), {
+        target: () => agentExists ? { paneId: '%1', busy: false, connected: true } : undefined,
+        snapshot: vi.fn(), send: vi.fn(),
+      })
+      const fetch = autofixFetch(service, watcher)
+      const path = '/api/prs/autofix'
+      const body = { repo: 'acme/widgets', number: 12, paneId: '%1', enabled: true }
+      const put = (value: unknown) => fetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
+      expect((await fetch(path, { method: 'POST' })).status).toBe(405)
+      expect((await fetch(`${path}?repo=bad&number=12`)).status).toBe(400)
+      expect((await put({ ...body, number: 0 })).status).toBe(400)
+      expect((await put({ ...body, enabled: 'yes' })).status).toBe(400)
+      expect((await put({ ...body, paneId: 'bad' })).status).toBe(400)
+      expect((await put({ ...body, paneId: '%999' })).status).toBe(404)
+      agentExists = false
+      expect((await put(body)).status).toBe(409)
+      agentExists = true
+      expect((await put(body)).status).toBe(404)
+      list.mockResolvedValue({ pullRequests: [{ repo: 'acme/widgets', number: 12, state: 'merged' }] } as unknown as Awaited<ReturnType<PrService['listPanePullRequests']>>)
+      expect((await put(body)).status).toBe(409)
+      expect(await watcher.store.list()).toEqual([])
+    } finally { await rm(directory, { recursive: true, force: true }) }
   })
 })

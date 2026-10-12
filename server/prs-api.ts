@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { PrService, PrServiceError } from './prs.js'
+import { PrService, PrServiceError, validatePrNumber, validateRepo } from './prs.js'
+import { autofixStatus, setAutofixEnabled, type PrAutofixWatcher } from './pr-autofix.js'
 import { PrConflictError } from './pr-conflicts.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
 import { MAX_PR_PATCH_BYTES, renderPrDiff } from './pr-diff-render.js'
@@ -10,6 +11,7 @@ const MAX_BODY_BYTES = 64 * 1024
 type PrsApiDependencies = {
   panePath: (paneId: string) => string | undefined
   paneTargetId: (paneId: string) => string | undefined
+  autofix?: PrAutofixWatcher
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -60,6 +62,42 @@ export async function handlePrsApi(
   const path = url.pathname.slice(ROOT.length).split('/').filter(Boolean).map(decodeURIComponent)
 
   try {
+    if (path.length === 1 && path[0] === 'autofix') {
+      if (request.method !== 'GET' && request.method !== 'PUT') {
+        response.setHeader('Allow', 'GET, PUT')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const watcher = dependencies.autofix
+      if (!watcher) throw new PrServiceError(503, 'autofix_unavailable', 'CI monitoring is unavailable')
+      if (request.method === 'GET') {
+        const state = await watcher.store.get(validateRepo(url.searchParams.get('repo')), validatePrNumber(url.searchParams.get('number')))
+        json(response, 200, { status: state ? autofixStatus(state) : null })
+        return true
+      }
+      const body = await readBody(request)
+      const repo = validateRepo(body.repo)
+      const number = validatePrNumber(body.number)
+      if (typeof body.enabled !== 'boolean') throw new PrServiceError(400, 'invalid_request', 'enabled must be a boolean')
+      const enabled = body.enabled
+      let targetId: string | undefined
+      if (enabled) {
+        let paneId: string
+        try { paneId = validateTmuxPaneId(body.paneId) } catch { throw new PrServiceError(400, 'invalid_request', 'Invalid tmux pane id') }
+        targetId = dependencies.paneTargetId(paneId)
+        if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'Pane no longer exists')
+        if (!watcher.hasTarget(targetId)) throw new PrServiceError(409, 'agent_not_found', 'Pane has no agent chat')
+        const list = await service.listPanePullRequests(targetId)
+        const pr = list.pullRequests.find((pr) => pr.repo.toLowerCase() === repo.toLowerCase() && pr.number === number)
+        if (!pr) throw new PrServiceError(404, 'pr_not_linked', 'PR is not linked to this pane')
+        if (pr.state !== 'open') throw new PrServiceError(409, 'pr_not_open', 'PR is no longer open')
+      }
+      const state = await watcher.store.update(repo, number, (current) => targetId
+        ? setAutofixEnabled(current, repo, number, targetId, enabled)
+        : current ? setAutofixEnabled(current, repo, number, current.targetId, false) : null)
+      json(response, 200, { status: state ? autofixStatus(state) : null })
+      return true
+    }
     if (path.length === 1 && path[0] === 'diff-render') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST')

@@ -324,6 +324,41 @@ describe('pane PR status', () => {
     })] } } })
   }
 
+  it('reuses pane snapshots and caches opted-in comment reads behind the shared rate limit gate', async () => {
+    let now = 1
+    const runner = vi.fn(async (args: string[]) => {
+      if (args.includes('graphql')) return linkedPayload({ commits: { nodes: [{ commit: { statusCheckRollup: {
+        contexts: { nodes: [{ __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' }], totalCount: 1 },
+      } } }] } })
+      if (args[1]?.includes('/reviews?')) return JSON.stringify([[{ id: 1, state: 'CHANGES_REQUESTED', body: 'Fix this', user: { login: 'reviewer' }, html_url: 'https://github.com/review/1' }, { id: 2, state: 'APPROVED', user: { login: 'reviewer' } }]])
+      if (args[1]?.includes('/comments?')) return JSON.stringify([[{ id: 3, body: 'A comment', user: { login: 'leo' }, html_url: 'https://github.com/comment/3' }]])
+      throw new Error('Unexpected command')
+    })
+    const service = new PrService({ runner, now: () => now })
+    await service.listPanePullRequests(targetId)
+    const first = await service.autofixSnapshot('acme/widgets', 12, targetId)
+    expect(first).toMatchObject({ state: 'open', viewer: 'leo', headSha: '2222222222222222222222222222222222222222', failingChecks: ['lint'] })
+    expect(first.comments.map((comment) => comment.id)).toEqual(['0:3', '1:1', '2:3'])
+    expect(first.comments[1]).toMatchObject({ author: 'reviewer', body: 'Fix this', url: 'https://github.com/review/1' })
+    expect(runner).toHaveBeenCalledTimes(4)
+    expect(await service.autofixSnapshot('acme/widgets', 12, targetId)).toEqual(first)
+    expect(runner).toHaveBeenCalledTimes(4)
+    now = 60_002
+    await service.autofixSnapshot('acme/widgets', 12, targetId)
+    expect(runner).toHaveBeenCalledTimes(8)
+  })
+
+  it.each(['MERGED', 'CLOSED'])('does not fetch comments for a %s PR', async (state) => {
+    const { service, runner } = serviceWith(linkedPayload({ state }))
+    expect((await service.autofixSnapshot('acme/widgets', 12, targetId)).state).toBe(state.toLowerCase())
+    expect(runner).toHaveBeenCalledOnce()
+  })
+
+  it('does not mistake truncated pane membership for a missing PR', async () => {
+    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 101, nodes: [] } } }))
+    await expect(service.autofixSnapshot('acme/widgets', 12, targetId)).rejects.toMatchObject({ code: 'pr_list_truncated' })
+  })
+
   it('hydrates cached pane status and previews from a repo refresh without another pane query', async () => {
     let now = 1
     const runner = vi.fn().mockResolvedValueOnce(linkedPayload())
@@ -628,6 +663,20 @@ describe('pull request listing', () => {
     expect(checks?.pending).toBe(1)
     expect(checks?.runs.find((run) => run.name === 'Validate PR title')?.state).toBe('pass')
     expect(checks?.truncated).toBe(true)
+  })
+
+  it('counts skipped and neutral separately while preserving pass and total semantics', async () => {
+    const { service } = serviceWith(graphqlPayload([pullRequestNode({ commits: { nodes: [{ commit: { statusCheckRollup: {
+      contexts: { totalCount: 4, nodes: [
+        { __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { __typename: 'CheckRun', name: 'optional', status: 'COMPLETED', conclusion: 'SKIPPED' },
+        { __typename: 'CheckRun', name: 'report', status: 'COMPLETED', conclusion: 'NEUTRAL' },
+        { __typename: 'StatusContext', context: 'deploy', state: 'PENDING' },
+      ] },
+    } } }] } })]))
+    const checks = (await service.listPullRequests('acme/widgets', 'open')).pullRequests[0].checks
+    expect(checks).toMatchObject({ state: 'pending', failed: 0, pending: 1, skipped: 2, total: 4 })
+    expect(checks?.runs.filter((run) => run.skipped)).toEqual([{ name: 'optional', state: 'pass', skipped: true }, { name: 'report', state: 'pass', skipped: true }])
   })
 
   it('uses deduplicated checks when successful reruns leave the GitHub rollup failed', async () => {

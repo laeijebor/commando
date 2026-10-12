@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import type { PrAutofixSnapshot } from './pr-autofix.js'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
@@ -392,7 +393,8 @@ function checkRunState(node: JsonRecord): PrCheckRun | null {
     const name = typeof node.name === 'string' ? node.name : 'check'
     if (node.status !== 'COMPLETED') return { name, state: 'pending' }
     const conclusion = node.conclusion
-    if (conclusion === 'SUCCESS' || conclusion === 'NEUTRAL' || conclusion === 'SKIPPED') return { name, state: 'pass' }
+    if (conclusion === 'SUCCESS') return { name, state: 'pass' }
+    if (conclusion === 'NEUTRAL' || conclusion === 'SKIPPED') return { name, state: 'pass', skipped: true }
     return { name, state: 'fail' }
   }
   if (node.__typename === 'StatusContext') {
@@ -413,23 +415,24 @@ function parseChecks(commit: JsonRecord | null): PrChecks {
   const totalCount = typeof contexts.totalCount === 'number' ? contexts.totalCount : contextNodes.length
 
   // Duplicate context names are rerun attempts; a passing attempt wins, then pending.
-  const byName = new Map<string, PrCheckState>()
+  const byName = new Map<string, PrCheckRun>()
   for (const node of contextNodes) {
     const run = checkRunState(node)
     if (!run) continue
     const existing = byName.get(run.name)
-    if (existing === 'pass') continue
-    if (existing === 'pending' && run.state === 'fail') continue
-    byName.set(run.name, run.state)
+    if (existing?.state === 'pass') continue
+    if (existing?.state === 'pending' && run.state === 'fail') continue
+    byName.set(run.name, run)
   }
-  const runs = [...byName.entries()].map(([name, state]) => ({ name, state }))
+  const runs = [...byName.values()]
+  const skipped = runs.filter((run) => run.skipped).length
   const failed = runs.filter((run) => run.state === 'fail').length
   const pending = runs.filter((run) => run.state === 'pending').length
   const truncated = totalCount > contextNodes.length
 
   const state: PrCheckState = failed > 0 ? 'fail' : pending > 0 ? 'pending' : 'pass'
 
-  return { state, runs, failed, pending, total: runs.length, truncated }
+  return { state, runs, failed, pending, ...(skipped ? { skipped } : {}), total: runs.length, truncated }
 }
 
 function parseReviewDecision(value: unknown): PrSummary['reviewDecision'] {
@@ -655,6 +658,7 @@ export class PrService {
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly batchedRepos = new Set<string>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
+  private readonly autofixCommentsCache = new Map<string, CacheEntry<PrAutofixSnapshot['comments']>>()
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
@@ -844,6 +848,7 @@ export class PrService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     const list: PanePrList = {
       targetId,
+      viewer: typeof viewer?.login === 'string' ? viewer.login : '',
       totalCount: linked.totalCount,
       pullRequests,
       truncated: linked.truncated,
@@ -1025,6 +1030,52 @@ export class PrService {
       })
     }
     return JSON.stringify(payload)
+  }
+
+  /** Shares pane membership/check reads with the UI; only opted-in PRs fetch comments. */
+  async autofixSnapshot(repo: string, number: number, targetId: string): Promise<PrAutofixSnapshot> {
+    const list = await this.listPanePullRequests(targetId)
+    const pr = list.pullRequests.find((pr) => pr.repo.toLowerCase() === repo.toLowerCase() && pr.number === number)
+    if (!pr) {
+      // Search truncation is not evidence that the linked PR disappeared.
+      if (list.truncated) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR list is incomplete')
+      return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+    }
+    if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+    if (!pr.preview?.headRefOid || !list.viewer) throw invalidUpstream()
+    const key = `${repo.toLowerCase()}::${number}`
+    let cached = this.autofixCommentsCache.get(key)
+    if (!cached || this.now() - cached.at >= 60_000) {
+      const promise = this.fetchAutofixComments(repo, number)
+      cached = { at: this.now(), promise }
+      this.autofixCommentsCache.set(key, cached)
+      const entry = cached
+      void promise.catch(() => { if (this.autofixCommentsCache.get(key) === entry) this.autofixCommentsCache.delete(key) })
+      if (this.autofixCommentsCache.size > MAX_LIST_CACHE_ENTRIES) this.autofixCommentsCache.delete(this.autofixCommentsCache.keys().next().value!)
+    }
+    return { state: pr.state, url: pr.url, headSha: pr.preview.headRefOid,
+      failingChecks: pr.checks?.runs.filter((run) => run.state === 'fail').map((run) => run.name) ?? [],
+      comments: await cached.promise, viewer: list.viewer }
+  }
+
+  private async fetchAutofixComments(repo: string, number: number): Promise<PrAutofixSnapshot['comments']> {
+    const paths = [`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`]
+    const comments: PrAutofixSnapshot['comments'] = []
+    // Keep extra polling modest and go through the shared GitHub backoff gate.
+    for (const [kind, path] of paths.entries()) {
+      const parsed: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/${path}?per_page=100`, '--paginate', '--slurp']))
+      if (!Array.isArray(parsed) || !parsed.every(Array.isArray)) throw invalidUpstream()
+      for (const entry of parsed.flat()) {
+        if (!isRecord(entry) || typeof entry.id !== 'number') throw invalidUpstream()
+        if (kind === 1 && entry.state !== 'CHANGES_REQUESTED') continue
+        const author = optionalObject(entry, 'user')
+        if (typeof author?.login !== 'string') continue
+        comments.push({ id: `${kind}:${entry.id}`, author: author.login,
+          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body).slice(0, 500) : '',
+          url: typeof entry.html_url === 'string' ? entry.html_url : '' })
+      }
+    }
+    return comments
   }
 
   async pullRequestDetails(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrDetails> {
