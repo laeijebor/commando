@@ -18,7 +18,7 @@ import {
   parseAgentInteractionAnswer,
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import { MAX_FILE_QUERY, isAgentId, parseChatAnswer, parseChatImageRefs, parseChatQueueAction, parseChatSendOptions, parseChatSettingsChange, parseQueueIds } from '../shared/agent-chat.js'
+import { MAX_FILE_QUERY, isAgentId, isChatSwitchAction, type ChatImageRef, parseChatAnswer, parseChatImageRefs, parseChatQueueAction, parseChatSendOptions, parseChatSettingsChange, parseQueueIds } from '../shared/agent-chat.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -601,7 +601,37 @@ export function parseClientMessage(value: unknown): ParseResult {
         ? { ok: true, message: { type: 'chat_configure', paneId: value.paneId, settings, requestId: id } }
         : { ok: false, error: 'Invalid chat settings', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
+    case 'chat_switch': {
+      const id = requestId(value.requestId)
+      const draft = value.draft === undefined ? undefined : parseSwitchDraft(value.draft)
+      return id && isPaneId(value.paneId) && isChatSwitchAction(value.action) && draft !== null
+        ? { ok: true, message: { type: 'chat_switch', paneId: value.paneId, action: value.action, ...(draft ? { draft } : {}), requestId: id } }
+        : { ok: false, error: 'Invalid switch to Claude Code', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_return': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId)
+        ? { ok: true, message: { type: 'chat_return', paneId: value.paneId, requestId: id } }
+        : { ok: false, error: 'Invalid return to the chat', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_carry_taken': {
+      const id = requestId(value.requestId)
+      const carryId = typeof value.carryId === 'string' && value.carryId.length > 0 && value.carryId.length <= 200 ? value.carryId : null
+      const images = value.images === undefined || (Number.isInteger(value.images) && (value.images as number) >= 0 && (value.images as number) <= 1000) ? value.images as number | undefined : null
+      return id && isPaneId(value.paneId) && carryId && images !== null
+        ? { ok: true, message: { type: 'chat_carry_taken', paneId: value.paneId, carryId, ...(images === undefined ? {} : { images }), requestId: id } }
+        : { ok: false, error: 'Invalid carried draft', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
     default:
       return { ok: false, error: 'Unsupported message type' }
   }
+}
+
+/** A chat's unsent draft, sent with its switch to Claude Code; null when malformed. */
+function parseSwitchDraft(value: unknown): { text: string; images: ChatImageRef[] } | null {
+  if (!value || typeof value !== 'object') return null
+  const draft = value as Record<string, unknown>
+  const images = draft.images === undefined ? [] : parseChatImageRefs(draft.images)
+  if (typeof draft.text !== 'string' || draft.text.includes('\0') || Buffer.byteLength(draft.text, 'utf8') > MAX_PASTE_BYTES || !images) return null
+  return { text: draft.text, images }
 }

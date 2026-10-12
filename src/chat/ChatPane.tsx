@@ -1,9 +1,10 @@
 import { Component, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Bot, PlugZap, RefreshCw } from 'lucide-react'
+import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
   hostTakesTurnFlow,
   planImplementationPrompt,
   type ChatAnswer,
+  type ChatClaudeCodeSwitch,
   type ChatImageRef,
   type ChatItem,
   type ChatQueueAction,
@@ -12,9 +13,10 @@ import {
   type ChatSettingsChange,
   type ChatState,
   type ChatSubagentTranscript,
+  type ChatSwitchAction,
   type ChatTaskAction,
 } from '../../shared/agent-chat'
-import { ChatComposer, type ChatInputServices, type ChatSendError } from './ChatComposer'
+import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
@@ -31,6 +33,14 @@ export interface ChatFlowServices {
   savePlan: SavePlan
   /** Splits the pane and starts a fresh chat (same profile and folder) that implements the plan. */
   implementInNewPane?: (plan: string, mode: ChatSessionPermissionMode) => Promise<void>
+  /** Hands the conversation to Claude Code in this pane (Switch now), or cancels a waiting switch. */
+  switchToClaudeCode?: (action: ChatSwitchAction) => void
+  /** Lets a switch read the composer's unsent draft. */
+  registerDraft?: (read: (() => ChatDraft) | null) => void
+  /** The composer took back what the chat carried across Claude Code, with this many of its images. */
+  takeCarried?: (carryId: string, images: number) => void
+  /** The composer has an image still uploading, which a switch would leave behind. */
+  setUploading?: (uploading: boolean) => void
 }
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
@@ -238,6 +248,13 @@ function ChatColumn({
           <AgentSwitcher agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} onSelect={select} onTask={task} />
         </div>
       ) : null}
+      {chat.session.claudeCodeSwitch ? (
+        <ClaudeCodeSwitchBanner
+          state={chat.session.claudeCodeSwitch}
+          disabled={!connected || !chat.hostConnected}
+          {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
+        />
+      ) : null}
       <ChatComposer
         session={chat.session}
         hostConnected={connected && chat.hostConnected}
@@ -257,8 +274,36 @@ function ChatColumn({
         {...(implementInNewPane ? { onImplementInNewPane: implementInNewPane } : {})}
         {...(turnFlow && flow ? { onQueue: flow.queue } : {})}
         {...(relay ? { relayTarget: relay, onClearRelay: () => setRelay(undefined) } : {})}
+        {...(chat.carried ? { carried: chat.carried } : {})}
+        {...(flow?.takeCarried ? { onCarriedTaken: flow.takeCarried } : {})}
+        {...(flow?.registerDraft ? { registerDraft: flow.registerDraft } : {})}
+        {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
       />
     </section>
+  )
+}
+
+/** A switch to Claude Code waiting for the turn to end (Cancel, or Switch now to interrupt it), or under way. */
+function ClaudeCodeSwitchBanner({ state, disabled, onSwitch }: {
+  state: ChatClaudeCodeSwitch
+  disabled: boolean
+  onSwitch?: (action: ChatSwitchAction) => void
+}) {
+  return (
+    <div className="px-4 pt-2">
+      <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label" role="status" data-testid="claude-code-switch">
+        <SquareTerminal className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+        <span className="min-w-40 flex-1">{state === 'after_turn' ? 'Switching to Claude Code when this turn ends…' : 'Switching to Claude Code…'}</span>
+        {state !== 'switching' && onSwitch ? (
+          <>
+            <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSwitch('cancel')}>Cancel</Button>
+            {state === 'after_turn' ? (
+              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title="Interrupt Claude's turn and switch">Switch now</Button>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </div>
   )
 }
 

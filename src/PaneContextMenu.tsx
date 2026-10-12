@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, MessageSquare, Pencil, Terminal, Trash2, X } from 'lucide-react'
+import { Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bookmark, Check, MessageSquare, Pencil, ScrollText, Terminal, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PaneMark, PaneMarkTone } from '../shared/protocol'
 import { PANE_MARK_PRESETS } from './paneMarks'
@@ -19,6 +19,11 @@ type PaneContextMenuProps = {
   /** Adds a pane that starts a Claude chat, with this folder's remembered profile. */
   onSplitChat?: (direction: PaneSplitDirection) => void
   onUseXtermFallbackChange?: (useXtermFallback: boolean) => void
+  /** A chat pane: whether it shows the chat or its host's log. */
+  chatView?: 'chat' | 'terminal'
+  onChatView?: (view: 'chat' | 'terminal') => void
+  /** Claude Code running a chat's conversation: exit it and bring the chat back. */
+  onReturnToChat?: () => void
   onSetMark?: (label: string, tone: PaneMarkTone) => void
   onAcknowledgeMark?: () => void
   onClearMark?: () => void
@@ -38,6 +43,9 @@ export function PaneContextMenu({
   onSplit,
   onSplitChat,
   onUseXtermFallbackChange,
+  chatView,
+  onChatView,
+  onReturnToChat,
   onSetMark = () => {},
   onAcknowledgeMark = () => {},
   onClearMark = () => {},
@@ -115,6 +123,18 @@ export function PaneContextMenu({
           <Pencil aria-hidden="true" />
           Rename
         </button>
+        {onReturnToChat ? (
+          <button type="button" role="menuitem" disabled={busy} onClick={() => choose(onReturnToChat)}>
+            <MessageSquare aria-hidden="true" />
+            Back to chat
+          </button>
+        ) : null}
+        {chatView && onChatView ? (
+          <button type="button" role="menuitem" onClick={() => choose(() => onChatView(chatView === 'chat' ? 'terminal' : 'chat'))}>
+            {chatView === 'chat' ? <ScrollText aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
+            {chatView === 'chat' ? 'Show host log' : 'Show chat'}
+          </button>
+        ) : null}
         <div className="pane-context-menu__label">Mark pane</div>
         <div className="pane-mark-options" role="group" aria-label="Pane status">
           {PANE_MARK_PRESETS.map((preset) => {

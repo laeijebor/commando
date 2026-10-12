@@ -31,6 +31,7 @@ Options:
   --claude-path PATH               Claude Code executable (default: claude on PATH)
   --readable-dir DIR               Let Claude read DIR without asking (a stashed plan's folder only)
   --prompt TEXT                    Send TEXT as the first message
+  --from-claude-code               Claude Code just handed this conversation back (Commando's switch)
 `
 
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
@@ -54,6 +55,8 @@ export interface HostArgs {
   /** A stashed plan's folder this chat (only) may read. */
   readableDir?: string
   prompt?: string
+  /** Started by Commando's switch when Claude Code exited; never carried into restarts. */
+  fromClaudeCode?: boolean
 }
 
 export function parseHostArgs(argv: string[], env: Record<string, string | undefined>): HostArgs | string {
@@ -89,6 +92,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           break
         }
         case '--prompt': args.prompt = needValue(true); break
+        case '--from-claude-code': args.fromClaudeCode = true; break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
         case '--effort': {
@@ -157,6 +161,34 @@ export function withSessionSettings(args: HostArgs, info: ChatSessionInfo): Host
     ...(info.prePlanPermissionMode ? { prePlanPermissionMode: info.prePlanPermissionMode } : {}),
     permissionMode: info.permissionMode && PERMISSION_MODES.has(info.permissionMode) ? info.permissionMode as PermissionMode : args.permissionMode,
   }
+}
+
+/**
+ * Claude Code's own flags for this chat's settings, so the TUI runs the
+ * conversation with the same model, effort and permission mode.
+ */
+export function claudeCodeFlags(args: HostArgs): string[] {
+  return [
+    ...(args.model ? ['--model', args.model] : []),
+    ...(args.effort ? ['--effort', args.effort] : []),
+    ...(args.permissionMode === 'bypassPermissions'
+      ? ['--dangerously-skip-permissions']
+      : ['--permission-mode', args.permissionMode, ...(args.bypassAllowed ? ['--allow-dangerously-skip-permissions'] : [])]),
+    ...(args.readableDir ? ['--add-dir', args.readableDir] : []),
+  ]
+}
+
+/**
+ * The pane command for a switch to Claude Code: the TUI on the same
+ * conversation, then (when it exits, however it exits) this chat again.
+ * bash runs it with job control, so Claude Code is the pane's foreground
+ * process: tmux names the pane after it (auto-resume needs that to see an
+ * agent, not a shell), and Ctrl-C reaches only Claude Code.
+ */
+export function claudeCodeSwitchCommand(args: HostArgs, claudePath: string, launcher: string, sessionId: string): string {
+  const tui = [claudePath, ...claudeCodeFlags(args), '--resume', sessionId].map(shellQuote).join(' ')
+  const back = ['exec', ...[launcher, 'claude', ...sessionFlags(args), '--resume', sessionId, '--from-claude-code'].map(shellQuote)].join(' ')
+  return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
 }
 
 /** The command that resumes a conversation as a chat pane; hooks append `--resume <id>`. */
@@ -252,6 +284,7 @@ async function main(): Promise<void> {
     images: new ChatImageStore(undefined, (message) => write(dim(message))),
     ...(readableDir ? { readableDirectories: [readableDir] } : {}),
     log: (message) => write(dim(message)),
+    ...(parsed.fromClaudeCode ? { returnedFromClaudeCode: true } : {}),
   })
 
   const printed = new Map<string, string>()
@@ -273,7 +306,9 @@ async function main(): Promise<void> {
     settings = withSessionSettings(parsed, info)
     if (launcher) session.setResumeCommand(chatResumeCommand(launcher, settings))
   })
+  let switching = false
   session.on('closed', () => {
+    if (switching) return
     const { session: info } = session.snapshot()
     write(color(31, `Session ended${info.error ? `: ${info.error}` : ''}. Press Ctrl-C twice to quit.`))
   })
@@ -307,6 +342,49 @@ async function main(): Promise<void> {
       restarting = false
     })
   }
+  /**
+   * Hands the conversation to Claude Code in this pane. The daemon keeps the
+   * queue first; then this session ends, so Claude Code is the only process
+   * writing the transcript, and tmux replaces this host with the TUI. When the
+   * TUI exits, the pane command brings this chat back on the same conversation.
+   */
+  const switchToClaudeCode = async (): Promise<void> => {
+    const sessionId = session.snapshot().session.sessionId
+    if (!launcher || !claudePath || !sessionId) {
+      throw new Error(!sessionId
+        ? 'this chat has no conversation yet'
+        : "this host was started without the commando-agent launcher or can't find claude")
+    }
+    const saved = await host.handoff({ type: 'handoff', paneId, sessionId, cwd: process.cwd(), queue: session.queued, returnFlags: sessionFlags(settings) })
+    if (!saved.ok) throw new Error(saved.error ?? "Commando couldn't keep the chat's queue and draft")
+    switching = true
+    write(dim('Switching to Claude Code…'))
+    const ended = new Promise<boolean>((resolve) => session.on('closed', () => resolve(true)))
+    session.handOver()
+    // The SDK's Claude process exits before the TUI starts on the same transcript.
+    if (!await Promise.race([ended, new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))])) {
+      write(color(31, "Claude didn't stop within 10 s; starting Claude Code anyway."))
+    }
+    const env = [
+      ...DAEMON_ENV_KEYS.flatMap((key) => process.env[key] ? ['-e', `${key}=${process.env[key]}`] : []),
+      ...(settings.configDir ? ['-e', `CLAUDE_CONFIG_DIR=${settings.configDir}`] : []),
+    ]
+    await new Promise<void>((resolve, reject) => {
+      execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), claudeCodeSwitchCommand(settings, claudePath, launcher, sessionId)], (error) => (error ? reject(error) : resolve()))
+    })
+  }
+  session.on('switchReady', () => {
+    switchToClaudeCode().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      // Once the session has ended, its queue and draft are kept and come back with the chat.
+      const reason = switching
+        ? `Couldn't start Claude Code: ${message}. Quit (Ctrl-C twice) and start commando-agent again with --resume ${session.snapshot().session.sessionId}.`
+        : `Couldn't switch to Claude Code: ${message}.`
+      write(color(31, reason))
+      session.endSwitch(reason)
+    })
+  })
+
   const requestRestart = () => {
     if (restarting) return
     restarting = true

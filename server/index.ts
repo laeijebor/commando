@@ -64,7 +64,9 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { AgentResumeService, readProcessTable } from './agent-resume.js'
-import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
+import { buildChatReturnCommand, isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
+import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
+import { returnToChat } from './chat-return.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -637,11 +639,22 @@ async function main(): Promise<void> {
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
+  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
+    .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : []))
+  // Chats switched to Claude Code: what they held, and the way back.
+  const chatHandoffs = new ChatHandoffStore(undefined, Date.now, (error) => console.error('[commando] chat handoff state failed', error))
+  await chatHandoffs.load()
+  const chatReturnCommand = (handoff: ChatHandoff): string | null => (
+    buildChatReturnCommand(handoff.sessionId, COMMANDO_AGENT_LAUNCHER, handoff.returnFlags, chatEnv)
+  )
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
     chatSettings: (paneId) => chatResumeSettings(paneId),
-    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
-      .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
+    chatReturnCommand: (sessionId) => {
+      const handoff = chatHandoffs.get(sessionId)
+      return handoff && handoff.returnedAt === undefined ? chatReturnCommand(handoff) ?? undefined : undefined
+    },
+    chatEnv,
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
       await tmux.sendText(pane.sessionId, pane.id, command)
@@ -858,8 +871,25 @@ async function main(): Promise<void> {
       log: (message) => console.warn(message),
     }),
     log: (message) => console.log(message),
+    handoffs: chatHandoffs,
+    onHandoffsChange: () => publishChatHandoffs(),
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
+  let publishedHandoffs = ''
+  const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode() })
+  function publishChatHandoffs(): void {
+    const message = chatHandoffsMessage()
+    const key = JSON.stringify(message)
+    if (key === publishedHandoffs) return
+    publishedHandoffs = key
+    broadcast(message)
+  }
+  /** Panes whose Claude Code is being asked to exit, so a second click doesn't ask again. */
+  const chatReturns = new Set<string>()
+  const panePidFromTmux = async (paneId: string): Promise<number | undefined> => {
+    const pid = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  }
   const chatImages = new ChatImageStore()
   const chatSends = new Map<string, Promise<void>>()
   const deliverChatSend = async (client: ClientState, message: Extract<ClientMessage, { type: 'chat_send' }>): Promise<void> => {
@@ -1378,7 +1408,16 @@ async function main(): Promise<void> {
         await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
-          return pane && agentStatuses.liveHookStatus(paneId, pane.command)
+          if (!pane) return undefined
+          // A switch hands the same conversation from the chat host to Claude Code, so the
+          // registry still scopes its status to the host's process; the resume checks that
+          // Claude Code in the pane really resumes that conversation.
+          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          if (live) return live
+          const status = agentStatuses.get(paneId)
+          const switched = status?.source === 'hook' && status.provider === 'claude' && status.agentSessionId !== undefined
+            && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
+          return switched ? status : undefined
         })
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
@@ -2169,6 +2208,43 @@ async function main(): Promise<void> {
         }
         return
       }
+      case 'chat_switch': {
+        const error = agentHosts.switchToClaudeCode(message.paneId, message.action, message.draft, message.requestId)
+        if (error) sendError(client, 'chat_unavailable', error, message.requestId)
+        return
+      }
+      case 'chat_carry_taken':
+        agentHosts.takeCarried(message.paneId, message.carryId, message.images)
+        return
+      case 'chat_return': {
+        const pane = paneForId(message.paneId)
+        if (!pane) {
+          sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
+          return
+        }
+        if (chatReturns.has(message.paneId)) return
+        chatReturns.add(message.paneId)
+        void returnToChat({
+          panePid: panePidFromTmux,
+          paneCommand: async (paneId) => (await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_current_command}']).catch(() => '')).trim() || undefined,
+          status: (paneId) => agentStatuses.get(paneId),
+          handoff: (sessionId) => chatHandoffs.get(sessionId),
+          chatOwnsPane: (paneId) => agentHosts.owns(paneId),
+          readProcessTable,
+          signal: (pid, signal) => { process.kill(pid, signal) },
+          returnCommand: chatReturnCommand,
+          sendCommand: async (paneId, command) => {
+            const current = paneForId(paneId)
+            if (!current) throw new Error('the pane is gone')
+            await tmux.sendText(current.sessionId, paneId, command)
+            await tmux.sendKey(current.sessionId, paneId, 'Enter')
+          },
+        }, message.paneId).then(
+          (error) => { if (error) sendError(client, 'chat_unavailable', error, message.requestId) },
+          (error: unknown) => sendError(client, 'chat_unavailable', `Couldn't return to the chat: ${error instanceof Error ? error.message : String(error)}`, message.requestId),
+        ).finally(() => chatReturns.delete(message.paneId))
+        return
+      }
       case 'chat_queue':
       case 'chat_task': {
         if (!agentHosts.takesTurnFlow(message.paneId)) {
@@ -2266,6 +2342,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
+    send(client, chatHandoffsMessage())
     send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {

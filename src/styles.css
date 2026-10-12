@@ -1533,6 +1533,45 @@ kbd {
   gap: 1px;
 }
 
+/* Chat | Claude Code: one conversation, shown as a chat or run in Claude Code. */
+.pane-agent-switch {
+  flex: 0 0 auto;
+  display: inline-flex;
+  height: 22px;
+  overflow: hidden;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+}
+
+.pane-agent-switch button {
+  padding: 0 8px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.pane-agent-switch button + button { border-left: 1px solid var(--border-mid); }
+.pane-agent-switch button[aria-pressed='true'] { color: var(--text); background: var(--surface-hover); }
+.pane-agent-switch button[aria-pressed='false']:hover:not(:disabled) { color: var(--text); background: var(--surface-soft); }
+.pane-agent-switch button:disabled { opacity: 0.4; }
+
+.pane-chat-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--amber);
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.pane-chat-alert span { flex: 1; min-width: 0; }
+
 .pane-context-menu-backdrop {
   position: fixed;
   inset: 0;
