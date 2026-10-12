@@ -193,7 +193,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   liveTargetIds: ReadonlySet<string>
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
-  onOpenQuickLook?: (pr: PrSummary) => boolean
+  onOpenQuickLook?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
   onOpenDiff?: (pr: PrSummary) => void
   onMerged: () => Promise<void>
   pill?: { count: number; sessionName: string; tone: string; status: string }
@@ -217,8 +217,10 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   const [threads, setThreads] = useState<PrThreads | null>(null)
   const [threadsFailed, setThreadsFailed] = useState(false)
   const [quickLook, setQuickLook] = useState(false)
+  const quickLookRequest = useRef(0)
 
   useEffect(() => () => {
+    quickLookRequest.current += 1
     if (openTimer.current !== null) window.clearTimeout(openTimer.current)
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
   }, [])
@@ -239,6 +241,17 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   const cancelTimers = () => {
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
     if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
+  }
+  const openQuickLook = () => {
+    cancelTimers()
+    setPopover(null)
+    const request = ++quickLookRequest.current
+    const opened = onOpenQuickLook?.(pr) ?? false
+    const fallback = (result: boolean | undefined) => {
+      if (request === quickLookRequest.current && result === false) setQuickLook(true)
+    }
+    if (typeof opened === 'boolean') fallback(opened)
+    else void opened.then(fallback, () => fallback(false))
   }
   const scheduleOpen = () => {
     if (quickLook) return
@@ -295,7 +308,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       {pill ? (
         <button type="button" className="session-pr-count"
           aria-label={`PR #${pr.number} in ${pill.sessionName}: ${pill.status}${pill.count > 1 ? `; ${pill.count - 1} more open pull request${pill.count > 2 ? 's' : ''}` : ''}`}
-          onClick={() => { cancelTimers(); setPopover(null); if (!onOpenQuickLook?.(pr)) setQuickLook(true) }}>
+          onClick={openQuickLook}>
           <GitPullRequest aria-hidden="true" /><span>#{pr.number}</span>
           {pill.count > 1 ? <span className="session-pr-more">+{pill.count - 1}</span> : null}
           <i className={`session-pr-readiness ${pill.tone}`} aria-hidden="true" />
@@ -312,7 +325,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
           className="pr-quick-trigger"
           aria-label={`Quick look at PR #${pr.number}`}
           title="Quick look"
-          onClick={() => { cancelTimers(); setPopover(null); if (!onOpenQuickLook?.(pr)) setQuickLook(true) }}
+          onClick={openQuickLook}
         ><Eye aria-hidden="true" /></button>
       </div>
       <a className="pr-card-title" href={pr.url} target="_blank" rel="noreferrer">{pr.title}</a>
@@ -419,7 +432,7 @@ export function PrsSection({
   liveTargetIds?: ReadonlySet<string>
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
-  onOpenQuickLook?: (pr: PrSummary) => boolean
+  onOpenQuickLook?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
   onOpenDiff?: (pr: PrSummary) => void
 }) {
   const defaultApi = useMemo(() => createPrsApi(token), [token])

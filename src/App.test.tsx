@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPane } from '../shared/protocol'
-import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
+import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PR_PANE_LOOKUP_TIMEOUT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { createPrsApi } from './prsApi'
 import { refreshPanePrs } from './prStore'
 import { getAuthBootstrap, getAuthUser } from './authClient'
@@ -847,6 +847,114 @@ describe('HUD tabs', () => {
       })
       return pr
     }
+    function stubColdPr() {
+      const pr = stubPr()
+      const fetchPr = vi.mocked(fetch).getMockImplementation()!
+      let resolve!: (response: Response) => void
+      let reject!: (cause: Error) => void
+      const pending = new Promise<Response>((done, fail) => { resolve = done; reject = fail })
+      vi.mocked(fetch).mockImplementation((input, init) => {
+        const url = String(input)
+        if (url.includes('/api/prs/pane') && new URL(url, 'http://localhost').searchParams.get('paneId') === adjacentPane.id) return pending.then((response) => response.clone())
+        return fetchPr(input, init)
+      })
+      return {
+        pr,
+        finish: (linked = true) => resolve(new Response(JSON.stringify({ list: {
+          targetId: adjacentPane.targetId, fetchedAt: Date.now(), totalCount: linked ? 1 : 0, truncated: false,
+          pullRequests: linked ? [{ ...pr, repo: 'acme/widgets', preview: pr }] : [],
+        } }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+        fail: () => reject(new Error('Pane PR fetch offline')),
+      }
+    }
+    const hudPrActionLabel = (subTab: 'Description' | 'Diff') => subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46'
+    const prTabSelections = () => vi.mocked(fetch).mock.calls.filter(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))
+
+    it.each(['Description', 'Diff'] as const)('waits for a cold startup pane cache and opens %s when the linked PR arrives', async (subTab) => {
+      const cold = stubColdPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(subTab) }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(open).not.toHaveBeenCalled()
+      expect(prTabSelections()).toHaveLength(0)
+      await act(async () => { cold.finish() })
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(open).not.toHaveBeenCalled()
+      expect(prTabSelections()).toHaveLength(1)
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/api/prs/pane?paneId=%2513'))).toHaveLength(1)
+    })
+    it.each(['Description', 'Diff'] as const)('uses the %s fallback when a cold cache loads without the PR', async (subTab) => {
+      const cold = stubColdPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(subTab) }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(open).not.toHaveBeenCalled()
+      await act(async () => { cold.finish(false) })
+      if (subTab === 'Description') expect(await screen.findByRole('dialog')).toBeVisible()
+      else await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(cold.pr.url, '_blank', 'noopener,noreferrer'))
+      expect(prTabSelections()).toHaveLength(0)
+    })
+    it.each(['Description', 'Diff'] as const)('uses the %s fallback when a cold pane fetch fails', async (subTab) => {
+      const cold = stubColdPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(subTab) }))
+      await act(async () => { cold.fail() })
+      if (subTab === 'Description') expect(await screen.findByRole('dialog')).toBeVisible()
+      else await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(cold.pr.url, '_blank', 'noopener,noreferrer'))
+      expect(prTabSelections()).toHaveLength(0)
+    })
+    it('bounds a cold lookup and ignores the response after falling back', async () => {
+      const cold = stubColdPr()
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      const trigger = await screen.findByRole('button', { name: 'Quick look at PR #12' })
+      vi.useFakeTimers()
+      fireEvent.click(trigger)
+      await act(async () => { await vi.advanceTimersByTimeAsync(PR_PANE_LOOKUP_TIMEOUT_MS - 1) })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+      expect(screen.getByRole('dialog')).toBeVisible()
+      await act(async () => { cold.finish() })
+      expect(screen.getByRole('dialog')).toBeVisible()
+      expect(prTabSelections()).toHaveLength(0)
+      expect(document.querySelector('[data-pane-id="%12"]')).toHaveClass('is-focused')
+    })
+    it.each(['Description', 'Diff'] as const)('ignores an older cold action when the newest HUD action opens %s', async (subTab) => {
+      const cold = stubColdPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(subTab === 'Description' ? 'Diff' : 'Description') }))
+      fireEvent.click(screen.getByRole('button', { name: hudPrActionLabel(subTab) }))
+      await act(async () => { cold.finish() })
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(open).not.toHaveBeenCalled()
+      expect(prTabSelections()).toHaveLength(1)
+    })
+    it('suppresses the older modal fallback when a newer Diff action falls back', async () => {
+      const cold = stubColdPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
+      await act(async () => { cold.finish(false) })
+      await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(cold.pr.url, '_blank', 'noopener,noreferrer'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(prTabSelections()).toHaveLength(0)
+    })
     it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {
       stubPr()
       await renderAppWithSnapshot()
@@ -875,7 +983,6 @@ describe('HUD tabs', () => {
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
       stubPr(true, remotePane)
       await renderAppWithSnapshot(snapshotAcrossSessions())
-      await act(async () => { await refreshPanePrs(createPrsApi('test-token'), remotePane.id) })
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
       fireEvent.click(await screen.findByRole('button', { name: subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')

@@ -185,6 +185,7 @@ const PrPanel = lazy(() => import('./PrPanel').then((module) => ({ default: modu
 
 const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 export const PANE_JUMP_HIGHLIGHT_MS = 1600
+export const PR_PANE_LOOKUP_TIMEOUT_MS = 5_000
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
@@ -1106,6 +1107,8 @@ export function App() {
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
+  const prHudActionVersion = useRef(0)
+  useEffect(() => () => { prHudActionVersion.current += 1 }, [token])
   const [prSelections, setPrSelections] = useState<Record<string, { tab: PrQuickLookTab; revision: number }>>({})
   const switchHudTab = useCallback((tab: HudTab) => {
     setHudTab(tab)
@@ -1992,7 +1995,7 @@ export function App() {
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
-  const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean => {
+  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
     if (matches.length !== 1) return false
@@ -2005,11 +2008,35 @@ export function App() {
     const tabId = builtinPanelTab(pane.id, key).id
     setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
     revealBuiltinTab(pane.id, key)
-    void refreshPanePrs(prsApi, pane.id)
+    if (refresh) void refreshPanePrs(prsApi, pane.id)
     return true
   }
+  const latestOpenLoadedPanePr = useRef(openLoadedPanePr)
+  latestOpenLoadedPanePr.current = openLoadedPanePr
+  const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean | Promise<boolean | undefined> => {
+    const version = ++prHudActionVersion.current
+    const targetId = pr.commandoMarker?.targetId
+    const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
+    if (matches.length !== 1) return false
+    const pane = matches[0]
+    if (cachedPanePrs(prsApi, pane.id)?.targetId === pane.targetId) return openLoadedPanePr(pr, subTab)
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (loaded: boolean) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timer)
+        resolve(version !== prHudActionVersion.current ? undefined : loaded ? latestOpenLoadedPanePr.current(pr, subTab, false) : false)
+      }
+      const timer = window.setTimeout(() => finish(false), PR_PANE_LOOKUP_TIMEOUT_MS)
+      void refreshPanePrs(prsApi, pane.id).then(() => finish(true), () => finish(false))
+    })
+  }
   const openPrDiff = (pr: PrSummary) => {
-    if (!openPanePr(pr, 'Diff')) window.open(pr.url, '_blank', 'noopener,noreferrer')
+    const opened = openPanePr(pr, 'Diff')
+    const fallback = (result: boolean | undefined) => { if (result === false) window.open(pr.url, '_blank', 'noopener,noreferrer') }
+    if (typeof opened === 'boolean') fallback(opened)
+    else void opened.then(fallback)
   }
 
   const openPaneMaximized = (paneId: string) => {
