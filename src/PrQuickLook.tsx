@@ -73,6 +73,7 @@ type PrQuickLookProps = {
   repo: string
   api: PrsApiClient
   actions: ReactNode
+  selection?: { tab: PrQuickLookTab; revision: number }
   onRefresh?(): Promise<void>
 }
 
@@ -125,7 +126,6 @@ export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(
 export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied }: PrQuickLookProps & {
   closeButton?: ReactNode
   visible?: boolean
-  selection?: { tab: PrQuickLookTab; revision: number }
   onSelectionApplied?(): void
 }) {
   const id = useId()

@@ -10,6 +10,7 @@ import {
   type PrSummary,
   type PrThreads,
 } from './prsApi'
+import type { PrQuickLookTab } from './PrQuickLook'
 import { markPrMerged, useRepoPrs } from './prStore'
 import { PrBadges } from './PrBadges'
 import { PrStackComposer } from './PrStackComposer'
@@ -194,7 +195,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
   onOpenQuickLook?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
-  onOpenDiff?: (pr: PrSummary) => void
+  onOpenDiff?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
   onMerged: () => Promise<void>
   pill?: { count: number; sessionName: string; tone: string; status: string }
 }) {
@@ -218,6 +219,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   const [threadsFailed, setThreadsFailed] = useState(false)
   const [quickLook, setQuickLook] = useState(false)
   const quickLookRequest = useRef(0)
+  const [quickLookSelection, setQuickLookSelection] = useState<{ tab: PrQuickLookTab; revision: number }>({ tab: 'Description', revision: 0 })
 
   useEffect(() => () => {
     quickLookRequest.current += 1
@@ -242,16 +244,34 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
     if (openTimer.current !== null) { window.clearTimeout(openTimer.current); openTimer.current = null }
     if (closeTimer.current !== null) { window.clearTimeout(closeTimer.current); closeTimer.current = null }
   }
+  const showQuickLook = (tab: PrQuickLookTab) => {
+    setQuickLookSelection((current) => ({ tab, revision: current.revision + 1 }))
+    setQuickLook(true)
+  }
   const openQuickLook = () => {
     cancelTimers()
     setPopover(null)
     const request = ++quickLookRequest.current
     const opened = onOpenQuickLook?.(pr) ?? false
     const fallback = (result: boolean | undefined) => {
-      if (request === quickLookRequest.current && result === false) setQuickLook(true)
+      if (request === quickLookRequest.current && result === false) showQuickLook('Description')
     }
     if (typeof opened === 'boolean') fallback(opened)
     else void opened.then(fallback, () => fallback(false))
+  }
+  const openDiff = () => {
+    cancelTimers()
+    setPopover(null)
+    const request = ++quickLookRequest.current
+    const opened = onOpenDiff?.(pr) ?? false
+    if (typeof opened === 'boolean') {
+      if (!opened) window.open(pr.url, '_blank', 'noopener,noreferrer')
+    } else {
+      const fallback = (result: boolean | undefined) => {
+        if (request === quickLookRequest.current && result === false) showQuickLook('Diff')
+      }
+      void opened.then(fallback, () => fallback(false))
+    }
   }
   const scheduleOpen = () => {
     if (quickLook) return
@@ -336,6 +356,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
             pr={pr}
             repo={repo}
             api={api}
+            selection={quickLookSelection}
             onClose={() => setQuickLook(false)}
             onRefresh={async () => { setThreads(null); setThreadsFailed(false); await onMerged() }}
             actions={<>
@@ -379,7 +400,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       ) : null}
       {!pill ? <>
       <div className="pr-meta">
-        <PrBadges pr={pr} number={pr.number} onOpenDiff={onOpenDiff ? () => onOpenDiff(pr) : undefined}>
+        <PrBadges pr={pr} number={pr.number} onOpenDiff={onOpenDiff ? openDiff : undefined}>
           {targetIsLive ? (
             <button
               type="button"
@@ -433,7 +454,7 @@ export function PrsSection({
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
   onOpenQuickLook?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
-  onOpenDiff?: (pr: PrSummary) => void
+  onOpenDiff?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
 }) {
   const defaultApi = useMemo(() => createPrsApi(token), [token])
   const api = suppliedApi ?? defaultApi

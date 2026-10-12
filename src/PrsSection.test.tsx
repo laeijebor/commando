@@ -296,7 +296,7 @@ describe('PrsSection', () => {
   it('opens the marked PR diff from its LOC counts', async () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     const selected = pr({ commandoMarker: { version: 1, targetId, relation: 'created' } })
-    const onOpenDiff = vi.fn()
+    const onOpenDiff = vi.fn(() => true)
     stubFetch({ list: () => jsonResponse({ list: listWith([selected]) }) })
 
     render(
@@ -319,7 +319,7 @@ describe('PrsSection', () => {
       }),
     })
 
-    const onOpenDiff = vi.fn()
+    const onOpenDiff = vi.fn(() => true)
     render(<PrsSection token="t" liveTargetIds={new Set()} onOpenDiff={onOpenDiff} />)
     fireEvent.click(await screen.findByRole('button', { name: /Open diff for PR/ }))
     expect(onOpenDiff).toHaveBeenCalledOnce()

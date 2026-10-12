@@ -2032,12 +2032,7 @@ export function App() {
       void refreshPanePrs(prsApi, pane.id).then(() => finish(true), () => finish(false))
     })
   }
-  const openPrDiff = (pr: PrSummary) => {
-    const opened = openPanePr(pr, 'Diff')
-    const fallback = (result: boolean | undefined) => { if (result === false) window.open(pr.url, '_blank', 'noopener,noreferrer') }
-    if (typeof opened === 'boolean') fallback(opened)
-    else void opened.then(fallback)
-  }
+  const openPrDiff = (pr: PrSummary) => openPanePr(pr, 'Diff')
 
   const openPaneMaximized = (paneId: string) => {
     if (!paneMap.has(paneId)) return
