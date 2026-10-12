@@ -747,13 +747,15 @@ export class GitDiffInspector {
         if (!(await this.refExists(root, validatedHead))) {
           throw new GitDiffError('bad-target', `Unknown git ref: ${validatedHead}`)
         }
-        const base = await this.mergeBase(root, validated, validatedHead)
+        // A PR comparison needs a real common ancestor: diffing two tips directly (e.g. in a
+        // shallow clone) would attribute base-branch changes to the PR.
+        const base = await this.commonAncestor(root, validated, validatedHead)
+        if (base === undefined) {
+          throw new GitDiffError('bad-target', usedFallback
+            ? "The PR's base commit isn't in this repo and no common ancestor with its branch is available"
+            : 'No common ancestor between the PR base and head is available in this repo')
+        }
         if (usedFallback) {
-          // mergeBase() returns the ref itself when git finds no common ancestor (e.g. a shallow
-          // clone); diffing those trees would show unrelated changes as the PR's.
-          if (base === validated) {
-            throw new GitDiffError('bad-target', "The PR's base commit isn't in this repo and no common ancestor with its branch is available")
-          }
           const { stdout } = await this.git(root, ['rev-parse', '--verify', '--quiet', `${validatedHead}^{commit}`])
           if (base === stdout.trim()) {
             throw new GitDiffError('bad-target', "The PR's base commit isn't in this repo and its branch already contains the PR")
@@ -848,6 +850,15 @@ export class GitDiffInspector {
       return true
     } catch {
       return false
+    }
+  }
+
+  private async commonAncestor(root: string, base: string, head: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.git(root, ['merge-base', base, head])
+      return stdout.trim() || undefined
+    } catch {
+      return undefined
     }
   }
 

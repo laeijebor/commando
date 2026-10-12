@@ -473,6 +473,13 @@ describe('GitDiffInspector.summary', () => {
     expect(repo.calls.some((call) => call.args[0] === 'diff')).toBe(false)
   })
 
+  it('rejects a pinned PR comparison with no common ancestor', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'], mergeBase: '' })
+    await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'base-tip', 'head-tip'))
+      .rejects.toMatchObject({ kind: 'bad-target' })
+    expect(repo.calls.some((call) => call.args[0] === 'diff')).toBe(false)
+  })
+
   it('rejects an origin fork instead of diffing against the wrong repository', async () => {
     const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], remotes: { origin: 'git@github.com:fork/widgets.git' } })
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
