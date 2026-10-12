@@ -840,5 +840,5 @@ export type ClientMessage =
   | { type: 'chat_switch'; paneId: string; action: ChatSwitchAction; draft?: { text: string; images: ChatImageRef[] }; requestId: string }
   /** Claude Code, running a conversation that started as a chat, exits so the chat comes back. */
   | { type: 'chat_return'; paneId: string; requestId: string }
-  /** The composer took what the chat carried across Claude Code. */
-  | { type: 'chat_carry_taken'; paneId: string; carryId: string; requestId: string }
+  /** The composer took what the chat carried across Claude Code: its text and the first `images` images (all when omitted). */
+  | { type: 'chat_carry_taken'; paneId: string; carryId: string; images?: number; requestId: string }

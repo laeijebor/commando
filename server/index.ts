@@ -2133,7 +2133,7 @@ async function main(): Promise<void> {
         return
       }
       case 'chat_carry_taken':
-        agentHosts.takeCarried(message.paneId, message.carryId)
+        agentHosts.takeCarried(message.paneId, message.carryId, message.images)
         return
       case 'chat_return': {
         const pane = paneForId(message.paneId)

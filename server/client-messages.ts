@@ -617,8 +617,9 @@ export function parseClientMessage(value: unknown): ParseResult {
     case 'chat_carry_taken': {
       const id = requestId(value.requestId)
       const carryId = typeof value.carryId === 'string' && value.carryId.length > 0 && value.carryId.length <= 200 ? value.carryId : null
-      return id && isPaneId(value.paneId) && carryId
-        ? { ok: true, message: { type: 'chat_carry_taken', paneId: value.paneId, carryId, requestId: id } }
+      const images = value.images === undefined || (Number.isInteger(value.images) && (value.images as number) >= 0 && (value.images as number) <= 1000) ? value.images as number | undefined : null
+      return id && isPaneId(value.paneId) && carryId && images !== null
+        ? { ok: true, message: { type: 'chat_carry_taken', paneId: value.paneId, carryId, ...(images === undefined ? {} : { images }), requestId: id } }
         : { ok: false, error: 'Invalid carried draft', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     default:

@@ -37,8 +37,10 @@ export interface ChatFlowServices {
   switchToClaudeCode?: (action: ChatSwitchAction) => void
   /** Lets a switch read the composer's unsent draft. */
   registerDraft?: (read: (() => ChatDraft) | null) => void
-  /** The composer took back what the chat carried across Claude Code. */
-  takeCarried?: (carryId: string) => void
+  /** The composer took back what the chat carried across Claude Code, with this many of its images. */
+  takeCarried?: (carryId: string, images: number) => void
+  /** The composer has an image still uploading, which a switch would leave behind. */
+  setUploading?: (uploading: boolean) => void
 }
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
@@ -275,6 +277,7 @@ function ChatColumn({
         {...(chat.carried ? { carried: chat.carried } : {})}
         {...(flow?.takeCarried ? { onCarriedTaken: flow.takeCarried } : {})}
         {...(flow?.registerDraft ? { registerDraft: flow.registerDraft } : {})}
+        {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
       />
     </section>
   )

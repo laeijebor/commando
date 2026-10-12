@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -45,11 +45,49 @@ describe('switching a chat to Claude Code', () => {
     const { input } = composer({ carried, onCarriedTaken })
     expect(input.value).toBe('queued\n\ndraft')
     expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
-    expect(onCarriedTaken).toHaveBeenCalledWith('carry-1')
+    expect(onCarriedTaken).toHaveBeenCalledWith('carry-1', 1)
     cleanup()
     // A remount before the daemon cleared it doesn't add it twice.
     const again = composer({ carried, onCarriedTaken })
     expect(again.input.value).toBe('')
+  })
+
+  it('restores only the carried images that fit, and the rest once there is room', () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({ id: `${String(index % 10).repeat(64)}.png`, name: `shot-${index}.png` }))
+    const onCarriedTaken = vi.fn()
+    const { rerender } = render(<ChatComposer session={session} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={{ id: 'carry-many', text: 'with images', images: many }} onCarriedTaken={onCarriedTaken} />)
+    expect(screen.getAllByRole('img')).toHaveLength(10)
+    expect(onCarriedTaken).toHaveBeenLastCalledWith('carry-many', 10)
+    expect(screen.getByRole('alert')).toHaveTextContent("2 images from before Claude Code don't fit in this message yet")
+    // The daemon offers the two left over; with no room they wait, unreported.
+    const left = { id: 'carry-left', text: '', images: many.slice(10) }
+    rerender(<ChatComposer session={session} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={left} onCarriedTaken={onCarriedTaken} />)
+    expect(onCarriedTaken).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getAllByRole('button', { name: /^Remove/ })[0]!)
+    expect(onCarriedTaken).toHaveBeenLastCalledWith('carry-left', 1)
+    expect(screen.getAllByRole('img')).toHaveLength(10)
+  })
+
+  it('leaves a carried draft with Commando while a switch waits', () => {
+    const onCarriedTaken = vi.fn()
+    const { input } = composer({ session: { ...session, claudeCodeSwitch: 'after_turn' }, carried: { id: 'carry-wait', text: 'later', images: [] }, onCarriedTaken })
+    expect(input.value).toBe('')
+    expect(onCarriedTaken).not.toHaveBeenCalled()
+  })
+
+  it('tells the app while an image uploads, so a switch waits for it', async () => {
+    let finish!: (ref: { id: string; name: string }) => void
+    const uploadImage = vi.fn(() => new Promise<{ id: string; name: string }>((resolve) => { finish = resolve }))
+    const onUploadingChange = vi.fn()
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() }))
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 80, height: 60, close: () => {} })))
+    const services = { searchFiles: vi.fn(), pullRequests: vi.fn(), uploadImage } as never
+    composer({ services, onUploadingChange })
+    fireEvent.change(screen.getByTestId('chat-image-input'), { target: { files: [new File(['x'], 'shot.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(onUploadingChange).toHaveBeenLastCalledWith(true))
+    finish({ id: imageId, name: 'shot.png' })
+    await waitFor(() => expect(onUploadingChange).toHaveBeenLastCalledWith(false))
+    vi.unstubAllGlobals()
   })
 
   it('shows the wait with Cancel and Switch now', () => {

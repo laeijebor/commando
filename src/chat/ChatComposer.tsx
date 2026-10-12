@@ -181,8 +181,11 @@ type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatIma
 /** The draft a switch to Claude Code carries across: text and uploaded images. */
 export type ChatDraft = { text: string; images: ChatImageRef[] }
 
-/** Carried drafts this page already put in a composer, so a remount before the daemon clears it doesn't add it twice. */
-const takenCarries = new Set<string>()
+/**
+ * Carried drafts this page already put in a composer, with how many of their
+ * images, so a remount before the daemon clears one doesn't add it twice.
+ */
+const takenCarries = new Map<string, number>()
 
 const FILE_SEARCH_DEBOUNCE_MS = 80
 const PR_CACHE_MS = 60_000
@@ -311,6 +314,7 @@ export function ChatComposer({
   carried,
   onCarriedTaken,
   registerDraft,
+  onUploadingChange,
 }: {
   session: ChatSessionInfo
   hostConnected: boolean
@@ -341,9 +345,12 @@ export function ChatComposer({
   onClearRelay?: () => void
   /** The draft and queue the chat had when it switched to Claude Code, back in the composer. */
   carried?: ChatCarriedDraft
-  onCarriedTaken?: (carryId: string) => void
+  /** `images`: how many of the carried images came back; the rest wait for room. */
+  onCarriedTaken?: (carryId: string, images: number) => void
   /** Lets a switch to Claude Code read the unsent draft. */
   registerDraft?: (read: (() => ChatDraft) | null) => void
+  /** An image is still uploading: a switch now would leave it behind. */
+  onUploadingChange?: (uploading: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -522,15 +529,21 @@ export function ChatComposer({
   }, [registerDraft])
 
   // Back from Claude Code: what the chat held comes back into the composer, once.
+  // Images beyond a message's limit stay with Commando and come back as room frees up.
+  const reportedCarries = useRef(new Set<string>())
   useEffect(() => {
-    if (!carried) return
-    if (!takenCarries.has(carried.id)) {
-      takenCarries.add(carried.id)
-      if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+    // A pending switch has taken the draft as it was; what's carried stays with Commando until then.
+    if (!carried || switching || reportedCarries.current.has(carried.id)) return
+    let restored = takenCarries.get(carried.id)
+    if (restored === undefined) {
       const fit = fitAttachments(attachments.length, carried.images.length)
-      const dropped = carried.images.length - fit.accepted
-      if (dropped) setAttachError(`${dropped} image${dropped === 1 ? '' : 's'} from before Claude Code didn't fit in one message: ${carried.images.slice(fit.accepted).map((ref) => ref.name ?? ref.id).join(', ')}`)
-      const images = carried.images.slice(0, fit.accepted).map((ref, index) => ({
+      const waiting = carried.images.length - fit.accepted
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (!carried.text && fit.accepted === 0) return
+      restored = fit.accepted
+      takenCarries.set(carried.id, restored)
+      if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      const images = carried.images.slice(0, restored).map((ref, index) => ({
         key: `carried-${carried.id}-${index}`,
         name: ref.name ?? 'image',
         previewUrl: chatImageUrl(ref.id),
@@ -538,12 +551,18 @@ export function ChatComposer({
       }))
       if (images.length) setAttachments((current) => [...images, ...current])
     }
-    onCarriedTaken?.(carried.id)
-    // Only a new carried draft is taken; the attachments it counts are this render's.
+    reportedCarries.current.add(carried.id)
+    onCarriedTaken?.(carried.id, restored)
+    // A carried draft is taken once; room for its images is what changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carried?.id])
+  }, [carried?.id, attachments.length, switching])
 
   const uploading = attachments.some((attachment) => !attachment.ref)
+  useEffect(() => {
+    if (!onUploadingChange) return
+    onUploadingChange(uploading)
+    return () => onUploadingChange(false)
+  }, [uploading, onUploadingChange])
   const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
   const planFollowUp = plan && !running && !relayTarget ? plan : undefined
   const refining = Boolean(draft.trim() || attachments.length)

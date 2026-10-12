@@ -350,6 +350,8 @@ type TerminalPaneProps = {
   onDismissChatActionError?: () => void
   /** The pane runs Claude Code on a conversation that started as a chat. */
   claudeCodeFromChat?: boolean
+  /** The chat's composer has an image still uploading. */
+  chatUploading?: boolean
   onSwitchToClaudeCode?: () => void
   onReturnToChat?: () => void
   onRename: (title: string) => Promise<void>
@@ -434,6 +436,7 @@ export function TerminalPaneCard({
   chatActionError,
   onDismissChatActionError,
   claudeCodeFromChat = false,
+  chatUploading = false,
   onSwitchToClaudeCode,
   onReturnToChat,
   onRename,
@@ -628,8 +631,8 @@ export function TerminalPaneCard({
             mode={chat ? 'chat' : 'claude-code'}
             hostLogShown={Boolean(chat) && !showChat}
             chatDisabled={!chat && !connected}
-            claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch)}
-            {...(chat ? { claudeCodeTitle: claudeCodeSwitchTitle(chat) } : {})}
+            claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch) || chatUploading}
+            {...(chat ? { claudeCodeTitle: chatUploading ? 'Waiting for image upload…' : claudeCodeSwitchTitle(chat) } : {})}
             onChat={() => (chat ? onChatView?.('chat') : onReturnToChat?.())}
             onClaudeCode={() => onSwitchToClaudeCode?.()}
           />
@@ -1050,6 +1053,8 @@ export function App() {
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
+  /** Chat panes whose composer has an image still uploading; a switch waits for it. */
+  const [chatUploads, setChatUploads] = useState<ReadonlySet<string>>(() => new Set())
   const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
   const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
   /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
@@ -2391,7 +2396,14 @@ export function App() {
           if (read) chatDraftReaders.current.set(paneId, read)
           else chatDraftReaders.current.delete(paneId)
         },
-        takeCarried: (carryId) => { latestChatDeps.current.send({ type: 'chat_carry_taken', paneId, carryId, requestId: requestId('chat-carry') }) },
+        takeCarried: (carryId, images) => { latestChatDeps.current.send({ type: 'chat_carry_taken', paneId, carryId, images, requestId: requestId('chat-carry') }) },
+        setUploading: (uploading) => setChatUploads((current) => {
+          if (current.has(paneId) === uploading) return current
+          const next = new Set(current)
+          if (uploading) next.add(paneId)
+          else next.delete(paneId)
+          return next
+        }),
       }
       chatFlowCache.current.set(paneId, flow)
     }
@@ -3506,6 +3518,7 @@ export function App() {
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
+                            chatUploading={chatUploads.has(pane.id)}
                             onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}
                             onReturnToChat={() => returnToChat(pane.id)}
                             index={leafPaneIds.indexOf(pane.id)}

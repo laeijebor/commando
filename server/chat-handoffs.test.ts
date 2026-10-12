@@ -36,8 +36,9 @@ describe('ChatHandoffStore', () => {
     expect(reloaded.inClaudeCode()).toEqual([])
     // A host reconnect before the composer took it offers the same draft again.
     expect(reloaded.returned('abcd1234-0000')).toEqual(carried)
-    expect(reloaded.take('abcd1234-0000', 'someone-else')).toBe(false)
-    expect(reloaded.take('abcd1234-0000', carried!.id)).toBe(true)
+    expect(reloaded.take('abcd1234-0000', 'someone-else')).toBeUndefined()
+    expect(reloaded.get('abcd1234-0000')).toBeDefined()
+    expect(reloaded.take('abcd1234-0000', carried!.id, 2)).toBeUndefined()
     await reloaded.flush()
     expect(JSON.parse(await readFile(handoffs.path, 'utf8'))).toEqual({ version: 1, entries: [] })
   })
@@ -68,5 +69,18 @@ describe('ChatHandoffStore', () => {
     await kept.save(switched)
     expect(kept.discard('abcd1234-0000')).toBe(true)
     expect(kept.inClaudeCode()).toEqual([])
+  })
+
+  it('keeps the carried images a composer had no room for, under a new id', async () => {
+    const handoffs = await store()
+    await handoffs.save(switched)
+    const carried = handoffs.returned('abcd1234-0000')!
+    const left = handoffs.take('abcd1234-0000', carried.id, 1)
+    expect(left).toEqual({ id: expect.any(String), text: '', images: [image(1)] })
+    expect(left!.id).not.toBe(carried.id)
+    expect(handoffs.take('abcd1234-0000', carried.id)).toBeUndefined()
+    expect(handoffs.get('abcd1234-0000')).toBeDefined()
+    expect(handoffs.take('abcd1234-0000', left!.id, 1)).toBeUndefined()
+    expect(handoffs.get('abcd1234-0000')).toBeUndefined()
   })
 })

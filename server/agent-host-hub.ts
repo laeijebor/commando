@@ -395,14 +395,17 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'switch', paneId, action, requestId }) ? null : 'No agent host is connected for this pane'
   }
 
-  /** A composer took back what the chat carried across Claude Code. */
-  takeCarried(paneId: string, carryId: string): boolean {
+  /**
+   * A composer took back what the chat carried across Claude Code, with the
+   * first `imagesTaken` images (all when omitted); the rest wait to be offered again.
+   */
+  takeCarried(paneId: string, carryId: string, imagesTaken?: number): boolean {
     const entry = this.chats.get(paneId)
     const sessionId = entry?.state.session.sessionId
     if (!entry || entry.state.carried?.id !== carryId || !sessionId) return false
-    this.dependencies.handoffs?.take(sessionId, carryId)
+    const left = this.dependencies.handoffs?.take(sessionId, carryId, imagesTaken)
     const { carried: _taken, ...rest } = entry.state
-    entry.state = rest
+    entry.state = left ? { ...rest, carried: left } : rest
     if (entry.visible) this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
     return true
   }

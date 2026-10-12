@@ -383,7 +383,10 @@ describe('AgentHostHub switch to Claude Code', () => {
     const handoffs = {
       save: async (entry: unknown) => { saved.push(entry); await save(entry) },
       returned: () => carried,
-      take: (_sessionId: string, carryId: string) => { taken.push(carryId); return true },
+      take: (_sessionId: string, carryId: string, images?: number) => {
+        taken.push(carryId)
+        return images === 0 ? { id: 'carry-2', text: '', images: [image] } : undefined
+      },
       discard: (sessionId: string) => { discarded.push(sessionId); return true },
     }
     const run = setup({ handoffs })
@@ -439,6 +442,17 @@ describe('AgentHostHub switch to Claude Code', () => {
     expect(taken).toEqual(['carry-1'])
     expect(hub.states()[0]?.carried).toBeUndefined()
     expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_state', chat: { paneId: '%1' } })
+  })
+
+  it('offers images that did not fit again under a new id', async () => {
+    const { hub, connect, broadcasts, setCarried } = switchable()
+    setCarried({ id: 'carry-1', text: 'draft', images: [image] })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5, sessionId: 'abcd1234-0000' }), items: [] })
+    await settle()
+    expect(hub.takeCarried('%1', 'carry-1', 0)).toBe(true)
+    expect(hub.states()[0]?.carried).toEqual({ id: 'carry-2', text: '', images: [image] })
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_state', chat: { carried: { id: 'carry-2' } } })
   })
 
   it('ends the chat as soon as a host that handed over goes, and forgets a switch the host gave up on', async () => {

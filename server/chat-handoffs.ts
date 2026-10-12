@@ -139,13 +139,25 @@ export class ChatHandoffStore {
     return carried
   }
 
-  /** A composer took what the chat carried back. */
-  take(sessionId: string, carryId: string): boolean {
+  /**
+   * A composer took what the chat carried back: its text, and the first
+   * `imagesTaken` images (all when omitted). Images that didn't fit stay here,
+   * offered again under a new id; that remainder is returned.
+   */
+  take(sessionId: string, carryId: string, imagesTaken?: number): ChatCarriedDraft | undefined {
     const entry = this.entries.get(sessionId)
-    if (!entry || entry.carryId !== carryId || entry.returnedAt === undefined) return false
-    this.entries.delete(sessionId)
+    if (!entry || entry.carryId !== carryId || entry.returnedAt === undefined) return undefined
+    const images = carriedDraft(entry)?.images ?? []
+    const left = imagesTaken === undefined ? [] : images.slice(imagesTaken)
+    if (!left.length) {
+      this.entries.delete(sessionId)
+      this.persistQuietly()
+      return undefined
+    }
+    const rest: ChatHandoff = { ...entry, draft: { text: '', images: left }, queue: [], carryId: randomUUID() }
+    this.entries.set(sessionId, rest)
     this.persistQuietly()
-    return true
+    return carriedDraft(rest)
   }
 
   /** Resolves once queued writes have reached disk. */
