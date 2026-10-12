@@ -213,6 +213,18 @@ describe('WebPaneCard agent requests', () => {
     expect(container.querySelector('iframe')).not.toBe(first)
   })
 
+  it('returns a reused iframe tab to its registered URL after local navigation', () => {
+    const props = { onClose: vi.fn(), onConfirm: vi.fn() }
+    const tab = { ...webPane, openRevision: 0 }
+    const view = render(<WebPaneCard {...props} webPane={tab} reloadRevision={0} />)
+    const first = view.container.querySelector('iframe')!
+    first.src = 'http://localhost:5173/settings'
+    view.rerender(<WebPaneCard {...props} webPane={{ ...tab, openRevision: 1 }} reloadRevision={1} />)
+    const reopened = view.container.querySelector('iframe')!
+    expect(reopened).not.toBe(first)
+    expect(reopened.src).toBe(tab.url)
+  })
+
   it('leaves canvas chromium reloads to the daemon', () => {
     const props = {
       webPane: { ...webPane, engine: 'chromium' as const },

@@ -1801,6 +1801,13 @@ async function main(): Promise<void> {
         console.error('[commando] chromium tile navigation after confirm failed', error)
       })
     },
+    onReopen: (pane) => {
+      if (pane.engine !== 'chromium') return
+      chromiumEngine.updatePendingSnapshot(pane.id, webPanePending.snapshot(pane.id))
+      void chromiumEngine.navigate(pane.id, pane.url).catch((error: unknown) => {
+        console.error('[commando] chromium tile navigation after reopen failed', error)
+      })
+    },
     onReload: (pane) => {
       if (pane.engine !== 'chromium') return
       void chromiumEngine.reload(pane.id, pane.url).catch((error: unknown) => {

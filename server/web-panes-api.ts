@@ -80,6 +80,8 @@ type WebPanesApiDependencies = {
   onClosed?: (webPaneId: string) => void
   /** Fired after a reload request (chromium tiles reload their headless page here). */
   onReload?: (pane: WebPane) => void
+  /** Fired after a URL reopen so chromium tiles return to their registered URL. */
+  onReopen?: (pane: WebPane) => void
   /** Agent navigate requests awaiting the owner, and agent-triggered reloads. */
   agentRequests: WebPaneAgentRequests
 }
@@ -406,7 +408,7 @@ export class WebPanesApi {
         const reused = !pane.content && existingIds.has(pane.id)
         if (reused && pane.status === 'open') {
           this.dependencies.agentRequests.reload(pane.id)
-          this.dependencies.onReload?.(pane)
+          this.dependencies.onReopen?.(pane)
         }
         this.adoptPending(pane)
         this.dependencies.onChange()

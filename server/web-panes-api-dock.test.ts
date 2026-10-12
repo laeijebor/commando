@@ -28,8 +28,9 @@ async function setup() {
   const agentRequests = new WebPaneAgentRequests()
   const onChange = vi.fn()
   const onReload = vi.fn()
+  const onReopen = vi.fn()
   const api = new WebPanesApi({
-    service, agentToken, agentRequests, onChange, onReload,
+    service, agentToken, agentRequests, onChange, onReload, onReopen,
     ownerAuthorized: async (request) => request.headers['x-test-owner'] === 'yes',
     paneForId: (id) => ['%12', '%13'].includes(id) ? { id, sessionId: '$1', windowId: '@3', width: 80, height: 50 } : undefined,
     feedback: new WebPaneFeedbackStore(new FeedbackJournal({ dir: directory })),
@@ -46,7 +47,7 @@ async function setup() {
     await api.handle(request, response as unknown as ServerResponse, new URL(path, 'http://localhost'))
     return { status: response.writeHead.mock.calls[0][0], body: JSON.parse(response.end.mock.calls[0][0]) }
   }
-  return { service, agentRequests, onChange, onReload, post }
+  return { service, agentRequests, onChange, onReload, onReopen, post }
 }
 
 describe('dock and URL reuse API', () => {
@@ -75,8 +76,8 @@ describe('dock and URL reuse API', () => {
     expect((await post(`/api/web-panes/${opened.body.webPaneId}/dock`, { dock: 'split' }, true)).status).toBe(400)
   })
 
-  it.each(['panel', 'split'] as const)('reuses a normalized URL in the %s and reloads through the same broadcast and headless callbacks as /reload', async (dock) => {
-    const { service, agentRequests, onChange, onReload, post } = await setup()
+  it.each(['panel', 'split'] as const)('reuses a normalized URL in the %s and calls the reopen hook with the tile', async (dock) => {
+    const { service, agentRequests, onChange, onReload, onReopen, post } = await setup()
     const first = await post('/api/web-panes', { url: 'http://LOCALHOST:80', anchor: '%12', engine: 'chromium' })
     expect(first).toMatchObject({ status: 201, body: { reused: false } })
     const id = first.body.webPaneId
@@ -86,10 +87,12 @@ describe('dock and URL reuse API', () => {
     expect(service.list()).toHaveLength(1)
     expect(service.get(id)).toMatchObject({ dock, unseen: dock === 'panel', openRevision: 1 })
     expect(agentRequests.reloads()[id]).toBe(1)
-    expect(onReload).toHaveBeenCalledWith(service.get(id))
+    expect(onReopen).toHaveBeenCalledExactlyOnceWith(service.get(id))
+    expect(onReload).not.toHaveBeenCalled()
     await post(`/api/web-panes/${id}/reload`, {})
     expect(agentRequests.reloads()[id]).toBe(2)
-    expect(onReload).toHaveBeenCalledTimes(2)
+    expect(onReload).toHaveBeenCalledExactlyOnceWith(service.get(id))
+    expect(onReopen).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenCalledTimes(dock === 'split' ? 4 : 3)
   })
 
@@ -106,7 +109,7 @@ describe('dock and URL reuse API', () => {
   })
 
   it('returns pending URL tiles as-is without any reload', async () => {
-    const { service, agentRequests, onReload, post } = await setup()
+    const { service, agentRequests, onReload, onReopen, post } = await setup()
     const body = { url: 'https://unconfirmed.example', anchor: '%12' }
     const first = await post('/api/web-panes', body)
     const pane = service.get(first.body.webPaneId)
@@ -115,5 +118,6 @@ describe('dock and URL reuse API', () => {
     expect(service.get(pane!.id)).toBe(pane)
     expect(agentRequests.reloads()).toEqual({})
     expect(onReload).not.toHaveBeenCalled()
+    expect(onReopen).not.toHaveBeenCalled()
   })
 })

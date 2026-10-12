@@ -500,3 +500,28 @@ describe('native panel tab visibility', () => {
     expect(attachment.detach).not.toHaveBeenCalled()
   })
 })
+
+describe('native URL reopens', () => {
+  it.each(['webkit', 'chromium'] as const)('returns a reused %s tile to its registered URL and keeps ordinary reloads on the current page', async (engine) => {
+    class Observer {
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', Observer)
+    const { attachment, bridge, loaded } = nativeHarness()
+    const tab = { ...webPane, engine, openRevision: 0 }
+    const props = { bridge, onFallback: vi.fn() }
+    const view = render(<NativeWebViewTile {...props} webPane={tab} reloadKey={0} />)
+    await waitFor(() => expect(bridge.attach).toHaveBeenCalledExactlyOnceWith(tab.id, tab.url, expect.any(Function), expect.any(Object)))
+    act(() => loaded('http://localhost:5173/settings'))
+    view.rerender(<NativeWebViewTile {...props} webPane={tab} reloadKey={1} />)
+    expect(bridge.reload).toHaveBeenCalledExactlyOnceWith(attachment.attachmentId)
+    expect(attachment.detach).not.toHaveBeenCalled()
+    expect(bridge.attach).toHaveBeenCalledTimes(1)
+    view.rerender(<NativeWebViewTile {...props} webPane={{ ...tab, openRevision: 1 }} reloadKey={1} />)
+    expect(attachment.detach).toHaveBeenCalledOnce()
+    expect(bridge.attach).toHaveBeenCalledTimes(2)
+    expect(bridge.attach).toHaveBeenLastCalledWith(tab.id, tab.url, expect.any(Function), expect.any(Object))
+    expect(bridge.reload).toHaveBeenCalledTimes(1)
+  })
+})

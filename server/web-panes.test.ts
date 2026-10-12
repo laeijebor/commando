@@ -1069,6 +1069,29 @@ describe('dock changes', () => {
 })
 
 describe('URL open reuse', () => {
+  it('does not reuse a URL tile stamped by another tmux socket', async () => {
+    const path = await temporaryStatePath()
+    const owner = track(new WebPaneService(path, Date.now, undefined, 'name:first'))
+    const first = owner.open({ ...anchor, url: 'http://localhost/' })
+    await owner.flush()
+    const foreign = track(new WebPaneService(path, Date.now, undefined, 'name:second'))
+    await foreign.load()
+    const reopened = foreign.open({ ...anchor, url: first.url })
+    expect(reopened.id).not.toBe(first.id)
+    expect(foreign.list()).toHaveLength(2)
+    expect(foreign.get(first.id)).toEqual(first)
+    expect(foreign.open({ ...anchor, url: first.url }).id).toBe(reopened.id)
+  })
+
+  it.each([{ windowId: '@4' }, { sessionId: '$2' }])('does not reuse a URL tile outside its window or session: %j', async (target) => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const first = service.open({ ...anchor, url: 'http://localhost/' })
+    const reopened = service.open({ ...anchor, ...target, url: first.url })
+    expect(reopened.id).not.toBe(first.id)
+    expect(service.list()).toHaveLength(2)
+    expect(service.get(first.id)).toEqual(first)
+  })
+
   it('normalizes URLs, increments each reopen even while unseen, and persists its revision', async () => {
     const path = await temporaryStatePath()
     const service = track(new WebPaneService(path))

@@ -438,6 +438,8 @@ export class WebPaneService {
     if (!content) {
       const existing = [...this.panes.values()].find((pane) =>
         pane.anchorPaneId === input.anchorPaneId && pane.engine === engine &&
+        (this.paneSocketHashes.get(pane.id) ?? this.socketHash) === this.socketHash &&
+        pane.windowId === input.windowId && pane.sessionId === input.sessionId &&
         !pane.content && pane.url === decision.url)
       if (existing) {
         if (existing.status === 'pending') return existing
