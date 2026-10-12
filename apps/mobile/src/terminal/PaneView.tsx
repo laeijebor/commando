@@ -1,7 +1,8 @@
-import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Platform,
   Pressable,
   StyleSheet,
@@ -10,7 +11,6 @@ import {
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
-import { SafeAreaInsetsContext } from 'react-native-safe-area-context'
 
 import type { WebPane } from '@commando/protocol'
 
@@ -64,9 +64,8 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
   const theme = useTheme()
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
-  // The screens leave the bottom edge to the pane, so the composer clears the home indicator itself.
-  const bottomInset = useContext(SafeAreaInsetsContext)?.bottom ?? 0
-  const keyboard = useKeyboardShown()
+  const body = useRef<View>(null)
+  const keyboard = useKeyboardOverlap(body)
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   return (
     <View style={styles.root}>
@@ -77,10 +76,7 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
         title={chat.session.title || context.title}
       />
       <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={[styles.body, { paddingBottom: keyboard ? 0 : bottomInset }]}
-      >
+      <View ref={body} style={[styles.body, { paddingBottom: keyboard ?? 0 }]}>
         <ChatErrorBoundary
           fallback={(error) => (
             <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
@@ -88,22 +84,36 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
         >
           <ChatView chat={chat} client={client} host={host} phase={state.phase} />
         </ChatErrorBoundary>
-      </KeyboardAvoidingView>
+      </View>
     </View>
   )
 }
 
-function useKeyboardShown(): boolean {
-  const [shown, setShown] = useState(false)
+/**
+ * How much of `view` the keyboard covers, or null while it is down. The pane
+ * sits under the stack's nav and above the tab bar, which KeyboardAvoidingView's
+ * parent-relative frame can't see, so this measures the view on the page
+ * (`measureInWindow` reports it relative to its screen here, not the window).
+ */
+function useKeyboardOverlap(view: React.RefObject<View | null>): number | null {
+  const [overlap, setOverlap] = useState<number | null>(null)
   useEffect(() => {
-    const show = Keyboard.addListener('keyboardWillShow', () => setShown(true))
-    const hide = Keyboard.addListener('keyboardWillHide', () => setShown(false))
+    const show = Keyboard.addListener('keyboardWillShow', (event) => {
+      view.current?.measure((_x, _y, _width, height, _pageX, pageY) => {
+        LayoutAnimation.configureNext(LayoutAnimation.create(event.duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+        setOverlap(Math.max(0, pageY + height - event.endCoordinates.screenY))
+      })
+    })
+    const hide = Keyboard.addListener('keyboardWillHide', (event) => {
+      LayoutAnimation.configureNext(LayoutAnimation.create(event.duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+      setOverlap(null)
+    })
     return () => {
       show.remove()
       hide.remove()
     }
-  }, [])
-  return shown
+  }, [view])
+  return overlap
 }
 
 /**
