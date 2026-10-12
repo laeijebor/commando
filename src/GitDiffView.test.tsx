@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 
@@ -52,6 +53,15 @@ function renderView(api = fakeApi(), onClose = vi.fn(), initialSummary = summary
   )
   return { api, onClose }
 }
+
+it('establishes its own container for the narrow layout query', async () => {
+  renderView()
+  await screen.findByText('DIFF')
+  expect(screen.getByRole('region', { name: 'Git diff' }).parentElement).toHaveClass('git-diff-view')
+  const css = readFileSync('src/git-diff.css', 'utf8')
+  expect(css).toMatch(/\.git-diff-view\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*git-diff;/)
+  expect(css).toContain('@container git-diff (width < 640px)')
+})
 
 it.each(['summary', 'diff'] as const)('clears an initial %s error after a successful silent refresh', async (failedRequest) => {
   vi.useFakeTimers()
