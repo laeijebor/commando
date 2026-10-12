@@ -64,3 +64,9 @@ export function resolveActivePanelTab(tabs: readonly PanelTab[], stored?: string
 export function defaultPanelCollapsed(hasWebTabs: boolean, remembered: string | null, hasHadWebTabs = false): boolean {
   return remembered === 'true' ? true : remembered === 'false' ? false : !(hasWebTabs || hasHadWebTabs)
 }
+
+/** New ids and URL reopens share the agent-open focus policy. */
+export function openedPanelTabs(tabs: readonly WebPane[], previous: ReadonlyMap<string, number>): WebPane[] {
+  return tabs.filter((tab) => tab.dock !== 'split' &&
+    (!previous.has(tab.id) || (tab.openRevision ?? 0) > previous.get(tab.id)!))
+}

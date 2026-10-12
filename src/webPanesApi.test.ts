@@ -357,3 +357,15 @@ it('shares canvas owner headers and parses both JSON and non-JSON errors', async
   await expect(canvasRequest('/api/canvas', '', {}, 'PNG export failed')).rejects.toThrow('PNG export failed (502)')
   vi.unstubAllGlobals()
 })
+
+it('POSTs dock changes with optional anchor geometry', async () => {
+  const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+  const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+  await api.dock('w-11111111', 'split', { cols: 100, rows: 30 })
+  await api.dock('w-11111111', 'panel')
+  const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+  expect(calls.map(([url, init]) => [url, init.method, JSON.parse(String(init.body))])).toEqual([
+    ['/api/web-panes/w-11111111/dock', 'POST', { dock: 'split', anchorSize: { cols: 100, rows: 30 } }],
+    ['/api/web-panes/w-11111111/dock', 'POST', { dock: 'panel' }],
+  ])
+})

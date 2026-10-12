@@ -15,7 +15,7 @@ export interface WebPanesApiClient {
     anchor: string,
     placement?: WebPanePlacement,
     engine?: WebPaneEngine,
-  ): Promise<{ webPaneId: string; status: 'open' | 'pending' }>
+  ): Promise<{ webPaneId: string; status: 'open' | 'pending'; reused?: boolean }>
   setActiveTab(webPaneId: string, anchorPaneId?: string): Promise<void>
   clearUnseen(webPaneId: string): Promise<void>
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
@@ -62,6 +62,7 @@ export interface WebPanesApiClient {
   dismissPendingDropped(webPaneId: string): Promise<WebPanePendingSnapshot>
   /** Tells the daemon which page the tile shows, returning that page's sent answers. */
   setPendingPage(webPaneId: string, url: string): Promise<WebPanePendingSnapshot>
+  dock(webPaneId: string, dock: 'panel' | 'split', anchorSize?: { cols: number; rows: number }): Promise<void>
   move(webPaneId: string, anchor: string, placement: 'right' | 'below'): Promise<void>
   navigate(webPaneId: string, url: string): Promise<void>
   answerNavigateRequest(webPaneId: string, requestId: string, decision: 'accept' | 'dismiss'): Promise<void>
@@ -256,6 +257,12 @@ export function createWebPanesApi(
         method: 'POST',
         body: JSON.stringify({ url }),
       }))
+    },
+    dock: async (webPaneId, dock, anchorSize) => {
+      await request(`/${encodeURIComponent(webPaneId)}/dock`, {
+        method: 'POST',
+        body: JSON.stringify({ dock, ...(anchorSize ? { anchorSize } : {}) }),
+      })
     },
     move: async (webPaneId, anchor, placement) => {
       await request(`/${encodeURIComponent(webPaneId)}/move`, {

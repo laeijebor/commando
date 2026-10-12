@@ -1021,3 +1021,72 @@ describe('built-in panel selection', () => {
     expect(restored.list()[0].activeTab).toBe(false)
   })
 })
+
+describe('dock changes', () => {
+  it('keeps order, falls back to the next then previous tab, and activates on return across persistence', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const tabs = [1, 2, 3].map((n) => service.open({ ...anchor, url: `http://localhost/${n}` }))
+    service.setActiveTab(tabs[1].id)
+    const split = service.dock(tabs[1].id, 'split', { cols: 80, rows: 50 })
+    expect(split).toMatchObject({ dock: 'split', order: 1, placement: 'below', layoutState: 'pending', anchorSize: { cols: 80, rows: 50 } })
+    expect(service.panelActiveTabs()['%12']).toBe(tabs[2].id)
+    service.dock(tabs[2].id, 'split', { cols: 180, rows: 40 })
+    expect(service.panelActiveTabs()['%12']).toBe(tabs[0].id)
+    service.dock(tabs[0].id, 'split', { cols: 180, rows: 40 })
+    expect(service.panelActiveTabs()['%12']).toBe('session')
+    const returned = service.dock(tabs[1].id, 'panel')
+    expect(returned).toMatchObject({ dock: 'panel', order: 1, layoutState: 'settled', unseen: false })
+    expect(returned.anchorSize).toBeUndefined()
+    expect(service.panelActiveTabs()['%12']).toBe(returned.id)
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.get(returned.id)).toEqual(returned)
+    expect(restored.panelActiveTabs()['%12']).toBe(returned.id)
+    service.dock(tabs[0].id, 'panel')
+    expect(service.list().filter((tab) => tab.dock === 'panel').sort((a, b) => a.order! - b.order!).map((tab) => tab.id)).toEqual([tabs[0].id, tabs[1].id])
+  })
+
+  it('rejects canvas splits, unknown dock values and invalid sizes', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const canvas = service.open({ ...anchor, url: 'http://localhost/canvas', content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'canvas.json' } })
+    const web = service.open({ ...anchor, url: 'http://localhost/web' })
+    for (const action of [() => service.dock(canvas.id, 'split', { cols: 100, rows: 30 }), () => service.dock(web.id, 'other'), () => service.dock(web.id, 'split', { cols: 0, rows: 30 }), () => service.dock(web.id, 'split')]) {
+      expect(action).toThrow(expect.objectContaining({ status: 400 }))
+    }
+  })
+
+  it('does not change selection, placement or metadata when already docked there', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const tab = service.open({ ...anchor, url: 'http://localhost/web' })
+    service.setActiveTab('session', '%12', () => true)
+    expect(service.dock(tab.id, 'panel')).toBe(tab)
+    expect(service.panelActiveTabs()['%12']).toBe('session')
+    const split = service.dock(tab.id, 'split', { cols: 180, rows: 40 })
+    expect(service.dock(tab.id, 'split', { cols: 60, rows: 40 })).toBe(split)
+  })
+})
+
+describe('URL open reuse', () => {
+  it('normalizes URLs, increments each reopen even while unseen, and persists its revision', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    const first = service.open({ ...anchor, url: 'http://LOCALHOST:80' })
+    const second = service.open({ ...anchor, url: 'http://localhost/' })
+    expect(second).toMatchObject({ id: first.id, unseen: true, openRevision: 1, order: first.order })
+    expect(service.open({ ...anchor, url: first.url }).openRevision).toBe(2)
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.get(first.id)?.openRevision).toBe(2)
+  })
+
+  it('reuses split tiles without an unseen badge and leaves pending tiles untouched', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const split = service.open({ ...anchor, url: 'http://localhost/', dock: 'split' })
+    expect(service.open({ ...anchor, url: split.url })).toMatchObject({ id: split.id, dock: 'split', unseen: false })
+    const pending = service.open({ ...anchor, url: 'https://unconfirmed.example/' })
+    expect(service.open({ ...anchor, url: pending.url })).toBe(pending)
+  })
+})

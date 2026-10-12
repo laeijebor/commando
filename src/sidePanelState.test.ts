@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -79,4 +79,12 @@ describe('built-in panel tabs', () => {
     expect(defaultPanelCollapsed(true, 'true', true)).toBe(true)
     expect(defaultPanelCollapsed(false, 'false', false)).toBe(false)
   })
+})
+
+it('detects URL reopens even while unseen and ignores split reloads', () => {
+  const first = { ...tab('w-one'), unseen: true, openRevision: 2 }
+  const reused = { ...first, openRevision: 3 }
+  const split = { ...tab('w-split'), dock: 'split' as const, openRevision: 3 }
+  const previous = new Map([[first.id, 2], [split.id, 2]])
+  expect(openedPanelTabs([first, reused, split, tab('w-new')], previous).map((tab) => tab.id)).toEqual(['w-one', 'w-new'])
 })

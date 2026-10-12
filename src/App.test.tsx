@@ -2175,3 +2175,87 @@ describe('pane renderer overrides', () => {
     })
   })
 })
+
+describe('side panel dock changes and reopens', () => {
+  it.each([false, true])('splits a tab and returns it without changing panel width or remounting terminals (maximized: %s)', async (maximized) => {
+    localStorage.setItem('commando.side-panel.width.@2', '62')
+    await renderAppWithSnapshot()
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const tab = { ...openWebPane, dock: 'panel' as const, order: 0, unseen: false, activeTab: true }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tab], activeTabs: { [pane.id]: tab.id } }))
+    const terminal = screen.getByTestId(`renderer-${pane.id}`)
+    const layout = document.querySelector('.window-panel-layout') as HTMLElement
+    if (maximized) fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Split out' }))
+    expect(layout).not.toHaveClass('is-panel-maximized')
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tab.id}/dock`, expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ dock: 'split', anchorSize: { cols: pane.width, rows: pane.height } }),
+    })))
+    const split = { ...tab, dock: 'split' as const, placement: 'right' as const, activeTab: false, layoutState: 'pending' as const, anchorSize: { cols: pane.width, rows: pane.height } }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [split], activeTabs: { [pane.id]: 'session' } }))
+    const tile = document.querySelector(`[data-web-pane-id="${tab.id}"]`)
+    expect(tile?.closest('.window-terminal-grid')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    expect(layout).not.toHaveClass('is-collapsed')
+    expect(layout.style.getPropertyValue('--side-panel-width')).toBe('62%')
+    expect(screen.getByTestId(`renderer-${pane.id}`)).toBe(terminal)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to panel' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tab.id}/dock`, expect.objectContaining({ body: JSON.stringify({ dock: 'panel' }) })))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...tab, layoutState: 'settled' }], activeTabs: { [pane.id]: tab.id } }))
+    expect(document.querySelector(`[data-web-pane-id="${tab.id}"]`)?.closest('.side-panel')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /127.0.0.1:41300\/plan/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByLabelText('New tab')).not.toBeInTheDocument()
+    expect(layout.style.getPropertyValue('--side-panel-width')).toBe('62%')
+    expect(screen.getByTestId(`renderer-${pane.id}`)).toBe(terminal)
+    selectSession(pane.id)
+    expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
+  })
+
+  it.each([true, false])('treats an existing id as an agent open when its pane is focused: %s', async (focused) => {
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const anchor = focused ? pane.id : adjacentPane.id
+    const tab = { ...openWebPane, anchorPaneId: anchor, dock: 'panel' as const, openRevision: 0, unseen: false }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tab], activeTabs: { [anchor]: 'session' } }))
+    vi.mocked(fetch).mockClear()
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...tab, openRevision: 1, unseen: true }], activeTabs: { [anchor]: 'session' } }))
+    if (focused) {
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tab.id}/active-tab`, expect.objectContaining({ method: 'POST' })))
+      expect(screen.getByRole('tab', { name: /127.0.0.1:41300\/plan/ })).toHaveAttribute('aria-selected', 'true')
+      await waitFor(() => expect(screen.queryByLabelText('New tab')).not.toBeInTheDocument())
+      selectSession(anchor)
+      act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...tab, openRevision: 2, unseen: true }], activeTabs: { [anchor]: 'session' } }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: /127.0.0.1:41300\/plan/ })).toHaveAttribute('aria-selected', 'true'))
+      await waitFor(() => expect(screen.queryByLabelText('New tab')).not.toBeInTheDocument())
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/seen'))).toHaveLength(2)
+    } else {
+      expect(document.querySelector(`[data-pane-id="${anchor}"] .pane-tab-count`)).toHaveTextContent('1 new')
+      expect(fetch).not.toHaveBeenCalledWith(`/api/web-panes/${tab.id}/active-tab`, expect.anything())
+      expect(fetch).not.toHaveBeenCalledWith(`/api/web-panes/${tab.id}/seen`, expect.anything())
+    }
+  })
+
+  it.each(['collapsed', 'maximized'] as const)('reveals a split simulator from a %s panel without selecting a panel tab or changing collapse state', async (state) => {
+    await renderAppWithSnapshot()
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Review', task: 'Review', sessionName: 'work', ports: [], idle: false }
+    const tile = { ...openWebPane, id: 'w-sim', dock: 'split' as const, url: '', content: { kind: 'simulator' as const, udid: simulator.udid } }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tile], activeTabs: { [pane.id]: 'session' } }))
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
+      state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
+    } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Session' }))
+    if (state === 'collapsed') fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    else fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane', hidden: true }))
+    const live = await screen.findByTestId(`sim-${simulator.udid}`)
+    await waitFor(() => expect(live).toHaveFocus())
+    expect(live).toBeVisible()
+    expect(live).toHaveAttribute('data-active', 'true')
+    expect(document.querySelector('.window-panel-layout')).not.toHaveClass('is-panel-maximized')
+    if (state === 'collapsed') expect(document.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
+    else expect(document.querySelector('.window-panel-layout')).not.toHaveClass('is-collapsed')
+    expect(fetch).not.toHaveBeenCalledWith(`/api/web-panes/${tile.id}/active-tab`, expect.anything())
+  })
+})

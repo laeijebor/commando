@@ -110,7 +110,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, builtinPanelTab, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -1070,9 +1070,9 @@ export function App() {
     setMaximizedBuiltinTab((current) => current && !tabs.some((tab) => tab.id === current.id) ? null : current)
     for (const anchor of new Set(tabs.map((tab) => tab.anchorPaneId))) panelTabSets.current.set(anchor, tabs.filter((tab) => tab.anchorPaneId === anchor))
   }, [])
-  const knownPanelTabs = useRef<Set<string> | null>(null)
+  const knownPanelTabs = useRef<Map<string, number> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
-  const seenPanelTabs = useRef(new Set<string>())
+  const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
@@ -1497,7 +1497,7 @@ export function App() {
         break
       case 'web_panes':
         if (knownPanelTabs.current === null) {
-          knownPanelTabs.current = new Set(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => tab.id))
+          knownPanelTabs.current = new Map(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => [tab.id, tab.openRevision ?? 0]))
         }
         setPanelActiveTabs(message.activeTabs ?? {})
         setWebPanes(message.webPanes)
@@ -1740,10 +1740,10 @@ export function App() {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
     const previous = knownPanelTabs.current
     if (previous === null) return
-    knownPanelTabs.current = new Set(tabs.map((tab) => tab.id))
+    knownPanelTabs.current = new Map(tabs.map((tab) => [tab.id, tab.openRevision ?? 0]))
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
-    const newTabs = focusedTabs.filter((tab) => !previous.has(tab.id))
+    const newTabs = openedPanelTabs(focusedTabs, previous)
     const selected = newTabs.at(-1)
     if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
@@ -2498,12 +2498,13 @@ export function App() {
   }
 
   const markPanelTabSeen = useCallback((tab: WebPane) => {
-    if (seenPanelTabs.current.has(tab.id)) return
-    seenPanelTabs.current.add(tab.id)
+    const revision = tab.openRevision ?? 0
+    if (seenPanelTabs.current.get(tab.id) === revision) return
+    seenPanelTabs.current.set(tab.id, revision)
     void createWebPanesApi(token).clearUnseen(tab.id).then(() => {
-      setWebPanes((current) => current.map((pane) => pane.id === tab.id ? { ...pane, unseen: false } : pane))
+      setWebPanes((current) => current.map((pane) => pane.id === tab.id && (pane.openRevision ?? 0) === revision ? { ...pane, unseen: false } : pane))
     }).catch((cause) => {
-      seenPanelTabs.current.delete(tab.id)
+      if (seenPanelTabs.current.get(tab.id) === revision) seenPanelTabs.current.delete(tab.id)
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark tab seen')
     })
   }, [token])
@@ -2542,8 +2543,17 @@ export function App() {
       return
     }
     setFocusedPaneId(tab.anchorPaneId)
-    void selectPanelTab(tab)
     setActiveSimulatorTileId(tab.id)
+    if (tab.dock === 'split') {
+      setMaximizedBuiltinTab(null)
+      setPanelRevealRequest(null)
+      const tile = document.querySelector<HTMLElement>(`[data-web-pane-id="${tab.id}"]`)
+      tile?.scrollIntoView?.({ block: 'nearest' })
+      tile?.querySelector<HTMLCanvasElement>('canvas:not([hidden])')?.focus()
+      setPendingSimulatorTileId(null)
+      return
+    }
+    void selectPanelTab(tab)
     setPanelRevealRequest({
       tabId: tab.id,
       onVisible: () => {
@@ -2583,6 +2593,22 @@ export function App() {
       await webPanesApi.close(webPaneId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    }
+  }
+
+  const dockWebPane = async (webPane: WebPane) => {
+    setPaneActionError('')
+    if (maximizedPaneId === webPane.id) {
+      clearLayoutTimers()
+      setMaximizedPaneId(null)
+    }
+    const dock = webPane.dock === 'split' ? 'panel' : 'split'
+    const anchor = paneMap.get(webPane.anchorPaneId)
+    try {
+      await webPanesApi.dock(webPane.id, dock,
+        dock === 'split' && anchor ? { cols: anchor.width, rows: anchor.height } : undefined)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to change web pane dock')
     }
   }
 
@@ -3415,6 +3441,7 @@ export function App() {
                   onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
                   simulatorActive={activeSimulatorTileId === webPane.id}
                   onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
+                  onDock={() => void dockWebPane(webPane)}
                   onClose={() => void closeWebPane(webPane.id)}
                   onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
                   wsToken={token}

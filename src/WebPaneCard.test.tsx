@@ -8,6 +8,8 @@ import type { WebPane } from '../shared/protocol'
 import { resetNativeWebViewBridge } from './nativeWebViewBridge'
 import { CHROMIUM_RENDERER_STORAGE_KEY, WebPaneCard } from './WebPaneCard'
 
+vi.mock('./CanvasPane', () => ({ CanvasPane: () => <div>Canvas</div> }))
+
 vi.mock('./SimLiveView', () => ({
   SimLiveView: ({ udid, token, active, visible }: { udid: string; token: string; active: boolean; visible: boolean }) => <div data-testid="sim-live" data-udid={udid} data-token={token} data-active={String(active)} data-visible={String(visible)} />,
 }))
@@ -475,5 +477,29 @@ describe('simulator tile', () => {
     rerender(<WebPaneCard webPane={webPane} visible={false} simulatorActive onClose={onClose} onConfirm={vi.fn()} />)
     expect(screen.getByTestId('sim-live')).toBe(live)
     expect(live).toHaveAttribute('data-visible', 'false')
+  })
+})
+
+describe('dock actions', () => {
+  it.each(['webkit', 'chromium', 'devtools', 'simulator'] as const)('offers Split out and Back to panel on %s tiles', (kind) => {
+    const onDock = vi.fn()
+    const tile: WebPane = { ...webPane, dock: 'panel',
+      engine: kind === 'chromium' ? 'chromium' : 'webkit',
+      ...(kind === 'devtools' ? { url: 'http://localhost/devtools/inspector.html' } : {}),
+      ...(kind === 'simulator' ? { content: { kind: 'simulator', udid: '11111111-1111-1111-1111-111111111111' } } : {}),
+    }
+    const view = render(<WebPaneCard webPane={tile} onClose={vi.fn()} onConfirm={vi.fn()} onDock={onDock} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Split out' }))
+    expect(onDock).toHaveBeenCalledOnce()
+    view.rerender(<WebPaneCard webPane={{ ...tile, dock: 'split' }} onClose={vi.fn()} onConfirm={vi.fn()} onDock={onDock} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to panel' }))
+    expect(onDock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not offer Split out on canvas tabs or detached windows', () => {
+    const view = render(<WebPaneCard webPane={{ ...webPane, content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'canvas.json' } }} onClose={vi.fn()} onConfirm={vi.fn()} onDock={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
+    view.rerender(<WebPaneCard webPane={webPane} detachedWindow onClose={vi.fn()} onConfirm={vi.fn()} onDock={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
   })
 })

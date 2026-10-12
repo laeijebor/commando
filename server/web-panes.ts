@@ -133,7 +133,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   const {
     content, id, url, title, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
     engine, openedBy, openerLabel,
-    status, createdAt, tmuxSocketHash, dock, order, unseen,
+    status, createdAt, tmuxSocketHash, dock, order, unseen, openRevision,
   } = value
   const parsedAnchorSize = parseAnchorSize(anchorSize)
   if (
@@ -145,6 +145,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     (dock !== undefined && dock !== 'panel' && dock !== 'split') ||
     (order !== undefined && (!Number.isSafeInteger(order) || (order as number) < 0)) ||
     (unseen !== undefined && typeof unseen !== 'boolean') ||
+    (openRevision !== undefined && (!Number.isSafeInteger(openRevision) || (openRevision as number) < 0)) ||
     typeof placement !== 'string' || !PLACEMENTS.includes(placement as WebPanePlacement) ||
     (layoutState !== undefined && !LAYOUT_STATES.includes(layoutState as typeof LAYOUT_STATES[number])) ||
     parsedAnchorSize === null ||
@@ -175,6 +176,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     dock: !canvas && dock === 'split' ? 'split' : 'panel',
     order: typeof order === 'number' ? order : -1,
     unseen: unseen === true,
+    ...(typeof openRevision === 'number' ? { openRevision } : {}),
     ...(layoutState !== undefined
       ? { layoutState: layoutState as typeof LAYOUT_STATES[number] }
       : {}),
@@ -419,9 +421,6 @@ export class WebPaneService {
     const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
     if (!PANE_ID.test(input.anchorPaneId)) throw new WebPaneError(400, 'Invalid anchor pane id')
-    if (this.panes.size >= MAX_WEB_PANES) {
-      throw new WebPaneError(409, `At most ${MAX_WEB_PANES} web panes can be open`)
-    }
     if (input.dock !== undefined && input.dock !== 'panel' && input.dock !== 'split') throw new WebPaneError(400, 'Invalid dock')
     const requested = input.placement ?? 'auto'
     if (!PLACEMENTS.includes(requested)) throw new WebPaneError(400, 'Invalid placement')
@@ -435,6 +434,26 @@ export class WebPaneService {
         : 'right'
     const engine = content ? 'webkit' : input.engine ?? 'webkit'
     if (!ENGINES.includes(engine)) throw new WebPaneError(400, 'Invalid engine')
+
+    if (!content) {
+      const existing = [...this.panes.values()].find((pane) =>
+        pane.anchorPaneId === input.anchorPaneId && pane.engine === engine &&
+        !pane.content && pane.url === decision.url)
+      if (existing) {
+        if (existing.status === 'pending') return existing
+        const reopened: WebPane = {
+          ...existing,
+          unseen: existing.dock !== 'split' && input.openedBy === 'agent',
+          openRevision: (existing.openRevision ?? 0) + 1,
+        }
+        this.panes.set(existing.id, reopened)
+        this.persist()
+        return reopened
+      }
+    }
+    if (this.panes.size >= MAX_WEB_PANES) {
+      throw new WebPaneError(409, `At most ${MAX_WEB_PANES} web panes can be open`)
+    }
 
     const pane: WebPane = {
       id: `w-${randomUUID().replaceAll('-', '').slice(0, 8)}`,
@@ -557,6 +576,31 @@ export class WebPaneService {
     this.paneSocketHashes.delete(id)
     this.persist()
     return true
+  }
+
+  dock(id: string, dock: unknown, anchorSize?: unknown): WebPane {
+    const pane = this.panes.get(id)
+    if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
+    if (dock !== 'panel' && dock !== 'split') throw new WebPaneError(400, 'Invalid dock')
+    if (dock === 'split' && pane.content?.kind === 'canvas') throw new WebPaneError(400, 'Canvas tabs cannot split out')
+    if ((pane.dock ?? 'panel') === dock) return pane
+    const size = parseAnchorSize(anchorSize)
+    if (size === null || (dock === 'split' && !size)) throw new WebPaneError(400, 'Invalid anchor size')
+    if (dock === 'split') this.releaseActiveTab(pane)
+    const updated: WebPane = {
+      ...pane, dock,
+      layoutState: dock === 'split' ? 'pending' : 'settled',
+      ...(dock === 'split' && size ? { placement: resolveAutoPlacement(size), anchorSize: size } : {}),
+    }
+    if (dock === 'panel') {
+      delete updated.anchorSize
+      updated.unseen = false
+      this.activeTabs[pane.anchorPaneId] = id
+    }
+    this.panes.set(id, updated)
+    this.reconcileActiveTabs()
+    this.persist()
+    return updated
   }
 
   /**

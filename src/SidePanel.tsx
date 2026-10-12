@@ -116,7 +116,7 @@ export function SidePanel({
   useEffect(() => { setAdding(null); setUrl('') }, [focusedPaneId])
   useEffect(() => {
     if (!gridMaximized && expanded && active && !isBuiltinTab(active) && active.unseen) onSeen?.(active)
-  }, [active?.id, active?.unseen, gridMaximized, expanded, onSeen])
+  }, [active?.id, active?.unseen, active && !isBuiltinTab(active) ? active.openRevision : undefined, gridMaximized, expanded, onSeen])
   useEffect(() => { if (revealRequest) changeCollapsed(false) }, [revealRequest])
   useEffect(() => {
     if (!revealRequest || !expanded || gridMaximized || active?.id !== revealRequest.tabId) return

@@ -480,6 +480,8 @@ export type WebPane = {
   dock?: 'panel' | 'split'
   order?: number
   unseen?: boolean
+  /** Increments when an existing URL tab is opened again. */
+  openRevision?: number
   /** Per-anchor selection included in the existing web-panes broadcast. */
   activeTab?: boolean
   /**

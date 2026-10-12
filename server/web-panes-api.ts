@@ -400,11 +400,19 @@ export class WebPanesApi {
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
-        const pane = this.openPane(await readJson(request), caller)
+        const body = await readJson(request)
+        const existingIds = new Set(this.dependencies.service.list().map((pane) => pane.id))
+        const pane = this.openPane(body, caller)
+        const reused = !pane.content && existingIds.has(pane.id)
+        if (reused && pane.status === 'open') {
+          this.dependencies.agentRequests.reload(pane.id)
+          this.dependencies.onReload?.(pane)
+        }
         this.adoptPending(pane)
         this.dependencies.onChange()
-        writeJson(response, 201, {
+        writeJson(response, reused ? 200 : 201, {
           ok: true,
+          reused,
           webPaneId: pane.id,
           beside: pane.anchorPaneId,
           status: pane.status,
@@ -762,6 +770,20 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'dock') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can change a tab dock')
+        const body = await readJson(request)
+        const existing = this.dependencies.service.get(route.id)
+        if (!existing) throw new HttpError(404, 'Web pane does not exist')
+        const anchor = this.dependencies.paneForId(existing.anchorPaneId)
+        const pane = this.dependencies.service.dock(route.id, body.dock,
+          body.anchorSize !== undefined ? body.anchorSize : (anchor ? { cols: anchor.width, rows: anchor.height } : undefined))
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true, webPaneId: pane.id, dock: pane.dock })
+        return true
+      }
+
       if (route.action === 'move') {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
@@ -915,7 +937,7 @@ export class WebPanesApi {
               : /\/threads\/[^/]+\/(replies|status)$/.test(url.pathname) || url.pathname.endsWith('/spotlight') ? 'POST'
               : url.pathname.includes('/spotlight-requests/') ? 'GET, POST'
               : url.pathname.includes('/navigate-requests/') ? 'GET, POST'
-              : url.pathname.endsWith('/navigate') || url.pathname.endsWith('/reload') ? 'POST'
+              : url.pathname.endsWith('/navigate') || url.pathname.endsWith('/reload') || url.pathname.endsWith('/dock') ? 'POST'
               : /\/attachments\/[^/]+$/.test(url.pathname) && !url.pathname.includes('/pending/') ? 'GET'
               : url.pathname.endsWith('/pending') ? 'GET, POST'
               : url.pathname.endsWith('/pending/send') ||
@@ -1005,7 +1027,7 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
-    | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'dock' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request' | 'spotlight-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'thread-replies' | 'thread-status'; threadId: string }
@@ -1038,7 +1060,7 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(spotlight|active-tab|seen|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(spotlight|active-tab|seen|dock|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
     if (!match || (!WEB_PANE_ID.test(match[1]) && !(match[2] === 'active-tab' && isBuiltinPanelKey(match[1])))) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
@@ -1050,7 +1072,7 @@ export class WebPanesApi {
       return { kind: 'pane', id: match[1], action: 'pending' }
     }
     if (match[3] !== undefined) throw new HttpError(404, 'Not found')
-    const action = match[2] === 'spotlight' ? 'spotlight' : match[2] === 'active-tab' || match[2] === 'seen'
+    const action = match[2] === 'spotlight' ? 'spotlight' : match[2] === 'active-tab' || match[2] === 'seen' || match[2] === 'dock'
       ? match[2]
       : match[2] === 'confirm'
       ? 'confirm'
