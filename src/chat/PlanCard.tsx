@@ -4,8 +4,7 @@ import { useState, type ReactNode } from 'react'
 import { BookmarkPlus, Check, Copy, ListChecks } from 'lucide-react'
 import { chatPlanTitle } from '../../shared/agent-chat'
 import { cn } from './cn'
-import type { PlanItem } from './timelineRows'
-import { canCollapsePlan, collapsedPlanPreview, planBody } from './turnFlow'
+import { canCollapsePlan, collapsedPlanPreview, planBody, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 
 export type SavePlan = (markdown: string) => Promise<{ path: string }>

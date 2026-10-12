@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatItem, ChatState } from '../../shared/agent-chat'
 import { ChatPane } from './ChatPane'
-import { deriveTimelineRows, patchLines, pendingRequests, shortPath, thoughtLabel, workSummary } from './timelineRows'
+import { deriveTimelineRows, patchLines, pendingRequests, shortPath, thoughtLabel, workSummary } from '../../shared/chat-timeline'
 
 afterEach(cleanup)
 

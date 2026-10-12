@@ -23,7 +23,7 @@ import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
-import { latestTodos, pendingRequests, type SubagentItem } from './timelineRows'
+import { latestTodos, pendingRequests, type SubagentItem } from '../../shared/chat-timeline'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
 import './chat.css'
 

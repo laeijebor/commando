@@ -20,28 +20,27 @@ import {
   type ChatSessionPermissionMode,
   type ChatSettingsChange,
 } from '../../shared/agent-chat'
-import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
+import { prepareImage, type PreparedImage } from './attachImages'
 import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
-import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable } from './ComposerControls'
+import { ContextMeter, ModelPicker, PermissionPicker } from './ComposerControls'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
   filterCommands,
-  filterPullRequests,
+  fitAttachments,
   mentionText,
+  modelMenuAvailable,
   moveCommandToStart,
-  pullRequestText,
   replaceRange,
-  useTriggerState,
   type ComposerTrigger,
-  type PullRequestOption,
-} from './composerTriggers'
+} from '../../shared/chat-composer'
+import { filterPullRequests, pullRequestText, useTriggerState, type PullRequestOption } from './composerTriggers'
 import { StashMenu } from './StashMenu'
 import { useNow } from './Subagents'
-import { shortPath, type PlanItem } from './timelineRows'
+import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
 
