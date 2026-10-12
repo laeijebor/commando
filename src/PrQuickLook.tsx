@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ExternalLink, X } from 'lucide-react'
 import Markdown from 'react-markdown'
@@ -15,7 +15,7 @@ import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
 
 const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts', 'Stack'] as const
-type Tab = (typeof tabs)[number]
+export type PrQuickLookTab = (typeof tabs)[number]
 type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T }
 
 function MarkdownBody({ body }: { body: string }) {
@@ -68,71 +68,18 @@ function ConversationComment({
   )
 }
 
-export function PrQuickLook({
-  pr,
-  repo,
-  api,
-  onClose,
-  actions,
-  onRefresh,
-}: {
+type PrQuickLookProps = {
   pr: PrSummary
   repo: string
   api: PrsApiClient
-  onClose(): void
   actions: ReactNode
   onRefresh?(): Promise<void>
-}) {
-  const references = JSON.stringify([
-    repo,
-    pr.number,
-    pr.state,
-    pr.headRefName,
-    pr.baseRefName,
-    pr.headRefOid,
-    pr.baseRefOid,
-  ])
-  const detailRevision = JSON.stringify([
-    references,
-    pr.updatedAt,
-    pr.checks,
-    pr.unresolvedThreads,
-    pr.unansweredThreads,
-    pr.reviewDecision,
-    pr.reviews,
-    pr.requestedReviewers,
-  ])
-  const [tab, setTab] = useState<Tab>('Description')
-  const [detailSnapshot, setDetailSnapshot] = useState<Snapshot<PrDetails> | null>(null)
-  const [detailError, setDetailError] = useState('')
-  const [diffSnapshot, setDiffSnapshot] = useState<Snapshot<PrRemoteDiff> | null>(null)
-  const [diffError, setDiffError] = useState('')
-  const [retry, setRetry] = useState(0)
-  const [selectedPath, setSelectedPath] = useState('')
-  const [filter, setFilter] = useState('')
-  const [conflictSnapshot, setConflictSnapshot] = useState<Snapshot<PrConflicts> | null>(null)
-  // Hide stale data immediately on a new render, including before effects or old requests settle.
-  const details =
-    detailSnapshot?.api === api && detailSnapshot.revision === detailRevision ? detailSnapshot.value : null
-  const diff = diffSnapshot?.api === api && diffSnapshot.revision === references ? diffSnapshot.value : null
-  const conflicts =
-    conflictSnapshot?.api === api && conflictSnapshot.revision === references ? conflictSnapshot.value : null
+}
+
+export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(): void }) {
   const dialog = useRef<HTMLElement>(null)
   const closeRef = useRef(onClose)
-  const detailRequest = useRef(0)
-  const latest = useRef({ api, references, detailRevision, pr })
-  latest.current = { api, references, detailRevision, pr }
   closeRef.current = onClose
-
-  useEffect(() => {
-    setDetailSnapshot(null)
-    setDiffSnapshot(null)
-    setConflictSnapshot(null)
-    setDetailError('')
-    setDiffError('')
-    setSelectedPath('')
-  }, [api, references])
-
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
     dialog.current?.querySelector<HTMLButtonElement>('button')?.focus()
@@ -162,12 +109,82 @@ export function PrQuickLook({
     window.addEventListener('keydown', keydown, true)
     return () => {
       window.removeEventListener('keydown', keydown, true)
-      detailRequest.current += 1
       previous?.focus()
     }
   }, [])
+  return createPortal(
+    <div className="pr-quick-backdrop" data-native-terminal-occluder=""
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="pr-quick-modal" ref={dialog} role="dialog" aria-modal="true" aria-label={`PR #${props.pr.number}: ${props.pr.title}`}>
+        <PrQuickLookView {...props} closeButton={<button type="button" className="icon-button" aria-label="Close PR quick look" onClick={onClose}><X /></button>} />
+      </section>
+    </div>, document.body,
+  )
+}
+
+export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied }: PrQuickLookProps & {
+  closeButton?: ReactNode
+  visible?: boolean
+  selection?: { tab: PrQuickLookTab; revision: number }
+  onSelectionApplied?(): void
+}) {
+  const id = useId()
+  const references = JSON.stringify([
+    repo,
+    pr.number,
+    pr.state,
+    pr.headRefName,
+    pr.baseRefName,
+    pr.headRefOid,
+    pr.baseRefOid,
+  ])
+  const detailRevision = JSON.stringify([
+    references,
+    pr.updatedAt,
+    pr.checks,
+    pr.unresolvedThreads,
+    pr.unansweredThreads,
+    pr.reviewDecision,
+    pr.reviews,
+    pr.requestedReviewers,
+  ])
+  const [tab, setTab] = useState<PrQuickLookTab>(selection?.tab ?? 'Description')
+  useEffect(() => {
+    if (!selection) return
+    setTab(selection.tab)
+    onSelectionApplied?.()
+  }, [selection?.revision, selection?.tab])
+  const [detailSnapshot, setDetailSnapshot] = useState<Snapshot<PrDetails> | null>(null)
+  const [detailError, setDetailError] = useState('')
+  const [diffSnapshot, setDiffSnapshot] = useState<Snapshot<PrRemoteDiff> | null>(null)
+  const [diffError, setDiffError] = useState('')
+  const [retry, setRetry] = useState(0)
+  const [selectedPath, setSelectedPath] = useState('')
+  const [filter, setFilter] = useState('')
+  const [conflictSnapshot, setConflictSnapshot] = useState<Snapshot<PrConflicts> | null>(null)
+  // Hide stale data immediately on a new render, including before effects or old requests settle.
+  const details =
+    detailSnapshot?.api === api && detailSnapshot.revision === detailRevision ? detailSnapshot.value : null
+  const diff = diffSnapshot?.api === api && diffSnapshot.revision === references ? diffSnapshot.value : null
+  const conflicts =
+    conflictSnapshot?.api === api && conflictSnapshot.revision === references ? conflictSnapshot.value : null
+  const detailRequest = useRef(0)
+  const latest = useRef({ api, references, detailRevision, pr })
+  latest.current = { api, references, detailRevision, pr }
 
   useEffect(() => {
+    setDetailSnapshot(null)
+    setDiffSnapshot(null)
+    setConflictSnapshot(null)
+    setDetailError('')
+    setDiffError('')
+    setSelectedPath('')
+  }, [api, references])
+
+  useEffect(() => () => { detailRequest.current += 1 }, [])
+
+  useEffect(() => {
+    if (!visible) return
     let active = true
     const request = ++detailRequest.current
     setDetailError('')
@@ -187,10 +204,10 @@ export function PrQuickLook({
     return () => {
       active = false
     }
-  }, [api, repo, pr.number, references, detailRevision, retry])
+  }, [api, repo, pr.number, references, detailRevision, retry, visible])
 
   useEffect(() => {
-    if (tab !== 'Diff' || diff) return
+    if (!visible || tab !== 'Diff' || diff) return
     let active = true
     setDiffError('')
     api
@@ -208,7 +225,7 @@ export function PrQuickLook({
     return () => {
       active = false
     }
-  }, [tab, api, repo, pr.number, references, diff, retry])
+  }, [tab, api, repo, pr.number, references, diff, retry, visible])
 
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
   const error = tab === 'Diff' ? diffError : detailError
@@ -248,34 +265,19 @@ export function PrQuickLook({
     setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value })
     if (refreshError) throw refreshError
   }
-  return createPortal(
-    <div
-      className="pr-quick-backdrop"
-      data-native-terminal-occluder=""
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
-    >
-      <section
-        className="pr-quick-modal"
-        ref={dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="pr-quick-title"
-      >
+  return (
+    <div className="pr-quick-view">
         <header className="pr-quick-header">
           <div>
             <span className="pr-quick-repo">
               {repo} · #{pr.number}
             </span>
-            <h2 id="pr-quick-title">{pr.title}</h2>
+            <h2>{pr.title}</h2>
           </div>
           <span className={`pr-state ${pr.isDraft && pr.state === 'open' ? 'draft' : pr.state}`}>
             {pr.isDraft && pr.state === 'open' ? 'Draft' : pr.state}
           </span>
-          <button type="button" className="icon-button" aria-label="Close PR quick look" onClick={onClose}>
-            <X />
-          </button>
+          {closeButton}
         </header>
         <div className="pr-quick-meta">
           <code>{pr.headRefName}</code>
@@ -315,11 +317,11 @@ export function PrQuickLook({
           {tabs.map((name, index) => (
             <button
               key={name}
-              id={`pr-quick-tab-${name}`}
+              id={`${id}-tab-${name}`}
               type="button"
               role="tab"
               aria-selected={tab === name}
-              aria-controls="pr-quick-panel"
+              aria-controls={`${id}-panel`}
               tabIndex={tab === name ? 0 : -1}
               onClick={() => setTab(name)}
               onKeyDown={(event) => {
@@ -336,7 +338,7 @@ export function PrQuickLook({
                 if (next < 0) return
                 event.preventDefault()
                 setTab(tabs[next])
-                document.getElementById(`pr-quick-tab-${tabs[next]}`)?.focus()
+                document.getElementById(`${id}-tab-${tabs[next]}`)?.focus()
               }}
             >
               {name}
@@ -348,8 +350,8 @@ export function PrQuickLook({
         <div
           className={`pr-quick-panel${tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
           role="tabpanel"
-          id="pr-quick-panel"
-          aria-labelledby={`pr-quick-tab-${tab}`}
+          id={`${id}-panel`}
+          aria-labelledby={`${id}-tab-${tab}`}
           tabIndex={0}
         >
           {error && tab !== 'Conflicts' && tab !== 'Stack' ? (
@@ -519,8 +521,6 @@ export function PrQuickLook({
             <ExternalLink aria-hidden="true" /> Open on GitHub
           </a>
         </footer>
-      </section>
-    </div>,
-    document.body,
+    </div>
   )
 }

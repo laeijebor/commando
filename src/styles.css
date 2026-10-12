@@ -4728,10 +4728,7 @@ body.is-resizing-hud-pinned-note {
 .side-panel-rail .side-panel-expand { position: relative; }
 .side-panel-rail .side-panel-new { position: absolute; right: 5px; top: 5px; }
 .pane-worklog.is-panel { width: 100%; flex: 1; border-left: 0; }
-.panel-pr-summary { width: 100%; overflow: auto; padding: 12px; }
-.panel-pr-comparison { width: 100%; min-height: 0; display: flex; flex-direction: column; }
-.panel-pr-summary > button, .panel-pr-comparison > button { padding: 8px; border: 0; color: var(--text); background: var(--surface-hover); cursor: pointer; }
-.panel-pr-comparison > .git-diff-view { flex: 1; }
+
 .terminal-pane .pane-heading { min-width: 80px; }
 .pane-tab-count { flex-shrink: 1; overflow: hidden; }
 @container (max-width: 480px) { .pane-tab-count-detail { display: none; } }
@@ -4739,3 +4736,9 @@ body.is-resizing-hud-pinned-note {
 
 .side-panel-new.is-warning { background: var(--amber); }
 .side-panel-add { flex-shrink: 0; }
+
+.side-panel-pr-state.open, .side-panel-pr-indicator.open { color: var(--green); }
+.side-panel-pr-state.draft, .side-panel-pr-indicator.draft { color: var(--muted); }
+.side-panel-pr-state.merged, .side-panel-pr-indicator.merged { color: var(--purple); }
+.side-panel-pr-state.closed, .side-panel-pr-indicator.closed { color: var(--red); }
+.side-panel-pr-indicator { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }

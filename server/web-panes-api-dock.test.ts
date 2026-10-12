@@ -121,3 +121,22 @@ describe('dock and URL reuse API', () => {
     expect(onReopen).not.toHaveBeenCalled()
   })
 })
+
+describe('PR panel selection API', () => {
+  it.each(['pr:12', 'pr%3A12'])('accepts %s for an existing pane without a web tile or layout action', async (key) => {
+    const { service, post, onChange, onReload, onReopen } = await setup()
+    expect((await post(`/api/web-panes/${key}/active-tab`, { anchorPaneId: '%12' }, true)).status).toBe(200)
+    expect(service.panelActiveTabs()).toEqual({ '%12': 'pr:12' })
+    expect(service.list()).toEqual([])
+    expect(onChange).toHaveBeenCalledOnce()
+    expect(onReload).not.toHaveBeenCalled()
+    expect(onReopen).not.toHaveBeenCalled()
+    expect((await post(`/api/web-panes/${key}/active-tab`, { anchorPaneId: '%999' }, true)).status).toBe(404)
+  })
+  it.each(['pr', 'pr%3A0', 'pr%3A-1', 'pr%3A01', 'pr%3A1x', 'pr%ZZ', 'pr%3A12/dock'])('rejects malformed or non-selection path %s', async (key) => {
+    const { post, service } = await setup()
+    const path = key.endsWith('/dock') ? key : `${key}/active-tab`
+    expect((await post(`/api/web-panes/${path}`, { anchorPaneId: '%12' }, true)).status).toBe(404)
+    expect(service.panelActiveTabs()).toEqual({})
+  })
+})

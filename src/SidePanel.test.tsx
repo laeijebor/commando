@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
-import type { PrsApiClient } from './prsApi'
+import type { PanePrSummary, PrsApiClient } from './prsApi'
 import { SidePanel } from './SidePanel'
 
 const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
@@ -78,6 +78,46 @@ describe('SidePanel', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
     expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('keeps one PR rail icon, all linked tabs and mounted inactive bodies, with removal fallback and legacy migration', async () => {
+    vi.useFakeTimers()
+    const pr = (number: number, state: 'open' | 'merged' | 'closed', updatedAt: string, isDraft = false) => ({ number, state, updatedAt, isDraft, repo: 'acme/widgets', url: `https://github.com/acme/widgets/pull/${number}` } as PanePrSummary)
+    let prs = [pr(1, 'closed', '2026-10-12'), pr(2, 'merged', '2026-10-12'), pr(3, 'open', '2026-10-10', true), pr(4, 'open', '2026-10-11')]
+    const gitApi = { summary: vi.fn(async () => ({ isRepo: false })) } as unknown as GitDiffApiClient
+    const prsApi = { pane: vi.fn(async () => ({ targetId: 'target', pullRequests: prs })) } as unknown as PrsApiClient
+    const onSelect = vi.fn()
+    const element = (stored: string, connected = true) => <SidePanel windowId="@1" tabs={[]} panes={[{ id: '%12', targetId: 'target', path: '/repo' } as TmuxPane]}
+      connected={connected} gitApi={gitApi} prsApi={prsApi} focusedPaneId="%12" activeTabs={{ '%12': stored }} paneLabel="pane" titles={{}} simulatorNames={{}}
+      onSelect={onSelect} onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null} renderBuiltin={(tab) => <input aria-label={`State of ${tab.key}`} defaultValue={tab.key} />}>{null}</SidePanel>
+    let view!: ReturnType<typeof render>
+    await act(async () => { view = render(element('pr')) })
+    expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:4' }))
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', '#4', '#3', '#2', '#1'])
+    expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('button', { name: /Close #/ })).not.toBeInTheDocument()
+    const first = screen.getByLabelText('State of pr:4')
+    fireEvent.change(first, { target: { value: 'retained' } })
+    view.rerender(element('pr:3'))
+    expect(first.closest('[role="tabpanel"]')).toHaveAttribute('hidden')
+    expect(first).toHaveValue('retained')
+    view.rerender(element('pr:4', false))
+    expect(screen.getByRole('tab', { name: '#4 open' })).toBeVisible()
+    view.rerender(element('pr:4'))
+    prs = prs.filter((pr) => pr.number !== 4)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.queryByRole('tab', { name: '#4 open' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '#3 draft' })).toHaveAttribute('aria-selected', 'true')
+    // A transient error retains the last good list and its tab state.
+    vi.mocked(prsApi.pane).mockRejectedValueOnce(new Error('Disconnected'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.getByRole('tab', { name: '#3 draft' })).toHaveAttribute('aria-selected', 'true')
+    prs = []
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session'])
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('shows failed resume attention in the collapsed rail and expanded Session tab', () => {

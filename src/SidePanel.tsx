@@ -48,7 +48,7 @@ function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string 
 
 export function SidePanel({
   windowId, tabs, focusedPaneId, maximizedTabId, revealRequest, gridMaximized = false, paneLabel, simulatorNames, titles,
-  onSelect, onSeen, onClose, onOpen, renderTab, children, panes = [], gitApi, prsApi, connected = false, renderBuiltin, activeTabs = {}, sessionAttention = {}, sessionWarnings = {}, onMaximize, comparisonPr, onTabSets,
+  onSelect, onSeen, onClose, onOpen, renderTab, children, panes = [], gitApi, prsApi, connected = false, renderBuiltin, activeTabs = {}, sessionAttention = {}, sessionWarnings = {}, onMaximize, onTabSets,
 }: {
   windowId: string
   tabs: WebPane[]
@@ -60,7 +60,6 @@ export function SidePanel({
   simulatorNames: Record<string, string>
   titles: Record<string, string>
   onTabSets?: (tabs: PanelTab[]) => void
-  comparisonPr?: { paneId: string; pr: import('./prsApi').PanePrSummary }
   panes?: TmuxPane[]
   gitApi?: GitDiffApiClient
   prsApi?: PrsApiClient
@@ -97,7 +96,7 @@ export function SidePanel({
   const bodyRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ startX: number; width: number; workspaceWidth: number } | null>(null)
   const paneIds = [...new Set([...panes.map((pane) => pane.id), ...tabs.map((tab) => tab.anchorPaneId), ...(focusedPaneId ? [focusedPaneId] : [])])]
-  const allTabs = paneIds.flatMap((id) => combinedPanelTabs(id, tabs, paneData[id]?.summary ?? null, paneData[id]?.prs?.pullRequests.length ? paneData[id].prs!.pullRequests : comparisonPr?.paneId === id ? [comparisonPr.pr] : [], sessionAttention[id], sessionWarnings[id]))
+  const allTabs = paneIds.flatMap((id) => combinedPanelTabs(id, tabs, paneData[id]?.summary ?? null, paneData[id]?.prs?.pullRequests ?? [], sessionAttention[id], sessionWarnings[id]))
   useEffect(() => { onTabSets?.(allTabs) }, [allTabs, onTabSets])
   const maximizedTab = allTabs.find((tab) => tab.id === maximizedTabId)
   const expanded = Boolean(maximizedTab) || !collapsed
@@ -160,9 +159,9 @@ export function SidePanel({
       <aside className="side-panel" hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs">
         {!expanded ? <div className="side-panel-rail">
           <button className="side-panel-expand" type="button" aria-label="Expand side panel" onClick={() => changeCollapsed(false)}><PanelRightOpen /></button>
-          {focusedTabs.filter(isBuiltinTab).map((tab) => {
+          {focusedTabs.filter(isBuiltinTab).filter((tab, index, builtins) => !tab.prState || builtins.findIndex((candidate) => candidate.prState) === index).map((tab) => {
             const Icon = tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
-            return <button key={tab.id} className="side-panel-expand" type="button" aria-label={`Open ${tab.label}`} title={tab.label} onClick={() => { onSelect(tab); changeCollapsed(false) }}><Icon />{tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}</button>
+            return <button key={tab.id} className="side-panel-expand" type="button" aria-label={`Open ${tab.prState ? 'PRs' : tab.label}`} title={tab.prState ? 'PRs' : tab.label} onClick={() => { onSelect(tab); changeCollapsed(false) }}><Icon />{tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}</button>
           })}
         </div> : (
           <header className="side-panel-head">
@@ -171,8 +170,9 @@ export function SidePanel({
                 if (isBuiltinTab(tab)) {
                   const Icon = tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
                   return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}`} key={tab.id}>
-                    <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)}>
-                      <Icon aria-hidden="true" /><span>{tab.label}</span>
+                    <button type="button" role="tab" aria-label={tab.prState ? `${tab.label} ${tab.prState}` : undefined} aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)}>
+                      <Icon aria-hidden="true" className={tab.prState ? `side-panel-pr-state ${tab.prState}` : undefined} /><span>{tab.label}</span>
+                      {tab.prState && <i className={`side-panel-pr-indicator ${tab.prState}`} aria-label={tab.prState} />}
                       {tab.key === 'changes' && <span className="side-panel-counts"><b className="added">+{tab.additions}</b> <b className="deleted">−{tab.deletions}</b></span>}
                       {tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}
                     </button>

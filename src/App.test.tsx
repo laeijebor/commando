@@ -813,60 +813,90 @@ describe('HUD tabs', () => {
     expect(targetPane).not.toHaveClass('is-jump-highlighted')
   })
 
-  it.each(['normal', 'terminal', 'other built-in'] as const)('opens the marked pane PR diff while %s is maximized', async (maximized) => {
-    const targetId = adjacentPane.targetId
-    const baseRefOid = '1111111111111111111111111111111111111111'
-    const headRefOid = '2222222222222222222222222222222222222222'
-    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      const json = (value: unknown) => new Response(JSON.stringify(value), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
+  describe('HUD PR tab routing', () => {
+    function stubPr(owned = true, ownerPane = adjacentPane) {
+      const pr = {
+        number: 12, title: 'feat: pane diff', url: 'https://github.com/acme/widgets/pull/12',
+        state: 'open', isDraft: false, author: 'leo', bodyExcerpt: '', additions: 379, deletions: 46,
+        changedFiles: 1, commitCount: 1, unresolvedThreads: 0, threadsTruncated: false,
+        reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false, checks: null,
+        createdAt: '', updatedAt: new Date().toISOString(), headRefName: 'feat/pane-diff',
+        baseRefName: 'main', headRefOid: '2'.repeat(40), baseRefOid: '1'.repeat(40), viewerIsAuthor: true, viewerReviewRequested: false,
+        commandoMarker: owned ? { version: 1, targetId: ownerPane.targetId, relation: 'created' } : null,
+      }
+      vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (url.includes('/api/prs/prefs')) return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
+        if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
+        if (url.includes('/api/prs/repo')) return json({ repo: null })
+        if (url.includes('/api/prs/details')) return json({ details: { body: '# PR description', headOid: pr.headRefOid, mergeTarget: { branch: 'main', oid: pr.baseRefOid }, checks: [], conversation: [] } })
+        if (url.includes('/api/prs/diff')) return json({ diff: { base: pr.baseRefOid, head: pr.headRefOid, files: [], truncated: false } })
+        if (url.includes('/api/prs/pane')) {
+          const paneId = new URL(url, 'http://localhost').searchParams.get('paneId')
+          const owner = paneId === ownerPane.id
+          return json({ list: { targetId: owner ? ownerPane.targetId : pane.targetId, totalCount: owner && owned ? 1 : 0,
+            pullRequests: owner && owned ? [{ ...pr, repo: 'acme/widgets', preview: pr }] : [], truncated: false, fetchedAt: Date.now() } })
+        }
+        if (url.includes('/api/prs?')) return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false, mineTruncated: false, fetchedAt: Date.now(), pullRequests: [pr] } })
+        if (url.includes('/api/web-panes/pr%3A12/active-tab')) return json({ ok: true })
+        if (url.includes('/api/git/summary')) return json({ isRepo: true, root: ownerPane.path, branch: 'feat/pane-diff', files: [] })
+        return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
       })
-      if (url.includes('/api/prs/prefs')) {
-        return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
-      }
-      if (url.includes('/api/prs/repos')) return json({ repos: [{ nameWithOwner: 'acme/widgets', pinned: true }] })
-      if (url.includes('/api/prs/repo')) return json({ repo: null })
-      if (url.includes('/api/prs')) {
-        return json({ list: {
-          repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false,
-          mineTruncated: false, fetchedAt: 0,
-          pullRequests: [{
-            number: 12, title: 'feat: pane diff', url: 'https://github.com/acme/widgets/pull/12',
-            state: 'open', isDraft: false, author: 'leo', bodyExcerpt: '', additions: 379, deletions: 46,
-            changedFiles: 1, commitCount: 1, unresolvedThreads: 0, threadsTruncated: false,
-            reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false, checks: null,
-            createdAt: '', updatedAt: new Date().toISOString(), headRefName: 'feat/pane-diff',
-            baseRefName: 'main', headRefOid, baseRefOid, viewerIsAuthor: true, viewerReviewRequested: false,
-            commandoMarker: { version: 1, targetId, relation: 'created' },
-          }],
-        } })
-      }
-      if (url.includes('/api/git/summary')) {
-        return json({ isRepo: true, root: adjacentPane.path, branch: 'feat/pane-diff', files: [] })
-      }
-      return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
+      return pr
+    }
+    it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {
+      stubPr()
+      await renderAppWithSnapshot()
+      if (maximized === 'terminal') fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`) as HTMLElement).getByRole('button', { name: 'Maximize pane' }))
+      if (maximized === 'other built-in') { selectSession(pane.id); fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' })) }
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: /Diff/ })).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
+      expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/prs/diff?repo=acme%2Fwidgets&number=12', expect.any(Object)))
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
+      // Return to the HUD and quick look explicitly selects Description on the mounted view.
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: 'Description' })).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)).toHaveClass('is-focused')
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane]) }))
+      await waitFor(() => expect(document.querySelector('[id="panel-tab-panel:%13:pr:12"]')).not.toBeInTheDocument())
     })
-
-    await renderAppWithSnapshot()
-    if (maximized === 'terminal') fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`) as HTMLElement).getByRole('button', { name: 'Maximize pane' }))
-    if (maximized === 'other built-in') { selectSession(pane.id); fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' })) }
-    fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
-
-    expect(await screen.findByRole('tab', { name: 'PR #12' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Back to PR summary' })).toBeVisible()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(screen.getByTitle(headRefOid)).toHaveTextContent('feat/pane-diff')
-    expect(screen.getByTitle(baseRefOid)).toHaveTextContent('main')
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      `/api/git/summary?paneId=%2513&target=${baseRefOid}&head=${headRefOid}`,
-      expect.any(Object),
-    ))
-
-    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane]) }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    it.each(['Description', 'Diff'] as const)('jumps across sessions and selects the owning PR on %s without sending built-in keys to tmux', async (subTab) => {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+      stubPr(true, remotePane)
+      await renderAppWithSnapshot(snapshotAcrossSessions())
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46' }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const panel = document.querySelector('[id="panel-tab-panel:%21:pr:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
+      expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused')
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: remotePane.id }) }))
+      for (const [message] of appMocks.send.mock.calls) {
+        if (message.type === 'set_window_layout' || message.type === 'apply_window_layout') expect(JSON.stringify(message)).not.toContain('pr:')
+      }
+    })
+    it('keeps the modal and GitHub diff fallback for unowned PRs', async () => {
+      const pr = stubPr(false)
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
+      expect(await screen.findByRole('dialog')).toBeVisible()
+      expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR quick look' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
+      expect(open).toHaveBeenCalledWith(pr.url, '_blank', 'noopener,noreferrer')
+    })
   })
 })
 

@@ -33,9 +33,18 @@ export function neighbouringTab(tabs: readonly WebPane[], removedId: string): st
   return index < 0 ? tabs[0]?.id : (tabs[index + 1] ?? tabs[index - 1])?.id
 }
 
-export const BUILTIN_PANEL_KEYS = ['session', 'changes', 'pr'] as const
-export type BuiltinPanelKey = typeof BUILTIN_PANEL_KEYS[number]
+export const BUILTIN_PANEL_KEYS = ['session', 'changes'] as const
+export type PrPanelKey = `pr:${number}`
+export type BuiltinPanelKey = typeof BUILTIN_PANEL_KEYS[number] | PrPanelKey
+
+export function prPanelKey(number: number): PrPanelKey { return `pr:${number}` }
+
+export function parsePrPanelKey(value: string): number | undefined {
+  if (!/^pr:[1-9]\d*$/.test(value)) return undefined
+  const number = Number(value.slice(3))
+  return Number.isSafeInteger(number) ? number : undefined
+}
 
 export function isBuiltinPanelKey(value: string): value is BuiltinPanelKey {
-  return (BUILTIN_PANEL_KEYS as readonly string[]).includes(value)
+  return (BUILTIN_PANEL_KEYS as readonly string[]).includes(value) || parsePrPanelKey(value) !== undefined
 }

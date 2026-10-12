@@ -1063,6 +1063,9 @@ export class WebPanesApi {
       }
     }
     const match = /^\/api\/web-panes\/([^/]+)(?:\/(spotlight|active-tab|seen|dock|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    if (match?.[2] === 'active-tab') {
+      try { match[1] = decodeURIComponent(match[1]) } catch { throw new HttpError(404, 'Not found') }
+    }
     if (!match || (!WEB_PANE_ID.test(match[1]) && !(match[2] === 'active-tab' && isBuiltinPanelKey(match[1])))) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }

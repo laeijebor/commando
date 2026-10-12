@@ -98,7 +98,7 @@ import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
-import { GitDiffView, type GitDiffComparison } from './GitDiffView'
+import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { SessionIdeView } from './SessionIdeView'
@@ -111,7 +111,7 @@ import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
 import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
-import { neighbouringTab } from '../shared/web-pane-placement'
+import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
   insertWebPaneLeaves,
@@ -119,7 +119,8 @@ import {
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
-import { PanePullRequests } from './PanePullRequests'
+import type { PrQuickLookTab } from './PrQuickLook'
+import { refreshPanePrs } from './prStore'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -179,6 +180,8 @@ import {
   type AuthBootstrap,
   type AuthUser,
 } from './authClient'
+
+const PrPanel = lazy(() => import('./PrPanel').then((module) => ({ default: module.PrPanel })))
 
 const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 export const PANE_JUMP_HIGHLIGHT_MS = 1600
@@ -1103,11 +1106,7 @@ export function App() {
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
-  const [prDiff, setPrDiff] = useState<{
-    targetId: string
-    comparison: GitDiffComparison
-    pr: import('./prsApi').PanePrSummary
-  } | null>(null)
+  const [prSelections, setPrSelections] = useState<Record<string, { tab: PrQuickLookTab; revision: number }>>({})
   const switchHudTab = useCallback((tab: HudTab) => {
     setHudTab(tab)
     storeHudTab(tab)
@@ -1690,13 +1689,6 @@ export function App() {
     : []
   const paneMap = new Map(snapshot?.panes.map((pane) => [pane.id, pane]) ?? [])
   const livePaneTargetIds = new Set(snapshot?.panes.map((pane) => pane.targetId) ?? [])
-  const prDiffPaneMatches = prDiff
-    ? snapshot?.panes.filter((pane) => pane.targetId === prDiff.targetId) ?? []
-    : []
-  const prDiffPane = prDiffPaneMatches.length === 1 ? prDiffPaneMatches[0] : undefined
-  useEffect(() => {
-    if (prDiff && snapshot && prDiffPaneMatches.length !== 1) setPrDiff(null)
-  }, [prDiff, prDiffPaneMatches.length, snapshot])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
   const paneSessionNames = new Map<string, string | undefined>()
@@ -1991,32 +1983,30 @@ export function App() {
     jumpToPane(matches[0].id, targetId, true)
   }
 
-  const revealBuiltinTab = (paneId: string, key: 'session' | 'changes' | 'pr') => {
+  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey) => {
     const tab = builtinPanelTab(paneId, key)
     setMaximizedPaneId((current) => webPanes.some((pane) => pane.id === current && pane.dock !== 'split' && pane.anchorPaneId === paneId) ? current : null)
-    setMaximizedBuiltinTab((current) => current?.anchorPaneId === paneId ? current : null)
+    setMaximizedBuiltinTab((current) => current?.id === tab.id ? current : null)
     setFocusedPaneId(paneId)
     void selectPanelTab(tab)
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null) })
   }
 
-  const openPrDiff = (pr: PrSummary) => {
+  const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
-    if (matches.length !== 1) { window.open(pr.url, '_blank', 'noopener,noreferrer'); return }
+    if (matches.length !== 1) return false
     const pane = matches[0]
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
-    setPrDiff({
-      targetId: pane.targetId,
-      pr: { ...pr, repo: new URL(pr.url).pathname.split('/').slice(1, 3).join('/'), preview: pr },
-      comparison: {
-        base: pr.baseRefOid,
-        head: pr.headRefOid,
-        baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7),
-        headLabel: pr.headRefName || pr.headRefOid.slice(0, 7),
-      },
-    })
-    revealBuiltinTab(pane.id, 'pr')
+    const key = prPanelKey(pr.number)
+    const tabId = builtinPanelTab(pane.id, key).id
+    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
+    revealBuiltinTab(pane.id, key)
+    void refreshPanePrs(prsApi, pane.id)
+    return true
+  }
+  const openPrDiff = (pr: PrSummary) => {
+    if (!openPanePr(pr, 'Diff')) window.open(pr.url, '_blank', 'noopener,noreferrer')
   }
 
   const openPaneMaximized = (paneId: string) => {
@@ -3567,7 +3557,6 @@ export function App() {
                     titles={webPaneTitles}
                     onTabSets={rememberPanelTabs}
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
-                    comparisonPr={prDiff && prDiffPane ? { paneId: prDiffPane.id, pr: prDiff.pr } : undefined}
                     activeTabs={panelActiveTabs} sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
                     onMaximize={(tab) => {
                       clearLayoutTimers()
@@ -3583,13 +3572,17 @@ export function App() {
                       const pane = paneMap.get(tab.anchorPaneId)
                       if (!pane) return null
                       if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
-                      if (tab.key === 'pr') return prDiff && prDiffPane?.id === pane.id
-                        ? <div className="panel-pr-comparison"><button type="button" onClick={() => setPrDiff(null)}>Back to PR summary</button>
-                            <GitDiffView key={`${prDiff.comparison.base}:${prDiff.comparison.head}`} paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={null} comparison={prDiff.comparison} visible={visible} />
-                          </div>
-                        : <div className="panel-pr-summary"><PanePullRequests paneId={pane.id} api={prsApi} connected={connected} list={data.prs} />
-                            {data.prs?.pullRequests.map((pr) => pr.preview && <button type="button" key={pr.url} onClick={() => openPrDiff(pr.preview!)}>View diff for PR #{pr.number}</button>)}
-                          </div>
+                      const prNumber = parsePrPanelKey(tab.key)
+                      if (prNumber !== undefined) {
+                        const source = data.prs?.pullRequests.find((pr) => pr.number === prNumber)
+                        return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
+                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} source={source} api={prsApi} visible={visible} selection={prSelections[tab.id]}
+                            onSelectionApplied={() => setPrSelections((current) => {
+                              if (current[tab.id] !== prSelections[tab.id]) return current
+                              const next = { ...current }; delete next[tab.id]; return next
+                            })} />
+                        </Suspense> : null
+                      }
                       const supplied = paneBriefs[pane.id]
                       const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
                       const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
@@ -3957,6 +3950,7 @@ export function App() {
               liveTargetIds={livePaneTargetIds}
               targetSessionNames={paneSessionNames}
               onJumpToTarget={jumpToPaneTarget}
+              onOpenQuickLook={(pr) => openPanePr(pr, 'Description')}
               onOpenDiff={openPrDiff}
             />
           </div>

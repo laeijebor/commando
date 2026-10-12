@@ -185,7 +185,7 @@ function PrPopover({ pr, position, threads, threadsFailed, onEnter, onLeave, tar
   )
 }
 
-export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenDiff, onMerged, pill }: {
+export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetSessionNames, onJumpToTarget, onOpenQuickLook, onOpenDiff, onMerged, pill }: {
   pr: PrSummary
   viewer: string
   repo: string
@@ -193,6 +193,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
   liveTargetIds: ReadonlySet<string>
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
+  onOpenQuickLook?: (pr: PrSummary) => boolean
   onOpenDiff?: (pr: PrSummary) => void
   onMerged: () => Promise<void>
   pill?: { count: number; sessionName: string; tone: string; status: string }
@@ -294,7 +295,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       {pill ? (
         <button type="button" className="session-pr-count"
           aria-label={`PR #${pr.number} in ${pill.sessionName}: ${pill.status}${pill.count > 1 ? `; ${pill.count - 1} more open pull request${pill.count > 2 ? 's' : ''}` : ''}`}
-          onClick={() => { cancelTimers(); setPopover(null); setQuickLook(true) }}>
+          onClick={() => { cancelTimers(); setPopover(null); if (!onOpenQuickLook?.(pr)) setQuickLook(true) }}>
           <GitPullRequest aria-hidden="true" /><span>#{pr.number}</span>
           {pill.count > 1 ? <span className="session-pr-more">+{pill.count - 1}</span> : null}
           <i className={`session-pr-readiness ${pill.tone}`} aria-hidden="true" />
@@ -311,7 +312,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
           className="pr-quick-trigger"
           aria-label={`Quick look at PR #${pr.number}`}
           title="Quick look"
-          onClick={() => { cancelTimers(); setPopover(null); setQuickLook(true) }}
+          onClick={() => { cancelTimers(); setPopover(null); if (!onOpenQuickLook?.(pr)) setQuickLook(true) }}
         ><Eye aria-hidden="true" /></button>
       </div>
       <a className="pr-card-title" href={pr.url} target="_blank" rel="noreferrer">{pr.title}</a>
@@ -365,7 +366,7 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       ) : null}
       {!pill ? <>
       <div className="pr-meta">
-        <PrBadges pr={pr} number={pr.number} onOpenDiff={targetIsLive && onOpenDiff ? () => onOpenDiff(pr) : undefined}>
+        <PrBadges pr={pr} number={pr.number} onOpenDiff={onOpenDiff ? () => onOpenDiff(pr) : undefined}>
           {targetIsLive ? (
             <button
               type="button"
@@ -406,6 +407,7 @@ export function PrsSection({
   liveTargetIds = new Set<string>(),
   targetSessionNames,
   onJumpToTarget,
+  onOpenQuickLook,
   onOpenDiff,
 }: {
   token: string
@@ -417,6 +419,7 @@ export function PrsSection({
   liveTargetIds?: ReadonlySet<string>
   targetSessionNames?: ReadonlyMap<string, string | undefined>
   onJumpToTarget?: (targetId: string) => void
+  onOpenQuickLook?: (pr: PrSummary) => boolean
   onOpenDiff?: (pr: PrSummary) => void
 }) {
   const defaultApi = useMemo(() => createPrsApi(token), [token])
@@ -660,19 +663,19 @@ export function PrsSection({
             {groups.yours.length > 0 ? (
               <section className="prs-group" aria-label="Your pull requests">
                 <header><strong>Yours</strong><small>{groups.yours.length}</small></header>
-                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
+                {groups.yours.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenQuickLook={onOpenQuickLook} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {groups.needsReview.length > 0 ? (
               <section className="prs-group" aria-label="Pull requests awaiting your review">
                 <header><strong>Needs your review</strong><small>{groups.needsReview.length}</small></header>
-                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
+                {groups.needsReview.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenQuickLook={onOpenQuickLook} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {showEveryone && groups.everyone.length > 0 ? (
               <section className="prs-group" aria-label="Everyone's pull requests">
                 <header><strong>Everyone&rsquo;s</strong><small>{groups.everyone.length}</small></header>
-                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
+                {groups.everyone.map((pr) => <PrCard pr={pr} viewer={list.viewer} repo={list.repo} api={api} liveTargetIds={liveTargetIds} targetSessionNames={targetSessionNames} onJumpToTarget={onJumpToTarget} onOpenQuickLook={onOpenQuickLook} onOpenDiff={onOpenDiff} onMerged={repoState.refresh} key={`${list.repo}:${pr.number}`} />)}
               </section>
             ) : null}
             {list.mineTruncated ? (

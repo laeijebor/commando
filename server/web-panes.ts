@@ -228,7 +228,7 @@ function parseState(value: unknown): StateFile {
   const activeTabs: Record<string, string> = {}
   if (isRecord(value.activeTabs)) {
     for (const [anchor, key] of Object.entries(value.activeTabs)) {
-      if (/^%\d+$/.test(anchor) && typeof key === 'string' && isBuiltinPanelKey(key)) activeTabs[anchor] = key
+      if (/^%\d+$/.test(anchor) && typeof key === 'string' && (key === 'pr' || isBuiltinPanelKey(key))) activeTabs[anchor] = key
     }
   }
   for (const pane of panes) {
@@ -560,7 +560,7 @@ export class WebPaneService {
   private reconcileActiveTabs(): void {
     for (const anchor of Object.keys(this.activeTabs)) {
       const tabs = panelTabs(this.list(), anchor)
-      if (!isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
+      if (this.activeTabs[anchor] !== 'pr' && !isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
         if (tabs[0]) this.activeTabs[anchor] = tabs[0].id
         else delete this.activeTabs[anchor]
       }
