@@ -1124,3 +1124,82 @@ describe('URL open reuse', () => {
     expect(service.open({ ...anchor, url: pending.url })).toBe(pending)
   })
 })
+
+
+describe('PR tab dismissals', () => {
+  const key = 'pr:acme:widgets:12'
+  const exists = (id: string) => id === '%12'
+  it('dismisses an active tab to Session, persists and restores it', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.setActiveTab(key, '%12', exists)
+    service.dismissPrTab('%12', key, 'open|false|now', exists)
+    expect(service.panelActiveTabs()['%12']).toBe('session')
+    expect(service.panelDismissedPrTabs()).toEqual({ '%12': { [key]: 'open|false|now' } })
+    const copy = service.panelDismissedPrTabs()
+    copy['%12'][key] = 'mutated'
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelDismissedPrTabs()['%12'][key]).toBe('open|false|now')
+    restored.restorePrTab('%12', key, exists)
+    await restored.flush()
+    await service.load()
+    expect(service.panelDismissedPrTabs()).toEqual({})
+  })
+  it('caps entries at 200 and drops the oldest dismissal, including after reload', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    for (let n = 1; n <= 201; n++) service.dismissPrTab('%12', `pr:acme:widgets:${n}`, '', exists)
+    expect(Object.keys(service.panelDismissedPrTabs()['%12'])).toHaveLength(200)
+    expect(service.panelDismissedPrTabs()['%12']['pr:acme:widgets:1']).toBeUndefined()
+    service.dismissPrTab('%12', 'pr:acme:widgets:2', 'new', exists)
+    service.dismissPrTab('%12', 'pr:acme:widgets:202', '', exists)
+    expect(service.panelDismissedPrTabs()['%12']['pr:acme:widgets:3']).toBeUndefined()
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelDismissedPrTabs()).toEqual(service.panelDismissedPrTabs())
+  })
+  it('rejects invalid keys, signatures and missing anchors without changing state', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    for (const invalid of ['session', 'pr:12', 'pr:acme:widgets:0', undefined]) {
+      expect(() => service.dismissPrTab('%12', invalid as string, '', exists)).toThrow('Invalid PR tab key')
+      expect(() => service.restorePrTab('%12', invalid as string, exists)).toThrow('Invalid PR tab key')
+    }
+    for (const invalid of ['x'.repeat(257), 1, null]) expect(() => service.dismissPrTab('%12', key, invalid as string, exists)).toThrow('Invalid PR tab signature')
+    for (const anchor of ['%99', 'invalid', undefined]) {
+      expect(() => service.dismissPrTab(anchor as string, key, '', exists)).toThrow('Anchor pane does not exist')
+      expect(() => service.restorePrTab(anchor as string, key, exists)).toThrow('Anchor pane does not exist')
+    }
+    service.dismissPrTab('%12', key, 'x'.repeat(256), exists)
+    expect(service.panelDismissedPrTabs()['%12'][key]).toHaveLength(256)
+  })
+  it('prunes dismissal-only panes only with a complete snapshot', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    service.dismissPrTab('%12', key, '', exists)
+    expect(service.prune([])).toBe(false)
+    expect(service.prune([{ id: '@1', sessionId: '$1', paneIds: ['%13'] }, { id: '@2', sessionId: '$1', paneIds: [] }])).toBe(false)
+    expect(service.prune([{ id: '@1', sessionId: '$1', paneIds: ['%12'] }])).toBe(false)
+    expect(service.prune([{ id: '@1', sessionId: '$1', paneIds: ['%13'] }])).toBe(true)
+    expect(service.panelDismissedPrTabs()).toEqual({})
+  })
+  it('preserves dismissals when foreign or unstamped panes prevent pruning selections', async () => {
+    const path = await temporaryStatePath()
+    const owner = track(new WebPaneService(path, Date.now, undefined, 'owner-socket'))
+    owner.open({ ...anchor, url: 'http://localhost/' })
+    owner.dismissPrTab('%12', key, '', exists)
+    await owner.flush()
+    const foreign = track(new WebPaneService(path, Date.now, undefined, 'foreign-socket'))
+    await foreign.load()
+    const snapshot = [{ id: '@3', sessionId: '$2', paneIds: ['%13'] }]
+    expect(foreign.prune(snapshot)).toBe(false)
+    expect(foreign.panelDismissedPrTabs()['%12'][key]).toBe('')
+    const raw = JSON.parse(await readFile(path, 'utf8'))
+    delete raw.panes[0].tmuxSocketHash
+    await writeFile(path, JSON.stringify(raw))
+    await owner.load()
+    expect(owner.prune(snapshot)).toBe(false)
+    expect(owner.panelDismissedPrTabs()['%12'][key]).toBe('')
+  })
+})

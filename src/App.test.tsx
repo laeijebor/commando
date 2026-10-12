@@ -841,7 +841,7 @@ describe('HUD tabs', () => {
             pullRequests: owner && owned && paneRepo ? [{ ...pr, repo: paneRepo, preview: pr }] : [], truncated: false, fetchedAt: Date.now() } })
         }
         if (url.includes('/api/prs?')) return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false, mineTruncated: false, fetchedAt: Date.now(), pullRequests: [pr] } })
-        if (/\/api\/web-panes\/pr.*\/active-tab$/.test(url)) return json({ ok: true })
+        if (/\/api\/web-panes\/.*\/active-tab$/.test(url) || url.includes('/api/web-panes/pr-tabs/')) return json({ ok: true })
         if (url.includes('/api/git/summary')) return json({ isRepo: true, root: ownerPane.path, branch: 'feat/pane-diff', files: [] })
         return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
       })
@@ -965,6 +965,47 @@ describe('HUD tabs', () => {
       expect(open).not.toHaveBeenCalled()
       expect(prTabSelections()).toHaveLength(0)
     })
+    it('uses remembered broadcast dismissals and restores a linked PR from the HUD', async () => {
+      const pr = stubPr()
+      await renderAppWithSnapshot()
+      await act(async () => { await refreshPanePrs(createPrsApi('test-token'), adjacentPane.id) })
+      selectSession(adjacentPane.id)
+      act(() => daemonMessage?.({ type: 'web_panes', webPanes: [], activeTabs: { [adjacentPane.id]: 'session' },
+        dismissedPrTabs: { [adjacentPane.id]: { 'pr:acme:widgets:12': `open|false|${pr.updatedAt}` } } }))
+      expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel('Description') }))
+      await waitFor(() => expect(screen.getByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true'))
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/restore', expect.any(Object))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it.each(['Description', 'Diff', 'menu'] as const)('restores and selects a dismissed PR via %s without a modal', async (action) => {
+      const pr = stubPr()
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel('Description') }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
+      await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
+      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}` }) }))
+      if (action === 'menu') {
+        fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+        expect(screen.getByRole('heading', { name: 'Closed PRs' })).toBeVisible()
+        fireEvent.click(screen.getByRole('button', { name: /#12 · feat: pane diff/ }))
+      } else {
+        fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+        fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(action) }))
+      }
+      await waitFor(() => expect(screen.getByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      const calls = vi.mocked(fetch).mock.calls
+      const restoredAt = calls.findIndex(([url]) => String(url) === '/api/web-panes/pr-tabs/restore')
+      expect(calls[restoredAt][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12' }) }))
+      expect(calls.slice(restoredAt + 1).some(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))).toBe(true)
+    })
+
     it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {
       stubPr()
       await renderAppWithSnapshot()

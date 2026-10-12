@@ -1061,6 +1061,7 @@ export function App() {
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
+  const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -1505,6 +1506,7 @@ export function App() {
           knownPanelTabs.current = new Map(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => [tab.id, tab.openRevision ?? 0]))
         }
         setPanelActiveTabs(message.activeTabs ?? {})
+        setDismissedPrTabs(message.dismissedPrTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1998,7 +2000,16 @@ export function App() {
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
-  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean => {
+  const restorePanePrTab = async (tab: BuiltinPanelTab) => {
+    await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key)
+    setDismissedPrTabs((current) => {
+      const entries = { ...current[tab.anchorPaneId] }
+      delete entries[tab.key]
+      return { ...current, [tab.anchorPaneId]: entries }
+    })
+  }
+
+  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean | Promise<boolean> => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
     if (matches.length !== 1) return false
@@ -2008,12 +2019,20 @@ export function App() {
     if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
     const key = prPanelKey(repo, pr.number)
-    const tabId = builtinPanelTab(pane.id, key).id
-    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
-    revealBuiltinTab(pane.id, key)
-    if (refresh) void refreshPanePrs(prsApi, pane.id)
-    return true
+    const tab = builtinPanelTab(pane.id, key)
+    const open = () => {
+      setPrSelections((current) => ({ ...current, [tab.id]: { tab: subTab, revision: (current[tab.id]?.revision ?? 0) + 1 } }))
+      revealBuiltinTab(pane.id, key)
+      if (refresh) void refreshPanePrs(prsApi, pane.id)
+      return true
+    }
+    if (dismissedPrTabs[pane.id]?.[key] === undefined) return open()
+    return restorePanePrTab(tab).then(open).catch((error: unknown) => {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')
+      return true
+    })
   }
+
   const latestOpenLoadedPanePr = useRef(openLoadedPanePr)
   latestOpenLoadedPanePr.current = openLoadedPanePr
   const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean | Promise<boolean | undefined> => {
@@ -2585,6 +2604,17 @@ export function App() {
     })
     setPendingSimulatorTileId(null)
   }, [pendingSimulatorTileId, webPanes, selectedSessionId, activeGroup?.windowId])
+
+  const dismissPanePrTab = async (tab: BuiltinPanelTab, signature: string, next?: PanelTab) => {
+    setPaneActionError('')
+    try {
+      await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature)
+      setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
+      if (next) await selectPanelTab(next)
+    } catch (error) {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not close PR tab')
+    }
+  }
 
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
@@ -3585,7 +3615,10 @@ export function App() {
                     titles={webPaneTitles}
                     onTabSets={rememberPanelTabs}
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
-                    activeTabs={panelActiveTabs} sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
+                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs}
+                    onDismissPr={(tab, signature, next) => { void dismissPanePrTab(tab, signature, next) }}
+                    onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
+                    sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
                     onMaximize={(tab) => {
                       clearLayoutTimers()
                       if (isBuiltinTab(tab)) {

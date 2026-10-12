@@ -395,9 +395,21 @@ export class WebPanesApi {
       const caller = await this.authenticate(request, url)
       const route = this.route(url.pathname)
 
+      if (route.kind === 'pr-tabs') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can dismiss or restore PR tabs')
+        const body = await readJson(request)
+        const paneExists = (id: string) => Boolean(this.dependencies.paneForId(id))
+        if (route.action === 'dismiss') this.dependencies.service.dismissPrTab(body.anchorPaneId as string, body.key as string, body.signature as string, paneExists)
+        else this.dependencies.service.restorePrTab(body.anchorPaneId as string, body.key as string, paneExists)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true })
+        return true
+      }
+
       if (route.kind === 'collection') {
         if (request.method === 'GET') {
-          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs() })
+          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs(), dismissedPrTabs: this.dependencies.service.panelDismissedPrTabs() })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -1029,11 +1041,14 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
+    | { kind: 'pr-tabs'; action: 'dismiss' | 'restore' }
     | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'dock' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request' | 'spotlight-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'thread-replies' | 'thread-status'; threadId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
+    if (pathname === `${API_ROOT}/pr-tabs/dismiss`) return { kind: 'pr-tabs', action: 'dismiss' }
+    if (pathname === `${API_ROOT}/pr-tabs/restore`) return { kind: 'pr-tabs', action: 'restore' }
     if (pathname === API_ROOT) return { kind: 'collection' }
     const thread = /^\/api\/web-panes\/([^/]+)\/threads\/(ct-[0-9a-f]{24})\/(replies|status)$/.exec(pathname)
     if (thread && WEB_PANE_ID.test(thread[1])) return { kind: 'pane', id: thread[1], threadId: thread[2], action: thread[3] === 'replies' ? 'thread-replies' : 'thread-status' }

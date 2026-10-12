@@ -598,6 +598,7 @@ async function main(): Promise<void> {
     type: 'web_panes',
     webPanes: webPanes.list(),
     activeTabs: webPanes.panelActiveTabs(),
+    dismissedPrTabs: webPanes.panelDismissedPrTabs(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
     spotlightRequests: canvasSpotlight.pending(),

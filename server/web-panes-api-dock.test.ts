@@ -1,6 +1,6 @@
 import { IncomingMessage, type ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -139,4 +139,21 @@ describe('PR panel selection API', () => {
     expect((await post(`/api/web-panes/${path}`, { anchorPaneId: '%12' }, true)).status).toBe(404)
     expect(service.panelActiveTabs()).toEqual({})
   })
+})
+
+
+it('allows only owners to dismiss and restore PR tabs and broadcasts the dismissal state', async () => {
+  const { service, post, onChange } = await setup()
+  const body = { anchorPaneId: '%12', key: 'pr:acme:widgets:12', signature: 'open|false|now' }
+  const messages: unknown[] = []
+  onChange.mockImplementation(() => messages.push({ type: 'web_panes', dismissedPrTabs: service.panelDismissedPrTabs() }))
+  for (const action of ['dismiss', 'restore']) expect((await post(`/api/web-panes/pr-tabs/${action}`, body)).status).toBe(403)
+  expect((await post('/api/web-panes/pr-tabs/dismiss', body, true)).status).toBe(200)
+  expect(messages.at(-1)).toEqual({ type: 'web_panes', dismissedPrTabs: { '%12': { [body.key]: body.signature } } })
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, key: 'session' }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, signature: 'x'.repeat(257) }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/restore', { ...body, anchorPaneId: '%99' }, true)).status).toBe(404)
+  expect((await post('/api/web-panes/pr-tabs/restore', body, true)).status).toBe(200)
+  expect(service.panelDismissedPrTabs()).toEqual({})
+  expect(await readFile(new URL('./index.ts', import.meta.url), 'utf8')).toContain('dismissedPrTabs: webPanes.panelDismissedPrTabs(),')
 })

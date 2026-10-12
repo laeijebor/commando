@@ -24,6 +24,7 @@ export type BuiltinPanelTab = {
   key: BuiltinPanelKey
   anchorPaneId: string
   label: string
+  prSignature?: string
   prState?: 'open' | 'draft' | 'merged' | 'closed'
   unseen?: boolean
   warning?: boolean
@@ -43,17 +44,26 @@ export function orderedPanePrs(prs: readonly PanePrSummary[]): PanePrSummary[] {
   const priority = { open: 0, merged: 1, closed: 2 }
   return [...prs].sort((a, b) => priority[a.state] - priority[b.state] || b.updatedAt.localeCompare(a.updatedAt))
 }
+export function prTabSignature(pr: PanePrSummary): string {
+  return `${pr.state}|${pr.isDraft}|${pr.updatedAt}`
+}
+export function visiblePanePrs(prs: readonly PanePrSummary[], dismissed: Readonly<Record<string, string>> = {}): PanePrSummary[] {
+  return orderedPanePrs(prs).filter((pr) => dismissed[prPanelKey(pr.repo, pr.number)] !== prTabSignature(pr))
+}
+export function closedPanePrs(prs: readonly PanePrSummary[], dismissed: Readonly<Record<string, string>> = {}): PanePrSummary[] {
+  return orderedPanePrs(prs).filter((pr) => dismissed[prPanelKey(pr.repo, pr.number)] === prTabSignature(pr))
+}
 export function primaryPanePr(prs: readonly PanePrSummary[]): PanePrSummary | undefined {
   return orderedPanePrs(prs)[0]
 }
-export function combinedPanelTabs(anchor: string, webTabs: readonly WebPane[], summary: GitDiffSummary | null, prs: readonly PanePrSummary[], sessionUnseen = false, sessionWarning = false): PanelTab[] {
+export function combinedPanelTabs(anchor: string, webTabs: readonly WebPane[], summary: GitDiffSummary | null, prs: readonly PanePrSummary[], sessionUnseen = false, sessionWarning = false, dismissed: Readonly<Record<string, string>> = {}): PanelTab[] {
   const tabs: PanelTab[] = [{ ...builtinPanelTab(anchor, 'session'), unseen: sessionUnseen, warning: sessionWarning }]
   if (hasPaneChanges(summary)) tabs.push({ ...builtinPanelTab(anchor, 'changes'), additions: summary?.additions ?? 0, deletions: summary?.deletions ?? 0 })
   const counts = new Map<number, number>()
   for (const pr of prs) counts.set(pr.number, (counts.get(pr.number) ?? 0) + 1)
-  for (const pr of orderedPanePrs(prs)) {
+  for (const pr of visiblePanePrs(prs, dismissed)) {
     tabs.push({ ...builtinPanelTab(anchor, prPanelKey(pr.repo, pr.number), `${counts.get(pr.number)! > 1 ? pr.repo : ''}#${pr.number}`),
-      prState: pr.state === 'open' && pr.isDraft ? 'draft' : pr.state })
+      prSignature: prTabSignature(pr), prState: pr.state === 'open' && pr.isDraft ? 'draft' : pr.state })
   }
   return [...tabs, ...panelTabs(webTabs, anchor)]
 }
