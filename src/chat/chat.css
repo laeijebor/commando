@@ -163,6 +163,8 @@
 
 /* Compact PR context stays directly above the composer. */
 .commando-chat .chat-pr-strip { flex: none; padding: 4px 16px 0; font-size: 12px; }
+/* Rows share the composer's column width instead of spanning a wide pane. */
+.commando-chat .chat-pr-strip > * { width: 100%; max-width: var(--chat-content-max-width); margin-inline: auto; }
 .commando-chat .chat-pr-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 8px; margin-bottom: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text-soft); }
 .commando-chat .chat-pr-row.merged { color: color-mix(in srgb, #b59bea 70%, var(--muted)); background: color-mix(in srgb, #a78bfa 8%, var(--surface-soft)); }
 .commando-chat .chat-pr-row.closed { opacity: .6; }
@@ -174,5 +176,5 @@
 .commando-chat .chat-pr-dot.pass { background: var(--green); }
 .commando-chat .chat-pr-dot.fail { background: var(--red); }
 .commando-chat .chat-pr-dot.pending { background: var(--amber); }
-.commando-chat .chat-pr-more { color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }
+.commando-chat .chat-pr-more { display: block; text-align: left; color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }
 .chat-floating .chat-pr-autofix-toggle { appearance: auto; width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; }
