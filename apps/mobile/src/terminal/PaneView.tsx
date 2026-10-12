@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -10,7 +10,7 @@ import {
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context'
 
 import type { WebPane } from '@commando/protocol'
 
@@ -64,7 +64,8 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
   const theme = useTheme()
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
-  const insets = useSafeAreaInsets()
+  // The screens leave the bottom edge to the pane, so the composer clears the home indicator itself.
+  const bottomInset = useContext(SafeAreaInsetsContext)?.bottom ?? 0
   const keyboard = useKeyboardShown()
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   return (
@@ -78,7 +79,7 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
       <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={[styles.body, { paddingBottom: keyboard ? 0 : insets.bottom }]}
+        style={[styles.body, { paddingBottom: keyboard ? 0 : bottomInset }]}
       >
         <ChatErrorBoundary
           fallback={(error) => (

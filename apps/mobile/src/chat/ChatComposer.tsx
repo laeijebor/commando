@@ -238,12 +238,12 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }
 
   // Each send's draft is kept by its request id, so a refusal puts back what it refused.
-  const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[] }>())
+  const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[]; at: number }>())
   useEffect(() => {
     let count = attachments.length
     for (const { requestId, code } of sendError?.refused ?? []) {
       const sent = sentDrafts.current.get(requestId)
-      if (!sent) continue
+      if (!sent || Date.now() - sent.at > CHAT_SEND_REFUSAL_MS) continue
       sentDrafts.current.delete(requestId)
       if (sent.text) setText((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
       // A missing image has to be attached again, as the error says.
@@ -287,8 +287,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const options: ChatSendOptions = running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
     const requestId = channel.send(sent, images, options)
-    sentDrafts.current.set(requestId, { text: sent, images })
-    setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
+    const now = Date.now()
+    for (const [id, draft] of sentDrafts.current) if (now - draft.at > CHAT_SEND_REFUSAL_MS) sentDrafts.current.delete(id)
+    sentDrafts.current.set(requestId, { text: sent, images, at: now })
     clearDraft()
   }
 
