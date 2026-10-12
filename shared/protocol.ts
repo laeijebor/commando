@@ -555,6 +555,7 @@ export type WebPaneFeedbackHandoff = {
 
 /** Frame-local CSS pixels and author-provided manifest context. */
 export type CanvasNoteContext = {
+  threadId?: string
   frameId: string
   point: { x: number; y: number }
   label?: string; labelId?: string; frameTitle?: string
@@ -565,8 +566,10 @@ export type CanvasNoteContext = {
 export type CanvasThread = {
   id: string; webPaneId: string; frameId: string; point: { x: number; y: number }
   label?: string; labelId?: string; selector?: string
-  messages: Array<{ author: 'user'; text: string; at: number }>
-  status: 'open'; createdAt: number
+  canvas?: CanvasNoteContext
+  source?: Pick<WebPaneFeedbackNote, 'selector' | 'tag' | 'text' | 'rect' | 'pageUrl'>
+  messages: Array<{ author: 'user' | 'agent'; text: string; at: number; deliveryKey?: string }>
+  status: 'open' | 'resolved'; createdAt: number
 }
 
 export type WebPaneFeedbackNote = {
@@ -665,6 +668,11 @@ export type WebPaneNavigateRequest = {
   requestedAt: number
 }
 
+export type CanvasSpotlightRequest = {
+  id: string; label?: string; labelId?: string; frame?: string; message?: string
+  requestedBy?: string; requestedAt: number
+}
+
 export type WebPaneNavigateDecision = 'pending' | 'accepted' | 'dismissed' | 'superseded' | 'closed'
 
 export type PaneLayoutCapacity = {
@@ -726,6 +734,7 @@ export type ServerMessage =
       webPanes: WebPane[]
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
+      spotlightRequests?: Record<string, CanvasSpotlightRequest>
       /** Per-tile reload counter: a change asks viewers to reload what they render. */
       reloads?: Record<string, number>
     }

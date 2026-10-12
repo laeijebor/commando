@@ -24,6 +24,59 @@ describe('CanvasThreadsStore', () => {
     expect(restored.list('w-12345678')).toHaveLength(1)
     expect(changed).toHaveBeenCalledOnce()
   })
+  it('persists two authors, resolved status and reply delivery dedupe across restart', () => {
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    const prepared = store.prepare('w-12345678', [note])
+    store.record('w-12345678', prepared)
+    const id = prepared[0].canvas!.threadId!
+    store.reply('w-12345678', id, 'Fixed', true)
+    const restored = new CanvasThreadsStore(path)
+    expect(restored.get('w-12345678', id)).toMatchObject({ status: 'resolved', canvas: { threadId: id }, messages: [{ author: 'user' }, { author: 'agent', text: 'Fixed' }] })
+    const followup = { ...note, comment: 'More', reviewKey: 'reply', deliveryKey: 'reply-delivery', canvas: { ...note.canvas!, threadId: id } }
+    restored.record('w-12345678', restored.prepare('w-12345678', [followup]))
+    restored.record('w-12345678', [followup])
+    expect(restored.get('w-12345678', id).messages).toHaveLength(3)
+    expect(restored.get('w-12345678', id).status).toBe('open')
+    expect(() => restored.get('w-other', id)).toThrow('Thread does not exist')
+    restored.status('w-12345678', id, 'resolved')
+    expect(new CanvasThreadsStore(path).get('w-12345678', id).status).toBe('resolved')
+    // Pin retries with a different delivery intent do not add a conversation message.
+    restored.record('w-12345678', restored.prepare('w-12345678', [{ ...note, deliveryKey: 'new-intent' }]))
+    expect(restored.get('w-12345678', id).messages).toHaveLength(3)
+  })
+  it('preserves legacy whitespace-only pin comments while rejecting empty agent replies', () => {
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    store.record('w-12345678', [{ ...note, comment: ' ' }])
+    const restored = new CanvasThreadsStore(path), thread = restored.list('w-12345678')[0]
+    expect(thread.messages[0].text).toBe(' ')
+    expect(() => restored.reply('w-12345678', thread.id, ' ')).toThrow('4096')
+  })
+  it('preflights the batch message cap and deduplicates reply keys', () => {
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    store.record('w-12345678', [note])
+    const thread = store.list('w-12345678')[0]
+    writeFileSync(path, JSON.stringify([{ ...thread, messages: Array(199).fill(thread.messages[0]) }]))
+    const full = new CanvasThreadsStore(path)
+    const reply = { ...note, reviewKey: 'reply', deliveryKey: 'reply-delivery', canvas: { ...note.canvas!, threadId: thread.id } }
+    expect(() => full.prepare('w-12345678', [reply, { ...reply, deliveryKey: 'other' }])).toThrow('200 message limit')
+    expect(full.prepare('w-12345678', [reply, reply])).toHaveLength(2)
+    full.record('w-12345678', [reply, reply])
+    expect(full.get('w-12345678', thread.id).messages).toHaveLength(200)
+    expect(() => full.reply('w-12345678', thread.id, 'Another')).toThrow('200 message limit')
+    expect(() => full.reply('w-12345678', thread.id, 'x'.repeat(4097))).toThrow('4096')
+  })
+  it('rejects malformed persisted authors/statuses and message overflow', () => {
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    store.record('w-12345678', [note])
+    const valid = store.list('w-12345678')[0]
+    for (const change of [{ status: 'replied' }, { messages: [{ author: 'system', text: 'Bad', at: 1 }] },
+      { messages: [{ author: 'agent', text: 'x'.repeat(4097), at: 1 }] }, { messages: Array(201).fill(valid.messages[0]) }]) {
+      writeFileSync(path, JSON.stringify([{ ...valid, ...change }]))
+      expect(new CanvasThreadsStore(path).list('w-12345678')).toEqual([])
+    }
+    writeFileSync(path, JSON.stringify([{ ...valid, status: 'resolved', messages: Array(200).fill(valid.messages[0]) }]))
+    expect(new CanvasThreadsStore(path).list('w-12345678')[0].messages).toHaveLength(200)
+  })
   it('prunes closed panes durably and broadcasts only changes', () => {
     const path = join(dir, 'threads.json'), changed = vi.fn(), store = new CanvasThreadsStore(path, changed)
     store.record('w-12345678', [note]); store.record('w-87654321', [note])

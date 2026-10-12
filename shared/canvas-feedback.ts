@@ -10,12 +10,13 @@ export function parseCanvasNoteContext(value: unknown): CanvasNoteContext | null
   const coordinate = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1_000_000
   if (!point || !coordinate(point.x) || !coordinate(point.y)) return null
   const context: CanvasNoteContext = { frameId: raw.frameId, point: { x: point.x, y: point.y } }
-  for (const key of ['label', 'labelId', 'frameTitle', 'section', 'ticket', 'status'] as const) {
+  for (const key of ['threadId', 'label', 'labelId', 'frameTitle', 'section', 'ticket', 'status'] as const) {
     const v = raw[key]
     if (v === undefined) continue
     if (typeof v !== 'string' || !v.trim() || v.length > (key === 'frameTitle' ? 1_024 : 256)) return null
     context[key] = v
   }
+  if (context.threadId !== undefined && !/^ct-[0-9a-f]{24}$/.test(context.threadId)) return null
   if (context.status !== undefined && !CANVAS_STATUSES.some((status) => status === context.status)) return null
   if (raw.focus !== undefined) {
     if (!Number.isSafeInteger(raw.focus) || (raw.focus as number) < 1 || (raw.focus as number) > 1_000_000) return null
