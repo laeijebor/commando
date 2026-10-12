@@ -1,3 +1,4 @@
+import { encodeCanvasPath } from './canvas-manifest.js'
 import { describe, expect, it } from 'vitest'
 import { canvasRelativePath, parseCanvasManifest } from './canvas-manifest.js'
 
@@ -62,4 +63,15 @@ describe('canvas manifest', () => {
     expect(parseCanvasManifest('{').errors).toEqual(['canvas.json: must be valid JSON'])
     expect(parseCanvasManifest('[]').errors).toEqual(['canvas.json: must be an object'])
   })
+})
+
+it.each(['bad/id', 'x'.repeat(65), 'space id', '雪', ''])('rejects invalid ids in every manifest entity: %s', (id) => {
+  const result = parseCanvasManifest({ title: 'Board', frames: [{ id, title: 'A', src: 'a.html', x: 0, y: 0 }],
+    sections: [{ id, title: 'S', frames: [], status: 'idea' }], annotations: [{ id, kind: 'design', x: 0, y: 0 }] })
+  expect(result.manifest.frames).toEqual([]); expect(result.manifest.sections).toEqual([]); expect(result.manifest.annotations).toEqual([])
+  expect(result.errors.filter((error) => error.includes('.id:'))).toHaveLength(3)
+})
+
+it('encodes canvas path segments while preserving nested separators', () => {
+  expect(encodeCanvasPath('folder name/雪 &.html')).toBe('folder%20name/%E9%9B%AA%20%26.html')
 })

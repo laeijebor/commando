@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -107,4 +108,11 @@ describe('commando-canvas CLI', () => {
     const result = await run([f.artifact], f.env)
     expect(result.code).toBe(1); expect(result.stderr).toContain('daemon unavailable at http://127.0.0.1:4410')
   })
+})
+
+it('documents checkout script locations and authenticated raw HTTP for every CLI action', () => {
+  const skill = readFileSync(join(process.cwd(), 'skills/canvas/SKILL.md'), 'utf8')
+  expect(skill).toContain('Commando repo checkout'); expect(skill).toContain('Authorization: Bearer <token>')
+  for (const route of ['POST /api/redline/artifacts', 'GET /api/redline/artifacts/:id/canvas?manifest=', 'POST /api/web-panes', '/feedback?wait=30&cursor=', '/threads/:threadId/replies', '/threads/:threadId/status', '/spotlight?wait=30', '/spotlight-requests/:requestId?wait=30']) expect(skill).toContain(route)
+  expect(skill).not.toContain('In hand mode')
 })

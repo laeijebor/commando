@@ -28,3 +28,22 @@ export function parseCanvasNoteContext(value: unknown): CanvasNoteContext | null
   }
   return context
 }
+
+/** Keep frame identity while ignoring reload/query churn; ordinary pages retain their identity. */
+export function canvasPageKey(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (['http:', 'https:'].includes(parsed.protocol)) {
+      const frame = parsed.searchParams.get('canvas-frame')
+      return `${parsed.origin}${parsed.pathname}${frame && /^[A-Za-z0-9_-]{1,64}$/.test(frame) ? `?canvas-frame=${frame}` : ''}`
+    }
+  } catch { /* Preserve the ordinary textual fallback. */ }
+  return url.replace(/[?#].*$/, '')
+}
+
+/** Adapt canvas keys to the existing pathname-keyed durable answer store. */
+export function canvasSentPageUrl(url: string): string {
+  const key = canvasPageKey(url)
+  const marker = key.indexOf('?canvas-frame=')
+  return marker < 0 ? url : `${key.slice(0, marker)}/.commando-canvas-frame/${key.slice(marker + 14)}`
+}

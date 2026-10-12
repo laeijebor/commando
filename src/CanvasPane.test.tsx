@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 /// <reference types="node" />
+import { canvasPendingSnapshotForPage } from './canvasFrameBridge'
 import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
@@ -97,7 +98,7 @@ describe('CanvasPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
     expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
     fireEvent.click(viewport); expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
-    fireEvent.doubleClick(settings.closest('.canvas-frame')!); fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.doubleClick(settings.closest('.canvas-frame')!); fireEvent.keyDown(container.querySelector('.canvas-pane')!, { key: 'Escape' })
     expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
   })
   it('Play validates window/target/live identity, flies to static targets and Back restores the previous live frame', async () => {
@@ -410,4 +411,40 @@ describe('canvas overview and frame bridge', () => {
     fireEvent.click(screen.getByRole('button', { name: '★ 1 · Settings' }))
     expect(screen.getByLabelText('Zoom')).toHaveTextContent('57%')
   })
+})
+
+it('hydrates only the matching canvas frame when source and SDK queueKey are shared', () => {
+  const a = 'http://localhost/Shared.html?canvas-frame=a', b = 'http://localhost/Shared.html?canvas-frame=b'
+  const answer = { queueKey: 'ship', shape: { question: 'Ship?', kind: 'approve' as const, options: ['Yes', 'No'] }, response: { question: 'Ship?', answer: 'Yes' }, sentAt: 1 }
+  const note = { id: 1, selector: 'html', tag: 'body', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: '', pageUrl: a, queueKey: 'ship', response: answer.response }
+  const snapshot = { notes: [note, { ...note, id: 2, pageUrl: b, response: { question: 'Ship?', answer: 'No' } }], knownUpTo: 2, dropped: 0, sent: { page: a, answers: [answer] } }
+  expect(canvasPendingSnapshotForPage(snapshot, a + '&canvas-reload=2')).toMatchObject({ controls: [{ response: { answer: 'Yes' } }], sent: [answer] })
+  const other = canvasPendingSnapshotForPage(snapshot, b)
+  expect(other.controls).toHaveLength(1); expect(other.controls[0].response.answer).toBe('No'); expect(other.sent).toBeUndefined()
+})
+it('remounts the canvas when WebPaneCard changes artifact/manifest identity', async () => {
+  const pane: WebPane = { id: 'w-12345678', url: 'http://localhost/', content: { kind: 'canvas', artifactId, manifest: 'canvas.json' }, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', engine: 'webkit', status: 'open', openedBy: 'user', createdAt: 0 }
+  const props = { webPane: pane, wsToken: '', onClose: vi.fn(), onConfirm: vi.fn() }
+  const view = render(<WebPaneCard {...props} />)
+  await screen.findByTitle('Settings')
+  fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
+  expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'true')
+  const node = view.container.querySelector('.canvas-pane')
+  view.rerender(<WebPaneCard {...props} webPane={{ ...pane, content: { kind: 'canvas', artifactId, manifest: 'second.json' } }} />)
+  await screen.findByTitle('Settings')
+  expect(view.container.querySelector('.canvas-pane')).not.toBe(node)
+  expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'false')
+})
+it('registers Escape once through manifest refreshes and ignores outside targets', async () => {
+  const add = vi.spyOn(window, 'addEventListener'), remove = vi.spyOn(window, 'removeEventListener')
+  const view = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-test" />)
+  await screen.findByTitle('Settings')
+  fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
+  fireEvent.keyDown(document.body, { key: 'Escape' })
+  expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'true')
+  push(['canvas.json']); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length).toBe(2))
+  expect(add.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1)
+  expect(remove.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(0)
+  fireEvent.keyDown(view.container.querySelector('.canvas-pane')!, { key: 'Escape' })
+  expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'false')
 })

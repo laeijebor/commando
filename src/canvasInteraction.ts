@@ -27,7 +27,7 @@ export function canvasWheelRoute(live: boolean, commentMode: boolean, ctrlKey: b
   return ctrlKey || metaKey ? 'zoom' : live && !commentMode ? 'frame' : 'pan'
 }
 
-export function useCanvasInteraction(frames: CanvasFrame[], navigate: (frame: CanvasFrame) => void, identity: string) {
+export function useCanvasInteraction(frames: CanvasFrame[], navigate: (frame: CanvasFrame) => void) {
   const [state, setState] = useState(INERT_CANVAS)
   const current = useRef(state)
   useLayoutEffect(() => { current.current = state }, [state])
@@ -39,7 +39,6 @@ export function useCanvasInteraction(frames: CanvasFrame[], navigate: (frame: Ca
       if (frame) navigate(frame)
     }
   }
-  useEffect(() => { current.current = INERT_CANVAS; setState(INERT_CANVAS) }, [identity])
   useEffect(() => {
     if (state.current && !frames.some((f) => f.id === state.current)) act({ type: 'escape' })
     else if (state.live && !frames.some((f) => f.id === state.live && f.interactive)) act({ type: 'background' })

@@ -1,3 +1,6 @@
+import { encodeCanvasPath } from '../shared/canvas-manifest'
+import { canvasPageKey } from '../shared/canvas-feedback'
+import { redlinePageKey } from '../shared/redline-response'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { redlinePendingSnapshotForPage } from '../shared/redline-response'
 import type { WebPanePendingSnapshot } from '../shared/protocol'
@@ -8,7 +11,7 @@ import { readCanvasLabels, type CanvasLabelReports } from './canvasLabels'
 export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0): string {
   const query = new URLSearchParams({ 'canvas-frame': frame.id })
   if (revision) query.set('canvas-reload', String(revision))
-  return baseUrl + frame.src.split('/').map(encodeURIComponent).join('/') + '?' + query
+  return baseUrl + encodeCanvasPath(frame.src) + '?' + query
 }
 
 export type CanvasFrameInput = { type: 'goto'; target: string } | { type: 'escape' } | { type: 'zoom'; deltaY: number; deltaMode: number; x: number; y: number }
@@ -50,9 +53,10 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
         return
       }
       if (data.type === 'labels') {
+        if (typeof data.frameId !== 'string' || data.frameId.length > 64) return
         const labels = readCanvasLabels(data.labels)
         if (labels) setReports((current) => ({ ...current, [data.frameId]: labels }))
-        iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: redlinePendingSnapshotForPage(pending.current, new URL(url, window.location.href).href) }, '*')
+        iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: canvasPendingSnapshotForPage(pending.current, new URL(url, window.location.href).href) }, '*')
       } else if (data.type === 'hit') {
         const request = requests.current.get(data.requestId)
         if (request && request.frameId === data.frameId && request.url === url) request.finish(readCanvasHit(data))
@@ -86,8 +90,17 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
     pending.current = snapshot
     for (const [id, iframe] of iframes.current) {
       const url = sources.current.get(id)
-      if (url) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: redlinePendingSnapshotForPage(snapshot, new URL(url, window.location.href).href) }, '*')
+      if (url) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: canvasPendingSnapshotForPage(snapshot, new URL(url, window.location.href).href) }, '*')
     }
   }, [])
   return { reports, register, hitTest, forwardPending, syncInteraction }
+}
+
+/** Filter by frame before using the shared sanitizer, whose ordinary page keys ignore queries. */
+export function canvasPendingSnapshotForPage(snapshot: WebPanePendingSnapshot, url: string) {
+  const page = canvasPageKey(url)
+  return redlinePendingSnapshotForPage({ ...snapshot,
+    notes: snapshot.notes.filter((note) => note.pageUrl && canvasPageKey(note.pageUrl) === page),
+    sent: snapshot.sent?.page === page ? { ...snapshot.sent, page: redlinePageKey(url) } : undefined,
+  }, url)
 }

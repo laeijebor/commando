@@ -1,3 +1,4 @@
+import { canvasRequest } from './canvasWrite'
 import { useEffect, useRef, useState } from 'react'
 import type { CanvasSnapshot } from '../shared/canvas-snapshot'
 
@@ -14,8 +15,7 @@ export function CanvasHistory({ apiUrl, token, selected, disabled, onSelect }: {
     const epoch = ++generation.current
     setBusy(true); setError('')
     try {
-      const response = await fetch(apiUrl, { cache: 'no-store', credentials: 'same-origin', headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      if (!response.ok) throw new Error(`Could not load history (${response.status})`)
+      const response = await canvasRequest(apiUrl, token, { cache: 'no-store' }, 'Could not load history')
       const data = await response.json() as { snapshots: CanvasSnapshot[] }
       if (epoch === generation.current) setSnapshots(data.snapshots ?? [])
     } catch (reason) { if (epoch === generation.current) setError((reason as Error).message) }

@@ -24,3 +24,15 @@ describe('canvas geometry', () => {
     expect(canvasConnector(note, target).path).toContain(' C ')
   })
 })
+
+it('projects scrolled viewport label rectangles consistently for highlights, connectors and flight', () => {
+  const frame = { x: 200, y: 300 }, before = { x: 10, y: 120, w: 30, h: 40 }, after = { ...before, y: 20 }
+  const camera = { x: 50, y: 25, scale: 2 }
+  expect(projectCanvasRect(frame, after, camera).y).toBe(projectCanvasRect(frame, before, camera).y - 200)
+  const bounds = canvasLabelBounds(frame, after)
+  expect(bounds.y).toBe(320)
+  expect(canvasConnector({ x: 210, y: 600, w: 30, h: 40 }, bounds).end.y).toBe(360)
+  const flight = flyToCanvasRect(bounds, { w: 800, h: 600 })
+  const target = projectCanvasRect(frame, after, flight)
+  expect(target.y + target.h / 2).toBe(300)
+})

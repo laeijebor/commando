@@ -32,16 +32,39 @@ scripts/commando-canvas .canvas/settings
 # Or: scripts/commando-canvas .canvas/settings --manifest board.json
 ```
 
+The scripts live in the **Commando repo checkout**, not the artifact/project
+folder. Invoke `/absolute/path/to/commando/scripts/commando-canvas` and
+`/absolute/path/to/commando/scripts/commando-feedback` when working elsewhere.
+
+If those scripts are unavailable, use raw HTTP. For **every request** send the
+agent-hook-token as `Authorization: Bearer <token>`, read from
+`${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}`. Use
+`http://127.0.0.1:${COMMANDO_PORT:-4310}` as the base URL and
+`Content-Type: application/json` for JSON bodies. Encode path ids and query values.
+
+| CLI action | Raw HTTP fallback |
+|---|---|
+| Open: register directory | `POST /api/redline/artifacts` with `{"dir":"/absolute/canvas/folder"}`; retain returned `id` and `url` |
+| Open: validate manifest | `GET /api/redline/artifacts/:id/canvas?manifest=canvas.json` (or custom manifest) |
+| Open: create/select tab | `POST /api/web-panes` with `{"url":"<registered url>","anchor":"<TMUX_PANE>","engine":"webkit","content":{"kind":"canvas","artifactId":"<id>","manifest":"canvas.json"}}`; retain `webPaneId` |
+| Feedback / `--wait` | `GET /api/web-panes/:webPaneId/feedback?wait=30&cursor=<last cursor>`; first poll omits cursor, next poll acknowledges returned cursor; fetch attachments before acknowledging; repeat while review is active |
+| Threads | `GET /api/web-panes/:webPaneId/threads` |
+| Reply / `--resolve` | `POST /api/web-panes/:webPaneId/threads/:threadId/replies` with `{"text":"Updated the row","resolve":true}` (false unless resolving) |
+| Resolve / thread status | `POST /api/web-panes/:webPaneId/threads/:threadId/status` with `{"status":"resolved"}` (or `"open"`) |
+| Spotlight / `--frame`, `--message`, `--wait` | `POST /api/web-panes/:webPaneId/spotlight?wait=30` with `{"label":"Outlook row","frame":"accounts","message":"Updated state"}`; optional frame/message; wait is 0–60 |
+| Spotlight decision polling | `GET /api/web-panes/:webPaneId/spotlight-requests/:requestId?wait=30` |
+
 The script registers the folder with the existing redline artifact registry,
 validates the manifest and prints the webPaneId. Missing or unparsable
 manifests fail. Field validation warnings still open the usable content;
-correct them in place. Reopening the same artifact at the same anchor selects
+correct them in place. Reopening the same artifact and manifest at the same anchor selects
 its existing tab. `COMMANDO_PORT` defaults to 4310; auth uses
 `~/.commando/agent-hook-token` (or `COMMANDO_AGENT_HOOK_TOKEN_PATH`).
 
 ## Manifest
 
-Coordinates and sizes use world pixels. All ids must be unique. Frame `src`
+Coordinates and sizes use world pixels. All frame, section and annotation ids
+must be unique and match `^[A-Za-z0-9_-]{1,64}$`. Frame `src`
 paths are relative to the registered canvas folder and cannot escape it.
 Unknown keys are ignored. `title` and `frames` are required; `sections` and
 `annotations` may be omitted. Frames require id, title, src, x and y; w/h
@@ -173,7 +196,7 @@ completion. The journal remains the source of truth across daemon restarts.
 
 ## User layout and section status
 
-In hand mode, users can drag frame label rows. Positions snap to 10 world pixels
+Users can drag frame label rows whenever comment mode is off and Play isn't running. Positions snap to 10 world pixels
 and are written atomically to the manifest. Users can also choose any of the
 five statuses from a section's status chip. This writes the new status and
 queues then sends a feedback note with section, ticket and status context

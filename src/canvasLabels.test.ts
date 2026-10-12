@@ -35,3 +35,13 @@ describe('canvas label tree', () => {
     for (const value of [null, {}, [null], [{ ...label('x'), group: 2 }], [{ ...label('x'), rect: { x: Infinity, y: 0, w: 1, h: 1 } }], [{ ...label('x'), rect: { x: 0, y: 0, w: -1, h: 1 } }]]) expect(readCanvasLabels(value)).toBeNull()
   })
 })
+
+it('rejects excessive counts, strings, coordinates and payload bytes', () => {
+  const label = { name: 'Row', rect: { x: 0, y: 0, w: 10, h: 10 } }
+  expect(readCanvasLabels(Array.from({ length: 1001 }, () => label))).toBeNull()
+  for (const field of ['name', 'group', 'id']) expect(readCanvasLabels([{ ...label, [field]: 'x'.repeat(201) }])).toBeNull()
+  for (const n of [Infinity, NaN, 1000001]) expect(readCanvasLabels([{ ...label, rect: { ...label.rect, x: n } }])).toBeNull()
+  expect(readCanvasLabels([{ ...label, extra: 'x'.repeat(1000001) }])).toBeNull()
+  expect(readCanvasLabels(Array.from({ length: 1000 }, () => ({ ...label, name: '雪'.repeat(200), group: '雪'.repeat(200) })))).toBeNull()
+  expect(readCanvasLabels([label])).toHaveLength(1)
+})

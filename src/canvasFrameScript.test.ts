@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 /// <reference types="node" />
+import { TextEncoder } from 'node:util'
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,6 +11,7 @@ let post: ReturnType<typeof vi.spyOn>
 let elementAtPoint: ReturnType<typeof vi.fn>
 beforeEach(() => {
   vi.useFakeTimers()
+  vi.stubGlobal('TextEncoder', TextEncoder)
   document.body.innerHTML = ''
   const script = document.createElement('script')
   script.dataset.canvasFrame = 'settings'
@@ -23,7 +25,7 @@ beforeEach(() => {
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: elementAtPoint })
 })
 afterEach(() => {
-  listeners.forEach(([type, listener]) => window.removeEventListener(type, listener)); listeners = []
+  listeners.forEach(([type, listener]) => { window.removeEventListener(type, listener, true); window.removeEventListener(type, listener) }); listeners = []
   observers.forEach((observer) => observer.disconnect()); observers = []
   vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers()
 })
@@ -63,7 +65,7 @@ describe('canvas frame script', () => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(post).not.toHaveBeenCalled()
   })
-  it('reports labels in document order, inherits nearest groups and adds document scroll offsets', async () => {
+  it('reports labels in document order, inherits nearest groups in viewport coordinates', async () => {
     document.body.innerHTML = '<section data-canvas-group="Accounts"><button data-canvas-label="Row" data-canvas-id="outlook"></button><div data-canvas-group="Nested"><b data-canvas-label="Title"></b></div></section><footer data-canvas-label="Footer"></footer>'
     document.querySelectorAll('[data-canvas-label]').forEach(box)
     vi.spyOn(window, 'scrollX', 'get').mockReturnValue(5)
@@ -71,9 +73,9 @@ describe('canvas frame script', () => {
     boot()
     window.dispatchEvent(new Event('load'))
     expect(latest()).toEqual({ source: 'commando-canvas-frame', frameId: 'settings', type: 'labels', labels: [
-      { name: 'Row', group: 'Accounts', id: 'outlook', rect: { x: 15, y: 120, w: 30, h: 40 } },
-      { name: 'Title', group: 'Nested', rect: { x: 15, y: 120, w: 30, h: 40 } },
-      { name: 'Footer', rect: { x: 15, y: 120, w: 30, h: 40 } },
+      { name: 'Row', group: 'Accounts', id: 'outlook', rect: { x: 10, y: 20, w: 30, h: 40 } },
+      { name: 'Title', group: 'Nested', rect: { x: 10, y: 20, w: 30, h: 40 } },
+      { name: 'Footer', rect: { x: 10, y: 20, w: 30, h: 40 } },
     ] })
     post.mockClear()
     document.querySelector('button')!.setAttribute('data-canvas-label', 'Renamed')
@@ -154,4 +156,28 @@ describe('canvas frame script', () => {
     boot(); window.dispatchEvent(new Event('load'))
     expect(post).not.toHaveBeenCalled()
   })
+})
+
+it('debounces window and nested non-bubbling scroll reports, retaining document coordinates for hits', () => {
+  document.body.innerHTML = '<div id="scroll"><b data-canvas-label="Row"></b></div>'
+  const row = document.querySelector('b')!; box(row)
+  vi.spyOn(window, 'scrollY', 'get').mockReturnValue(100)
+  boot(); post.mockClear()
+  window.dispatchEvent(new Event('scroll')); document.querySelector('div')!.dispatchEvent(new Event('scroll'))
+  vi.advanceTimersByTime(99); expect(post).not.toHaveBeenCalled()
+  vi.advanceTimersByTime(1); expect(latest().labels[0].rect.y).toBe(20)
+  expect(hit(row).rect.y).toBe(120)
+})
+it('caps emitted labels and excludes oversized names and unsafe geometry', () => {
+  document.body.innerHTML = Array.from({ length: 1005 }, () => '<b data-canvas-label="Row"></b>').join('')
+  document.querySelectorAll('b').forEach(box)
+  document.querySelector('b')!.setAttribute('data-canvas-label', 'x'.repeat(201))
+  boot(); window.dispatchEvent(new Event('load'))
+  expect(latest().labels).toHaveLength(999)
+})
+
+it('drops reports that exceed the total UTF-8 payload budget', () => {
+  document.body.innerHTML = Array.from({ length: 1000 }, () => `<b data-canvas-label="${'雪'.repeat(200)}" data-canvas-group="${'雪'.repeat(200)}"></b>`).join('')
+  boot(); window.dispatchEvent(new Event('load'))
+  expect(post).not.toHaveBeenCalled()
 })

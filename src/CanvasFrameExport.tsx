@@ -1,3 +1,5 @@
+import { encodeCanvasPath } from '../shared/canvas-manifest'
+import { canvasRequest } from './canvasWrite'
 import { useState } from 'react'
 import type { CanvasFrame } from '../shared/canvas-manifest'
 
@@ -6,18 +8,14 @@ export function CanvasFrameExport({ frame, baseUrl, apiUrl, manifest, token, sna
 }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [open, setOpen] = useState(false)
-  const fileUrl = baseUrl + frame.src.split('/').map(encodeURIComponent).join('/')
+  const fileUrl = baseUrl + encodeCanvasPath(frame.src)
   // Frame files live on the daemon's origin, where <a download> is ignored, so both
   // exports go through a blob URL.
   const save = async (url: string, init: RequestInit, filename: string, failure: string) => {
     if (busy) return
     setBusy(true); setError('')
     try {
-      const response = await fetch(url, init)
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { error?: string }
-        throw new Error(body.error ?? `${failure} (${response.status})`)
-      }
+      const response = await canvasRequest(url, url === fileUrl ? undefined : token, init, failure)
       const blobUrl = URL.createObjectURL(await response.blob())
       const link = document.createElement('a')
       link.href = blobUrl; link.download = filename; link.click()
@@ -29,7 +27,7 @@ export function CanvasFrameExport({ frame, baseUrl, apiUrl, manifest, token, sna
   }
   const downloadHtml = () => save(fileUrl, { cache: 'no-store' }, frame.src.split('/').at(-1)!, 'HTML export failed')
   const downloadPng = () => save(`${apiUrl}/${encodeURIComponent(frame.id)}.png?${new URLSearchParams({ manifest })}`,
-    { credentials: 'same-origin', headers: token ? { Authorization: `Bearer ${token}` } : {} }, `${frame.id}.png`, 'PNG export failed')
+    {}, `${frame.id}.png`, 'PNG export failed')
   return <details className="canvas-menu canvas-frame-export" open={open} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
     <summary aria-label={`Export ${frame.title}`} onClick={(event) => { event.preventDefault(); setOpen(!open) }}>⤓</summary>
     {open && <div className="canvas-menu-items" role="menu" aria-label={`Export ${frame.title}`}>

@@ -1,8 +1,18 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import type { CanvasManifestResult, CanvasMove, CanvasSection } from '../shared/canvas-manifest'
+import { encodeCanvasPath } from '../shared/canvas-manifest'
+import { subscribeCanvasChanges } from './webPanesApi'
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { parseCanvasManifest, type CanvasFrame, type CanvasManifestResult, type CanvasMove, type CanvasSection } from '../shared/canvas-manifest'
 import { writeCanvasLayout } from './canvasWrite'
 
-export function useCanvasLayout(artifactId: string, manifest: string, token: string, setResult: Dispatch<SetStateAction<CanvasManifestResult>>) {
+type ManifestView = {
+  baseUrl: string; readOnly: boolean; frames: CanvasFrame[]; onTitle?: (title: string) => void
+  onReset: () => void; setLoaded: Dispatch<SetStateAction<boolean>>
+  setRevisions: Dispatch<SetStateAction<Record<string, number>>>
+}
+
+export function useCanvasLayout(artifactId: string, manifest: string, token: string, setResult: Dispatch<SetStateAction<CanvasManifestResult>>, view?: ManifestView) {
+  const viewRef = useRef(view), manifestRef = useRef({ frames: view?.frames ?? [] })
+  useLayoutEffect(() => { viewRef.current = view; manifestRef.current = { frames: view?.frames ?? [] } })
   const contentHash = useRef(''), reload = useRef<() => Promise<void>>(async () => {})
   const loadEpoch = useRef(0)
   const reloadAfterWrite = useRef(false)
@@ -13,6 +23,51 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
     ++generation.current; contentHash.current = ''; overlay.current = null; lock.current = false; reloadAfterWrite.current = false; setBusy(false); setError('')
     return () => { ++generation.current }
   }, [artifactId, manifest])
+  useEffect(() => {
+    view?.onReset()
+    if (!view) return
+    const { baseUrl, readOnly, setLoaded, setRevisions } = view
+    let disposed = false
+    let sequence = 0
+    const abort = new AbortController()
+    setLoaded(false)
+    setRevisions({})
+    const load = async () => {
+      if (!readOnly && lock.current) { reloadAfterWrite.current = true; return }
+      const request = ++sequence
+      const epoch = loadEpoch.current
+      try {
+        const response = await fetch(baseUrl + encodeCanvasPath(manifest), { cache: 'no-store', signal: abort.signal })
+        if (!response.ok) throw new Error(`${manifest}: could not load (${response.status})`)
+        const parsed = parseCanvasManifest(await response.text())
+        if (!disposed && request === sequence && epoch === loadEpoch.current) {
+          if (!readOnly) contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
+          const move = readOnly ? null : overlay.current
+          if (move) parsed.manifest.frames = parsed.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f)
+          setResult(parsed); setLoaded(true); viewRef.current?.onTitle?.(parsed.manifest.title || 'Canvas')
+        }
+      } catch (error) {
+        if (!disposed && request === sequence && epoch === loadEpoch.current) { setResult((current) => ({ ...current, errors: [String((error as Error).message)] })); setLoaded(true) }
+      }
+    }
+    reload.current = load
+    void load()
+    const unsubscribe = subscribeCanvasChanges(({ artifactId: changedArtifact, changed }) => {
+      if (readOnly || changedArtifact !== artifactId) return
+      const other = changed.filter((path) => path !== manifest)
+      const frames = manifestRef.current.frames
+      const unknown = other.some((path) => !frames.some((frame) => frame.src === path))
+      if (changed.includes(manifest) || unknown) void load()
+      if (!other.length) return
+      setRevisions((current) => {
+        const next = { ...current }
+        for (const frame of frames) if (unknown || other.includes(frame.src)) next[frame.id] = (next[frame.id] ?? 0) + 1
+        return next
+      })
+    })
+    return () => { disposed = true; abort.abort(); unsubscribe(); reload.current = async () => {} }
+  }, [artifactId, manifest, view?.baseUrl])
+
   const preview = (move: CanvasMove | null) => {
     overlay.current = move
     if (move) setResult((result) => ({ ...result, manifest: { ...result.manifest, frames: result.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f) } }))
@@ -40,6 +95,6 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
       }
     }
   }
-  return { contentHash, loadEpoch, reload, writing: lock, reloadAfterWrite, overlay, busy, error, preview, move: (move: CanvasMove) => write({ moves: [move] }),
+  return { hasPreview: () => overlay.current !== null, contentHash, loadEpoch, reload, writing: lock, reloadAfterWrite, overlay, busy, error, preview, move: (move: CanvasMove) => write({ moves: [move] }),
     status: (section: CanvasSection, status: CanvasSection['status'], after: () => Promise<unknown>) => write({ statuses: [{ id: section.id, status }] }, after) }
 }

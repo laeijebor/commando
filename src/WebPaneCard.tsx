@@ -234,7 +234,7 @@ export function WebPaneCard({
 
   if (webPane.content?.kind === 'canvas') return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <CanvasPane webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+      <CanvasPane key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
     </article>
   )
 

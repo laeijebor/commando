@@ -1,3 +1,4 @@
+import { publishCanvasChange } from './webPanesApi'
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -43,4 +44,23 @@ describe('canvas layout writes', () => {
     expect(result.current.error).toBe('stale manifest'); expect(reload).toHaveBeenCalledOnce(); expect(after).not.toHaveBeenCalled()
     expect(result.current.overlay.current).toBeNull(); expect(result.current.busy).toBe(false)
   })
+})
+
+it('owns manifest loading, ETag updates and frame/manifest watch refreshes', async () => {
+  let hash = 'a'.repeat(64)
+  const fetcher = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify(initial.manifest), headers: new Headers({ ETag: `"${hash}"` }) }))
+  vi.stubGlobal('fetch', fetcher)
+  const setResult = vi.fn(), setLoaded = vi.fn(), setRevisions = vi.fn(), onTitle = vi.fn()
+  const { result } = renderHook(() => useCanvasLayout('first', 'canvas.json', '', setResult, {
+    baseUrl: '/artifacts/first/', readOnly: false, frames: initial.manifest.frames, setLoaded, setRevisions, onTitle, onReset: vi.fn(),
+  }))
+  await act(async () => {})
+  expect(setResult).toHaveBeenCalledWith(initial); expect(onTitle).toHaveBeenCalledWith('Board')
+  expect(result.current.contentHash.current).toBe(hash)
+  act(() => publishCanvasChange({ artifactId: 'first', changed: ['a.html'] }))
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(setRevisions.mock.calls.at(-1)![0]({})).toEqual({ a: 1 })
+  hash = 'c'.repeat(64)
+  await act(async () => publishCanvasChange({ artifactId: 'first', changed: ['canvas.json'] }))
+  expect(fetcher).toHaveBeenCalledTimes(2); expect(result.current.contentHash.current).toBe(hash)
 })

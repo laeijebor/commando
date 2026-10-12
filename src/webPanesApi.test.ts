@@ -1,3 +1,5 @@
+import { createChannel } from './webPanesApi'
+import { canvasRequest } from './canvasWrite'
 import { describe, expect, it, vi } from 'vitest'
 import { createWebPanesApi } from './webPanesApi'
 
@@ -337,4 +339,21 @@ describe('canvas thread and spotlight actions', () => {
       ['/api/web-panes/w-12345678/spotlight-requests/sr-12345678', 'POST', { decision: 'accept' }],
     ])
   })
+})
+
+it('uses independent typed channels with ordered delivery and unsubscribe', () => {
+  const a = createChannel<string>(), b = createChannel<string>(), calls: string[] = []
+  const unsubscribe = a.subscribe((value) => calls.push('first:' + value))
+  a.subscribe((value) => calls.push('second:' + value)); b.subscribe((value) => calls.push('other:' + value))
+  a.publish('one'); unsubscribe(); a.publish('two'); b.publish('three')
+  expect(calls).toEqual(['first:one', 'second:one', 'second:two', 'other:three'])
+})
+it('shares canvas owner headers and parses both JSON and non-JSON errors', async () => {
+  const fetcher = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({ error: 'Missing browser' }) }))
+  vi.stubGlobal('fetch', fetcher)
+  await expect(canvasRequest('/api/canvas', 'owner')).rejects.toMatchObject({ message: 'Missing browser', status: 503 })
+  expect(fetcher).toHaveBeenCalledWith('/api/canvas', expect.objectContaining({ credentials: 'same-origin', headers: { Authorization: 'Bearer owner' } }))
+  fetcher.mockResolvedValueOnce({ ok: false, status: 502, json: async () => { throw new Error('HTML response') } })
+  await expect(canvasRequest('/api/canvas', '', {}, 'PNG export failed')).rejects.toThrow('PNG export failed (502)')
+  vi.unstubAllGlobals()
 })

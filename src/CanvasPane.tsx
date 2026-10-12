@@ -8,10 +8,9 @@ import { CanvasPins, canvasPins, canvasPinPoint } from './CanvasPins'
 import { CanvasQueueChip } from './CanvasQueueChip'
 import { useCanvasComments } from './useCanvasComments'
 import { canvasNoteContext } from './canvasComments'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult } from '../shared/canvas-manifest'
 import { fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
-import { subscribeCanvasChanges } from './webPanesApi'
 import { CanvasOverview } from './CanvasOverview'
 import { CanvasHighlights } from './CanvasHighlights'
 import { canvasConnector, canvasLabelBounds } from './canvasGeometry'
@@ -58,23 +57,27 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const drag = useRef<{ pointerId: number; x: number; y: number; camera: CanvasCamera } | null>(null)
   const initialFit = useRef(false)
   const manifestRef = useRef(result.manifest)
-  const titleCallback = useRef(onTitle)
-  useLayoutEffect(() => { manifestRef.current = result.manifest; titleCallback.current = onTitle })
+  useLayoutEffect(() => { manifestRef.current = result.manifest })
   const resourceUrl = (path: string) => artifactUrl ? new URL(path, artifactUrl).toString() : path
   const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
   // Same-origin like the rest of the app's API calls; the daemon answers no CORS preflight.
   const apiUrl = `/api/redline/artifacts/${artifactId}/canvas`
-  useEffect(() => { setSnapshot(null); liveView.current = null; restoringCamera.current = false }, [artifactId, manifestPath])
 
   const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections)
-  const layout = useCanvasLayout(artifactId, manifestPath, token, setResult)
+  const layout = useCanvasLayout(artifactId, manifestPath, token, setResult, {
+    baseUrl, readOnly, frames: result.manifest.frames, onTitle, setLoaded, setRevisions,
+    onReset: () => {
+      setSelected(null); setHovered(null); setSpotlightFrame(null); setSpotlightTarget(null); spotlightFallback.current = null; cancelFlight()
+      initialFit.current = restoringCamera.current; restoringCamera.current = false
+    },
+  })
   const feedbackBusy = comments.busy || layout.busy
   const { flyTo, cancel: cancelFlight } = useCanvasFlight(camera, setCamera, viewport)
   const interaction = useCanvasInteraction(result.manifest.frames, (frame) => {
     initialFit.current = true; setSelected(null); setHovered(null); flyTo(frameBounds(frame))
-  }, `${artifactId}/${manifestPath}`)
+  })
   const live = !readOnly && !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
-  const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight, `${artifactId}/${manifestPath}/${snapshot?.id ?? 'live'}`)
+  const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight)
   const { reports, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
     live, onInput: (frameId, input) => {
       if (input.type === 'escape') { interaction.act({ type: 'escape' }); cancelFlight() }
@@ -89,14 +92,14 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     },
   })
   useEffect(() => { forwardPending(readOnly ? { notes: [], knownUpTo: 0, dropped: 0 } : comments.snapshot) }, [readOnly, comments.snapshot, forwardPending, revisions, result.manifest.frames])
+  const escape = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !(event.target instanceof Node) || !pane.current?.contains(event.target)) return
+    ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
+  })
   useEffect(() => {
-    ++hitSequence.current
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight() }
-    }
     window.addEventListener('keydown', escape)
     return () => { ++hitSequence.current; window.removeEventListener('keydown', escape) }
-  }, [commentMode, artifactId, webPaneId, result.manifest.frames])
+  }, [])
   const overviewVisible = overviewOverride ?? (wide ?? false)
   useLayoutEffect(() => {
     const node = pane.current
@@ -108,50 +111,6 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     return () => observer.disconnect()
   }, [])
 
-  useEffect(() => {
-    setSelected(null); setHovered(null); setSpotlightFrame(null); setSpotlightTarget(null); spotlightFallback.current = null; cancelFlight()
-    let disposed = false
-    let sequence = 0
-    const abort = new AbortController()
-    initialFit.current = restoringCamera.current
-    restoringCamera.current = false
-    setLoaded(false)
-    setRevisions({})
-    const load = async () => {
-      if (!readOnly && layout.writing.current) { layout.reloadAfterWrite.current = true; return }
-      const request = ++sequence
-      const epoch = layout.loadEpoch.current
-      try {
-        const response = await fetch(baseUrl + manifestPath.split('/').map(encodeURIComponent).join('/'), { cache: 'no-store', signal: abort.signal })
-        if (!response.ok) throw new Error(`${manifestPath}: could not load (${response.status})`)
-        const parsed = parseCanvasManifest(await response.text())
-        if (!disposed && request === sequence && epoch === layout.loadEpoch.current) {
-          if (!readOnly) layout.contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
-          const move = readOnly ? null : layout.overlay.current
-          if (move) parsed.manifest.frames = parsed.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f)
-          setResult(parsed); setLoaded(true); titleCallback.current?.(parsed.manifest.title || 'Canvas')
-        }
-      } catch (error) {
-        if (!disposed && request === sequence && epoch === layout.loadEpoch.current) { setResult((current) => ({ ...current, errors: [String((error as Error).message)] })); setLoaded(true) }
-      }
-    }
-    layout.reload.current = load
-    void load()
-    const unsubscribe = subscribeCanvasChanges(({ artifactId: changedArtifact, changed }) => {
-      if (readOnly || changedArtifact !== artifactId) return
-      const other = changed.filter((path) => path !== manifestPath)
-      const frames = manifestRef.current.frames
-      const unknown = other.some((path) => !frames.some((frame) => frame.src === path))
-      if (changed.includes(manifestPath) || unknown) void load()
-      if (!other.length) return
-      setRevisions((current) => {
-        const next = { ...current }
-        for (const frame of frames) if (unknown || other.includes(frame.src)) next[frame.id] = (next[frame.id] ?? 0) + 1
-        return next
-      })
-    })
-    return () => { disposed = true; abort.abort(); unsubscribe(); layout.reload.current = async () => {} }
-  }, [artifactId, manifestPath, baseUrl])
 
   useLayoutEffect(() => {
     const elements = world.current?.querySelectorAll<HTMLElement>('[data-measure]')
@@ -266,10 +225,10 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const endPan = () => { drag.current = null; setPanning(false) }
 
   const selectSnapshot = (next: CanvasSnapshot | null) => {
-    if (feedbackBusy || layout.overlay.current || next?.id === snapshot?.id) return
+    if (feedbackBusy || layout.hasPreview() || next?.id === snapshot?.id) return
     if (next && !snapshot) liveView.current = { result, camera }
     ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
-    drag.current = null; setPanning(false)
+    drag.current = null; frameDrag.reset(); setPanning(false)
     setSelected(null); setHovered(null)
     if (!next && liveView.current) {
       setResult(liveView.current.result); setCamera(liveView.current.camera); restoringCamera.current = true

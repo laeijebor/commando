@@ -279,50 +279,38 @@ export function createWebPanesApi(
 }
 
 export type CanvasChange = { artifactId: string; changed: string[] }
-const canvasChangeListeners = new Set<(change: CanvasChange) => void>()
-export function publishCanvasChange(change: CanvasChange): void {
-  for (const listener of canvasChangeListeners) listener(change)
+type ChannelArgs<T> = [T] extends [void] ? [] : [value: T]
+export function createChannel<T>() {
+  const listeners = new Set<(...args: ChannelArgs<T>) => void>()
+  return {
+    publish: (...args: ChannelArgs<T>) => { for (const listener of listeners) listener(...args) },
+    subscribe: (listener: (...args: ChannelArgs<T>) => void): (() => void) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+  }
 }
-export function subscribeCanvasChanges(listener: (change: CanvasChange) => void): () => void {
-  canvasChangeListeners.add(listener)
-  return () => { canvasChangeListeners.delete(listener) }
-}
-
-const canvasThreadListeners = new Set<(webPaneId: string) => void>()
-export function publishCanvasThreadsChanged(webPaneId: string): void {
-  for (const listener of canvasThreadListeners) listener(webPaneId)
-}
-export function subscribeCanvasThreads(listener: (webPaneId: string) => void): () => void {
-  canvasThreadListeners.add(listener)
-  return () => { canvasThreadListeners.delete(listener) }
-}
-
-const canvasPendingListeners = new Set<(webPaneId: string) => void>()
-export function publishCanvasPendingChanged(webPaneId: string): void {
-  for (const listener of canvasPendingListeners) listener(webPaneId)
-}
-export function subscribeCanvasPending(listener: (webPaneId: string) => void): () => void {
-  canvasPendingListeners.add(listener)
-  return () => { canvasPendingListeners.delete(listener) }
-}
-
-const canvasRefreshListeners = new Set<() => void>()
-export function publishCanvasRefresh(): void {
-  for (const listener of canvasRefreshListeners) listener()
-}
-export function subscribeCanvasRefresh(listener: () => void): () => void {
-  canvasRefreshListeners.add(listener)
-  return () => { canvasRefreshListeners.delete(listener) }
-}
+const changes = createChannel<CanvasChange>()
+export const publishCanvasChange = changes.publish
+export const subscribeCanvasChanges = changes.subscribe
+const threads = createChannel<string>()
+export const publishCanvasThreadsChanged = threads.publish
+export const subscribeCanvasThreads = threads.subscribe
+const pending = createChannel<string>()
+export const publishCanvasPendingChanged = pending.publish
+export const subscribeCanvasPending = pending.subscribe
+const refresh = createChannel<void>()
+export const publishCanvasRefresh = () => refresh.publish()
+export const subscribeCanvasRefresh = refresh.subscribe
 
 let canvasSpotlights: Record<string, CanvasSpotlightRequest> = {}
-const spotlightListeners = new Set<(requests: Record<string, CanvasSpotlightRequest>) => void>()
+const spotlights = createChannel<Record<string, CanvasSpotlightRequest>>()
 export function publishCanvasSpotlights(requests: Record<string, CanvasSpotlightRequest>): void {
   canvasSpotlights = requests
-  for (const listener of spotlightListeners) listener(requests)
+  spotlights.publish(requests)
 }
 export function subscribeCanvasSpotlights(listener: (requests: Record<string, CanvasSpotlightRequest>) => void): () => void {
-  spotlightListeners.add(listener)
+  const unsubscribe = spotlights.subscribe(listener)
   listener(canvasSpotlights)
-  return () => { spotlightListeners.delete(listener) }
+  return unsubscribe
 }

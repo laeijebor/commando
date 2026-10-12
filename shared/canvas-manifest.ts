@@ -18,6 +18,8 @@ export type CanvasMove = { id: string; x: number; y: number }
 export type CanvasStatusChange = { id: string; status: CanvasSection['status'] }
 export type CanvasWriteResult = CanvasManifestResult & { contentHash: string }
 
+export const encodeCanvasPath = (path: string): string => path.split('/').map(encodeURIComponent).join('/')
+
 export function canvasRelativePath(value: unknown): string | null {
   if (typeof value !== 'string' || !value || /[\\\0?#%]/.test(value) || value.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(value)) return null
   const parts = value.split('/')
@@ -57,6 +59,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
   const id = (obj: Record<string, unknown>, path: string) => {
     const value = string(obj, 'id', path, true)
     if (!value) return undefined
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(value)) { fail(`${path}id`, 'must match ^[A-Za-z0-9_-]{1,64}$'); return undefined }
     if (ids.has(value)) { fail(`${path}id`, `duplicate id "${value}"`); return undefined }
     ids.add(value); return value
   }

@@ -1,3 +1,4 @@
+import { publishCanvasChange } from './webPanesApi'
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
@@ -169,7 +170,7 @@ describe('canvas comments', () => {
     const position = pin.style.left
     fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 40, deltaY: 20 })
     expect(pin.style.left).not.toBe(position)
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(container.querySelector('.canvas-pane')!, { key: 'Escape' })
     expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(container.querySelector('.canvas-pin.is-draft')).not.toBeInTheDocument()
@@ -322,7 +323,7 @@ describe('canvas comments', () => {
     const post = vi.spyOn(iframe.contentWindow!, 'postMessage')
     clickPoint(container)
     const request = post.mock.calls.filter((call) => call[0].type === 'hit-test').at(-1)![0]
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(container.querySelector('.canvas-pane')!, { key: 'Escape' })
     message(iframe, 'hit', { requestId: request.requestId, selector: '#row', rect })
     await act(async () => {})
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -334,4 +335,19 @@ describe('canvas comments', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+})
+
+it('keeps a hit request alive through a manifest refresh with the same frame source', async () => {
+  const { container } = mount(), iframe = await screen.findByTitle('Settings') as HTMLIFrameElement
+  fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
+  const post = vi.spyOn(iframe.contentWindow!, 'postMessage')
+  clickPoint(container)
+  const request = post.mock.calls.filter((call) => call[0].type === 'hit-test').at(-1)![0]
+  const fetcher = vi.mocked(fetch)
+  const loads = fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length
+  act(() => publishCanvasChange({ artifactId, changed: ['canvas.json'] }))
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length).toBe(loads + 1))
+  await act(async () => {})
+  message(iframe, 'hit', { requestId: request.requestId, selector: '#row', rect, label: 'Row' })
+  expect(await screen.findByRole('dialog')).toBeInTheDocument()
 })

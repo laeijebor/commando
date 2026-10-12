@@ -1,12 +1,24 @@
 import type { CanvasMove, CanvasStatusChange, CanvasWriteResult } from '../shared/canvas-manifest'
 
 export async function writeCanvasLayout(artifactId: string, manifest: string, expectedHash: string, change: { moves: CanvasMove[] } | { statuses: CanvasStatusChange[] }, token: string): Promise<CanvasWriteResult> {
-  const response = await fetch(`/api/redline/artifacts/${encodeURIComponent(artifactId)}/canvas/${'moves' in change ? 'frames' : 'sections'}`, {
+  const response = await canvasRequest(`/api/redline/artifacts/${encodeURIComponent(artifactId)}/canvas/${'moves' in change ? 'frames' : 'sections'}`, token, {
     method: 'PATCH', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest, expectedHash, ...change }),
-  })
+  }, 'Canvas write failed')
   const body = await response.json()
-  if (!response.ok) throw Object.assign(new Error(body?.error || `Canvas write failed (${response.status})`), { status: response.status })
   return body as CanvasWriteResult
+}
+
+/** Canvas API transport owns owner auth and consistent server/fallback errors. */
+export async function canvasRequest(url: string, token: string | undefined, init: RequestInit = {}, failure = 'Canvas request failed'): Promise<Response> {
+  const response = await fetch(url, token === undefined ? init : { ...init, credentials: 'same-origin',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers },
+  })
+  if (!response.ok) {
+    let body: { error?: string } = {}
+    try { body = await response.json() } catch { /* Non-JSON failures use the status fallback. */ }
+    throw Object.assign(new Error(body?.error || `${failure} (${response.status})`), { status: response.status })
+  }
+  return response
 }
