@@ -1,11 +1,11 @@
-import type { WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
+import type { CanvasNoteContext, CanvasThread, WebPaneEngine, WebPaneFeedbackNote, WebPanePendingNote, WebPanePendingSendIntent, WebPanePendingSnapshot, WebPanePlacement } from '../shared/protocol'
 import { parsePendingSent, type RedlinePageResponse } from '../shared/redline-response'
 
 /** A pending note as the client submits it — the daemon assigns the id. */
 export type PendingNoteDraft = Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'>
 export type PendingSendTarget = { id: number; revision: number }
 export type PendingSendOptions = {
-  intent: WebPanePendingSendIntent
+  intent?: WebPanePendingSendIntent
   expectedQueueRevision: number
 }
 
@@ -22,12 +22,14 @@ export interface WebPanesApiClient {
   close(webPaneId: string): Promise<void>
   cdp(webPaneId: string): Promise<{ target: string; devtoolsFrontendUrl: string }>
   submitFeedback(webPaneId: string, notes: WebPaneFeedbackNote[]): Promise<void>
+  threads(webPaneId: string): Promise<CanvasThread[]>
   pendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
   addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingSnapshot>
   addPendingResponse(
     webPaneId: string,
     pageUrl: string,
     response: RedlinePageResponse,
+    canvas?: CanvasNoteContext,
   ): Promise<WebPanePendingSnapshot>
   updatePendingNote(
     webPaneId: string,
@@ -161,6 +163,10 @@ export function createWebPanesApi(
         body: JSON.stringify({ notes }),
       })
     },
+    threads: async (webPaneId) => {
+      const body = await request(`/${encodeURIComponent(webPaneId)}/threads`, { method: 'GET' }) as { threads?: CanvasThread[] }
+      return body.threads ?? []
+    },
     pendingNotes: async (webPaneId) => {
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }))
     },
@@ -170,10 +176,10 @@ export function createWebPanesApi(
         body: JSON.stringify({ note }),
       }))
     },
-    addPendingResponse: async (webPaneId, pageUrl, response) => {
+    addPendingResponse: async (webPaneId, pageUrl, response, canvas) => {
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending/response`, {
         method: 'POST',
-        body: JSON.stringify({ pageUrl, response }),
+        body: JSON.stringify({ pageUrl, response, ...(canvas ? { canvas } : {}) }),
       }))
     },
     updatePendingNote: async (webPaneId, noteId, expectedRevision, change) => {
@@ -268,4 +274,31 @@ export function publishCanvasChange(change: CanvasChange): void {
 export function subscribeCanvasChanges(listener: (change: CanvasChange) => void): () => void {
   canvasChangeListeners.add(listener)
   return () => { canvasChangeListeners.delete(listener) }
+}
+
+const canvasThreadListeners = new Set<(webPaneId: string) => void>()
+export function publishCanvasThreadsChanged(webPaneId: string): void {
+  for (const listener of canvasThreadListeners) listener(webPaneId)
+}
+export function subscribeCanvasThreads(listener: (webPaneId: string) => void): () => void {
+  canvasThreadListeners.add(listener)
+  return () => { canvasThreadListeners.delete(listener) }
+}
+
+const canvasPendingListeners = new Set<(webPaneId: string) => void>()
+export function publishCanvasPendingChanged(webPaneId: string): void {
+  for (const listener of canvasPendingListeners) listener(webPaneId)
+}
+export function subscribeCanvasPending(listener: (webPaneId: string) => void): () => void {
+  canvasPendingListeners.add(listener)
+  return () => { canvasPendingListeners.delete(listener) }
+}
+
+const canvasRefreshListeners = new Set<() => void>()
+export function publishCanvasRefresh(): void {
+  for (const listener of canvasRefreshListeners) listener()
+}
+export function subscribeCanvasRefresh(listener: () => void): () => void {
+  canvasRefreshListeners.add(listener)
+  return () => { canvasRefreshListeners.delete(listener) }
 }

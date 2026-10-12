@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useDaemon } from './useDaemon'
-import { subscribeCanvasChanges } from './webPanesApi'
+import { subscribeCanvasChanges, subscribeCanvasThreads, subscribeCanvasPending, subscribeCanvasRefresh } from './webPanesApi'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 it('routes canvas changes from the existing daemon socket to mounted subscribers', async () => {
@@ -16,6 +16,19 @@ it('routes canvas changes from the existing daemon socket to mounted subscribers
   act(() => sockets[0].dispatchEvent(new MessageEvent('message', { data: JSON.stringify(change) })))
   expect(changed).toHaveBeenCalledWith(change)
   expect(receive).not.toHaveBeenCalledWith(change)
+  const threads = vi.fn(), pending = vi.fn()
+  const unthreads = subscribeCanvasThreads(threads), unpending = subscribeCanvasPending(pending)
+  act(() => {
+    sockets[0].dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'canvas_threads_changed', webPaneId: 'w-12345678' }) }))
+    sockets[0].dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ type: 'canvas_pending_changed', webPaneId: 'w-12345678' }) }))
+  })
+  expect(threads).toHaveBeenCalledExactlyOnceWith('w-12345678')
+  expect(pending).toHaveBeenCalledExactlyOnceWith('w-12345678')
+  const refreshed = vi.fn(), unrefresh = subscribeCanvasRefresh(refreshed)
+  act(() => sockets[0].dispatchEvent(new Event('open')))
+  expect(refreshed).toHaveBeenCalledOnce()
+  unrefresh()
+  unthreads(); unpending()
   unsubscribe()
   act(() => sockets[0].dispatchEvent(new MessageEvent('message', { data: JSON.stringify(change) })))
   expect(changed).toHaveBeenCalledOnce()

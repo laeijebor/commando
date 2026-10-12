@@ -1,4 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { redlinePendingSnapshotForPage } from '../shared/redline-response'
+import type { WebPanePendingSnapshot } from '../shared/protocol'
+import { readCanvasHit, type CanvasHit } from './canvasComments'
 import type { CanvasFrame } from '../shared/canvas-manifest'
 import { readCanvasLabels, type CanvasLabelReports } from './canvasLabels'
 
@@ -8,7 +11,12 @@ export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0
   return baseUrl + frame.src.split('/').map(encodeURIComponent).join('/') + '?' + query
 }
 
-export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>) {
+export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>, onRedline?: (frameId: string, payload: unknown, pageUrl: string) => void) {
+  const relay = useRef(onRedline)
+  const pending = useRef<WebPanePendingSnapshot>({ notes: [], knownUpTo: 0, dropped: 0 })
+  const requests = useRef(new Map<string, { frameId: string; url: string; finish: (hit: CanvasHit | null) => void }>())
+  const requestId = useRef(0)
+  useLayoutEffect(() => { relay.current = onRedline })
   const iframes = useRef(new Map<string, HTMLIFrameElement>())
   const sources = useRef(new Map<string, string>())
   const [reports, setReports] = useState<CanvasLabelReports>({})
@@ -17,22 +25,51 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
     const previous = sources.current
     setReports((current) => Object.fromEntries(Object.entries(current).filter(([id]) => next.has(id) && next.get(id) === previous.get(id))))
     sources.current = next
+    for (const request of requests.current.values()) if (next.get(request.frameId) !== request.url) request.finish(null)
   }, [frames, baseUrl, revisions])
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       const data = event.data
-      if (!data || data.source !== 'commando-canvas-frame' || data.type !== 'labels' || typeof data.frameId !== 'string') return
+      if (!data || data.source !== 'commando-canvas-frame' || typeof data.frameId !== 'string') return
       const iframe = iframes.current.get(data.frameId)
       if (!iframe || !event.source || event.source !== iframe.contentWindow) return
-      const labels = readCanvasLabels(data.labels)
-      if (labels) setReports((current) => ({ ...current, [data.frameId]: labels }))
+      const url = sources.current.get(data.frameId)
+      if (!url) return
+      if (data.type === 'labels') {
+        const labels = readCanvasLabels(data.labels)
+        if (labels) setReports((current) => ({ ...current, [data.frameId]: labels }))
+        iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: redlinePendingSnapshotForPage(pending.current, new URL(url, window.location.href).href) }, '*')
+      } else if (data.type === 'hit') {
+        const request = requests.current.get(data.requestId)
+        if (request && request.frameId === data.frameId && request.url === url) request.finish(readCanvasHit(data))
+      } else if (data.type === 'redline-queue') {
+        relay.current?.(data.frameId, data.payload, new URL(url, window.location.href).href)
+      }
     }
     window.addEventListener('message', receive)
-    return () => window.removeEventListener('message', receive)
+    return () => { window.removeEventListener('message', receive); for (const request of requests.current.values()) request.finish(null) }
   }, [])
-  const register = (id: string, node: HTMLIFrameElement | null) => {
+  const register = useCallback((id: string, node: HTMLIFrameElement | null) => {
     if (node) iframes.current.set(id, node)
     else iframes.current.delete(id)
+  }, [])
+  const hitTest = (frameId: string, point: { x: number; y: number }): Promise<CanvasHit | null> => {
+    const iframe = iframes.current.get(frameId), url = sources.current.get(frameId)
+    if (!iframe?.contentWindow || !url) return Promise.resolve(null)
+    return new Promise((resolve) => {
+      const id = `hit-${++requestId.current}`
+      const finish = (hit: CanvasHit | null) => { window.clearTimeout(timer); requests.current.delete(id); resolve(hit) }
+      const timer = window.setTimeout(() => finish(null), 2_000)
+      requests.current.set(id, { frameId, url, finish })
+      iframe.contentWindow!.postMessage({ source: 'commando-canvas', type: 'hit-test', requestId: id, ...point }, '*')
+    })
   }
-  return { reports, register }
+  const forwardPending = useCallback((snapshot: WebPanePendingSnapshot) => {
+    pending.current = snapshot
+    for (const [id, iframe] of iframes.current) {
+      const url = sources.current.get(id)
+      if (url) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: redlinePendingSnapshotForPage(snapshot, new URL(url, window.location.href).href) }, '*')
+    }
+  }, [])
+  return { reports, register, hitTest, forwardPending }
 }

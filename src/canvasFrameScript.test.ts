@@ -103,6 +103,26 @@ describe('canvas frame script', () => {
     hit(document.body, { requestId: {} })
     expect(post).not.toHaveBeenCalled()
   })
+  it('relays the redline SDK binding and applies only parent pending snapshots', () => {
+    boot()
+    const binding = (window as unknown as { __commandoRedlineQueue: (payload: string) => void }).__commandoRedlineQueue
+    const payload = JSON.stringify({ question: 'Ship?', answer: 'Yes' })
+    binding(payload)
+    expect(latest()).toEqual({ source: 'commando-canvas-frame', frameId: 'settings', type: 'redline-queue', payload })
+    const listener = vi.fn()
+    window.addEventListener('commando:redline-pending', listener)
+    const snapshot = { version: 1, controls: [{ queueKey: 'ship', response: { question: 'Ship?', answer: 'Yes' } }] }
+    const data = { source: 'commando-canvas', type: 'redline-pending', snapshot }
+    window.dispatchEvent(new MessageEvent('message', { source: null, data }))
+    window.dispatchEvent(new MessageEvent('message', { source: window, data: { ...data, source: 'other' } }))
+    expect(listener).not.toHaveBeenCalled()
+    window.dispatchEvent(new MessageEvent('message', { source: window, data }))
+    expect((window as unknown as { __commandoRedlinePendingSnapshot: unknown }).__commandoRedlinePendingSnapshot).toEqual(snapshot)
+    expect(listener.mock.calls[0][0].detail).toEqual(snapshot)
+    window.dispatchEvent(new MessageEvent('message', { source: window, data }))
+    expect(listener).toHaveBeenCalledOnce()
+    window.removeEventListener('commando:redline-pending', listener)
+  })
   it('does not initialize with an invalid frame id', () => {
     const script = document.currentScript as HTMLScriptElement
     script.dataset.canvasFrame = 'bad/id'

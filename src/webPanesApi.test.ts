@@ -306,3 +306,19 @@ describe('webPanesApi.answerNavigateRequest', () => {
     expect(init.body).toBe(JSON.stringify({ decision: 'dismiss' }))
   })
 })
+
+it('sends canvas context and queue revisions without requesting a build, and fetches threads', async () => {
+  const fetcher = vi.fn(async () => jsonResponse(200, { ok: true, notes: [], knownUpTo: 0, dropped: 0, threads: [{ id: 'ct-one' }] }))
+  const api = createWebPanesApi('owner', fetcher as unknown as typeof fetch)
+  const canvas = { frameId: 'settings', point: { x: 5, y: 7 }, label: 'Row' }
+  await api.addPendingNote('w-12345678', { selector: '#row', tag: 'button', rect: { x: 0, y: 0, width: 10, height: 20 }, comment: 'Fix', canvas })
+  await api.addPendingResponse('w-12345678', 'http://localhost/Settings.html', { question: 'Ship?', answer: 'Yes' }, canvas)
+  await api.sendPendingNotes('w-12345678', [{ id: 1, revision: 2 }], { expectedQueueRevision: 9 })
+  expect(await api.threads('w-12345678')).toEqual([{ id: 'ct-one' }])
+  const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+  expect(JSON.parse(String(calls[0][1].body)).note.canvas).toEqual(canvas)
+  expect(JSON.parse(String(calls[1][1].body))).toMatchObject({ canvas, pageUrl: 'http://localhost/Settings.html' })
+  expect(calls[2][0]).toBe('/api/web-panes/w-12345678/pending/send')
+  expect(JSON.parse(String(calls[2][1].body))).toEqual({ items: [{ id: 1, revision: 2 }], expectedQueueRevision: 9 })
+  expect(calls[3][0]).toBe('/api/web-panes/w-12345678/threads')
+})

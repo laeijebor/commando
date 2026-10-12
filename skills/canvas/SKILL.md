@@ -8,8 +8,7 @@ argument-hint: <screens or variants to lay out>
 
 Use a canvas for a spatial board of screens, flows or alternatives. Use a
 redline document for a linear plan, report or proposal that needs prose and
-review of document elements. Canvas displays inert frames with a label overview; Play mode and
-comment pins arrive in later milestones. Do not imply
+review of document elements. Canvas displays inert frames with a label overview; Comment pins and redline SDK controls queue feedback; Play mode arrives in a later milestone. Do not imply
 that an Interactive badge enables interaction yet.
 
 Create plain HTML files with local assets and no build step:
@@ -117,7 +116,7 @@ must match `^[A-Za-z0-9_-]{1,64}$`.
 </div>
 ```
 
-## Edit and collect feedback
+## Collecting feedback
 
 Editing files live-reloads the open tab. Never close/reopen it to refresh.
 A frame HTML change reloads that frame; asset changes reload all frames;
@@ -131,6 +130,17 @@ scripts/commando-feedback <webPaneId>
 scripts/commando-feedback <webPaneId> --wait 30
 ```
 
-The script tracks its acknowledgement cursor automatically. Poll while awaiting feedback; use its selector and notes to edit the source,
-then keep the tab open for the next review. Canvas pins and the frame review
-bridge arrive in M2b. The Threads tab currently shows “No comments yet”.
+The script tracks its acknowledgement cursor automatically. Poll while awaiting feedback, then keep the tab open for the next review.
+Use the 💬 tool to drop a pin on a frame (Esc exits), Queue to batch notes,
+and Send or Send this to deliver them through the shared feedback journal.
+Notes carry `canvas` context: frameId, frameTitle, frame-local CSS pixel point,
+label/labelId, section/ticket/status, focus and interactive. Prefer label +
+frame over selector when finding the source to edit. The first matching
+manifest section supplies section context. Queued pins survive reload; sent
+pins appear in Threads and remain after journal acknowledgement.
+
+Redline SDK controls work inside frames through the canvas queue bridge,
+with pending snapshots scoped to the frame page URL. SDK question snapshots
+are validated but ignored in M2b. Frames remain inert until Play is available;
+programmatic SDK queue calls work now. Threads are read-only in this milestone;
+agent replies and resolution arrive in M3.

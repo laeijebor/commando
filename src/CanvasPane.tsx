@@ -1,3 +1,8 @@
+import { CanvasComposer } from './CanvasComposer'
+import { CanvasPins, canvasPins, canvasPinPoint } from './CanvasPins'
+import { CanvasQueueChip } from './CanvasQueueChip'
+import { useCanvasComments } from './useCanvasComments'
+import { canvasNoteContext } from './canvasComments'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult } from '../shared/canvas-manifest'
 import { fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
@@ -16,8 +21,8 @@ const KIND_LABELS = { development: 'Development', important: 'Important', design
 const NOTE_COLOURS = { development: '#1f9d55', important: '#d97706', design: 'var(--accent)', question: '#0e7490' }
 const frameBounds = (frame: CanvasBounds): CanvasBounds => ({ ...frame, y: frame.y - 36, h: frame.h + 36 })
 
-export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose }: {
-  artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
+export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '' }: {
+  webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
 }) {
   const [result, setResult] = useState<CanvasManifestResult>(EMPTY)
   const [loaded, setLoaded] = useState(false)
@@ -25,6 +30,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [notesVisible, setNotesVisible] = useState(true)
   const [revisions, setRevisions] = useState<Record<string, number>>({})
   const [sizes, setSizes] = useState<Record<string, { w: number; h: number }>>({})
+  const [commentMode, setCommentMode] = useState(false)
+  const hitSequence = useRef(0)
   const [panning, setPanning] = useState(false)
   const [overviewOverride, setOverviewOverride] = useState<boolean | null>(null)
   const [wide, setWide] = useState<boolean | null>(null)
@@ -40,7 +47,17 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   useLayoutEffect(() => { manifestRef.current = result.manifest; titleCallback.current = onTitle })
   const baseUrl = artifactUrl ? new URL(`/redline/artifacts/${artifactId}/`, artifactUrl).toString() : `/redline/artifacts/${artifactId}/`
 
-  const { reports, register } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions)
+  const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections)
+  const { reports, register, hitTest, forwardPending } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, comments.relay)
+  useEffect(() => { forwardPending(comments.snapshot) }, [comments.snapshot, forwardPending, revisions, result.manifest.frames])
+  useEffect(() => {
+    ++hitSequence.current
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { ++hitSequence.current; setCommentMode(false); comments.close() }
+    }
+    window.addEventListener('keydown', escape)
+    return () => { ++hitSequence.current; window.removeEventListener('keydown', escape) }
+  }, [commentMode, artifactId, webPaneId])
   const { flyTo, cancel: cancelFlight } = useCanvasFlight(camera, setCamera, viewport)
   const overviewVisible = overviewOverride ?? (wide ?? false)
   useLayoutEffect(() => {
@@ -160,6 +177,23 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const node = viewport.current!
     setCamera((current) => zoomAt(current, factor, { x: node.clientWidth / 2, y: node.clientHeight / 2 }))
   }
+  const pins = canvasPins(comments.draft, comments.queued, comments.threads)
+  const activePin = pins.find((pin) => pin.id === comments.active)
+  const activePoint = activePin ? canvasPinPoint(activePin, frames, camera) : null
+  const activeNote = comments.queued.find((note) => `pending:${note.id}` === comments.active)
+  const activeThread = comments.threads.find((thread) => thread.id === comments.active)
+  const dropComment = async (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!commentMode || !webPaneId || comments.busy || (event.target as HTMLElement).closest('.canvas-composer, .canvas-pin, .canvas-note, .canvas-variant, .canvas-section-head')) return
+    const rect = viewport.current!.getBoundingClientRect()
+    const worldPoint = { x: (event.clientX - rect.left - camera.x) / camera.scale, y: (event.clientY - rect.top - camera.y) / camera.scale }
+    const frame = [...frames].reverse().find((f) => worldPoint.x >= f.x && worldPoint.x < f.x + f.w && worldPoint.y >= f.y && worldPoint.y < f.y + f.h)
+    if (!frame) return
+    const point = { x: worldPoint.x - frame.x, y: worldPoint.y - frame.y }
+    const sequence = ++hitSequence.current
+    const hit = await hitTest(frame.id, point)
+    if (hit && sequence === hitSequence.current) comments.openDraft({ canvas: canvasNoteContext(frame, sections, point, hit.label, hit.labelId), hit,
+      pageUrl: new URL(canvasFrameUrl(baseUrl, frame, revisions[frame.id]), window.location.href).href })
+  }
   const endPan = () => { drag.current = null; setPanning(false) }
 
   return <div className="canvas-pane" ref={pane}>
@@ -171,18 +205,29 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       <button type="button" onClick={() => { initialFit.current = true; fit() }}>Fit</button>
       <span className="canvas-toolbar-separator" />
       <button type="button" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>Notes</button>
+      <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={!webPaneId || comments.busy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
+      <CanvasQueueChip count={comments.queued.length} busy={comments.busy} onSend={comments.sendAll} />
       <span className="canvas-toolbar-title" title={title}>{title || 'Canvas'}</span>
       {onClose && <button type="button" aria-label="Close canvas tab" onClick={onClose}>×</button>}
     </div>
     {loaded && result.errors.length > 0 && <div className="canvas-errors" role="alert"><strong>Canvas errors</strong><ul>{result.errors.map((error, i) => <li key={i}>{error}</li>)}</ul></div>}
+    {comments.error && <div className="canvas-errors" role="alert">{comments.error}</div>}
     <div className="canvas-body">
       {overviewVisible && <CanvasOverview frames={frames} annotations={annotations} reports={reports} selected={selected} onHover={setHovered}
+        threads={comments.threads} queued={comments.queued} onThread={(thread) => {
+          const frame = frames.find((f) => f.id === thread.frameId)
+          if (!frame) return
+          setSelected(null); setHovered(null); initialFit.current = true
+          flyTo({ x: frame.x + thread.point.x - 40, y: frame.y + thread.point.y - 40, w: 80, h: 80 })
+          ++hitSequence.current; comments.open(thread.id)
+        }}
         onSelect={(instance) => { setSelected(instance); initialFit.current = true; flyTo(canvasLabelBounds(frames.find((frame) => frame.id === instance.frameId)!, instance.label.rect)) }}
         onFrame={(frame) => { setSelected(null); setHovered(null); initialFit.current = true; flyTo(frameBounds(frame)) }}
         onNote={(note) => { setSelected(null); setHovered(null); setNotesVisible(true); initialFit.current = true; flyTo(noteBounds(note)) }} />}
-      <div className={`canvas-viewport${panning ? ' is-panning' : ''}`} ref={viewport}
+      <div className={`canvas-viewport${panning ? ' is-panning' : ''}${commentMode ? ' is-commenting' : ''}`} ref={viewport}
+        onClick={(event) => { void dropComment(event) }}
         onPointerDown={(event) => {
-          if (event.button !== 0 || (event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head')) return
+          if (commentMode || (event.target as HTMLElement).closest('.canvas-composer, .canvas-pin') || event.button !== 0 || (event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head')) return
           cancelFlight()
           initialFit.current = true
           drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, camera }
@@ -217,7 +262,13 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           </div>)}
         </div>
         <CanvasHighlights frames={frames} reports={reports} camera={camera} selected={selected} hovered={hovered} />
-        <div className="canvas-hint">{loaded ? 'Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…'}</div>
+        <CanvasPins pins={pins} frames={frames} camera={camera} active={comments.active} onOpen={(id) => { if (!comments.busy) { ++hitSequence.current; comments.open(id) } }} />
+        {activePin && activePoint && <CanvasComposer key={activePin.id} point={activePoint} label={activePin.canvas.label || activeThread?.selector || activeNote?.selector || comments.draft?.hit.selector || 'Unlabelled'}
+          text={activeNote?.comment ?? activeThread?.messages[0]?.text ?? comments.draft?.comment} sent={activePin.state === 'sent'} queued={activePin.state === 'queued'} busy={comments.busy}
+          onComment={comments.updateDraftComment}
+          onQueue={(text) => { void comments.queueDraft(text, false) }} onSend={(text) => { if (activeNote) void comments.sendThis(activeNote); else void comments.queueDraft(text, true) }}
+          onCancel={() => { ++hitSequence.current; comments.close() }} />}
+        <div className="canvas-hint">{commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? 'Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…'}</div>
       </div>
     </div>
   </div>
