@@ -2611,12 +2611,26 @@ export function App() {
   }, [pendingSimulatorTileId, webPanes, selectedSessionId, activeGroup?.windowId])
 
   const dismissPanePrTab = async (tab: BuiltinPanelTab, signature: string, next?: PanelTab) => {
+    const previousActiveKey = panelActiveTabs[tab.anchorPaneId]
+    const previousMaximizedBuiltinTab = maximizedBuiltinTab
+    const previousMaximizedPaneId = maximizedPaneId
+    const previousWebActiveTabs = new Map(webPanes.map((pane) => [pane.id, pane.activeTab]))
     setPaneActionError('')
     if (next) selectPanelTabLocally(next)
     try {
       await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
       setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
     } catch (error) {
+      setPanelActiveTabs((current) => {
+        const restored = { ...current }
+        if (previousActiveKey === undefined) delete restored[tab.anchorPaneId]
+        else restored[tab.anchorPaneId] = previousActiveKey
+        return restored
+      })
+      setMaximizedBuiltinTab(previousMaximizedBuiltinTab)
+      setMaximizedPaneId(previousMaximizedPaneId)
+      setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
+        ? { ...pane, activeTab: previousWebActiveTabs.get(pane.id) } : pane))
       setPaneActionError(error instanceof Error ? error.message : 'Could not close PR tab')
     }
   }

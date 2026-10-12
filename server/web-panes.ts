@@ -570,7 +570,8 @@ export class WebPaneService {
     delete entries[key]
     entries[key] = signature
     this.dismissedPrTabs[anchorPaneId] = Object.fromEntries(Object.entries(entries).slice(-MAX_DISMISSED_PR_TABS))
-    if (this.activeTabs[anchorPaneId] === key) this.activeTabs[anchorPaneId] = nextKey ?? 'session'
+    const active = this.activeTabs[anchorPaneId]
+    if (active === key || active === 'pr' || active === `pr:${parsePrPanelKey(key)!.number}`) this.activeTabs[anchorPaneId] = nextKey ?? 'session'
     this.persist()
   }
 

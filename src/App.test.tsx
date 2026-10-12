@@ -1042,6 +1042,37 @@ describe('HUD tabs', () => {
       expect(posts()).toHaveLength(1)
     })
 
+    it.each([false, true])('restores selection and maximization after a failed PR dismiss (maximized=%s)', async (maximized) => {
+      stubPr()
+      await renderAppWithSnapshot()
+      const web = { ...openWebPane, anchorPaneId: adjacentPane.id, dock: 'panel' as const, activeTab: false, unseen: false }
+      act(() => daemonMessage?.({ type: 'web_panes', webPanes: [web] }))
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel('Description') }))
+      const prTab = await screen.findByRole('tab', { name: '#12 open' })
+      expect(prTab).toHaveAttribute('aria-selected', 'true')
+      const prPanel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      expect(prPanel).toBeVisible()
+      if (maximized) fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
+      const fetchPr = vi.mocked(fetch).getMockImplementation()!
+      let fail!: (reason: Error) => void
+      vi.mocked(fetch).mockImplementation((input, init) => String(input) === '/api/web-panes/pr-tabs/dismiss'
+        ? new Promise((_, reject) => { fail = reject }) : fetchPr(input, init))
+      const callsBefore = vi.mocked(fetch).mock.calls.length
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
+      expect(screen.getByRole('tab', { name: '127.0.0.1:41300/plan' })).toHaveAttribute('aria-selected', 'true')
+      expect(prPanel).not.toBeVisible()
+      await act(async () => { fail(new Error('Dismiss failed')) })
+      expect(await screen.findByText('Dismiss failed')).toBeVisible()
+      expect(screen.getByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('button', { name: 'Close PR #12 tab' })).toBeVisible()
+      expect(prPanel).toBeVisible()
+      expect(screen.getByRole('tab', { name: '127.0.0.1:41300/plan' })).toHaveAttribute('aria-selected', 'false')
+      expect(screen.getByRole('button', { name: maximized ? 'Restore panel tab' : 'Maximize panel tab' })).toBeVisible()
+      const posts = vi.mocked(fetch).mock.calls.slice(callsBefore).filter(([url]) => String(url).includes('/api/web-panes/'))
+      expect(posts).toHaveLength(1)
+    })
+
     it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {
       stubPr()
       await renderAppWithSnapshot()

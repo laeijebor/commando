@@ -1229,13 +1229,27 @@ describe('PR tab dismissals', () => {
     expect(service.panelActiveTabs()['%12']).toBe(next.id)
     expect(service.list().find((pane) => pane.activeTab)?.id).toBe(next.id)
   })
-  it.each(['session', 'changes', 'pr:other:widgets:12', 'pr', 'pr:12'])('does not change an unrelated or legacy active selection (%s)', async (active) => {
+  it.each(['session', 'changes', 'pr:other:widgets:12', 'pr:13'])('does not change an unrelated active selection (%s)', async (active) => {
     const path = await temporaryStatePath()
     await writeFile(path, JSON.stringify({ version: 1, activeTabs: { '%12': active }, allowedOrigins: [], panes: [] }))
     const service = track(new WebPaneService(path))
     await service.load()
     service.dismissPrTab('%12', key, 'old', exists, 'changes')
     expect(service.panelActiveTabs()['%12']).toBe(active)
+  })
+  it.each([
+    ['pr', 'changes'], ['pr:12', 'pr:acme:widgets:13'], ['pr', undefined], ['pr:12', undefined],
+  ])('dismisses a matching legacy active selection (%s) to %s', async (active, nextKey) => {
+    const path = await temporaryStatePath()
+    await writeFile(path, JSON.stringify({ version: 1, activeTabs: { '%12': active }, allowedOrigins: [], panes: [] }))
+    const service = track(new WebPaneService(path))
+    await service.load()
+    service.dismissPrTab('%12', key, 'old', exists, nextKey)
+    expect(service.panelActiveTabs()['%12']).toBe(nextKey ?? 'session')
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()['%12']).toBe(nextKey ?? 'session')
   })
   it('preserves the active PR on reload despite a stale dismissal entry', async () => {
     const path = await temporaryStatePath()
