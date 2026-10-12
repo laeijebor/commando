@@ -774,9 +774,10 @@ export class GitDiffInspector {
   }
 
   private async baseFallbackRef(root: string, repo: string, branch: string): Promise<string | undefined> {
-    const { stdout: remotes } = await this.git(root, ['remote'])
+    const remotes = await this.git(root, ['remote']).then(({ stdout }) => stdout, () => '')
     for (const remote of remotes.trim().split('\n').filter(Boolean)) {
-      const { stdout: url } = await this.git(root, ['remote', 'get-url', remote])
+      // A remote without a readable URL can't match; skip it rather than failing the request.
+      const url = await this.git(root, ['remote', 'get-url', remote]).then(({ stdout }) => stdout, () => '')
       if (repoFromGithubRemote(url)?.toLowerCase() !== repo.toLowerCase()) continue
       const ref = validateGitTarget(`${remote}/${branch}`)
       if (await this.refExists(root, ref)) return ref

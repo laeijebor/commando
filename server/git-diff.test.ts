@@ -91,7 +91,10 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       throw failure()
     }
     if (joined === 'remote') return { stdout: Object.keys(remotes).join('\n'), stderr: '' }
-    if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: remotes[args[2]] ?? '', stderr: '' }
+    if (args[0] === 'remote' && args[1] === 'get-url') {
+      if (remotes[args[2]] === '!error') throw new Error(`fatal: No such remote '${args[2]}'`)
+      return { stdout: remotes[args[2]] ?? '', stderr: '' }
+    }
     if (args[0] === 'merge-base') return { stdout: `${mergeBase}\n`, stderr: '' }
     if (args[0] === 'for-each-ref' && args[1]?.startsWith('--format=%(objectname)')) {
       return { stdout: refTips.join('\n'), stderr: '' }
@@ -454,6 +457,13 @@ describe('GitDiffInspector.summary', () => {
       expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
     },
   )
+
+  it('skips a remote whose URL cannot be read and uses the next matching remote', async () => {
+    const repo = fakeRepo({ refs: ['upstream/main', 'head-tip'],
+      remotes: { broken: '!error', upstream: 'https://github.com/acme/widgets.git' } })
+    const summary = await new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main')
+    expect(summary.target).toBe('upstream/main…head-tip')
+  })
 
   it('rejects an origin fork instead of diffing against the wrong repository', async () => {
     const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], remotes: { origin: 'git@github.com:fork/widgets.git' } })
