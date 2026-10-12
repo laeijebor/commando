@@ -16,7 +16,7 @@ import './pr-quick-look.css'
 
 const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts', 'Stack'] as const
 export type PrQuickLookTab = (typeof tabs)[number]
-type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T }
+type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T; retry?: number }
 
 function MarkdownBody({ body }: { body: string }) {
   return (
@@ -184,7 +184,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
   useEffect(() => () => { detailRequest.current += 1 }, [])
 
   useEffect(() => {
-    if (!visible) return
+    if (!visible || (details && detailSnapshot?.retry === retry)) return
     let active = true
     const request = ++detailRequest.current
     setDetailError('')
@@ -196,7 +196,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
           || (pr.baseRefOid && (value.mergeTarget?.oid !== pr.baseRefOid || value.mergeTarget.branch !== pr.baseRefName))) {
           throw new Error('The PR or merge target changed since this card refreshed. Refresh PR, then retry.')
         }
-        setDetailSnapshot({ api, references, revision: detailRevision, value })
+        setDetailSnapshot({ api, references, revision: detailRevision, value, retry })
       })
       .catch((error: unknown) => {
         if (active && request === detailRequest.current) setDetailError(error instanceof Error ? error.message : 'Unable to load PR details')
@@ -204,10 +204,10 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     return () => {
       active = false
     }
-  }, [api, repo, pr.number, references, detailRevision, retry, visible])
+  }, [api, repo, pr.number, references, detailRevision, retry, visible, details])
 
   useEffect(() => {
-    if (!visible || tab !== 'Diff' || diff) return
+    if (!visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
     let active = true
     setDiffError('')
     api
@@ -215,7 +215,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
       .then((value) => {
         if (active) {
           if (pr.headRefOid && value.head !== pr.headRefOid) throw new Error('The PR head changed since this card refreshed. Refresh PR, then retry.')
-          setDiffSnapshot({ api, references, revision: references, value })
+          setDiffSnapshot({ api, references, revision: references, value, retry })
           setSelectedPath(value.files[0]?.path ?? '')
         }
       })
@@ -262,7 +262,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
       throw new Error(message)
     }
     setDetailError('')
-    setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value })
+    setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value, retry })
     if (refreshError) throw refreshError
   }
   return (

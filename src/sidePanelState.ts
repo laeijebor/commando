@@ -1,5 +1,5 @@
 import type { WebPane } from '../shared/protocol'
-import { panelTabs, parsePrPanelKey, prPanelKey, type BuiltinPanelKey } from '../shared/web-pane-placement'
+import { panelTabs, isLegacyPrPanelKey, parsePrPanelKey, prPanelKey, type BuiltinPanelKey } from '../shared/web-pane-placement'
 import type { GitDiffSummary } from './gitApi'
 import type { PanePrSummary } from './prsApi'
 export { panelTabs }
@@ -33,7 +33,7 @@ export type BuiltinPanelTab = {
 export type PanelTab = WebPane | BuiltinPanelTab
 export function isBuiltinTab(tab: PanelTab): tab is BuiltinPanelTab { return 'key' in tab }
 export function panelTabKey(tab: PanelTab): string { return isBuiltinTab(tab) ? tab.key : tab.id }
-export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Session' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)}`): BuiltinPanelTab {
+export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Session' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)?.number}`): BuiltinPanelTab {
   return { id: `panel:${anchorPaneId}:${key}`, key, anchorPaneId, label }
 }
 export function hasPaneChanges(summary: GitDiffSummary | null): boolean {
@@ -49,17 +49,25 @@ export function primaryPanePr(prs: readonly PanePrSummary[]): PanePrSummary | un
 export function combinedPanelTabs(anchor: string, webTabs: readonly WebPane[], summary: GitDiffSummary | null, prs: readonly PanePrSummary[], sessionUnseen = false, sessionWarning = false): PanelTab[] {
   const tabs: PanelTab[] = [{ ...builtinPanelTab(anchor, 'session'), unseen: sessionUnseen, warning: sessionWarning }]
   if (hasPaneChanges(summary)) tabs.push({ ...builtinPanelTab(anchor, 'changes'), additions: summary?.additions ?? 0, deletions: summary?.deletions ?? 0 })
+  const counts = new Map<number, number>()
+  for (const pr of prs) counts.set(pr.number, (counts.get(pr.number) ?? 0) + 1)
   for (const pr of orderedPanePrs(prs)) {
-    tabs.push({ ...builtinPanelTab(anchor, prPanelKey(pr.number), `#${pr.number}`),
+    tabs.push({ ...builtinPanelTab(anchor, prPanelKey(pr.repo, pr.number), `${counts.get(pr.number)! > 1 ? pr.repo : ''}#${pr.number}`),
       prState: pr.state === 'open' && pr.isDraft ? 'draft' : pr.state })
   }
   return [...tabs, ...panelTabs(webTabs, anchor)]
 }
 export function resolveActivePanelTab(tabs: readonly PanelTab[], stored?: string, previous: readonly PanelTab[] = []): PanelTab | undefined {
-  if (stored === 'pr') {
-    const firstPr = tabs.find((tab) => parsePrPanelKey(panelTabKey(tab)) !== undefined)
+  if (stored && isLegacyPrPanelKey(stored)) {
+    const number = stored === 'pr' ? undefined : Number(stored.slice(3))
+    const firstPr = tabs.find((tab) => {
+      const pr = parsePrPanelKey(panelTabKey(tab))
+      return pr && (number === undefined || pr.number === number)
+    })
     if (firstPr) return firstPr
   }
+  const identity = stored ? parsePrPanelKey(stored) : undefined
+  if (identity) stored = prPanelKey(identity.repo, identity.number)
   const selected = tabs.find((tab) => panelTabKey(tab) === stored)
   if (selected) return selected
   const index = previous.findIndex((tab) => panelTabKey(tab) === stored)

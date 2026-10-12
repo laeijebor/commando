@@ -936,15 +936,15 @@ it('opens two manifests in the same canvas folder as separate tabs', async () =>
 })
 
 describe('built-in panel selection', () => {
-  it('retains a legacy PR selection for client migration without web tabs', async () => {
+  it.each(['pr', 'pr:12'])('retains legacy %s for client migration without web tabs', async (key) => {
     const path = await temporaryStatePath()
-    await writeFile(path, JSON.stringify({ version: 1, panes: [], activeTabs: { '%12': 'pr' } }))
+    await writeFile(path, JSON.stringify({ version: 1, panes: [], activeTabs: { '%12': key } }))
     const service = track(new WebPaneService(path))
     await service.load()
-    expect(service.panelActiveTabs()).toEqual({ '%12': 'pr' })
+    expect(service.panelActiveTabs()).toEqual({ '%12': key })
   })
 
-  it.each(['session', 'changes', 'pr:12'])('prunes a disappeared pane with built-in %s selected and no web panes', async (key) => {
+  it.each(['session', 'changes', 'pr:acme:widgets:12'])('prunes a disappeared pane with built-in %s selected and no web panes', async (key) => {
     const path = await temporaryStatePath()
     const service = track(new WebPaneService(path))
     service.setActiveTab(key, '%12', () => true)
@@ -982,17 +982,17 @@ describe('built-in panel selection', () => {
   ])('preserves built-in selections without web panes in a $name snapshot', async ({ windows }) => {
     const path = await temporaryStatePath()
     const service = track(new WebPaneService(path))
-    service.setActiveTab('pr:12', '%12', () => true)
+    service.setActiveTab('pr:acme:widgets:12', '%12', () => true)
     await service.flush()
     const before = await stat(path)
     vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     expect(service.prune(windows)).toBe(false)
-    expect(service.panelActiveTabs()).toEqual({ '%12': 'pr:12' })
+    expect(service.panelActiveTabs()).toEqual({ '%12': 'pr:acme:widgets:12' })
     await service.flush()
     expect((await stat(path)).ino).toBe(before.ino)
   })
 
-  it.each(['session', 'changes', 'pr:12'])('preserves built-in %s selections from another tmux socket', async (key) => {
+  it.each(['session', 'changes', 'pr:acme:widgets:12'])('preserves built-in %s selections from another tmux socket', async (key) => {
     const path = await temporaryStatePath()
     const owner = track(new WebPaneService(path, Date.now, undefined, 'name:first'))
     owner.open({ ...anchor, url: 'http://localhost:5173/' })
@@ -1012,19 +1012,19 @@ describe('built-in panel selection', () => {
   it('validates keys against live panes and persists anchors without web tabs', async () => {
     const path = await temporaryStatePath()
     const service = track(new WebPaneService(path))
-    for (const key of ['session', 'changes', 'pr:12']) {
+    for (const key of ['session', 'changes', 'pr:acme:widgets:12']) {
       expect(() => service.setActiveTab(key, '%999', (id) => id === '%12')).toThrow('Anchor pane does not exist')
       service.setActiveTab(key, '%12', (id) => id === '%12')
       expect(service.panelActiveTabs()).toEqual({ '%12': key })
     }
-    for (const key of ['pr', 'pr:0', 'pr:-1', 'pr:01', 'pr:1.5', 'pr:NaN', 'pr:12junk']) {
+    for (const key of ['pr', 'pr:12', 'pr:acme:widgets:0', 'pr:acme:widgets:-1', 'pr:acme:widgets:01', 'pr:acme:widgets:1.5', 'pr:acme:widgets:NaN', 'pr:acme:widgets:12junk', 'pr:acme:widgets:9007199254740992']) {
       expect(() => service.setActiveTab(key, '%12', () => true)).toThrow('Web pane does not exist')
     }
     expect(() => service.setActiveTab('unknown', '%12', () => true)).toThrow('Web pane does not exist')
     await service.flush()
     const restored = track(new WebPaneService(path))
     await restored.load()
-    expect(restored.panelActiveTabs()).toEqual({ '%12': 'pr:12' })
+    expect(restored.panelActiveTabs()).toEqual({ '%12': 'pr:acme:widgets:12' })
     const tile = restored.open({ ...anchor, url: 'http://localhost/plan' })
     expect(() => restored.setActiveTab(tile.id, '%13', () => true)).toThrow('Web pane is not a panel tab of this pane')
     restored.setActiveTab('session', '%12', () => true)

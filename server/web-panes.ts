@@ -13,7 +13,7 @@ import {
   type WebPanePlacement,
 } from '../shared/protocol.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
-import { isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
+import { isLegacyPrPanelKey, isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -228,7 +228,7 @@ function parseState(value: unknown): StateFile {
   const activeTabs: Record<string, string> = {}
   if (isRecord(value.activeTabs)) {
     for (const [anchor, key] of Object.entries(value.activeTabs)) {
-      if (/^%\d+$/.test(anchor) && typeof key === 'string' && (key === 'pr' || isBuiltinPanelKey(key))) activeTabs[anchor] = key
+      if (/^%\d+$/.test(anchor) && typeof key === 'string' && (isLegacyPrPanelKey(key) || isBuiltinPanelKey(key))) activeTabs[anchor] = key
     }
   }
   for (const pane of panes) {
@@ -560,7 +560,7 @@ export class WebPaneService {
   private reconcileActiveTabs(): void {
     for (const anchor of Object.keys(this.activeTabs)) {
       const tabs = panelTabs(this.list(), anchor)
-      if (this.activeTabs[anchor] !== 'pr' && !isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
+      if (!isLegacyPrPanelKey(this.activeTabs[anchor]) && !isBuiltinPanelKey(this.activeTabs[anchor]) && !tabs.some((tab) => tab.id === this.activeTabs[anchor])) {
         if (tabs[0]) this.activeTabs[anchor] = tabs[0].id
         else delete this.activeTabs[anchor]
       }

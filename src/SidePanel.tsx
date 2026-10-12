@@ -54,7 +54,7 @@ export function SidePanel({
   tabs: WebPane[]
   focusedPaneId?: string
   maximizedTabId?: string
-  revealRequest?: { tabId: string; onVisible: () => void }
+  revealRequest?: { tabId: string; onVisible: () => void; onUnavailable?: () => void }
   gridMaximized?: boolean
   paneLabel: string
   simulatorNames: Record<string, string>
@@ -116,6 +116,11 @@ export function SidePanel({
   useEffect(() => {
     if (!gridMaximized && expanded && active && !isBuiltinTab(active) && active.unseen) onSeen?.(active)
   }, [active?.id, active?.unseen, active && !isBuiltinTab(active) ? active.openRevision : undefined, gridMaximized, expanded, onSeen])
+  useEffect(() => {
+    if (!revealRequest?.onUnavailable) return
+    const pane = panes.find((pane) => revealRequest.tabId.startsWith(`panel:${pane.id}:pr:`))
+    if (pane && paneData[pane.id]?.prs?.targetId === pane.targetId && !allTabs.some((tab) => tab.id === revealRequest.tabId)) revealRequest.onUnavailable()
+  }, [revealRequest, paneData, allTabs])
   useEffect(() => { if (revealRequest) changeCollapsed(false) }, [revealRequest])
   useEffect(() => {
     if (!revealRequest || !expanded || gridMaximized || active?.id !== revealRequest.tabId) return

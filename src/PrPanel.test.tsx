@@ -18,6 +18,7 @@ function fixture() {
     diff: vi.fn().mockResolvedValue({ head: 'b', base: 'a', files: [], truncated: false }),
     list: vi.fn().mockResolvedValue({ repo: 'acme/widgets', pullRequests: [pr] }),
     pane: vi.fn().mockResolvedValue({ targetId: 'target', pullRequests: [source] }),
+    conflicts: vi.fn().mockResolvedValue({ state: 'clean', baseRefName: 'main', headRefName: 'feature', baseOid: 'a', headOid: 'b', files: [], messages: [], truncated: false, fetchedAt: Date.now() }),
     merge: vi.fn().mockResolvedValue({ merged: true }),
   }
 }
@@ -41,6 +42,44 @@ it('renders Description without a modal shell, preserves local sub-tab state, an
   expect(await screen.findByText('No changes vs origin/main.')).toBeVisible()
   view.rerender(element(true, { tab: 'Description', revision: 2 }))
   await waitFor(() => expect(screen.getByRole('tab', { name: 'Description' })).toHaveAttribute('aria-selected', 'true'))
+})
+
+it('reuses matching details, diff and conflict snapshots across panel hides and reveals', async () => {
+  const api = fixture()
+  const element = (visible: boolean) => <PrPanel paneId="%12" source={source} api={api as unknown as PrsApiClient} visible={visible} />
+  const view = render(element(true))
+  await screen.findByRole('heading', { name: 'Full description' })
+  view.rerender(element(false))
+  view.rerender(element(true))
+  expect(api.details).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+  await screen.findByText('No changes vs origin/main.')
+  view.rerender(element(false))
+  view.rerender(element(true))
+  expect(api.details).toHaveBeenCalledTimes(1)
+  expect(api.diff).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('tab', { name: 'Conflicts' }))
+  await screen.findByText('No merge conflicts')
+  view.rerender(element(false))
+  view.rerender(element(true))
+  expect(api.details).toHaveBeenCalledTimes(1)
+  expect(api.conflicts).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh conflicts' }))
+  await waitFor(() => expect(api.conflicts).toHaveBeenCalledTimes(2))
+})
+
+it('explicit refresh forces matching details to reload and retries the diff', async () => {
+  const api = fixture()
+  api.diff.mockRejectedValueOnce(new Error('Diff offline'))
+  render(<PrPanel paneId="%12" source={source} api={api as unknown as PrsApiClient} visible />)
+  await screen.findByRole('heading', { name: 'Full description' })
+  fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Diff offline')
+  expect(api.details).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh PR' }))
+  await screen.findByText('No changes vs origin/main.')
+  expect(api.details).toHaveBeenCalledTimes(2)
+  expect(api.diff).toHaveBeenCalledTimes(2)
 })
 
 it('does not poll hidden views or fetch changed details until revealed', async () => {

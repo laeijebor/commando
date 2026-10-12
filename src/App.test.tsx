@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPane } from '../shared/protocol'
 import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
+import { createPrsApi } from './prsApi'
+import { refreshPanePrs } from './prStore'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
 import { DESKTOP_WINDOW_ACTIVITY_EVENT } from './desktopWindowActivity'
@@ -814,7 +816,7 @@ describe('HUD tabs', () => {
   })
 
   describe('HUD PR tab routing', () => {
-    function stubPr(owned = true, ownerPane = adjacentPane) {
+    function stubPr(owned = true, ownerPane = adjacentPane, paneRepo: string | null = 'acme/widgets') {
       const pr = {
         number: 12, title: 'feat: pane diff', url: 'https://github.com/acme/widgets/pull/12',
         state: 'open', isDraft: false, author: 'leo', bodyExcerpt: '', additions: 379, deletions: 46,
@@ -836,10 +838,10 @@ describe('HUD tabs', () => {
           const paneId = new URL(url, 'http://localhost').searchParams.get('paneId')
           const owner = paneId === ownerPane.id
           return json({ list: { targetId: owner ? ownerPane.targetId : pane.targetId, totalCount: owner && owned ? 1 : 0,
-            pullRequests: owner && owned ? [{ ...pr, repo: 'acme/widgets', preview: pr }] : [], truncated: false, fetchedAt: Date.now() } })
+            pullRequests: owner && owned && paneRepo ? [{ ...pr, repo: paneRepo, preview: pr }] : [], truncated: false, fetchedAt: Date.now() } })
         }
         if (url.includes('/api/prs?')) return json({ list: { repo: 'acme/widgets', filter: 'open', viewer: 'leo', totalCount: 1, truncated: false, mineTruncated: false, fetchedAt: Date.now(), pullRequests: [pr] } })
-        if (url.includes('/api/web-panes/pr%3A12/active-tab')) return json({ ok: true })
+        if (/\/api\/web-panes\/pr.*\/active-tab$/.test(url)) return json({ ok: true })
         if (url.includes('/api/git/summary')) return json({ isRepo: true, root: ownerPane.path, branch: 'feat/pane-diff', files: [] })
         return new Response(JSON.stringify({ error: 'Not found' }), { status: 404 })
       })
@@ -853,13 +855,13 @@ describe('HUD tabs', () => {
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
-      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:12"]') as HTMLElement
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: /Diff/ })).toHaveAttribute('aria-selected', 'true'))
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
       expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
       await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/prs/diff?repo=acme%2Fwidgets&number=12', expect.any(Object)))
-      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
       // Return to the HUD and quick look explicitly selects Description on the mounted view.
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
@@ -867,23 +869,66 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)).toHaveClass('is-focused')
       act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane]) }))
-      await waitFor(() => expect(document.querySelector('[id="panel-tab-panel:%13:pr:12"]')).not.toBeInTheDocument())
+      await waitFor(() => expect(document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]')).not.toBeInTheDocument())
     })
     it.each(['Description', 'Diff'] as const)('jumps across sessions and selects the owning PR on %s without sending built-in keys to tmux', async (subTab) => {
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
       stubPr(true, remotePane)
       await renderAppWithSnapshot(snapshotAcrossSessions())
+      await act(async () => { await refreshPanePrs(createPrsApi('test-token'), remotePane.id) })
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
       fireEvent.click(await screen.findByRole('button', { name: subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
-      const panel = document.querySelector('[id="panel-tab-panel:%21:pr:12"]') as HTMLElement
+      const panel = document.querySelector('[id="panel-tab-panel:%21:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
       expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused')
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: remotePane.id }) }))
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: remotePane.id }) }))
       for (const [message] of appMocks.send.mock.calls) {
         if (message.type === 'set_window_layout' || message.type === 'apply_window_layout') expect(JSON.stringify(message)).not.toContain('pr:')
       }
+    })
+    it('renders and reveals the right repo when two linked PRs share a number', async () => {
+      const pr = stubPr()
+      const fetchPr = vi.mocked(fetch).getMockImplementation()!
+      const other = { ...pr, title: 'Other repository PR', url: 'https://github.com/other/widgets/pull/12', updatedAt: '2099-01-01' }
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        const url = String(input)
+        if (url.includes('/api/prs/pane') && new URL(url, 'http://localhost').searchParams.get('paneId') === adjacentPane.id) {
+          return new Response(JSON.stringify({ list: { targetId: adjacentPane.targetId, fetchedAt: Date.now(), totalCount: 2, truncated: false,
+            pullRequests: [{ ...other, repo: 'other/widgets', preview: other }, { ...pr, repo: 'acme/widgets', preview: pr }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return fetchPr(input, init)
+      })
+      await renderAppWithSnapshot()
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
+      expect(await screen.findByRole('tab', { name: 'acme/widgets#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const selected = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      expect(within(selected).getByRole('heading', { name: pr.title })).toBeVisible()
+      expect(within(selected).getByText('acme/widgets · #12')).toBeVisible()
+      fireEvent.click(screen.getByRole('tab', { name: 'other/widgets#12 open' }))
+      expect(await screen.findByRole('heading', { name: other.title })).toBeVisible()
+      expect(screen.getByText('other/widgets · #12')).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+      expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
+      fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
+      expect(screen.getByRole('tab', { name: 'other/widgets#12 open' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+    it.each([null, 'other/widgets'])('falls back when the marker matches but pane membership is %s', async (paneRepo) => {
+      const pr = stubPr(true, adjacentPane, paneRepo)
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      await act(async () => { await refreshPanePrs(createPrsApi('test-token'), adjacentPane.id) })
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Quick look at PR #12' }))
+      expect(await screen.findByRole('dialog')).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR quick look' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Open diff for PR #12: +379 -46' }))
+      expect(open).toHaveBeenCalledWith(pr.url, '_blank', 'noopener,noreferrer')
+      expect(vi.mocked(fetch).mock.calls.filter(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))).toHaveLength(0)
+      expect(document.querySelector('[data-pane-id="%12"]')).toHaveClass('is-focused')
     })
     it('keeps the modal and GitHub diff fallback for unowned PRs', async () => {
       const pr = stubPr(false)

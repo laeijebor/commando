@@ -120,7 +120,7 @@ import {
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
-import { refreshPanePrs } from './prStore'
+import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -1056,7 +1056,7 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
-  const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void } | null>(null)
+  const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -1989,7 +1989,7 @@ export function App() {
     setMaximizedBuiltinTab((current) => current?.id === tab.id ? current : null)
     setFocusedPaneId(paneId)
     void selectPanelTab(tab)
-    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null) })
+    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
   const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean => {
@@ -1997,8 +1997,11 @@ export function App() {
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
     if (matches.length !== 1) return false
     const pane = matches[0]
+    const repo = new URL(pr.url).pathname.split('/').slice(1, 3).join('/').toLowerCase()
+    const list = cachedPanePrs(prsApi, pane.id)
+    if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
-    const key = prPanelKey(pr.number)
+    const key = prPanelKey(repo, pr.number)
     const tabId = builtinPanelTab(pane.id, key).id
     setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
     revealBuiltinTab(pane.id, key)
@@ -3572,9 +3575,9 @@ export function App() {
                       const pane = paneMap.get(tab.anchorPaneId)
                       if (!pane) return null
                       if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
-                      const prNumber = parsePrPanelKey(tab.key)
-                      if (prNumber !== undefined) {
-                        const source = data.prs?.pullRequests.find((pr) => pr.number === prNumber)
+                      const identity = parsePrPanelKey(tab.key)
+                      if (identity) {
+                        const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
                         return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
                           <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} source={source} api={prsApi} visible={visible} selection={prSelections[tab.id]}
                             onSelectionApplied={() => setPrSelections((current) => {

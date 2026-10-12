@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrSummary, PrsApiClient } from './prsApi'
+import { useState } from 'react'
 import { SidePanel } from './SidePanel'
 
 const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
@@ -94,18 +95,18 @@ describe('SidePanel', () => {
     await act(async () => { view = render(element('pr')) })
     expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:4' }))
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:4' }))
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', '#4', '#3', '#2', '#1'])
     expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByRole('button', { name: /Close #/ })).not.toBeInTheDocument()
-    const first = screen.getByLabelText('State of pr:4')
+    const first = screen.getByLabelText('State of pr:acme:widgets:4')
     fireEvent.change(first, { target: { value: 'retained' } })
-    view.rerender(element('pr:3'))
+    view.rerender(element('pr:acme:widgets:3'))
     expect(first.closest('[role="tabpanel"]')).toHaveAttribute('hidden')
     expect(first).toHaveValue('retained')
-    view.rerender(element('pr:4', false))
+    view.rerender(element('pr:acme:widgets:4', false))
     expect(screen.getByRole('tab', { name: '#4 open' })).toBeVisible()
-    view.rerender(element('pr:4'))
+    view.rerender(element('pr:acme:widgets:4'))
     prs = prs.filter((pr) => pr.number !== 4)
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
     expect(screen.queryByRole('tab', { name: '#4 open' })).not.toBeInTheDocument()
@@ -118,6 +119,37 @@ describe('SidePanel', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session'])
     expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it.each([false, true])('settles a delayed PR reveal after membership loads (present=%s)', async (present) => {
+    const requestedId = 'panel:%12:pr:acme:widgets:12'
+    let finish!: (value: unknown) => void
+    const prsApi = { pane: vi.fn(() => new Promise((resolve) => { finish = resolve })) } as unknown as PrsApiClient
+    const gitApi = { summary: vi.fn(async () => ({ isRepo: false })) } as unknown as GitDiffApiClient
+    const onUnavailable = vi.fn()
+    const onVisible = vi.fn()
+    function PendingPanel({ windowId }: { windowId: string }) {
+      const [request, setRequest] = useState<typeof requestedId | null>(requestedId)
+      return <SidePanel key={windowId} windowId={windowId} tabs={[]} panes={[{ id: '%12', targetId: 'target', path: '/repo' } as TmuxPane]}
+        connected gitApi={gitApi} prsApi={prsApi} focusedPaneId="%12" activeTabs={{ '%12': 'pr:acme:widgets:12' }} paneLabel="pane" titles={{}} simulatorNames={{}}
+        revealRequest={request ? { tabId: request, onVisible: () => { onVisible(); setRequest(null) }, onUnavailable: () => { onUnavailable(); setRequest(null) } } : undefined}
+        onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>
+    }
+    const view = render(<PendingPanel windowId="@1" />)
+    expect(onUnavailable).not.toHaveBeenCalled()
+    await act(async () => { finish({ targetId: 'target', fetchedAt: Date.now(), pullRequests: present ? [{ number: 12, repo: 'acme/widgets', url: 'https://github.com/acme/widgets/pull/12', state: 'open', updatedAt: '' }] : [] }) })
+    if (present) {
+      await vi.waitFor(() => expect(onVisible).toHaveBeenCalledOnce())
+      expect(onUnavailable).not.toHaveBeenCalled()
+      expect(screen.getByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+    } else {
+      expect(onUnavailable).toHaveBeenCalledOnce()
+      expect(onVisible).not.toHaveBeenCalled()
+      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    view.rerender(<PendingPanel windowId="@2" />)
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
   })
 
   it('shows failed resume attention in the collapsed rail and expanded Session tab', () => {

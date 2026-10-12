@@ -239,6 +239,10 @@ export function refreshPrCommentStatus(api: StoreApi, repo: string): Promise<voi
   return storeFor(api).refreshCommentStatus(repo)
 }
 
+export function cachedPanePrs(api: StoreApi, paneId: string): PanePrList | null {
+  return storeFor(api).paneSnapshot(paneId).list
+}
+
 export function cachedPrSummary(api: StoreApi, repo: string, number: number): PrSummary | undefined {
   return storeFor(api).summary(repo, number)
 }

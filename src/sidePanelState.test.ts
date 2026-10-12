@@ -45,9 +45,9 @@ describe('effective pane focus', () => {
 
 describe('built-in panel tabs', () => {
   const changed = { isRepo: true, target: 'main', additions: 4, deletions: 2, files: [{ path: 'a.ts', status: 'M', additions: 4, deletions: 2, binary: false }] }
-  const pr = (number: number, state: 'open' | 'merged' | 'closed', updatedAt: string) => ({ number, state, updatedAt } as import('./prsApi').PanePrSummary)
+  const pr = (number: number, state: 'open' | 'merged' | 'closed', updatedAt: string) => ({ number, state, updatedAt, repo: 'acme/widgets' } as import('./prsApi').PanePrSummary)
   it('orders Session, conditional Changes and PR, then the ordered web tabs', () => {
-    expect(combinedPanelTabs('%12', [tab('b', '%12', 2), tab('a')], changed, [pr(8, 'open', '')]).map(panelTabKey)).toEqual(['session', 'changes', 'pr:8', 'a', 'b'])
+    expect(combinedPanelTabs('%12', [tab('b', '%12', 2), tab('a')], changed, [pr(8, 'open', '')]).map(panelTabKey)).toEqual(['session', 'changes', 'pr:acme:widgets:8', 'a', 'b'])
     expect(combinedPanelTabs('%12', [], null, []).map(panelTabKey)).toEqual(['session'])
     expect(combinedPanelTabs('%12', [], { ...changed, files: [] }, []).map(panelTabKey)).toEqual(['session'])
     expect(combinedPanelTabs('%12', [], { ...changed, target: null }, []).map(panelTabKey)).toEqual(['session'])
@@ -62,24 +62,38 @@ describe('built-in panel tabs', () => {
   it('falls forward, then backward across built-ins and web tabs, otherwise Session', () => {
     const previous = combinedPanelTabs('%12', [tab('a')], changed, [pr(1, 'open', '')])
     expect(panelTabKey(resolveActivePanelTab(previous, 'changes')!)).toBe('changes')
-    expect(panelTabKey(resolveActivePanelTab(previous.filter((t) => panelTabKey(t) !== 'pr:1'), 'pr:1', previous)!)).toBe('a')
-    expect(panelTabKey(resolveActivePanelTab(previous.slice(0, 2), 'pr:1', previous)!)).toBe('changes')
+    expect(panelTabKey(resolveActivePanelTab(previous.filter((t) => panelTabKey(t) !== 'pr:acme:widgets:1'), 'pr:acme:widgets:1', previous)!)).toBe('a')
+    expect(panelTabKey(resolveActivePanelTab(previous.slice(0, 2), 'pr:acme:widgets:1', previous)!)).toBe('changes')
     expect(panelTabKey(resolveActivePanelTab(previous, undefined)!)).toBe('session')
     expect(panelTabKey(resolveActivePanelTab(previous, 'missing')!)).toBe('session')
-    expect(panelTabKey(resolveActivePanelTab(previous.slice(0, 3), 'a', previous)!)).toBe('pr:1')
+    expect(panelTabKey(resolveActivePanelTab(previous.slice(0, 3), 'a', previous)!)).toBe('pr:acme:widgets:1')
   })
   it('creates a labelled tab for every linked PR, with drafts grouped with open PRs', () => {
     const prs = [pr(1, 'closed', '2026-10-12'), pr(2, 'merged', '2026-10-12'),
       pr(3, 'open', '2026-10-09'), { ...pr(4, 'open', '2026-10-10'), isDraft: true }, pr(5, 'merged', '2026-10-11')]
     const tabs = combinedPanelTabs('%12', [], changed, prs)
     expect(tabs.slice(2).map((tab) => 'key' in tab && [tab.key, tab.label, tab.prState])).toEqual([
-      ['pr:4', '#4', 'draft'], ['pr:3', '#3', 'open'], ['pr:2', '#2', 'merged'], ['pr:5', '#5', 'merged'], ['pr:1', '#1', 'closed'],
+      ['pr:acme:widgets:4', '#4', 'draft'], ['pr:acme:widgets:3', '#3', 'open'], ['pr:acme:widgets:2', '#2', 'merged'], ['pr:acme:widgets:5', '#5', 'merged'], ['pr:acme:widgets:1', '#1', 'closed'],
     ])
-    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr')!)).toBe('pr:4')
+    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr')!)).toBe('pr:acme:widgets:4')
     expect(panelTabKey(resolveActivePanelTab(combinedPanelTabs('%12', [], null, []), 'pr')!)).toBe('session')
-    const removed = tabs.filter((tab) => panelTabKey(tab) !== 'pr:4')
-    expect(panelTabKey(resolveActivePanelTab(removed, 'pr:4', tabs)!)).toBe('pr:3')
-    expect(panelTabKey(resolveActivePanelTab(tabs.slice(0, 2), 'pr:4', tabs)!)).toBe('changes')
+    const removed = tabs.filter((tab) => panelTabKey(tab) !== 'pr:acme:widgets:4')
+    expect(panelTabKey(resolveActivePanelTab(removed, 'pr:acme:widgets:4', tabs)!)).toBe('pr:acme:widgets:3')
+    expect(panelTabKey(resolveActivePanelTab(tabs.slice(0, 2), 'pr:acme:widgets:4', tabs)!)).toBe('changes')
+  })
+  it('distinguishes same-number PRs by repo in keys, labels and legacy migration', () => {
+    const tabs = combinedPanelTabs('%12', [], null, [
+      { ...pr(12, 'open', '2026-10-12'), repo: 'orgA/x' },
+      { ...pr(12, 'merged', '2026-10-11'), repo: 'orgB/y' }, pr(13, 'open', '2026-10-10'),
+    ])
+    expect(tabs.slice(1).map((tab) => 'key' in tab && [tab.key, tab.label])).toEqual([
+      ['pr:orga:x:12', 'orgA/x#12'], ['pr:acme:widgets:13', '#13'], ['pr:orgb:y:12', 'orgB/y#12'],
+    ])
+    expect(new Set(tabs.map((tab) => tab.id)).size).toBe(tabs.length)
+    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr')!)).toBe('pr:orga:x:12')
+    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr:12')!)).toBe('pr:orga:x:12')
+    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr:orgB:y:12')!)).toBe('pr:orgb:y:12')
+    expect(panelTabKey(resolveActivePanelTab(tabs, 'pr:99')!)).toBe('session')
   })
   it('stays expanded after the first web tab, while remembered choices always win', () => {
     expect(defaultPanelCollapsed(false, null)).toBe(true)
