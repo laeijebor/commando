@@ -95,7 +95,10 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       if (remotes[args[2]] === '!error') throw new Error(`fatal: No such remote '${args[2]}'`)
       return { stdout: remotes[args[2]] ?? '', stderr: '' }
     }
-    if (args[0] === 'merge-base') return { stdout: `${mergeBase}\n`, stderr: '' }
+    if (args[0] === 'merge-base') {
+      if (mergeBase === '!timeout') throw new GitCommandFailure('git timed out', '', false)
+      return { stdout: `${mergeBase}\n`, stderr: '' }
+    }
     if (args[0] === 'for-each-ref' && args[1]?.startsWith('--format=%(objectname)')) {
       return { stdout: refTips.join('\n'), stderr: '' }
     }
@@ -478,6 +481,12 @@ describe('GitDiffInspector.summary', () => {
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'base-tip', 'head-tip'))
       .rejects.toMatchObject({ kind: 'bad-target' })
     expect(repo.calls.some((call) => call.args[0] === 'diff')).toBe(false)
+  })
+
+  it('reports a merge-base timeout as a git failure, not a missing common ancestor', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'], mergeBase: '!timeout' })
+    const failure = await new GitDiffInspector(repo.execute, {}).summary('/repo', 'base-tip', 'head-tip').catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(GitCommandFailure)
   })
 
   it('rejects an origin fork instead of diffing against the wrong repository', async () => {

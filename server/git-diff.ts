@@ -853,13 +853,11 @@ export class GitDiffInspector {
     }
   }
 
+  /** Undefined only when git reports no common ancestor (exit 1); other failures propagate. */
   private async commonAncestor(root: string, base: string, head: string): Promise<string | undefined> {
-    try {
-      const { stdout } = await this.git(root, ['merge-base', base, head])
-      return stdout.trim() || undefined
-    } catch {
-      return undefined
-    }
+    const { stdout } = await this.execute('git', ['merge-base', base, head],
+      { ...this.options(root, COMMAND_TIMEOUT_MS, COMMAND_BUFFER_BYTES), allowExitCodes: [1] })
+    return stdout.trim() || undefined
   }
 
   private async mergeBase(root: string, target: string, head = 'HEAD'): Promise<string> {
