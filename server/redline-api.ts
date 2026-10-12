@@ -100,7 +100,7 @@ export class RedlineApi {
         await this.handleApi(request, response, url)
         return true
       }
-      this.handleStatic(request, response, url.pathname)
+      this.handleStatic(request, response, url)
       return true
     } catch (error) {
       if (error instanceof HttpError || error instanceof RedlineArtifactError) {
@@ -116,10 +116,15 @@ export class RedlineApi {
     }
   }
 
-  private handleStatic(request: IncomingMessage, response: ServerResponse, pathname: string): void {
+  private handleStatic(request: IncomingMessage, response: ServerResponse, url: URL): void {
+    const { pathname } = url
     if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
     if (pathname === '/redline/sdk.js') {
       this.serveFile(response, join(staticDir, 'redline-sdk.js'))
+      return
+    }
+    if (pathname === '/redline/canvas-frame.js') {
+      this.serveFile(response, join(staticDir, 'canvas-frame.js'))
       return
     }
     const design = /^\/redline\/design\/([^/]+)$/.exec(pathname)
@@ -137,7 +142,9 @@ export class RedlineApi {
       const file = this.dependencies.artifacts.resolve(artifact[1], artifact[2])
       if (!file) throw new HttpError(404, 'Not found')
       // Artifacts change during a review loop — never cache them.
-      this.serveFile(response, file, { cache: 'no-store', cached: false })
+      const frameId = url.searchParams.get('canvas-frame')
+      if (frameId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(frameId)) throw new HttpError(400, 'Invalid canvas frame id')
+      this.serveFile(response, file, { cache: 'no-store', cached: false, frameId: frameId ?? undefined })
       return
     }
     throw new HttpError(404, 'Not found')
@@ -169,7 +176,7 @@ export class RedlineApi {
   private serveFile(
     response: ServerResponse,
     filePath: string,
-    options: { cache?: string; cached?: boolean } = {},
+    options: { cache?: string; cached?: boolean; frameId?: string } = {},
   ): void {
     const cached = options.cached ?? true
     let body = cached ? this.fileCache.get(filePath) : undefined
@@ -180,6 +187,12 @@ export class RedlineApi {
         throw new HttpError(404, 'Not found')
       }
       if (cached) this.fileCache.set(filePath, body)
+    }
+    if (options.frameId && extname(filePath).toLowerCase() === '.html') {
+      const script = `<script src="/redline/canvas-frame.js" data-canvas-frame="${options.frameId}"></script>`
+      const html = body.toString('utf8')
+      const end = [...html.matchAll(/<\/body\s*>/gi)].at(-1)
+      body = Buffer.from(end ? html.slice(0, end.index) + script + html.slice(end.index) : html + script)
     }
     response.writeHead(200, {
       'Access-Control-Allow-Origin': '*',
