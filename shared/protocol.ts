@@ -1,4 +1,5 @@
 import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatTaskAction } from './agent-chat.js'
+import type { ChatStashEntry } from './chat-stash.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -755,6 +756,8 @@ export type ServerMessage =
   | { type: 'canvas_changed'; artifactId: string; changed: string[] }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
+  /** The composer stash, newest first: on connect and after every change. */
+  | { type: 'chat_stash'; entries: ChatStashEntry[] }
   /** A chat pane's whole state: sent when its host connects or reconnects. */
   | { type: 'chat_state'; chat: ChatState }
   | { type: 'chat_session'; paneId: string; session: ChatSessionInfo; hostConnected: boolean }
