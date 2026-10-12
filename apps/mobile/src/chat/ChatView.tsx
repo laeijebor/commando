@@ -67,8 +67,7 @@ export function ChatView({ host, chat, client, phase }: {
         <RequestCard
           cwd={chat.session.cwd}
           disabled={!hostConnected}
-          // A refused answer brings the buttons back.
-          key={`${request.requestId}:${actionError ?? ''}`}
+          key={request.requestId}
           onAnswer={(answer) => channel.answer(request.requestId, answer)}
           pendingCount={requests.length}
           request={request}

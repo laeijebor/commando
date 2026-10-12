@@ -217,9 +217,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
         setAttachError(error)
       }
       void (async () => {
-        const prepared = await prepareImage(image)
-        if (!prepared.ok) return drop(prepared.error)
         try {
+          const prepared = await prepareImage(image)
+          if (!prepared.ok) return drop(prepared.error)
           const ref = await uploadChatImage(host, prepared.image)
           if (!mounted.current) return
           setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, ref } : attachment)))
@@ -273,8 +273,8 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       const images = restored(carried.images.slice(0, taken), host.baseUrl, 'carried')
       if (images.length) setAttachments((current) => [...images, ...current])
     }
-    reportedCarries.current.add(carried.id)
-    channel.carryTaken(carried.id, taken)
+    // Unreported, the daemon would offer the same draft to another composer; try again on the next render.
+    if (channel.carryTaken(carried.id, taken)) reportedCarries.current.add(carried.id)
     // A carried draft is taken once; room for its images is what changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carried?.id, attachments.length, switching])

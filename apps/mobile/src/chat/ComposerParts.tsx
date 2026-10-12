@@ -63,7 +63,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
                 />
                 <View style={styles.queuedActions}>
                   <SmallButton
-                    disabled={!editing.text.trim()}
+                    disabled={disabled || !editing.text.trim()}
                     label="Save"
                     onPress={() => {
                       if (editing.text.trim()) onChange({ action: 'edit', id: queued.id, text: editing.text })

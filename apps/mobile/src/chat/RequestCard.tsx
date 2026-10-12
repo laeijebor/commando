@@ -25,16 +25,12 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
   onAnswer: (answer: ChatAnswer) => void
 }): React.JSX.Element {
   const theme = useTheme()
-  // Answers go once; a refusal remounts the card (its key changes with the error).
-  const [sent, setSent] = useState(false)
+  // Buttons stay live, as on the web: the daemon takes the first answer from any device.
   const answer = (value: ChatAnswer) => {
-    if (sent) return
-    setSent(true)
     Keyboard.dismiss()
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     onAnswer(value)
   }
-  const locked = disabled || sent
   return (
     // A tap outside its buttons puts the keyboard away, since the card can cover the timeline.
     <Pressable
@@ -51,7 +47,7 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
         {pendingCount > 1 ? <Text style={[styles.count, { color: theme.muted }]}>1/{pendingCount}</Text> : null}
       </View>
       {request.requestKind === 'question'
-        ? <Questions request={request} disabled={locked} onAnswer={answer} />
+        ? <Questions request={request} disabled={disabled} onAnswer={answer} />
         : (
             <>
               <Text style={[styles.title, { color: theme.text }]}>{request.title}</Text>
@@ -61,9 +57,9 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
                 </ScrollView>
               ) : null}
               <View style={styles.row}>
-                <Button disabled={locked} label="Deny" onPress={() => answer({ kind: 'approval', decision: 'deny' })} style={styles.choice} variant="danger" />
-                <Button disabled={locked} label="Always" onPress={() => answer({ kind: 'approval', decision: 'allow_always' })} style={styles.choice} />
-                <Button disabled={locked} label="Allow once" onPress={() => answer({ kind: 'approval', decision: 'allow' })} style={styles.choice} variant="primary" />
+                <Button disabled={disabled} label="Deny" onPress={() => answer({ kind: 'approval', decision: 'deny' })} style={styles.choice} variant="danger" />
+                <Button disabled={disabled} label="Always" onPress={() => answer({ kind: 'approval', decision: 'allow_always' })} style={styles.choice} />
+                <Button disabled={disabled} label="Allow once" onPress={() => answer({ kind: 'approval', decision: 'allow' })} style={styles.choice} variant="primary" />
               </View>
             </>
           )}

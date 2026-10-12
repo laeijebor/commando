@@ -1,3 +1,5 @@
+import { requireOptionalNativeModule } from 'expo'
+
 import {
   CHAT_IMAGE_MAX_DIMENSION,
   CHAT_IMAGE_TYPES,
@@ -22,14 +24,13 @@ type ImageManipulatorModule = typeof import('expo-image-manipulator')
 /**
  * The picker and the resizer are native modules. A dev client built before
  * they were added doesn't have them, so they load on first use and the
- * composer says to rebuild rather than crashing the chat.
+ * composer says to rebuild rather than crashing the chat. The native module is
+ * checked first: requiring the package without it throws inside Metro's module
+ * loader, which reports a fatal error before any catch here could see it.
  */
 function load<T>(name: 'picker' | 'manipulator'): T | null {
-  try {
-    return (name === 'picker' ? require('expo-image-picker') : require('expo-image-manipulator')) as T
-  } catch {
-    return null
-  }
+  if (!requireOptionalNativeModule(name === 'picker' ? 'ExponentImagePicker' : 'ExpoImageManipulator')) return null
+  return (name === 'picker' ? require('expo-image-picker') : require('expo-image-manipulator')) as T
 }
 
 export const REBUILD_FOR_IMAGES = 'This build of the app has no photo picker; rebuild it to attach images'
@@ -93,26 +94,52 @@ export async function prepareImage(image: PickedImage): Promise<{ ok: true; imag
     const context = manipulator.ImageManipulator.manipulate(image.uri)
     if (scale < 1) context.resize({ width: Math.max(1, Math.round(image.width * scale)) })
     const rendered = await context.renderAsync()
-    const saved = await rendered.saveAsync({
-      format: type === 'image/png' ? manipulator.SaveFormat.PNG : manipulator.SaveFormat.JPEG,
-      compress: 0.9,
-    })
-    return { ok: true, image: { uri: saved.uri, name: renamed(image.name, type), type } }
+    // Keep the format first; a big photo-like PNG falls back to JPEG, as the web's does.
+    const attempts: [ChatImageType, number][] = [[type, 0.9], ['image/jpeg', 0.8], ['image/jpeg', 0.7]]
+    let smallest = Infinity
+    for (const [format, compress] of attempts) {
+      const saved = await rendered.saveAsync({ format: format === 'image/png' ? manipulator.SaveFormat.PNG : manipulator.SaveFormat.JPEG, compress })
+      const size = await fileSize(saved.uri)
+      if (size <= MAX_CHAT_IMAGE_BYTES) return { ok: true, image: { uri: saved.uri, name: renamed(image.name, format), type: format } }
+      smallest = Math.min(smallest, size)
+    }
+    return { ok: false, error: `${image.name} is ${megabytes(smallest)} even resized; images must be ${megabytes(MAX_CHAT_IMAGE_BYTES)} or smaller` }
   } catch (error) {
     return { ok: false, error: `${image.name} couldn't be resized: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 
+async function fileSize(uri: string): Promise<number> {
+  return (await (await fetch(uri)).blob()).size
+}
+
+/** How long an upload may take before the composer gives up on it. */
+const UPLOAD_TIMEOUT_MS = 60_000
+
 /** Uploads one image the way the web composer does; the message then names it by id. */
 export async function uploadChatImage(host: Host, image: PreparedImage, fetcher: typeof fetch = fetch): Promise<ChatImageRef> {
-  const file = await fetcher(image.uri)
-  const blob = await file.blob()
-  const response = await fetcher(`${host.baseUrl}/api/chat/images`, {
-    method: 'POST',
-    body: blob,
-    credentials: 'include',
-    headers: { 'Content-Type': image.type, ...authHeaders(host) },
-  })
+  let blob: Blob
+  try {
+    blob = await (await fetcher(image.uri)).blob()
+  } catch {
+    throw new Error("couldn't read the picked image; pick it again")
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetcher(`${host.baseUrl}/api/chat/images`, {
+      method: 'POST',
+      body: blob,
+      credentials: 'include',
+      headers: { 'Content-Type': image.type, ...authHeaders(host) },
+      signal: controller.signal,
+    })
+  } catch (error) {
+    throw controller.signal.aborted ? new Error('the upload timed out') : error
+  } finally {
+    clearTimeout(timer)
+  }
   const result = await response.json().catch(() => ({})) as { image?: { id?: unknown }; error?: string }
   if (!response.ok || !isChatImageId(result.image?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
   return { id: result.image.id, name: image.name }

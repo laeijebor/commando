@@ -82,9 +82,9 @@ export class ChatChannel {
     this.action({ type: 'chat_queue', paneId: this.paneId, ...change })
   }
 
-  /** The composer took back what the chat carried across Claude Code. */
-  carryTaken(carryId: string, images: number): void {
-    this.transport.send({ type: 'chat_carry_taken', paneId: this.paneId, carryId, images })
+  /** The composer took back what the chat carried across Claude Code; false when the socket couldn't say so. */
+  carryTaken(carryId: string, images: number): boolean {
+    return this.transport.send({ type: 'chat_carry_taken', paneId: this.paneId, carryId, images }) !== null
   }
 
   /** Files and folders for an `@` mention, searched by the chat's host. */

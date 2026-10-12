@@ -57,7 +57,10 @@ export type PaneViewProps = {
  */
 export function PaneView(props: PaneViewProps): React.JSX.Element {
   const chat = useChat(props.host?.id, props.paneId)
-  return chat && props.host ? <ChatPane {...props} chat={chat} host={props.host} /> : <TerminalPane {...props} />
+  // Keyed so the iPad's centre column starts each chat afresh (its draft, scroll and error boundary).
+  return chat && props.host
+    ? <ChatPane key={`${props.host.id}:${chat.paneId}`} {...props} chat={chat} host={props.host} />
+    : <TerminalPane {...props} />
 }
 
 /** A chat pane: the nav and window chips over the native chat. */
@@ -117,7 +120,10 @@ function useKeyboardOverlap(): { ref: React.RefObject<View | null>; onLayout: ()
     const show = Keyboard.addListener('keyboardWillShow', (event) => {
       shown.current = true
       animate(event.duration)
-      setOverlap(Math.max(0, Dimensions.get('window').height - event.endCoordinates.screenY - gap.current))
+      const { height, screenY } = event.endCoordinates
+      // A floating or undocked iPad keyboard doesn't reach the bottom edge, and covers nothing below it.
+      const docked = height > 0 && screenY + height >= Dimensions.get('window').height - 1
+      setOverlap(docked ? Math.max(0, Math.min(height, Dimensions.get('window').height - screenY) - gap.current) : null)
     })
     const hide = Keyboard.addListener('keyboardWillHide', (event) => {
       shown.current = false
