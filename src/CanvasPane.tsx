@@ -5,7 +5,6 @@ import { CanvasSpotlightToast } from './CanvasSpotlightToast'
 import type { CanvasSpotlightRequest } from '../shared/protocol'
 import { CanvasComposer } from './CanvasComposer'
 import { CanvasPins, canvasPins, canvasPinPoint } from './CanvasPins'
-import { CanvasQueueChip } from './CanvasQueueChip'
 import { useCanvasComments } from './useCanvasComments'
 import { canvasNoteContext } from './canvasComments'
 import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -51,6 +50,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [spotlightFrame, setSpotlightFrame] = useState<string | null>(null)
   const [selected, setSelected] = useState<CanvasLabelRef | null>(null)
   const [hovered, setHovered] = useState<CanvasLabelRef | null>(null)
+  const [exportMenu, setExportMenu] = useState<{ frame: typeof result.manifest.frames[number]; anchor: HTMLElement } | null>(null)
+  const exportOverlay = useRef<HTMLDivElement>(null)
+  useEffect(() => { setExportMenu(null) }, [camera.x, camera.y, camera.scale, panning, snapshot, result.manifest])
   const pane = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const world = useRef<HTMLDivElement>(null)
@@ -238,17 +240,17 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
 
   return <div className={`canvas-pane${readOnly ? ' is-snapshot' : ''}`} ref={pane}>
     <div className="canvas-toolbar" role="toolbar" aria-label="Canvas controls">
-      <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
+      <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setExportMenu(null); setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
       <button type="button" aria-label="Zoom out" onClick={() => zoom(0.8)}>−</button>
       <output className="canvas-zoom" aria-label="Zoom">{Math.round(camera.scale * 100)}%</output>
       <button type="button" aria-label="Zoom in" onClick={() => zoom(1.25)}>+</button>
       <button type="button" onClick={() => { initialFit.current = true; fit() }}>Fit</button>
-      <button type="button" aria-label="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶ Play</button>
+      <button type="button" aria-label="Play" title="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶</button>
       {interaction.state.playing && <button type="button" disabled={!interaction.state.history.length} onClick={() => interaction.act({ type: 'back' })}>Back</button>}
       <span className="canvas-toolbar-separator" />
-      <button type="button" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>Notes</button>
-      <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
-      <CanvasQueueChip count={readOnly ? 0 : comments.queued.length} busy={feedbackBusy} onSend={comments.sendAll} />
+      <button type="button" aria-label="Notes" title="Notes" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>▤</button>
+      <button type="button" aria-label="Comment tool" title="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
+      {!readOnly && comments.queued.length > 0 && <span className="canvas-queue"><span>{comments.queued.length} ·</span><button type="button" disabled={feedbackBusy} onClick={comments.sendAll}>Send</button></span>}
       <CanvasHistory apiUrl={`${apiUrl}/snapshots`} token={token} selected={snapshot} disabled={feedbackBusy} onSelect={selectSnapshot} />
       <span className="canvas-toolbar-title" title={title}>{title || 'Canvas'}</span>
       {onClose && <button type="button" aria-label="Close canvas tab" onClick={onClose}>×</button>}
@@ -268,6 +270,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         }}
         onSelect={(instance) => { setSpotlightFrame(null); setSelected(instance); initialFit.current = true; flyTo(canvasLabelBounds(frames.find((frame) => frame.id === instance.frameId)!, instance.label.rect)) }}
         onFrame={(frame) => { setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true; flyTo(frameBounds(frame)) }}
+        onExport={(frame, anchor) => setExportMenu({ frame, anchor })}
         onNote={(note) => { setSpotlightFrame(null); setSelected(null); setHovered(null); setNotesVisible(true); initialFit.current = true; flyTo(noteBounds(note)) }} />}
       <div className={`canvas-viewport${panning ? ' is-panning' : ''}${commentMode ? ' is-commenting' : ''}`} ref={viewport}
         onClick={(event) => {
@@ -299,7 +302,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
             onDoubleClick={() => { if (!readOnly && !commentMode) interaction.act({ type: 'enter', id: frame.id }) }}>
             <div className="canvas-frame-label" onPointerDown={(event) => { if (!readOnly && !commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, camera.scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
               {frame.platform && <i>[{frame.platform}]</i>}<b>{frame.title}</b>{frame.focus && <span className="canvas-badge focus">★ Focus {frame.focus}</span>}<span className={`canvas-badge ${frame.interactive ? 'live' : 'static'}`}>{frame.interactive ? '▶ Interactive' : 'Static'}</span>
-              <CanvasFrameExport key={`${baseUrl}/${frame.src}`} frame={frame} baseUrl={baseUrl} apiUrl={`${apiUrl}/frames`} manifest={manifestPath} token={token} snapshot={readOnly} />
+              <button type="button" className="canvas-frame-export" aria-label={`Export ${frame.title}`} title={`Export ${frame.title}`} aria-haspopup="menu" aria-expanded={exportMenu?.frame.id === frame.id}
+                onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => { event.stopPropagation(); setExportMenu(exportMenu?.anchor === event.currentTarget ? null : { frame, anchor: event.currentTarget }) }}>⤓</button>
               {live === frame.id && <span className="canvas-badge entered">Live — Esc to leave</span>}
             </div>
             <iframe ref={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" loading="lazy" onLoad={syncInteraction} src={canvasFrameUrl(baseUrl, frame, revisions[frame.id])} />
@@ -331,6 +336,10 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         {!readOnly && <CanvasSpotlightToast webPaneId={webPaneId} token={token} onShow={setSpotlightTarget} />}
         <div className="canvas-hint" role="status" aria-label="Canvas hint">{interaction.state.hint || (commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? readOnly ? 'Snapshot · Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Drag to pan · Double-click to enter · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…')}</div>
       </div>
+    </div>
+    <div ref={exportOverlay} className="canvas-overlay canvas-export-overlay">
+      {exportMenu && exportOverlay.current && <CanvasFrameExport key={`${baseUrl}/${exportMenu.frame.id}/${exportMenu.frame.src}`} frame={exportMenu.frame} anchor={exportMenu.anchor} overlay={exportOverlay.current}
+        baseUrl={baseUrl} apiUrl={`${apiUrl}/frames`} manifest={manifestPath} token={token} snapshot={readOnly} onClose={() => setExportMenu(null)} />}
     </div>
   </div>
 }

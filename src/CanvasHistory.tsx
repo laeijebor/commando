@@ -23,7 +23,7 @@ export function CanvasHistory({ apiUrl, token, selected, disabled, onSelect }: {
   }
   const choose = (snapshot: CanvasSnapshot | null) => { onSelect(snapshot); setOpen(false) }
   return <details className="canvas-menu canvas-history" open={open}>
-    <summary onClick={(event) => { event.preventDefault(); setOpen(!open); if (!open) void load() }}>History</summary>
+    <summary aria-label="History" title="History" onClick={(event) => { event.preventDefault(); setOpen(!open); if (!open) void load() }}>🕘</summary>
     {open && <div className="canvas-menu-items" role="menu" aria-label="Canvas history">
       <button type="button" role="menuitemradio" aria-checked={!selected} disabled={disabled} onClick={() => choose(null)}>Live</button>
       {busy && <span role="status">Loading history…</span>}

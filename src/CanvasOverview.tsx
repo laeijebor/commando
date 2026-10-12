@@ -5,10 +5,11 @@ import { buildCanvasLabelTree, sameLabel, type CanvasLabelInstance, type CanvasL
 
 const threadState = (thread: CanvasThread) => thread.status === 'resolved' ? 'resolved' : thread.messages.at(-1)?.author === 'agent' ? 'replied' : 'open'
 
-export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], onThread, hideThreads = false }: {
+export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], onThread, onExport, hideThreads = false }: {
   frames: CanvasFrame[]; annotations: CanvasAnnotation[]; reports: CanvasLabelReports; selected: CanvasLabelRef | null
   onHover: (label: CanvasLabelRef | null) => void; onSelect: (label: CanvasLabelInstance) => void
   hideThreads?: boolean; threads?: CanvasThread[]; queued?: WebPanePendingNote[]; onThread?: (thread: CanvasThread) => void
+  onExport?: (frame: CanvasFrame, anchor: HTMLElement) => void
   onFrame: (frame: CanvasFrame) => void; onNote: (note: CanvasAnnotation) => void
 }) {
   const [tab, setTab] = useState('components'), [filter, setFilter] = useState('')
@@ -21,6 +22,11 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
     className={`canvas-o-item${grouped ? ' in-group' : ''}${sameLabel(selected, instance) ? ' is-selected' : ''}`}
     aria-pressed={sameLabel(selected, instance)} onPointerEnter={() => onHover(instance)} onPointerLeave={() => onHover(null)}
     onFocus={() => onHover(instance)} onBlur={() => onHover(null)} onClick={() => onSelect(instance)}><i /><span>{instance.label.name}</span>{pinCount([instance]) > 0 && <em className="canvas-o-count" aria-label={`${pinCount([instance])} comments`}>💬 {pinCount([instance])}</em>}</button>
+  const frameRow = (frame: CanvasFrame, label: string, count?: number) => <div className="canvas-o-frame-row">
+    <button type="button" className="canvas-o-frame" onClick={() => onFrame(frame)}><span>{label}</span>{count !== undefined && <em className="canvas-o-count">{count}</em>}</button>
+    {onExport && <button type="button" className="canvas-o-export" aria-label={`Export ${frame.title} from overview`} title={`Export ${frame.title}`} aria-haspopup="menu"
+      onClick={(event) => onExport(frame, event.currentTarget.parentElement!)}>Export…</button>}
+  </div>
   return <aside className="canvas-overview" aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
     <div className="canvas-overview-tabs" role="tablist" aria-label="Overview">
       {(hideThreads ? ['components'] : ['components', 'threads']).map((name) => <button type="button" key={name} role="tab" id={`${id}-${name}`} aria-controls={`${id}-panel`}
@@ -33,7 +39,7 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
       </button>) : <p className="canvas-overview-empty">No comments yet</p> : <>
         {!filter.trim() && <>
           <div className="canvas-o-head">Start here</div>
-          {frames.filter((frame) => frame.focus).sort((a, b) => a.focus! - b.focus!).map((frame) => <button type="button" className="canvas-o-frame" key={frame.id} onClick={() => onFrame(frame)}><span>★ {frame.focus} · {frame.title}</span></button>)}
+          {frames.filter((frame) => frame.focus).sort((a, b) => a.focus! - b.focus!).map((frame) => <div key={frame.id}>{frameRow(frame, `★ ${frame.focus} · ${frame.title}`)}</div>)}
           <div className="canvas-o-head">Notes</div>
           {annotations.map((note) => <button type="button" className="canvas-o-item" key={note.id} onClick={() => onNote(note)}><i /><span>{note.title || note.text || note.items?.[0] || note.kind}</span></button>)}
         </>}
@@ -43,7 +49,7 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
           <i /><span>{name}</span><em className="canvas-o-count">×{instances.length}</em>{pinCount(instances) > 0 && <em className="canvas-o-count" aria-label={`${pinCount(instances)} comments`}>💬 {pinCount(instances)}</em>}</button>)}</>}
         <div className="canvas-o-head">Frames</div>
         {tree.frames.map(({ frame, count, groups }) => <div key={frame.id}>
-          <button type="button" className="canvas-o-frame" onClick={() => onFrame(frame)}><span>{frame.interactive ? '▶ ' : ''}{frame.title}</span><em className="canvas-o-count">{count}</em></button>
+          {frameRow(frame, `${frame.interactive ? '▶ ' : ''}${frame.title}`, count)}
           {groups.map(({ name, labels }) => <div key={name}>{name && <div className="canvas-o-group">{name}</div>}{labels.map((instance) => item(instance, !!name))}</div>)}
         </div>)}
         {filter.trim() && !tree.frames.length && <p className="canvas-overview-empty">No matching labels</p>}

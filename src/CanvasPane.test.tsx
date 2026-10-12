@@ -47,7 +47,7 @@ describe('CanvasPane', () => {
     fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 30, deltaY: 20 })
     const liveCamera = world.style.transform
     fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
-    fireEvent.click(screen.getByText('History'))
+    fireEvent.click(screen.getByLabelText('History'))
     const liveItem = await screen.findByRole('menuitemradio', { name: 'Live' })
     expect(liveItem).toHaveAttribute('aria-checked', 'true')
     const historyRequest = fetcher.mock.calls.find(([url]) => url.endsWith('/snapshots'))!
@@ -58,6 +58,10 @@ describe('CanvasPane', () => {
     expect(screen.getByTitle('Settings')).toHaveAttribute('src', `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/Settings.html?canvas-frame=settings`)
     expect(screen.getByRole('button', { name: 'Comment tool' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Export Settings from overview' }).at(-1)!)
+    expect(screen.getByRole('menuitem', { name: 'Download PNG' })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Download HTML' })).toBeEnabled()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
     expect(screen.getByRole('button', { name: 'Settings, regrouped status' })).toBeDisabled()
     expect(screen.queryByRole('tab', { name: 'Threads' })).not.toBeInTheDocument()
     expect(container.querySelector('.canvas-pin')).not.toBeInTheDocument()
@@ -447,4 +451,37 @@ it('registers Escape once through manifest refreshes and ignores outside targets
   expect(remove.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(0)
   fireEvent.keyDown(view.container.querySelector('.canvas-pane')!, { key: 'Escape' })
   expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'false')
+})
+
+it('opens the shared screen-space export menu from labels and overview, and closes on camera changes', async () => {
+  const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+  await screen.findByTitle('Settings')
+  const trigger = screen.getByRole('button', { name: 'Export Settings' })
+  fireEvent.click(trigger)
+  expect(screen.getByRole('menu', { name: 'Export Settings' }).closest('.canvas-world')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }))
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  const overviewExport = screen.getAllByRole('button', { name: 'Export Settings from overview' }).at(-1)!
+  fireEvent.click(overviewExport)
+  expect(screen.getByRole('menu', { name: 'Export Settings' }).closest('.canvas-export-overlay')).not.toBeNull()
+  expect(screen.getByRole('menuitem', { name: 'Download PNG' })).toBeEnabled()
+  fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 10, deltaY: 20 })
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  fireEvent.click(trigger); fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})
+it('keeps compact toolbar controls accessible at 380px', async () => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(380)
+  render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+  await screen.findByTitle('Settings')
+  for (const [name, icon] of [['Play', '▶'], ['Notes', '▤'], ['Comment tool', '💬']]) {
+    const button = screen.getByRole('button', { name })
+    expect(button).toHaveTextContent(icon)
+    expect(button).toHaveAttribute('title', name)
+    expect(button.textContent).not.toContain(name)
+  }
+  expect(screen.getByLabelText('History')).toHaveTextContent('🕘')
+  expect(screen.getByLabelText('History')).toHaveAttribute('title', 'History')
+  expect(canvasPaneCss.match(/\.canvas-toolbar button\s*\{([^}]+)\}/)?.[1]).toMatch(/white-space:\s*nowrap/)
+  expect(canvasPaneCss.match(/\.canvas-toolbar-title\s*\{([^}]+)\}/)?.[1]).toMatch(/min-width:\s*0/)
 })

@@ -88,7 +88,7 @@ describe('canvas comments', () => {
     const { container } = mount()
     await screen.findByTitle('Settings')
     await waitFor(() => expect(container.querySelectorAll('.canvas-pin')).toHaveLength(2))
-    fireEvent.click(screen.getByText('History')); fireEvent.click(await screen.findByRole('menuitemradio', { name: /3 comments/ }))
+    fireEvent.click(screen.getByLabelText('History')); fireEvent.click(await screen.findByRole('menuitemradio', { name: /3 comments/ }))
     await screen.findByText(/Viewing snapshot from/)
     await waitFor(() => expect(screen.getByTitle('Settings').getAttribute('src')).toContain('/canvas-snapshots/'))
     expect(container.querySelector('.canvas-pin')).not.toBeInTheDocument(); expect(screen.queryByRole('tab', { name: 'Threads' })).not.toBeInTheDocument()
@@ -139,7 +139,7 @@ describe('canvas comments', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Pending queue revision is stale')
     expect(snapshot.notes).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Accounts section status' })).toHaveTextContent('Shipped')
-    expect(screen.getByText('1 queued ·')).toBeInTheDocument()
+    expect(screen.getByText('1 ·')).toBeInTheDocument()
   })
   it('comments on an entered frame through the parent hit-test overlay', async () => {
     const { container } = mount(), frame = await screen.findByTitle('Settings')
@@ -181,7 +181,7 @@ describe('canvas comments', () => {
     await draftPin(container)
     fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: '  Fix row  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
-    await screen.findByText('1 queued ·')
+    await screen.findByText('1 ·')
     const queued = calls.find((call) => call.url.endsWith('/pending') && call.init?.method === 'POST')!
     expect(queued.init?.headers).toMatchObject({ Authorization: 'Bearer owner' })
     expect(queued.body!.note).toMatchObject({ selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 }, comment: 'Fix row', canvas: { ...context, point: { x: expect.closeTo(25), y: expect.closeTo(35) } } })
@@ -276,7 +276,7 @@ describe('canvas comments', () => {
     mount(); await screen.findByTitle('Settings')
     snapshot = { ...snapshot, notes: [queuedNote()], revision: 4, knownUpTo: 1 }
     act(() => publishCanvasPendingChanged(id))
-    await screen.findByText('1 queued ·')
+    await screen.findByText('1 ·')
     failSend = true
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Pending queue revision is stale')
@@ -295,7 +295,7 @@ describe('canvas comments', () => {
     message(iframe, 'redline-queue', { payload }, window)
     expect(calls.filter((call) => call.url.endsWith('/pending/response'))).toHaveLength(0)
     message(iframe, 'redline-queue', { payload })
-    await screen.findByText('1 queued ·')
+    await screen.findByText('1 ·')
     const relay = calls.find((call) => call.url.endsWith('/pending/response'))!
     expect(relay.body).toMatchObject({ pageUrl: expect.stringContaining('/Settings.html?canvas-frame=settings'), response: { question: 'Ship?', answer: 'Yes' }, canvas: { frameId: 'settings', point: { x: 10, y: 20 }, frameTitle: 'Settings' } })
     await waitFor(() => expect(post.mock.calls.some((call) => call[0].type === 'redline-pending' && call[0].snapshot.controls.length === 1)).toBe(true))

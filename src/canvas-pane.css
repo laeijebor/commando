@@ -1,12 +1,12 @@
 .web-pane > .canvas-pane { grid-row: 1 / -1; }
-.canvas-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; font-size: 11px; }
-.canvas-toolbar { flex: none; display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-bottom: 1px solid var(--surface-hover); }
-.canvas-toolbar button { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 0 5px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-dim); font: inherit; cursor: pointer; }
+.canvas-pane { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; font-size: 11px; }
+.canvas-toolbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 3px 5px; white-space: nowrap; border-bottom: 1px solid var(--surface-hover); }
+.canvas-toolbar button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 0 3px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-dim); font: inherit; cursor: pointer; }
 .canvas-toolbar button:hover { color: var(--text); background: var(--surface-hover); }
 .canvas-toolbar button[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.canvas-toolbar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-soft); padding: 0 4px; }
-.canvas-toolbar-separator { width: 1px; height: 14px; background: var(--border-mid); margin: 0 3px; }
-.canvas-zoom { font-family: var(--mono); font-size: 10px; color: var(--text-soft); min-width: 38px; text-align: center; }
+.canvas-toolbar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-soft); padding: 0 2px; }
+.canvas-toolbar-separator { flex: none; width: 1px; height: 14px; background: var(--border-mid); margin: 0 2px; }
+.canvas-zoom { flex: none; font-family: var(--mono); font-size: 10px; color: var(--text-soft); min-width: 32px; text-align: center; }
 .canvas-viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 20px 20px; cursor: grab; touch-action: none; }
 .canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
 .canvas-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
@@ -89,7 +89,7 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-composer button { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer; }
 .canvas-comment-text { margin: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .canvas-reply-later { margin: 8px; font-size: 11px; color: var(--muted); }
-.canvas-queue { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding-left: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); white-space: nowrap; }
+.canvas-queue { flex: none; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding-left: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); white-space: nowrap; }
 .canvas-queue button { color: var(--accent); }
 .canvas-o-thread { display: grid; grid-template-columns: 1fr auto; gap: 4px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; color: var(--text); padding: 8px; cursor: pointer; }
 .canvas-o-thread span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
@@ -116,8 +116,17 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-menu-items button:disabled { opacity: .5; cursor: default; }
 .canvas-menu-items [aria-checked="true"] { color: var(--accent); }
 .canvas-menu-items span { padding: 7px; white-space: normal; }
-.canvas-frame-export { margin-left: auto; font-size: 16px; }
-.canvas-frame:has(.canvas-menu[open]) { z-index: 8; }
+.canvas-frame-export { flex: none; margin-left: auto; padding: 3px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-size: 16px; cursor: pointer; }
+
 .canvas-snapshot-banner { flex: none; padding: 7px 10px; color: var(--text); background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
 .canvas-snapshot-banner button { border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
 .canvas-pane.is-snapshot .canvas-frame-label { cursor: default; }
+
+.canvas-export-overlay { z-index: 20; }
+.canvas-export-popover { pointer-events: auto; right: auto; box-sizing: border-box; width: 190px; min-width: 0; max-width: calc(100% - 16px); max-height: calc(100% - 16px); cursor: default; }
+.canvas-o-frame-row { display: flex; align-items: center; min-width: 0; }
+.canvas-o-frame-row .canvas-o-frame { flex: 1; min-width: 0; }
+.canvas-o-export { flex: none; padding: 4px; margin-right: 4px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
+.canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
+
+.canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
