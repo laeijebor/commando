@@ -14,6 +14,8 @@ import {
   type ChatSubagentTranscript,
   type ChatTaskAction,
 } from '../../shared/agent-chat'
+import type { PrsApiClient } from '../prsApi'
+import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
@@ -60,6 +62,8 @@ export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
 
 function ChatColumn({
   chat,
+  paneId,
+  prsApi,
   connected,
   focused,
   onFocus,
@@ -76,6 +80,8 @@ function ChatColumn({
   flow,
 }: {
   chat: ChatState
+  paneId?: string
+  prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
   focused: boolean
@@ -238,6 +244,7 @@ function ChatColumn({
           <AgentSwitcher agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} onSelect={select} onTask={task} />
         </div>
       ) : null}
+      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} /> : null}
       <ChatComposer
         session={chat.session}
         hostConnected={connected && chat.hostConnected}

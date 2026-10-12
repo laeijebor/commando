@@ -682,6 +682,8 @@ export function TerminalPaneCard({
       <div className="terminal-pane-body has-worklog">
         {showChat && chat ? (
           <ChatPane
+            paneId={pane.id}
+            {...(prsApi ? { prsApi } : {})}
             chat={chat}
             connected={connected}
             focused={focused}

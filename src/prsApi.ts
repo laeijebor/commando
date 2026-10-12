@@ -1,6 +1,6 @@
-import type { NewStackedPr, PrStack, StackedPrResult } from '../shared/pr-stacks'
-import type { PanePrList, PrList, PrScope, PrStateFilter } from '../shared/pr-types'
-export type { PanePrList, PanePrSummary, PrList, PrScope, PrStateFilter, PrSummary, PrStatus, PrCheckState, PrCheckRun, PrChecks, PrReview } from '../shared/pr-types'
+import type { NewStackedPr, PrStack, StackedPrResult } from '../shared/pr-stacks.js'
+import type { PanePrList, PrAutofixStatus, PrList, PrScope, PrStateFilter } from '../shared/pr-types.js'
+export type { PanePrList, PanePrSummary, PrList, PrScope, PrStateFilter, PrSummary, PrStatus, PrCheckState, PrCheckRun, PrChecks, PrReview } from '../shared/pr-types.js'
 export type PrThreadExcerpt = { path: string | null; author: string | null; excerpt: string }
 export type PrThreads = { repo: string; number: number; threads: PrThreadExcerpt[]; truncated: boolean; fetchedAt: number }
 export type PrRepoOption = { nameWithOwner: string; pinned: boolean }
@@ -43,6 +43,10 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
   }
   return {
     storeKey,
+    autofixStatus: async (repo: string, number: number) =>
+      (await request<{ status: PrAutofixStatus | null }>(`/autofix?repo=${encodeURIComponent(repo)}&number=${number}`)).status,
+    setAutofix: async (repo: string, number: number, enabled: boolean, paneId: string) =>
+      (await request<{ status: PrAutofixStatus | null }>('/autofix', { method: 'PUT', body: JSON.stringify({ repo, number, enabled, paneId }) })).status,
     stack: async (repo: string, number: number) =>
       (await request<{ stack: PrStack }>(`/stack?repo=${encodeURIComponent(repo)}&number=${number}`)).stack,
     linkStack: async (repo: string, numbers: number[]) =>
@@ -52,11 +56,11 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     threadAction: async (repo: string, number: number, threadId: string, action: 'reply' | 'resolve' | 'reopen', body?: string) =>
       request<{ ok: true }>('/thread-action', { method: 'POST', body: JSON.stringify({ repo, number, threadId, action, ...(body !== undefined ? { body } : {}) }) }),
     conflicts: async (repo: string, number: number) =>
-      (await request<{ conflicts: import('../shared/pr-quick-look').PrConflicts }>(`/conflicts?repo=${encodeURIComponent(repo)}&number=${number}`)).conflicts,
+      (await request<{ conflicts: import('../shared/pr-quick-look.js').PrConflicts }>(`/conflicts?repo=${encodeURIComponent(repo)}&number=${number}`)).conflicts,
     details: async (repo: string, number: number) =>
-      (await request<{ details: import('../shared/pr-quick-look').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
+      (await request<{ details: import('../shared/pr-quick-look.js').PrDetails }>(`/details?repo=${encodeURIComponent(repo)}&number=${number}`)).details,
     diff: async (repo: string, number: number) =>
-      (await request<{ diff: import('../shared/pr-quick-look').PrRemoteDiff }>(`/diff?repo=${encodeURIComponent(repo)}&number=${number}`)).diff,
+      (await request<{ diff: import('../shared/pr-quick-look.js').PrRemoteDiff }>(`/diff?repo=${encodeURIComponent(repo)}&number=${number}`)).diff,
     renderDiff: async (path: string, patch: string, width: number) =>
       (await request<{ ansi: string }>('/diff-render', { method: 'POST', body: JSON.stringify({ path, patch, width }) })).ansi,
     merge: async (repo: string, number: number, headRefOid: string, baseRefName?: string) =>
