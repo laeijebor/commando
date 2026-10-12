@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
+import { publishCanvasSpotlights, publishCanvasChange, publishCanvasThreadsChanged, publishCanvasPendingChanged, publishCanvasRefresh } from './webPanesApi'
 import type { ClientMessage, CommandoSnapshot, ServerMessage } from '../shared/protocol'
 
 export type ConnectionPhase =
@@ -82,6 +83,7 @@ export function useDaemon(
       socket.addEventListener('open', () => {
         if (cancelled) return
         attempt = 0
+        publishCanvasRefresh()
         setConnection({
           phase: 'live',
           detail: 'Authenticated local stream',
@@ -92,7 +94,14 @@ export function useDaemon(
       socket.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return
         try {
-          receiveMessage(JSON.parse(event.data) as ServerMessage)
+          const message = JSON.parse(event.data) as ServerMessage
+          if (message.type === 'canvas_pending_changed') publishCanvasPendingChanged(message.webPaneId)
+          else if (message.type === 'canvas_threads_changed') publishCanvasThreadsChanged(message.webPaneId)
+          else if (message.type === 'canvas_changed') publishCanvasChange(message)
+          else {
+            if (message.type === 'web_panes') publishCanvasSpotlights(message.spotlightRequests ?? {})
+            receiveMessage(message)
+          }
         } catch {
           setConnection((current) => ({
             ...current,

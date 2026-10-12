@@ -43,6 +43,7 @@ import {
 import {
   MAX_PENDING_NOTES,
   MAX_WEB_PANE_URL_LENGTH,
+  MAX_WEB_PANE_TITLE_LENGTH,
   type WebPanePendingSnapshot,
 } from '../shared/protocol.js'
 import { WebPaneError } from './web-panes.js'
@@ -54,6 +55,7 @@ const SCREENCAST_MAX_DIMENSION = 2_560
 export const SCREENCAST_FALLBACK_AFTER_MS = 2_000
 /** captureScreenshot cadence while the fallback poller substitutes for the screencast. */
 export const SCREENCAST_POLL_INTERVAL_MS = 700
+const PAGE_TITLE_INTERVAL_MS = 250
 const MAX_VIEWPORT_DIMENSION = 8_192
 const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
@@ -339,6 +341,7 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
 }
 
 type CdpEventHandler = (params: Record<string, unknown>) => void
+type ScreenshotCdp = Pick<CdpConnection, 'send' | 'on' | 'close'>
 
 /**
  * Minimal CDP client over one page-target websocket: request/response
@@ -719,6 +722,8 @@ type TileTarget = {
   mainFrameId: string | null
   /** Default execution contexts keyed to their owning frame for binding admission. */
   executionContextFrames: Map<number, string>
+  pageTitle: string | null
+  titleTimer: ReturnType<typeof setTimeout> | null
   /** Last accepted main-document question inventory. */
   questionSnapshot: RedlinePageQuestionSnapshot
   /** True only while the main-frame document is accepted by the tile URL policy. */
@@ -749,6 +754,8 @@ export type ChromiumEngineOptions = {
   onExternalNavigation: (webPaneId: string, url: string) => void
   /** Called when a tile's CDP connection (or the whole browser) went away. */
   onTargetDown?: (webPaneId: string) => void
+  /** Coalesced main-frame titles, independent of screencast subscribers. */
+  onPageTitle?: (webPaneId: string, title: string) => void
   /** Called when a tile page queues a component answer via the redline binding. */
   onPageResponse?: (webPaneId: string, response: RedlinePageResponse, pageUrl: string) => void
   /**
@@ -818,6 +825,54 @@ export class ChromiumEngine {
 
   hasTile(webPaneId: string): boolean {
     return this.tiles.has(webPaneId)
+  }
+
+  /** A temporary page, with no tile, review binding, or canvas frame script. */
+  async screenshot(url: string, width: number, height: number,
+    connect: (url: string, timeoutMs: number) => Promise<ScreenshotCdp> = CdpConnection.open,
+  ): Promise<Buffer> {
+    if (![width, height].every((size) => Number.isFinite(size) && size > 0 && size <= MAX_VIEWPORT_DIMENSION)) {
+      throw new WebPaneError(400, `PNG dimensions must be between 1 and ${MAX_VIEWPORT_DIMENSION}`)
+    }
+    let browser: BrowserSession | undefined, targetId: string | undefined, contextId: string | undefined, page: ScreenshotCdp | undefined
+    let expired = false
+    const check = () => { if (expired) throw new WebPaneError(504, 'PNG export timed out after 15s') }
+    const cleanup = () => {
+      page?.close(); page = undefined
+      if (browser && targetId) { browser.cdp.sendAndForget('Target.closeTarget', { targetId }); targetId = undefined }
+      if (browser && contextId) { browser.cdp.sendAndForget('Target.disposeBrowserContext', { browserContextId: contextId }); contextId = undefined }
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { expired = true; cleanup(); reject(new WebPaneError(504, 'PNG export timed out after 15s')) }, 15_000)
+    })
+    const capture = async () => {
+      try {
+        browser = await this.ensureBrowser(); check()
+        const context = await browser.cdp.send('Target.createBrowserContext', { disposeOnDetach: true })
+        if (typeof context.browserContextId !== 'string') throw new WebPaneError(502, 'Chromium did not return an export context')
+        contextId = context.browserContextId; check()
+        const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, newWindow: true, background: false })
+        if (typeof created.targetId !== 'string') throw new WebPaneError(502, 'Chromium did not return a screenshot target')
+        targetId = created.targetId; check()
+        page = await connect(`ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`, 15_000); check()
+        await page.send('Page.enable'); check()
+        await page.send('Emulation.setDeviceMetricsOverride', { width: Math.ceil(width), height: Math.ceil(height), deviceScaleFactor: 2, mobile: false }); check()
+        const loaded = new Promise<void>((resolve) => page!.on('Page.loadEventFired', () => resolve()))
+        const escapedUrl = url.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
+        const wrapper = `<html><head><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{border:0;display:block}</style></head><body><iframe sandbox="allow-scripts" width="${Math.ceil(width)}" height="${Math.ceil(height)}" src="${escapedUrl}"></iframe></body></html>`
+        const navigation = await page.send('Page.navigate', { url: `data:text/html;charset=utf-8,${encodeURIComponent(wrapper)}` }); check()
+        if (navigation.errorText) throw new WebPaneError(502, `PNG navigation failed: ${navigation.errorText}`)
+        await loaded; check()
+        // Wait for fonts and a paint after load; external pages that never settle hit the overall deadline.
+        await page.send('Runtime.evaluate', { expression: 'document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))', awaitPromise: true }); check()
+        const result = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); check()
+        if (typeof result.data !== 'string') throw new WebPaneError(502, 'Chromium returned no PNG data')
+        return Buffer.from(result.data, 'base64')
+      } finally { cleanup() }
+    }
+    try { return await Promise.race([capture(), timeout]) }
+    finally { clearTimeout(timer); cleanup() }
   }
 
   async cdpInfo(webPaneId: string, url: string): Promise<{ target: string; devtoolsFrontendUrl: string }> {
@@ -991,7 +1046,9 @@ export class ChromiumEngine {
             // A real frame may have raced in while the screenshot was taken;
             // it wins, and the poller is already stopped.
             if (tile.gotRealFrame) return
-            const frame: ScreencastFrame = { data, format: 'png', metadata: {} }
+            const frame: ScreencastFrame = {
+              data, format: 'png', metadata: {},
+            }
             tile.lastFrame = frame
             for (const sink of tile.sinks) sink(frame)
           })
@@ -1240,6 +1297,7 @@ export class ChromiumEngine {
   /** Removed from the map first, so the socket close is not reported as the target going down. */
   private closeTarget(tile: TileTarget): void {
     this.tiles.delete(tile.webPaneId)
+    if (tile.titleTimer) clearTimeout(tile.titleTimer)
     this.stopScreencastFallback(tile)
     tile.cdp.close()
     this.browser?.cdp.sendAndForget('Target.closeTarget', { targetId: tile.targetId })
@@ -1315,6 +1373,7 @@ export class ChromiumEngine {
     session.cdp.close()
     for (const [webPaneId, tile] of [...this.tiles]) {
       this.tiles.delete(webPaneId)
+      if (tile.titleTimer) clearTimeout(tile.titleTimer)
       tile.cdp.close()
       this.options.onTargetDown?.(webPaneId)
     }
@@ -1396,6 +1455,8 @@ export class ChromiumEngine {
       mainFrameUrl: 'about:blank',
       mainFrameId: null,
       executionContextFrames: new Map(),
+      pageTitle: null,
+      titleTimer: null,
       questionSnapshot: EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
       pendingSnapshotPageReady: false,
       gotRealFrame: false,
@@ -1406,6 +1467,33 @@ export class ChromiumEngine {
       lastFrame: resumeFrame,
       lastUsed: ++this.useCounter,
     }
+    const updateTitle = (title: string) => {
+      if (this.disposed || this.tiles.get(webPaneId) !== tile) return
+      const pageTitle = title.slice(0, MAX_WEB_PANE_TITLE_LENGTH)
+      if (pageTitle === tile.pageTitle) return
+      tile.pageTitle = pageTitle
+      if (tile.titleTimer) return
+      tile.titleTimer = setTimeout(() => {
+        tile.titleTimer = null
+        this.options.onPageTitle?.(webPaneId, tile.pageTitle ?? '')
+      }, PAGE_TITLE_INTERVAL_MS)
+    }
+    // The initial binding can precede frame/context admission. Read the main
+    // document again after load, even if its title never changes afterwards.
+    const readTitle = () => {
+      void cdp.send('Runtime.evaluate', { expression: 'document.title', returnByValue: true })
+        .then((result) => {
+          const value = (result as { result?: { value?: unknown } }).result?.value
+          if (typeof value === 'string') updateTitle(value)
+        })
+        .catch(() => { /* Navigation can destroy the execution context. */ })
+    }
+    cdp.on('Page.loadEventFired', readTitle)
+    cdp.on('Runtime.bindingCalled', (params) => {
+      if (params.name !== '__commandoPageTitle' || typeof params.payload !== 'string' ||
+          typeof params.executionContextId !== 'number' || tile.executionContextFrames.get(params.executionContextId) !== tile.mainFrameId) return
+      updateTitle(params.payload)
+    })
     cdp.on('Page.screencastFrame', (params) => {
       const sessionId = params.sessionId
       if (typeof sessionId === 'number') {
@@ -1419,7 +1507,7 @@ export class ChromiumEngine {
       const frame: ScreencastFrame = {
         data,
         format: 'png',
-        metadata: (params.metadata ?? {}) as Record<string, unknown>,
+        metadata: params.metadata as Record<string, unknown> ?? {},
       }
       tile.lastFrame = frame
       for (const sink of tile.sinks) sink(frame)
@@ -1432,6 +1520,9 @@ export class ChromiumEngine {
     cdp.on('Page.frameNavigated', (params) => {
       const frame = params.frame as { id?: string; parentId?: string; url?: string } | undefined
       if (!frame || frame.parentId || typeof frame.url !== 'string') return
+      if (tile.titleTimer) clearTimeout(tile.titleTimer)
+      tile.titleTimer = null
+      tile.pageTitle = null
       if (typeof frame.id === 'string') tile.mainFrameId = frame.id
       tile.questionSnapshot = EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT
       this.options.onPageQuestions?.(
@@ -1448,12 +1539,14 @@ export class ChromiumEngine {
         typeof params.url !== 'string'
       ) return
       this.handleMainFrameNavigation(tile, params.url)
+      readTitle()
       this.options.onPageQuestions?.(webPaneId, tile.questionSnapshot, params.url)
     })
     cdp.on('Page.domContentEventFired', () => {
       this.pushPendingSnapshot(tile)
     })
     cdp.onClose(() => {
+      if (tile.titleTimer) clearTimeout(tile.titleTimer)
       this.stopScreencastFallback(tile)
       if (this.tiles.get(webPaneId) !== tile) return
       this.tiles.delete(webPaneId)
@@ -1484,6 +1577,10 @@ export class ChromiumEngine {
     })
     cdp.on('Runtime.executionContextsCleared', () => tile.executionContextFrames.clear())
     await cdp.send('Runtime.enable')
+    await cdp.send('Runtime.addBinding', { name: '__commandoPageTitle' })
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
+      "(()=>{if(window.top!==window)return;let last;const report=()=>{if(document.title!==last){last=document.title;window.__commandoPageTitle(last)}};const observe=()=>{if(!document.head)return;new MutationObserver(report).observe(document.head,{subtree:true,childList:true,characterData:true});report()};if(document.head)observe();else document.addEventListener('DOMContentLoaded',observe,{once:true})})()",
+    })
     await cdp.send('Runtime.addBinding', { name: REDLINE_BINDING_NAME })
     cdp.on('Runtime.bindingCalled', (params) => {
       if (params.name !== REDLINE_BINDING_NAME) return

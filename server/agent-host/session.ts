@@ -742,7 +742,9 @@ export class AgentSession {
 
   answer(requestId: string, answer: ChatAnswer): boolean {
     const request = this.pending.get(requestId)
-    if (!request || request.requestKind !== (answer.kind === 'approval' ? 'approval' : 'question')) return false
+    // A question dismissed on the island or phone arrives as a denial.
+    const dismissed = request?.requestKind === 'question' && answer.kind === 'approval' && answer.decision === 'deny'
+    if (!request || (!dismissed && request.requestKind !== (answer.kind === 'approval' ? 'approval' : 'question'))) return false
     this.pending.delete(requestId)
     if (answer.kind === 'question') {
       request.resolve({ behavior: 'allow', updatedInput: { questions: request.input.questions, answers: answer.answers } })
@@ -755,7 +757,7 @@ export class AgentSession {
         ...(answer.decision === 'allow_always' && request.suggestions ? { updatedPermissions: request.suggestions as never } : {}),
       })
     }
-    this.emitItems(this.mapper.resolveRequest(requestId, answer))
+    this.emitItems(this.mapper.resolveRequest(requestId, dismissed ? { kind: 'cancelled', reason: 'Dismissed' } : answer))
     if (this.pending.size === 0 && this.info.status === 'waiting') this.setStatus('running')
     return true
   }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneGitStats } from './PaneGitStats'
@@ -66,4 +66,12 @@ describe('PaneGitStats', () => {
       .toBeVisible()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
+})
+
+it('selects Changes through the supplied panel action without opening a dialog', async () => {
+  const onOpenChanges = vi.fn()
+  render(<PaneGitStats paneId="%1" panePath="/repo" connected onOpenChanges={onOpenChanges} api={apiWithSummary({ isRepo: true, target: 'main', files: [{ path: 'a', status: 'M', additions: 1, deletions: 0, binary: false }] })} />)
+  fireEvent.click(await screen.findByRole('button', { name: /Git changes/ }))
+  expect(onOpenChanges).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

@@ -53,6 +53,7 @@ export class WebPaneFeedbackStore {
     private readonly onDrain: (webPaneId: string) => void = () => undefined,
     private readonly now: () => number = Date.now,
     private readonly releaseAttachment: (attachmentId: string) => void = () => undefined,
+    private readonly onAck: (webPaneId: string, deliveryKeys: string[]) => void = () => undefined,
   ) {
     const currentTime = this.now()
     for (const record of this.journal.scanDeliveryKeys(currentTime)) {
@@ -219,6 +220,7 @@ export class WebPaneFeedbackStore {
     if (effective <= state.ackedUpTo) return
     const acknowledged = state.notes.filter((entry) => entry.id <= effective)
     this.journal.appendAck(webPaneId, effective)
+    this.onAck(webPaneId, acknowledged.flatMap(({ note }) => note.deliveryKey ? [note.deliveryKey] : []))
     state.ackedUpTo = effective
     state.notes = state.notes.filter((entry) => entry.id > effective)
     for (const entry of acknowledged) {

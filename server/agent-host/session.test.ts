@@ -144,6 +144,16 @@ describe('AgentSession', () => {
     expect(await pending).toEqual({ behavior: 'allow', updatedInput: { questions, answers: { 'Which?': 'B' } } })
   })
 
+  it('takes a denial for a question as dismissing it, but not an approval', async () => {
+    const { fake, session, items } = started()
+    const questions = [{ question: 'Which?', multiSelect: false, options: [{ label: 'A', description: '' }] }]
+    const pending = fake.canUseTool('AskUserQuestion', { questions }, signalOptions('q2'))
+    expect(session.answer('q2', { kind: 'approval', decision: 'allow' })).toBe(false)
+    expect(session.answer('q2', { kind: 'approval', decision: 'deny', message: 'The user dismissed the question.' })).toBe(true)
+    expect(await pending).toEqual({ behavior: 'deny', message: 'The user dismissed the question.' })
+    expect(items.get('request-q2')).toMatchObject({ status: 'interrupted', answer: { kind: 'cancelled', reason: 'Dismissed' } })
+  })
+
   it('denies open requests and interrupts the SDK on interrupt', async () => {
     const { fake, session, items } = started()
     const pending = fake.canUseTool('Write', { file_path: '/work/a' }, signalOptions('r2'))

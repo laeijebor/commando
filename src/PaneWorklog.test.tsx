@@ -36,6 +36,15 @@ afterEach(() => {
 })
 
 describe('PaneWorklog', () => {
+  it.each(['queued', 'resuming', 'failed'] as const)('reports %s resume attention while Session is hidden', (state) => {
+    const onAttentionChange = vi.fn()
+    const resume: AgentResume = { targetId: 'target', paneId: brief.paneId, provider: 'claude', command: 'claude --resume session', state, updatedAt: 1 }
+    const view = render(<PaneWorklog brief={brief} paneLabel="Tests" fullWidth visible={false} resume={resume} onAttentionChange={onAttentionChange} />)
+    expect(onAttentionChange).toHaveBeenLastCalledWith(brief.paneId, true, state === 'failed')
+    view.rerender(<PaneWorklog brief={brief} paneLabel="Tests" fullWidth visible={false} resume={{ ...resume, state: 'resumed' }} onAttentionChange={onAttentionChange} />)
+    expect(onAttentionChange).toHaveBeenLastCalledWith(brief.paneId, false, false)
+  })
+
   it('shows saved history as inactive until fresh hooks reconnect', () => {
     const view = render(<PaneWorklog brief={brief} paneLabel="Tests" hookConnected={false} />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))

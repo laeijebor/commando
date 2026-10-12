@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
+import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
   MAX_CHAT_IMAGES,
@@ -23,6 +23,7 @@ import {
 import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
 import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
+import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
 import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable } from './ComposerControls'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
@@ -38,8 +39,11 @@ import {
   type ComposerTrigger,
   type PullRequestOption,
 } from './composerTriggers'
+import { StashMenu } from './StashMenu'
+import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from './timelineRows'
 import { Button } from './ui/button'
+import { useComposerStash, type StashedDraft } from './useComposerStash'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -493,6 +497,53 @@ export function ChatComposer({
     }))
   }
 
+  const clearDraft = () => {
+    for (const attachment of attachments) release(attachment)
+    setAttachments([])
+    setAttachError(null)
+    setDraft('')
+    updateTrigger(null)
+  }
+
+  // A draft taken from the stash goes before anything typed since, with its images as fit.
+  const latestAttachments = useRef(attachments)
+  latestAttachments.current = attachments
+  const bringBack = ({ text, images }: StashedDraft) => {
+    if (text) {
+      pendingCaret.current = text.length
+      setDraft((current) => [text, current.trim()].filter(Boolean).join('\n\n'))
+    }
+    if (!images.length) return
+    const fit = fitAttachments(latestAttachments.current.length, images.length)
+    if (fit.error) setAttachError(fit.error)
+    const restored = images.slice(0, fit.accepted).map((ref) => ({
+      key: `stash-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name: ref.name ?? 'image',
+      previewUrl: chatImageUrl(ref.id),
+      ref,
+    }))
+    setAttachments((current) => [...restored, ...current])
+  }
+
+  const stashMenuId = useId()
+  const stash = useComposerStash({
+    session,
+    draft,
+    images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])),
+    uploading: attachments.some((attachment) => !attachment.ref),
+    clear: clearDraft,
+    bringBack,
+    setError: setAttachError,
+  })
+  const stashNow = useNow(stash.menuOpen)
+  // The stash list and the `/`, `@` and `#` menus share the space; the stash list wins.
+  const triggerMenuOpen = menuOpen && !stash.menuOpen
+  const openStashMenu = () => {
+    updateTrigger(null)
+    stash.openMenu(!stash.menuOpen)
+    textarea.current?.focus()
+  }
+
   // Each send's draft is kept by its request id, so a refusal puts back what it refused
   // even after later follow-ups were sent.
   const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[] }>())
@@ -582,16 +633,13 @@ export function ChatComposer({
       sentDrafts.current.set(requestId, { text, images })
       window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
     }
-    for (const attachment of attachments) release(attachment)
-    setAttachments([])
-    setAttachError(null)
-    setDraft('')
-    updateTrigger(null)
+    clearDraft()
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
-    if (menuOpen && trigger) {
+    if (stash.onKeyDown(event)) return
+    if (triggerMenuOpen && trigger) {
       if (items.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault()
         const index = active ? items.indexOf(active) : -1
@@ -612,6 +660,7 @@ export function ChatComposer({
         return
       }
     }
+    if (handleLineKey(event, event.currentTarget)) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit(event.metaKey || event.ctrlKey)
@@ -708,7 +757,18 @@ export function ChatComposer({
             ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
             : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
         ) : null}
-        {menuOpen && trigger ? (
+        {stash.menuOpen ? (
+          <StashMenu
+            id={stashMenuId}
+            entries={stash.entries}
+            activeId={stash.activeId}
+            paneId={session.paneId}
+            now={stashNow}
+            onHighlight={stash.setActiveId}
+            onRestore={stash.restore}
+            onRemove={stash.remove}
+          />
+        ) : triggerMenuOpen && trigger ? (
           <ComposerMenu
             id={menuId}
             label={MENU_LABELS[trigger.kind]}
@@ -755,7 +815,10 @@ export function ChatComposer({
             syncTrigger(event.target)
           }}
           onSelect={(event) => syncTrigger(event.currentTarget)}
-          onBlur={() => updateTrigger(null)}
+          onBlur={() => {
+            updateTrigger(null)
+            if (stash.menuOpen) stash.openMenu(false)
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder={!hostConnected
@@ -770,9 +833,9 @@ export function ChatComposer({
                     ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
                     : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
           aria-label="Message Claude"
-          aria-controls={menuOpen ? menuId : undefined}
+          aria-controls={stash.menuOpen ? stashMenuId : triggerMenuOpen ? menuId : undefined}
           aria-autocomplete="list"
-          aria-activedescendant={menuOpen && active ? `${menuId}-${active.key}` : undefined}
+          aria-activedescendant={stash.menuOpen ? (stash.activeId ? `${stashMenuId}-${stash.activeId}` : undefined) : triggerMenuOpen && active ? `${menuId}-${active.key}` : undefined}
           className="chat-composer-input block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
@@ -801,6 +864,22 @@ export function ChatComposer({
             <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
+            {stash.entries.length ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                aria-expanded={stash.menuOpen}
+                aria-haspopup="listbox"
+                title="Stashed drafts (Ctrl+Shift+S). Ctrl+S stashes a draft, or brings back the newest on an empty composer"
+                disabled={disabled}
+                // Keep focus (and the caret) in the textarea.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={openStashMenu}
+              >
+                <Archive aria-hidden="true" />
+                {stash.entries.length} stashed
+              </Button>
+            ) : null}
           </span>
           {session.contextUsage ? (
             <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />

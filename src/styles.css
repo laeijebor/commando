@@ -1346,10 +1346,6 @@ kbd {
   overflow: hidden;
 }
 
-.terminal-pane-body.has-worklog {
-  grid-template-columns: minmax(120px, 1fr) auto;
-}
-
 .terminal-pane-body > .terminal-source-grid,
 .terminal-pane-body > .terminal-find-shell,
 .terminal-pane-body > .terminal-chat-shell {
@@ -3282,6 +3278,7 @@ body.is-resizing-hud-pinned-note {
 }
 
 .agent-card {
+  position: relative;
   width: 100%;
   min-width: 0;
   display: grid;
@@ -3300,9 +3297,24 @@ body.is-resizing-hud-pinned-note {
 }
 
 .agent-card:hover,
-.agent-card:focus-visible {
+.agent-card:has(> .agent-card-open:focus-visible) {
   border-color: var(--border-strong);
   background: var(--surface-soft);
+}
+
+/* Covers the card so a click anywhere opens the pane; answer buttons sit above it. */
+.agent-card-open {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.agent-card-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .agent-card.status-needs_input {
@@ -3481,6 +3493,83 @@ body.is-resizing-hud-pinned-note {
   font-size: 9px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.agent-request .agent-request-prompt {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 400;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.agent-request-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.agent-request-button {
+  padding: 2px 7px;
+  border: 1px solid var(--border-mid);
+  border-radius: 5px;
+  color: var(--text-soft);
+  background: var(--surface-soft);
+  font-size: 8.5px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.agent-request-button:hover:not(:disabled),
+.agent-request-button:focus-visible {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.agent-request-button.primary {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.agent-request-button.primary:hover:not(:disabled),
+.agent-request-button.primary:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 86%, white);
+}
+
+.agent-request-button.deny {
+  border-color: rgba(255, 141, 137, 0.3);
+  color: var(--red);
+  background: rgba(255, 141, 137, 0.08);
+}
+
+.agent-request-button.deny:hover:not(:disabled),
+.agent-request-button.deny:focus-visible {
+  border-color: rgba(255, 141, 137, 0.5);
+  color: var(--red);
+  background: rgba(255, 141, 137, 0.14);
+}
+
+.agent-request-button:disabled {
+  opacity: 0.55;
+}
+
+.agent-request-error {
+  flex-basis: 100%;
+  color: var(--red);
+  font-size: 8.5px;
+  line-height: 1.35;
 }
 
 .agent-recap {
@@ -4554,6 +4643,7 @@ body.is-resizing-hud-pinned-note {
 }
 
 .side-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 0 0 var(--side-panel-width, 50%);
@@ -4610,11 +4700,11 @@ body.is-resizing-hud-pinned-note {
 .side-panel-tab-body { position: absolute; inset: 0; display: flex; min-width: 0; min-height: 0; }
 .side-panel-tab-body[hidden] { display: none; }
 .side-panel-tab-body > .web-pane { flex: 1; min-width: 0; }
-.side-panel-empty { padding: 24px 16px; color: var(--text-soft); font-size: 12px; }
-.side-panel-empty div, .side-panel-empty form { display: flex; gap: 6px; margin-top: 8px; }
-.side-panel-empty button, .side-panel-empty input { border: 1px solid var(--border-mid); border-radius: 3px; padding: 5px 8px; background: var(--surface-raised); color: var(--text); font: inherit; }
-.side-panel-empty button { cursor: pointer; }
-.side-panel-empty input { min-width: 0; flex: 1; }
+.side-panel-add-menu { position: absolute; top: 26px; right: 6px; z-index: 3; padding: 8px; border: 1px solid var(--border-mid); background: var(--surface-raised); color: var(--text-soft); font-size: 12px; }
+.side-panel-add-menu div, .side-panel-add-menu form { display: flex; gap: 6px; margin-top: 8px; }
+.side-panel-add-menu button, .side-panel-add-menu input { border: 1px solid var(--border-mid); border-radius: 3px; padding: 5px 8px; background: var(--surface-raised); color: var(--text); font: inherit; }
+.side-panel-add-menu button { cursor: pointer; }
+.side-panel-add-menu input { min-width: 0; flex: 1; }
 .pane-tab-count { flex-shrink: 0; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .pane-tab-count.has-new { color: var(--accent); }
 
@@ -4628,3 +4718,24 @@ body.is-resizing-hud-pinned-note {
 
 .window-terminal-grid[hidden], .side-panel-splitter[hidden], .side-panel[hidden] { display: none; }
 .window-panel-layout.is-panel-maximized .side-panel { flex: 1 1 auto; }
+
+/* Built-in tabs share the panel's existing tab strip and rail. */
+.side-panel-tab.first-web-tab { margin-left: 5px; border-left: 1px solid var(--border-mid); }
+.side-panel-counts { display: inline-flex; gap: 4px; font: 10px var(--mono); }
+.side-panel-counts .added { color: var(--green); }
+.side-panel-counts .deleted { color: var(--red); }
+.side-panel-rail { display: flex; flex-direction: column; align-items: center; }
+.side-panel-rail .side-panel-expand { position: relative; }
+.side-panel-rail .side-panel-new { position: absolute; right: 5px; top: 5px; }
+.pane-worklog.is-panel { width: 100%; flex: 1; border-left: 0; }
+.panel-pr-summary { width: 100%; overflow: auto; padding: 12px; }
+.panel-pr-comparison { width: 100%; min-height: 0; display: flex; flex-direction: column; }
+.panel-pr-summary > button, .panel-pr-comparison > button { padding: 8px; border: 0; color: var(--text); background: var(--surface-hover); cursor: pointer; }
+.panel-pr-comparison > .git-diff-view { flex: 1; }
+.terminal-pane .pane-heading { min-width: 80px; }
+.pane-tab-count { flex-shrink: 1; overflow: hidden; }
+@container (max-width: 480px) { .pane-tab-count-detail { display: none; } }
+@container (max-width: 360px) { .pane-tab-count { display: none; } }
+
+.side-panel-new.is-warning { background: var(--amber); }
+.side-panel-add { flex-shrink: 0; }

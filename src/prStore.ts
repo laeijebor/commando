@@ -246,7 +246,7 @@ export function usePanePrs(
   const subscribe = useCallback((listener: () => void) => (
     enabled ? store.subscribePane(paneId, background, listener) : () => undefined
   ), [background, enabled, paneId, store])
-  const getSnapshot = useCallback(() => enabled ? store.paneSnapshot(paneId) : EMPTY_PANE, [enabled, paneId, store])
+  const getSnapshot = useCallback(() => store.paneSnapshot(paneId), [enabled, paneId, store])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).list
 }
 
