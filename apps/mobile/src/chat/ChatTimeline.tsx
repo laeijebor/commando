@@ -1,4 +1,4 @@
-import { createContext, memo, use, useMemo, useState } from 'react'
+import { createContext, memo, use, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
@@ -52,26 +52,44 @@ export function ChatTimeline({ items, cwd, baseUrl, working }: {
     return working && !streaming && !liveWork ? [{ kind: 'working', id: 'working' }, ...entries] : entries
   }, [rows, working, streaming, liveWork])
   const context = useMemo(() => ({ baseUrl, cwd }), [baseUrl, cwd])
+  const list = useRef<FlatList<Entry>>(null)
+  // Inverted: offset 0 is the newest turn.
+  const [scrolledBack, setScrolledBack] = useState(false)
 
   return (
     <TimelineContext value={context}>
-      <FlatList
-        contentContainerStyle={styles.content}
-        data={data}
-        inverted
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        keyExtractor={(entry) => entry.id}
-        ListEmptyComponent={(
-          // An inverted list draws its empty view upside down too.
-          <View style={styles.empty}>
-            <Text style={[styles.emptyText, { color: theme.muted }]}>Ask Claude anything about this folder.</Text>
-          </View>
-        )}
-        renderItem={({ item }) => <Row entry={item} />}
-        style={styles.list}
-        testID="chat-timeline"
-      />
+      <View style={styles.list}>
+        <FlatList
+          contentContainerStyle={styles.content}
+          data={data}
+          inverted
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          keyExtractor={(entry) => entry.id}
+          ListEmptyComponent={(
+            // An inverted list draws its empty view upside down too.
+            <View style={styles.empty}>
+              <Text style={[styles.emptyText, { color: theme.muted }]}>Ask Claude anything about this folder.</Text>
+            </View>
+          )}
+          onScroll={(event) => setScrolledBack(event.nativeEvent.contentOffset.y > 240)}
+          ref={list}
+          renderItem={({ item }) => <Row entry={item} />}
+          scrollEventThrottle={100}
+          style={styles.list}
+          testID="chat-timeline"
+        />
+        {scrolledBack ? (
+          <Pressable
+            accessibilityLabel="Jump to the newest turn"
+            accessibilityRole="button"
+            onPress={() => list.current?.scrollToOffset({ offset: 0, animated: true })}
+            style={[styles.jump, { backgroundColor: withAlpha(theme.accent, 0.9) }]}
+          >
+            <Text style={[styles.jumpLabel, { color: theme.accentInk }]}>Jump to latest</Text>
+          </Pressable>
+        ) : null}
+      </View>
     </TimelineContext>
   )
 }
@@ -418,7 +436,9 @@ function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  list: { flex: 1 },
+  list: { flex: 1, minHeight: 0 },
+  jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
+  jumpLabel: { fontSize: 12.5, fontWeight: '700' },
   content: { paddingHorizontal: 14, paddingVertical: 10, flexGrow: 1 },
   // Inverted: this sits at the bottom, under the newest turn.
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center', transform: [{ scaleY: -1 }] },
