@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +9,8 @@ import { CanvasPane } from './CanvasPane'
 import { WebPaneCard } from './WebPaneCard'
 import { publishCanvasChange } from './webPanesApi'
 
+// Vitest skips CSS, so the layout contract is read from source.
+const canvasPaneCss = readFileSync(`${process.cwd()}/src/canvas-pane.css`, 'utf8')
 const artifactId = '0123456789abcdef'
 const example = {
   title: 'Settings board',
@@ -29,6 +33,23 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const push = (changed: string[], id = artifactId) => act(() => publishCanvasChange({ artifactId: id, changed }))
 describe('CanvasPane', () => {
+  it('spans the card grid and gives the viewport the remaining flex height', async () => {
+    const webPane: WebPane = { id: 'w-12345678', url: 'http://localhost/', content: { kind: 'canvas', artifactId, manifest: 'canvas.json' }, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', engine: 'webkit', status: 'open', openedBy: 'user', createdAt: 0 }
+    const { container } = render(<WebPaneCard webPane={webPane} onClose={vi.fn()} onConfirm={vi.fn()} />)
+    await screen.findByTitle('Settings')
+    const pane = container.querySelector('.web-pane > .canvas-pane')!
+    expect(pane.parentElement).toHaveClass('web-pane')
+    expect(pane.parentElement!.children).toHaveLength(1)
+    expect(pane.querySelector(':scope > .canvas-toolbar')).toBeInTheDocument()
+    expect(pane.querySelector(':scope > .canvas-viewport')).toBeInTheDocument()
+    expect(canvasPaneCss.match(/\.web-pane\s*>\s*\.canvas-pane\s*\{([^}]+)\}/)?.[1]).toMatch(/grid-row:\s*1\s*\/\s*-1/)
+    const paneRule = canvasPaneCss.match(/(?:^|})\s*\.canvas-pane\s*\{([^}]+)\}/)?.[1]
+    expect(paneRule).toMatch(/display:\s*flex/)
+    expect(paneRule).toMatch(/flex-direction:\s*column/)
+    const viewportRule = canvasPaneCss.match(/\.canvas-viewport\s*\{([^}]+)\}/)?.[1]
+    expect(viewportRule).toMatch(/flex:\s*1/)
+    expect(viewportRule).toMatch(/min-height:\s*0/)
+  })
   it('renders sections, status, frame roles, variants, notes and frame-target connectors', async () => {
     const title = vi.fn(), { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" artifactUrl="http://127.0.0.1:4410/redline/artifacts/0123456789abcdef/" onTitle={title} />)
     expect(await screen.findByText('[GIZMO-6094] Settings, regrouped')).toBeInTheDocument()

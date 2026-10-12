@@ -48,10 +48,18 @@ describe('commando-canvas CLI', () => {
     const body = JSON.parse(calls[2][calls[2].indexOf('--data') + 1])
     expect(body).toEqual({ url: 'http://127.0.0.1:4410/redline/artifacts/0123456789abcdef/', anchor: '%12', engine: 'webkit', content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'board.json' } })
   })
-  it.each([['canvas.json: must be valid JSON', '200'], ['canvas.json: not found', '404']])('does not open an unusable manifest: %s', async (error, status) => {
-    const f = await fixture([error], status), result = await run([f.artifact], f.env)
+  it.each([
+    ['canvas.json', 'canvas.json: must be valid JSON', '200'],
+    ['canvas.json', 'canvas.json: not found', '404'],
+    ['other.json', 'other.json: must be valid JSON', '200'],
+    ['other.json', 'other.json: not found', '200'],
+    ['other.json', 'other.json: not found', '404'],
+    ['other.json', 'canvas.json: must be valid JSON', '200'],
+  ])('does not open an unusable %s manifest: %s', async (manifest, error, status) => {
+    const f = await fixture([error], status), result = await run([f.artifact, '--manifest', manifest], f.env)
     expect(result.code).toBe(1)
-    expect(result.stderr).toContain(error)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain(error.replace(/^canvas\.json:/, manifest + ':'))
     expect((await readFile(f.calls, 'utf8')).trim().split('\n')).toHaveLength(2)
   })
   it('reports missing token and daemon-down errors', async () => {

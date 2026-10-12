@@ -47,9 +47,12 @@ artifact_url=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(proces
 request --get --data-urlencode "manifest=$manifest" "$base/api/redline/artifacts/$artifact_id/canvas"
 node -e '
   const result = JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
-  for (const error of result.errors) console.error("commando-canvas: " + error);
-  if (result.errors.some(error => error.startsWith("canvas.json:"))) process.exit(1);
-' "$body_file"
+  const manifest = process.argv[2];
+  // Shared parsing names root errors canvas.json even for custom manifests.
+  const errors = result.errors.map(error => error.startsWith("canvas.json:") ? manifest + error.slice("canvas.json".length) : error);
+  for (const error of errors) console.error("commando-canvas: " + error);
+  if (errors.some(error => error.startsWith(manifest + ":"))) process.exit(1);
+' "$body_file" "$manifest"
 body=$(node -e 'console.log(JSON.stringify({url:process.argv[1],anchor:process.argv[2],engine:"webkit",content:{kind:"canvas",artifactId:process.argv[3],manifest:process.argv[4]}}))' "$artifact_url" "$pane" "$artifact_id" "$manifest")
 request -X POST -H 'Content-Type: application/json' --data "$body" "$base/api/web-panes"
 node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).webPaneId)' "$body_file"
