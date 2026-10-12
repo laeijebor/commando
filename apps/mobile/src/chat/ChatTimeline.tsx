@@ -68,7 +68,6 @@ export function ChatTimeline({ items, cwd, baseUrl, working }: {
             <Text style={[styles.emptyText, { color: theme.muted }]}>Ask Claude anything about this folder.</Text>
           </View>
         )}
-        maintainVisibleContentPosition={{ minIndexForVisible: 1, autoscrollToTopThreshold: 48 }}
         renderItem={({ item }) => <Row entry={item} />}
         style={styles.list}
         testID="chat-timeline"

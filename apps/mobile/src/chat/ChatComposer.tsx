@@ -453,7 +453,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
 }
 
 const styles = StyleSheet.create({
-  wrap: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
+  wrap: { flexShrink: 0, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
   box: { borderWidth: 1, borderRadius: 20, overflow: 'hidden' },
   attachments: { gap: 8, paddingHorizontal: 12, paddingTop: 10 },
   thumb: { width: 56, height: 56 },

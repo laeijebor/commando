@@ -48,43 +48,45 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
   return (
     <View style={[styles.queue, { borderBottomColor: theme.border }]} testID="chat-queue">
       <Text style={[styles.queueNote, { color: theme.muted }]}>Queued · sent together when Claude's turn ends</Text>
-      {queue.map((queued) => (
-        <View key={queued.id} style={[styles.queued, { backgroundColor: theme.surfaceSoft }]}>
-          {editing?.id === queued.id ? (
-            <View style={styles.queuedEdit}>
-              <TextInput
-                accessibilityLabel="Edit queued message"
-                autoFocus
-                multiline
-                onChangeText={(text) => setEditing({ id: queued.id, text })}
-                style={[styles.queuedInput, { color: theme.text, borderColor: theme.borderMid, backgroundColor: theme.surface }]}
-                value={editing.text}
-              />
-              <View style={styles.queuedActions}>
-                <SmallButton
-                  disabled={!editing.text.trim()}
-                  label="Save"
-                  onPress={() => {
-                    if (editing.text.trim()) onChange({ action: 'edit', id: queued.id, text: editing.text })
-                    setEditing(null)
-                  }}
-                  primary
+      <ScrollView contentContainerStyle={styles.queueRows} keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.queueScroll}>
+        {queue.map((queued) => (
+          <View key={queued.id} style={[styles.queued, { backgroundColor: theme.surfaceSoft }]}>
+            {editing?.id === queued.id ? (
+              <View style={styles.queuedEdit}>
+                <TextInput
+                  accessibilityLabel="Edit queued message"
+                  autoFocus
+                  multiline
+                  onChangeText={(text) => setEditing({ id: queued.id, text })}
+                  style={[styles.queuedInput, { color: theme.text, borderColor: theme.borderMid, backgroundColor: theme.surface }]}
+                  value={editing.text}
                 />
-                <SmallButton label="Cancel" onPress={() => setEditing(null)} />
+                <View style={styles.queuedActions}>
+                  <SmallButton
+                    disabled={!editing.text.trim()}
+                    label="Save"
+                    onPress={() => {
+                      if (editing.text.trim()) onChange({ action: 'edit', id: queued.id, text: editing.text })
+                      setEditing(null)
+                    }}
+                    primary
+                  />
+                  <SmallButton label="Cancel" onPress={() => setEditing(null)} />
+                </View>
               </View>
-            </View>
-          ) : (
-            <>
-              <Text numberOfLines={2} style={[styles.queuedText, { color: theme.textSoft }]}>
-                {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{queued.text || '(images only)'}
-              </Text>
-              <IconButton disabled={disabled || !queued.text} icon="edit-2" label="Edit queued message" onPress={() => setEditing({ id: queued.id, text: queued.text })} />
-              <SmallButton disabled={disabled} icon="zap" label="Steer" onPress={() => onChange({ action: 'steer', id: queued.id })} />
-              <IconButton disabled={disabled} icon="x" label="Remove queued message" onPress={() => onChange({ action: 'remove', id: queued.id })} />
-            </>
-          )}
-        </View>
-      ))}
+            ) : (
+              <>
+                <Text numberOfLines={2} style={[styles.queuedText, { color: theme.textSoft }]}>
+                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{queued.text || '(images only)'}
+                </Text>
+                <IconButton disabled={disabled || !queued.text} icon="edit-2" label="Edit queued message" onPress={() => setEditing({ id: queued.id, text: queued.text })} />
+                <SmallButton disabled={disabled} icon="zap" label="Steer" onPress={() => onChange({ action: 'steer', id: queued.id })} />
+                <IconButton disabled={disabled} icon="x" label="Remove queued message" onPress={() => onChange({ action: 'remove', id: queued.id })} />
+              </>
+            )}
+          </View>
+        ))}
+      </ScrollView>
     </View>
   )
 }
@@ -310,6 +312,8 @@ function SmallButton({ label, icon, onPress, disabled, primary }: { label: strin
 const styles = StyleSheet.create({
   queue: { gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
   queueNote: { fontSize: 11.5 },
+  queueScroll: { maxHeight: 150, flexGrow: 0 },
+  queueRows: { gap: 6 },
   queued: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 10, paddingLeft: 10, paddingRight: 4, paddingVertical: 4 },
   queuedText: { flex: 1, fontSize: 14, lineHeight: 19 },
   queuedEdit: { flex: 1, gap: 6, paddingVertical: 4, paddingRight: 6 },

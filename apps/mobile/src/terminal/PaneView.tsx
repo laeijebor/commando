@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Dimensions,
   Keyboard,
   KeyboardAvoidingView,
   LayoutAnimation,
@@ -64,8 +65,7 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
   const theme = useTheme()
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
-  const body = useRef<View>(null)
-  const keyboard = useKeyboardOverlap(body)
+  const keyboard = useKeyboardOverlap()
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   return (
     <View style={styles.root}>
@@ -76,7 +76,7 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
         title={chat.session.title || context.title}
       />
       <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
-      <View ref={body} style={[styles.body, { paddingBottom: keyboard ?? 0 }]}>
+      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.body, { paddingBottom: keyboard.overlap ?? 0 }]}>
         <ChatErrorBoundary
           fallback={(error) => (
             <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
@@ -90,30 +90,46 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
 }
 
 /**
- * How much of `view` the keyboard covers, or null while it is down. The pane
- * sits under the stack's nav and above the tab bar, which KeyboardAvoidingView's
- * parent-relative frame can't see, so this measures the view on the page
- * (`measureInWindow` reports it relative to its screen here, not the window).
+ * How much of the pane's body the keyboard covers, or null while it is down.
+ * The body sits under the stack's nav and above the tab bar, which
+ * KeyboardAvoidingView's parent-relative frame can't see, so the gap between
+ * the body and the bottom of the window is measured on layout, and the
+ * overlap is the keyboard's height less that gap. (`measureInWindow` reports
+ * the body relative to its screen here, and a measure during the keyboard
+ * event can catch the app-switch animation's transform.)
  */
-function useKeyboardOverlap(view: React.RefObject<View | null>): number | null {
+function useKeyboardOverlap(): { ref: React.RefObject<View | null>; onLayout: () => void; overlap: number | null } {
+  const ref = useRef<View>(null)
+  const gap = useRef(0)
   const [overlap, setOverlap] = useState<number | null>(null)
+  const shown = useRef(false)
+  const onLayout = useCallback(() => {
+    // The padding changes the body's layout while the keyboard is up; the gap below it doesn't change.
+    if (shown.current) return
+    ref.current?.measure((_x, _y, _width, height, _pageX, pageY) => {
+      gap.current = Math.max(0, Dimensions.get('window').height - (pageY + height))
+    })
+  }, [])
   useEffect(() => {
+    const animate = (duration: number) => {
+      LayoutAnimation.configureNext(LayoutAnimation.create(duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+    }
     const show = Keyboard.addListener('keyboardWillShow', (event) => {
-      view.current?.measure((_x, _y, _width, height, _pageX, pageY) => {
-        LayoutAnimation.configureNext(LayoutAnimation.create(event.duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
-        setOverlap(Math.max(0, pageY + height - event.endCoordinates.screenY))
-      })
+      shown.current = true
+      animate(event.duration)
+      setOverlap(Math.max(0, Dimensions.get('window').height - event.endCoordinates.screenY - gap.current))
     })
     const hide = Keyboard.addListener('keyboardWillHide', (event) => {
-      LayoutAnimation.configureNext(LayoutAnimation.create(event.duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+      shown.current = false
+      animate(event.duration)
       setOverlap(null)
     })
     return () => {
       show.remove()
       hide.remove()
     }
-  }, [view])
-  return overlap
+  }, [])
+  return { ref, onLayout, overlap }
 }
 
 /**

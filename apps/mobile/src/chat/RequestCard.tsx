@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import * as Haptics from 'expo-haptics'
 
 import type { ChatAnswer, ChatItem } from '@commando/agent-chat'
@@ -30,13 +30,17 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
   const answer = (value: ChatAnswer) => {
     if (sent) return
     setSent(true)
+    Keyboard.dismiss()
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     onAnswer(value)
   }
   const locked = disabled || sent
   return (
-    <View
+    // A tap outside its buttons puts the keyboard away, since the card can cover the timeline.
+    <Pressable
       accessibilityLabel={request.title}
+      accessible={false}
+      onPress={Keyboard.dismiss}
       style={[styles.card, { backgroundColor: theme.surface, borderColor: withAlpha(theme.amber, 0.45) }]}
       testID="chat-request"
     >
@@ -63,7 +67,7 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
               </View>
             </>
           )}
-    </View>
+    </Pressable>
   )
 }
 
@@ -138,16 +142,16 @@ function Questions({ request, disabled, onAnswer }: { request: RequestItem; disa
 }
 
 const styles = StyleSheet.create({
-  card: { borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, gap: 8, marginHorizontal: 12, marginBottom: 8 },
+  card: { flexShrink: 1, minHeight: 0, borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, gap: 8, marginHorizontal: 12, marginBottom: 8 },
   head: { flexDirection: 'row', alignItems: 'center' },
   kicker: { flex: 1, fontSize: 11.5, fontWeight: '700', letterSpacing: 1 },
   count: { fontSize: 12 },
   title: { fontSize: 16, fontWeight: '700', lineHeight: 21 },
-  detail: { maxHeight: 120, borderWidth: 1, borderRadius: 10 },
+  detail: { flexShrink: 1, minHeight: 36, overflow: 'hidden', maxHeight: 120, borderWidth: 1, borderRadius: 10 },
   detailText: { fontFamily: MONO, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 10, paddingVertical: 8 },
   row: { flexDirection: 'row', gap: 6 },
   choice: { flex: 1, paddingHorizontal: 4, paddingVertical: 9, minHeight: 40 },
-  questions: { maxHeight: 360 },
+  questions: { flexShrink: 1, maxHeight: 360 },
   questionsContent: { gap: 12 },
   question: { gap: 8 },
   header: { fontSize: 11, fontWeight: '700', letterSpacing: 1 },
