@@ -1074,7 +1074,7 @@ describe('HUD tabs', () => {
     })
 
     it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {
-      stubPr()
+      const pr = stubPr()
       await renderAppWithSnapshot()
       if (maximized === 'terminal') fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`) as HTMLElement).getByRole('button', { name: 'Maximize pane' }))
       if (maximized === 'other built-in') { selectSession(pane.id); fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' })) }
@@ -1086,7 +1086,8 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
       expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
-      await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/prs/diff?repo=acme%2Fwidgets&number=12', expect.any(Object)))
+      expect(within(panel).getByText('Structural diff')).toBeVisible()
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/git/summary?paneId=%2513&target=${pr.baseRefOid}&head=${pr.headRefOid}`, expect.any(Object)))
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
       // Return to the HUD and quick look explicitly selects Description on the mounted view.
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
@@ -1099,13 +1100,22 @@ describe('HUD tabs', () => {
     })
     it.each(['Description', 'Diff'] as const)('jumps across sessions and selects the owning PR on %s without sending built-in keys to tmux', async (subTab) => {
       Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
-      stubPr(true, remotePane)
+      const pr = stubPr(true, remotePane)
       await renderAppWithSnapshot(snapshotAcrossSessions())
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
       fireEvent.click(await screen.findByRole('button', { name: subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
       const panel = document.querySelector('[id="panel-tab-panel:%21:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
+      if (subTab === 'Diff') {
+        expect(within(panel).getByText('Structural diff')).toBeVisible()
+        await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => {
+          const url = new URL(String(input), 'http://localhost')
+          return url.pathname === '/api/git/summary' && url.searchParams.get('paneId') === remotePane.id
+            && url.searchParams.get('target') === pr.baseRefOid && url.searchParams.get('head') === pr.headRefOid
+        })).toBe(true))
+        expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes('/api/prs/diff'))).toBe(false)
+      }
       expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused')
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: remotePane.id }) }))

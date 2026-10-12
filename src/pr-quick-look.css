@@ -538,16 +538,16 @@
 .pr-quick-embedded .pr-quick-diff header span { overflow-wrap: anywhere; }
 /* Keep the header outside the patch's horizontal scroll area. */
 .pr-quick-embedded .pr-quick-diff > pre { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 14px 16px; font: 12px/1.45 var(--terminal-mono); }
-.pr-quick-embedded .pr-quick-diff .pr-quick-patch > .pr-quick-patch-line { display: grid; grid-template-columns: 4ch 4ch 1fr; gap: 1ch; }
-.pr-quick-embedded .pr-quick-line-number { color: var(--muted-dim); text-align: right; user-select: none; }
-.pr-quick-embedded .pr-quick-diff .hunk { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .pr-quick-embedded .pr-quick-repo { overflow-wrap: anywhere; }
 .pr-quick-embedded .pr-quick-comment header > * { min-width: 0; overflow-wrap: anywhere; }
 .pr-quick-embedded .pr-stack-panel { overflow-wrap: anywhere; }
 
 @container pr-quick-panel (min-width: 720px) {
-  .pr-quick-embedded .pr-quick-panel.is-diff,
   .pr-quick-embedded .pr-conflict-files-layout { flex-direction: row; }
   .pr-quick-embedded .pr-quick-files { flex: 0 0 240px; max-height: none; border-right: 1px solid var(--border); border-bottom: 0; }
   .pr-quick-embedded .pr-quick-diff { min-height: 0; }
 }
+
+.pr-quick-embedded .pr-quick-panel.is-comparison { display: flex; flex-direction: column; padding: 0; }
+.pr-quick-embedded .is-comparison > .git-diff-view { flex: 1; height: auto; }
+.pr-quick-embedded .git-diff-error { display: block; }

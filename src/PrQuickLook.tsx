@@ -32,29 +32,6 @@ function MarkdownBody({ body }: { body: string }) {
   )
 }
 
-/** Panel diffs use HTML rows so terminal decoration cannot dictate their width. */
-function PanelDiffPatch({ patch }: { patch: string }) {
-  let oldLine: number | undefined
-  let newLine: number | undefined
-  return <pre className="pr-quick-patch" aria-label="PR diff">
-    {patch.split('\n').map((line, index) => {
-      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
-      if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]) }
-      const kind = line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'added' : line.startsWith('-') ? 'removed' : 'context'
-      const content = kind !== 'hunk' && !line.startsWith('\\') && line.length > 0
-      const before = content && kind !== 'added' ? oldLine : undefined
-      const after = content && kind !== 'removed' ? newLine : undefined
-      if (before !== undefined) oldLine = before + 1
-      if (after !== undefined) newLine = after + 1
-      return <span className={`pr-quick-patch-line ${kind}`} key={index}>
-        <span className="pr-quick-line-number" aria-hidden="true">{before}</span>
-        <span className="pr-quick-line-number" aria-hidden="true">{after}</span>
-        <span>{line || ' '}</span>
-      </span>
-    })}
-  </pre>
-}
-
 function ConversationComment({
   entry,
   prUrl,
@@ -146,10 +123,10 @@ export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(
   )
 }
 
-export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied, embedded = false }: PrQuickLookProps & {
+export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied, diffView }: PrQuickLookProps & {
   closeButton?: ReactNode
   visible?: boolean
-  embedded?: boolean
+  diffView?: ReactNode
   onSelectionApplied?(): void
 }) {
   const id = useId()
@@ -231,7 +208,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
   }, [api, repo, pr.number, references, detailRevision, retry, visible, details])
 
   useEffect(() => {
-    if (!visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
+    if (diffView !== undefined || !visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
     let active = true
     setDiffError('')
     api
@@ -249,10 +226,10 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     return () => {
       active = false
     }
-  }, [tab, api, repo, pr.number, references, diff, retry, visible])
+  }, [tab, api, repo, pr.number, references, diff, retry, visible, diffView !== undefined])
 
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
-  const error = tab === 'Diff' ? diffError : detailError
+  const error = tab === 'Diff' ? (diffView !== undefined ? '' : diffError) : detailError
   const checks = details?.checks ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? []
   const knownTarget =
     detailSnapshot?.api === api && detailSnapshot.references === references
@@ -325,8 +302,8 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
             <strong>
               Merges into <code>{mergeTarget}</code>, not main.
             </strong>{' '}
-            The Diff tab still compares against <code>origin/main</code>; conflict inspection uses{' '}
-            <code>{mergeTarget}</code>.
+            {diffView === undefined ? <>The Diff tab still compares against <code>origin/main</code>; conflict inspection uses{' '}
+              <code>{mergeTarget}</code>.</> : <>Diff and conflict inspection use this PR’s merge target.</>}
           </div>
         ) : null}
         {hasConflicts ? (
@@ -366,13 +343,13 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
               }}
             >
               {name}
-              {name === 'Diff' ? <small>vs origin/main</small> : null}
+              {name === 'Diff' && diffView === undefined ? <small>vs origin/main</small> : null}
               {name === 'Conflicts' && hasConflicts ? <small className="fail">!</small> : null}
             </button>
           ))}
         </div>
         <div
-          className={`pr-quick-panel${tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
+          className={`pr-quick-panel${tab === 'Diff' && diffView !== undefined ? ' is-comparison' : tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
           role="tabpanel"
           id={`${id}-panel`}
           aria-labelledby={`${id}-tab-${tab}`}
@@ -463,7 +440,8 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
               repo={repo} number={pr.number} api={api} onChanged={refreshConversation}
               renderComment={(entry, options) => <ConversationComment entry={entry} prUrl={pr.url} {...options} />} />
           </div>
-          {tab === 'Diff' && !error ? (
+          {tab === 'Diff' && diffView !== undefined ? diffView : null}
+          {tab === 'Diff' && diffView === undefined && !error ? (
             diff ? (
               <>
                 <aside className="pr-quick-files">
@@ -519,8 +497,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
                   </header>
                   {file ? (
                     file.patch !== null ? (
-                      embedded ? <PanelDiffPatch key={`${references}:${file.path}`} patch={file.patch} />
-                        : <PrDiffPatch key={`${references}:${file.path}`} path={file.path} patch={file.patch} api={api} />
+                      <PrDiffPatch key={`${references}:${file.path}`} path={file.path} patch={file.patch} api={api} />
                     ) : (
                       <p>
                         GitHub did not provide a text patch for this file (binary or too large).{' '}

@@ -42,6 +42,7 @@ type Props = {
   initialSummary: GitDiffSummary | null
   comparison?: GitDiffComparison
   visible?: boolean
+  errorHint?: ReactNode
 }
 
 export type GitDiffComparison = {
@@ -138,7 +139,8 @@ function statusLabel(file: GitChangedFile): { letter: string; className: string;
   }
 }
 
-export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true }: Props) {
+export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true, errorHint }: Props) {
+  const comparisonVisible = !comparison || visible
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -306,6 +308,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   }, [paneId, initialSummary, selectedTarget, comparison?.head, summary?.target])
 
   useEffect(() => {
+    if (!comparisonVisible) return
     const request = ++generation.current
     const revision = summaryRevision.current
     const key = JSON.stringify([paneId, selectedTarget, comparison?.head])
@@ -332,7 +335,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         if (request === generation.current) setSummaryLoading(false)
       })
     return () => { generation.current++ }
-  }, [paneId, selectedTarget, comparison?.head, refresh])
+  }, [paneId, selectedTarget, comparison?.head, refresh, comparisonVisible])
 
   const files = summary?.files ?? []
   const deferredFileFilter = useDeferredValue(fileFilter)
@@ -370,6 +373,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
 
   const selectedFileStats = JSON.stringify(files.find((file) => file.path === selectedFile) ?? null)
   useEffect(() => {
+    if (!comparisonVisible) return
     if (!selectedFile) {
       diffRequestKey.current = null
       setDiffLoading(false)
@@ -413,9 +417,10 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         if (request === diffGeneration.current) setDiffLoading(false)
       })
     return () => { diffGeneration.current++ }
-  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion, selectedFileStats])
+  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion, selectedFileStats, comparisonVisible])
 
   useEffect(() => {
+    if (!comparisonVisible) return
     const query = diffSearch.trim()
     const request = ++searchGeneration.current
     if (searchScope !== 'all' || query === '') {
@@ -454,7 +459,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       window.clearTimeout(timeout)
       if (searchGeneration.current === request) searchGeneration.current += 1
     }
-  }, [paneId, selectedTarget, comparison?.head, diffSearch, searchScope])
+  }, [paneId, selectedTarget, comparison?.head, diffSearch, searchScope, comparisonVisible])
 
   useEffect(() => {
     setActiveDiffMatch(0)
@@ -818,7 +823,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
             </div>
             <div className="git-diff-file-scroll">
               {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
-              {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}</div> : null}
+              {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}{errorHint}</div> : null}
               {!summaryLoading && !summaryError && files.length === 0
                 ? <div className="git-diff-status">No changes vs {summary?.target ?? 'target'}</div>
                 : null}
@@ -933,7 +938,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
             </div>
             <div className="git-diff-output" ref={outputRef}>
               {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}
-              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}</div> : null}
+              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}{errorHint}</div> : null}
               {!diffLoading && !diffError && selectedFile && diff.trim() === ''
                 ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
                 : null}

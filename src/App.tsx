@@ -3656,7 +3656,7 @@ export function App() {
                       if (identity) {
                         const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
                         return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
-                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} source={source} api={prsApi} visible={visible} selection={prSelections[tab.id]}
+                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
                             onSelectionApplied={() => setPrSelections((current) => {
                               if (current[tab.id] !== prSelections[tab.id]) return current
                               const next = { ...current }; delete next[tab.id]; return next

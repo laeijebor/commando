@@ -241,6 +241,30 @@ it('keeps an explicit branch comparison when footer stats use the same label for
 })
 
 describe('GitDiffView engine and layout toggles', () => {
+  it('defers comparison summary, file and all-file search requests while hidden', async () => {
+    vi.useFakeTimers()
+    const api = fakeApi()
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: null,
+      comparison: { base: 'base-tip', head: 'head-tip', baseLabel: 'main', headLabel: 'feature' } }
+    let view!: ReturnType<typeof render>
+    await act(async () => { view = render(<GitDiffView {...props} visible={false} />) })
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'DIFF' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(api.summary).not.toHaveBeenCalled()
+    expect(api.fileDiff).not.toHaveBeenCalled()
+    expect(api.search).not.toHaveBeenCalled()
+    await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+    expect(api.summary).toHaveBeenCalledWith('%1', 'base-tip', 'head-tip')
+    expect(api.fileDiff).toHaveBeenCalledWith('%1', 'a.ts', expect.objectContaining({ target: 'base-tip', head: 'head-tip' }))
+    await act(async () => { view.rerender(<GitDiffView {...props} visible={false} />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(api.search).not.toHaveBeenCalled()
+    await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+    expect(api.search).toHaveBeenCalledExactlyOnceWith('%1', 'DIFF', 'base-tip', 'head-tip')
+  })
+
   it('re-requests the diff with the chosen engine and layout, and persists them', async () => {
     const { api } = renderView()
     const fileDiff = api.fileDiff as ReturnType<typeof vi.fn>
