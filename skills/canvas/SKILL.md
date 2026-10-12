@@ -184,3 +184,23 @@ Always re-read `canvas.json` (or the custom manifest path) before rewriting it.
 Keep user-moved x/y positions and user-chosen section statuses, along with
 unknown keys. Do not overwrite layout from an earlier in-memory copy. Agents
 edit the file directly; the layout/status daemon endpoints require owner auth.
+
+## History and frame export
+
+History lists the newest 30 snapshots, with Live at the top. The daemon takes
+one when comments are sent (Send, Send this, user thread follow-ups and section
+status notes), so agents can refer to “the previous round”. Identical consecutive
+content keeps the existing snapshot. Selecting a round opens its saved files
+read-only: overview, pan and zoom still work; commenting, dragging, status edits,
+Play and threads are unavailable. Back to live restores the live camera.
+
+Snapshots include the manifest and local folder files, skipping hidden entries,
+node_modules, symlinks and files over 5 MiB. If the folder exceeds 50 MiB, a
+partial snapshot keeps only manifests and frame sources within that cap; assets
+may be missing. History expires with the artifact registration.
+
+Each frame label's ⤓ menu offers Download HTML (the source file only, without
+bundled assets) and Download PNG (the live frame at its declared size, rendered
+at 2× resolution). PNG requires the daemon's managed Chromium; missing-browser
+errors explain how to install or configure it. PNG is available in Live; HTML
+can also be downloaded from a snapshot. Export omits the canvas frame script.

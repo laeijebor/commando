@@ -104,3 +104,20 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-thread-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 8px; }
 .canvas-spotlight { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 6; width: max-content; }
 .canvas-frame.is-spotlight { outline: 3px solid var(--accent); outline-offset: 4px; }
+
+.canvas-menu { position: relative; flex: none; }
+.canvas-menu > summary { cursor: pointer; list-style: none; padding: 3px 7px; border-radius: 4px; white-space: nowrap; }
+.canvas-menu > summary::-webkit-details-marker { display: none; }
+.canvas-menu > summary:hover { background: var(--surface-hover); }
+.canvas-menu[open] { z-index: 8; }
+.canvas-menu-items { position: absolute; top: 100%; right: 0; display: grid; gap: 2px; min-width: 180px; max-height: 300px; overflow: auto; padding: 5px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 30px rgba(0,0,0,.35); color: var(--text); font-size: 12px; }
+.canvas-menu-items button, .canvas-menu-items a { display: block; padding: 7px; border: 0; text-align: left; text-decoration: none; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.canvas-menu-items button:hover, .canvas-menu-items a:hover { background: var(--surface-hover); }
+.canvas-menu-items button:disabled { opacity: .5; cursor: default; }
+.canvas-menu-items [aria-checked="true"] { color: var(--accent); }
+.canvas-menu-items span { padding: 7px; white-space: normal; }
+.canvas-frame-export { margin-left: auto; font-size: 16px; }
+.canvas-frame:has(.canvas-menu[open]) { z-index: 8; }
+.canvas-snapshot-banner { flex: none; padding: 7px 10px; color: var(--text); background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
+.canvas-snapshot-banner button { border: 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.canvas-pane.is-snapshot .canvas-frame-label { cursor: default; }

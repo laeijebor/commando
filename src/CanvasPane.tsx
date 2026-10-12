@@ -1,3 +1,6 @@
+import { CanvasHistory, canvasSnapshotTime } from './CanvasHistory'
+import { CanvasFrameExport } from './CanvasFrameExport'
+import type { CanvasSnapshot } from '../shared/canvas-snapshot'
 import { CanvasSpotlightToast } from './CanvasSpotlightToast'
 import type { CanvasSpotlightRequest } from '../shared/protocol'
 import { CanvasComposer } from './CanvasComposer'
@@ -30,6 +33,10 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
 }) {
   const [result, setResult] = useState<CanvasManifestResult>(EMPTY)
+  const [snapshot, setSnapshot] = useState<CanvasSnapshot | null>(null)
+  const liveView = useRef<{ result: CanvasManifestResult; camera: CanvasCamera } | null>(null)
+  const restoringCamera = useRef(false)
+  const readOnly = snapshot !== null
   const [loaded, setLoaded] = useState(false)
   const [camera, setCamera] = useState<CanvasCamera>({ x: 0, y: 0, scale: 1 })
   const [notesVisible, setNotesVisible] = useState(true)
@@ -53,7 +60,11 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const manifestRef = useRef(result.manifest)
   const titleCallback = useRef(onTitle)
   useLayoutEffect(() => { manifestRef.current = result.manifest; titleCallback.current = onTitle })
-  const baseUrl = artifactUrl ? new URL(`/redline/artifacts/${artifactId}/`, artifactUrl).toString() : `/redline/artifacts/${artifactId}/`
+  const resourceUrl = (path: string) => artifactUrl ? new URL(path, artifactUrl).toString() : path
+  const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
+  // Same-origin like the rest of the app's API calls; the daemon answers no CORS preflight.
+  const apiUrl = `/api/redline/artifacts/${artifactId}/canvas`
+  useEffect(() => { setSnapshot(null); liveView.current = null; restoringCamera.current = false }, [artifactId, manifestPath])
 
   const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections)
   const layout = useCanvasLayout(artifactId, manifestPath, token, setResult)
@@ -62,9 +73,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const interaction = useCanvasInteraction(result.manifest.frames, (frame) => {
     initialFit.current = true; setSelected(null); setHovered(null); flyTo(frameBounds(frame))
   }, `${artifactId}/${manifestPath}`)
-  const live = !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
-  const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight, `${artifactId}/${manifestPath}`)
-  const { reports, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, comments.relay, {
+  const live = !readOnly && !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
+  const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight, `${artifactId}/${manifestPath}/${snapshot?.id ?? 'live'}`)
+  const { reports, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
     live, onInput: (frameId, input) => {
       if (input.type === 'escape') { interaction.act({ type: 'escape' }); cancelFlight() }
       else if (input.type === 'goto') interaction.act({ type: 'goto', id: input.target })
@@ -77,7 +88,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       }
     },
   })
-  useEffect(() => { forwardPending(comments.snapshot) }, [comments.snapshot, forwardPending, revisions, result.manifest.frames])
+  useEffect(() => { forwardPending(readOnly ? { notes: [], knownUpTo: 0, dropped: 0 } : comments.snapshot) }, [readOnly, comments.snapshot, forwardPending, revisions, result.manifest.frames])
   useEffect(() => {
     ++hitSequence.current
     const escape = (event: KeyboardEvent) => {
@@ -102,11 +113,12 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     let disposed = false
     let sequence = 0
     const abort = new AbortController()
-    initialFit.current = false
+    initialFit.current = restoringCamera.current
+    restoringCamera.current = false
     setLoaded(false)
     setRevisions({})
     const load = async () => {
-      if (layout.writing.current) { layout.reloadAfterWrite.current = true; return }
+      if (!readOnly && layout.writing.current) { layout.reloadAfterWrite.current = true; return }
       const request = ++sequence
       const epoch = layout.loadEpoch.current
       try {
@@ -114,8 +126,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         if (!response.ok) throw new Error(`${manifestPath}: could not load (${response.status})`)
         const parsed = parseCanvasManifest(await response.text())
         if (!disposed && request === sequence && epoch === layout.loadEpoch.current) {
-          layout.contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
-          const move = layout.overlay.current
+          if (!readOnly) layout.contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
+          const move = readOnly ? null : layout.overlay.current
           if (move) parsed.manifest.frames = parsed.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f)
           setResult(parsed); setLoaded(true); titleCallback.current?.(parsed.manifest.title || 'Canvas')
         }
@@ -126,7 +138,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     layout.reload.current = load
     void load()
     const unsubscribe = subscribeCanvasChanges(({ artifactId: changedArtifact, changed }) => {
-      if (changedArtifact !== artifactId) return
+      if (readOnly || changedArtifact !== artifactId) return
       const other = changed.filter((path) => path !== manifestPath)
       const frames = manifestRef.current.frames
       const unknown = other.some((path) => !frames.some((frame) => frame.src === path))
@@ -234,13 +246,13 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       if (!spotlightTarget.label && !spotlightTarget.labelId) setSpotlightTarget(null)
     }
   }, [spotlightTarget, loaded, reports, result.manifest.frames, flyTo])
-  const pins = canvasPins(comments.draft, comments.queued, comments.threads)
+  const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads)
   const activePin = pins.find((pin) => pin.id === comments.active)
   const activePoint = activePin ? canvasPinPoint(activePin, frames, camera) : null
   const activeNote = comments.queued.find((note) => `pending:${note.id}` === comments.active)
   const activeThread = comments.threads.find((thread) => thread.id === comments.active)
   const dropComment = async (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!commentMode || !webPaneId || feedbackBusy || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin, .canvas-note, .canvas-variant, .canvas-section-head')) return
+    if (readOnly || !commentMode || !webPaneId || feedbackBusy || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin, .canvas-note, .canvas-variant, .canvas-section-head')) return
     const rect = viewport.current!.getBoundingClientRect()
     const worldPoint = { x: (event.clientX - rect.left - camera.x) / camera.scale, y: (event.clientY - rect.top - camera.y) / camera.scale }
     const frame = [...frames].reverse().find((f) => worldPoint.x >= f.x && worldPoint.x < f.x + f.w && worldPoint.y >= f.y && worldPoint.y < f.y + f.h)
@@ -253,28 +265,42 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   }
   const endPan = () => { drag.current = null; setPanning(false) }
 
-  return <div className="canvas-pane" ref={pane}>
+  const selectSnapshot = (next: CanvasSnapshot | null) => {
+    if (feedbackBusy || layout.overlay.current || next?.id === snapshot?.id) return
+    if (next && !snapshot) liveView.current = { result, camera }
+    ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
+    drag.current = null; setPanning(false)
+    setSelected(null); setHovered(null)
+    if (!next && liveView.current) {
+      setResult(liveView.current.result); setCamera(liveView.current.camera); restoringCamera.current = true
+    } else setResult(EMPTY)
+    setLoaded(false); setSnapshot(next)
+  }
+
+  return <div className={`canvas-pane${readOnly ? ' is-snapshot' : ''}`} ref={pane}>
     <div className="canvas-toolbar" role="toolbar" aria-label="Canvas controls">
       <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
       <button type="button" aria-label="Zoom out" onClick={() => zoom(0.8)}>−</button>
       <output className="canvas-zoom" aria-label="Zoom">{Math.round(camera.scale * 100)}%</output>
       <button type="button" aria-label="Zoom in" onClick={() => zoom(1.25)}>+</button>
       <button type="button" onClick={() => { initialFit.current = true; fit() }}>Fit</button>
-      <button type="button" aria-label="Play" aria-pressed={interaction.state.playing} disabled={!frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶ Play</button>
+      <button type="button" aria-label="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶ Play</button>
       {interaction.state.playing && <button type="button" disabled={!interaction.state.history.length} onClick={() => interaction.act({ type: 'back' })}>Back</button>}
       <span className="canvas-toolbar-separator" />
       <button type="button" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>Notes</button>
-      <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={!webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
-      <CanvasQueueChip count={comments.queued.length} busy={feedbackBusy} onSend={comments.sendAll} />
+      <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
+      <CanvasQueueChip count={readOnly ? 0 : comments.queued.length} busy={feedbackBusy} onSend={comments.sendAll} />
+      <CanvasHistory apiUrl={`${apiUrl}/snapshots`} token={token} selected={snapshot} disabled={feedbackBusy} onSelect={selectSnapshot} />
       <span className="canvas-toolbar-title" title={title}>{title || 'Canvas'}</span>
       {onClose && <button type="button" aria-label="Close canvas tab" onClick={onClose}>×</button>}
     </div>
+    {snapshot && <div className="canvas-snapshot-banner" role="status">Viewing snapshot from {canvasSnapshotTime(snapshot.createdAt)} — <button type="button" onClick={() => selectSnapshot(null)}>Back to live</button>{snapshot.partial && <span> · Partial snapshot</span>}</div>}
     {loaded && result.errors.length > 0 && <div className="canvas-errors" role="alert"><strong>Canvas errors</strong><ul>{result.errors.map((error, i) => <li key={i}>{error}</li>)}</ul></div>}
     {comments.error && <div className="canvas-errors" role="alert">{comments.error}</div>}
     {layout.error && <div className="canvas-errors" role="alert">{layout.error}</div>}
     <div className="canvas-body">
-      {overviewVisible && <CanvasOverview frames={frames} annotations={annotations} reports={reports} selected={selected} onHover={setHovered}
-        threads={comments.threads} queued={comments.queued} onThread={(thread) => {
+      {overviewVisible && <CanvasOverview key={snapshot?.id ?? 'live'} hideThreads={readOnly} frames={frames} annotations={annotations} reports={reports} selected={selected} onHover={setHovered}
+        threads={readOnly ? [] : comments.threads} queued={readOnly ? [] : comments.queued} onThread={(thread) => {
           const frame = frames.find((f) => f.id === thread.frameId)
           if (!frame) return
           setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
@@ -304,16 +330,17 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         <div ref={world} className={`canvas-world${notesVisible ? '' : ' hide-notes'}`} style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}>
           {sectionBoxes.map(({ section, bounds }) => <div key={section.id} className="canvas-section" style={{ left: bounds.x, top: bounds.y, width: bounds.w, height: bounds.h }}>
             <div className="canvas-section-head" data-measure={`section:${section.id}`}><span className="canvas-chip">{section.ticket ? `[${section.ticket}] ` : ''}{section.title}</span>
-              <CanvasSectionStatus section={section} disabled={layout.busy || comments.busy || !webPaneId} onChange={(status) => {
+              <CanvasSectionStatus section={section} disabled={readOnly || layout.busy || comments.busy || !webPaneId} onChange={(status) => {
                 const frame = frames.find((f) => section.frames.includes(f.id))!
                 void layout.status(section, status, () => comments.sectionStatus(section, status, new URL(canvasFrameUrl(baseUrl, frame, revisions[frame.id]), window.location.href).href))
               }} />
             </div>
           </div>)}
           {frames.map((frame) => <div key={frame.id} className={`canvas-frame${frame.focus ? ' is-focus' : ''}${live === frame.id ? ' is-live' : ''}${spotlightFrame === frame.id ? ' is-spotlight' : ''}`} style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h }}
-            onDoubleClick={() => { if (!commentMode) interaction.act({ type: 'enter', id: frame.id }) }}>
-            <div className="canvas-frame-label" onPointerDown={(event) => { if (!commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, camera.scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
+            onDoubleClick={() => { if (!readOnly && !commentMode) interaction.act({ type: 'enter', id: frame.id }) }}>
+            <div className="canvas-frame-label" onPointerDown={(event) => { if (!readOnly && !commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, camera.scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
               {frame.platform && <i>[{frame.platform}]</i>}<b>{frame.title}</b>{frame.focus && <span className="canvas-badge focus">★ Focus {frame.focus}</span>}<span className={`canvas-badge ${frame.interactive ? 'live' : 'static'}`}>{frame.interactive ? '▶ Interactive' : 'Static'}</span>
+              <CanvasFrameExport key={`${baseUrl}/${frame.src}`} frame={frame} baseUrl={baseUrl} apiUrl={`${apiUrl}/frames`} manifest={manifestPath} token={token} snapshot={readOnly} />
               {live === frame.id && <span className="canvas-badge entered">Live — Esc to leave</span>}
             </div>
             <iframe ref={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" loading="lazy" onLoad={syncInteraction} src={canvasFrameUrl(baseUrl, frame, revisions[frame.id])} />
@@ -342,8 +369,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           onComment={comments.updateDraftComment}
           onQueue={(text) => { void comments.queueDraft(text, false) }} onSend={(text) => { if (activeNote) void comments.sendThis(activeNote); else void comments.queueDraft(text, true) }}
           onCancel={() => { ++hitSequence.current; comments.close() }} />}
-        <CanvasSpotlightToast webPaneId={webPaneId} token={token} onShow={setSpotlightTarget} />
-        <div className="canvas-hint" role="status" aria-label="Canvas hint">{interaction.state.hint || (commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? 'Drag to pan · Double-click to enter · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…')}</div>
+        {!readOnly && <CanvasSpotlightToast webPaneId={webPaneId} token={token} onShow={setSpotlightTarget} />}
+        <div className="canvas-hint" role="status" aria-label="Canvas hint">{interaction.state.hint || (commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? readOnly ? 'Snapshot · Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Drag to pan · Double-click to enter · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…')}</div>
       </div>
     </div>
   </div>

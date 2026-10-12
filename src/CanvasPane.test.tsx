@@ -34,6 +34,51 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const push = (changed: string[], id = artifactId) => act(() => publishCanvasChange({ artifactId: id, changed }))
 describe('CanvasPane', () => {
+  it('opens read-only history, keeps overview, ignores live updates and restores the live camera and tools', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    const snapshot = { id: '11111111-1111-1111-1111-111111111111', createdAt: Date.now(), comments: 3, partial: false, manifestTitle: 'Previous round' }
+    const previous = { ...example, title: 'Previous round', frames: example.frames.map((f) => ({ ...f, x: f.x + 300 })) }
+    fetcher.mockImplementation(async (url: string) => ({ ok: true, text: async () => JSON.stringify(url.includes('/canvas-snapshots/') ? previous : example), json: async () => ({ snapshots: [snapshot], notes: [], threads: [], knownUpTo: 0, dropped: 0 }) }))
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-history" token="owner" />)
+    await screen.findByTitle('Settings')
+    const world = container.querySelector('.canvas-world') as HTMLElement
+    fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 30, deltaY: 20 })
+    const liveCamera = world.style.transform
+    fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
+    fireEvent.click(screen.getByText('History'))
+    const liveItem = await screen.findByRole('menuitemradio', { name: 'Live' })
+    expect(liveItem).toHaveAttribute('aria-checked', 'true')
+    const historyRequest = fetcher.mock.calls.find(([url]) => url.endsWith('/snapshots'))!
+    expect(historyRequest[1].headers.Authorization).toBe('Bearer owner')
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /3 comments/ }))
+    expect(await screen.findByText(/Viewing snapshot from/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTitle('Settings').closest('.canvas-frame')).toHaveStyle({ left: '300px' }))
+    expect(screen.getByTitle('Settings')).toHaveAttribute('src', `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/Settings.html?canvas-frame=settings`)
+    expect(screen.getByRole('button', { name: 'Comment tool' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Settings, regrouped status' })).toBeDisabled()
+    expect(screen.queryByRole('tab', { name: 'Threads' })).not.toBeInTheDocument()
+    expect(container.querySelector('.canvas-pin')).not.toBeInTheDocument()
+    fireEvent.doubleClick(screen.getByTitle('Settings').closest('.canvas-frame')!)
+    expect(screen.getByTitle('Settings').closest('.canvas-frame')).not.toHaveClass('is-live')
+    const label = screen.getByTitle('Settings').closest('.canvas-frame')!.querySelector('.canvas-frame-label') as HTMLElement
+    label.setPointerCapture = vi.fn()
+    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 }); fireEvent.pointerMove(label, { pointerId: 1, clientX: 40, clientY: 40 }); fireEvent.pointerUp(label, { pointerId: 1 })
+    expect(label.setPointerCapture).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '★ 1 · Settings' }))
+    expect(world.style.transform).not.toBe(liveCamera)
+    const reads = fetcher.mock.calls.length, source = screen.getByTitle('Settings').getAttribute('src')
+    push(['Settings.html', 'canvas.json']); expect(fetcher).toHaveBeenCalledTimes(reads); expect(screen.getByTitle('Settings')).toHaveAttribute('src', source)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    await waitFor(() => expect(screen.getByTitle('Settings')).toHaveAttribute('src', `/redline/artifacts/${artifactId}/Settings.html?canvas-frame=settings`))
+    expect(world.style.transform).toBe(liveCamera)
+    expect(screen.queryByText(/Viewing snapshot from/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment tool' })).toBeEnabled(); expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled()
+    expect(screen.getByRole('tab', { name: 'Threads' })).toBeInTheDocument()
+  })
+
   it('enters only interactive frames, leaves on background/Esc, routes live wheel and suspends live input for comments', async () => {
     const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-m4" />)
     const settings = await screen.findByTitle('Settings'), accounts = screen.getByTitle('Accounts')

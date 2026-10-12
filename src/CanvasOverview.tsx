@@ -5,10 +5,10 @@ import { buildCanvasLabelTree, sameLabel, type CanvasLabelInstance, type CanvasL
 
 const threadState = (thread: CanvasThread) => thread.status === 'resolved' ? 'resolved' : thread.messages.at(-1)?.author === 'agent' ? 'replied' : 'open'
 
-export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], onThread }: {
+export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], onThread, hideThreads = false }: {
   frames: CanvasFrame[]; annotations: CanvasAnnotation[]; reports: CanvasLabelReports; selected: CanvasLabelRef | null
   onHover: (label: CanvasLabelRef | null) => void; onSelect: (label: CanvasLabelInstance) => void
-  threads?: CanvasThread[]; queued?: WebPanePendingNote[]; onThread?: (thread: CanvasThread) => void
+  hideThreads?: boolean; threads?: CanvasThread[]; queued?: WebPanePendingNote[]; onThread?: (thread: CanvasThread) => void
   onFrame: (frame: CanvasFrame) => void; onNote: (note: CanvasAnnotation) => void
 }) {
   const [tab, setTab] = useState('components'), [filter, setFilter] = useState('')
@@ -23,7 +23,7 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
     onFocus={() => onHover(instance)} onBlur={() => onHover(null)} onClick={() => onSelect(instance)}><i /><span>{instance.label.name}</span>{pinCount([instance]) > 0 && <em className="canvas-o-count" aria-label={`${pinCount([instance])} comments`}>💬 {pinCount([instance])}</em>}</button>
   return <aside className="canvas-overview" aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
     <div className="canvas-overview-tabs" role="tablist" aria-label="Overview">
-      {['components', 'threads'].map((name) => <button type="button" key={name} role="tab" id={`${id}-${name}`} aria-controls={`${id}-panel`}
+      {(hideThreads ? ['components'] : ['components', 'threads']).map((name) => <button type="button" key={name} role="tab" id={`${id}-${name}`} aria-controls={`${id}-panel`}
         aria-selected={tab === name} onClick={() => { setTab(name); onHover(null) }}>{name === 'components' ? 'Components' : 'Threads'}</button>)}
     </div>
     {tab === 'components' && <input className="canvas-overview-filter" aria-label="Filter labels" placeholder="Filter labels…" value={filter} onChange={(event) => { setFilter(event.target.value); onHover(null) }} />}

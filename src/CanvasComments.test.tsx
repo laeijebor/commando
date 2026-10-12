@@ -79,6 +79,30 @@ async function draftPin(container: HTMLElement) {
   return { iframe, post, request }
 }
 describe('canvas comments', () => {
+  it('hides pending/sent pins and threads and drops programmatic SDK queues while viewing history', async () => {
+    const history = { id: '11111111-1111-1111-1111-111111111111', createdAt: 10, comments: 3, partial: false, manifestTitle: 'Board' }
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => url.endsWith('/snapshots') ? Promise.resolve({ ok: true, json: async () => ({ snapshots: [history] }) }) : originalFetch(url, init)))
+    threads = [thread()]; snapshot = { ...snapshot, notes: [queuedNote()], knownUpTo: 1 }
+    const { container } = mount()
+    await screen.findByTitle('Settings')
+    await waitFor(() => expect(container.querySelectorAll('.canvas-pin')).toHaveLength(2))
+    fireEvent.click(screen.getByText('History')); fireEvent.click(await screen.findByRole('menuitemradio', { name: /3 comments/ }))
+    await screen.findByText(/Viewing snapshot from/)
+    await waitFor(() => expect(screen.getByTitle('Settings').getAttribute('src')).toContain('/canvas-snapshots/'))
+    expect(container.querySelector('.canvas-pin')).not.toBeInTheDocument(); expect(screen.queryByRole('tab', { name: 'Threads' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    const iframe = screen.getByTitle('Settings') as HTMLIFrameElement
+    const post = vi.spyOn(iframe.contentWindow!, 'postMessage')
+    message(iframe, 'labels', { labels: [{ name: 'Row', id: 'row', rect }] })
+    expect(post.mock.calls.find((call) => call[0].type === 'redline-pending')![0].snapshot.controls).toEqual([])
+    const payload = JSON.stringify({ type: 'response', question: 'Ship?', answer: 'Yes', queueKey: 'ship', selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 } })
+    message(iframe, 'redline-queue', { payload })
+    expect(calls.filter((call) => call.url.endsWith('/pending/response'))).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    await waitFor(() => expect(container.querySelectorAll('.canvas-pin')).toHaveLength(2))
+  })
+
   it('writes a section status and queues then sends its exact feedback/context without sending other queued notes', async () => {
     snapshot = { ...snapshot, knownUpTo: 1, revision: 1, notes: [queuedNote()] }
     mount(); await screen.findByTitle('Settings')
