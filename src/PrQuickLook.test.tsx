@@ -87,6 +87,17 @@ function setup(
 }
 
 describe('PR quick look', () => {
+  it('keeps the modal on the Delta renderer outside the embedded panel container', async () => {
+    const { api } = setup()
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: /Diff/ }))
+    const patch = await screen.findByLabelText('Delta syntax-highlighted diff')
+    expect(patch.closest('.pr-quick-modal')).toBe(screen.getByRole('dialog'))
+    expect(patch.closest('.pr-quick-embedded')).toBeNull()
+    expect(screen.queryByLabelText('PR diff')).not.toBeInTheDocument()
+    expect(api.renderDiff).toHaveBeenCalledWith('a.ts', '@@\n-old\n+new', 120)
+  })
+
   it('shows an actionable saved-but-refresh-failed error and retries reads without repeating the write', async () => {
     const entry = { id: '2:10', commentId: 10, kind: 'inline comment', author: 'Reviewer', body: 'Resolve this finding', url: '', createdAt: '',
       thread: { id: 'PRRT_10', commentId: 10, isResolved: false, viewerCanReply: true, viewerCanResolve: true, viewerCanUnresolve: true } }

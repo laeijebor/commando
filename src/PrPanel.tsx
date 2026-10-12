@@ -57,7 +57,7 @@ export function PrPanel({ paneId, source, api, visible, selection, onSelectionAp
   }
   return <div className="pr-quick-embedded">
     {error ? <p role="alert" className="pr-quick-message">{error} <button type="button" onClick={() => { void refresh() }}>Refresh PR</button></p> : null}
-    {pr ? <PrQuickLookView pr={pr} repo={source.repo} api={api} visible={visible} selection={selection} onSelectionApplied={onSelectionApplied} onRefresh={refresh} actions={<>
+    {pr ? <PrQuickLookView embedded pr={pr} repo={source.repo} api={api} visible={visible} selection={selection} onSelectionApplied={onSelectionApplied} onRefresh={refresh} actions={<>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.url).catch(() => undefined) }}>Copy URL</button>

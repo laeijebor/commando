@@ -32,6 +32,29 @@ function MarkdownBody({ body }: { body: string }) {
   )
 }
 
+/** Panel diffs use HTML rows so terminal decoration cannot dictate their width. */
+function PanelDiffPatch({ patch }: { patch: string }) {
+  let oldLine: number | undefined
+  let newLine: number | undefined
+  return <pre className="pr-quick-patch" aria-label="PR diff">
+    {patch.split('\n').map((line, index) => {
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+      if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]) }
+      const kind = line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'added' : line.startsWith('-') ? 'removed' : 'context'
+      const content = kind !== 'hunk' && !line.startsWith('\\') && line.length > 0
+      const before = content && kind !== 'added' ? oldLine : undefined
+      const after = content && kind !== 'removed' ? newLine : undefined
+      if (before !== undefined) oldLine = before + 1
+      if (after !== undefined) newLine = after + 1
+      return <span className={`pr-quick-patch-line ${kind}`} key={index}>
+        <span className="pr-quick-line-number" aria-hidden="true">{before}</span>
+        <span className="pr-quick-line-number" aria-hidden="true">{after}</span>
+        <span>{line || ' '}</span>
+      </span>
+    })}
+  </pre>
+}
+
 function ConversationComment({
   entry,
   prUrl,
@@ -123,9 +146,10 @@ export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(
   )
 }
 
-export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied }: PrQuickLookProps & {
+export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied, embedded = false }: PrQuickLookProps & {
   closeButton?: ReactNode
   visible?: boolean
+  embedded?: boolean
   onSelectionApplied?(): void
 }) {
   const id = useId()
@@ -488,14 +512,15 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
                 </aside>
                 <div className="pr-quick-diff">
                   <header>
-                    <strong>{file?.path ?? 'Select a file'}</strong>
+                    <strong title={file?.path}>{file?.path ?? 'Select a file'}</strong>
                     <span title={`${diff.base}…${diff.head}`}>
                       {diff.head.slice(0, 7)} vs origin/main · {diff.base.slice(0, 7)}
                     </span>
                   </header>
                   {file ? (
                     file.patch !== null ? (
-                      <PrDiffPatch key={`${references}:${file.path}`} path={file.path} patch={file.patch} api={api} />
+                      embedded ? <PanelDiffPatch key={`${references}:${file.path}`} patch={file.patch} />
+                        : <PrDiffPatch key={`${references}:${file.path}`} path={file.path} patch={file.patch} api={api} />
                     ) : (
                       <p>
                         GitHub did not provide a text patch for this file (binary or too large).{' '}
