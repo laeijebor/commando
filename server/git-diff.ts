@@ -725,11 +725,13 @@ export class GitDiffInspector {
     }
     if (target !== undefined) {
       let validated = validateGitTarget(target)
+      let usedFallback = false
       if (!(await this.refExists(root, validated))) {
         if (fallback === undefined || !(await this.refExists(root, fallback))) {
           throw new GitDiffError('bad-target', `Unknown git ref: ${validated}`)
         }
         validated = fallback
+        usedFallback = true
       }
       if (head !== undefined) {
         const validatedHead = validateGitTarget(head)
@@ -737,6 +739,12 @@ export class GitDiffInspector {
           throw new GitDiffError('bad-target', `Unknown git ref: ${validatedHead}`)
         }
         const base = await this.mergeBase(root, validated, validatedHead)
+        if (usedFallback) {
+          const { stdout } = await this.git(root, ['rev-parse', '--verify', '--quiet', `${validatedHead}^{commit}`])
+          if (base === stdout.trim()) {
+            throw new GitDiffError('bad-target', "The PR's base commit isn't in this repo and its branch already contains the PR")
+          }
+        }
         return {
           base,
           head: validatedHead,
