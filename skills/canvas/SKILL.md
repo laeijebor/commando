@@ -8,8 +8,8 @@ argument-hint: <screens or variants to lay out>
 
 Use a canvas for a spatial board of screens, flows or alternatives. Use a
 redline document for a linear plan, report or proposal that needs prose and
-review of document elements. Canvas M1 displays inert frames; Play mode,
-label overview and comment pins arrive in later milestones. Do not imply
+review of document elements. Canvas displays inert frames with a label overview; Play mode and
+comment pins arrive in later milestones. Do not imply
 that an Interactive badge enables interaction yet.
 
 Create plain HTML files with local assets and no build step:
@@ -78,7 +78,7 @@ Frame roles:
   Initial view fits focus frames; without focus it fits everything. Fit always
   includes everything. Set focus on the screens to discuss first.
 - `interactive`: boolean distinguishing a planned clickable prototype (cyan
-  ▶ Interactive) from a Static reference. Frames stay inert in M1.
+  ▶ Interactive) from a Static reference. Frames stay inert until Play mode is implemented.
 - Sections group frame ids with an optional ticket. Status must be `idea`,
   `in-progress`, `ready-for-review`, `ready-for-dev` or `shipped`.
 - `variant`: title required, context and description optional; appears above
@@ -88,14 +88,25 @@ Frame roles:
   `development` (implementation guidance, green), `important` (cautions,
   amber), `design` (design reasoning, accent), `question` (open decisions,
   teal). Frame-target connectors point at the nearest frame edge. Label
-  targets fall back to that frame in M1. Notes hides variants, annotations
+  targets connect to the named element once its labels arrive, falling back
+  to the frame edge while loading. Notes hides variants, annotations
   and their connectors.
 
-## Label the frame HTML now
+## Label the frame HTML
 
-Agent-authored labels will power the overview in M2; label meaningful
-components, not every wrapper. Stable ids preserve identity when names change.
-Groups organize labels; goto declares future Play navigation to a frame id.
+The overview consumes `data-canvas-label` (display name), `data-canvas-group`
+(region) and `data-canvas-id` (stable identity). Label the components a reviewer
+would talk about, such as “Outlook row” or “Quiet hours”; avoid labelling every
+wrapper. Group by region using the attribute on a labelled element or its
+nearest ancestor. Use unique, stable `data-canvas-id` values when names may
+change. Reuse label names across frames for comparable components: Shared
+lists names found in at least two frames and cycles through their instances.
+The filter matches label names; hover highlights and click selects and flies
+to the element. Start here follows focus order; Notes jumps to note cards.
+Label-targeted annotations match names within their target frame (use distinct
+names there if they need distinct connectors). Frame ids used by the bridge
+must match `^[A-Za-z0-9_-]{1,64}$`.
+`data-canvas-goto` declares future Play navigation to a frame id.
 
 ```html
 <div data-canvas-group="Accounts">
@@ -122,4 +133,4 @@ scripts/commando-feedback <webPaneId> --wait 30
 
 The script tracks its acknowledgement cursor automatically. Poll while awaiting feedback; use its selector and notes to edit the source,
 then keep the tab open for the next review. Canvas pins and the frame review
-bridge are M2: M1 adds the board, not a new feedback delivery system.
+bridge arrive in M2b. The Threads tab currently shows “No comments yet”.
