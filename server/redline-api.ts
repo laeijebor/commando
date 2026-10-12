@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { canvasRelativePath, parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { RedlineArtifactError, type RedlineArtifactRegistry } from './redline-artifacts.js'
 
 const require_ = createRequire(import.meta.url)
@@ -105,7 +106,7 @@ export class RedlineApi {
       if (error instanceof HttpError || error instanceof RedlineArtifactError) {
         if (error.status === 401) response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname.startsWith('/api/redline') ? 'POST, DELETE' : 'GET')
+          response.setHeader('Allow', url.pathname.startsWith('/api/redline') ? 'GET, POST, DELETE' : 'GET')
         }
         this.writeJson(response, error.status, { error: error.message })
         return true
@@ -202,6 +203,19 @@ export class RedlineApi {
         id,
         url: `${this.dependencies.baseUrl}/redline/artifacts/${id}/`,
       })
+      return
+    }
+    const canvas = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas$/.exec(url.pathname)
+    if (canvas) {
+      if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+      const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
+      if (!manifestPath) throw new HttpError(400, 'manifest must be a relative path inside the canvas folder')
+      const file = this.dependencies.artifacts.resolve(canvas[1], manifestPath.split('/').map(encodeURIComponent).join('/'))
+      if (!file) {
+        this.writeJson(response, 404, { ...parseCanvasManifest({ title: '', frames: [] }), errors: [`${manifestPath}: not found`] })
+        return
+      }
+      this.writeJson(response, 200, parseCanvasManifest(readFileSync(file, 'utf8')))
       return
     }
     const single = /^\/api\/redline\/artifacts\/([0-9a-f]{16})$/.exec(url.pathname)

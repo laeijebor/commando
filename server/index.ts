@@ -1,3 +1,4 @@
+import { CanvasWatch } from './canvas-watch.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
@@ -599,6 +600,7 @@ async function main(): Promise<void> {
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
     webPaneAgentRequests.retain(liveIds)
+    canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -1705,6 +1707,8 @@ async function main(): Promise<void> {
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
+  canvasWatch.sync(webPanes.list())
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
@@ -2498,6 +2502,7 @@ async function main(): Promise<void> {
     pushNotifier?.close()
     simLive.close()
     simLogs.close()
+    canvasWatch.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void sessionIdes.close().catch((error: unknown) => console.error('[commando] IDE cleanup failed', error))

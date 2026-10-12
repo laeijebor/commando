@@ -466,7 +466,7 @@ export type WebPaneEngine = 'webkit' | 'chromium'
  */
 export type WebPane = {
   /** Built-in content bypasses browser engines and URL navigation. */
-  content?: { kind: 'simulator'; udid: string }
+  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string }
   id: string
   url: string
   sessionId: string
@@ -718,6 +718,7 @@ export type ServerMessage =
       changed: boolean
       requestId: string
     }
+  | { type: 'canvas_changed'; artifactId: string; changed: string[] }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
   /** A chat pane's whole state: sent when its host connects or reconnects. */

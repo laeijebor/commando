@@ -17,7 +17,7 @@ import { MAX_NAVIGATE_WAIT_MS, type WebPaneAgentRequests } from './web-pane-agen
 import { MAX_FEEDBACK_WAIT_MS, type WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { MAX_WEB_PANE_ATTACHMENT_SIZE, WebPaneAttachmentError, type WebPaneAttachmentStore } from './web-pane-attachments.js'
 import type { PendingNoteInput, PendingSendTarget, WebPanePendingStore } from './web-pane-pending.js'
-import { classifyWebPaneUrl, WebPaneError, type WebPaneService } from './web-panes.js'
+import { classifyWebPaneUrl, parseWebPaneContent, WebPaneError, type WebPaneService } from './web-panes.js'
 
 const API_ROOT = '/api/web-panes'
 const MAX_REQUEST_BYTES = (MAX_RESPONSE_PAYLOAD_BYTES * 4) + 4_096
@@ -932,11 +932,9 @@ export class WebPanesApi {
 
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
     const { url, anchor, placement, engine, content } = body
-    let simulator: { kind: 'simulator'; udid: string } | undefined
-    if (content !== undefined) {
-      if (!content || typeof content !== 'object' || Array.isArray(content) || (content as { kind?: unknown }).kind !== 'simulator' || typeof (content as { udid?: unknown }).udid !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test((content as { udid: string }).udid)) throw new HttpError(400, 'Invalid simulator content')
-      simulator = { kind: 'simulator', udid: (content as { udid: string }).udid.toUpperCase() }
-    }
+    const parsedContent = parseWebPaneContent(content)
+    if (parsedContent === null) throw new HttpError(400, (content as { kind?: unknown } | null)?.kind === 'canvas' ? 'Invalid canvas content' : 'Invalid simulator content')
+    const simulator = parsedContent?.kind === 'simulator'
     if (!simulator && typeof url !== 'string') throw new HttpError(400, 'url must be a string')
     if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {
       throw new HttpError(400, 'anchor must be a tmux pane id (use $TMUX_PANE)')
@@ -958,13 +956,13 @@ export class WebPanesApi {
 
     return this.dependencies.service.open({
       url: simulator ? '' : url as string,
-      ...(simulator ? { content: simulator } : {}),
+      ...(parsedContent ? { content: parsedContent } : {}),
       anchorPaneId: anchorPane.id,
       sessionId: anchorPane.sessionId,
       windowId: anchorPane.windowId,
       placement: placement as WebPanePlacement | undefined,
       anchorSize: { cols: anchorPane.width, rows: anchorPane.height },
-      engine: simulator ? 'webkit' : engine as WebPaneEngine | undefined,
+      engine: parsedContent ? 'webkit' : engine as WebPaneEngine | undefined,
       openedBy: caller === 'owner' ? 'user' : 'agent',
       openerLabel: caller === 'agent'
         ? this.dependencies.agentLabel?.(anchorPane.id)
