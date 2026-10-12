@@ -234,7 +234,7 @@ export function WebPaneCard({
     return () => window.clearTimeout(watchdog)
   }, [nativeChromium, nativeLoaded, webPane.url])
 
-  const dockAction = onDock && !detachedWindow && webPane.content?.kind !== 'canvas' ? (
+  const dockAction = onDock && !detached && !detachedWindow && webPane.content?.kind !== 'canvas' ? (
     <button type="button" className="web-pane-button" onClick={onDock}
       title={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}
       aria-label={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}>

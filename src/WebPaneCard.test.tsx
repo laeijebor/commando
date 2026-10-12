@@ -508,10 +508,12 @@ describe('dock actions', () => {
     expect(onDock).toHaveBeenCalledTimes(2)
   })
 
-  it('does not offer Split out on canvas tabs or detached windows', () => {
+  it('does not offer Split out on canvas tabs, detached windows or popped-out placeholders', () => {
     const view = render(<WebPaneCard webPane={{ ...webPane, content: { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'canvas.json' } }} onClose={vi.fn()} onConfirm={vi.fn()} onDock={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
     view.rerender(<WebPaneCard webPane={webPane} detachedWindow onClose={vi.fn()} onConfirm={vi.fn()} onDock={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
+    view.rerender(<WebPaneCard webPane={{ ...webPane, engine: 'chromium' }} detached onClose={vi.fn()} onConfirm={vi.fn()} onDock={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Split out' })).not.toBeInTheDocument()
   })
 })
