@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest'
 import { GitDiffApi } from './git-api.js'
 import { GitCommandFailure, GitDiffInspector, type GitProcessExecutor } from './git-diff.js'
 
-function comparisonApi(remotes: Record<string, string> = { origin: 'git@github.com:acme/widgets.git' }, refs = ['origin/main^{commit}', 'head^{commit}']) {
+function comparisonApi(remotes: Record<string, string> = { origin: 'git@github.com:acme/widgets.git' }, refs = ['refs/remotes/origin/main^{commit}', 'head^{commit}']) {
   const execute = vi.fn<GitProcessExecutor>(async (_file, args) => {
     if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return { stdout: '/repo\nfeature\n', stderr: '' }
     if (args[0] === 'rev-parse' && args[1] === '--verify') {
@@ -29,7 +29,7 @@ it.each(['summary', 'file-diff', 'search'])('routes the base fallback through co
   const url = new URL(`http://localhost/api/git/${route}?paneId=%251&target=missing-base&head=head&baseFallbackRepo=acme%2Fwidgets&baseFallbackBranch=main&file=a.ts&query=needle`)
   await api.handle(request, response as unknown as ServerResponse, url)
   expect(response.writeHead).toHaveBeenCalledWith(200, expect.any(Object))
-  expect(execute.mock.calls.some(([, args]) => args.join(' ') === 'merge-base origin/main head')).toBe(true)
+  expect(execute.mock.calls.some(([, args]) => args.join(' ') === 'merge-base refs/remotes/origin/main head')).toBe(true)
   expect(execute.mock.calls.some(([, args]) => args[0] === 'fetch')).toBe(false)
   if (route === 'file-diff') expect(JSON.parse(response.end.mock.calls[0][0])).toEqual({ file: 'a.ts', diff: 'STRUCTURAL' })
 })

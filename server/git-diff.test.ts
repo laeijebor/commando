@@ -410,7 +410,7 @@ describe('GitDiffInspector.summary', () => {
   })
 
   it.each(['summary', 'difftastic', 'delta', 'search'] as const)('uses a local base fallback for %s when the pinned base is missing and the head is not an ancestor', async (operation) => {
-    const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], numstat: `1\t0\tsrc/app.ts${NUL}`, nameStatus: `M${NUL}src/app.ts${NUL}` })
+    const repo = fakeRepo({ refs: ['refs/remotes/origin/main', 'head-tip'], numstat: `1\t0\tsrc/app.ts${NUL}`, nameStatus: `M${NUL}src/app.ts${NUL}` })
     const inspector = new GitDiffInspector(repo.execute, {})
     if (operation === 'summary') {
       await expect(inspector.summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
@@ -422,15 +422,15 @@ describe('GitDiffInspector.summary', () => {
     } else {
       await inspector.fileDiff('/repo', 'src/app.ts', 'missing-base', 120, operation, 'inline', 'head-tip', 'acme/widgets', 'main')
     }
-    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'origin/main', 'head-tip'] }))
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'refs/remotes/origin/main', 'head-tip'] }))
     expect(repo.calls.filter((call) => call.args[0] === 'rev-parse' && call.args[1] === '--verify').slice(0, 3).map((call) => call.args[3]))
-      .toEqual(['missing-base^{commit}', 'origin/main^{commit}', 'head-tip^{commit}'])
+      .toEqual(['missing-base^{commit}', 'refs/remotes/origin/main^{commit}', 'head-tip^{commit}'])
     expect(repo.calls.some((call) => call.args[0] === 'fetch')).toBe(false)
   })
 
   it.each(['summary', 'difftastic', 'delta', 'search'] as const)('rejects the %s base fallback when its branch already contains the head', async (operation) => {
     // The head is a named ref; its resolved OID is "sha" in this fixture.
-    const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], mergeBase: 'sha' })
+    const repo = fakeRepo({ refs: ['refs/remotes/origin/main', 'head-tip'], mergeBase: 'sha' })
     const inspector = new GitDiffInspector(repo.execute, {})
     const request = operation === 'summary' ? inspector.summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main')
       : operation === 'search' ? inspector.search('/repo', 'needle', 'missing-base', 'head-tip', 'acme/widgets', 'main')
@@ -443,33 +443,33 @@ describe('GitDiffInspector.summary', () => {
   })
 
   it('prefers the pinned base even when the remote branch already contains a merged PR', async () => {
-    const repo = fakeRepo({ refs: ['base-tip', 'head-tip', 'origin/main'], mergeBase: 'sha' })
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip', 'refs/remotes/origin/main'], mergeBase: 'sha' })
     await new GitDiffInspector(repo.execute, {}).summary('/repo', 'base-tip', 'head-tip', 'acme/widgets', 'main')
     expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'base-tip', 'head-tip'] }))
-    expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
+    expect(repo.calls.some((call) => call.args.includes('refs/remotes/origin/main^{commit}'))).toBe(false)
     expect(repo.calls.some((call) => call.args[0] === 'remote')).toBe(false)
   })
 
   it.each(['git@GitHub.com:ACME/Widgets.git', 'https://GITHUB.com/Acme/Widgets.git', 'ssh://git@github.com/acme/widgets.git'])(
     'matches the PR repository to upstream using the fetch URL %s', async (url) => {
-      const repo = fakeRepo({ refs: ['origin/main', 'upstream/main', 'head-tip'],
+      const repo = fakeRepo({ refs: ['refs/remotes/origin/main', 'refs/remotes/upstream/main', 'head-tip'],
         remotes: { origin: 'https://github.com/fork/widgets.git', upstream: url } })
       const summary = await new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main')
       expect(summary.target).toBe('upstream/main…head-tip')
-      expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'upstream/main', 'head-tip'] }))
-      expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
+      expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'refs/remotes/upstream/main', 'head-tip'] }))
+      expect(repo.calls.some((call) => call.args.includes('refs/remotes/origin/main^{commit}'))).toBe(false)
     },
   )
 
   it('skips a remote whose URL cannot be read and uses the next matching remote', async () => {
-    const repo = fakeRepo({ refs: ['upstream/main', 'head-tip'],
+    const repo = fakeRepo({ refs: ['refs/remotes/upstream/main', 'head-tip'],
       remotes: { broken: '!error', upstream: 'https://github.com/acme/widgets.git' } })
     const summary = await new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main')
     expect(summary.target).toBe('upstream/main…head-tip')
   })
 
   it('rejects a fallback with no common ancestor instead of diffing unrelated trees', async () => {
-    const repo = fakeRepo({ refs: ['upstream/main', 'head-tip'], mergeBase: '',
+    const repo = fakeRepo({ refs: ['refs/remotes/upstream/main', 'head-tip'], mergeBase: '',
       remotes: { upstream: 'https://github.com/acme/widgets.git' } })
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
       .rejects.toMatchObject({ kind: 'bad-target' })
@@ -489,12 +489,20 @@ describe('GitDiffInspector.summary', () => {
     expect(failure).toBeInstanceOf(GitCommandFailure)
   })
 
+  it('uses the remote-tracking ref even when a local branch has the same short name', async () => {
+    const repo = fakeRepo({ refs: ['origin/main', 'refs/remotes/origin/main', 'head-tip'] })
+    const summary = await new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main')
+    expect(summary.target).toBe('origin/main…head-tip')
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'refs/remotes/origin/main', 'head-tip'] }))
+    expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
+  })
+
   it('rejects an origin fork instead of diffing against the wrong repository', async () => {
-    const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], remotes: { origin: 'git@github.com:fork/widgets.git' } })
+    const repo = fakeRepo({ refs: ['refs/remotes/origin/main', 'head-tip'], remotes: { origin: 'git@github.com:fork/widgets.git' } })
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
       .rejects.toMatchObject({ kind: 'bad-target', message: 'Unknown git ref: missing-base' })
     expect(repo.calls.some((call) => call.args[0] === 'merge-base')).toBe(false)
-    expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
+    expect(repo.calls.some((call) => call.args.includes('refs/remotes/origin/main^{commit}'))).toBe(false)
   })
 
   it('rejects a matching remote without a local base ref', async () => {
@@ -505,7 +513,7 @@ describe('GitDiffInspector.summary', () => {
   })
 
   it('still rejects a missing head when the base fallback exists', async () => {
-    const repo = fakeRepo({ refs: ['origin/main'] })
+    const repo = fakeRepo({ refs: ['refs/remotes/origin/main'] })
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'missing-head', 'acme/widgets', 'main'))
       .rejects.toThrow('Unknown git ref: missing-head')
   })

@@ -764,7 +764,7 @@ export class GitDiffInspector {
         return {
           base,
           head: validatedHead,
-          label: `${validated}…${validatedHead}`,
+          label: `${validated.replace(/^refs\/remotes\//, '')}…${validatedHead}`,
           mode: 'ref',
           commit: base,
         }
@@ -786,7 +786,8 @@ export class GitDiffInspector {
       // A remote without a readable URL can't match; skip it rather than failing the request.
       const url = await this.git(root, ['remote', 'get-url', remote]).then(({ stdout }) => stdout, () => '')
       if (repoFromGithubRemote(url)?.toLowerCase() !== repo.toLowerCase()) continue
-      const ref = validateGitTarget(`${remote}/${branch}`)
+      // Fully qualified, so a local branch literally named `<remote>/<branch>` can't shadow it.
+      const ref = validateGitTarget(`refs/remotes/${remote}/${branch}`)
       if (await this.refExists(root, ref)) return ref
     }
     return undefined
