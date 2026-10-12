@@ -460,7 +460,7 @@ describe('simulator tile', () => {
     const onActivate = vi.fn(), onClose = vi.fn(), onMaximize = vi.fn()
     const webPane: WebPane = { id: 'w-11111111', url: '', content: { kind: 'simulator', udid: 'AAAAAAAA-1111-1111-1111-111111111111' }, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', engine: 'webkit', status: 'open', openedBy: 'user', createdAt: 0 }
     const { container, rerender } = render(<WebPaneCard webPane={webPane} wsToken="owner" simulatorActive onActivateSimulator={onActivate} onClose={onClose} onConfirm={vi.fn()} onMaximize={onMaximize} onDragStart={vi.fn()} />)
-    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-udid', webPane.content!.udid)
+    expect(screen.getByTestId('sim-live')).toHaveAttribute('data-udid', webPane.content?.kind === 'simulator' ? webPane.content.udid : undefined)
     expect(screen.getByTestId('sim-live')).toHaveAttribute('data-token', 'owner')
     expect(screen.getByTestId('sim-live')).toHaveAttribute('data-active', 'true')
     expect(container.querySelector('iframe')).toBeNull()

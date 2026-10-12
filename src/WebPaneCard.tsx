@@ -5,6 +5,7 @@ import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebVie
 import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
+import { CanvasPane } from './CanvasPane'
 import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
 
@@ -230,6 +231,12 @@ export function WebPaneCard({
     }, LOAD_WATCHDOG_MS)
     return () => window.clearTimeout(watchdog)
   }, [nativeChromium, nativeLoaded, webPane.url])
+
+  if (webPane.content?.kind === 'canvas') return (
+    <article className="web-pane" data-web-pane-id={webPane.id}>
+      <CanvasPane artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+    </article>
+  )
 
   if (webPane.content?.kind === 'simulator') return (
     <article className="web-pane" data-web-pane-id={webPane.id} onPointerDownCapture={onActivateSimulator}>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
+import { Globe, LayoutDashboard, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneEngine } from '../shared/protocol'
 import { activePanelTab, panelTabs } from './sidePanelState'
 
@@ -13,7 +13,8 @@ function loadWidth(windowId: string): number {
 
 function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
   if (title) return title
-  if (tab.content) return simulatorName ?? 'Simulator'
+  if (tab.content?.kind === 'simulator') return simulatorName ?? 'Simulator'
+  if (tab.content?.kind === 'canvas') return 'Canvas'
   try {
     const url = new URL(tab.url)
     return `${url.host}${url.pathname}`
@@ -101,8 +102,8 @@ export function SidePanel({
           <header className="side-panel-head">
             <div className="side-panel-tabs" role="tablist" aria-label={`Tabs for ${paneLabel}`}>
               {focusedTabs.map((tab) => {
-                const Icon = tab.content ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
-                const label = tabLabel(tab, titles[tab.id], tab.content ? simulatorNames[tab.content.udid] : undefined)
+                const Icon = tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
+                const label = tabLabel(tab, titles[tab.id], tab.content?.kind === 'simulator' ? simulatorNames[tab.content.udid] : undefined)
                 return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}`} key={tab.id}>
                   <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)} title={tab.url || label}>
                     <Icon aria-hidden="true" />

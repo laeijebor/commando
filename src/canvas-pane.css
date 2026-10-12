@@ -1,0 +1,42 @@
+.canvas-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; font-size: 11px; }
+.canvas-toolbar { flex: none; display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-bottom: 1px solid var(--surface-hover); }
+.canvas-toolbar button { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 0 5px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-dim); font: inherit; cursor: pointer; }
+.canvas-toolbar button:hover { color: var(--text); background: var(--surface-hover); }
+.canvas-toolbar button[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.canvas-toolbar-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-soft); padding: 0 4px; }
+.canvas-toolbar-separator { width: 1px; height: 14px; background: var(--border-mid); margin: 0 3px; }
+.canvas-zoom { font-family: var(--mono); font-size: 10px; color: var(--text-soft); min-width: 38px; text-align: center; }
+.canvas-viewport { position: relative; flex: 1; min-height: 0; overflow: hidden; background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 20px 20px; cursor: grab; touch-action: none; }
+.canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
+.canvas-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.canvas-frame { position: absolute; }
+.canvas-frame iframe { display: block; width: 100%; height: 100%; border: 0; border-radius: 28px; background: #fff; pointer-events: none; box-shadow: 0 0 0 1px #2c2542; }
+.canvas-frame.is-focus iframe { box-shadow: 0 0 0 3px var(--accent), 0 0 0 12px color-mix(in srgb, var(--accent) 14%, transparent); }
+.canvas-frame-label { position: absolute; left: 0; right: 0; top: -30px; display: flex; align-items: center; gap: 8px; font-size: 18px; color: var(--muted); white-space: nowrap; }
+.canvas-frame-label b { font-weight: 500; color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; }
+.canvas-frame-label i { font-style: normal; color: var(--muted-dim); }
+.canvas-badge { flex: none; font-size: 13px; padding: 2px 8px; border-radius: 5px; white-space: nowrap; }
+.canvas-frame-label .canvas-badge:first-of-type { margin-left: auto; }
+.canvas-badge.focus { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.canvas-badge.live { border: 1px solid color-mix(in srgb, var(--cyan) 60%, transparent); color: var(--cyan); }
+.canvas-badge.static { border: 1px solid var(--border-strong); color: var(--muted); }
+.canvas-section { position: absolute; border: 1.5px solid var(--border-strong); border-radius: 14px; background: color-mix(in srgb, var(--surface) 60%, transparent); }
+.canvas-section-head { position: absolute; left: 0; top: -50px; display: flex; gap: 8px; align-items: center; }
+.canvas-chip { font-size: 18px; padding: 5px 12px; border-radius: 7px; background: var(--surface-hover); color: var(--text); white-space: nowrap; }
+.canvas-status { background: color-mix(in srgb, var(--status-color) 16%, transparent); color: var(--status-color); }
+.canvas-status.status-idea { --status-color: var(--muted); }
+.canvas-status.status-in-progress { --status-color: var(--amber); }
+.canvas-status.status-ready-for-review { --status-color: var(--accent); }
+.canvas-status.status-ready-for-dev { --status-color: var(--green); }
+.canvas-status.status-shipped { --status-color: var(--cyan); }
+.canvas-variant { position: absolute; box-sizing: border-box; width: 330px; min-height: 165px; padding: 0 0 36px 16px; border-left: 2px dashed var(--border-strong); color: var(--muted); font-size: 15px; }
+.canvas-variant b { display: block; color: var(--text); font-size: 20px; font-weight: 600; }
+.canvas-note { position: absolute; box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #f6f5fb; color: #17141f; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.canvas-note ul { margin: 6px 0 0; padding-left: 18px; }
+.canvas-note-title { display: block; margin-bottom: 6px; }
+.canvas-kind { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 5px; font-size: 13px; font-weight: 700; color: #fff; }
+.canvas-connectors { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.canvas-world.hide-notes .canvas-note, .canvas-world.hide-notes .canvas-connectors, .canvas-world.hide-notes .canvas-variant { visibility: hidden; }
+.canvas-hint { position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 5px; background: color-mix(in srgb, var(--surface-raised) 90%, transparent); color: var(--muted); font-size: 10px; pointer-events: none; }
+.canvas-errors { flex: none; max-height: 120px; overflow: auto; padding: 6px 10px; background: color-mix(in srgb, var(--amber) 12%, var(--surface)); color: var(--amber); }
+.canvas-errors ul { margin: 4px 0 0; padding-left: 18px; }

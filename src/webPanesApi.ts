@@ -259,3 +259,13 @@ export function createWebPanesApi(
     },
   }
 }
+
+export type CanvasChange = { artifactId: string; changed: string[] }
+const canvasChangeListeners = new Set<(change: CanvasChange) => void>()
+export function publishCanvasChange(change: CanvasChange): void {
+  for (const listener of canvasChangeListeners) listener(change)
+}
+export function subscribeCanvasChanges(listener: (change: CanvasChange) => void): () => void {
+  canvasChangeListeners.add(listener)
+  return () => { canvasChangeListeners.delete(listener) }
+}

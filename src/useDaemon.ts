@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
+import { publishCanvasChange } from './webPanesApi'
 import type { ClientMessage, CommandoSnapshot, ServerMessage } from '../shared/protocol'
 
 export type ConnectionPhase =
@@ -92,7 +93,9 @@ export function useDaemon(
       socket.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return
         try {
-          receiveMessage(JSON.parse(event.data) as ServerMessage)
+          const message = JSON.parse(event.data) as ServerMessage
+          if (message.type === 'canvas_changed') publishCanvasChange(message)
+          else receiveMessage(message)
         } catch {
           setConnection((current) => ({
             ...current,

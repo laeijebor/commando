@@ -2344,7 +2344,7 @@ export function App() {
     }
     return flow
   }
-  const simulatorTabKey = webPanes.flatMap((pane) => pane.content ? [pane.content.udid] : []).join(',')
+  const simulatorTabKey = webPanes.flatMap((pane) => pane.content?.kind === 'simulator' ? [pane.content.udid] : []).join(',')
   useEffect(() => {
     if (!simulatorTabKey || !connected) return
     let cancelled = false
@@ -2391,7 +2391,7 @@ export function App() {
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
-      const existing = webPanes.find((tile) => tile.content?.udid === udid.toUpperCase())
+      const existing = webPanes.find((tile) => tile.content?.kind === 'simulator' && tile.content.udid === udid.toUpperCase())
       const id = existing?.id ?? (await simsApi.show(udid, anchorPaneId)).webPaneId
       setArea('workspace')
       setPendingPaneFocus(null)
