@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -9,9 +10,14 @@ import {
 } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import type { WebPane } from '@commando/protocol'
 
+import type { ChatState } from '@commando/agent-chat'
+
+import { chatStatusWord, ChatErrorBoundary, ChatView } from '../chat/ChatView'
+import { useChat } from '../chat/store'
 import { useDaemonClient, useDaemonConnection } from '../daemon/useDaemonConnection'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
@@ -41,15 +47,71 @@ export type PaneViewProps = {
 }
 
 /**
- * One live pane: the xterm WebView with the window chips, HUD strip, key bar
- * and composer around it. React Native owns the socket, the keyboard and the
- * pane's size; by default the pane renders at its source `cols × rows` and pans
- * (Decision 2), and "Fit to phone" takes the resize lease while it is on.
+ * One live pane. A chat pane (an agent host drives it) is drawn natively from
+ * its chat items; any other pane, including a chat handed to Claude Code, is
+ * the terminal.
  *
  * The phone's pane screen and the iPad cockpit's centre column are the same
  * component so that neither can drift from the other.
  */
-export function PaneView({
+export function PaneView(props: PaneViewProps): React.JSX.Element {
+  const chat = useChat(props.host?.id, props.paneId)
+  return chat && props.host ? <ChatPane {...props} chat={chat} host={props.host} /> : <TerminalPane {...props} />
+}
+
+/** A chat pane: the nav and window chips over the native chat. */
+function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWindow }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
+  const theme = useTheme()
+  const state = useDaemonConnection(host)
+  const client = useDaemonClient(host)
+  const insets = useSafeAreaInsets()
+  const keyboard = useKeyboardShown()
+  const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
+  return (
+    <View style={styles.root}>
+      <PaneNav
+        {...(onBack ? { onBack } : {})}
+        {...(onInfo ? { onInfo } : {})}
+        subtitle={`${context.title} · chat · ${chatStatusWord(chat.session.status)}`}
+        title={chat.session.title || context.title}
+      />
+      <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={[styles.body, { paddingBottom: keyboard ? 0 : insets.bottom }]}
+      >
+        <ChatErrorBoundary
+          fallback={(error) => (
+            <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
+          )}
+        >
+          <ChatView chat={chat} client={client} host={host} phase={state.phase} />
+        </ChatErrorBoundary>
+      </KeyboardAvoidingView>
+    </View>
+  )
+}
+
+function useKeyboardShown(): boolean {
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardWillShow', () => setShown(true))
+    const hide = Keyboard.addListener('keyboardWillHide', () => setShown(false))
+    return () => {
+      show.remove()
+      hide.remove()
+    }
+  }, [])
+  return shown
+}
+
+/**
+ * The terminal: the xterm WebView with the window chips, HUD strip, key bar
+ * and composer around it. React Native owns the socket, the keyboard and the
+ * pane's size; by default the pane renders at its source `cols × rows` and pans
+ * (Decision 2), and "Fit to phone" takes the resize lease while it is on.
+ */
+function TerminalPane({
   host,
   paneId,
   active,
@@ -222,4 +284,5 @@ const styles = StyleSheet.create({
   },
   toastLabel: { fontSize: 12.5, fontWeight: '600' },
   sizeLine: { fontSize: 11.5, paddingHorizontal: 16, paddingTop: 6 },
+  chatFailed: { fontSize: 13.5, lineHeight: 19, padding: 16 },
 })

@@ -18,6 +18,8 @@
     "expo-constants": "~57.0.19",
     "expo-device": "~57.0.2",
     "expo-haptics": "~57.0.3",
+    "expo-image-manipulator": "~57.0.21",
+    "expo-image-picker": "~57.0.20",
     "expo-linking": "~57.0.10",
     "expo-notifications": "~57.0.20",
     "expo-router": "~57.0.22",
@@ -25,6 +27,7 @@
     "expo-splash-screen": "~57.0.9",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
+    "marked": "^16.4.2",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
@@ -51,6 +54,11 @@
     "moduleNameMapper": {
       "^@commando/protocol$": "<rootDir>/../../shared/protocol.ts",
       "^@commando/tmux-create$": "<rootDir>/../../shared/tmux-create.ts",
+      "^@commando/agent-chat$": "<rootDir>/../../shared/agent-chat.ts",
+      "^@commando/chat-timeline$": "<rootDir>/../../shared/chat-timeline.ts",
+      "^@commando/chat-composer$": "<rootDir>/../../shared/chat-composer.ts",
+      "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
+      "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "testPathIgnorePatterns": [

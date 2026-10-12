@@ -3,6 +3,7 @@ import type { ClientMessage, ServerMessage, SpecialKey } from '@commando/protoco
 import type { Host } from '../hosts/types'
 import { webSocketBase } from '../hosts/types'
 import { inputFits, MAX_INPUT_BYTES, MAX_PASTE_BYTES, pasteFits } from './limits'
+import { useChatStore } from '../chat/store'
 import { parseServerMessage } from './state'
 import { useDaemonStore } from './store'
 
@@ -304,11 +305,12 @@ export class DaemonClient {
     socket.onmessage = (event: { data?: unknown }) => {
       const message = parseServerMessage(event.data)
       if (!message) return
-      // Every message is folded into the store first (the reducer ignores the
+      // Every message is folded into the stores first (the reducers ignore the
       // pane bytes), then handed to the pane the bytes belong to, then to the
       // listeners waiting on a reply to something they sent — each exactly
       // once, and never dropped on the way.
       useDaemonStore.getState().ingest(this.hostId, message)
+      useChatStore.getState().ingest(this.hostId, message)
       if (message.type === 'pane_reset' || message.type === 'pane_data') {
         this.dispatchPaneMessage(message)
       } else if (message.type === 'snapshot' && this.paneHandlers.size > 0) {
