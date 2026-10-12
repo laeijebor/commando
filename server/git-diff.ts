@@ -749,6 +749,11 @@ export class GitDiffInspector {
         }
         const base = await this.mergeBase(root, validated, validatedHead)
         if (usedFallback) {
+          // mergeBase() returns the ref itself when git finds no common ancestor (e.g. a shallow
+          // clone); diffing those trees would show unrelated changes as the PR's.
+          if (base === validated) {
+            throw new GitDiffError('bad-target', "The PR's base commit isn't in this repo and no common ancestor with its branch is available")
+          }
           const { stdout } = await this.git(root, ['rev-parse', '--verify', '--quiet', `${validatedHead}^{commit}`])
           if (base === stdout.trim()) {
             throw new GitDiffError('bad-target', "The PR's base commit isn't in this repo and its branch already contains the PR")

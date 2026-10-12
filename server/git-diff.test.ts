@@ -465,6 +465,14 @@ describe('GitDiffInspector.summary', () => {
     expect(summary.target).toBe('upstream/main…head-tip')
   })
 
+  it('rejects a fallback with no common ancestor instead of diffing unrelated trees', async () => {
+    const repo = fakeRepo({ refs: ['upstream/main', 'head-tip'], mergeBase: '',
+      remotes: { upstream: 'https://github.com/acme/widgets.git' } })
+    await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
+      .rejects.toMatchObject({ kind: 'bad-target' })
+    expect(repo.calls.some((call) => call.args[0] === 'diff')).toBe(false)
+  })
+
   it('rejects an origin fork instead of diffing against the wrong repository', async () => {
     const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], remotes: { origin: 'git@github.com:fork/widgets.git' } })
     await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'head-tip', 'acme/widgets', 'main'))
