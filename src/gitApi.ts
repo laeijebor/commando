@@ -68,7 +68,8 @@ export type DiffDisplay = 'side-by-side' | 'inline'
 export type GitFileDiffOptions = {
   target?: string
   head?: string
-  baseFallback?: string
+  baseFallbackRepo?: string
+  baseFallbackBranch?: string
   width?: number
   engine?: DiffEngine
   display?: DiffDisplay
@@ -77,9 +78,9 @@ export type GitFileDiffOptions = {
 export interface GitDiffApiClient {
   /** Which repository (if any) contains an absolute directory; worktrees resolve to their main checkout. */
   repo(directory: string): Promise<GitRepoInfo>
-  summary(paneId: string, target?: string, head?: string, baseFallback?: string): Promise<GitDiffSummary>
+  summary(paneId: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
-  search(paneId: string, query: string, target?: string, head?: string, baseFallback?: string): Promise<GitDiffSearchResult>
+  search(paneId: string, query: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSearchResult>
   branches(paneId: string): Promise<GitBranches>
 }
 
@@ -112,19 +113,20 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
   }
 
   return {
-    summary: (paneId, target, head, baseFallback) => request<GitDiffSummary>('summary', { paneId, target, head, baseFallback }),
+    summary: (paneId, target, head, baseFallbackRepo, baseFallbackBranch) => request<GitDiffSummary>('summary', { paneId, target, head, baseFallbackRepo, baseFallbackBranch }),
     fileDiff: (paneId, file, options = {}) =>
       request<GitFileDiff>('file-diff', {
         paneId,
         file,
         target: options.target,
         head: options.head,
-        baseFallback: options.baseFallback,
+        baseFallbackRepo: options.baseFallbackRepo,
+        baseFallbackBranch: options.baseFallbackBranch,
         width: options.width === undefined ? undefined : String(options.width),
         engine: options.engine,
         display: options.display,
       }),
-    search: (paneId, query, target, head, baseFallback) => request<GitDiffSearchResult>('search', { paneId, query, target, head, baseFallback }),
+    search: (paneId, query, target, head, baseFallbackRepo, baseFallbackBranch) => request<GitDiffSearchResult>('search', { paneId, query, target, head, baseFallbackRepo, baseFallbackBranch }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
     repo: (directory) => request<GitRepoInfo>('repo', { path: directory }),
   }

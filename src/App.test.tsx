@@ -1087,7 +1087,7 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
       expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
       expect(within(panel).getByText('Structural diff')).toBeVisible()
-      await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/git/summary?paneId=%2513&target=${pr.baseRefOid}&head=${pr.headRefOid}&baseFallback=origin%2Fmain`, expect.any(Object)))
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/git/summary?paneId=%2513&target=${pr.baseRefOid}&head=${pr.headRefOid}&baseFallbackRepo=acme%2Fwidgets&baseFallbackBranch=main`, expect.any(Object)))
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
       // Return to the HUD and quick look explicitly selects Description on the mounted view.
       fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))

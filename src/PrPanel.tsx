@@ -66,7 +66,7 @@ export function PrPanel({ paneId, panePath, source, api, gitApi, visible, select
   const diffView = (diffVisible: boolean) => pr?.baseRefOid && pr.headRefOid
     ? <GitDiffView key={`${pr.baseRefOid}:${pr.headRefOid}`} paneId={paneId} panePath={panePath} api={gitApi}
         initialSummary={null} visible={diffVisible} comparison={{ base: pr.baseRefOid, head: pr.headRefOid,
-          baseFallback: pr.baseRefName ? `origin/${pr.baseRefName}` : undefined,
+          ...(pr.baseRefName ? { baseFallbackRepo: source.repo, baseFallbackBranch: pr.baseRefName } : {}),
           baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7), headLabel: pr.headRefName || pr.headRefOid.slice(0, 7) }}
         errorHint={comparisonHint} />
     : <div className="pr-quick-message" role="alert">The PR’s comparison commits are unavailable.{comparisonHint}</div>
