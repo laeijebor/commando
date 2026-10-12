@@ -38,6 +38,31 @@ function box(element: Element) {
   vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 30, height: 40, right: 40, bottom: 60, x: 10, y: 20, toJSON() {} })
 }
 describe('canvas frame script', () => {
+  it('intercepts nested goto clicks only while live, relays Esc and modifier-wheel, and leaves ordinary scrolling native', () => {
+    document.body.innerHTML = '<a href="#native" data-canvas-goto="accounts"><span>Go</span></a>'
+    boot(); post.mockClear()
+    const click = () => { const event = new MouseEvent('click', { bubbles: true, cancelable: true }); document.querySelector('span')!.dispatchEvent(event); return event }
+    expect(click().defaultPrevented).toBe(false)
+    const activate = { source: 'commando-canvas', type: 'interaction', live: true }
+    window.dispatchEvent(new MessageEvent('message', { source: null, data: activate }))
+    expect(click().defaultPrevented).toBe(false)
+    window.dispatchEvent(new MessageEvent('message', { source: window, data: activate }))
+    expect(click().defaultPrevented).toBe(true)
+    expect(latest()).toMatchObject({ type: 'goto', target: 'accounts', frameId: 'settings' })
+    const scroll = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 10 })
+    document.body.dispatchEvent(scroll); expect(scroll.defaultPrevented).toBe(false)
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+      const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -12, clientX: 20, clientY: 30, ...modifier })
+      document.body.dispatchEvent(wheel); expect(wheel.defaultPrevented).toBe(true)
+      expect(latest()).toMatchObject({ type: 'zoom', deltaY: -12, deltaMode: 0, x: 20, y: 30 })
+    }
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(latest()).toMatchObject({ type: 'escape' })
+    window.dispatchEvent(new MessageEvent('message', { source: window, data: { ...activate, live: false } }))
+    post.mockClear(); expect(click().defaultPrevented).toBe(false)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(post).not.toHaveBeenCalled()
+  })
   it('reports labels in document order, inherits nearest groups and adds document scroll offsets', async () => {
     document.body.innerHTML = '<section data-canvas-group="Accounts"><button data-canvas-label="Row" data-canvas-id="outlook"></button><div data-canvas-group="Nested"><b data-canvas-label="Title"></b></div></section><footer data-canvas-label="Footer"></footer>'
     document.querySelectorAll('[data-canvas-label]').forEach(box)

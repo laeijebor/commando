@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanvasThread, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import { MAX_RESPONSE_PAYLOAD_BYTES } from '../shared/redline-response'
 import { CanvasPane } from './CanvasPane'
+import { parseCanvasManifest } from '../shared/canvas-manifest'
 import { publishCanvasSpotlights, publishCanvasPendingChanged, publishCanvasThreadsChanged, publishCanvasRefresh } from './webPanesApi'
 
 const id = 'w-12345678', artifactId = '0123456789abcdef'
@@ -13,12 +14,12 @@ const manifest = { title: 'Board', frames: [{ id: 'settings', title: 'Settings',
   sections: [{ id: 'regroup', title: 'Accounts section', frames: ['settings'], ticket: 'APP-1', status: 'ready-for-dev' }] }
 const context = { frameId: 'settings', point: { x: 25, y: 35 }, label: 'Row', labelId: 'row', frameTitle: 'Settings', section: 'Accounts section', ticket: 'APP-1', status: 'ready-for-dev', focus: 1, interactive: true }
 const rect = { x: 10, y: 20, w: 100, h: 40 }
-let snapshot: WebPanePendingSnapshot, threads: CanvasThread[], calls: Array<{ url: string; body?: Record<string, unknown>; init?: RequestInit }>, failSend: boolean
+let snapshot: WebPanePendingSnapshot, threads: CanvasThread[], calls: Array<{ url: string; body?: Record<string, unknown>; init?: RequestInit }>, failSend: boolean, failStatus: boolean
 const queuedNote = (noteId = 1): WebPanePendingNote => ({ id: noteId, revision: 1, selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 }, comment: 'Fix row', canvas: context, pageUrl: `http://localhost/redline/artifacts/${artifactId}/Settings.html?canvas-frame=settings` })
 const thread = (): CanvasThread => ({ id: 'ct-one', webPaneId: id, frameId: 'settings', point: context.point, label: 'Row', labelId: 'row', selector: '#row', status: 'open', createdAt: 10, messages: [{ author: 'user', text: 'Fix row\nMore detail', at: 10 }] })
 beforeEach(() => {
   publishCanvasSpotlights({})
-  snapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }; threads = []; calls = []; failSend = false
+  snapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }; threads = []; calls = []; failSend = false; failStatus = false
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('matchMedia', () => ({ matches: true }))
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
@@ -26,9 +27,14 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(270)
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(165)
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/canvas.json')) return { ok: true, text: async () => JSON.stringify(manifest) }
+    if (url.endsWith('/canvas.json')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
     calls.push({ url, body, init })
+    if (url.endsWith('/canvas/sections')) {
+      if (failStatus) return { ok: false, status: 409, json: async () => ({ error: 'Canvas changed on disk; reloaded. Try again.' }) }
+      const status = (body!.statuses as Array<{ status: string }>)[0].status
+      return { ok: true, json: async () => ({ ...parseCanvasManifest({ ...manifest, sections: [{ ...manifest.sections[0], status }] }), contentHash: 'b'.repeat(64) }) }
+    }
     if (url.endsWith('/threads')) return { ok: true, json: async () => ({ threads }) }
     if (url.endsWith('/replies')) {
       const target = threads.find((thread) => url.includes(thread.id))!
@@ -73,6 +79,51 @@ async function draftPin(container: HTMLElement) {
   return { iframe, post, request }
 }
 describe('canvas comments', () => {
+  it('writes a section status and queues then sends its exact feedback/context without sending other queued notes', async () => {
+    snapshot = { ...snapshot, knownUpTo: 1, revision: 1, notes: [queuedNote()] }
+    mount(); await screen.findByTitle('Settings')
+    const chip = screen.getByRole('button', { name: 'Accounts section status' })
+    fireEvent.click(chip)
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(5)
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Ready for review' }))
+    expect(screen.getByRole('button', { name: 'Comment tool' })).toBeDisabled()
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith('/pending/send'))).toBe(true))
+    const write = calls.find((call) => call.url.endsWith('/canvas/sections'))!
+    expect(write.init?.method).toBe('PATCH')
+    expect(write.body).toEqual({ manifest: 'canvas.json', expectedHash: 'a'.repeat(64), statuses: [{ id: 'regroup', status: 'ready-for-review' }] })
+    const added = calls.find((call) => call.url.endsWith('/pending') && call.init?.method === 'POST')!
+    expect(added.body!.note).toMatchObject({ comment: 'Section "Accounts section" status changed from ready-for-dev to ready-for-review',
+      canvas: { frameId: 'settings', section: 'Accounts section', ticket: 'APP-1', status: 'ready-for-review', point: { x: 0, y: 0 } } })
+    expect(calls.find((call) => call.url.endsWith('/pending/send'))!.body).toMatchObject({ items: [{ id: 2, revision: 1 }], expectedQueueRevision: 2 })
+    expect(snapshot.notes.map((n) => n.id)).toEqual([1])
+    expect(chip).toHaveTextContent('Ready for review'); expect(chip).toHaveAttribute('aria-expanded', 'false')
+    expect(threads.at(-1)?.messages[0].text).toContain('status changed')
+  })
+  it('does not queue feedback for a stale status write, and retains a note if delivery fails', async () => {
+    failStatus = true
+    const view = mount(); await screen.findByTitle('Settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Accounts section status' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Shipped' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Canvas changed on disk')
+    expect(calls.some((call) => call.url.endsWith('/pending') && call.init?.method === 'POST')).toBe(false)
+    expect(screen.getByRole('button', { name: 'Accounts section status' })).toHaveTextContent('Ready for dev')
+    view.unmount(); failStatus = false; failSend = true; calls = []
+    mount(); await screen.findByTitle('Settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Accounts section status' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Shipped' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Pending queue revision is stale')
+    expect(snapshot.notes).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Accounts section status' })).toHaveTextContent('Shipped')
+    expect(screen.getByText('1 queued ·')).toBeInTheDocument()
+  })
+  it('comments on an entered frame through the parent hit-test overlay', async () => {
+    const { container } = mount(), frame = await screen.findByTitle('Settings')
+    fireEvent.doubleClick(frame.closest('.canvas-frame')!)
+    expect(frame.closest('.canvas-frame')).toHaveClass('is-live')
+    await draftPin(container)
+    expect(frame.closest('.canvas-frame')).not.toHaveClass('is-live')
+    expect(screen.getByRole('dialog', { name: 'Canvas comment' })).toBeInTheDocument()
+  })
   it('hit-tests camera-correct frame CSS coordinates, ignores background and foreign replies, renders constant-size pins and exits with Esc', async () => {
     const { container } = mount(), iframe = await screen.findByTitle('Settings') as HTMLIFrameElement
     const post = vi.spyOn(iframe.contentWindow!, 'postMessage')

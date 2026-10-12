@@ -11,12 +11,21 @@ export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0
   return baseUrl + frame.src.split('/').map(encodeURIComponent).join('/') + '?' + query
 }
 
-export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>, onRedline?: (frameId: string, payload: unknown, pageUrl: string) => void) {
+export type CanvasFrameInput = { type: 'goto'; target: string } | { type: 'escape' } | { type: 'zoom'; deltaY: number; deltaMode: number; x: number; y: number }
+export function readCanvasFrameInput(data: Record<string, unknown>): CanvasFrameInput | null {
+  if (data.type === 'goto' && typeof data.target === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(data.target)) return { type: 'goto', target: data.target }
+  if (data.type === 'escape') return { type: 'escape' }
+  if (data.type === 'zoom' && [data.deltaY, data.x, data.y].every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1_000_000) && [0, 1, 2].includes(data.deltaMode as number)) return { type: 'zoom', deltaY: data.deltaY as number, deltaMode: data.deltaMode as number, x: data.x as number, y: data.y as number }
+  return null
+}
+
+export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>, onRedline?: (frameId: string, payload: unknown, pageUrl: string) => void, input?: { live: string | null; onInput: (frameId: string, input: CanvasFrameInput) => void }) {
   const relay = useRef(onRedline)
+  const interaction = useRef(input)
   const pending = useRef<WebPanePendingSnapshot>({ notes: [], knownUpTo: 0, dropped: 0 })
   const requests = useRef(new Map<string, { frameId: string; url: string; finish: (hit: CanvasHit | null) => void }>())
   const requestId = useRef(0)
-  useLayoutEffect(() => { relay.current = onRedline })
+  useLayoutEffect(() => { relay.current = onRedline; interaction.current = input })
   const iframes = useRef(new Map<string, HTMLIFrameElement>())
   const sources = useRef(new Map<string, string>())
   const [reports, setReports] = useState<CanvasLabelReports>({})
@@ -35,6 +44,11 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
       if (!iframe || !event.source || event.source !== iframe.contentWindow) return
       const url = sources.current.get(data.frameId)
       if (!url) return
+      const frameInput = readCanvasFrameInput(data)
+      if (frameInput && interaction.current?.live === data.frameId) {
+        interaction.current?.onInput(data.frameId, frameInput)
+        return
+      }
       if (data.type === 'labels') {
         const labels = readCanvasLabels(data.labels)
         if (labels) setReports((current) => ({ ...current, [data.frameId]: labels }))
@@ -49,6 +63,10 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
     window.addEventListener('message', receive)
     return () => { window.removeEventListener('message', receive); for (const request of requests.current.values()) request.finish(null) }
   }, [])
+  const syncInteraction = useCallback(() => {
+    for (const [id, iframe] of iframes.current) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'interaction', live: interaction.current?.live === id }, '*')
+  }, [])
+  useEffect(() => { syncInteraction() }, [input?.live, revisions, frames, syncInteraction])
   const register = useCallback((id: string, node: HTMLIFrameElement | null) => {
     if (node) iframes.current.set(id, node)
     else iframes.current.delete(id)
@@ -71,5 +89,5 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
       if (url) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: redlinePendingSnapshotForPage(snapshot, new URL(url, window.location.href).href) }, '*')
     }
   }, [])
-  return { reports, register, hitTest, forwardPending }
+  return { reports, register, hitTest, forwardPending, syncInteraction }
 }

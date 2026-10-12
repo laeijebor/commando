@@ -8,6 +8,7 @@ import type { WebPane } from '../shared/protocol'
 import { CanvasPane } from './CanvasPane'
 import { WebPaneCard } from './WebPaneCard'
 import { publishCanvasChange } from './webPanesApi'
+import { parseCanvasManifest } from '../shared/canvas-manifest'
 
 // Vitest skips CSS, so the layout contract is read from source.
 const canvasPaneCss = readFileSync(`${process.cwd()}/src/canvas-pane.css`, 'utf8')
@@ -23,7 +24,7 @@ const example = {
 const fetcher = vi.fn()
 beforeEach(() => {
   vi.stubGlobal('fetch', fetcher)
-  fetcher.mockReset().mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify(example) }))
+  fetcher.mockReset().mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify(example), json: async () => ({ notes: [], threads: [], knownUpTo: 0, dropped: 0 }) }))
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
@@ -33,6 +34,132 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const push = (changed: string[], id = artifactId) => act(() => publishCanvasChange({ artifactId: id, changed }))
 describe('CanvasPane', () => {
+  it('enters only interactive frames, leaves on background/Esc, routes live wheel and suspends live input for comments', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-m4" />)
+    const settings = await screen.findByTitle('Settings'), accounts = screen.getByTitle('Accounts')
+    const viewport = container.querySelector('.canvas-viewport')!, world = container.querySelector('.canvas-world') as HTMLElement
+    fireEvent.doubleClick(accounts.closest('.canvas-frame')!)
+    expect(screen.getByRole('status', { name: 'Canvas hint' })).toHaveTextContent('Static frame')
+    expect(accounts.closest('.canvas-frame')).not.toHaveClass('is-live')
+    fireEvent.doubleClick(settings.closest('.canvas-frame')!)
+    expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
+    expect(screen.getByText('Live — Esc to leave')).toBeInTheDocument()
+    const transform = world.style.transform
+    fireEvent.wheel(settings, { deltaY: 40 }); expect(world.style.transform).toBe(transform)
+    fireEvent.wheel(settings, { deltaY: -10, metaKey: true }); expect(world.style.transform).not.toBe(transform)
+    fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
+    expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+    fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
+    expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
+    fireEvent.click(viewport); expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+    fireEvent.doubleClick(settings.closest('.canvas-frame')!); fireEvent.keyDown(window, { key: 'Escape' })
+    expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+  })
+  it('Play validates window/target/live identity, flies to static targets and Back restores the previous live frame', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const settings = await screen.findByTitle('Settings') as HTMLIFrameElement, accounts = screen.getByTitle('Accounts') as HTMLIFrameElement
+    const go = (target: unknown, source: MessageEventSource | null = settings.contentWindow, frameId = 'settings') => act(() => window.dispatchEvent(new MessageEvent('message', { source, data: { source: 'commando-canvas-frame', type: 'goto', frameId, target } })))
+    go('accounts'); expect(screen.queryByText('Live — Esc to leave')).not.toBeInTheDocument()
+    const play = screen.getByRole('button', { name: 'Play' })
+    fireEvent.click(play)
+    expect(play).toHaveAttribute('aria-pressed', 'true')
+    expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled()
+    go('accounts', window); go('missing'); go({}); go('accounts', accounts.contentWindow)
+    expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
+    const before = (container.querySelector('.canvas-world') as HTMLElement).style.transform
+    go('accounts')
+    expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+    expect(accounts.closest('.canvas-frame')).not.toHaveClass('is-live')
+    expect((container.querySelector('.canvas-world') as HTMLElement).style.transform).not.toBe(before)
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(settings.closest('.canvas-frame')).toHaveClass('is-live')
+    act(() => window.dispatchEvent(new MessageEvent('message', { source: settings.contentWindow, data: { source: 'commando-canvas-frame', type: 'escape', frameId: 'settings' } })))
+    expect(play).toHaveAttribute('aria-pressed', 'false'); expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+    fireEvent.doubleClick(settings.closest('.canvas-frame')!); go('accounts')
+    expect(settings.closest('.canvas-frame')).not.toHaveClass('is-live')
+    expect(play).toHaveAttribute('aria-pressed', 'false')
+  })
+  it('relays modifier zoom from the live iframe, ignores malformed and inactive messages', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const frame = await screen.findByTitle('Settings') as HTMLIFrameElement
+    const world = container.querySelector('.canvas-world') as HTMLElement
+    const zoom = (extras = {}) => act(() => window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { source: 'commando-canvas-frame', type: 'zoom', frameId: 'settings', deltaY: -10, deltaMode: 0, x: 10, y: 20, ...extras } })))
+    const before = world.style.transform
+    zoom(); expect(world.style.transform).toBe(before)
+    fireEvent.doubleClick(frame.closest('.canvas-frame')!)
+    zoom({ x: Infinity }); expect(world.style.transform).toBe(before)
+    zoom(); expect(world.style.transform).not.toBe(before)
+  })
+  it('snaps label drags in world pixels, persists the loaded hash, and preserves iframe identity through self-write reload', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    let board = structuredClone(example)
+    fetcher.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)), move = body.moves[0]
+        board.frames[0].x = move.x; board.frames[0].y = move.y
+        return { ok: true, json: async () => ({ ...parseCanvasManifest(board), contentHash: 'b'.repeat(64) }) }
+      }
+      return { ok: true, text: async () => JSON.stringify(board), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    })
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" token="owner" />)
+    const frame = await screen.findByTitle('Settings'), wrapper = frame.closest('.canvas-frame')!, label = wrapper.querySelector('.canvas-frame-label') as HTMLElement
+    label.setPointerCapture = vi.fn()
+    const scale = Number(/scale\(([^)]+)\)/.exec((container.querySelector('.canvas-world') as HTMLElement).style.transform)![1])
+    const source = frame.getAttribute('src')
+    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(label, { pointerId: 1, clientX: 23 * scale, clientY: 37 * scale })
+    expect(wrapper).toHaveStyle({ left: '20px', top: '40px' })
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0)
+    fireEvent.pointerUp(label, { pointerId: 1 })
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1))
+    const [url, init] = fetcher.mock.calls.find(([, init]) => init?.method === 'PATCH')!
+    expect(url).toBe(`/api/redline/artifacts/${artifactId}/canvas/frames`)
+    expect(JSON.parse(init.body)).toEqual({ manifest: 'canvas.json', expectedHash: 'a'.repeat(64), moves: [{ id: 'settings', x: 20, y: 40 }] })
+    expect(init.headers.Authorization).toBe('Bearer owner')
+    push(['canvas.json']); await waitFor(() => expect(wrapper).toHaveStyle({ left: '20px', top: '40px' }))
+    expect(screen.getByTitle('Settings')).toBe(frame); expect(frame).toHaveAttribute('src', source)
+    fireEvent.pointerDown(label, { button: 0, pointerId: 2, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(label, { pointerId: 2, clientX: 50, clientY: 40 })
+    fireEvent.pointerCancel(label, { pointerId: 2 })
+    expect(wrapper).toHaveStyle({ left: '20px', top: '40px' })
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+  })
+  it('reloads on a stale drag write and reports the conflict without remounting the iframe', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    let changed = false
+    fetcher.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') { changed = true; return { ok: false, status: 409, json: async () => ({ error: 'Canvas changed on disk; reloaded. Try again.' }) } }
+      return { ok: true, text: async () => JSON.stringify({ ...example, frames: example.frames.map((f) => ({ ...f, x: changed ? f.x + 100 : f.x })) }), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    })
+    render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const frame = await screen.findByTitle('Settings'), label = frame.closest('.canvas-frame')!.querySelector('.canvas-frame-label') as HTMLElement
+    label.setPointerCapture = vi.fn()
+    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(label, { pointerId: 1, clientX: 20, clientY: 20 }); fireEvent.pointerUp(label, { pointerId: 1 })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Canvas changed on disk')
+    await waitFor(() => expect(frame.closest('.canvas-frame')).toHaveStyle({ left: '100px' }))
+    expect(screen.getByTitle('Settings')).toBe(frame)
+  })
+  it('does not let an older manifest fetch overwrite a completed move', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    let reads = 0, finishOld!: (response: unknown) => void
+    fetcher.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return { ok: true, json: async () => ({ ...parseCanvasManifest({ ...example, frames: example.frames.map((f) => f.id === 'settings' ? { ...f, x: 30, y: 30 } : f) }), contentHash: 'b'.repeat(64) }) }
+      if (++reads === 2) return new Promise((resolve) => { finishOld = resolve })
+      return { ok: true, text: async () => JSON.stringify(example), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    })
+    render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const frame = await screen.findByTitle('Settings'), wrapper = frame.closest('.canvas-frame')!, label = wrapper.querySelector('.canvas-frame-label') as HTMLElement
+    label.setPointerCapture = vi.fn()
+    push(['canvas.json'])
+    fireEvent.pointerDown(label, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(label, { pointerId: 1, clientX: 20, clientY: 20 }); fireEvent.pointerUp(label, { pointerId: 1 })
+    await waitFor(() => expect(wrapper).toHaveStyle({ left: '30px' }))
+    await act(async () => { finishOld({ ok: true, text: async () => JSON.stringify(example), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }) })
+    expect(wrapper).toHaveStyle({ left: '30px', top: '30px' }); expect(screen.getByTitle('Settings')).toBe(frame)
+  })
   it('spans the card grid and gives the viewport the remaining flex height', async () => {
     const webPane: WebPane = { id: 'w-12345678', url: 'http://localhost/', content: { kind: 'canvas', artifactId, manifest: 'canvas.json' }, sessionId: '$1', windowId: '@1', anchorPaneId: '%1', placement: 'right', engine: 'webkit', status: 'open', openedBy: 'user', createdAt: 0 }
     const { container } = render(<WebPaneCard webPane={webPane} onClose={vi.fn()} onConfirm={vi.fn()} />)

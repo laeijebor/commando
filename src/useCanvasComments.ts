@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CanvasFrame, CanvasSection } from '../shared/canvas-manifest'
 import type { CanvasThread, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
-import { canvasNoteContext, canvasRedlineResponse, type CanvasDraft } from './canvasComments'
+import { canvasNoteContext, canvasRedlineResponse, canvasSectionStatusNote, type CanvasDraft } from './canvasComments'
 import { createWebPanesApi, subscribeCanvasThreads, subscribeCanvasPending, subscribeCanvasRefresh } from './webPanesApi'
 
 const EMPTY: WebPanePendingSnapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }
@@ -75,6 +75,18 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
     else setActive(null)
   })
   const queued = snapshot.notes.filter((note) => note.canvas)
+  const sectionStatus = (section: CanvasSection, status: CanvasSection['status'], pageUrl: string) => mutate(async () => {
+    if (!webPaneId) return
+    const frame = frames.find((f) => section.frames.includes(f.id))
+    if (!frame) return
+    const generation = lifetime.current
+    const note = canvasSectionStatusNote(frame, section, status, pageUrl)
+    const next = await api.addPendingNote(webPaneId, note)
+    if (generation !== lifetime.current) return
+    apply(next)
+    const added = [...next.notes].reverse().find((n) => n.id > snapshot.knownUpTo && n.comment === note.comment && n.canvas?.frameId === frame.id)
+    if (added) await send([added], next)
+  })
   const relay = (frameId: string, payload: unknown, pageUrl: string) => {
     const response = canvasRedlineResponse(payload), frame = frames.find((f) => f.id === frameId)
     if (!response || !frame || !webPaneId) return
@@ -84,7 +96,7 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
       .then((next) => { if (generation === lifetime.current) apply(next) })
       .catch((reason: Error) => { if (generation === lifetime.current) setError(reason.message) })
   }
-  return { snapshot, queued, threads, draft, active, busy, error, relay,
+  return { snapshot, queued, threads, draft, active, busy, error, relay, sectionStatus,
     openDraft: (next: CanvasDraft) => { setDraft(next); setActive('draft'); setError('') },
     updateDraftComment: (comment: string) => setDraft((current) => current ? { ...current, comment } : current),
     open: setActive, close: () => { setActive(null); setDraft(null) }, queueDraft,

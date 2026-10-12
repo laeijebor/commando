@@ -1,8 +1,8 @@
-import type { CanvasFrame, CanvasSection } from '../shared/canvas-manifest'
-import type { CanvasNoteContext } from '../shared/protocol'
-import { MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES, parseRedlinePageQuestionSnapshot, parseRedlinePageResponse } from '../shared/redline-response'
-import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect'
-import type { CanvasBounds } from './canvasCamera'
+import type { CanvasFrame, CanvasSection } from '../shared/canvas-manifest.js'
+import type { CanvasNoteContext, WebPanePendingNote } from '../shared/protocol.js'
+import { MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES, parseRedlinePageQuestionSnapshot, parseRedlinePageResponse } from '../shared/redline-response.js'
+import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
+import type { CanvasBounds } from './canvasCamera.js'
 
 export type CanvasHit = { selector: string; rect: CanvasBounds; label?: string; labelId?: string; tag: string; text?: string }
 export type CanvasDraft = { comment?: string; canvas: CanvasNoteContext; hit: CanvasHit; pageUrl: string }
@@ -38,4 +38,10 @@ export function canvasNoteContext(frame: CanvasFrame, sections: CanvasSection[],
     ...(label ? { label } : {}), ...(labelId ? { labelId } : {}),
     ...(section ? { section: section.title.slice(0, 256), status: section.status, ...(section.ticket ? { ticket: section.ticket.slice(0, 256) } : {}) } : {}),
     ...(frame.focus !== undefined ? { focus: frame.focus } : {}), interactive: frame.interactive ?? false }
+}
+
+export function canvasSectionStatusNote(frame: CanvasFrame, section: CanvasSection, status: CanvasSection['status'], pageUrl: string): Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'> {
+  return { selector: 'html', tag: 'section', comment: `Section "${section.title}" status changed from ${section.status} to ${status}`, pageUrl,
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+    canvas: { ...canvasNoteContext(frame, [], { x: 0, y: 0 }), section: section.title.slice(0, 256), ...(section.ticket ? { ticket: section.ticket.slice(0, 256) } : {}), status } }
 }

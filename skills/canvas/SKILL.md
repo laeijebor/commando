@@ -8,8 +8,12 @@ argument-hint: <screens or variants to lay out>
 
 Use a canvas for a spatial board of screens, flows or alternatives. Use a
 redline document for a linear plan, report or proposal that needs prose and
-review of document elements. Canvas displays inert frames with a label overview; Comment pins and redline SDK controls queue feedback; Play mode arrives in a later milestone. Do not imply
-that an Interactive badge enables interaction yet.
+review of document elements. Canvas displays inert frames with a label overview.
+Double-click an interactive frame to enter it; its Live chip indicates that
+controls and scrolling work. Esc or clicking the canvas background leaves it.
+Static frames never become live. The comment tool takes precedence over live input.
+▶ Play starts at focus 1 (or the first interactive frame), fits it, and follows
+prototype links. Back retraces up to 50 frame visits; Esc exits Play.
 
 Create plain HTML files with local assets and no build step:
 
@@ -77,7 +81,7 @@ Frame roles:
   Initial view fits focus frames; without focus it fits everything. Fit always
   includes everything. Set focus on the screens to discuss first.
 - `interactive`: boolean distinguishing a planned clickable prototype (cyan
-  ▶ Interactive) from a Static reference. Frames stay inert until Play mode is implemented.
+  ▶ Interactive) from a Static reference. Frames stay inert until double-clicked or entered through Play.
 - Sections group frame ids with an optional ticket. Status must be `idea`,
   `in-progress`, `ready-for-review`, `ready-for-dev` or `shipped`.
 - `variant`: title required, context and description optional; appears above
@@ -105,7 +109,10 @@ to the element. Start here follows focus order; Notes jumps to note cards.
 Label-targeted annotations match names within their target frame (use distinct
 names there if they need distinct connectors). Frame ids used by the bridge
 must match `^[A-Za-z0-9_-]{1,64}$`.
-`data-canvas-goto` declares future Play navigation to a frame id.
+`data-canvas-goto="<frameId>"` is required for canvas click-through. The bridge
+intercepts those clicks and flies to the target frame in Play or an entered
+frame. Ordinary links do not navigate between canvas frames. Targets must be
+manifest frame ids; static targets fit into view but stay inert.
 
 ```html
 <div data-canvas-group="Accounts">
@@ -144,8 +151,8 @@ pins appear in Threads and remain after journal acknowledgement.
 
 Redline SDK controls work inside frames through the canvas queue bridge,
 with pending snapshots scoped to the frame page URL. SDK question snapshots
-are validated but ignored in M2b. Frames remain inert until Play is available;
-programmatic SDK queue calls work now. The review loop is two-way: reply in each thread, and resolve when done.
+are validated but ignored. Enter a frame to use its SDK controls; programmatic
+SDK queue calls also work while inert. The review loop is two-way: reply in each thread, and resolve when done.
 User follow-ups arrive through the same journal and reopen resolved threads.
 
 ```bash
@@ -163,3 +170,17 @@ a pending result can be polled with
 Chat hosts queue pushed feedback during a turn. Terminal agents receive pushes
 only in `done` status; busy or unknown panes are owed delivery until a later
 completion. The journal remains the source of truth across daemon restarts.
+
+## User layout and section status
+
+In hand mode, users can drag frame label rows. Positions snap to 10 world pixels
+and are written atomically to the manifest. Users can also choose any of the
+five statuses from a section's status chip. This writes the new status and
+queues then sends a feedback note with section, ticket and status context
+through the shared journal and push delivery. A stale edit reloads the manifest
+and asks the user to try again; a failed send leaves the note queued for Send.
+
+Always re-read `canvas.json` (or the custom manifest path) before rewriting it.
+Keep user-moved x/y positions and user-chosen section statuses, along with
+unknown keys. Do not overwrite layout from an earlier in-memory copy. Agents
+edit the file directly; the layout/status daemon endpoints require owner auth.
