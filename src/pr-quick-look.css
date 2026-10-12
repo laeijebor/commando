@@ -249,16 +249,16 @@
 .pr-quick-markdown img {
   max-width: 100%;
 }
-.pr-quick-modal a {
+.pr-quick-view a {
   color: var(--accent);
 }
-.pr-quick-modal .pass {
+.pr-quick-view .pass {
   color: var(--green);
 }
-.pr-quick-modal .fail {
+.pr-quick-view .fail {
   color: var(--red);
 }
-.pr-quick-modal .pending {
+.pr-quick-view .pending {
   color: var(--amber);
 }
 .pr-quick-check {
@@ -507,3 +507,23 @@
   .pr-quick-diff header { padding: 8px; font-size: 11px; }
   .pr-quick-diff pre { padding: 8px; font-size: 11px; line-height: 1.5; }
 }
+
+.pr-quick-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.pr-quick-embedded { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: auto; color: var(--text); background: var(--surface-raised); font-size: 12px; }
+.pr-quick-embedded .pr-quick-header { gap: 8px; padding: 14px 12px 8px; }
+.pr-quick-embedded .pr-quick-header h2 { font-size: 16px; }
+.pr-quick-embedded .pr-quick-meta { padding: 0 12px 12px; }
+.pr-quick-embedded .pr-quick-target { min-width: 0; flex-wrap: wrap; }
+.pr-quick-embedded .pr-quick-target-warning, .pr-quick-embedded .pr-quick-conflict-warning { padding: 8px 12px; }
+.pr-quick-embedded .pr-quick-tabs { padding: 0 6px; }
+.pr-quick-embedded .pr-quick-tabs button { padding: 8px 6px; font-size: 11px; }
+.pr-quick-embedded .pr-quick-tabs small { display: block; margin-left: 0; }
+.pr-quick-embedded .pr-quick-panel { padding: 12px; min-height: 100px; }
+.pr-quick-embedded .pr-quick-panel.is-diff { flex-direction: column; padding: 0; }
+.pr-quick-embedded .pr-quick-files { flex: 0 0 auto; max-height: 160px; min-width: 0; border-right: 0; border-bottom: 1px solid var(--border); }
+.pr-quick-embedded .pr-quick-files input { box-sizing: border-box; }
+.pr-quick-embedded .pr-quick-diff { min-height: 100px; }
+.pr-quick-embedded .pr-conflict-files-layout { flex-direction: column; }
+.pr-quick-embedded .pr-quick-actions { padding: 10px 12px; }
+.pr-quick-embedded .pr-quick-actions .pr-pop-btn { padding: 6px 8px; }
+.pr-quick-embedded .pr-quick-check > * { min-width: 0; }

@@ -1,4 +1,5 @@
-import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatTaskAction } from './agent-chat.js'
+import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
+import type { ChatStashEntry } from './chat-stash.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
 
@@ -466,9 +467,11 @@ export type WebPaneEngine = 'webkit' | 'chromium'
  */
 export type WebPane = {
   /** Built-in content bypasses browser engines and URL navigation. */
-  content?: { kind: 'simulator'; udid: string }
+  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string }
   id: string
   url: string
+  /** Daemon page title, available even when a Chromium tile is hidden. */
+  title?: string
   sessionId: string
   windowId: string
   anchorPaneId: string
@@ -477,6 +480,8 @@ export type WebPane = {
   dock?: 'panel' | 'split'
   order?: number
   unseen?: boolean
+  /** Increments when an existing URL tab is opened again. */
+  openRevision?: number
   /** Per-anchor selection included in the existing web-panes broadcast. */
   activeTab?: boolean
   /**
@@ -497,6 +502,7 @@ export type WebPane = {
 
 export const MAX_WEB_PANES = 64
 export const MAX_WEB_PANE_URL_LENGTH = 2_048
+export const MAX_WEB_PANE_TITLE_LENGTH = 1_024
 /** Cap on notes per POST /feedback body — client and server must agree on this. */
 export const MAX_FEEDBACK_NOTES_PER_POST = 20
 
@@ -553,6 +559,25 @@ export type WebPaneFeedbackHandoff = {
   instruction: string
 }
 
+/** Frame-local CSS pixels and author-provided manifest context. */
+export type CanvasNoteContext = {
+  threadId?: string
+  frameId: string
+  point: { x: number; y: number }
+  label?: string; labelId?: string; frameTitle?: string
+  section?: string; ticket?: string; status?: string
+  focus?: number; interactive?: boolean
+}
+
+export type CanvasThread = {
+  id: string; webPaneId: string; frameId: string; point: { x: number; y: number }
+  label?: string; labelId?: string; selector?: string
+  canvas?: CanvasNoteContext
+  source?: Pick<WebPaneFeedbackNote, 'selector' | 'tag' | 'text' | 'rect' | 'pageUrl'>
+  messages: Array<{ author: 'user' | 'agent'; text: string; at: number; deliveryKey?: string }>
+  status: 'open' | 'resolved'; createdAt: number
+}
+
 export type WebPaneFeedbackNote = {
   /** Server-assigned delivery id; present on drained notes, used for dedupe. */
   id?: number
@@ -567,6 +592,7 @@ export type WebPaneFeedbackNote = {
   text?: string
   rect: { x: number; y: number; width: number; height: number }
   comment: string
+  canvas?: CanvasNoteContext
   pageUrl: string
   capturedAt: number
   /** Present when the note came from an in-page component, not an annotation. */
@@ -599,6 +625,7 @@ export type WebPanePendingNote = {
   text?: string
   rect: { x: number; y: number; width: number; height: number }
   comment: string
+  canvas?: CanvasNoteContext
   /** Replace-key for unsent re-answers from the same in-page question. */
   queueKey?: string
   /** Present when the note came from an in-page component, not an annotation. */
@@ -645,6 +672,11 @@ export type WebPaneNavigateRequest = {
   /** Label of the requesting agent, e.g. "claude · gizmo". */
   requestedBy?: string
   requestedAt: number
+}
+
+export type CanvasSpotlightRequest = {
+  id: string; label?: string; labelId?: string; frame?: string; message?: string
+  requestedBy?: string; requestedAt: number
 }
 
 export type WebPaneNavigateDecision = 'pending' | 'accepted' | 'dismissed' | 'superseded' | 'closed'
@@ -706,8 +738,11 @@ export type ServerMessage =
   | {
       type: 'web_panes'
       webPanes: WebPane[]
+      /** Per-pane panel selection, including built-in keys. */
+      activeTabs?: Record<string, string>
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
+      spotlightRequests?: Record<string, CanvasSpotlightRequest>
       /** Per-tile reload counter: a change asks viewers to reload what they render. */
       reloads?: Record<string, number>
     }
@@ -718,8 +753,13 @@ export type ServerMessage =
       changed: boolean
       requestId: string
     }
+  | { type: 'canvas_pending_changed'; webPaneId: string }
+  | { type: 'canvas_threads_changed'; webPaneId: string }
+  | { type: 'canvas_changed'; artifactId: string; changed: string[] }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
+  /** The composer stash, newest first: on connect and after every change. */
+  | { type: 'chat_stash'; entries: ChatStashEntry[] }
   /** A chat pane's whole state: sent when its host connects or reconnects. */
   | { type: 'chat_state'; chat: ChatState }
   | { type: 'chat_session'; paneId: string; session: ChatSessionInfo; hostConnected: boolean }
@@ -728,6 +768,8 @@ export type ServerMessage =
   | { type: 'chat_removed'; paneId: string }
   /** A chat's `/` menu list changed. */
   | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }
+  /** Conversations running in Claude Code that started as a chat, so their panes offer the way back. */
+  | { type: 'chat_handoffs'; sessionIds: string[] }
   /** Answers one client's `chat_file_search`. */
   | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   /** Answers one client's `chat_subagent_transcript`. */
@@ -831,3 +873,12 @@ export type ClientMessage =
   | { type: 'chat_answer'; paneId: string; chatRequestId: string; answer: ChatAnswer; requestId: string }
   /** Switches a chat's model, effort or permission mode while it runs. */
   | { type: 'chat_configure'; paneId: string; settings: ChatSettingsChange; requestId: string }
+  /**
+   * Hands a chat's conversation to Claude Code in its pane (or cancels a switch
+   * that waits for the turn). `draft` is the unsent draft the chat gets back.
+   */
+  | { type: 'chat_switch'; paneId: string; action: ChatSwitchAction; draft?: { text: string; images: ChatImageRef[] }; requestId: string }
+  /** Claude Code, running a conversation that started as a chat, exits so the chat comes back. */
+  | { type: 'chat_return'; paneId: string; requestId: string }
+  /** The composer took what the chat carried across Claude Code: its text and the first `images` images (all when omitted). */
+  | { type: 'chat_carry_taken'; paneId: string; carryId: string; images?: number; requestId: string }

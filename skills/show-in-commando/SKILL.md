@@ -1,12 +1,12 @@
 ---
 name: show-in-commando
-description: Show the user a web page beside your terminal pane in Commando, or debug one together over CDP. Use whenever you serve or publish anything reviewable on localhost — a Lavish/HTML artifact, npx serve output, a vite/storybook/dev server, coverage or build reports, docs — or the user says "show me", "open it next to", or "in commando"; also when you want to debug a web page WITH the user (watch network requests, breakpoints, traces) — open it as a chromium-engine tile and attach Chrome DevTools Protocol to the page they are looking at. Opens the URL as a tile in the Commando pane grid, anchored to the tmux pane you are running in.
+description: Show the user a web page beside your terminal pane in Commando, or debug one together over CDP. Use whenever you serve or publish anything reviewable on localhost — a Lavish/HTML artifact, npx serve output, a vite/storybook/dev server, coverage or build reports, docs — or the user says "show me", "open it next to", or "in commando"; also when you want to debug a web page WITH the user (watch network requests, breakpoints, traces) — open it as a chromium-engine tile and attach Chrome DevTools Protocol to the page they are looking at. Opens the URL as a tab in the anchor tmux pane's side panel.
 ---
 
 # Show a page in Commando
 
 Commando (the user's tmux cockpit) can render a web page as a tile in its
-pane grid, right beside the tmux pane you are working in. When you have
+side-panel tab set, anchored to the tmux pane you are working in. When you have
 something worth *seeing* — a served HTML page, a dev server, a report —
 open it as a tile instead of only pasting a URL into chat.
 
@@ -40,21 +40,20 @@ All three must hold (otherwise just share the URL in your reply):
 
 ```bash
 url="http://127.0.0.1:41300/my-page"   # must not contain double quotes
-placement="auto"                        # right | below | auto
 engine="webkit"                         # webkit (show) | chromium (debug over CDP)
 curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes" \
   -H "Authorization: Bearer $(cat "${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}")" \
   -H 'Content-Type: application/json' \
-  --data "{\"url\":\"${url}\",\"anchor\":\"${TMUX_PANE}\",\"placement\":\"${placement}\",\"engine\":\"${engine}\"}"
+  --data "{\"url\":\"${url}\",\"anchor\":\"${TMUX_PANE}\",\"engine\":\"${engine}\"}"
 ```
 
 (If a checkout of the commando repo is handy, `scripts/commando-open <url>
-[placement] [--engine chromium]` does exactly this.)
+[--engine chromium]` does exactly this.)
 
-Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine":"webkit"}`.
+Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine":"webkit","reused":false}`.
 
-- `status: "open"` — the tile is already visible in every connected
-  Commando client. Tell the user you opened it beside your pane.
+- `status: "open"` — the tile is in every connected client. It activates if its
+  anchor pane is focused; otherwise it is badged "new". Tell the user you opened it beside your pane.
 - `status: "pending"` — non-localhost origins need the user's one-click
   approval; the tile shows a confirm card. Tell the user it is waiting for
   their confirmation. Never try to confirm it yourself — confirmation is
@@ -62,12 +61,15 @@ Response: `{"ok":true,"webPaneId":"w-…","beside":"%12","status":"open","engine
 
 ## Change a tile's URL, or reload it
 
-Keep the tile and change what it shows. Never close and reopen a tile to
-change its URL, and never drive the user's view with CDP `Page.navigate`.
+Open a new tab for each new page or artifact; localhost needs no approval.
+Reopening a URL already open in your pane brings that tab forward and reloads
+it (`reused: true`); an unconfirmed tab stays pending.
+Use `/navigate` only when the user asks you to change a tab they are looking
+at; the user approves it from a toast. Never drive their view with CDP `Page.navigate`.
 CDP reaches the daemon's headless page, and the user often watches the tile
 through a native webview that CDP cannot touch.
 
-To ask for a new URL:
+To request that tab change:
 
 ```bash
 curl -sS -X POST "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/navigate?wait=60" \
@@ -204,12 +206,11 @@ finished). Do not close tiles you did not open.
 
 - localhost / 127.0.0.1 URLs open instantly; anything else pends for the
   user. Only `http:`/`https:` URLs are accepted.
-- Prefer `placement: "auto"` (splits along the pane's longer edge);
-  use `below` for short/wide content, `right` for tall content.
-- At most a handful of tiles fit — open one, not one per artifact, and
-  reuse it by closing the old tile before opening a replacement.
+- Web tiles open as tabs in the anchor pane's side-panel tab set.
+  `placement` is ignored for agent opens; only the user splits a tab out.
+- Open a new tab for each new page or artifact; use `/reload` for content edits.
 - 404 "Anchor tmux pane does not exist": your pane is not mirrored by this
   daemon — fall back to sharing the URL.
 - 401 / connection refused / missing token file: Commando is not available —
   fall back to sharing the URL. Do not retry in a loop.
-- 429: you are opening tiles too fast; stop and reuse the existing tile.
+- 429: you are opening tiles too fast; slow down.

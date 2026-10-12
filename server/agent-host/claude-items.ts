@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { isAgentId, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatSubagentState, type ChatTodo } from '../../shared/agent-chat.js'
+import { ATTACHMENT_NOTES, isAgentId, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatSubagentState, type ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
 /** Transcript user entries that Claude Code wrote itself, not the person. */
@@ -50,21 +50,6 @@ function imageData(part: unknown): string | undefined {
   if (value.type !== 'image') return undefined
   const source = record(value.source)
   return source.type === 'base64' ? str(source.data) : undefined
-}
-
-/**
- * Names the saved copy of an attached image in the text Claude gets, so its
- * tools can open the file (after t3code's AttachmentPrompt).
- */
-export function attachmentNote(name: string, path: string): string {
-  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
-}
-
-const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
-
-/** The text the person typed, without the notes the host added for Claude. */
-export function stripAttachmentNotes(text: string): string {
-  return text.replace(ATTACHMENT_NOTES, '').trim()
 }
 
 /** The saved-copy paths that a transcript's own attachment notes name. */

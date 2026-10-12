@@ -620,6 +620,21 @@ describe('chat pane messages', () => {
     expect(parseClientMessage({ type: 'chat_configure', paneId: '%4', settings: { model: 'x; rm -rf /' }, requestId: 'r5' }).ok).toBe(false)
   })
 
+  it('accepts switches to Claude Code with their draft, returns and taken drafts', () => {
+    const image = { id: `${'b'.repeat(64)}.png`, name: 'shot.png' }
+    expect(parseClientMessage({ type: 'chat_switch', paneId: '%4', action: 'after_turn', draft: { text: 'half', images: [image] }, requestId: 'r6' }))
+      .toEqual({ ok: true, message: { type: 'chat_switch', paneId: '%4', action: 'after_turn', draft: { text: 'half', images: [image] }, requestId: 'r6' } })
+    expect(parseClientMessage({ type: 'chat_switch', paneId: '%4', action: 'cancel', requestId: 'r6' }))
+      .toEqual({ ok: true, message: { type: 'chat_switch', paneId: '%4', action: 'cancel', requestId: 'r6' } })
+    expect(parseClientMessage({ type: 'chat_switch', paneId: '%4', action: 'later', requestId: 'r6' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_switch', paneId: '%4', action: 'now', draft: { text: 'x', images: [{ id: '../etc' }] }, requestId: 'r6' }).ok).toBe(false)
+    expect(parseClientMessage({ type: 'chat_return', paneId: '%4', requestId: 'r7' }))
+      .toEqual({ ok: true, message: { type: 'chat_return', paneId: '%4', requestId: 'r7' } })
+    expect(parseClientMessage({ type: 'chat_carry_taken', paneId: '%4', carryId: 'c1', requestId: 'r8' }))
+      .toEqual({ ok: true, message: { type: 'chat_carry_taken', paneId: '%4', carryId: 'c1', requestId: 'r8' } })
+    expect(parseClientMessage({ type: 'chat_carry_taken', paneId: '%4', carryId: '', requestId: 'r8' }).ok).toBe(false)
+  })
+
   it('rejects blank sends, bad panes and malformed answers', () => {
     expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: '   ', requestId: 'r1' }).ok).toBe(false)
     expect(parseClientMessage({ type: 'chat_send', paneId: '4', text: 'hi', requestId: 'r1' }).ok).toBe(false)

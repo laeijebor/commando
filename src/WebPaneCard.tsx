@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PictureInPicture2, RotateCw, ShieldAlert, Smartphone, Wrench, X } from 'lucide-react'
+import { ExternalLink, Globe, Maximize2, MessageSquarePlus, Minimize2, PanelRightOpen, PictureInPicture2, Columns2, RotateCw, ShieldAlert, Smartphone, Wrench, X } from 'lucide-react'
 import type { WebPane, WebPaneFeedbackInfo, WebPaneNavigateRequest } from '../shared/protocol'
 import { getNativeWebViewBridge, type NativeWebViewBridge } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
+import { CanvasPane } from './CanvasPane'
 import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
 
@@ -101,6 +102,7 @@ export function WebPaneCard({
   onNavigate,
   maximized,
   onMaximize,
+  onDock,
   detached = false,
   detachedWindow = false,
   onPopOut,
@@ -133,6 +135,7 @@ export function WebPaneCard({
   onNavigate?: (url: string) => void
   maximized?: boolean
   onMaximize?: () => void
+  onDock?: () => void
   /** The pane is rendered exclusively in another AppKit window. */
   detached?: boolean
   /** This card is the content of the focused AppKit pane window. */
@@ -231,6 +234,20 @@ export function WebPaneCard({
     return () => window.clearTimeout(watchdog)
   }, [nativeChromium, nativeLoaded, webPane.url])
 
+  const dockAction = onDock && !detached && !detachedWindow && webPane.content?.kind !== 'canvas' ? (
+    <button type="button" className="web-pane-button" onClick={onDock}
+      title={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}
+      aria-label={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}>
+      {webPane.dock === 'split' ? <PanelRightOpen aria-hidden="true" /> : <Columns2 aria-hidden="true" />}
+    </button>
+  ) : null
+
+  if (webPane.content?.kind === 'canvas') return (
+    <article className="web-pane" data-web-pane-id={webPane.id}>
+      <CanvasPane key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+    </article>
+  )
+
   if (webPane.content?.kind === 'simulator') return (
     <article className="web-pane" data-web-pane-id={webPane.id} onPointerDownCapture={onActivateSimulator}>
       <header className="web-pane-head" draggable={onDragStart ? 'true' : 'false'} onDragStart={onDragStart} onDragEnd={onDragEnd}>
@@ -241,6 +258,7 @@ export function WebPaneCard({
         </button>
         <span className="web-pane-meta"><span className="web-pane-chip">simulator</span></span>
         <span className="web-pane-actions">
+          {dockAction}
           {onMaximize ? <button type="button" className="web-pane-button" onClick={onMaximize} aria-label={maximized ? 'Restore web pane' : 'Maximize web pane'}>{maximized ? <Minimize2 /> : <Maximize2 />}</button> : null}
           <button type="button" className="web-pane-button" onClick={onClose} aria-label="Close simulator tile"><X /></button>
         </span>
@@ -327,6 +345,7 @@ export function WebPaneCard({
           )}
         </span>
         <span className="web-pane-actions">
+          {dockAction}
           {chromium && !pending && !detached && (
             <button
               type="button"

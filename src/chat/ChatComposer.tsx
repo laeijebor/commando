@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
+import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
   MAX_CHAT_IMAGES,
@@ -9,6 +9,7 @@ import {
   hostTakesSettings,
   hostTakesTurnFlow,
   type ChatAnswer,
+  type ChatCarriedDraft,
   type ChatCommand,
   type ChatFileSearchResult,
   type ChatImageRef,
@@ -22,6 +23,7 @@ import {
 import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
 import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
+import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
 import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable } from './ComposerControls'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
@@ -37,8 +39,11 @@ import {
   type ComposerTrigger,
   type PullRequestOption,
 } from './composerTriggers'
+import { StashMenu } from './StashMenu'
+import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from './timelineRows'
 import { Button } from './ui/button'
+import { useComposerStash, type StashedDraft } from './useComposerStash'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -177,6 +182,15 @@ function TodoChip({ todos }: { todos: TodoItem }) {
 
 type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
 
+/** The draft a switch to Claude Code carries across: text and uploaded images. */
+export type ChatDraft = { text: string; images: ChatImageRef[] }
+
+/**
+ * Carried drafts this page already put in a composer, with how many of their
+ * images, so a remount before the daemon clears one doesn't add it twice.
+ */
+const takenCarries = new Map<string, number>()
+
 const FILE_SEARCH_DEBOUNCE_MS = 80
 const PR_CACHE_MS = 60_000
 /** A failed load is retried sooner (e.g. once the branch is pushed). */
@@ -301,6 +315,10 @@ export function ChatComposer({
   onQueue,
   relayTarget,
   onClearRelay,
+  carried,
+  onCarriedTaken,
+  registerDraft,
+  onUploadingChange,
 }: {
   session: ChatSessionInfo
   hostConnected: boolean
@@ -329,6 +347,14 @@ export function ChatComposer({
   /** Messages go to this subagent, relayed through main Claude. */
   relayTarget?: { agentId: string; label: string }
   onClearRelay?: () => void
+  /** The draft and queue the chat had when it switched to Claude Code, back in the composer. */
+  carried?: ChatCarriedDraft
+  /** `images`: how many of the carried images came back; the rest wait for room. */
+  onCarriedTaken?: (carryId: string, images: number) => void
+  /** Lets a switch to Claude Code read the unsent draft. */
+  registerDraft?: (read: (() => ChatDraft) | null) => void
+  /** An image is still uploading: a switch now would leave it behind. */
+  onUploadingChange?: (uploading: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -337,7 +363,9 @@ export function ChatComposer({
   const menuId = useId()
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
-  const disabled = !hostConnected || closed
+  // A switch to Claude Code takes the draft as it is; answers and Stop still work.
+  const switching = Boolean(session.claudeCodeSwitch)
+  const disabled = !hostConnected || closed || switching
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.
   const richInput = Boolean(services) && hostTakesInput(session)
@@ -469,6 +497,53 @@ export function ChatComposer({
     }))
   }
 
+  const clearDraft = () => {
+    for (const attachment of attachments) release(attachment)
+    setAttachments([])
+    setAttachError(null)
+    setDraft('')
+    updateTrigger(null)
+  }
+
+  // A draft taken from the stash goes before anything typed since, with its images as fit.
+  const latestAttachments = useRef(attachments)
+  latestAttachments.current = attachments
+  const bringBack = ({ text, images }: StashedDraft) => {
+    if (text) {
+      pendingCaret.current = text.length
+      setDraft((current) => [text, current.trim()].filter(Boolean).join('\n\n'))
+    }
+    if (!images.length) return
+    const fit = fitAttachments(latestAttachments.current.length, images.length)
+    if (fit.error) setAttachError(fit.error)
+    const restored = images.slice(0, fit.accepted).map((ref) => ({
+      key: `stash-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name: ref.name ?? 'image',
+      previewUrl: chatImageUrl(ref.id),
+      ref,
+    }))
+    setAttachments((current) => [...restored, ...current])
+  }
+
+  const stashMenuId = useId()
+  const stash = useComposerStash({
+    session,
+    draft,
+    images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])),
+    uploading: attachments.some((attachment) => !attachment.ref),
+    clear: clearDraft,
+    bringBack,
+    setError: setAttachError,
+  })
+  const stashNow = useNow(stash.menuOpen)
+  // The stash list and the `/`, `@` and `#` menus share the space; the stash list wins.
+  const triggerMenuOpen = menuOpen && !stash.menuOpen
+  const openStashMenu = () => {
+    updateTrigger(null)
+    stash.openMenu(!stash.menuOpen)
+    textarea.current?.focus()
+  }
+
   // Each send's draft is kept by its request id, so a refusal puts back what it refused
   // even after later follow-ups were sent.
   const sentDrafts = useRef(new Map<string, { text: string; images: ChatImageRef[] }>())
@@ -496,7 +571,49 @@ export function ChatComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendError])
 
+  const latestDraft = useRef<ChatDraft>({ text: '', images: [] })
+  latestDraft.current = { text: draft, images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])) }
+  useEffect(() => {
+    if (!registerDraft) return
+    registerDraft(() => latestDraft.current)
+    return () => registerDraft(null)
+  }, [registerDraft])
+
+  // Back from Claude Code: what the chat held comes back into the composer, once.
+  // Images beyond a message's limit stay with Commando and come back as room frees up.
+  const reportedCarries = useRef(new Set<string>())
+  useEffect(() => {
+    // A pending switch has taken the draft as it was; what's carried stays with Commando until then.
+    if (!carried || switching || reportedCarries.current.has(carried.id)) return
+    let restored = takenCarries.get(carried.id)
+    if (restored === undefined) {
+      const fit = fitAttachments(attachments.length, carried.images.length)
+      const waiting = carried.images.length - fit.accepted
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (!carried.text && fit.accepted === 0) return
+      restored = fit.accepted
+      takenCarries.set(carried.id, restored)
+      if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      const images = carried.images.slice(0, restored).map((ref, index) => ({
+        key: `carried-${carried.id}-${index}`,
+        name: ref.name ?? 'image',
+        previewUrl: chatImageUrl(ref.id),
+        ref,
+      }))
+      if (images.length) setAttachments((current) => [...images, ...current])
+    }
+    reportedCarries.current.add(carried.id)
+    onCarriedTaken?.(carried.id, restored)
+    // A carried draft is taken once; room for its images is what changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carried?.id, attachments.length, switching])
+
   const uploading = attachments.some((attachment) => !attachment.ref)
+  useEffect(() => {
+    if (!onUploadingChange) return
+    onUploadingChange(uploading)
+    return () => onUploadingChange(false)
+  }, [uploading, onUploadingChange])
   const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
   const planFollowUp = plan && !running && !relayTarget ? plan : undefined
   const refining = Boolean(draft.trim() || attachments.length)
@@ -516,16 +633,13 @@ export function ChatComposer({
       sentDrafts.current.set(requestId, { text, images })
       window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
     }
-    for (const attachment of attachments) release(attachment)
-    setAttachments([])
-    setAttachError(null)
-    setDraft('')
-    updateTrigger(null)
+    clearDraft()
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
-    if (menuOpen && trigger) {
+    if (stash.onKeyDown(event)) return
+    if (triggerMenuOpen && trigger) {
       if (items.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault()
         const index = active ? items.indexOf(active) : -1
@@ -546,6 +660,7 @@ export function ChatComposer({
         return
       }
     }
+    if (handleLineKey(event, event.currentTarget)) return
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit(event.metaKey || event.ctrlKey)
@@ -642,7 +757,18 @@ export function ChatComposer({
             ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
             : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
         ) : null}
-        {menuOpen && trigger ? (
+        {stash.menuOpen ? (
+          <StashMenu
+            id={stashMenuId}
+            entries={stash.entries}
+            activeId={stash.activeId}
+            paneId={session.paneId}
+            now={stashNow}
+            onHighlight={stash.setActiveId}
+            onRestore={stash.restore}
+            onRemove={stash.remove}
+          />
+        ) : triggerMenuOpen && trigger ? (
           <ComposerMenu
             id={menuId}
             label={MENU_LABELS[trigger.kind]}
@@ -689,23 +815,28 @@ export function ChatComposer({
             syncTrigger(event.target)
           }}
           onSelect={(event) => syncTrigger(event.currentTarget)}
-          onBlur={() => updateTrigger(null)}
+          onBlur={() => {
+            updateTrigger(null)
+            if (stash.menuOpen) stash.openMenu(false)
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
-            : closed
-              ? 'This session has ended'
-              : relayTarget
-                ? `Message @${relayTarget.label} through main Claude…`
-                : running
-                  ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
-                  : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
+            : switching
+              ? 'Switching to Claude Code…'
+                : closed
+                ? 'This session has ended'
+                : relayTarget
+                  ? `Message @${relayTarget.label} through main Claude…`
+                  : running
+                    ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
+                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
           aria-label="Message Claude"
-          aria-controls={menuOpen ? menuId : undefined}
+          aria-controls={stash.menuOpen ? stashMenuId : triggerMenuOpen ? menuId : undefined}
           aria-autocomplete="list"
-          aria-activedescendant={menuOpen && active ? `${menuId}-${active.key}` : undefined}
-          className="block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          aria-activedescendant={stash.menuOpen ? (stash.activeId ? `${stashMenuId}-${stash.activeId}` : undefined) : triggerMenuOpen && active ? `${menuId}-${active.key}` : undefined}
+          className="chat-composer-input block max-h-60 min-h-11 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-base text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
         />
         <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
@@ -733,6 +864,22 @@ export function ChatComposer({
             <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
+            {stash.entries.length ? (
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                aria-expanded={stash.menuOpen}
+                aria-haspopup="listbox"
+                title="Stashed drafts (Ctrl+Shift+S). Ctrl+S stashes a draft, or brings back the newest on an empty composer"
+                disabled={disabled}
+                // Keep focus (and the caret) in the textarea.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={openStashMenu}
+              >
+                <Archive aria-hidden="true" />
+                {stash.entries.length} stashed
+              </Button>
+            ) : null}
           </span>
           {session.contextUsage ? (
             <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />

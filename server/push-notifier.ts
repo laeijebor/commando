@@ -259,6 +259,22 @@ export class PushNotifier {
     this.pending.set(paneId, { status: change.status, timer })
   }
 
+  /**
+   * Takes in a status that isn't news, such as a chat's state restored after
+   * a daemon restart: later changes compare with it, and it notifies nobody.
+   */
+  observe(change: AgentStatusChange): void {
+    if (change?.type !== 'upsert') {
+      this.handleStatusChange(change)
+      return
+    }
+    const { status } = change
+    this.lastKind.set(status.paneId, status.status)
+    const context = this.options.paneContext(status.paneId)
+    const notification = context ? buildNotification(status, undefined, context) : null
+    if (notification) this.rememberKey(notification.dedupeKey)
+  }
+
   /** Sends a single notification to one device, bypassing its rules. */
   async sendTest(device: PushDevice): Promise<ExpoPushOutcome> {
     return this.options.sender.send([{

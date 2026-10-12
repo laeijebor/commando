@@ -97,6 +97,7 @@ export function NativeWebViewTile({
     reviewFallbackRef.current?.()
   }, [])
 
+  // Reopens reset local navigation through the same attachment path as URL changes.
   useEffect(() => {
     let active = true
     let attachment
@@ -157,7 +158,7 @@ export function NativeWebViewTile({
       setAttachment((current) => current === attachment ? null : current)
       attachment.detach()
     }
-  }, [bridge, presentPendingSnapshot, webPane.id, webPane.url])
+  }, [bridge, presentPendingSnapshot, webPane.id, webPane.url, webPane.openRevision])
 
   useEffect(() => {
     latestPendingRevisionRef.current = undefined

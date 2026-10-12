@@ -296,7 +296,7 @@ describe('PrsSection', () => {
   it('opens the marked PR diff from its LOC counts', async () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     const selected = pr({ commandoMarker: { version: 1, targetId, relation: 'created' } })
-    const onOpenDiff = vi.fn()
+    const onOpenDiff = vi.fn(() => true)
     stubFetch({ list: () => jsonResponse({ list: listWith([selected]) }) })
 
     render(
@@ -311,7 +311,7 @@ describe('PrsSection', () => {
     expect(onOpenDiff).toHaveBeenCalledWith(expect.objectContaining(selected))
   })
 
-  it('keeps LOC counts non-interactive when the marked pane is no longer live', async () => {
+  it('keeps the GitHub diff fallback available when the marked pane is no longer live', async () => {
     const targetId = '550e8400-e29b-41d4-a716-446655440000'
     stubFetch({
       list: () => jsonResponse({
@@ -319,9 +319,10 @@ describe('PrsSection', () => {
       }),
     })
 
-    render(<PrsSection token="t" liveTargetIds={new Set()} onOpenDiff={vi.fn()} />)
-    expect(await screen.findByText('+100')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Open diff for PR/ })).not.toBeInTheDocument()
+    const onOpenDiff = vi.fn(() => true)
+    render(<PrsSection token="t" liveTargetIds={new Set()} onOpenDiff={onOpenDiff} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Open diff for PR/ }))
+    expect(onOpenDiff).toHaveBeenCalledOnce()
   })
 
   it('opens a hover popover with details after a delay and lazily loads thread excerpts', async () => {

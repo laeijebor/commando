@@ -5,7 +5,7 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 4
+export const AGENT_HOST_PROTOCOL_VERSION = 5
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -30,6 +30,12 @@ export const CHAT_FLOW_HOST_VERSION = 4
 
 export function hostTakesTurnFlow(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_FLOW_HOST_VERSION
+}
+/** Hosts from this version can hand their conversation to Claude Code in the same pane. */
+export const CHAT_SWITCH_HOST_VERSION = 5
+
+export function hostTakesSwitch(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_SWITCH_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -74,6 +80,37 @@ export const MAX_CHAT_IMAGES = 10
  */
 export const CHAT_IMAGE_MAX_DIMENSION = 2000
 export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+/**
+ * Names the saved copy of an attached image in the text Claude gets, so its
+ * tools can open the file (after t3code's AttachmentPrompt). The host appends
+ * one per image after the typed text.
+ */
+export function attachmentNote(name: string, path: string): string {
+  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
+}
+
+/** Matches attachmentNote's notes; the first group is the saved path. */
+export const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
+const ATTACHMENT_NOTE_START = '[Attached image "'
+
+/** The text the person typed, without the notes the host added for Claude. */
+export function stripAttachmentNotes(text: string): string {
+  return text.replace(ATTACHMENT_NOTES, '').trim()
+}
+
+/** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
+export function stripAttachmentNotesFromSummary(text: string): string {
+  const stripped = stripAttachmentNotes(text)
+  // A length limit can cut a note anywhere: after its opening (the image name
+  // may hold a "["), or inside its opening words.
+  const marker = stripped.lastIndexOf(ATTACHMENT_NOTE_START)
+  const open = marker >= 0 && !stripped.slice(marker).includes(']') ? marker : stripped.lastIndexOf('[')
+  const tail = stripped.slice(open)
+  const cutNote = open >= 0 && (open === 0 || /\s/.test(stripped[open - 1]!)) && !tail.includes(']')
+    && (tail.startsWith(ATTACHMENT_NOTE_START) || ATTACHMENT_NOTE_START.startsWith(tail))
+  return cutNote ? stripped.slice(0, open).trim() : stripped
+}
+
 /** Images are stored by content hash, so an id is also a safe file name. */
 const CHAT_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/
 
@@ -288,6 +325,35 @@ export interface ChatSessionInfo {
   queue?: ChatQueuedMessage[]
   /** The mode the chat had before it entered plan mode; Implement returns to it. */
   prePlanPermissionMode?: ChatSessionPermissionMode
+  /** A switch to Claude Code in this pane: waiting for the turn to end, or under way. */
+  claudeCodeSwitch?: ChatClaudeCodeSwitch
+}
+
+/**
+ * `after_turn` waits for the running turn (and any answers it needs) to end;
+ * `now` interrupted it; `switching` hands the conversation over.
+ */
+export type ChatClaudeCodeSwitch = 'after_turn' | 'now' | 'switching'
+const CLAUDE_CODE_SWITCHES = new Set<ChatClaudeCodeSwitch>(['after_turn', 'now', 'switching'])
+
+/** What a switch request asks of the host. */
+export type ChatSwitchAction = 'after_turn' | 'now' | 'cancel'
+
+export function isChatSwitchAction(value: unknown): value is ChatSwitchAction {
+  return value === 'after_turn' || value === 'now' || value === 'cancel'
+}
+
+/** The chat's notice when Claude Code exits and the chat resumes the conversation. */
+export const RETURNED_FROM_CLAUDE_CODE = 'Returned from Claude Code'
+
+/**
+ * What a chat held when it switched to Claude Code (the unsent draft, then
+ * its queued messages), offered back to the composer when the chat returns.
+ */
+export interface ChatCarriedDraft {
+  id: string
+  text: string
+  images: ChatImageRef[]
 }
 
 /** `claude-opus-5-5` for `claude-opus-5-5[1m]`: no row lists the context-window variant a setting can pick. */
@@ -324,6 +390,8 @@ export interface ChatState {
   updateAvailable?: boolean
   /** Claude Code's commands and skills, for the `/` menu. */
   commands?: ChatCommand[]
+  /** The draft and queue the chat had when it switched to Claude Code, until a composer takes them. */
+  carried?: ChatCarriedDraft
 }
 
 // ---- host ⇄ daemon ----
@@ -340,6 +408,12 @@ export type HostToDaemonMessage =
   | { type: 'commands'; paneId: string; commands: ChatCommand[] }
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
+  /**
+   * The host is about to hand the conversation to Claude Code: the daemon keeps
+   * its queue (and the client's draft) until the chat comes back, and the
+   * flags that bring it back. The host waits for `handoff_saved`.
+   */
+  | { type: 'handoff'; paneId: string; sessionId: string; cwd: string; queue: ChatQueuedMessage[]; returnFlags: string[] }
 
 /** A finished subagent's own turns, read from its saved transcript. */
 export interface ChatSubagentTranscript {
@@ -398,6 +472,10 @@ export type DaemonToHostMessage =
   | { type: 'restart'; paneId: string; requestId: string }
   /** Switch the model, effort or permission mode for the rest of the session. */
   | { type: 'configure'; paneId: string; settings: ChatSettingsChange; requestId: string }
+  /** Hand the conversation to Claude Code in this pane, or cancel a switch that waits for the turn. */
+  | { type: 'switch'; paneId: string; action: ChatSwitchAction; requestId: string }
+  /** Answers `handoff`: false when the daemon couldn't keep it, and the switch is off. */
+  | { type: 'handoff_saved'; paneId: string; ok: boolean; error?: string }
 
 // ---- validation (host and client input both cross a trust boundary) ----
 
@@ -757,6 +835,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(contextUsage ? { contextUsage } : {}),
     ...(queue?.length ? { queue } : {}),
     ...(isChatPermissionMode(value.prePlanPermissionMode) ? { prePlanPermissionMode: value.prePlanPermissionMode } : {}),
+    ...(CLAUDE_CODE_SWITCHES.has(value.claudeCodeSwitch as ChatClaudeCodeSwitch) ? { claudeCodeSwitch: value.claudeCodeSwitch as ChatClaudeCodeSwitch } : {}),
   }
 }
 
@@ -805,6 +884,14 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
       return withOptional({ type: 'subagent_transcript_result' as const, paneId: value.paneId, requestId: value.requestId, items }, {
         error: optionalText(value.error, 1000),
       })
+    }
+    case 'handoff': {
+      const queue = parseQueue(value.queue)
+      const flags = Array.isArray(value.returnFlags) && value.returnFlags.length <= 64 && value.returnFlags.every((flag) => typeof flag === 'string' && flag.length <= 4096 && !flag.includes('\0'))
+        ? value.returnFlags as string[]
+        : null
+      if (!isPaneId(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
+      return { type: 'handoff', paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }
     }
     default:
       return null
@@ -855,6 +942,14 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
         ? { type: 'configure', paneId: value.paneId, settings, requestId: value.requestId }
         : null
     }
+    case 'switch':
+      return isPaneId(value.paneId) && isChatSwitchAction(value.action) && shortString(value.requestId)
+        ? { type: 'switch', paneId: value.paneId, action: value.action, requestId: value.requestId }
+        : null
+    case 'handoff_saved':
+      return isPaneId(value.paneId) && typeof value.ok === 'boolean'
+        ? withOptional({ type: 'handoff_saved' as const, paneId: value.paneId, ok: value.ok }, { error: optionalText(value.error, 1000) })
+        : null
     case 'answer': {
       const answer = parseChatAnswer(value.answer)
       return isPaneId(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)

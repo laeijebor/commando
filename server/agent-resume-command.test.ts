@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   shellQuote,
   buildChatResumeCommand,
+  buildChatReturnCommand as chatReturnCommand,
   findChatHost,
   buildResumeCommand,
   findAgentProcess,
@@ -158,6 +159,17 @@ describe('chat resume hardening', () => {
       .toBe('/c/launcher claude --permission-mode acceptEdits --resume abcdef12-3456')
   })
 
+  it("carries the mode a plan-mode chat returns to on Implement, and drops a stale one", () => {
+    const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan --pre-plan-permission-mode default'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }))
+      .toBe('/c/launcher claude --permission-mode plan --pre-plan-permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits' }))
+      .toBe('/c/launcher claude --permission-mode plan --pre-plan-permission-mode acceptEdits --resume abcdef12-3456')
+    // Out of plan mode there is nothing to return to.
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { permissionMode: 'acceptEdits', prePlanPermissionMode: 'acceptEdits' }))
+      .toBe('/c/launcher claude --permission-mode acceptEdits --resume abcdef12-3456')
+  })
+
   it('prefixes the daemon environment a restored shell may lack', () => {
     const args = 'node /c/server/agent-host/main.ts claude --permission-mode plan'.split(' ')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, { COMMANDO_PORT: '4410' }))
@@ -168,5 +180,13 @@ describe('chat resume hardening', () => {
     expect(shellQuote('~root/x')).toBe("'~root/x'")
     expect(shellQuote('=ls')).toBe("'=ls'")
     expect(shellQuote('/plain/path')).toBe('/plain/path')
+  })
+})
+
+describe('buildChatReturnCommand', () => {
+  it("resumes the chat with only a chat host's own flags", () => {
+    expect(chatReturnCommand('abcd1234-0000', '/c/scripts/commando-agent', ['--config-dir', '/Users/me/.claudep', '--model', 'sonnet', '--permission-mode', 'plan', '--pre-plan-permission-mode', 'acceptEdits', '--evil', '--prompt', 'x'], { COMMANDO_PORT: '4422' }))
+      .toBe("env COMMANDO_PORT=4422 /c/scripts/commando-agent claude --config-dir /Users/me/.claudep --model sonnet --permission-mode plan --pre-plan-permission-mode acceptEdits --resume abcd1234-0000 --from-claude-code")
+    expect(chatReturnCommand('bad id!', '/c/scripts/commando-agent', [])).toBeNull()
   })
 })

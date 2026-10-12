@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
-import type { PanePrList, PanePrSummary, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
+import type { PanePrList, PanePrSummary, PrSummary, PrList, PrScope, PrsApiClient, PrStateFilter } from './prsApi'
 import { PrEntities } from '../shared/pr-entities'
 
 export const PR_FOREGROUND_INTERVAL_MS = 30_000
@@ -51,6 +51,12 @@ class PrStore {
 
   repoSnapshot(repo: string, filter: PrStateFilter, scope: PrScope): PrStoreSnapshot<PrList> {
     return this.repos.get(this.repoKey(repo, filter, scope))?.snapshot ?? EMPTY_REPO
+  }
+
+  summary(repo: string, number: number): PrSummary | undefined {
+    return [...this.repos.values()].flatMap((entry) => entry.snapshot.list?.repo.toLowerCase() === repo.toLowerCase()
+      ? entry.snapshot.list.pullRequests.filter((pr) => pr.number === number) : [])
+      .sort((a, b) => (b.statusFetchedAt ?? 0) - (a.statusFetchedAt ?? 0) || b.updatedAt.localeCompare(a.updatedAt))[0]
   }
 
   subscribePane(paneId: string, background: boolean, listener: () => void): () => void {
@@ -233,6 +239,18 @@ export function refreshPrCommentStatus(api: StoreApi, repo: string): Promise<voi
   return storeFor(api).refreshCommentStatus(repo)
 }
 
+export function cachedPanePrs(api: StoreApi, paneId: string): PanePrList | null {
+  return storeFor(api).paneSnapshot(paneId).list
+}
+
+export function cachedPrSummary(api: StoreApi, repo: string, number: number): PrSummary | undefined {
+  return storeFor(api).summary(repo, number)
+}
+
+export function refreshPanePrs(api: StoreApi, paneId: string): Promise<void> {
+  return storeFor(api).refreshPane(paneId)
+}
+
 export function markPrMerged(api: StoreApi, repo: string, number: number): void {
   storeFor(api).markMerged(repo, number)
 }
@@ -246,7 +264,7 @@ export function usePanePrs(
   const subscribe = useCallback((listener: () => void) => (
     enabled ? store.subscribePane(paneId, background, listener) : () => undefined
   ), [background, enabled, paneId, store])
-  const getSnapshot = useCallback(() => enabled ? store.paneSnapshot(paneId) : EMPTY_PANE, [enabled, paneId, store])
+  const getSnapshot = useCallback(() => store.paneSnapshot(paneId), [enabled, paneId, store])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).list
 }
 

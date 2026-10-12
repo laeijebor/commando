@@ -6,7 +6,7 @@ argument-hint: <what to build or show for review>
 
 # Redline: reviewable artifact in a Commando tile
 
-Show the user something visual in a chromium tile beside your pane, let them
+Show the user something visual in a chromium side-panel tab anchored to your pane, let them
 annotate elements in the tile's review mode, and apply their notes in a loop —
 the Lavish flow, native to Commando.
 
@@ -362,8 +362,15 @@ plan and mockup playbooks; a mockup comparison also requires comparison.
 
 ## 2. Open for review
 
-Open the URL as a tile per show-in-commando with `"engine":"chromium"` —
+Open the URL as a tab per show-in-commando with `"engine":"chromium"` —
 review mode is chromium-only. Save the `webPaneId`.
+
+The tab activates if its anchor pane is focused; otherwise it is badged "new".
+Open a new tab for each new page or artifact; localhost needs no approval.
+Reopening a URL already open in your pane brings that tab forward and reloads
+it (`reused: true`); an unconfirmed tab stays pending. `placement` is ignored
+for agent opens; only the user splits a tab out. On 429, slow down.
+Close tabs you opened once they have served their purpose.
 
 ### Actual-tile quality gate
 
@@ -424,9 +431,8 @@ Send).
    `/reload` endpoint (show-in-commando, "Change a tile's URL, or reload it")
    rather than deleting and reopening the tile or navigating over CDP.
    Artifact responses are `no-store`, so a reload shows edits without a
-   cache-bust. For a dev-served page, hot reload usually handles it. To move
-   the tile to a different page, use `/navigate`; the user approves the
-   change from a toast over the tile.
+   cache-bust. For a dev-served page, hot reload usually handles it. Use
+   `/navigate` only when the user asks you to change a tab they are looking at; the user approves the change from a toast over the tile.
 4. A note may be a component answer instead of an annotation — it carries a
    `response: {question, answer, note?, data?}` field. Acknowledge it in your
    terminal reply the same way you acknowledge annotation notes.

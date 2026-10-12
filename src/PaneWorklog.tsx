@@ -297,7 +297,13 @@ export function PaneWorklog({
   hookConnected = true,
   resume,
   onRetryResume,
+  fullWidth = false,
+  visible = true,
+  onAttentionChange,
 }: {
+  fullWidth?: boolean
+  visible?: boolean
+  onAttentionChange?: (paneId: string, unseen: boolean, warning?: boolean) => void
   brief: SessionBrief
   paneLabel: string
   prsApi?: Pick<PrsApiClient, 'pane'>
@@ -380,17 +386,22 @@ export function PaneWorklog({
     const added = Math.max(0, brief.updates.length - previousUpdateCount.current)
     previousUpdateCount.current = brief.updates.length
     if (!added) return
-    if (following && !preferences.minimized && !compact) {
+    if (visible && following && (fullWidth || (!preferences.minimized && !compact))) {
       window.requestAnimationFrame(() => scrollToStart())
     } else {
       setUnread((current) => current + added)
     }
-  }, [brief.updates.length, compact, following, preferences.minimized])
+  }, [brief.updates.length, compact, following, preferences.minimized, visible, fullWidth])
 
   useEffect(() => {
-    if (preferences.minimized || compact) return
+    if (!fullWidth && (preferences.minimized || compact)) return
     window.requestAnimationFrame(() => scrollToStart())
   }, [compact, preferences.minimized])
+
+  useEffect(() => {
+    if (visible && following) setUnread(0)
+  }, [visible, following])
+  useEffect(() => { onAttentionChange?.(brief.paneId, Boolean(unread || unseenScreenshots || resume?.state === 'queued' || resume?.state === 'resuming' || resume?.state === 'failed'), resume?.state === 'failed') }, [brief.paneId, unread, unseenScreenshots, resume?.state, onAttentionChange])
 
   const setMinimized = (minimized: boolean) => {
     setPreferences((current) => ({ ...current, minimized, visibilitySet: true }))
@@ -403,7 +414,7 @@ export function PaneWorklog({
     setPreferences((current) => current.screenshotsSeenAt >= timestamp ? current : { ...current, screenshotsSeenAt: timestamp })
   }, [])
 
-  if (preferences.minimized || compact) {
+  if (!fullWidth && (preferences.minimized || compact)) {
     return (
       <aside className={`pane-worklog is-minimized state-${displayState}`} aria-label={`Minimized worklog for ${paneLabel}`}>
         <button
@@ -445,16 +456,16 @@ export function PaneWorklog({
   }
 
   return (
-    <aside className={`pane-worklog state-${displayState}`} aria-label={`Worklog for ${paneLabel}`}>
+    <aside className={`pane-worklog${fullWidth ? ' is-panel' : ''} state-${displayState}`} aria-label={`Worklog for ${paneLabel}`}>
       <header className="pane-worklog-header">
         <span className={`pane-worklog-state ${displayState}`} aria-hidden="true" />
         <span className="pane-worklog-heading">
           <strong>{brief.headline}</strong>
           <small>{empty ? 'Notes, important terms, pull requests and tasks' : `Worklog · ${relativeAge(brief.updatedAt)}`}</small>
         </span>
-        <button type="button" onClick={() => setMinimized(true)} aria-label={`Minimize worklog for ${paneLabel}`} title="Minimize worklog">
+        {!fullWidth && <button type="button" onClick={() => setMinimized(true)} aria-label={`Minimize worklog for ${paneLabel}`} title="Minimize worklog">
           <ChevronRight aria-hidden="true" />
-        </button>
+        </button>}
       </header>
 
       <div className="pane-worklog-scroll" ref={activityRef} onScroll={(event) => {
@@ -464,7 +475,8 @@ export function PaneWorklog({
         if (atStart) setUnread(0)
       }}>
         {resume ? <AgentResumeNotice resume={resume} connected={connected} onRetry={onRetryResume} /> : null}
-        {(!hookConnected || empty) && !(resume && resume.state !== 'failed') ? (
+        {fullWidth && empty ? <div className="pane-worklog-recap" role="status">No session brief yet.</div> : null}
+        {(!fullWidth || !empty) && (!hookConnected || empty) && !(resume && resume.state !== 'failed') ? (
           <div className="pane-worklog-recap" role="status">
             {!connected ? 'Disconnected from Commando. Saved notes and history remain available.'
               : !hookConnected && !empty ? 'Saved worklog restored. No agent is connected yet; resume the agent to continue receiving tasks and activity.'
@@ -572,13 +584,13 @@ export function PaneWorklog({
           </section>
         ) : null}
 
-        {prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} list={prList} /> : null}
+        {!fullWidth && prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} list={prList} /> : null}
 
         {screenshotFolders.length ? (
           <PaneScreenshots
             paneId={brief.paneId}
             folders={screenshotFolders}
-            collapsed={preferences.screenshotsCollapsed}
+            collapsed={preferences.screenshotsCollapsed || !visible}
             seenAt={preferences.screenshotsSeenAt}
             screenshotsApi={screenshotsApi}
             paneManagementApi={paneManagementApi}

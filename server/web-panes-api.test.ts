@@ -353,10 +353,10 @@ describe('web panes API', () => {
     const { baseUrl } = await startApi(await createService(), {
       openLimiter: new TokenBucketRateLimiter(2, 0.0001),
     })
-    const open = () => post(baseUrl, '/api/web-panes', { url: 'http://localhost:5173/', anchor: '%12' }, agentAuth)
-    expect((await open()).status).toBe(201)
-    expect((await open()).status).toBe(201)
-    expect((await open()).status).toBe(429)
+    const open = (page: number) => post(baseUrl, '/api/web-panes', { url: `http://localhost:5173/${page}`, anchor: '%12' }, agentAuth)
+    expect((await open(1)).status).toBe(201)
+    expect((await open(2)).status).toBe(201)
+    expect((await open(3)).status).toBe(429)
   })
 
   it('moves a tile to a new anchor with the previewed placement', async () => {

@@ -41,7 +41,7 @@ type Props = {
   api: GitDiffApiClient
   initialSummary: GitDiffSummary | null
   comparison?: GitDiffComparison
-  onClose(): void
+  visible?: boolean
 }
 
 export type GitDiffComparison = {
@@ -138,7 +138,7 @@ function statusLabel(file: GitChangedFile): { letter: string; className: string;
   }
 }
 
-export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison, onClose }: Props) {
+export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true }: Props) {
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -189,6 +189,20 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   const generation = useRef(0)
   const diffGeneration = useRef(0)
   const searchGeneration = useRef(0)
+  const summaryRequestKey = useRef<string | null>(null)
+  const diffRequestKey = useRef<string | null>(null)
+  const previousSummaryProp = useRef({ paneId, summary: initialSummary })
+  const summaryRevision = useRef(0)
+  const wasVisible = useRef(visible)
+  const [refresh, setRefresh] = useState(0)
+  useEffect(() => {
+    const revealed = visible && !wasVisible.current
+    wasVisible.current = visible
+    if (!visible || comparison) return
+    if (revealed) setRefresh((value) => value + 1)
+    const timer = window.setInterval(() => setRefresh((value) => value + 1), 15_000)
+    return () => window.clearInterval(timer)
+  }, [visible, comparison?.base, comparison?.head])
   const selectedTarget = comparison?.base ?? appliedTarget
 
   const maximumFilePanelWidth = () => {
@@ -245,18 +259,18 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   }
 
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
+    if (!visible) return
+    const searchShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault()
         diffSearchInputRef.current?.focus()
         diffSearchInputRef.current?.select()
         return
       }
-      if (event.key === 'Escape') onClose()
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onClose])
+    window.addEventListener('keydown', searchShortcut)
+    return () => window.removeEventListener('keydown', searchShortcut)
+  }, [visible])
 
   useEffect(() => {
     const fitFilePanel = () => changeFilePanelWidth(filePanelWidthRef.current, false, false)
@@ -279,25 +293,46 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   }, [comparison, paneId])
 
   useEffect(() => {
-    const request = ++generation.current
-    setSummaryLoading(true)
+    const previous = previousSummaryProp.current
+    previousSummaryProp.current = { paneId, summary: initialSummary }
+    if (previous.paneId !== paneId || previous.summary === initialSummary || !initialSummary || comparison) return
+    if (selectedTarget !== undefined && initialSummary.targetMode === 'auto') return
+    const target = selectedTarget ?? summary?.target
+    if (target != null && initialSummary.target !== target) return
+    // A request already in flight must not overwrite a newer footer summary.
+    summaryRevision.current++
     setSummaryError('')
+    setSummary(initialSummary)
+  }, [paneId, initialSummary, selectedTarget, comparison?.head, summary?.target])
+
+  useEffect(() => {
+    const request = ++generation.current
+    const revision = summaryRevision.current
+    const key = JSON.stringify([paneId, selectedTarget, comparison?.head])
+    const background = summaryRequestKey.current === key
+    summaryRequestKey.current = key
+    if (!background) {
+      setSummaryLoading(true)
+      setSummaryError('')
+    }
     const summaryRequest = comparison
       ? apiRef.current.summary(paneId, selectedTarget, comparison.head)
       : apiRef.current.summary(paneId, selectedTarget)
     summaryRequest
       .then((next) => {
-        if (request !== generation.current) return
+        if (request !== generation.current || revision !== summaryRevision.current) return
+        setSummaryError('')
         setSummary(next)
       })
       .catch((cause: unknown) => {
-        if (request !== generation.current) return
-        setSummaryError(cause instanceof Error ? cause.message : 'Unable to load git summary')
+        if (request !== generation.current || revision !== summaryRevision.current) return
+        if (!background) setSummaryError(cause instanceof Error ? cause.message : 'Unable to load git summary')
       })
       .finally(() => {
         if (request === generation.current) setSummaryLoading(false)
       })
-  }, [paneId, selectedTarget, comparison?.head])
+    return () => { generation.current++ }
+  }, [paneId, selectedTarget, comparison?.head, refresh])
 
   const files = summary?.files ?? []
   const deferredFileFilter = useDeferredValue(fileFilter)
@@ -333,15 +368,23 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
     setSelectedFile(files[0]?.path ?? null)
   }, [files, selectedFile])
 
+  const selectedFileStats = JSON.stringify(files.find((file) => file.path === selectedFile) ?? null)
   useEffect(() => {
     if (!selectedFile) {
+      diffRequestKey.current = null
+      setDiffLoading(false)
       setDiff('')
       setDiffError('')
       return
     }
     const request = ++diffGeneration.current
-    setDiffLoading(true)
-    setDiffError('')
+    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
+    const background = diffRequestKey.current === key
+    diffRequestKey.current = key
+    if (!background) {
+      setDiffLoading(true)
+      setDiffError('')
+    }
     const measured = outputRef.current?.clientWidth
     const width = measured
       ? Math.min(400, Math.max(80, Math.floor(measured / APPROXIMATE_CHARACTER_WIDTH)))
@@ -356,17 +399,21 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
       })
       .then((next) => {
         if (request !== diffGeneration.current) return
+        setDiffError('')
         setDiff(next.diff)
       })
       .catch((cause: unknown) => {
         if (request !== diffGeneration.current) return
-        setDiff('')
-        setDiffError(cause instanceof Error ? cause.message : 'Unable to load diff')
+        if (!background) {
+          setDiff('')
+          setDiffError(cause instanceof Error ? cause.message : 'Unable to load diff')
+        }
       })
       .finally(() => {
         if (request === diffGeneration.current) setDiffLoading(false)
       })
-  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
+    return () => { diffGeneration.current++ }
+  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion, selectedFileStats])
 
   useEffect(() => {
     const query = diffSearch.trim()
@@ -595,8 +642,8 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
   }
 
   return (
-    <div className="git-diff-backdrop" data-native-terminal-occluder="" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="git-diff-modal" role="dialog" aria-modal="true" aria-labelledby="git-diff-title">
+    <div className="git-diff-view">
+      <section className="git-diff-main" aria-label="Git diff">
         <header className="git-diff-header">
           <div className="git-diff-heading">
             <span><FileDiff aria-hidden="true" /> Structural diff</span>
@@ -673,7 +720,6 @@ export function GitDiffModal({ paneId, panePath, api, initialSummary, comparison
               </>
             )}
           </div>
-          <button type="button" onClick={onClose} aria-label="Close diff view"><X /></button>
         </header>
         <div className="git-diff-toolbar">
           <div className="git-diff-segment" role="group" aria-label="Diff engine">

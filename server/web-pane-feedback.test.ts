@@ -451,3 +451,22 @@ describe('WebPaneFeedbackStore', () => {
     expect(store.info()['w-11111111']?.queued).toBe(1)
   })
 })
+
+it('preserves canvas context across feedback journal restart and drain', async () => {
+  const { store, dir } = makeStore(), canvas = { frameId: 'settings', point: { x: 7, y: 9 }, label: 'Row', labelId: 'row', section: 'Accounts', ticket: 'APP-1', status: 'ready-for-dev', focus: 1, interactive: true }
+  store.enqueue('w-12345678', [{ ...note(), canvas }])
+  const restored = makeStore({ dir }).store
+  expect((await restored.drain('w-12345678', 0)).notes[0].canvas).toEqual(canvas)
+})
+
+it('notifies push acknowledgement only after the durable ack and with actually delivered keys', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'canvas-ack-')); dirs.push(dir)
+  const journal = new FeedbackJournal({ dir }), onAck = vi.fn()
+  const store = new WebPaneFeedbackStore(journal, undefined, undefined, undefined, onAck)
+  const note: WebPaneFeedbackNote = { comment: 'Fix', selector: 'html', tag: 'body', rect: { x: 0, y: 0, width: 1, height: 1 }, pageUrl: 'http://localhost/', capturedAt: 1, deliveryKey: 'canvas-key' }
+  store.enqueue('w-1', [note])
+  await store.drain('w-1', 0, { cursor: 999 }); expect(onAck).not.toHaveBeenCalled()
+  await store.drain('w-1', 0, { cursor: 999 })
+  expect(onAck).toHaveBeenCalledExactlyOnceWith('w-1', ['canvas-key'])
+  expect((await new WebPaneFeedbackStore(new FeedbackJournal({ dir })).drain('w-1', 0)).notes).toEqual([])
+})

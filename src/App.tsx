@@ -17,7 +17,6 @@ import {
   LogOut,
   Mail,
   Maximize2,
-  MessageSquare,
   Minimize2,
   NotebookPen,
   PanelLeft,
@@ -56,6 +55,8 @@ import {
 } from 'react'
 
 import type {
+  AgentInteractionAnswer,
+  AgentInteractionRequest,
   AgentStatus,
   CommandoSnapshot,
   LayoutSpec,
@@ -97,7 +98,7 @@ import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
-import { GitDiffModal, type GitDiffComparison } from './GitDiffModal'
+import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
 import { SessionIdeView } from './SessionIdeView'
@@ -109,8 +110,8 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
-import { neighbouringTab } from '../shared/web-pane-placement'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
   insertWebPaneLeaves,
@@ -118,19 +119,24 @@ import {
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
+import type { PrQuickLookTab } from './PrQuickLook'
+import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
-import { AgentHudCard } from './AgentHudCard'
+import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
-import { CHAT_SEND_REFUSAL_MS, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
+import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
+import { PaneAgentSwitch } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import {
+  hostTakesSwitch,
   mergeChatItems,
   planImplementationPrompt,
   type ChatAnswer,
@@ -141,7 +147,9 @@ import {
   type ChatSettingsChange,
   type ChatState,
   type ChatSubagentTranscript,
+  type ChatSwitchAction,
 } from '../shared/agent-chat'
+import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -173,8 +181,11 @@ import {
   type AuthUser,
 } from './authClient'
 
+const PrPanel = lazy(() => import('./PrPanel').then((module) => ({ default: module.PrPanel })))
+
 const RESPONSIVE_DRAWER_OCCLUSION_FALLBACK_MS = 250
 export const PANE_JUMP_HIGHLIGHT_MS = 1600
+export const PR_PANE_LOOKUP_TIMEOUT_MS = 5_000
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
@@ -326,6 +337,7 @@ type TerminalPaneProps = {
   onOpenPath: () => Promise<void>
   onOpenScreenshot?: (request: Omit<PaneScreenshotLightboxRequest, 'paneId'>) => void
   onFocus: () => void
+  onOpenChanges?: () => void
   onOpenMenu: (x: number, y: number) => void
   onAcknowledgeMark?: () => void
   onRetryResume?: () => void
@@ -346,6 +358,12 @@ type TerminalPaneProps = {
   /** Why the daemon refused a queue, subagent or interrupt action in this pane. */
   chatActionError?: string
   onDismissChatActionError?: () => void
+  /** The pane runs Claude Code on a conversation that started as a chat. */
+  claudeCodeFromChat?: boolean
+  /** The chat's composer has an image still uploading. */
+  chatUploading?: boolean
+  onSwitchToClaudeCode?: () => void
+  onReturnToChat?: () => void
   onRename: (title: string) => Promise<void>
   onRenameFinished: () => void
   onMove: (direction: -1 | 1) => void
@@ -369,13 +387,24 @@ type TerminalPaneProps = {
   registerFocusable: (paneId: string, node: HTMLElement | null) => void
 }
 
+/** What clicking Claude Code in a chat's header does, or why it can't. */
+function claudeCodeSwitchTitle(chat: ChatState): string {
+  if (!chat.hostConnected) return 'The agent host is disconnected'
+  if (!hostTakesSwitch(chat.session)) return 'This chat started before switching to Claude Code; restart it to switch'
+  if (!chat.session.sessionId) return 'Send a message first: Claude Code resumes a conversation'
+  if (chat.session.claudeCodeSwitch) return 'Switching to Claude Code…'
+  const running = chat.session.status === 'running' || chat.session.status === 'waiting'
+  return running
+    ? 'Continue in Claude Code, in this pane, when this turn ends'
+    : 'Continue this conversation in Claude Code, in this pane'
+}
+
 export function TerminalPaneCard({
   pane,
   status,
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
   mark,
-  resume,
   index,
   count,
   solo,
@@ -390,17 +419,11 @@ export function TerminalPaneCard({
   useXtermFallback,
   gitApi,
   prsApi,
-  screenshotsApi,
-  simsApi,
-  onShowSimulator,
-  paneManagementApi,
-  revealInFinder = true,
   onOpenPath,
-  onOpenScreenshot,
   onFocus,
+  onOpenChanges,
   onOpenMenu,
   onAcknowledgeMark,
-  onRetryResume,
   chat,
   chatView = 'chat',
   onChatView,
@@ -415,6 +438,10 @@ export function TerminalPaneCard({
   onDismissChatSendError,
   chatActionError,
   onDismissChatActionError,
+  claudeCodeFromChat = false,
+  chatUploading = false,
+  onSwitchToClaudeCode,
+  onReturnToChat,
   onRename,
   onRenameFinished,
   onMove,
@@ -440,10 +467,6 @@ export function TerminalPaneCard({
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
   const showChat = Boolean(chat) && chatView === 'chat'
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
-  const worklogBrief = useMemo<SessionBrief>(() => brief ? { ...brief, targetId: pane.targetId } : ({
-    paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-    state: status?.status ?? 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0,
-  }), [brief, pane.id, pane.targetId, pane.sessionId, status?.status])
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
   const [renamePending, setRenamePending] = useState(false)
@@ -588,10 +611,10 @@ export function TerminalPaneCard({
               />
             </form>
           ) : <strong>{paneLabel}</strong>}
-          <small>{pane.command || pane.path}</small>
+          <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
         </span>
         {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
-          {paneTabs.length} {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}
+          {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
         </span>}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
@@ -602,19 +625,18 @@ export function TerminalPaneCard({
           </span>
         ) : null}
         <span className="pane-index">{pane.index}</span>
+        {chat || claudeCodeFromChat ? (
+          <PaneAgentSwitch
+            mode={chat ? 'chat' : 'claude-code'}
+            hostLogShown={Boolean(chat) && !showChat}
+            chatDisabled={!chat && !connected}
+            claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch) || chatUploading}
+            {...(chat ? { claudeCodeTitle: chatUploading ? 'Waiting for image upload…' : claudeCodeSwitchTitle(chat) } : {})}
+            onChat={() => (chat ? onChatView?.('chat') : onReturnToChat?.())}
+            onClaudeCode={() => onSwitchToClaudeCode?.()}
+          />
+        ) : null}
         <span className="pane-actions">
-          {chat ? (
-            <button
-              type="button"
-              className={`icon-button compact${showChat ? ' is-active' : ''}`}
-              onClick={() => onChatView?.(showChat ? 'terminal' : 'chat')}
-              aria-pressed={showChat}
-              aria-label={showChat ? 'Show the terminal' : 'Show the chat'}
-              title={showChat ? 'Show the terminal' : 'Show the chat'}
-            >
-              {showChat ? <Terminal aria-hidden="true" /> : <MessageSquare aria-hidden="true" />}
-            </button>
-          ) : null}
           <button
             type="button"
             className="icon-button compact"
@@ -664,6 +686,14 @@ export function TerminalPaneCard({
           aria-hidden="true"
         />
       )}
+      {!showChat && chatActionError ? (
+        <div className="pane-chat-alert" role="alert">
+          <span>{chatActionError}</span>
+          <button type="button" className="icon-button compact" aria-label="Dismiss" onClick={onDismissChatActionError}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
       {mark?.activityCount ? (
         <button
           type="button"
@@ -679,7 +709,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className="terminal-pane-body has-worklog">
+      <div className="terminal-pane-body">
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
@@ -707,7 +737,7 @@ export function TerminalPaneCard({
           terminalState={pane}
           connected={connected}
           resizeOwner={resizeOwner}
-          measurementKey={`${measurementKey}:worklog`}
+          measurementKey={measurementKey}
           ariaLabel={`${pane.title || `Pane ${pane.index}`} terminal input${connected ? '' : ', disconnected'}`}
           order={index}
           nativeRetryKey={nativeRetryKey}
@@ -728,30 +758,13 @@ export function TerminalPaneCard({
           registerSink={registerSink}
           registerFocusable={registerFocusable}
         />}
-        <PaneWorklog
-          key={pane.targetId}
-          brief={worklogBrief}
-          simsApi={simsApi}
-          onShowSimulator={onShowSimulator}
-          empty={!brief || brief.updatedAt === 0}
-          hookConnected={status?.source === 'hook'}
-          paneLabel={paneLabel}
-          prsApi={prsApi}
-          connected={connected}
-          screenshotsApi={screenshotsApi}
-          paneManagementApi={paneManagementApi}
-          revealInFinder={revealInFinder}
-          onOpenScreenshot={(folder, file, restoreFocus) => onOpenScreenshot?.({ folder, file, restoreFocus })}
-          onTypeCommand={onInput}
-          resume={resume}
-          onRetryResume={onRetryResume}
-        />
+
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
         <span className="pane-footer-dimensions">{pane.width}x{pane.height}</span>
-        <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} />
+        <PaneGitStats paneId={pane.id} panePath={pane.path} api={gitApi} connected={connected} onOpenChanges={() => { onFocus(); onOpenChanges?.() }} />
         <button
           type="button"
           className="pane-path"
@@ -1022,10 +1035,18 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
+  /** Conversations running in Claude Code that started as a chat. */
+  const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
+  /** Chat panes whose composer has an image still uploading; a switch waits for it. */
+  const [chatUploads, setChatUploads] = useState<ReadonlySet<string>>(() => new Set())
+  const [chatStashEntries, setChatStashEntries] = useState<ChatStashEntry[]>([])
   const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
   const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
   /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
   const chatActionPanes = useRef(new Map<string, string>())
+  /** The last answer each HUD card sent, by pane, and the panes of those still in flight. */
+  const [hudAnswers, setHudAnswers] = useState<Record<string, AgentHudAnswerState>>({})
+  const hudAnswerPanes = useRef(new Map<string, string>())
   /** Pending `@` searches by request id, answered by `chat_file_search_result`. */
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
@@ -1039,13 +1060,26 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
-  const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void } | null>(null)
+  const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
+  const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
+  const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
+  const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
+  const [maximizedBuiltinTab, setMaximizedBuiltinTab] = useState<BuiltinPanelTab | null>(null)
+  const reportSessionAttention = useCallback((id: string, unseen: boolean, warning = false) => {
+    setSessionWarnings((current) => current[id] === warning ? current : { ...current, [id]: warning })
+    setSessionAttention((current) => current[id] === unseen ? current : { ...current, [id]: unseen })
+  }, [])
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
-  const knownPanelTabs = useRef<Set<string> | null>(null)
+  const panelTabSets = useRef(new Map<string, PanelTab[]>())
+  const rememberPanelTabs = useCallback((tabs: PanelTab[]) => {
+    setMaximizedBuiltinTab((current) => current && !tabs.some((tab) => tab.id === current.id) ? null : current)
+    for (const anchor of new Set(tabs.map((tab) => tab.anchorPaneId))) panelTabSets.current.set(anchor, tabs.filter((tab) => tab.anchorPaneId === anchor))
+  }, [])
+  const knownPanelTabs = useRef<Map<string, number> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
-  const seenPanelTabs = useRef(new Set<string>())
+  const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
@@ -1076,10 +1110,9 @@ export function App() {
   const [rightPanelHidden, setRightPanelHidden] = useState(() => storedPanelHidden(RIGHT_PANEL_HIDDEN_STORAGE_KEY))
   const [hudTab, setHudTab] = useState<HudTab>(() => storedHudTab())
   const [prsAttention, setPrsAttention] = useState(false)
-  const [prDiff, setPrDiff] = useState<{
-    targetId: string
-    comparison: GitDiffComparison
-  } | null>(null)
+  const prHudActionVersion = useRef(0)
+  useEffect(() => () => { prHudActionVersion.current += 1 }, [token])
+  const [prSelections, setPrSelections] = useState<Record<string, { tab: PrQuickLookTab; revision: number }>>({})
   const switchHudTab = useCallback((tab: HudTab) => {
     setHudTab(tab)
     storeHudTab(tab)
@@ -1394,8 +1427,22 @@ export function App() {
           return next
         })
         break
+      case 'agent_request_answered': {
+        const paneId = hudAnswerPanes.current.get(message.requestId)
+        if (!paneId) break
+        hudAnswerPanes.current.delete(message.requestId)
+        setHudAnswers((current) => {
+          const next = { ...current }
+          delete next[paneId]
+          return next
+        })
+        break
+      }
       case 'chat_snapshot':
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
+        break
+      case 'chat_stash':
+        setChatStashEntries(message.entries)
         break
       case 'chat_state':
         setChats((current) => ({ ...current, [message.chat.paneId]: message.chat }))
@@ -1428,6 +1475,9 @@ export function App() {
         chatTranscripts.current.get(readId)?.(result)
         break
       }
+      case 'chat_handoffs':
+        setChatHandoffs(new Set(message.sessionIds))
+        break
       case 'chat_removed':
         setChats((current) => {
           if (!(message.paneId in current)) return current
@@ -1452,8 +1502,9 @@ export function App() {
         break
       case 'web_panes':
         if (knownPanelTabs.current === null) {
-          knownPanelTabs.current = new Set(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => tab.id))
+          knownPanelTabs.current = new Map(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => [tab.id, tab.openRevision ?? 0]))
         }
+        setPanelActiveTabs(message.activeTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1485,6 +1536,16 @@ export function App() {
           if (actionPane) {
             chatActionPanes.current.delete(message.requestId)
             setChatActionErrors((current) => ({ ...current, [actionPane]: message.message }))
+          }
+          const hudPane = hudAnswerPanes.current.get(message.requestId)
+          if (hudPane) {
+            hudAnswerPanes.current.delete(message.requestId)
+            const error = message.code === 'request_unavailable'
+              ? "It isn't waiting here any more; answer it in the pane"
+              : message.message
+            setHudAnswers((current) => current[hudPane]
+              ? { ...current, [hudPane]: { ...current[hudPane], pending: false, error } }
+              : current)
           }
         }
         if (
@@ -1634,13 +1695,6 @@ export function App() {
     : []
   const paneMap = new Map(snapshot?.panes.map((pane) => [pane.id, pane]) ?? [])
   const livePaneTargetIds = new Set(snapshot?.panes.map((pane) => pane.targetId) ?? [])
-  const prDiffPaneMatches = prDiff
-    ? snapshot?.panes.filter((pane) => pane.targetId === prDiff.targetId) ?? []
-    : []
-  const prDiffPane = prDiffPaneMatches.length === 1 ? prDiffPaneMatches[0] : undefined
-  useEffect(() => {
-    if (prDiff && snapshot && prDiffPaneMatches.length !== 1) setPrDiff(null)
-  }, [prDiff, prDiffPaneMatches.length, snapshot])
   const windowMap = new Map(snapshot?.windows.map((window) => [window.id, window]) ?? [])
   const sessionMap = new Map(snapshot?.sessions.map((session) => [session.id, session]) ?? [])
   const paneSessionNames = new Map<string, string | undefined>()
@@ -1665,24 +1719,29 @@ export function App() {
     setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
   }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
-  const selectPanelTab = useCallback(async (tab: WebPane) => {
-    if (webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)) setMaximizedPaneId(tab.id)
+  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+    const maximized = maximizedBuiltinTab?.anchorPaneId === tab.anchorPaneId || webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)
+    if (maximized) {
+      setMaximizedBuiltinTab(isBuiltinTab(tab) ? tab : null)
+      setMaximizedPaneId(isBuiltinTab(tab) ? null : tab.id)
+    }
+    setPanelActiveTabs((current) => ({ ...current, [tab.anchorPaneId]: panelTabKey(tab) }))
     setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
       ? { ...pane, activeTab: pane.id === tab.id }
       : pane))
-    try { await createWebPanesApi(token).setActiveTab(tab.id) } catch (error) {
+    try { await createWebPanesApi(token).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
-  }, [webPanes, maximizedPaneId, token])
+  }, [webPanes, maximizedPaneId, maximizedBuiltinTab, token])
 
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
     const previous = knownPanelTabs.current
     if (previous === null) return
-    knownPanelTabs.current = new Set(tabs.map((tab) => tab.id))
+    knownPanelTabs.current = new Map(tabs.map((tab) => [tab.id, tab.openRevision ?? 0]))
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
-    const newTabs = focusedTabs.filter((tab) => !previous.has(tab.id))
+    const newTabs = openedPanelTabs(focusedTabs, previous)
     const selected = newTabs.at(-1)
     if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
@@ -1719,6 +1778,12 @@ export function App() {
       requestId: requestId('load'),
     })
   }, [connected, selectedSessionId, send])
+
+  // The HUD answers requests too, so hooks hold them while this window is open.
+  useEffect(() => {
+    if (!connected) return
+    send({ type: 'watch_interactions', enabled: true, requestId: requestId('watch-interactions') })
+  }, [connected, send])
 
   useEffect(() => {
     if (!connected) return
@@ -1909,6 +1974,7 @@ export function App() {
     const pane = paneMap.get(paneId)
     if (!pane) return
     setArea('workspace')
+    setMaximizedBuiltinTab(null)
     setMaximizedPaneId(null)
     setSelectedSessionId(pane.sessionId)
     setPendingPaneFocus({ paneId, expectedTargetId, highlight })
@@ -1923,21 +1989,53 @@ export function App() {
     jumpToPane(matches[0].id, targetId, true)
   }
 
-  const openPrDiff = (pr: PrSummary) => {
+  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey) => {
+    const tab = builtinPanelTab(paneId, key)
+    setMaximizedPaneId((current) => webPanes.some((pane) => pane.id === current && pane.dock !== 'split' && pane.anchorPaneId === paneId) ? current : null)
+    setMaximizedBuiltinTab((current) => current?.id === tab.id ? current : null)
+    setFocusedPaneId(paneId)
+    void selectPanelTab(tab)
+    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
+  }
+
+  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean => {
     const targetId = pr.commandoMarker?.targetId
-    if (!targetId) return
-    const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
-    if (matches.length !== 1) return
-    setPrDiff({
-      targetId,
-      comparison: {
-        base: pr.baseRefOid,
-        head: pr.headRefOid,
-        baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7),
-        headLabel: pr.headRefName || pr.headRefOid.slice(0, 7),
-      },
+    const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
+    if (matches.length !== 1) return false
+    const pane = matches[0]
+    const repo = new URL(pr.url).pathname.split('/').slice(1, 3).join('/').toLowerCase()
+    const list = cachedPanePrs(prsApi, pane.id)
+    if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
+    if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
+    const key = prPanelKey(repo, pr.number)
+    const tabId = builtinPanelTab(pane.id, key).id
+    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
+    revealBuiltinTab(pane.id, key)
+    if (refresh) void refreshPanePrs(prsApi, pane.id)
+    return true
+  }
+  const latestOpenLoadedPanePr = useRef(openLoadedPanePr)
+  latestOpenLoadedPanePr.current = openLoadedPanePr
+  const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean | Promise<boolean | undefined> => {
+    const version = ++prHudActionVersion.current
+    const targetId = pr.commandoMarker?.targetId
+    const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
+    if (matches.length !== 1) return false
+    const pane = matches[0]
+    if (cachedPanePrs(prsApi, pane.id)?.targetId === pane.targetId) return openLoadedPanePr(pr, subTab)
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (loaded: boolean) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timer)
+        resolve(version !== prHudActionVersion.current ? undefined : loaded ? latestOpenLoadedPanePr.current(pr, subTab, false) : false)
+      }
+      const timer = window.setTimeout(() => finish(false), PR_PANE_LOOKUP_TIMEOUT_MS)
+      void refreshPanePrs(prsApi, pane.id).then(() => finish(true), () => finish(false))
     })
   }
+  const openPrDiff = (pr: PrSummary) => openPanePr(pr, 'Diff')
 
   const openPaneMaximized = (paneId: string) => {
     if (!paneMap.has(paneId)) return
@@ -2253,14 +2351,46 @@ export function App() {
     send({ type: 'chat_configure', paneId, settings, requestId: requestId('chat-configure') })
   }
   const answerChat = (paneId: string, chatRequestId: string, answer: ChatAnswer) => {
-    send({ type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
+    sendChatAction(paneId, { type: 'chat_answer', paneId, chatRequestId, answer, requestId: requestId('chat-answer') })
+  }
+  /** Answers from a HUD card the way the island and phone do, so the first answer anywhere wins. */
+  const answerFromHud = (paneId: string, request: AgentInteractionRequest, answer: AgentInteractionAnswer) => {
+    const id = requestId('hud-answer')
+    hudAnswerPanes.current.set(id, paneId)
+    window.setTimeout(() => {
+      if (!hudAnswerPanes.current.delete(id)) return
+      // No reply: let the card try again.
+      setHudAnswers((current) => current[paneId]?.requestId === request.id && current[paneId].pending
+        ? { ...current, [paneId]: { ...current[paneId], pending: false } }
+        : current)
+    }, 30_000)
+    const sent = send({ type: 'answer_agent_request', paneId, interactionId: request.id, answer, requestId: id })
+    if (!sent) hudAnswerPanes.current.delete(id)
+    setHudAnswers((current) => ({
+      ...current,
+      [paneId]: sent ? { requestId: request.id, pending: true } : { requestId: request.id, pending: false, error: 'Not connected to Commando' },
+    }))
+  }
+  /** Each chat composer's unsent draft, which a switch to Claude Code carries across. */
+  const chatDraftReaders = useRef(new Map<string, () => ChatDraft>())
+  const switchChat = (paneId: string, action: ChatSwitchAction) => {
+    const draft = action === 'cancel' ? undefined : chatDraftReaders.current.get(paneId)?.()
+    sendChatAction(paneId, { type: 'chat_switch', paneId, action, ...(draft ? { draft } : {}), requestId: requestId('chat-switch') })
+  }
+  const returnToChat = (paneId: string) => {
+    sendChatAction(paneId, { type: 'chat_return', paneId, requestId: requestId('chat-return') })
+  }
+  /** The pane runs Claude Code on a conversation that started as a chat, so it offers the way back. */
+  const runsChatInClaudeCode = (paneId: string): boolean => {
+    const status = agentStatuses[paneId]
+    return !chats[paneId] && status?.provider === 'claude' && Boolean(status.agentSessionId) && chatHandoffs.has(status.agentSessionId!)
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
-  const gitDiffApi = createGitDiffApi(token)
+  const gitDiffApi = useMemo(() => createGitDiffApi(token), [token])
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
   /**
@@ -2291,10 +2421,12 @@ export function App() {
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })
   }
+  const chatStashApi = useMemo(() => createChatStashApi(token), [token])
+  const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
-  const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction })
-  latestChatDeps.current = { send, token, prsApi, implementPlanInNewPane, sendChatAction }
+  const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction, switchChat })
+  latestChatDeps.current = { send, token, prsApi, implementPlanInNewPane, sendChatAction, switchChat }
   const chatServicesFor = (paneId: string): ChatInputServices => {
     let services = chatServiceCache.current.get(paneId)
     if (!services) {
@@ -2341,12 +2473,25 @@ export function App() {
         }),
         savePlan: (markdown) => saveChatPlan(latestChatDeps.current.token, markdown),
         implementInNewPane: (plan, mode) => latestChatDeps.current.implementPlanInNewPane(paneId, plan, mode),
+        switchToClaudeCode: (action) => latestChatDeps.current.switchChat(paneId, action),
+        registerDraft: (read) => {
+          if (read) chatDraftReaders.current.set(paneId, read)
+          else chatDraftReaders.current.delete(paneId)
+        },
+        takeCarried: (carryId, images) => { latestChatDeps.current.send({ type: 'chat_carry_taken', paneId, carryId, images, requestId: requestId('chat-carry') }) },
+        setUploading: (uploading) => setChatUploads((current) => {
+          if (current.has(paneId) === uploading) return current
+          const next = new Set(current)
+          if (uploading) next.add(paneId)
+          else next.delete(paneId)
+          return next
+        }),
       }
       chatFlowCache.current.set(paneId, flow)
     }
     return flow
   }
-  const simulatorTabKey = webPanes.flatMap((pane) => pane.content ? [pane.content.udid] : []).join(',')
+  const simulatorTabKey = webPanes.flatMap((pane) => pane.content?.kind === 'simulator' ? [pane.content.udid] : []).join(',')
   useEffect(() => {
     if (!simulatorTabKey || !connected) return
     let cancelled = false
@@ -2371,12 +2516,13 @@ export function App() {
   }
 
   const markPanelTabSeen = useCallback((tab: WebPane) => {
-    if (seenPanelTabs.current.has(tab.id)) return
-    seenPanelTabs.current.add(tab.id)
+    const revision = tab.openRevision ?? 0
+    if (seenPanelTabs.current.get(tab.id) === revision) return
+    seenPanelTabs.current.set(tab.id, revision)
     void createWebPanesApi(token).clearUnseen(tab.id).then(() => {
-      setWebPanes((current) => current.map((pane) => pane.id === tab.id ? { ...pane, unseen: false } : pane))
+      setWebPanes((current) => current.map((pane) => pane.id === tab.id && (pane.openRevision ?? 0) === revision ? { ...pane, unseen: false } : pane))
     }).catch((cause) => {
-      seenPanelTabs.current.delete(tab.id)
+      if (seenPanelTabs.current.get(tab.id) === revision) seenPanelTabs.current.delete(tab.id)
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to mark tab seen')
     })
   }, [token])
@@ -2393,7 +2539,7 @@ export function App() {
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
-      const existing = webPanes.find((tile) => tile.content?.udid === udid.toUpperCase())
+      const existing = webPanes.find((tile) => tile.content?.kind === 'simulator' && tile.content.udid === udid.toUpperCase())
       const id = existing?.id ?? (await simsApi.show(udid, anchorPaneId)).webPaneId
       setArea('workspace')
       setPendingPaneFocus(null)
@@ -2415,8 +2561,17 @@ export function App() {
       return
     }
     setFocusedPaneId(tab.anchorPaneId)
-    void selectPanelTab(tab)
     setActiveSimulatorTileId(tab.id)
+    if (tab.dock === 'split') {
+      setMaximizedBuiltinTab(null)
+      setPanelRevealRequest(null)
+      const tile = document.querySelector<HTMLElement>(`[data-web-pane-id="${tab.id}"]`)
+      tile?.scrollIntoView?.({ block: 'nearest' })
+      tile?.querySelector<HTMLCanvasElement>('canvas:not([hidden])')?.focus()
+      setPendingSimulatorTileId(null)
+      return
+    }
+    void selectPanelTab(tab)
     setPanelRevealRequest({
       tabId: tab.id,
       onVisible: () => {
@@ -2434,7 +2589,15 @@ export function App() {
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
-    // Drop the tile locally right away; the daemon broadcast confirms it.
+    const closing = webPanes.find((pane) => pane.id === webPaneId)
+    const combined = closing ? panelTabSets.current.get(closing.anchorPaneId) ?? [] : []
+    const selected = closing ? panelActiveTabs[closing.anchorPaneId] ?? activePanelTab(panelTabs(webPanes, closing.anchorPaneId))?.id : undefined
+    let selection: Promise<void> | undefined
+    if (selected === webPaneId) {
+      const next = resolveActivePanelTab(combined.filter((tab) => tab.id !== webPaneId), selected, combined)
+      if (next) selection = selectPanelTab(next)
+    }
+    // Drop the tile locally; the daemon broadcast confirms it.
     setWebPanes((current) => {
       const closing = current.find((pane) => pane.id === webPaneId)
       const tabs = closing && closing.dock !== 'split' ? panelTabs(current, closing.anchorPaneId) : []
@@ -2444,9 +2607,26 @@ export function App() {
         : pane)
     })
     try {
+      await selection
       await webPanesApi.close(webPaneId)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    }
+  }
+
+  const dockWebPane = async (webPane: WebPane) => {
+    setPaneActionError('')
+    if (maximizedPaneId === webPane.id) {
+      clearLayoutTimers()
+      setMaximizedPaneId(null)
+    }
+    const dock = webPane.dock === 'split' ? 'panel' : 'split'
+    const anchor = paneMap.get(webPane.anchorPaneId)
+    try {
+      await webPanesApi.dock(webPane.id, dock,
+        dock === 'split' && anchor ? { cols: anchor.width, rows: anchor.height } : undefined)
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to change web pane dock')
     }
   }
 
@@ -2619,7 +2799,7 @@ export function App() {
 
   useEffect(() => {
     const runPaneShortcut = (key: string) => {
-      if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || prDiff || screenshotLightbox) return
+      if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || screenshotLightbox) return
       if (!currentPrPane || currentPrPane.sessionId !== selectedSessionId) return
       if (key === 'w') void killPane(currentPrPane.id)
       if (key === 't') void splitPane(currentPrPane.id, 'right')
@@ -2910,6 +3090,7 @@ export function App() {
   }
 
   return (
+    <ChatStashContext.Provider value={chatStash}>
     <div
       className={`cockpit${maximizedPaneId ? ' has-maximized-pane' : ''}`}
       style={{ '--left-panel-width': `${leftPanelWidth}px` } as CSSProperties}
@@ -3238,7 +3419,8 @@ export function App() {
               })
               const maximizedPanelTab = webPanes.find((webPane) =>
                 webPane.id === maximizedPaneId && webPane.windowId === group.windowId && webPane.dock !== 'split')
-              const maximizedGridPaneId = maximizedPanelTab ? null : maximizedPaneId
+              const builtinMaximized = maximizedBuiltinTab && groupPanes.some((pane) => pane.id === maximizedBuiltinTab.anchorPaneId) && panelTabSets.current.get(maximizedBuiltinTab.anchorPaneId)?.some((tab) => tab.id === maximizedBuiltinTab.id) ? maximizedBuiltinTab : null
+              const maximizedGridPaneId = maximizedPanelTab || builtinMaximized ? null : maximizedPaneId
               const visibleGroupPanes = maximizedGridPaneId
                 ? groupPanes.filter((pane) => pane.id === maximizedGridPaneId)
                 : groupPanes
@@ -3267,7 +3449,7 @@ export function App() {
                   : visibleTree
               const panelWebPanes = webPanes.filter((webPane) => webPane.windowId === group.windowId && webPane.dock !== 'split')
               const splitWebPanes = groupWebPanes.filter((webPane) => webPane.dock === 'split')
-              const panelPaneId = maximizedPanelTab?.anchorPaneId ?? effectivePaneId
+              const panelPaneId = builtinMaximized?.anchorPaneId ?? maximizedPanelTab?.anchorPaneId ?? effectivePaneId
               const focusedPane = panelPaneId ? paneMap.get(panelPaneId) : undefined
               const renderWebPane = (webPane: WebPane, visible: boolean) => (
                 <WebPaneCard
@@ -3277,6 +3459,7 @@ export function App() {
                   onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
                   simulatorActive={activeSimulatorTileId === webPane.id}
                   onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
+                  onDock={() => void dockWebPane(webPane)}
                   onClose={() => void closeWebPane(webPane.id)}
                   onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
                   wsToken={token}
@@ -3394,12 +3577,54 @@ export function App() {
                   </header>
                   <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
                     focusedPaneId={panelPaneId}
-                    maximizedTabId={maximizedPanelTab?.id}
-                    revealRequest={panelRevealRequest && panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) ? panelRevealRequest : undefined}
+                    maximizedTabId={builtinMaximized?.id ?? maximizedPanelTab?.id}
+                    revealRequest={panelRevealRequest && (panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) || groupPanes.some((pane) => panelRevealRequest.tabId.startsWith(`panel:${pane.id}:`))) ? panelRevealRequest : undefined}
                     gridMaximized={Boolean(maximizedGridPaneId)}
                     paneLabel={focusedPane ? `${focusedPane.id} · ${focusedPane.title || focusedPane.command || `Pane ${focusedPane.index}`}` : 'pane'}
                     simulatorNames={simulatorNames}
                     titles={webPaneTitles}
+                    onTabSets={rememberPanelTabs}
+                    panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
+                    activeTabs={panelActiveTabs} sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
+                    onMaximize={(tab) => {
+                      clearLayoutTimers()
+                      if (isBuiltinTab(tab)) {
+                        setMaximizedPaneId(null)
+                        setMaximizedBuiltinTab((current) => current?.id === tab.id ? null : tab)
+                      } else {
+                        setMaximizedBuiltinTab(null)
+                        setMaximizedPaneId((current) => current === tab.id ? null : tab.id)
+                      }
+                    }}
+                    renderBuiltin={(tab, visible, data) => {
+                      const pane = paneMap.get(tab.anchorPaneId)
+                      if (!pane) return null
+                      if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
+                      const identity = parsePrPanelKey(tab.key)
+                      if (identity) {
+                        const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
+                        return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
+                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} source={source} api={prsApi} visible={visible} selection={prSelections[tab.id]}
+                            onSelectionApplied={() => setPrSelections((current) => {
+                              if (current[tab.id] !== prSelections[tab.id]) return current
+                              const next = { ...current }; delete next[tab.id]; return next
+                            })} />
+                        </Suspense> : null
+                      }
+                      const supplied = paneBriefs[pane.id]
+                      const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
+                      const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
+                        paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
+                        state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+                      }
+                      return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+                        fullWidth visible={visible} onAttentionChange={reportSessionAttention}
+                        empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
+                        simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
+                        screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
+                        onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
+                        onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+                    }}
                     onSelect={(tab) => { void selectPanelTab(tab) }}
                     onSeen={connected ? markPanelTabSeen : undefined}
                     onClose={(id) => { void closeWebPane(id) }}
@@ -3454,6 +3679,10 @@ export function App() {
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
+                            claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
+                            chatUploading={chatUploads.has(pane.id)}
+                            onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}
+                            onReturnToChat={() => returnToChat(pane.id)}
                             index={leafPaneIds.indexOf(pane.id)}
                             count={leafPaneIds.length}
                             solo={displayLeafCount === 1}
@@ -3480,6 +3709,7 @@ export function App() {
                             revealInFinder={revealInFinder}
                             onOpenPath={() => paneManagementApi.openPanePath(pane.id)}
                             onOpenScreenshot={(request) => setScreenshotLightbox({ paneId: pane.id, ...request })}
+                            onOpenChanges={() => revealBuiltinTab(pane.id, 'changes')}
                             onFocus={() => setFocusedPaneId(pane.id)}
                             onOpenMenu={(x, y) => openPaneMenu(pane.id, x, y)}
                             onAcknowledgeMark={() => { void acknowledgePaneMark(pane.id) }}
@@ -3715,6 +3945,8 @@ export function App() {
                       windowName={window?.name ?? pane?.windowId}
                       paneIndex={pane?.index}
                       onSelect={() => jumpToPane(status.paneId)}
+                      onAnswer={(request, answer) => answerFromHud(status.paneId, request, answer)}
+                      {...(hudAnswers[status.paneId] ? { answerState: hudAnswers[status.paneId] } : {})}
                       onDismiss={() => setAgentHudDismissals((current) => {
                         const next = { ...current, [status.paneId]: status.updatedAt }
                         storeAgentHudDismissals(next)
@@ -3746,6 +3978,7 @@ export function App() {
               liveTargetIds={livePaneTargetIds}
               targetSessionNames={paneSessionNames}
               onJumpToTarget={jumpToPaneTarget}
+              onOpenQuickLook={(pr) => openPanePr(pr, 'Description')}
               onOpenDiff={openPrDiff}
             />
           </div>
@@ -3763,18 +3996,6 @@ export function App() {
 
       {paneActionError ? (
         <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
-      ) : null}
-
-      {prDiff && prDiffPane ? (
-        <GitDiffModal
-          key={`${prDiffPane.id}:${prDiff.comparison.base}:${prDiff.comparison.head}`}
-          paneId={prDiffPane.id}
-          panePath={prDiffPane.path}
-          api={gitDiffApi}
-          initialSummary={null}
-          comparison={prDiff.comparison}
-          onClose={() => setPrDiff(null)}
-        />
       ) : null}
 
       {screenshotLightbox ? (
@@ -3800,6 +4021,11 @@ export function App() {
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
           onSplit={(direction) => { void splitPane(paneMenu.paneId, direction) }}
           onSplitChat={(direction) => { void splitPane(paneMenu.paneId, direction, true) }}
+          {...(chats[paneMenu.paneId] ? {
+            chatView: chatViews[paneMenu.paneId] ?? 'chat',
+            onChatView: (view: 'chat' | 'terminal') => setChatViews((current) => ({ ...current, [paneMenu.paneId]: view })),
+          } : {})}
+          {...(runsChatInClaudeCode(paneMenu.paneId) ? { onReturnToChat: () => returnToChat(paneMenu.paneId) } : {})}
           onUseXtermFallbackChange={(useXtermFallback) => {
             if (!contextPaneIdentity) return
             updatePaneRendererControl(paneMenu.paneId, contextPaneIdentity, (current) => ({
@@ -3878,5 +4104,6 @@ export function App() {
         </div>
       ) : null}
     </div>
+    </ChatStashContext.Provider>
   )
 }

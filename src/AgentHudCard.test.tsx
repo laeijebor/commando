@@ -215,4 +215,64 @@ describe('AgentHudCard', () => {
     expect(screen.queryByText(/output-file/)).not.toBeInTheDocument()
     expect(screen.getByText('Agent hook emitted a working state')).toBeVisible()
   })
+
+  describe('answering requests', () => {
+    const permission = { id: 'r1', kind: 'permission' as const, prompt: 'npm test -- chat', toolName: 'Bash', createdAt: NOW }
+    const needs = (requests: NonNullable<AgentStatus['details']>['requests']) => status({
+      status: 'needs_input',
+      details: { attention: 'Allow Bash?', recentActivities: [], checks: [], requests },
+    })
+
+    it('answers an approval inline, apart from opening the pane', () => {
+      const onAnswer = vi.fn()
+      const onSelect = vi.fn()
+      render(<AgentHudCard status={needs([permission])} now={NOW} onSelect={onSelect} onDismiss={vi.fn()} onAnswer={onAnswer} />)
+      expect(screen.getByText('Bash')).toBeVisible()
+      expect(screen.getByText('npm test -- chat')).toBeVisible()
+      expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual(['', 'Deny', 'Always allow', 'Allow once', ''])
+      fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Always allow' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
+      expect(onAnswer.mock.calls.map(([, answer]) => answer)).toEqual([{ action: 'allow_once' }, { action: 'allow_always' }, { action: 'deny' }])
+      expect(onSelect).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: /Open claude agent/ }))
+      expect(onSelect).toHaveBeenCalledOnce()
+    })
+
+    it('offers a single-choice question its options, and sends anything else to the pane', () => {
+      const onAnswer = vi.fn()
+      const onSelect = vi.fn()
+      const single = { header: 'Colour', question: 'Which colour?', options: [{ label: 'Lavender' }, { label: 'Mint' }], multiple: false, custom: true }
+      const { rerender } = render(<AgentHudCard
+        status={needs([{ id: 'q1', kind: 'question', prompt: 'Which colour?', questions: [single], createdAt: NOW }])}
+        now={NOW} onSelect={onSelect} onDismiss={vi.fn()} onAnswer={onAnswer}
+      />)
+      expect(screen.getByText('Which colour?')).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: 'Mint' }))
+      expect(onAnswer).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1' }), { action: 'answer', answers: [['Mint']] })
+      fireEvent.click(screen.getByRole('button', { name: 'Answer in pane…' }))
+      expect(onSelect).toHaveBeenCalledOnce()
+
+      rerender(<AgentHudCard
+        status={needs([{ id: 'q2', kind: 'question', prompt: 'Which?', questions: [{ ...single, multiple: true }], createdAt: NOW }])}
+        now={NOW} onSelect={onSelect} onDismiss={vi.fn()} onAnswer={onAnswer}
+      />)
+      expect(screen.queryByRole('button', { name: 'Mint' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Answer in pane…' })).toBeVisible()
+    })
+
+    it('holds the buttons while an answer is in flight and shows a refusal', () => {
+      const { rerender } = render(<AgentHudCard
+        status={needs([permission])} now={NOW} onSelect={vi.fn()} onDismiss={vi.fn()} onAnswer={vi.fn()}
+        answerState={{ requestId: 'r1', pending: true }}
+      />)
+      expect(screen.getByRole('button', { name: 'Allow once' })).toBeDisabled()
+      rerender(<AgentHudCard
+        status={needs([permission])} now={NOW} onSelect={vi.fn()} onDismiss={vi.fn()} onAnswer={vi.fn()}
+        answerState={{ requestId: 'r1', pending: false, error: 'Already answered on another device' }}
+      />)
+      expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled()
+      expect(screen.getByRole('alert')).toHaveTextContent('Already answered on another device')
+    })
+  })
 })

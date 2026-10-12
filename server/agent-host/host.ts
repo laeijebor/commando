@@ -32,6 +32,8 @@ const MAX_BACKOFF_MS = 5_000
 const HEALTHY_CONNECTION_MS = 5_000
 /** After the daemon refuses this host, retry rarely (it may be the wrong daemon). */
 const REFUSED_BACKOFF_MS = 30_000
+/** How long a switch to Claude Code waits for the daemon to keep the chat's queue and draft. */
+const HANDOFF_TIMEOUT_MS = 5_000
 
 export interface HostLog {
   info(message: string): void
@@ -134,6 +136,7 @@ export class AgentHost {
   readonly hostId = randomUUID()
   private readonly sessions = new Map<string, AgentSession>()
   private readonly pendingItems = new Map<string, Map<string, ChatItem>>()
+  private readonly handoffs = new Map<string, (result: { ok: boolean; error?: string }) => void>()
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly link: DaemonLink
 
@@ -201,8 +204,31 @@ export class AgentHost {
     if (commands) this.link.send({ type: 'commands', paneId: session.paneId, commands })
   }
 
+  /**
+   * Gives the daemon what a switch to Claude Code carries across, and waits
+   * until it is kept: only then may the session go.
+   */
+  handoff(message: Extract<HostToDaemonMessage, { type: 'handoff' }>): Promise<{ ok: boolean; error?: string }> {
+    this.flush()
+    return new Promise((resolve) => {
+      const finish = (result: { ok: boolean; error?: string }) => {
+        clearTimeout(timer)
+        if (this.handoffs.get(message.paneId) === finish) this.handoffs.delete(message.paneId)
+        resolve(result)
+      }
+      const timer = setTimeout(() => finish({ ok: false, error: "Commando didn't answer in time" }), HANDOFF_TIMEOUT_MS)
+      this.handoffs.get(message.paneId)?.({ ok: false, error: 'A newer switch replaced this one' })
+      this.handoffs.set(message.paneId, finish)
+      if (!this.link.send(message)) finish({ ok: false, error: "This chat isn't connected to Commando" })
+    })
+  }
+
   private async onMessage(message: DaemonToHostMessage): Promise<void> {
     if (message.type === 'welcome') return
+    if (message.type === 'handoff_saved') {
+      this.handoffs.get(message.paneId)?.({ ok: message.ok, ...(message.error ? { error: message.error } : {}) })
+      return
+    }
     const session = this.sessions.get(message.paneId)
     if (!session) return
     if (message.type === 'send') {
@@ -224,6 +250,7 @@ export class AgentHost {
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)
     else if (message.type === 'configure') await session.configure(message.settings)
+    else if (message.type === 'switch') await session.requestSwitch(message.action)
   }
 
   /** Coalesces streaming updates so a long reply is not resent per token. */

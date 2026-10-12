@@ -1,9 +1,11 @@
+import { canvasPageKey as redlinePageKey, canvasSentPageUrl } from '../shared/canvas-feedback.js'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   MAX_PENDING_NOTE_ATTACHMENTS,
   MAX_PENDING_NOTES,
   REDLINE_BUILD_HANDOFF_INSTRUCTION,
+  type CanvasNoteContext,
   type WebPaneFeedbackNote,
   type WebPaneImageAttachment,
   type WebPanePendingNote,
@@ -14,7 +16,6 @@ import {
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_NOTE,
-  redlinePageKey,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
 import { defaultFeedbackJournalDir, JOURNAL_COMPACT_THRESHOLD } from './web-pane-feedback-journal.js'
@@ -347,7 +348,7 @@ export class WebPanePendingStore {
     }
     const page = state.viewedPage ?? state.url
     if (this.sentAnswers && page !== undefined) {
-      snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(page) }
+      snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(canvasSentPageUrl(page)) }
     }
     return snapshot
   }
@@ -374,7 +375,7 @@ export class WebPanePendingStore {
    * oldest note is dropped so a misbehaving page cannot grow the queue
    * without bound. Drops are counted, not silent — the tile shows them.
    */
-  addResponse(webPaneId: string, url: string, response: RedlinePageResponse): WebPanePendingSnapshot {
+  addResponse(webPaneId: string, url: string, response: RedlinePageResponse, canvas?: CanvasNoteContext): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
     this.rememberUrl(webPaneId, state, url)
     const existing = response.queueKey === undefined
@@ -394,6 +395,7 @@ export class WebPanePendingStore {
         deliveryKey: existing.deliveryKey ?? pendingDeliveryKey(webPaneId, existing.id),
         revision: (existing.revision ?? 1) + 1,
         pageUrl: url,
+        ...(canvas ? { canvas } : {}),
         selector: response.selector ?? `redline:${response.queueKey}`,
         tag: response.tag ?? 'redline',
         ...(response.text !== undefined ? { text: response.text } : {}),
@@ -416,6 +418,7 @@ export class WebPanePendingStore {
       deliveryKey: pendingDeliveryKey(webPaneId, id),
       revision: 1,
       pageUrl: url,
+      ...(canvas ? { canvas } : {}),
       selector: response.selector ?? `redline:${response.queueKey ?? response.question.slice(0, 64)}`,
       tag: response.tag ?? 'redline',
       ...(response.text !== undefined ? { text: response.text } : {}),
@@ -817,7 +820,7 @@ export class WebPanePendingStore {
     }
     for (const [page, answers] of byPage) {
       try {
-        this.sentAnswers.record(page, answers)
+        this.sentAnswers.record(canvasSentPageUrl(page), answers)
       } catch (error) {
         console.warn('[web-pane-pending] could not record sent answers for', page, error)
       }

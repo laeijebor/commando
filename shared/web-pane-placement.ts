@@ -32,3 +32,27 @@ export function neighbouringTab(tabs: readonly WebPane[], removedId: string): st
   const index = tabs.findIndex((tab) => tab.id === removedId)
   return index < 0 ? tabs[0]?.id : (tabs[index + 1] ?? tabs[index - 1])?.id
 }
+
+export const BUILTIN_PANEL_KEYS = ['session', 'changes'] as const
+export type PrPanelKey = `pr:${string}:${string}:${number}`
+export type BuiltinPanelKey = typeof BUILTIN_PANEL_KEYS[number] | PrPanelKey
+
+export function prPanelKey(repo: string, number: number): PrPanelKey {
+  return `pr:${repo.toLowerCase().replace('/', ':')}:${number}` as PrPanelKey
+}
+
+export function parsePrPanelKey(value: string): { repo: string; number: number } | undefined {
+  const match = /^pr:([A-Za-z0-9][A-Za-z0-9-]{0,38}):([A-Za-z0-9._-]{1,100}):([1-9]\d*)$/.exec(value)
+  if (!match) return undefined
+  const number = Number(match[3])
+  return Number.isSafeInteger(number) ? { repo: `${match[1]}/${match[2]}`.toLowerCase(), number } : undefined
+}
+
+/** Preserve old selections on disk until the client can resolve pane membership. */
+export function isLegacyPrPanelKey(value: string): boolean {
+  return value === 'pr' || (/^pr:[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value.slice(3))))
+}
+
+export function isBuiltinPanelKey(value: string): value is BuiltinPanelKey {
+  return (BUILTIN_PANEL_KEYS as readonly string[]).includes(value) || parsePrPanelKey(value) !== undefined
+}

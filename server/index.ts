@@ -1,6 +1,12 @@
+import { CanvasPush } from './canvas-push.js'
+import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
+import { CanvasSpotlightStore } from './canvas-spotlight.js'
+import { parseCanvasManifest } from '../shared/canvas-manifest.js'
+import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
+import { CanvasWatch } from './canvas-watch.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
   createServer,
@@ -59,7 +65,9 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { AgentResumeService, readProcessTable } from './agent-resume.js'
-import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
+import { buildChatReturnCommand, isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
+import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
+import { returnToChat } from './chat-return.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -88,6 +96,7 @@ import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -102,6 +111,7 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { brokerChatInteractions } from './chat-interactions.js'
 import { AgentRequestApi } from './agent-request-api.js'
 import { answerAgentRequest, IdempotencyKeyMemory } from './agent-request-answers.js'
 import { CompanionHub } from './companion.js'
@@ -123,7 +133,12 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
-const MAX_WS_BUFFERED_BYTES = 1024 * 1024
+/**
+ * Output a browser may leave unread before the daemon drops it as stalled. A
+ * connect burst carries every chat's items (hosts cap each at 2 MB), so this
+ * sits well above any one burst.
+ */
+const MAX_WS_BUFFERED_BYTES = 32 * 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -253,15 +268,13 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 function send(client: ClientState, message: ServerMessage): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
-  const serialized = JSON.stringify(message)
-  if (
-    client.socket.bufferedAmount + Buffer.byteLength(serialized, 'utf8') >
-    MAX_WS_BUFFERED_BYTES
-  ) {
+  // Judge the backlog already queued, not the message itself: one large frame
+  // (a chat snapshot) must not drop a client that is keeping up.
+  if (client.socket.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
     client.socket.close(1013, 'Client is not consuming output')
     return false
   }
-  client.socket.send(serialized)
+  client.socket.send(JSON.stringify(message))
   return true
 }
 
@@ -517,6 +530,8 @@ async function main(): Promise<void> {
   })
   const webPaneAttachments = new WebPaneAttachmentStore()
   const webPaneAgentRequests = new WebPaneAgentRequests()
+  const canvasSpotlight = new CanvasSpotlightStore()
+  let canvasPush: CanvasPush | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
@@ -539,6 +554,7 @@ async function main(): Promise<void> {
     () => publishWebPanes(),
     Date.now,
     releaseAttachment,
+    (id, keys) => canvasPush?.acknowledge(id, keys),
   )
   webPanePending = new WebPanePendingStore(
     pendingJournal,
@@ -552,6 +568,9 @@ async function main(): Promise<void> {
       if (pane?.status === 'pending') publishWebPanes()
     },
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
+    onPageTitle: (webPaneId, title) => {
+      if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+    },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
     onPageResponse: (webPaneId, response, pageUrl) => {
@@ -578,8 +597,10 @@ async function main(): Promise<void> {
   const webPanesMessage = (): ServerMessage => ({
     type: 'web_panes',
     webPanes: webPanes.list(),
+    activeTabs: webPanes.panelActiveTabs(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
+    spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
   /**
@@ -599,7 +620,11 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
+    canvasThreads.retain(liveIds)
     webPaneAgentRequests.retain(liveIds)
+    canvasSpotlight.retain(liveIds)
+    canvasPush?.retain(liveIds)
+    canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -615,11 +640,22 @@ async function main(): Promise<void> {
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
+  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
+    .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : []))
+  // Chats switched to Claude Code: what they held, and the way back.
+  const chatHandoffs = new ChatHandoffStore(undefined, Date.now, (error) => console.error('[commando] chat handoff state failed', error))
+  await chatHandoffs.load()
+  const chatReturnCommand = (handoff: ChatHandoff): string | null => (
+    buildChatReturnCommand(handoff.sessionId, COMMANDO_AGENT_LAUNCHER, handoff.returnFlags, chatEnv)
+  )
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
     chatSettings: (paneId) => chatResumeSettings(paneId),
-    chatEnv: Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
-      .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : [])),
+    chatReturnCommand: (sessionId) => {
+      const handoff = chatHandoffs.get(sessionId)
+      return handoff && handoff.returnedAt === undefined ? chatReturnCommand(handoff) ?? undefined : undefined
+    },
+    chatEnv,
     currentPane: (targetId) => snapshot.panes.find((pane) => pane.targetId === targetId),
     sendCommand: async (pane, command) => {
       await tmux.sendText(pane.sessionId, pane.id, command)
@@ -741,7 +777,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const publishAgentStatusChange = (change: AgentStatusChange): void => {
+  const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
+    if (change?.type === 'upsert') void canvasPush?.statusChanged(change.status.paneId)
     for (const client of clients) sendAgentStatusChange(client, change)
     if (change && companionClientCount > 0) {
       if (change.type === 'remove') {
@@ -764,7 +801,8 @@ async function main(): Promise<void> {
       ) primeStatusTail(change.status.paneId)
     }
     if (change) companion?.publish()
-    pushNotifier?.handleStatusChange(change)
+    if (restored) pushNotifier?.observe(change)
+    else pushNotifier?.handleStatusChange(change)
     if (change) {
       const pane = paneForId(change.type === 'remove' ? change.paneId : change.status.paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
@@ -811,7 +849,8 @@ async function main(): Promise<void> {
     }
     return hostBuildCache.build
   }
-  const agentHosts = new AgentHostHub({
+  const interactions = new AgentInteractionBroker()
+  const agentHosts: AgentHostHub = new AgentHostHub({
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
@@ -824,7 +863,17 @@ async function main(): Promise<void> {
       const current = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
       return Number.isInteger(current) && current > 0 && current !== known && hostRunsInPane(rows, hostPid, current)
     },
+    // A chat's requests and status show where a terminal agent's do: island, phone, push and the HUD.
+    interactions: brokerChatInteractions({
+      registry: agentStatuses,
+      broker: interactions,
+      publish: publishAgentStatusChange,
+      answer: (paneId, chatRequestId, answer) => agentHosts.answerInteraction(paneId, chatRequestId, answer),
+      log: (message) => console.warn(message),
+    }),
     log: (message) => console.log(message),
+    handoffs: chatHandoffs,
+    onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
     snapshot: (repo, number, targetId) => prs.autofixSnapshot(repo, number, targetId),
@@ -838,6 +887,21 @@ async function main(): Promise<void> {
     log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
+  let publishedHandoffs = ''
+  const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode() })
+  function publishChatHandoffs(): void {
+    const message = chatHandoffsMessage()
+    const key = JSON.stringify(message)
+    if (key === publishedHandoffs) return
+    publishedHandoffs = key
+    broadcast(message)
+  }
+  /** Panes whose Claude Code is being asked to exit, so a second click doesn't ask again. */
+  const chatReturns = new Set<string>()
+  const panePidFromTmux = async (paneId: string): Promise<number | undefined> => {
+    const pid = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined
+  }
   const chatImages = new ChatImageStore()
   const chatSends = new Map<string, Promise<void>>()
   const deliverChatSend = async (client: ClientState, message: Extract<ClientMessage, { type: 'chat_send' }>): Promise<void> => {
@@ -868,6 +932,11 @@ async function main(): Promise<void> {
     (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat plan files`) },
     (error: unknown) => console.error('[commando] chat plan prune failed', error),
   )
+  const chatStash = new ChatStashStore(defaultChatStashPath(port), chatImages)
+  // Loading the stash marks its images in use before the prune looks at them.
+  await chatStash.load().catch((error: unknown) => {
+    console.error('[commando] failed to load the chat stash', error)
+  })
   void chatImages.prune().then(
     (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat images`) },
     (error: unknown) => console.error('[commando] chat image prune failed', error),
@@ -1351,7 +1420,16 @@ async function main(): Promise<void> {
         await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
-          return pane && agentStatuses.liveHookStatus(paneId, pane.command)
+          if (!pane) return undefined
+          // A switch hands the same conversation from the chat host to Claude Code, so the
+          // registry still scopes its status to the host's process; the resume checks that
+          // Claude Code in the pane really resumes that conversation.
+          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          if (live) return live
+          const status = agentStatuses.get(paneId)
+          const switched = status?.source === 'hook' && status.provider === 'claude' && status.agentSessionId !== undefined
+            && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
+          return switched ? status : undefined
         })
 
         const paneIds = new Set(snapshot.panes.map((pane) => pane.id))
@@ -1546,7 +1624,6 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
-  const interactions = new AgentInteractionBroker()
   const providerUsage = new ProviderUsageService()
   const pushDevices = new PushDeviceRegistry()
   await pushDevices.load().catch((error: unknown) => {
@@ -1660,13 +1737,47 @@ async function main(): Promise<void> {
       return pane ? { targetId: pane.targetId } : null
     },
   })
+  const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
+  canvasPush = new CanvasPush({
+    repoRoot: fileURLToPath(new URL('../', import.meta.url)),
+    pane: (id) => webPanes.get(id),
+    title: (pane) => {
+      if (pane.content?.kind === 'canvas') {
+        const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
+        try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || 'Canvas' } catch { /* The journal still works without a manifest. */ }
+      }
+      return 'Canvas'
+    },
+    owns: (paneId) => agentHosts.owns(paneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    status: (paneId) => agentStatuses.get(paneId),
+    sendTerminal: async (paneId, text) => {
+      const pane = paneForId(paneId)
+      const status = agentStatuses.get(paneId)
+      if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+      // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
+      await tmux.pasteText(paneId, text)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await tmux.sendKey(pane.sessionId, paneId, 'Enter')
+    },
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
     pending: webPanePending,
+    canvasThreads,
+    spotlight: canvasSpotlight,
+    onCanvasSent: (id, notes) => {
+      try { canvasSnapshots.captureSent(webPanes.get(id), notes) }
+      catch (error) { console.warn('[commando] canvas snapshot failed', error) }
+      void canvasPush?.deliver(id, notes)
+    },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
-    onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
+    onPendingChanged: (webPaneId, notes) => {
+      webTileRelay.broadcastPending(webPaneId, notes)
+      if (webPanes.get(webPaneId)?.content?.kind === 'canvas') broadcast({ type: 'canvas_pending_changed', webPaneId })
+    },
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     paneForId: (paneId) => {
@@ -1702,6 +1813,13 @@ async function main(): Promise<void> {
         console.error('[commando] chromium tile navigation after confirm failed', error)
       })
     },
+    onReopen: (pane) => {
+      if (pane.engine !== 'chromium') return
+      chromiumEngine.updatePendingSnapshot(pane.id, webPanePending.snapshot(pane.id))
+      void chromiumEngine.navigate(pane.id, pane.url).catch((error: unknown) => {
+        console.error('[commando] chromium tile navigation after reopen failed', error)
+      })
+    },
     onReload: (pane) => {
       if (pane.engine !== 'chromium') return
       void chromiumEngine.reload(pane.id, pane.url).catch((error: unknown) => {
@@ -1717,10 +1835,17 @@ async function main(): Promise<void> {
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
+  canvasSnapshots.prune()
+  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
+  canvasWatch.sync(webPanes.list())
+  canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     artifacts: redlineArtifacts,
+    snapshots: canvasSnapshots,
+    screenshot: (url, width, height) => chromiumEngine.screenshot(url, width, height),
     baseUrl: `http://127.0.0.1:${port}`,
   })
 
@@ -2094,10 +2219,49 @@ async function main(): Promise<void> {
                 ? agentHosts.configure(message.paneId, message.settings, message.requestId)
                 : agentHosts.answer(message.paneId, message.chatRequestId, message.answer, message.requestId)
         if (!delivered) {
-          sendError(client, 'chat_unavailable', message.type === 'chat_answer'
-            ? 'That request is no longer waiting for an answer'
-            : 'No agent host is connected for this pane', message.requestId)
+          sendError(client, 'chat_unavailable', message.type !== 'chat_answer'
+            ? 'No agent host is connected for this pane'
+            : agentHosts.answered(message.paneId, message.chatRequestId)
+              ? 'Already answered on another device'
+              : 'That request is no longer waiting for an answer', message.requestId)
         }
+        return
+      }
+      case 'chat_switch': {
+        const error = agentHosts.switchToClaudeCode(message.paneId, message.action, message.draft, message.requestId)
+        if (error) sendError(client, 'chat_unavailable', error, message.requestId)
+        return
+      }
+      case 'chat_carry_taken':
+        agentHosts.takeCarried(message.paneId, message.carryId, message.images)
+        return
+      case 'chat_return': {
+        const pane = paneForId(message.paneId)
+        if (!pane) {
+          sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
+          return
+        }
+        if (chatReturns.has(message.paneId)) return
+        chatReturns.add(message.paneId)
+        void returnToChat({
+          panePid: panePidFromTmux,
+          paneCommand: async (paneId) => (await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_current_command}']).catch(() => '')).trim() || undefined,
+          status: (paneId) => agentStatuses.get(paneId),
+          handoff: (sessionId) => chatHandoffs.get(sessionId),
+          chatOwnsPane: (paneId) => agentHosts.owns(paneId),
+          readProcessTable,
+          signal: (pid, signal) => { process.kill(pid, signal) },
+          returnCommand: chatReturnCommand,
+          sendCommand: async (paneId, command) => {
+            const current = paneForId(paneId)
+            if (!current) throw new Error('the pane is gone')
+            await tmux.sendText(current.sessionId, paneId, command)
+            await tmux.sendKey(current.sessionId, paneId, 'Enter')
+          },
+        }, message.paneId).then(
+          (error) => { if (error) sendError(client, 'chat_unavailable', error, message.requestId) },
+          (error: unknown) => sendError(client, 'chat_unavailable', `Couldn't return to the chat: ${error instanceof Error ? error.message : String(error)}`, message.requestId),
+        ).finally(() => chatReturns.delete(message.paneId))
         return
       }
       case 'chat_queue':
@@ -2197,6 +2361,8 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
+    send(client, chatHandoffsMessage())
+    send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
@@ -2342,6 +2508,7 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
@@ -2483,6 +2650,7 @@ async function main(): Promise<void> {
 
   prAutofix.start()
   const snapshotTimer = setInterval(() => {
+    canvasSnapshots.prune()
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
@@ -2513,6 +2681,7 @@ async function main(): Promise<void> {
     pushNotifier?.close()
     simLive.close()
     simLogs.close()
+    canvasWatch.close()
     webTileRelay.close()
     chromiumEngine.dispose()
     void sessionIdes.close().catch((error: unknown) => console.error('[commando] IDE cleanup failed', error))
