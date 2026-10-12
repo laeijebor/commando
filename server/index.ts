@@ -1,3 +1,4 @@
+import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -599,6 +600,7 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
+    canvasThreads.retain(liveIds)
     webPaneAgentRequests.retain(liveIds)
     canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
@@ -1650,13 +1652,18 @@ async function main(): Promise<void> {
       return pane ? { targetId: pane.targetId } : null
     },
   })
+  const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
     pending: webPanePending,
+    canvasThreads,
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
-    onPendingChanged: (webPaneId, notes) => webTileRelay.broadcastPending(webPaneId, notes),
+    onPendingChanged: (webPaneId, notes) => {
+      webTileRelay.broadcastPending(webPaneId, notes)
+      if (webPanes.get(webPaneId)?.content?.kind === 'canvas') broadcast({ type: 'canvas_pending_changed', webPaneId })
+    },
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     paneForId: (paneId) => {
@@ -1709,6 +1716,7 @@ async function main(): Promise<void> {
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
+  canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

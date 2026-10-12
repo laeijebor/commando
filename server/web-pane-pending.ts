@@ -4,6 +4,7 @@ import {
   MAX_PENDING_NOTE_ATTACHMENTS,
   MAX_PENDING_NOTES,
   REDLINE_BUILD_HANDOFF_INSTRUCTION,
+  type CanvasNoteContext,
   type WebPaneFeedbackNote,
   type WebPaneImageAttachment,
   type WebPanePendingNote,
@@ -374,7 +375,7 @@ export class WebPanePendingStore {
    * oldest note is dropped so a misbehaving page cannot grow the queue
    * without bound. Drops are counted, not silent — the tile shows them.
    */
-  addResponse(webPaneId: string, url: string, response: RedlinePageResponse): WebPanePendingSnapshot {
+  addResponse(webPaneId: string, url: string, response: RedlinePageResponse, canvas?: CanvasNoteContext): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
     this.rememberUrl(webPaneId, state, url)
     const existing = response.queueKey === undefined
@@ -394,6 +395,7 @@ export class WebPanePendingStore {
         deliveryKey: existing.deliveryKey ?? pendingDeliveryKey(webPaneId, existing.id),
         revision: (existing.revision ?? 1) + 1,
         pageUrl: url,
+        ...(canvas ? { canvas } : {}),
         selector: response.selector ?? `redline:${response.queueKey}`,
         tag: response.tag ?? 'redline',
         ...(response.text !== undefined ? { text: response.text } : {}),
@@ -416,6 +418,7 @@ export class WebPanePendingStore {
       deliveryKey: pendingDeliveryKey(webPaneId, id),
       revision: 1,
       pageUrl: url,
+      ...(canvas ? { canvas } : {}),
       selector: response.selector ?? `redline:${response.queueKey ?? response.question.slice(0, 64)}`,
       tag: response.tag ?? 'redline',
       ...(response.text !== undefined ? { text: response.text } : {}),

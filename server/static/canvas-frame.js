@@ -8,6 +8,7 @@
   function post(type, payload) {
     window.parent.postMessage(Object.assign({ source: 'commando-canvas-frame', frameId: frameId, type: type }, payload), '*')
   }
+  window.__commandoRedlineQueue = function (payload) { post('redline-queue', { payload: payload }) }
   function rect(element) {
     var r = element.getBoundingClientRect()
     return { x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height }
@@ -53,19 +54,30 @@
     }) })
   }
   var timer
+  var lastPendingSnapshot
   function schedule() {
     clearTimeout(timer)
     timer = setTimeout(report, 100)
   }
   window.addEventListener('message', function (event) {
     var data = event.data
-    if (event.source !== window.parent || !data || data.source !== 'commando-canvas' || data.type !== 'hit-test') return
+    if (event.source !== window.parent || !data || data.source !== 'commando-canvas' || typeof data.type !== 'string') return
+    if (data.type === 'redline-pending') {
+      // SDK hydration mutates DOM and triggers a label report. Do not echo that back forever.
+      var serialized = JSON.stringify(data.snapshot)
+      if (serialized === lastPendingSnapshot) return
+      lastPendingSnapshot = serialized
+      window.__commandoRedlinePendingSnapshot = data.snapshot
+      window.dispatchEvent(new CustomEvent('commando:redline-pending', { detail: data.snapshot }))
+      return
+    }
+    if (data.type !== 'hit-test') return
     if (!Number.isFinite(data.x) || !Number.isFinite(data.y) || typeof data.requestId !== 'string' && typeof data.requestId !== 'number') return
     // Hit-test coordinates are iframe viewport CSS pixels; reply rectangles are document CSS pixels.
     var element = document.elementFromPoint(data.x, data.y)
     if (!element) { post('hit', { requestId: data.requestId, selector: null, rect: null }); return }
     var label = element.closest('[data-canvas-label]')
-    var payload = { requestId: data.requestId, selector: selector(element), rect: rect(element) }
+    var payload = { requestId: data.requestId, selector: selector(element), rect: rect(element), tag: element.localName, text: (element.textContent || '').trim().slice(0, 500) }
     if (label) {
       payload.label = label.getAttribute('data-canvas-label')
       if (label.hasAttribute('data-canvas-id')) payload.labelId = label.getAttribute('data-canvas-id')

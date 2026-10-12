@@ -931,3 +931,15 @@ describe('WebPanePendingStore page identity', () => {
     expect(snapshot.notes.map((note) => note.comment)).toEqual(['left behind'])
   })
 })
+
+it('rehydrates canvas context and carries it unchanged through targeted delivery', () => {
+  const dir = makeDir(), canvas = { frameId: 'settings', point: { x: 7, y: 9 }, label: 'Row', labelId: 'row', focus: 1, interactive: true }
+  const journal = new PendingNotesJournal({ dir }), store = new WebPanePendingStore(journal)
+  store.addNote('w-12345678', PAGE_URL, { ...manualNote('Fix row'), canvas })
+  const restored = new WebPanePendingStore(new PendingNotesJournal({ dir }))
+  expect(restored.snapshot('w-12345678').notes[0].canvas).toEqual(canvas)
+  const delivered = vi.fn()
+  restored.send('w-12345678', PAGE_URL, 123, delivered, [{ id: 1, revision: 1 }], undefined, 1)
+  expect(delivered.mock.calls[0][0][0]).toMatchObject({ canvas, capturedAt: 123 })
+  expect(restored.list('w-12345678')).toEqual([])
+})

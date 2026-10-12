@@ -451,3 +451,10 @@ describe('WebPaneFeedbackStore', () => {
     expect(store.info()['w-11111111']?.queued).toBe(1)
   })
 })
+
+it('preserves canvas context across feedback journal restart and drain', async () => {
+  const { store, dir } = makeStore(), canvas = { frameId: 'settings', point: { x: 7, y: 9 }, label: 'Row', labelId: 'row', section: 'Accounts', ticket: 'APP-1', status: 'ready-for-dev', focus: 1, interactive: true }
+  store.enqueue('w-12345678', [{ ...note(), canvas }])
+  const restored = makeStore({ dir }).store
+  expect((await restored.drain('w-12345678', 0)).notes[0].canvas).toEqual(canvas)
+})

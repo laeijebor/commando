@@ -1,3 +1,5 @@
+import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
+import type { CanvasThreadsStore } from './canvas-threads.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
@@ -57,6 +59,7 @@ type WebPanesApiDependencies = {
   feedback: WebPaneFeedbackStore
   /** Queued-but-unsent review notes, owned by the daemon. */
   pending: WebPanePendingStore
+  canvasThreads?: CanvasThreadsStore
   /** Private bytes referenced by pending and sent review notes. */
   attachmentStore: WebPaneAttachmentStore
   /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
@@ -208,6 +211,13 @@ function parseExpectedQueueRevision(body: Record<string, unknown>, intent?: WebP
   return body.expectedQueueRevision as number
 }
 
+function canvasContext(value: unknown) {
+  if (value === undefined) return undefined
+  const context = parseCanvasNoteContext(value)
+  if (!context) throw new HttpError(400, 'canvas context is malformed')
+  return context
+}
+
 const MAX_FEEDBACK_COMMENT = 4_096
 
 function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[] {
@@ -239,6 +249,7 @@ function parseFeedbackNotes(body: Record<string, unknown>): WebPaneFeedbackNote[
       ...(note.text !== undefined ? { text: note.text } : {}),
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       comment: note.comment,
+      ...(note.canvas !== undefined ? { canvas: canvasContext(note.canvas) } : {}),
       pageUrl: note.pageUrl,
       capturedAt: note.capturedAt,
       ...(response !== undefined ? { response } : {}),
@@ -316,6 +327,7 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
     ...(note.text !== undefined ? { text: note.text } : {}),
     rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     comment: note.comment,
+    ...(note.canvas !== undefined ? { canvas: canvasContext(note.canvas) } : {}),
     ...(pageUrl !== undefined ? { pageUrl } : {}),
     ...(note.queueKey !== undefined ? { queueKey: note.queueKey } : {}),
     ...(response !== undefined ? { response } : {}),
@@ -325,13 +337,14 @@ function parsePendingNoteInput(body: Record<string, unknown>): PendingNoteInput 
 function parsePendingResponseInput(body: Record<string, unknown>): {
   pageUrl: string
   response: RedlinePageResponse
+  canvas?: import('../shared/protocol.js').CanvasNoteContext
 } {
   if (typeof body.pageUrl !== 'string') throw new HttpError(400, 'pageUrl must be an http or https URL')
   const decision = classifyWebPaneUrl(body.pageUrl, new Set())
   if (decision.kind === 'invalid') throw new HttpError(400, `pageUrl ${decision.reason}`)
   const response = parseRedlinePageResponse(body.response)
   if (!response) throw new HttpError(400, 'response is malformed')
-  return { pageUrl: decision.url, response }
+  return { pageUrl: decision.url, response, canvas: canvasContext(body.canvas) }
 }
 
 function digest(value: string): Buffer {
@@ -441,6 +454,13 @@ export class WebPanesApi {
         return true
       }
 
+      if (route.action === 'threads') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        if (!this.dependencies.service.get(route.id)) throw new HttpError(404, 'Web pane does not exist')
+        writeJson(response, 200, { ok: true, webPaneId: route.id, threads: this.dependencies.canvasThreads?.list(route.id) ?? [] })
+        return true
+      }
+
       if (route.action === 'feedback') {
         const paneExists = Boolean(this.dependencies.service.get(route.id))
         if (request.method === 'POST') {
@@ -450,6 +470,7 @@ export class WebPanesApi {
           }
           const notes = parseFeedbackNotes(await readJson(request))
           this.dependencies.feedback.enqueue(route.id, notes)
+          this.dependencies.canvasThreads?.record(route.id, notes)
           this.dependencies.onChange()
           const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
           writeJson(response, 200, { ok: true, webPaneId: route.id, queued })
@@ -507,7 +528,7 @@ export class WebPanesApi {
         if (route.response === true) {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
           const input = parsePendingResponseInput(await readJson(request))
-          const snapshot = pending.addResponse(route.id, input.pageUrl, input.response)
+          const snapshot = pending.addResponse(route.id, input.pageUrl, input.response, input.canvas)
           this.dependencies.onPendingChanged?.(route.id, snapshot)
           writeJson(response, 200, { ok: true, webPaneId: route.id, ...snapshot })
           return true
@@ -529,7 +550,10 @@ export class WebPanesApi {
             route.id,
             pane.url,
             Date.now(),
-            (feedbackNotes) => this.dependencies.feedback.enqueue(route.id, feedbackNotes),
+            (feedbackNotes) => {
+              this.dependencies.feedback.enqueue(route.id, feedbackNotes)
+              this.dependencies.canvasThreads?.record(route.id, feedbackNotes)
+            },
             targets,
             intent,
             expectedQueueRevision,
@@ -798,7 +822,7 @@ export class WebPanesApi {
             'Allow',
             url.pathname === API_ROOT
               ? 'GET, POST'
-              : url.pathname.endsWith('/cdp') ? 'GET'
+              : url.pathname.endsWith('/cdp') || url.pathname.endsWith('/threads') ? 'GET'
               : url.pathname.endsWith('/feedback') ? 'GET, POST'
               : url.pathname.includes('/navigate-requests/') ? 'GET, POST'
               : url.pathname.endsWith('/navigate') || url.pathname.endsWith('/reload') ? 'POST'
@@ -874,7 +898,7 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
-    | { kind: 'pane'; id: string; action: 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'move' | 'navigate' | 'reload' | 'delete' }
+    | { kind: 'pane'; id: string; action: 'active-tab' | 'seen' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
@@ -902,7 +926,7 @@ export class WebPanesApi {
           : { attachmentId: pendingAttachment[3] }),
       }
     }
-    const match = /^\/api\/web-panes\/([^/]+)(?:\/(active-tab|seen|confirm|cdp|feedback|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
+    const match = /^\/api\/web-panes\/([^/]+)(?:\/(active-tab|seen|confirm|cdp|feedback|threads|move|navigate|reload|pending)(?:\/(send|send-build|dropped|response|page|\d+))?)?$/.exec(pathname)
     if (!match || !WEB_PANE_ID.test(match[1])) throw new HttpError(404, 'Not found')
     if (match[2] === 'pending') {
       if (match[3] === 'send') return { kind: 'pane', id: match[1], action: 'pending', send: true }
@@ -920,6 +944,7 @@ export class WebPanesApi {
       ? 'confirm'
       : match[2] === 'cdp'
         ? 'cdp'
+        : match[2] === 'threads' ? 'threads'
         : match[2] === 'feedback'
           ? 'feedback'
           : match[2] === 'move'

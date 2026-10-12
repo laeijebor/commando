@@ -553,6 +553,22 @@ export type WebPaneFeedbackHandoff = {
   instruction: string
 }
 
+/** Frame-local CSS pixels and author-provided manifest context. */
+export type CanvasNoteContext = {
+  frameId: string
+  point: { x: number; y: number }
+  label?: string; labelId?: string; frameTitle?: string
+  section?: string; ticket?: string; status?: string
+  focus?: number; interactive?: boolean
+}
+
+export type CanvasThread = {
+  id: string; webPaneId: string; frameId: string; point: { x: number; y: number }
+  label?: string; labelId?: string; selector?: string
+  messages: Array<{ author: 'user'; text: string; at: number }>
+  status: 'open'; createdAt: number
+}
+
 export type WebPaneFeedbackNote = {
   /** Server-assigned delivery id; present on drained notes, used for dedupe. */
   id?: number
@@ -567,6 +583,7 @@ export type WebPaneFeedbackNote = {
   text?: string
   rect: { x: number; y: number; width: number; height: number }
   comment: string
+  canvas?: CanvasNoteContext
   pageUrl: string
   capturedAt: number
   /** Present when the note came from an in-page component, not an annotation. */
@@ -599,6 +616,7 @@ export type WebPanePendingNote = {
   text?: string
   rect: { x: number; y: number; width: number; height: number }
   comment: string
+  canvas?: CanvasNoteContext
   /** Replace-key for unsent re-answers from the same in-page question. */
   queueKey?: string
   /** Present when the note came from an in-page component, not an annotation. */
@@ -718,6 +736,8 @@ export type ServerMessage =
       changed: boolean
       requestId: string
     }
+  | { type: 'canvas_pending_changed'; webPaneId: string }
+  | { type: 'canvas_threads_changed'; webPaneId: string }
   | { type: 'canvas_changed'; artifactId: string; changed: string[] }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
