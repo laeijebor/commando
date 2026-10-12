@@ -1,8 +1,11 @@
+import { CanvasPush } from './canvas-push.js'
+import { CanvasSpotlightStore } from './canvas-spotlight.js'
+import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
   createServer,
@@ -518,6 +521,8 @@ async function main(): Promise<void> {
   })
   const webPaneAttachments = new WebPaneAttachmentStore()
   const webPaneAgentRequests = new WebPaneAgentRequests()
+  const canvasSpotlight = new CanvasSpotlightStore()
+  let canvasPush: CanvasPush | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
@@ -581,6 +586,7 @@ async function main(): Promise<void> {
     webPanes: webPanes.list(),
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
+    spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
   /**
@@ -602,6 +608,8 @@ async function main(): Promise<void> {
     webPanePending.retain(liveIds)
     canvasThreads.retain(liveIds)
     webPaneAgentRequests.retain(liveIds)
+    canvasSpotlight.retain(liveIds)
+    canvasPush?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
   }
@@ -745,6 +753,7 @@ async function main(): Promise<void> {
   }
 
   const publishAgentStatusChange = (change: AgentStatusChange): void => {
+    if (change?.type === 'upsert') void canvasPush?.statusChanged(change.status.paneId)
     for (const client of clients) sendAgentStatusChange(client, change)
     if (change && companionClientCount > 0) {
       if (change.type === 'remove') {
@@ -1653,11 +1662,35 @@ async function main(): Promise<void> {
     },
   })
   const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
+  canvasPush = new CanvasPush({
+    pane: (id) => webPanes.get(id),
+    title: (pane) => {
+      if (pane.content?.kind === 'canvas') {
+        const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
+        try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || 'Canvas' } catch { /* The journal still works without a manifest. */ }
+      }
+      return 'Canvas'
+    },
+    owns: (paneId) => agentHosts.owns(paneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    status: (paneId) => agentStatuses.get(paneId),
+    sendTerminal: async (paneId, text) => {
+      const pane = paneForId(paneId)
+      const status = agentStatuses.get(paneId)
+      if (!pane || pane.dead || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+      // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
+      await tmux.pasteText(paneId, text)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      await tmux.sendKey(pane.sessionId, paneId, 'Enter')
+    },
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     feedback: webPaneFeedback,
     pending: webPanePending,
     canvasThreads,
+    spotlight: canvasSpotlight,
+    onCanvasSent: (id, notes) => { void canvasPush?.deliver(id, notes) },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
     onPendingChanged: (webPaneId, notes) => {
