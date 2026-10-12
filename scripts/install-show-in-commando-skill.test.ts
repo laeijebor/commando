@@ -71,6 +71,16 @@ describe('Commando skill distribution (isolated HOME and profiles)', () => {
       .toBe(await readFile(join(f.checkout, 'skills/redline/playbooks/plan.md'), 'utf8'))
   })
 
+  it('installs canvas by name through the existing skill discovery', async () => {
+    const f = await fixture()
+    const result = await run(f, ['canvas'])
+    expect(result.code, result.stderr).toBe(0)
+    for (const root of f.roots) {
+      expect(await readdir(root)).toEqual(['canvas'])
+      await expectDistributed(join(f.checkout, 'skills/canvas'), join(root, 'canvas'))
+    }
+  })
+
   it('installs only selected names, refreshes their canonical files, and preserves unrelated content on repeat runs', async () => {
     const f = await fixture()
     for (const root of f.roots) {
