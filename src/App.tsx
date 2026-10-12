@@ -128,6 +128,7 @@ import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
@@ -145,6 +146,7 @@ import {
   type ChatState,
   type ChatSubagentTranscript,
 } from '../shared/agent-chat'
+import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
 import { createPaneScreenshotsApi, type PaneScreenshotsApiClient } from './paneScreenshotsApi'
@@ -995,6 +997,7 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
+  const [chatStashEntries, setChatStashEntries] = useState<ChatStashEntry[]>([])
   const [chatSendErrors, setChatSendErrors] = useState<Record<string, ChatSendError>>({})
   const [chatActionErrors, setChatActionErrors] = useState<Record<string, string>>({})
   /** Queue, subagent and interrupt requests by id, so a refusal shows in their pane. */
@@ -1397,6 +1400,9 @@ export function App() {
       }
       case 'chat_snapshot':
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
+        break
+      case 'chat_stash':
+        setChatStashEntries(message.entries)
         break
       case 'chat_state':
         setChats((current) => ({ ...current, [message.chat.paneId]: message.chat }))
@@ -2345,6 +2351,8 @@ export function App() {
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })
   }
+  const chatStashApi = useMemo(() => createChatStashApi(token), [token])
+  const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
   const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction })
@@ -2973,6 +2981,7 @@ export function App() {
   }
 
   return (
+    <ChatStashContext.Provider value={chatStash}>
     <div
       className={`cockpit${maximizedPaneId ? ' has-maximized-pane' : ''}`}
       style={{ '--left-panel-width': `${leftPanelWidth}px` } as CSSProperties}
@@ -3972,5 +3981,6 @@ export function App() {
         </div>
       ) : null}
     </div>
+    </ChatStashContext.Provider>
   )
 }

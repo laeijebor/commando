@@ -73,6 +73,14 @@ export class ChatImageStore {
     }
   }
 
+  /** Marks a stored image as in use, so the prune keeps it. */
+  async touch(id: string): Promise<void> {
+    const path = this.path(id)
+    if (!path) return
+    const now = new Date()
+    await utimes(path, now, now)
+  }
+
   /** Stores an upload; refuses anything that is not a supported image within the limit. */
   async save(bytes: Uint8Array, maxBytes = MAX_CHAT_IMAGE_BYTES): Promise<{ id: string } | { error: ChatImageSaveError }> {
     const checked = this.check(bytes, maxBytes)

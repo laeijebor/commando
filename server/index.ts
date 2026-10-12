@@ -93,6 +93,7 @@ import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -889,6 +890,11 @@ async function main(): Promise<void> {
     (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat plan files`) },
     (error: unknown) => console.error('[commando] chat plan prune failed', error),
   )
+  const chatStash = new ChatStashStore(defaultChatStashPath(port), chatImages)
+  // Loading the stash marks its images in use before the prune looks at them.
+  await chatStash.load().catch((error: unknown) => {
+    console.error('[commando] failed to load the chat stash', error)
+  })
   void chatImages.prune().then(
     (removed) => { if (removed) console.log(`[commando] pruned ${removed} unused chat images`) },
     (error: unknown) => console.error('[commando] chat image prune failed', error),
@@ -2260,6 +2266,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
+    send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()
     if (send(client, { type: 'agent_status_snapshot', statuses: replayStatuses })) {
       for (const status of replayStatuses) {
@@ -2404,6 +2411,7 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
