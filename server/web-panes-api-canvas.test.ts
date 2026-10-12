@@ -1,3 +1,5 @@
+import { CanvasSnapshotsStore } from './canvas-snapshots.js'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -40,6 +42,26 @@ async function request(action: string, body?: unknown, auth: 'owner' | 'agent' |
   return { status: writeHead.mock.calls[0][0], body: JSON.parse(end.mock.calls[0][0]), setHeader }
 }
 describe('canvas pending/feedback/thread routes without sockets', () => {
+  it('snapshots each canvas send path at the shared send hook, including user replies and section status notes', async () => {
+    const artifactId = '0123456789abcdef', artifact = join(dir, 'artifact')
+    mkdirSync(artifact)
+    writeFileSync(join(artifact, 'canvas.json'), JSON.stringify({ title: 'Board', frames: [{ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0 }] }))
+    const snapshots = new CanvasSnapshotsStore({ directory: (requested) => requested === artifactId ? artifact : null }, join(dir, 'snapshots'))
+    onCanvasSent.mockImplementation((paneId, notes) => { snapshots.captureSent(service.get(paneId), notes) })
+    const round = (text: string) => writeFileSync(join(artifact, 'Settings.html'), text)
+    round('batch'); await request('pending', { note }); await request('pending', { note: { ...note, comment: 'Second note' } }); await request('pending/send', {})
+    expect(snapshots.list(artifactId)[0].comments).toBe(2)
+    const threadId = threads.list(id)[0].id
+    round('send this'); const queued = await request('pending', { note: { ...note, comment: 'Send this' } })
+    await request('pending/send', { items: queued.body.notes.map((n: { id: number; revision: number }) => ({ id: n.id, revision: n.revision })), expectedQueueRevision: queued.body.revision })
+    round('follow-up'); await request(`threads/${threadId}/replies`, { text: 'Follow-up', author: 'user' })
+    round('status'); await request('pending', { note: { ...note, comment: 'Status changed', canvas: { ...canvas, status: 'shipped' } } }); await request('pending/send', {})
+    expect(snapshots.list(artifactId).map((snapshot) => snapshot.comments)).toEqual([1, 1, 1, 2])
+    expect(onCanvasSent).toHaveBeenCalledTimes(4)
+    await request(`threads/${threadId}/replies`, { text: 'Agent reply' }, 'agent')
+    expect(snapshots.list(artifactId)).toHaveLength(4)
+  })
+
   it('journals and pushes the section-status note produced by the canvas client through pending→send', async () => {
     const statusNote = canvasSectionStatusNote({ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0, w: 390, h: 844, interactive: true, focus: 1 },
       { id: 'section', title: 'Accounts', ticket: 'APP-1', status: 'idea', frames: ['settings'] }, 'ready-for-review', note.pageUrl)

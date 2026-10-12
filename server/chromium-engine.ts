@@ -339,6 +339,7 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
 }
 
 type CdpEventHandler = (params: Record<string, unknown>) => void
+type ScreenshotCdp = Pick<CdpConnection, 'send' | 'on' | 'close'>
 
 /**
  * Minimal CDP client over one page-target websocket: request/response
@@ -818,6 +819,48 @@ export class ChromiumEngine {
 
   hasTile(webPaneId: string): boolean {
     return this.tiles.has(webPaneId)
+  }
+
+  /** A temporary page, with no tile, review binding, or canvas frame script. */
+  async screenshot(url: string, width: number, height: number,
+    connect: (url: string, timeoutMs: number) => Promise<ScreenshotCdp> = CdpConnection.open,
+  ): Promise<Buffer> {
+    if (![width, height].every((size) => Number.isFinite(size) && size > 0 && size <= MAX_VIEWPORT_DIMENSION)) {
+      throw new WebPaneError(400, `PNG dimensions must be between 1 and ${MAX_VIEWPORT_DIMENSION}`)
+    }
+    let browser: BrowserSession | undefined, targetId: string | undefined, page: ScreenshotCdp | undefined
+    let expired = false
+    const check = () => { if (expired) throw new WebPaneError(504, 'PNG export timed out after 15s') }
+    const cleanup = () => {
+      page?.close(); page = undefined
+      if (browser && targetId) { browser.cdp.sendAndForget('Target.closeTarget', { targetId }); targetId = undefined }
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { expired = true; cleanup(); reject(new WebPaneError(504, 'PNG export timed out after 15s')) }, 15_000)
+    })
+    const capture = async () => {
+      try {
+        browser = await this.ensureBrowser(); check()
+        const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true, background: false })
+        if (typeof created.targetId !== 'string') throw new WebPaneError(502, 'Chromium did not return a screenshot target')
+        targetId = created.targetId; check()
+        page = await connect(`ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`, 15_000); check()
+        await page.send('Page.enable'); check()
+        await page.send('Emulation.setDeviceMetricsOverride', { width: Math.ceil(width), height: Math.ceil(height), deviceScaleFactor: 2, mobile: false }); check()
+        const loaded = new Promise<void>((resolve) => page!.on('Page.loadEventFired', () => resolve()))
+        const navigation = await page.send('Page.navigate', { url }); check()
+        if (navigation.errorText) throw new WebPaneError(502, `PNG navigation failed: ${navigation.errorText}`)
+        await loaded; check()
+        // Wait for fonts and a paint after load; external pages that never settle hit the overall deadline.
+        await page.send('Runtime.evaluate', { expression: 'document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))', awaitPromise: true }); check()
+        const result = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); check()
+        if (typeof result.data !== 'string') throw new WebPaneError(502, 'Chromium returned no PNG data')
+        return Buffer.from(result.data, 'base64')
+      } finally { cleanup() }
+    }
+    try { return await Promise.race([capture(), timeout]) }
+    finally { clearTimeout(timer); cleanup() }
   }
 
   async cdpInfo(webPaneId: string, url: string): Promise<{ target: string; devtoolsFrontendUrl: string }> {

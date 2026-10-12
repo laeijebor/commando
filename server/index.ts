@@ -1,4 +1,5 @@
 import { CanvasPush } from './canvas-push.js'
+import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
@@ -1690,7 +1691,11 @@ async function main(): Promise<void> {
     pending: webPanePending,
     canvasThreads,
     spotlight: canvasSpotlight,
-    onCanvasSent: (id, notes) => { void canvasPush?.deliver(id, notes) },
+    onCanvasSent: (id, notes) => {
+      try { canvasSnapshots.captureSent(webPanes.get(id), notes) }
+      catch (error) { console.warn('[commando] canvas snapshot failed', error) }
+      void canvasPush?.deliver(id, notes)
+    },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
     onPendingChanged: (webPaneId, notes) => {
@@ -1747,6 +1752,8 @@ async function main(): Promise<void> {
     },
   })
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
+  canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
   canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
@@ -1754,6 +1761,8 @@ async function main(): Promise<void> {
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
     artifacts: redlineArtifacts,
+    snapshots: canvasSnapshots,
+    screenshot: (url, width, height) => chromiumEngine.screenshot(url, width, height),
     baseUrl: `http://127.0.0.1:${port}`,
   })
 
@@ -2514,6 +2523,7 @@ async function main(): Promise<void> {
   })))
 
   const snapshotTimer = setInterval(() => {
+    canvasSnapshots.prune()
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()

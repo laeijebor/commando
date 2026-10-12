@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { canvasRelativePath, parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { RedlineArtifactError, type RedlineArtifactRegistry } from './redline-artifacts.js'
 import { canvasContentHash, writeCanvas } from './canvas-write.js'
+import type { CanvasSnapshotsStore } from './canvas-snapshots.js'
+import { WebPaneError } from './web-panes.js'
 
 const require_ = createRequire(import.meta.url)
 const staticDir = join(dirname(fileURLToPath(import.meta.url)), 'static')
@@ -75,6 +77,8 @@ type RedlineApiDependencies = {
   artifacts: RedlineArtifactRegistry
   /** Origin artifacts are reachable at, e.g. http://127.0.0.1:4310 */
   baseUrl: string
+  snapshots?: CanvasSnapshotsStore
+  screenshot?: (url: string, width: number, height: number) => Promise<Buffer>
 }
 
 /**
@@ -104,10 +108,10 @@ export class RedlineApi {
       this.handleStatic(request, response, url)
       return true
     } catch (error) {
-      if (error instanceof HttpError || error instanceof RedlineArtifactError) {
+      if (error instanceof HttpError || error instanceof RedlineArtifactError || error instanceof WebPaneError) {
         if (error.status === 401) response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
         if (error.status === 405) {
-          response.setHeader('Allow', /\/canvas\/(frames|sections)$/.test(url.pathname) ? 'PATCH' : url.pathname.startsWith('/api/redline') ? 'GET, POST, DELETE' : 'GET')
+          response.setHeader('Allow', /\/canvas\/(frames|sections)$/.test(url.pathname) ? 'PATCH' : /\/canvas\/(snapshots|frames\/[^/]+\.png)$/.test(url.pathname) ? 'GET' : url.pathname.startsWith('/api/redline') ? 'GET, POST, DELETE' : 'GET')
         }
         this.writeJson(response, error.status, { error: error.message })
         return true
@@ -139,8 +143,10 @@ export class RedlineApi {
       return
     }
     const artifact = /^\/redline\/artifacts\/([0-9a-f]{16})\/(.*)$/.exec(pathname)
-    if (artifact) {
-      const file = this.dependencies.artifacts.resolve(artifact[1], artifact[2])
+    const snapshot = /^\/redline\/canvas-snapshots\/([0-9a-f]{16})\/([0-9a-f-]{36})\/(.*)$/.exec(pathname)
+    if (artifact || snapshot) {
+      const file = artifact ? this.dependencies.artifacts.resolve(artifact[1], artifact[2])
+        : this.dependencies.snapshots?.resolve(snapshot![1], snapshot![2], snapshot![3])
       if (!file) throw new HttpError(404, 'Not found')
       // Artifacts change during a review loop — never cache them.
       const frameId = url.searchParams.get('canvas-frame')
@@ -207,6 +213,23 @@ export class RedlineApi {
   }
 
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const png = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/frames\/([A-Za-z0-9_-]{1,64})\.png$/.exec(url.pathname)
+    if (png) {
+      if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
+      if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+      const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
+      if (!manifestPath) throw new HttpError(400, 'Invalid manifest path')
+      const file = this.dependencies.artifacts.resolve(png[1], manifestPath.split('/').map(encodeURIComponent).join('/'))
+      if (!file) throw new HttpError(404, 'Canvas manifest not found')
+      const frame = parseCanvasManifest(readFileSync(file, 'utf8')).manifest.frames.find((f) => f.id === png[2])
+      if (!frame || !this.dependencies.artifacts.resolve(png[1], frame.src.split('/').map(encodeURIComponent).join('/'))) throw new HttpError(404, 'Canvas frame not found')
+      if (!this.dependencies.screenshot) throw new HttpError(503, 'Chromium engine is not available for PNG export')
+      const frameUrl = `${this.dependencies.baseUrl}/redline/artifacts/${png[1]}/${frame.src.split('/').map(encodeURIComponent).join('/')}`
+      const body = await this.dependencies.screenshot(frameUrl, frame.w, frame.h)
+      response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'Content-Length': body.length, 'X-Content-Type-Options': 'nosniff' })
+      response.end(body)
+      return
+    }
     const write = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/(frames|sections)$/.exec(url.pathname)
     if (write) {
       // Owner only: the agent token is deliberately not accepted for user layout edits.
@@ -216,6 +239,13 @@ export class RedlineApi {
       return
     }
     await this.authenticate(request, url)
+    const snapshots = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/snapshots$/.exec(url.pathname)
+    if (snapshots) {
+      if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+      if (!this.dependencies.artifacts.directory(snapshots[1])) throw new HttpError(404, 'Artifact not found')
+      this.writeJson(response, 200, { snapshots: this.dependencies.snapshots?.list(snapshots[1]) ?? [] })
+      return
+    }
     if (url.pathname === '/api/redline/artifacts') {
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
       const body = await this.readJson(request)
@@ -246,6 +276,7 @@ export class RedlineApi {
     if (single && ARTIFACT_ID.test(single[1])) {
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
       if (!this.dependencies.artifacts.unregister(single[1])) throw new HttpError(404, 'Not found')
+      this.dependencies.snapshots?.prune()
       this.writeJson(response, 200, { ok: true })
       return
     }
