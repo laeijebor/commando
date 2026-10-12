@@ -109,10 +109,10 @@ it.each(['summary', 'fileDiff'] as const)('keeps the local %s error and provides
   api.gitApi.summary.mockResolvedValue({ isRepo: true, root: '/repo', files: [
     { path: 'src/app.ts', status: 'M', additions: 1, deletions: 0, binary: false },
   ] })
-  api.gitApi[request].mockRejectedValue(new Error('Head commit is unavailable'))
+  api.gitApi[request].mockRejectedValue(new Error('Unknown git ref: b'))
   render(<PrPanel panePath="/repo" gitApi={api.gitApi} paneId="%12" source={source} api={api as unknown as PrsApiClient} visible selection={{ tab: 'Diff', revision: 1 }} />)
   const error = await screen.findByRole('alert')
-  expect(error).toHaveTextContent('Head commit is unavailable')
+  expect(error).toHaveTextContent('Unknown git ref: b')
   expect(error).toHaveTextContent('Comparison commits must be available')
   expect(within(error).getByRole('link', { name: 'Open on GitHub' })).toHaveAttribute('href', `${pr.url}/files`)
   expect(api.diff).not.toHaveBeenCalled()
@@ -142,14 +142,14 @@ it('uses the Changes view for a merged PR and fetches pinned comparisons only wh
   expect(screen.getByRole('searchbox', { name: 'Search diff contents' })).toBeVisible()
   expect(screen.getByTitle('b')).toHaveTextContent('feature')
   expect(screen.getByTitle('a')).toHaveTextContent('main')
-  expect(api.gitApi.summary).toHaveBeenCalledExactlyOnceWith('%12', 'a', 'b')
+  expect(api.gitApi.summary).toHaveBeenCalledExactlyOnceWith('%12', 'a', 'b', 'origin/main')
   expect(api.gitApi.fileDiff).toHaveBeenCalledWith('%12', 'src/app.ts', expect.objectContaining({ target: 'a', head: 'b' }))
   expect(api.diff).not.toHaveBeenCalled()
   expect(api.renderDiff).not.toHaveBeenCalled()
   view.rerender(element(false, 'c'))
   expect(api.gitApi.summary).toHaveBeenCalledTimes(1)
   view.rerender(element(true, 'c'))
-  await waitFor(() => expect(api.gitApi.summary).toHaveBeenCalledWith('%12', 'a', 'c'))
+  await waitFor(() => expect(api.gitApi.summary).toHaveBeenCalledWith('%12', 'a', 'c', 'origin/main'))
 })
 
 it('does not poll hidden views or fetch changed details until revealed', async () => {
@@ -173,6 +173,32 @@ it('resolves older pane data using the existing list API and keeps merge guards'
   await screen.findByRole('heading', { name: 'Full description' })
   expect(api.list).toHaveBeenCalledWith('acme/widgets', 'all', { scope: 'everyone' })
   expect(screen.getByRole('button', { name: 'Merge PR' })).toBeDisabled()
+})
+
+it('keeps the selected file, filter, search and rendered diff when returning from Conversation', async () => {
+  const api = fixture()
+  api.gitApi.summary.mockResolvedValue({ isRepo: true, root: '/repo', files: [
+    { path: 'src/a.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/b.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+  ] })
+  const { container } = render(<PrPanel panePath="/repo" gitApi={api.gitApi} paneId="%12" source={source}
+    api={api as unknown as PrsApiClient} visible selection={{ tab: 'Diff', revision: 1 }} />)
+  await screen.findByText('LOCAL PR DIFF')
+  fireEvent.click(screen.getByRole('button', { name: /b\.ts/ }))
+  await waitFor(() => expect(api.gitApi.fileDiff).toHaveBeenCalledWith('%12', 'src/b.ts', expect.objectContaining({ baseFallback: 'origin/main' })))
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Filter changed file paths' }), { target: { value: 'src/' } })
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'PR' } })
+  const output = container.querySelector('.git-diff-output > pre')
+  const fileRequests = api.gitApi.fileDiff.mock.calls.length
+  fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+  expect(container.querySelector('.pr-quick-comparison')).toHaveAttribute('hidden')
+  fireEvent.click(screen.getByRole('tab', { name: 'Diff' }))
+  expect(screen.getByRole('button', { name: /b\.ts/ })).toHaveClass('selected')
+  expect(screen.getByRole('searchbox', { name: 'Filter changed file paths' })).toHaveValue('src/')
+  expect(screen.getByRole('searchbox', { name: 'Search diff contents' })).toHaveValue('PR')
+  expect(container.querySelector('.git-diff-output > pre')).toBe(output)
+  expect(api.gitApi.summary).toHaveBeenCalledTimes(1)
+  expect(api.gitApi.fileDiff).toHaveBeenCalledTimes(fileRequests)
 })
 
 it('uses already loaded HUD data when pane preview is absent', async () => {

@@ -400,11 +400,11 @@ export class GitDiffInspector {
     private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
   ) {}
 
-  async summary(cwd: string, target?: string, head?: string): Promise<GitDiffSummary> {
-    const key = `${cwd}${NUL}${target ?? ''}${NUL}${head ?? ''}`
+  async summary(cwd: string, target?: string, head?: string, baseFallback?: string): Promise<GitDiffSummary> {
+    const key = `${cwd}${NUL}${target ?? ''}${NUL}${head ?? ''}${NUL}${baseFallback ?? ''}`
     const cached = this.summaryCache.get(key)
     if (cached && this.now() - cached.at < SUMMARY_CACHE_TTL_MS) return cached.result
-    const result = this.computeSummary(cwd, target, head)
+    const result = this.computeSummary(cwd, target, head, baseFallback)
     this.summaryCache.set(key, { at: this.now(), result })
     result.catch(() => this.summaryCache.delete(key))
     return result
@@ -471,11 +471,12 @@ export class GitDiffInspector {
     engine: DiffEngine = 'difftastic',
     display: DiffDisplay = 'side-by-side',
     head?: string,
+    baseFallback?: string,
   ): Promise<string> {
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
     const relative = validateRepoRelativePath(repo.root, file)
-    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head, baseFallback)
 
     try {
       const untracked = resolved.head === undefined && await this.isUntracked(repo.root, relative)
@@ -487,11 +488,11 @@ export class GitDiffInspector {
     }
   }
 
-  async search(cwd: string, value: unknown, target?: string, head?: string): Promise<GitDiffSearchResult> {
+  async search(cwd: string, value: unknown, target?: string, head?: string, baseFallback?: string): Promise<GitDiffSearchResult> {
     const query = validateDiffSearchQuery(value)
     const repo = await this.repoContext(cwd)
     if (!repo) throw new GitDiffError('exec', 'Not a git repository')
-    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head, baseFallback)
 
     try {
       const [{ stdout }, summary] = await Promise.all([
@@ -500,7 +501,7 @@ export class GitDiffInspector {
           ['diff', '--no-color', '--no-ext-diff', '--unified=0', '--no-renames', resolved.base, ...(resolved.head ? [resolved.head] : []), '--'],
           this.options(repo.root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
         ),
-        this.summary(cwd, target, head),
+        this.summary(cwd, target, head, baseFallback),
       ])
       const result = searchPatch(stdout, query)
       const matchingFiles = new Map(result.files.map((file) => [file.file, file.matches]))
@@ -638,10 +639,10 @@ export class GitDiffInspector {
     return new GitDiffError('exec', error instanceof Error ? error.message : 'git diff failed')
   }
 
-  private async computeSummary(cwd: string, target?: string, head?: string): Promise<GitDiffSummary> {
+  private async computeSummary(cwd: string, target?: string, head?: string, baseFallback?: string): Promise<GitDiffSummary> {
     const repo = await this.repoContext(cwd)
     if (!repo) return { isRepo: false }
-    const resolved = await this.resolveBase(repo.root, repo.branch, target, head)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head, baseFallback)
     const base = resolved.base
     const comparisonHead = resolved.head ? [resolved.head] : []
 
@@ -714,14 +715,21 @@ export class GitDiffInspector {
     }
   }
 
-  private async resolveBase(root: string, branch: string, target?: string, head?: string): Promise<ResolvedBase> {
+  private async resolveBase(root: string, branch: string, target?: string, head?: string, baseFallback?: string): Promise<ResolvedBase> {
+    const fallback = baseFallback === undefined ? undefined : validateGitTarget(baseFallback)
+    if (fallback !== undefined && (target === undefined || head === undefined)) {
+      throw new GitDiffError('bad-target', 'A base fallback requires an explicit base and head comparison')
+    }
     if (head !== undefined && target === undefined) {
       throw new GitDiffError('bad-target', 'A base target is required when a head ref is provided')
     }
     if (target !== undefined) {
-      const validated = validateGitTarget(target)
+      let validated = validateGitTarget(target)
       if (!(await this.refExists(root, validated))) {
-        throw new GitDiffError('bad-target', `Unknown git ref: ${validated}`)
+        if (fallback === undefined || !(await this.refExists(root, fallback))) {
+          throw new GitDiffError('bad-target', `Unknown git ref: ${validated}`)
+        }
+        validated = fallback
       }
       if (head !== undefined) {
         const validatedHead = validateGitTarget(head)

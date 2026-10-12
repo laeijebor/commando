@@ -549,5 +549,7 @@
 }
 
 .pr-quick-embedded .pr-quick-panel.is-comparison { display: flex; flex-direction: column; padding: 0; }
-.pr-quick-embedded .is-comparison > .git-diff-view { flex: 1; height: auto; }
+.pr-quick-embedded .pr-quick-comparison > .git-diff-view { flex: 1; height: auto; }
 .pr-quick-embedded .git-diff-error { display: block; }
+.pr-quick-comparison { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.pr-quick-comparison[hidden] { display: none; }

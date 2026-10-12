@@ -73,9 +73,10 @@ export class GitDiffApi {
       const { paneId, path: panePath } = this.resolvePane(url)
       const target = url.searchParams.get('target') ?? undefined
       const head = url.searchParams.get('head') ?? undefined
+      const baseFallback = url.searchParams.get('baseFallback') ?? undefined
 
       if (url.pathname === `${API_ROOT}/summary`) {
-        let summary = await this.inspector.summary(panePath, target, head)
+        let summary = await this.inspector.summary(panePath, target, head, baseFallback)
         if (
           target === undefined &&
           !summary.pullRequest &&
@@ -103,6 +104,7 @@ export class GitDiffApi {
           url.searchParams.get('query'),
           target,
           head,
+          baseFallback,
         ))
         return true
       }
@@ -112,7 +114,7 @@ export class GitDiffApi {
       const width = validateDiffWidth(url.searchParams.get('width') ?? undefined)
       const engine = validateDiffEngine(url.searchParams.get('engine') ?? undefined)
       const display = validateDiffDisplay(url.searchParams.get('display') ?? undefined)
-      const diff = await this.inspector.fileDiff(panePath, file, target, width, engine, display, head)
+      const diff = await this.inspector.fileDiff(panePath, file, target, width, engine, display, head, baseFallback)
       writeJson(response, 200, { file, diff })
       return true
     } catch (error) {

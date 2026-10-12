@@ -251,6 +251,28 @@ it('keeps an explicit branch comparison when footer stats use the same label for
 })
 
 describe('GitDiffView engine and layout toggles', () => {
+  it.each(['summary', 'fileDiff'] as const)('retries an interrupted comparison %s as a foreground request', async (operation) => {
+    const api = fakeApi()
+    let finish!: () => void
+    if (operation === 'summary') {
+      vi.mocked(api.summary).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(summary) }))
+    } else {
+      vi.mocked(api.fileDiff).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ file: 'a.ts', diff: 'stale' }) }))
+    }
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: null,
+      comparison: { base: 'base-tip', head: 'head-tip', baseLabel: 'main', headLabel: 'feature' } }
+    const view = render(<GitDiffView {...props} />)
+    await waitFor(() => expect(api[operation]).toHaveBeenCalledTimes(1))
+    view.rerender(<GitDiffView {...props} visible={false} />)
+    vi.mocked(api[operation]).mockRejectedValueOnce(new Error('Unknown git ref: head-tip'))
+    view.rerender(<GitDiffView {...props} visible />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unknown git ref: head-tip')
+    expect(api[operation]).toHaveBeenCalledTimes(2)
+    await act(async () => { finish() })
+    expect(screen.getByRole('alert')).toHaveTextContent('Unknown git ref: head-tip')
+    expect(screen.queryByText('stale')).not.toBeInTheDocument()
+  })
+
   it('defers comparison summary, file and all-file search requests while hidden', async () => {
     vi.useFakeTimers()
     const api = fakeApi()

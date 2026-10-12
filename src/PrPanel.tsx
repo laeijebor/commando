@@ -63,9 +63,10 @@ export function PrPanel({ paneId, panePath, source, api, gitApi, visible, select
   const comparisonHint = <p>Comparison commits must be available in this pane’s repository.{' '}
     <a href={`${pr?.url ?? source.url}/files`} target="_blank" rel="noreferrer">Open on GitHub</a>
   </p>
-  const diffView = pr?.baseRefOid && pr.headRefOid
+  const diffView = (diffVisible: boolean) => pr?.baseRefOid && pr.headRefOid
     ? <GitDiffView key={`${pr.baseRefOid}:${pr.headRefOid}`} paneId={paneId} panePath={panePath} api={gitApi}
-        initialSummary={null} visible={visible} comparison={{ base: pr.baseRefOid, head: pr.headRefOid,
+        initialSummary={null} visible={diffVisible} comparison={{ base: pr.baseRefOid, head: pr.headRefOid,
+          baseFallback: pr.baseRefName ? `origin/${pr.baseRefName}` : undefined,
           baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7), headLabel: pr.headRefName || pr.headRefOid.slice(0, 7) }}
         errorHint={comparisonHint} />
     : <div className="pr-quick-message" role="alert">The PR’s comparison commits are unavailable.{comparisonHint}</div>

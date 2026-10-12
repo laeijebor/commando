@@ -126,7 +126,7 @@ export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(
 export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied, diffView }: PrQuickLookProps & {
   closeButton?: ReactNode
   visible?: boolean
-  diffView?: ReactNode
+  diffView?: (visible: boolean) => ReactNode
   onSelectionApplied?(): void
 }) {
   const id = useId()
@@ -150,6 +150,8 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     pr.requestedReviewers,
   ])
   const [tab, setTab] = useState<PrQuickLookTab>(selection?.tab ?? 'Description')
+  const [diffOpened, setDiffOpened] = useState(tab === 'Diff')
+  useEffect(() => { if (tab === 'Diff') setDiffOpened(true) }, [tab])
   useEffect(() => {
     if (!selection) return
     setTab(selection.tab)
@@ -440,7 +442,9 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
               repo={repo} number={pr.number} api={api} onChanged={refreshConversation}
               renderComment={(entry, options) => <ConversationComment entry={entry} prUrl={pr.url} {...options} />} />
           </div>
-          {tab === 'Diff' && diffView !== undefined ? diffView : null}
+          {diffOpened && diffView !== undefined ? <div className="pr-quick-comparison" hidden={tab !== 'Diff'}>
+            {diffView(visible && tab === 'Diff')}
+          </div> : null}
           {tab === 'Diff' && diffView === undefined && !error ? (
             diff ? (
               <>

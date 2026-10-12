@@ -11,3 +11,17 @@ describe('createGitDiffApi.repo', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer secret')
   })
 })
+
+it('forwards the comparison base fallback on summary, file and search requests', async () => {
+  const fetcher = vi.fn(async () => new Response('{}', { status: 200 }))
+  const api = createGitDiffApi('', fetcher as unknown as typeof fetch)
+  await api.summary('%1', 'base-tip', 'head-tip', 'origin/main')
+  await api.fileDiff('%1', 'a.ts', { target: 'base-tip', head: 'head-tip', baseFallback: 'origin/main' })
+  await api.search('%1', 'needle', 'base-tip', 'head-tip', 'origin/main')
+  for (const [input] of fetcher.mock.calls as unknown as Array<[string]>) {
+    const params = new URL(input, 'http://localhost').searchParams
+    expect(params.get('target')).toBe('base-tip')
+    expect(params.get('head')).toBe('head-tip')
+    expect(params.get('baseFallback')).toBe('origin/main')
+  }
+})

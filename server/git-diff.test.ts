@@ -397,6 +397,45 @@ describe('GitDiffInspector.summary', () => {
     expect(repo.calls.some((call) => call.args[0] === 'ls-files')).toBe(false)
   })
 
+  it.each(['summary', 'difftastic', 'delta', 'search'] as const)('uses a local base fallback for %s when the pinned base is missing', async (operation) => {
+    const repo = fakeRepo({ refs: ['origin/main', 'head-tip'], numstat: `1\t0\tsrc/app.ts${NUL}`, nameStatus: `M${NUL}src/app.ts${NUL}` })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    if (operation === 'summary') {
+      await expect(inspector.summary('/repo', 'missing-base', 'head-tip', 'origin/main'))
+        .resolves.toMatchObject({ files: [{ path: 'src/app.ts' }], target: 'origin/main…head-tip' })
+      // A fallback summary must not populate the exact-only comparison cache.
+      await expect(inspector.summary('/repo', 'missing-base', 'head-tip')).rejects.toThrow('Unknown git ref: missing-base')
+    } else if (operation === 'search') {
+      await inspector.search('/repo', 'needle', 'missing-base', 'head-tip', 'origin/main')
+    } else {
+      await inspector.fileDiff('/repo', 'src/app.ts', 'missing-base', 120, operation, 'inline', 'head-tip', 'origin/main')
+    }
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'origin/main', 'head-tip'] }))
+    expect(repo.calls.filter((call) => call.args[0] === 'rev-parse' && call.args[1] === '--verify').slice(0, 3).map((call) => call.args[3]))
+      .toEqual(['missing-base^{commit}', 'origin/main^{commit}', 'head-tip^{commit}'])
+    expect(repo.calls.some((call) => call.args[0] === 'fetch')).toBe(false)
+  })
+
+  it('prefers the pinned base even when the remote branch already contains a merged PR', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip', 'origin/main'] })
+    await new GitDiffInspector(repo.execute, {}).summary('/repo', 'base-tip', 'head-tip', 'origin/main')
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'base-tip', 'head-tip'] }))
+    expect(repo.calls.some((call) => call.args.includes('origin/main^{commit}'))).toBe(false)
+  })
+
+  it('still rejects a missing head when the base fallback exists', async () => {
+    const repo = fakeRepo({ refs: ['origin/main'] })
+    await expect(new GitDiffInspector(repo.execute, {}).summary('/repo', 'missing-base', 'missing-head', 'origin/main'))
+      .rejects.toThrow('Unknown git ref: missing-head')
+  })
+
+  it('validates the fallback and restricts it to explicit comparisons', async () => {
+    const repo = fakeRepo({ refs: ['base-tip', 'head-tip'] })
+    const inspector = new GitDiffInspector(repo.execute, {})
+    await expect(inspector.summary('/repo', 'base-tip', 'head-tip', '--unsafe')).rejects.toThrow('Invalid git target ref')
+    await expect(inspector.summary('/repo', 'base-tip', undefined, 'origin/main')).rejects.toThrow('requires an explicit base and head')
+  })
+
   it('excludes this branch and its remote copies from branch-point detection', async () => {
     const repo = fakeRepo({
       refTips: [
