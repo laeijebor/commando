@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
-import { CanvasPush, canvasPushPrompt } from './canvas-push.js'
+import { CanvasPush, canvasPushPrompt, canvasRepoRoot } from './canvas-push.js'
 
 const id = 'w-12345678'
 const note = (key = 'one'): WebPaneFeedbackNote => ({ deliveryKey: key, comment: 'Fix this\nrow', selector: '#row', tag: 'button', rect: { x: 0, y: 0, width: 1, height: 1 }, pageUrl: 'http://localhost/', capturedAt: 1,
@@ -75,7 +75,7 @@ describe('CanvasPush (injected senders only)', () => {
   })
   it('formats the collection/reply instructions, unlabelled notes and bounded truncation', () => {
     const prompt = canvasPushPrompt('Board', id, [note()])
-    expect(prompt).toBe(`Canvas feedback on "Board" (1 comment(s)) — webPaneId ${id}.\n- [Settings › Row] Fix this row  (thread ct-${'a'.repeat(24)})\nRun scripts/commando-feedback ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with scripts/commando-canvas reply ${id} <threadId> "<text>" [--resolve].`)
+    expect(prompt).toBe(`Canvas feedback on "Board" (1 comment(s)) — webPaneId ${id}.\n- [Settings › Row] Fix this row  (thread ct-${'a'.repeat(24)})\nRun "${canvasRepoRoot}scripts/commando-feedback" ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with "${canvasRepoRoot}scripts/commando-canvas" reply ${id} <threadId> "<text>" [--resolve].`)
     expect(canvasPushPrompt('Board', id, [{ ...note(), canvas: { ...note().canvas!, label: undefined } }])).toContain('› unlabelled]')
     const many = Array.from({ length: 200 }, (_, i) => ({ ...note(String(i)), comment: 'x'.repeat(4096), canvas: { ...note().canvas!, frameTitle: 't'.repeat(1024), label: 'l'.repeat(256) } }))
     const long = canvasPushPrompt('t'.repeat(1024), id, many)
@@ -83,4 +83,38 @@ describe('CanvasPush (injected senders only)', () => {
     expect(long).toContain('…'); expect(long).toMatch(/\d+ comment\(s\) omitted/)
     expect(long).toContain('scripts/commando-feedback'); expect(long).toContain('[--resolve]')
   })
+})
+
+it('uses injected absolute checkout paths and removes every C0/C1 control from interpolated fields', () => {
+  const attack = '\u001b[201~\u0003' + Array.from({ length: 160 }, (_, i) => String.fromCharCode(i)).join('')
+  const n = note(); n.comment = attack; n.canvas = { ...n.canvas!, frameTitle: attack, label: attack, threadId: attack }
+  const prompt = canvasPushPrompt(attack, attack, [n], '/tmp/other checkout')
+  expect(prompt).toContain('"/tmp/other checkout/scripts/commando-feedback"')
+  expect(prompt).toContain('"/tmp/other checkout/scripts/commando-canvas"')
+  expect(prompt).not.toContain('\u001b[201~\u0003')
+  expect(prompt.replaceAll('\n', '')).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+})
+it('serializes two canvases at one anchor and rechecks availability before the second paste', async () => {
+  const f = fixture()
+  let finish!: () => void
+  f.sendTerminal.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+  const first = f.push.deliver(id, [note()])
+  await f.push.deliver('w-87654321', [note('two')])
+  expect(f.sendTerminal).toHaveBeenCalledTimes(1)
+  f.status({ status: 'working' }); finish(); await first
+  expect(f.sendTerminal).toHaveBeenCalledTimes(1)
+  f.status({ status: 'done' }); await f.push.statusChanged('%1')
+  expect(f.sendTerminal).toHaveBeenCalledTimes(2)
+})
+it('drops acknowledged owed feedback before done', async () => {
+  const f = fixture(false, 'working')
+  await f.push.deliver(id, [note()]); f.push.acknowledge(id, ['one'])
+  f.status({ status: 'done' }); await f.push.statusChanged('%1')
+  expect(f.sendTerminal).not.toHaveBeenCalled()
+})
+it('keeps only the last 2000 pushed delivery keys', async () => {
+  const f = fixture(true)
+  await f.push.deliver(id, Array.from({ length: 2001 }, (_, i) => note(String(i))))
+  await f.push.deliver(id, [note('2000')]); expect(f.sendChat).toHaveBeenCalledTimes(1)
+  await f.push.deliver(id, [note('0')]); expect(f.sendChat).toHaveBeenCalledTimes(2)
 })

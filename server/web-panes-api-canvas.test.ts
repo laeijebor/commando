@@ -1,5 +1,5 @@
 import { CanvasSnapshotsStore } from './canvas-snapshots.js'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -46,7 +46,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     const artifactId = '0123456789abcdef', artifact = join(dir, 'artifact')
     mkdirSync(artifact)
     writeFileSync(join(artifact, 'canvas.json'), JSON.stringify({ title: 'Board', frames: [{ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0 }] }))
-    const snapshots = new CanvasSnapshotsStore({ directory: (requested) => requested === artifactId ? artifact : null }, join(dir, 'snapshots'))
+    const snapshots = new CanvasSnapshotsStore({ directory: (requested) => requested === artifactId ? realpathSync(artifact) : null }, join(dir, 'snapshots'))
     onCanvasSent.mockImplementation((paneId, notes) => { snapshots.captureSent(service.get(paneId), notes) })
     const round = (text: string) => writeFileSync(join(artifact, 'Settings.html'), text)
     round('batch'); await request('pending', { note }); await request('pending', { note: { ...note, comment: 'Second note' } }); await request('pending/send', {})

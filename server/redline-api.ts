@@ -1,3 +1,4 @@
+import { encodeCanvasPath } from '../shared/canvas-manifest.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -219,12 +220,12 @@ export class RedlineApi {
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
       const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
       if (!manifestPath) throw new HttpError(400, 'Invalid manifest path')
-      const file = this.dependencies.artifacts.resolve(png[1], manifestPath.split('/').map(encodeURIComponent).join('/'))
+      const file = this.dependencies.artifacts.resolve(png[1], encodeCanvasPath(manifestPath))
       if (!file) throw new HttpError(404, 'Canvas manifest not found')
       const frame = parseCanvasManifest(readFileSync(file, 'utf8')).manifest.frames.find((f) => f.id === png[2])
-      if (!frame || !this.dependencies.artifacts.resolve(png[1], frame.src.split('/').map(encodeURIComponent).join('/'))) throw new HttpError(404, 'Canvas frame not found')
+      if (!frame || !this.dependencies.artifacts.resolve(png[1], encodeCanvasPath(frame.src))) throw new HttpError(404, 'Canvas frame not found')
       if (!this.dependencies.screenshot) throw new HttpError(503, 'Chromium engine is not available for PNG export')
-      const frameUrl = `${this.dependencies.baseUrl}/redline/artifacts/${png[1]}/${frame.src.split('/').map(encodeURIComponent).join('/')}`
+      const frameUrl = `${this.dependencies.baseUrl}/redline/artifacts/${png[1]}/${encodeCanvasPath(frame.src)}`
       const body = await this.dependencies.screenshot(frameUrl, frame.w, frame.h)
       response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'Content-Length': body.length, 'X-Content-Type-Options': 'nosniff' })
       response.end(body)
@@ -263,7 +264,7 @@ export class RedlineApi {
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
       const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
       if (!manifestPath) throw new HttpError(400, 'manifest must be a relative path inside the canvas folder')
-      const file = this.dependencies.artifacts.resolve(canvas[1], manifestPath.split('/').map(encodeURIComponent).join('/'))
+      const file = this.dependencies.artifacts.resolve(canvas[1], encodeCanvasPath(manifestPath))
       if (!file) {
         this.writeJson(response, 404, { ...parseCanvasManifest({ title: '', frames: [] }), errors: [`${manifestPath}: not found`] })
         return

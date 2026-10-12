@@ -943,3 +943,20 @@ it('rehydrates canvas context and carries it unchanged through targeted delivery
   expect(delivered.mock.calls[0][0][0]).toMatchObject({ canvas, capturedAt: 123 })
   expect(restored.list('w-12345678')).toEqual([])
 })
+
+it('separates same-source canvas queue keys and durable sent answers by frame, ignoring reload', () => {
+  const sent = new SentAnswerStore({ dir: makeDir(), now: () => 42 })
+  const store = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }), undefined, sent)
+  const a = 'http://localhost/Shared.html?canvas-frame=a', b = 'http://localhost/Shared.html?canvas-frame=b'
+  const shape = { question: 'Ship it?', kind: 'approve' as const, options: ['Yes', 'No'] }
+  store.addResponse('w-1', a, { ...response('Yes', 'ship'), shape })
+  store.addResponse('w-1', b, { ...response('No', 'ship'), shape })
+  expect(store.list('w-1')).toHaveLength(2)
+  store.addResponse('w-1', a + '&canvas-reload=3', { ...response('Later', 'ship'), shape })
+  expect(store.list('w-1')).toHaveLength(2)
+  store.send('w-1', a, 1, () => {})
+  expect(store.setPage('w-1', a).sent?.answers.map((x) => x.response.answer)).toEqual(['Later'])
+  expect(store.setPage('w-1', b + '&canvas-reload=4').sent?.answers.map((x) => x.response.answer)).toEqual(['No'])
+  const restored = new WebPanePendingStore(new PendingNotesJournal({ dir: makeDir() }), undefined, new SentAnswerStore({ dir: (sent as unknown as { dir: string }).dir }))
+  expect(restored.setPage('w-2', a).sent?.answers.map((x) => x.response.answer)).toEqual(['Later'])
+})

@@ -1,10 +1,13 @@
 import { WebPaneError } from './web-panes.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
 import type { CanvasThread, WebPaneFeedbackNote } from '../shared/protocol.js'
+
+export const CANVAS_THREADS_BYTES = 16 * 1024 * 1024
+export const CANVAS_THREADS_PER_PANE = 500
 
 const threadIdForKey = (webPaneId: string, key: string) => `ct-${createHash('sha256').update(`${webPaneId}:${key}`).digest('hex').slice(0, 24)}`
 
@@ -17,6 +20,7 @@ export class CanvasThreadsStore {
   private threads = new Map<string, CanvasThread>()
   constructor(private readonly path = defaultCanvasThreadsPath(), private readonly changed: (webPaneId: string) => void = () => {}) {
     try {
+      if (statSync(path).size > CANVAS_THREADS_BYTES) return
       const entries: unknown = JSON.parse(readFileSync(path, 'utf8'))
       if (Array.isArray(entries)) for (const entry of entries) {
         if (!entry || typeof entry !== 'object') continue
@@ -30,6 +34,7 @@ export class CanvasThreadsStore {
         this.threads.set(thread.id, thread)
       }
     } catch { /* A missing or corrupt store starts empty. */ }
+    this.bound(this.threads)
   }
 
   list(webPaneId: string): CanvasThread[] {
@@ -123,7 +128,22 @@ export class CanvasThreadsStore {
     for (const id of removedPanes) this.changed(id)
   }
 
+  private bound(threads: Map<string, CanvasThread>): void {
+    // Resolved pins are discarded first, then oldest pins. Apply the same order to the byte cap.
+    const oldest = [...threads.values()].sort((a, b) => Number(a.status !== 'resolved') - Number(b.status !== 'resolved') || a.createdAt - b.createdAt)
+    const counts = new Map<string, number>()
+    for (const t of oldest) counts.set(t.webPaneId, (counts.get(t.webPaneId) ?? 0) + 1)
+    for (const t of oldest) if (counts.get(t.webPaneId)! > CANVAS_THREADS_PER_PANE) {
+      threads.delete(t.id); counts.set(t.webPaneId, counts.get(t.webPaneId)! - 1)
+    }
+    let bytes = 2 + Math.max(0, threads.size - 1)
+    const sizes = new Map([...threads.values()].map((t) => [t.id, Buffer.byteLength(JSON.stringify(t))]))
+    for (const size of sizes.values()) bytes += size
+    for (const t of oldest) if (bytes > CANVAS_THREADS_BYTES && threads.delete(t.id)) bytes -= sizes.get(t.id)! + 1
+  }
+
   private persist(threads: Map<string, CanvasThread>): void {
+    this.bound(threads)
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
     const temporary = `${this.path}.tmp`
     writeFileSync(temporary, JSON.stringify([...threads.values()]), { mode: 0o600 })

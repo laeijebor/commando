@@ -1,3 +1,4 @@
+import { canvasPageKey as redlinePageKey, canvasSentPageUrl } from '../shared/canvas-feedback.js'
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -15,7 +16,6 @@ import {
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_NOTE,
-  redlinePageKey,
   type RedlinePageResponse,
 } from '../shared/redline-response.js'
 import { defaultFeedbackJournalDir, JOURNAL_COMPACT_THRESHOLD } from './web-pane-feedback-journal.js'
@@ -348,7 +348,7 @@ export class WebPanePendingStore {
     }
     const page = state.viewedPage ?? state.url
     if (this.sentAnswers && page !== undefined) {
-      snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(page) }
+      snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(canvasSentPageUrl(page)) }
     }
     return snapshot
   }
@@ -820,7 +820,7 @@ export class WebPanePendingStore {
     }
     for (const [page, answers] of byPage) {
       try {
-        this.sentAnswers.record(page, answers)
+        this.sentAnswers.record(canvasSentPageUrl(page), answers)
       } catch (error) {
         console.warn('[web-pane-pending] could not record sent answers for', page, error)
       }

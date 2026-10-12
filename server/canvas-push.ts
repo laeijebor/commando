@@ -1,17 +1,25 @@
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
+
 import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 
-const singleLine = (text: string) => text.replace(/[\r\n\t]+/g, ' ')
+export const canvasRepoRoot = fileURLToPath(new URL('../', import.meta.url))
+
+const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
 const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
 
-export function canvasPushPrompt(title: string, id: string, notes: readonly WebPaneFeedbackNote[]): string {
+export function canvasPushPrompt(title: string, id: string, notes: readonly WebPaneFeedbackNote[], repoRoot = canvasRepoRoot): string {
+  id = singleLine(id)
+  const feedbackScript = JSON.stringify(singleLine(resolve(repoRoot, 'scripts/commando-feedback')))
+  const canvasScript = JSON.stringify(singleLine(resolve(repoRoot, 'scripts/commando-canvas')))
   const header = `Canvas feedback on "${clip(singleLine(title), 180)}" (${notes.length} comment(s)) — webPaneId ${id}.`
-  const footer = `Run scripts/commando-feedback ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with scripts/commando-canvas reply ${id} <threadId> "<text>" [--resolve].`
+  const footer = `Run ${feedbackScript} ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with ${canvasScript} reply ${id} <threadId> "<text>" [--resolve].`
   const lines: string[] = []
   let length = header.length + footer.length + 2
   for (const note of notes) {
     const canvas = note.canvas
-    const line = `- [${clip(singleLine(canvas?.frameTitle ?? canvas?.frameId ?? 'Frame'), 100)} › ${clip(singleLine(canvas?.label ?? 'unlabelled'), 100)}] ${clip(singleLine(note.comment), 350)}  (thread ${canvas?.threadId ?? 'unknown'})`
+    const line = `- [${clip(singleLine(canvas?.frameTitle ?? canvas?.frameId ?? 'Frame'), 100)} › ${clip(singleLine(canvas?.label ?? 'unlabelled'), 100)}] ${clip(singleLine(note.comment), 350)}  (thread ${singleLine(canvas?.threadId ?? 'unknown')})`
     if (length + line.length + 1 > 1_900) break
     lines.push(line); length += line.length + 1
   }
@@ -20,6 +28,7 @@ export function canvasPushPrompt(title: string, id: string, notes: readonly WebP
 }
 
 type Dependencies = {
+  repoRoot?: string
   pane: (id: string) => WebPane | undefined
   title: (pane: WebPane) => string
   owns: (paneId: string) => boolean
@@ -50,27 +59,42 @@ export class CanvasPush {
     for (const id of this.owed.keys()) if (this.deps.pane(id)?.anchorPaneId === paneId) await this.flush(id)
   }
 
+  acknowledge(id: string, keys: readonly string[]): void {
+    for (const key of keys) this.owed.get(id)?.delete(key)
+  }
+
   retain(liveIds: ReadonlySet<string>): void {
     for (const id of this.pushed.keys()) if (!liveIds.has(id)) { this.pushed.delete(id); this.owed.delete(id) }
   }
 
   private async flush(id: string): Promise<void> {
-    if (this.sending.has(id)) return
     const pane = this.deps.pane(id), owed = this.owed.get(id)
     if (!pane || !owed?.size) return
     const paneId = pane.anchorPaneId
+    if (this.sending.has(paneId)) return
     const chat = this.deps.owns(paneId)
     const status = this.deps.status(paneId)
     if (!chat && (!status || status.provider === 'unknown' || status.status !== 'done')) return
     const notes = [...owed.values()], keys = [...owed.keys()]
-    const text = canvasPushPrompt(this.deps.title(pane), id, notes)
-    this.sending.add(id)
+    const text = canvasPushPrompt(this.deps.title(pane), id, notes, this.deps.repoRoot)
+    this.sending.add(paneId)
+    let delivered = false
     try {
+      // Availability can change while another canvas owns the anchor.
+      const available = this.deps.status(paneId)
+      if (this.deps.pane(id)?.anchorPaneId !== paneId || chat !== this.deps.owns(paneId) || (!chat && (!available || available.status !== 'done' || available.provider === 'unknown'))) return
       if (chat) {
         if (!this.deps.sendChat(paneId, text, `canvas-${randomUUID()}`)) return
       } else await this.deps.sendTerminal(paneId, text)
+      delivered = true
       for (const key of keys) { this.pushed.get(id)?.add(key); owed.delete(key) }
+      const pushed = this.pushed.get(id)
+      while (pushed && pushed.size > 2_000) pushed.delete(pushed.values().next().value!)
     } catch { /* Keep owed notes for the next status change; never fail journal delivery. */ }
-    finally { this.sending.delete(id) }
+    finally {
+      this.sending.delete(paneId)
+      // Drain other canvases sharing this anchor only after paste AND submit finish.
+      for (const other of this.owed.keys()) if (delivered && other !== id && this.deps.pane(other)?.anchorPaneId === paneId) await this.flush(other)
+    }
   }
 }

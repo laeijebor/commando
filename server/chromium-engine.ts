@@ -828,12 +828,13 @@ export class ChromiumEngine {
     if (![width, height].every((size) => Number.isFinite(size) && size > 0 && size <= MAX_VIEWPORT_DIMENSION)) {
       throw new WebPaneError(400, `PNG dimensions must be between 1 and ${MAX_VIEWPORT_DIMENSION}`)
     }
-    let browser: BrowserSession | undefined, targetId: string | undefined, page: ScreenshotCdp | undefined
+    let browser: BrowserSession | undefined, targetId: string | undefined, contextId: string | undefined, page: ScreenshotCdp | undefined
     let expired = false
     const check = () => { if (expired) throw new WebPaneError(504, 'PNG export timed out after 15s') }
     const cleanup = () => {
       page?.close(); page = undefined
       if (browser && targetId) { browser.cdp.sendAndForget('Target.closeTarget', { targetId }); targetId = undefined }
+      if (browser && contextId) { browser.cdp.sendAndForget('Target.disposeBrowserContext', { browserContextId: contextId }); contextId = undefined }
     }
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_, reject) => {
@@ -842,14 +843,19 @@ export class ChromiumEngine {
     const capture = async () => {
       try {
         browser = await this.ensureBrowser(); check()
-        const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true, background: false })
+        const context = await browser.cdp.send('Target.createBrowserContext', { disposeOnDetach: true })
+        if (typeof context.browserContextId !== 'string') throw new WebPaneError(502, 'Chromium did not return an export context')
+        contextId = context.browserContextId; check()
+        const created = await browser.cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, newWindow: true, background: false })
         if (typeof created.targetId !== 'string') throw new WebPaneError(502, 'Chromium did not return a screenshot target')
         targetId = created.targetId; check()
         page = await connect(`ws://127.0.0.1:${browser.launch.port}/devtools/page/${targetId}`, 15_000); check()
         await page.send('Page.enable'); check()
         await page.send('Emulation.setDeviceMetricsOverride', { width: Math.ceil(width), height: Math.ceil(height), deviceScaleFactor: 2, mobile: false }); check()
         const loaded = new Promise<void>((resolve) => page!.on('Page.loadEventFired', () => resolve()))
-        const navigation = await page.send('Page.navigate', { url }); check()
+        const escapedUrl = url.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
+        const wrapper = `<html><head><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{border:0;display:block}</style></head><body><iframe sandbox="allow-scripts" width="${Math.ceil(width)}" height="${Math.ceil(height)}" src="${escapedUrl}"></iframe></body></html>`
+        const navigation = await page.send('Page.navigate', { url: `data:text/html;charset=utf-8,${encodeURIComponent(wrapper)}` }); check()
         if (navigation.errorText) throw new WebPaneError(502, `PNG navigation failed: ${navigation.errorText}`)
         await loaded; check()
         // Wait for fonts and a paint after load; external pages that never settle hit the overall deadline.

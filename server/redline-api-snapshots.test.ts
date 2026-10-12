@@ -83,7 +83,7 @@ describe('PNG export route', () => {
   it('returns image/png through the engine with fake CDP at frame dimensions and no injection query', async () => {
     const engine = new ChromiumEngine({ classify: () => ({ kind: 'open' }), onExternalNavigation: vi.fn() })
     const closeTarget = vi.fn(), png = Buffer.from('fake-png')
-    vi.spyOn(engine as unknown as { ensureBrowser: () => Promise<unknown> }, 'ensureBrowser').mockResolvedValue({ launch: { port: 9222 }, cdp: { send: async () => ({ targetId: 'export' }), sendAndForget: closeTarget } })
+    vi.spyOn(engine as unknown as { ensureBrowser: () => Promise<unknown> }, 'ensureBrowser').mockResolvedValue({ launch: { port: 9222 }, cdp: { send: async (method: string) => method === 'Target.createBrowserContext' ? { browserContextId: 'isolated' } : { targetId: 'export' }, sendAndForget: closeTarget } })
     let load: () => void = () => {}
     const page = { on: (_event: string, handler: (params: Record<string, unknown>) => void) => { load = () => handler({}) }, close: vi.fn(), send: vi.fn(async (method: string) => {
       if (method === 'Page.navigate') load()
@@ -93,6 +93,6 @@ describe('PNG export route', () => {
     const result = await request(route())
     expect(screenshot).toHaveBeenCalledWith(`http://localhost:4310/redline/artifacts/${id}/Frame%20one.html`, 390, 844)
     expect(result.status).toBe(200); expect(result.body).toEqual(png); expect(result.headers['Content-Type']).toBe('image/png')
-    expect(result.headers['Cache-Control']).toBe('no-store'); expect(closeTarget).toHaveBeenCalledOnce(); expect(page.close).toHaveBeenCalledOnce()
+    expect(result.headers['Cache-Control']).toBe('no-store'); expect(closeTarget).toHaveBeenCalledWith('Target.closeTarget', { targetId: 'export' }); expect(closeTarget).toHaveBeenCalledWith('Target.disposeBrowserContext', { browserContextId: 'isolated' }); expect(page.close).toHaveBeenCalledOnce()
   })
 })

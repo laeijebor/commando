@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -88,4 +88,23 @@ describe('canvas snapshots', () => {
     const snapshot = store.capture(id, 'board.json')!
     expect(snapshot.manifestTitle).toBe('Custom'); expect(saved(snapshot.id, 'canvas.json')).toContain('Board'); expect(saved(snapshot.id, 'board.json')).toContain('Custom')
   })
+})
+
+it('refuses a canonical registration rebound through a parent symlink', () => {
+  const parent = join(dir, 'parent'), moved = join(dir, 'moved'), outside = join(dir, 'outside')
+  mkdirSync(parent); mkdirSync(join(parent, 'board')); mkdirSync(outside); mkdirSync(join(outside, 'board'))
+  const registered = join(parent, 'board'), capability = registry.register(registered).id
+  writeFileSync(join(registered, 'canvas.json'), JSON.stringify(board))
+  writeFileSync(join(outside, 'board', 'canvas.json'), JSON.stringify(board))
+  renameSync(parent, moved); symlinkSync(outside, parent)
+  expect(store.capture(capability)).toBeNull()
+})
+it('stops traversal and input reads at their capture budgets and marks partial', () => {
+  for (let i = 0; i < 15; i++) writeFileSync(join(artifact, `asset${i}`), 'x'.repeat(100))
+  const entries = new CanvasSnapshotsStore(registry, join(dir, 'entries'), () => now++, { entries: 5, inputBytes: 10000 })
+  const snap = entries.capture(id)!; expect(snap.partial).toBe(true)
+  expect(readdirSync(join(entries.root, id, snap.id, 'files')).length).toBeLessThanOrEqual(5)
+  const bytes = new CanvasSnapshotsStore(registry, join(dir, 'bytes'), () => now++, { entries: 5000, inputBytes: 300 })
+  const limited = bytes.capture(id)!; expect(limited.partial).toBe(true)
+  expect(readdirSync(join(bytes.root, id, limited.id, 'files')).length).toBeLessThan(17)
 })

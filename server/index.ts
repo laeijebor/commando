@@ -546,6 +546,7 @@ async function main(): Promise<void> {
     () => publishWebPanes(),
     Date.now,
     releaseAttachment,
+    (id, keys) => canvasPush?.acknowledge(id, keys),
   )
   webPanePending = new WebPanePendingStore(
     pendingJournal,
@@ -1664,6 +1665,7 @@ async function main(): Promise<void> {
   })
   const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
   canvasPush = new CanvasPush({
+    repoRoot: fileURLToPath(new URL('../', import.meta.url)),
     pane: (id) => webPanes.get(id),
     title: (pane) => {
       if (pane.content?.kind === 'canvas') {
@@ -1678,7 +1680,7 @@ async function main(): Promise<void> {
     sendTerminal: async (paneId, text) => {
       const pane = paneForId(paneId)
       const status = agentStatuses.get(paneId)
-      if (!pane || pane.dead || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+      if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
       // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
       await tmux.pasteText(paneId, text)
       await new Promise((resolve) => setTimeout(resolve, 150))

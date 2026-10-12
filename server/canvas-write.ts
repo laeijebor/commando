@@ -1,3 +1,4 @@
+import { encodeCanvasPath } from '../shared/canvas-manifest.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -36,7 +37,7 @@ export function writeCanvas(artifacts: RedlineArtifactRegistry, artifactId: stri
   const fail = (status: number, message: string): never => { throw new RedlineArtifactError(status, message) }
   const manifest = canvasRelativePath(body.manifest)
   if (!manifest || !manifest.endsWith('.json')) return fail(400, 'manifest must be a relative JSON path inside the canvas folder')
-  const encoded = manifest.split('/').map(encodeURIComponent).join('/')
+  const encoded = encodeCanvasPath(manifest)
   const file = artifacts.resolve(artifactId, encoded)
   if (!file) return fail(404, 'Canvas manifest not found')
   if (typeof body.expectedHash !== 'string' || !/^[0-9a-f]{64}$/.test(body.expectedHash)) return fail(400, 'expectedHash must be the loaded manifest content hash')

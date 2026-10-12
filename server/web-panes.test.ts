@@ -818,3 +818,12 @@ describe('canvas tabs', () => {
     expect(restored.list()).toHaveLength(1)
   })
 })
+
+it('opens two manifests in the same canvas folder as separate tabs', async () => {
+  const service = track(new WebPaneService(await temporaryStatePath()))
+  const content = { kind: 'canvas' as const, artifactId: '0123456789abcdef', manifest: 'canvas.json' }
+  const first = service.open({ ...anchor, url: 'http://localhost/', content })
+  const second = service.open({ ...anchor, url: first.url, content: { ...content, manifest: 'second.json' } })
+  expect(second.id).not.toBe(first.id)
+  expect(service.open({ ...anchor, url: first.url, content }).id).toBe(first.id)
+})

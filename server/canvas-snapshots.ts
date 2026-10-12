@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, opendirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 import { canvasRelativePath, parseCanvasManifest } from '../shared/canvas-manifest.js'
@@ -9,13 +9,15 @@ import type { RedlineArtifactRegistry } from './redline-artifacts.js'
 
 export const CANVAS_SNAPSHOT_FILE_LIMIT = 5 * 1024 * 1024
 export const CANVAS_SNAPSHOT_TOTAL_LIMIT = 50 * 1024 * 1024
+export const CANVAS_SNAPSHOT_ENTRY_LIMIT = 5_000
+export const CANVAS_SNAPSHOT_INPUT_LIMIT = 200 * 1024 * 1024
 const validId = (id: string) => /^[0-9a-f]{16}$/.test(id)
 const validSnapshot = (id: string) => /^[0-9a-f-]{36}$/.test(id)
 const eligiblePath = (path: string) => !!canvasRelativePath(path) && path.split('/').every((part) => !part.startsWith('.') && part !== 'node_modules')
 export const defaultCanvasSnapshotsPath = (port: number) => join(homedir(), '.commando', `canvas-snapshots-${port}`)
 
 /** Never follow symlinks, including directory components; validate again after opening. */
-function openRegular(root: string, path: string): number | null {
+function openRegular(root: string, path: string, expectedRoot?: string): number | null {
   if (!eligiblePath(path)) return null
   let fd: number | undefined
   try {
@@ -23,6 +25,7 @@ function openRegular(root: string, path: string): number | null {
     let file = root
     for (const part of path.split('/')) { file = join(file, part); if (lstatSync(file).isSymbolicLink()) return null }
     const canonicalRoot = realpathSync(root)
+    if (expectedRoot !== undefined && canonicalRoot !== expectedRoot) return null
     const confined = () => realpathSync(file).startsWith(canonicalRoot + sep)
     if (!confined()) return null
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
@@ -33,20 +36,23 @@ function openRegular(root: string, path: string): number | null {
     return fd
   } catch { if (fd !== undefined) closeSync(fd); return null }
 }
-function readBounded(root: string, path: string): Buffer | null {
-  const fd = openRegular(root, path)
+function readBounded(root: string, path: string, budget?: { remaining: number; partial: boolean }): Buffer | null {
+  const fd = openRegular(root, path, root)
   if (fd === null) return null
   try {
+    const size = fstatSync(fd).size
+    if (budget && size + 1 > budget.remaining) { budget.partial = true; budget.remaining = 0; return null }
     // An extra byte detects a file that grows after fstat without an unbounded read.
-    const buffer = Buffer.alloc(CANVAS_SNAPSHOT_FILE_LIMIT + 1)
+    const buffer = Buffer.alloc(Math.min(size + 1, CANVAS_SNAPSHOT_FILE_LIMIT + 1, budget?.remaining ?? Infinity))
     let length = 0, count = 0
     do { count = readSync(fd, buffer, length, buffer.length - length, null); length += count } while (count && length < buffer.length)
+    if (budget) { budget.remaining -= length; if (length === buffer.length) { budget.partial = true; return null } }
     return length > CANVAS_SNAPSHOT_FILE_LIMIT ? null : buffer.subarray(0, length)
   } finally { closeSync(fd) }
 }
 
 export class CanvasSnapshotsStore {
-  constructor(private readonly artifacts: Pick<RedlineArtifactRegistry, 'directory'>, readonly root: string, private readonly now = Date.now) {}
+  constructor(private readonly artifacts: Pick<RedlineArtifactRegistry, 'directory'>, readonly root: string, private readonly now = Date.now, private readonly limits = { entries: CANVAS_SNAPSHOT_ENTRY_LIMIT, inputBytes: CANVAS_SNAPSHOT_INPUT_LIMIT }) {}
 
   /** The shared canvas send hook calls this for batches, Send this, follow-ups and status notes. */
   captureSent(pane: WebPane | undefined, notes: readonly WebPaneFeedbackNote[]): CanvasSnapshot | null {
@@ -57,32 +63,44 @@ export class CanvasSnapshotsStore {
   capture(artifactId: string, manifestPath = 'canvas.json', comments = 0): CanvasSnapshot | null {
     const dir = validId(artifactId) && this.artifacts.directory(artifactId)
     if (!dir) { this.prune(); return null }
-    if (lstatSync(dir).isSymbolicLink()) return null
-    const manifestBytes = readBounded(dir, manifestPath)
+    try { if (lstatSync(dir).isSymbolicLink() || realpathSync(dir) !== dir) return null } catch { return null }
+    const budget = { remaining: this.limits.inputBytes, partial: false }
+    const manifestBytes = readBounded(dir, manifestPath, budget)
     if (!manifestBytes) return null
     const { manifest } = parseCanvasManifest(manifestBytes.toString('utf8'))
     const core = new Set(['canvas.json', manifestPath, ...manifest.frames.map((frame) => frame.src)])
     const paths: string[] = []
-    const walk = (folder: string) => {
-      for (const entry of readdirSync(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-        const file = join(folder, entry.name), path = relative(dir, file).split(sep).join('/')
-        // Recheck directory confinement before recursing (Dirent may be stale).
-        if (entry.isDirectory() && !lstatSync(file).isSymbolicLink() && realpathSync(file).startsWith(realpathSync(dir) + sep)) walk(file)
-        else if (entry.isFile()) paths.push(path)
-      }
+    let visited = 0
+    const walk = (folder: string, depth = 0) => {
+      if (depth >= 64 || visited >= this.limits.entries) { budget.partial = true; return }
+      const entries = opendirSync(folder)
+      try {
+        let entry
+        while (visited < this.limits.entries && (entry = entries.readSync())) {
+          ++visited
+          if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+          const file = join(folder, entry.name), path = relative(dir, file).split(sep).join('/')
+          try {
+            if (entry.isDirectory() && !lstatSync(file).isSymbolicLink() && realpathSync(file).startsWith(dir + sep)) walk(file, depth + 1)
+            else if (entry.isFile()) paths.push(path)
+          } catch { budget.partial = true }
+          if (visited >= this.limits.entries) { budget.partial = true; return }
+        }
+        if (visited >= this.limits.entries) budget.partial = true
+      } finally { entries.closeSync() }
     }
     walk(dir)
     const parent = join(this.root, artifactId), id = randomUUID(), staging = join(parent, `.${id}`)
     mkdirSync(join(staging, 'files'), { recursive: true, mode: 0o700 })
-    let total = 0, stored = 0, partial = false
+    let total = 0, stored = 0, partial = budget.partial
     const fileHashes: Array<[string, string]> = []
     try {
       // Read once: the hash describes the exact bytes copied, including files omitted by the total cap.
       const priority = (path: string) => path === manifestPath || path === 'canvas.json' ? 0 : core.has(path) ? 1 : 2
       for (const path of paths.sort((a, b) => priority(a) - priority(b) || a.localeCompare(b))) {
-        const body = path === manifestPath ? manifestBytes : readBounded(dir, path)
-        if (!body) continue
+        const body = path === manifestPath ? manifestBytes : readBounded(dir, path, budget)
+        if (budget.partial) partial = true
+        if (!body) { if (budget.remaining <= CANVAS_SNAPSHOT_FILE_LIMIT + 1 && budget.partial) break; continue }
         fileHashes.push([path, createHash('sha256').update(body).digest('hex')])
         total += body.length
         if (stored + body.length <= CANVAS_SNAPSHOT_TOTAL_LIMIT) {
