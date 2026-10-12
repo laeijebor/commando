@@ -127,6 +127,17 @@ describe('stash and pop with Ctrl+S', () => {
     expect(input.value).toBe('keep me')
   })
 
+  it('does one thing per press while Ctrl+S is held', async () => {
+    const { input, type, press, pushed, taken } = setup()
+    type('held')
+    press('s', { ctrlKey: true })
+    await waitFor(() => expect(screen.getByRole('button', { name: /1 stashed/ })).toBeInTheDocument())
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true, repeat: true })
+    expect(taken).toEqual([])
+    expect(pushed).toHaveLength(1)
+    expect(input.value).toBe('')
+  })
+
   it('does nothing on an empty composer with an empty stash, and leaves Cmd+S alone', () => {
     const { input, press, taken, pushed } = setup()
     press('s', { ctrlKey: true })
@@ -195,7 +206,7 @@ describe('the stash menu', () => {
     expect(screen.getByRole('button', { name: /1 stashed/ })).toBeInTheDocument()
   })
 
-  it('removes the highlighted entry with Delete or Backspace, keeping the composer', async () => {
+  it('removes the highlighted entry with Delete, keeping the composer', async () => {
     const first = entry('first')
     const second = entry('second')
     const third = entry('third')
@@ -207,10 +218,21 @@ describe('the stash menu', () => {
     await waitFor(() => expect(stashRows()).toHaveLength(2))
     expect(taken).toEqual([second.id])
     expect(stashRows()[1]).toHaveAttribute('aria-selected', 'true')
+    // With a draft, Backspace edits it rather than deleting a stashed one.
+    const backspace = new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true })
+    act(() => { input.dispatchEvent(backspace) })
+    expect(backspace.defaultPrevented).toBe(false)
+    expect(taken).toEqual([second.id])
+    expect(input.value).toBe('draft stays')
+  })
+
+  it('removes with Backspace from an empty composer', async () => {
+    const first = entry('first')
+    const { press, taken } = setup([first, entry('second')])
+    press('S', { ctrlKey: true, shiftKey: true })
     press('Backspace')
     await waitFor(() => expect(stashRows()).toHaveLength(1))
-    expect(taken).toEqual([second.id, third.id])
-    expect(input.value).toBe('draft stays')
+    expect(taken).toEqual([first.id])
   })
 
   it('restores with a click and removes with the row’s X', async () => {

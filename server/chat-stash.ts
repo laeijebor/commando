@@ -59,14 +59,13 @@ export class ChatStashStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
     }
-    let value: unknown
+    let state: Partial<StateFile> | null
     try {
-      value = JSON.parse(raw) as unknown
+      state = JSON.parse(raw) as Partial<StateFile> | null
     } catch (error) {
-      throw new Error('Chat stash file contains invalid JSON', { cause: error })
+      throw await this.setAside('contains invalid JSON', error)
     }
-    const state = value as Partial<StateFile> | null
-    if (!state || state.version !== 1 || !Array.isArray(state.entries)) throw new Error('Chat stash file has an invalid structure')
+    if (!state || state.version !== 1 || !Array.isArray(state.entries)) throw await this.setAside('has an invalid structure')
     // A bad entry is dropped rather than losing every other draft with it.
     const entries = state.entries.flatMap((candidate) => {
       const entry = parseChatStashEntry(candidate)
@@ -74,6 +73,13 @@ export class ChatStashStore {
     })
     this.entries = capped(entries.sort((left, right) => right.createdAt - left.createdAt))
     await this.touchImages(this.entries)
+  }
+
+  /** Keeps an unreadable file beside the new one, so the next stash doesn't overwrite its drafts. */
+  private async setAside(problem: string, cause?: unknown): Promise<Error> {
+    const aside = `${this.statePath}.unreadable-${Date.now()}`
+    await rename(this.statePath, aside).catch(() => undefined)
+    return new Error(`Chat stash file ${problem}; kept it as ${aside}`, { cause })
   }
 
   list(): ChatStashEntry[] {

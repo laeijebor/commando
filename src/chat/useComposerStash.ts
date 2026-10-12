@@ -102,6 +102,8 @@ export function useComposerStash({ session, draft, images, uploading, clear, bri
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 's') {
       // Never the browser's Save dialog.
       event.preventDefault()
+      // A held Ctrl+S would otherwise stash and pop the same draft by turns.
+      if (event.repeat) return true
       if (event.shiftKey) openMenu(!menuOpen)
       else if (hasDraft) run(async (target) => { await stashDraft(target) })
       else if (entries[0]) {
@@ -134,7 +136,8 @@ export function useComposerStash({ session, draft, images, uploading, clear, bri
       restore(active)
       return true
     }
-    if (event.key === 'Delete' || event.key === 'Backspace') {
+    // Typing still goes to the draft, so Backspace removes an entry only from an empty composer.
+    if (event.key === 'Delete' || (event.key === 'Backspace' && !hasDraft)) {
       event.preventDefault()
       remove(active)
       return true

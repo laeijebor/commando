@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -74,6 +74,10 @@ describe('chat stash store', () => {
     expect(store.list()).toEqual([good])
     await writeFile(path, '{')
     await expect(new ChatStashStore(path).load()).rejects.toThrow('invalid JSON')
+    // Set aside, so the next stash starts a new file instead of overwriting it.
+    const aside = (await readdir(dir)).filter((name) => name.startsWith('chat-stash.json.unreadable-'))
+    expect(aside).toHaveLength(1)
+    expect(await readFile(join(dir, aside[0]!), 'utf8')).toBe('{')
   })
 
   it('keeps stashed images from the prune and leaves out ones that are gone', async () => {
